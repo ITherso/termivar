@@ -42,6 +42,8 @@ use crate::web_runtime::openapi_runtime::{OpenApiCandidateSource, OpenApiRuntime
 use crate::web_runtime::rest_runtime::{
     RestObservedMediaClass, RestRuntimeOutcome, REST_REVIEW_ACTION_ID,
 };
+#[cfg(feature = "wordpress-review")]
+use crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID;
 use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 #[cfg(feature = "reporting")]
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
@@ -49,6 +51,11 @@ use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
 use crate::web_runtime::{
     MAX_AUTHORIZATION_REVIEW_REQUESTS, RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID,
     RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+};
+#[cfg(feature = "wordpress-review")]
+use crate::wordpress_review::{
+    parse_wordpress_advisory_catalog, parse_wordpress_context, WordPressApplicability,
+    WordPressCatalogStatus, WordPressReviewInputs,
 };
 #[cfg(any(feature = "authorization-review", feature = "rest-review"))]
 use crate::DecisionActionOrigin;
@@ -188,6 +195,268 @@ async fn dropping_the_progress_observer_cannot_stop_or_expand_the_assessment() {
     assert_eq!(report.usage().total_requests(), 1);
     assert_eq!(report.usage().active_verifications(), 0);
     assert_eq!(server.hit_count("/").await, 1);
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_review_reuses_root_observation_and_adds_no_requests() {
+    const ROOT: &str = r#"<html><head>
+        <meta name="generator" content="WordPress 6.9.4">
+        <link rel="stylesheet" href="/wp-content/plugins/example/style.css?ver=99">
+        </head><body>fixture</body></html>"#;
+    let server = serve(|_| FixtureReply::Response(FixtureResponse::html(ROOT))).await;
+
+    let mut without = WebAssessmentRuntime::builder(server.url("/"))
+        .build()
+        .unwrap();
+    let without_report = without.analyze().await.unwrap();
+    assert!(without_report.wordpress_review_audit().is_none());
+    let without_requests = server.requests().await;
+    assert_eq!(without_requests.len(), 2);
+    assert_eq!(without_requests[0].method, "GET");
+    assert_eq!(without_requests[0].target, "/");
+    assert_eq!(without_requests[1].method, "HEAD");
+    assert_eq!(
+        without_requests[1].target,
+        "/wp-content/plugins/example/style.css"
+    );
+
+    let decision_shape = |report: &WebAssessmentRunReport| {
+        report
+            .subjects()
+            .iter()
+            .map(|subject| {
+                let mut selected_actions = Vec::new();
+                let commands = subject
+                    .turns()
+                    .iter()
+                    .map(|turn| match turn {
+                        StandardWebDecisionRuntimeTurn::Planning(planning) => {
+                            selected_actions.extend(
+                                planning
+                                    .plan()
+                                    .steps()
+                                    .iter()
+                                    .map(|step| step.action_id().to_owned()),
+                            );
+                            planning.command().clone()
+                        },
+                        StandardWebDecisionRuntimeTurn::Outcome { decision, .. } => {
+                            decision.command().clone()
+                        },
+                    })
+                    .collect::<Vec<_>>();
+                (selected_actions, commands, subject.terminal().cloned())
+            })
+            .collect::<Vec<_>>()
+    };
+    let existing_item_shape = |report: &WebAssessmentRunReport| {
+        report
+            .assessment_items()
+            .iter()
+            .filter(|item| item.capability_id() != WORDPRESS_REVIEW_CAPABILITY_ID)
+            .map(|item| {
+                (
+                    item.capability_id(),
+                    item.fingerprint().to_owned(),
+                    item.disposition(),
+                    item.confidence().parts_per_million(),
+                    item.evidence_count(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let without_decisions = decision_shape(&without_report);
+    let without_existing_items = existing_item_shape(&without_report);
+
+    let catalog = parse_wordpress_advisory_catalog(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/examples/wordpress-review/advisories.curated.json"
+    )))
+    .unwrap();
+    let mut with = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, Some(catalog)))
+        .build()
+        .unwrap();
+    let with_report = with.analyze().await.unwrap();
+    assert_report_reconciles(&with_report);
+    let audit = with_report.wordpress_review_audit().unwrap();
+    assert_eq!(audit.additional_request_count(), 0);
+    assert_eq!(audit.signal_count(), 2);
+    assert!(audit.evidence_reference_count() > 0);
+    assert!(audit.item_projected());
+    assert_eq!(
+        audit.result().catalog_status(),
+        WordPressCatalogStatus::Evaluated
+    );
+    assert!(audit.result().advisories().iter().any(|evaluation| {
+        evaluation.record().id() == "GHSA-fpp7-x2x2-2mjf"
+            && evaluation.applicability() == WordPressApplicability::CandidateMatchOnDeclaredFacts
+    }));
+    let items = with_report
+        .assessment_items()
+        .iter()
+        .filter(|item| item.capability_id() == WORDPRESS_REVIEW_CAPABILITY_ID)
+        .collect::<Vec<_>>();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].disposition(), AssessmentDisposition::Informational);
+    assert!(matches!(items[0].basis(), AssessmentBasis::Observation(_)));
+
+    let all_requests = server.requests().await;
+    let with_requests = &all_requests[without_requests.len()..];
+    assert_eq!(with_requests, without_requests.as_slice());
+    assert_eq!(decision_shape(&with_report), without_decisions);
+    assert_eq!(existing_item_shape(&with_report), without_existing_items);
+    assert_eq!(
+        with_report.usage().total_requests(),
+        without_report.usage().total_requests()
+    );
+    assert_eq!(
+        with_report.usage().active_verifications(),
+        without_report.usage().active_verifications()
+    );
+    assert_eq!(
+        with_report.usage().request_body_bytes(),
+        without_report.usage().request_body_bytes()
+    );
+    assert_eq!(
+        with_report.usage().response_bytes(),
+        without_report.usage().response_bytes()
+    );
+
+    #[cfg(feature = "reporting")]
+    {
+        let product =
+            ReportGenerator::compose_assessment(with_report, ScanProfileV1::web_review().unwrap())
+                .unwrap();
+        let rendered = ReportGenerator::generate_assessment(&product, ReportFormat::Json).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(document["wordpress_review"]["additional_request_count"], 0);
+        assert_eq!(document["wordpress_review"]["catalog_status"], "evaluated");
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
+fn wordpress_context_root_mismatch_fails_before_runtime_start() {
+    let context = parse_wordpress_context(
+        br#"{"schema":"security.wordpress-context/v1","root":"https://other.example/","components":[]}"#,
+    )
+    .unwrap();
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .with_wordpress_review(WordPressReviewInputs::new(Some(context), None))
+        .build();
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::WordPressContextRootMismatch)
+    ));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn truncated_root_cannot_publish_partial_wordpress_interpretation() {
+    let body = format!(
+        r#"<meta name="generator" content="WordPress 6.9.4">{}"#,
+        "x".repeat(256)
+    );
+    let server = serve(move |_| FixtureReply::Response(FixtureResponse::html(body.clone()))).await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(32)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let reasons = report.completion().reasons();
+    assert!(reasons.contains(&WebAssessmentIncompleteReason::ResponseBodyIncomplete));
+    assert!(reasons.contains(&WebAssessmentIncompleteReason::WordPressReviewIncomplete));
+    assert!(report.wordpress_review_audit().is_none());
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.capability_id() != WORDPRESS_REVIEW_CAPABILITY_ID));
+    assert_eq!(server.requests().await.len(), 1);
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_signals_from_an_unrelated_discovered_subject_are_not_merged_into_root() {
+    let server = serve(|request| {
+        let body = if request.path() == "/" {
+            r#"<html><body><a href="/nested">nested</a></body></html>"#
+        } else {
+            r#"<html><head><meta name="generator" content="WordPress 6.9.4"></head></html>"#
+        };
+        FixtureReply::Response(FixtureResponse::html(body))
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    assert!(server.hit_count("/nested").await > 0);
+    let audit = report.wordpress_review_audit().unwrap();
+    assert_eq!(audit.signal_count(), 0);
+    assert!(!audit.item_projected());
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.capability_id() != WORDPRESS_REVIEW_CAPABILITY_ID));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_surface_item_identity_does_not_embed_declared_version() {
+    let response_index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let response_index_for_server = Arc::clone(&response_index);
+    let server = serve(move |_| {
+        let version =
+            if response_index_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                "6.9.4"
+            } else {
+                "7.0.1"
+            };
+        FixtureReply::Response(FixtureResponse::html(format!(
+            r#"<html><head><meta name="generator" content="WordPress {version}"></head></html>"#
+        )))
+    })
+    .await;
+    let mut fingerprints = Vec::new();
+    let mut versions = Vec::new();
+    for _ in 0..2 {
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let item = report
+            .assessment_items()
+            .iter()
+            .find(|item| item.capability_id() == WORDPRESS_REVIEW_CAPABILITY_ID)
+            .unwrap();
+        assert_eq!(
+            item.remediation().summary(),
+            "Confirm the component inventory and consult an appropriate authoritative advisory source before making a security decision."
+        );
+        fingerprints.push(item.fingerprint().to_owned());
+        versions.push(
+            report
+                .wordpress_review_audit()
+                .unwrap()
+                .result()
+                .components()[0]
+                .versions()[0]
+                .value()
+                .to_owned(),
+        );
+    }
+
+    assert_eq!(versions, ["6.9.4", "7.0.1"]);
+    assert_eq!(fingerprints[0], fingerprints[1]);
 }
 
 #[tokio::test]

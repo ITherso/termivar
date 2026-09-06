@@ -29,6 +29,8 @@ mod progress;
 mod report_bundle;
 mod report_compare;
 mod report_verify;
+#[cfg(feature = "wordpress-review")]
+mod wordpress_input;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{ffi::OsString, path::PathBuf};
@@ -178,6 +180,34 @@ fn scan_rest_review_flags_conflict(
         Some("`--rest-review` requires `--profile web-review`")
     } else if rest_review && !openapi_review {
         Some("`--rest-review` requires `--openapi-review`")
+    } else {
+        None
+    }
+}
+
+/// Rejects WordPress interpretation outside the explicit web-review profile.
+/// Input paths are selected and validated separately before any secret or
+/// network construction.
+#[cfg(feature = "wordpress-review")]
+fn scan_wordpress_review_flags_conflict(
+    profile: Option<CliScanProfile>,
+    wordpress_review: bool,
+    context_selected: bool,
+    advisories_selected: bool,
+) -> Option<&'static str> {
+    if (context_selected || advisories_selected) && !wordpress_review {
+        Some("WordPress inputs require explicit `--wordpress-review`")
+    } else if wordpress_review && profile != Some(CliScanProfile::WebReview) {
+        Some("`--wordpress-review` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_review_target_conflict(wordpress_review: bool, target: &Url) -> Option<&'static str> {
+    if wordpress_review && !is_exact_origin_root(target) {
+        Some("WordPress evidence review requires an exact origin root target")
     } else {
         None
     }
@@ -336,6 +366,30 @@ struct ScanArgs {
     #[cfg(feature = "rest-review")]
     #[arg(long, requires_all = ["profile", "openapi_review"])]
     rest_review: bool,
+    /// Interpret bounded WordPress component evidence already present in the
+    /// assessment. This option adds no target requests and is compiled only
+    /// with `wordpress-review`.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(long, requires = "profile")]
+    wordpress_review: bool,
+    /// Read one bounded `security.wordpress-context/v1` operator declaration.
+    /// The path itself is not retained in the assessment.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["profile", "wordpress_review"]
+    )]
+    wordpress_context: Option<PathBuf>,
+    /// Read one bounded `security.wordpress-advisory-catalog/v1` local
+    /// catalogue. No advisory source is fetched automatically.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["profile", "wordpress_review"]
+    )]
+    wordpress_advisories: Option<PathBuf>,
     /// Explicitly enable the bounded SSRF OAST query review. This option is
     /// compiled only with `ssrf-oast-review`, requires one policy, and is valid
     /// only with `--profile web-review`.
@@ -578,6 +632,12 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         openapi_review,
         #[cfg(feature = "rest-review")]
         rest_review,
+        #[cfg(feature = "wordpress-review")]
+        wordpress_review,
+        #[cfg(feature = "wordpress-review")]
+        wordpress_context,
+        #[cfg(feature = "wordpress-review")]
+        wordpress_advisories,
         #[cfg(feature = "ssrf-oast-review")]
         ssrf_oast_review,
         #[cfg(feature = "ssrf-oast-review")]
@@ -638,6 +698,18 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(message) = scan_wordpress_review_flags_conflict(
+        profile,
+        wordpress_review,
+        wordpress_context.is_some(),
+        wordpress_advisories.is_some(),
+    ) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
     #[cfg(feature = "ssrf-oast-review")]
     if let Some(message) = scan_ssrf_oast_review_flags_conflict(profile, ssrf_oast_review) {
         use clap::CommandFactory;
@@ -668,6 +740,10 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
+    }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(message) = wordpress_review_target_conflict(wordpress_review, &target) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
     }
     #[cfg(feature = "authorization-review")]
     let root_authorization_selected = auth_env.is_some() || auth_file.is_some() || auth_stdin;
@@ -739,6 +815,12 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             oast_admin_token_stdin,
         ),
     )?;
+    #[cfg(feature = "wordpress-review")]
+    let wordpress_review_input = wordpress_input::WordPressReviewInput::select(
+        wordpress_review,
+        wordpress_context,
+        wordpress_advisories,
+    )?;
     #[cfg(feature = "authorization-review")]
     if resource_authorization_input.is_some()
         && !authorization_context_transport_is_allowed(&target)
@@ -773,6 +855,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 report_format: report_format.map(Into::into),
             }
         };
+        // WordPress documents are non-credential local inputs, but their complete
+        // bounded structure is still validated before output reservation,
+        // credential loading, or network construction.
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_review = wordpress_review_input
+            .map(|input| input.load(&target))
+            .transpose()?;
         preflight_report_output(report_output.as_deref())?;
         let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;
         // All flag, profile, target, and obvious report-output checks above
@@ -814,6 +903,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 resource_authorization_review,
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast_review,
+                #[cfg(feature = "wordpress-review")]
+                wordpress_review,
             },
         )
         .await
@@ -1323,6 +1414,12 @@ mod tests {
         assert!(!args.openapi_review);
         #[cfg(feature = "rest-review")]
         assert!(!args.rest_review);
+        #[cfg(feature = "wordpress-review")]
+        {
+            assert!(!args.wordpress_review);
+            assert_eq!(args.wordpress_context, None);
+            assert_eq!(args.wordpress_advisories, None);
+        }
         #[cfg(feature = "ssrf-oast-review")]
         {
             assert!(!args.ssrf_oast_review);
@@ -1374,6 +1471,12 @@ mod tests {
         assert!(!args.openapi_review);
         #[cfg(feature = "rest-review")]
         assert!(!args.rest_review);
+        #[cfg(feature = "wordpress-review")]
+        {
+            assert!(!args.wordpress_review);
+            assert_eq!(args.wordpress_context, None);
+            assert_eq!(args.wordpress_advisories, None);
+        }
         #[cfg(feature = "ssrf-oast-review")]
         {
             assert!(!args.ssrf_oast_review);
@@ -1911,6 +2014,140 @@ mod tests {
             "web-review",
             "--openapi-review",
             "--rest-review",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_review_is_explicit_web_review_only_with_optional_local_inputs() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--wordpress-review",
+            "--wordpress-context",
+            "--wordpress-advisories",
+        ] {
+            assert!(help.contains(flag), "missing feature-gated flag {flag}");
+        }
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--wordpress-review",
+            "https://example.test/",
+        ])
+        .is_err());
+        for flag in ["--wordpress-context", "--wordpress-advisories"] {
+            assert!(Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "--profile",
+                "web-review",
+                flag,
+                "PRIVATE-WORDPRESS-PATH",
+                "https://example.test/",
+            ])
+            .is_err());
+        }
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--wordpress-review",
+            "--wordpress-context",
+            "context.json",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+        assert!(baseline.wordpress_review);
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                baseline.profile,
+                baseline.wordpress_review,
+                baseline.wordpress_context.is_some(),
+                baseline.wordpress_advisories.is_some(),
+            ),
+            Some("`--wordpress-review` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "decision-scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-context",
+            "context.json",
+            "--wordpress-advisories",
+            "advisories.json",
+            "--progress",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.wordpress_review);
+        assert!(review.wordpress_context.is_some());
+        assert!(review.wordpress_advisories.is_some());
+        assert!(review.progress);
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                review.profile,
+                review.wordpress_review,
+                true,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            wordpress_review_target_conflict(
+                true,
+                &Url::parse("https://example.test/subpath").unwrap(),
+            ),
+            Some("WordPress evidence review requires an exact origin root target")
+        );
+        assert_eq!(
+            wordpress_review_target_conflict(true, &Url::parse("https://example.test/").unwrap(),),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "wordpress-review"))]
+    #[test]
+    fn default_cli_does_not_expose_wordpress_review_inputs() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--wordpress-review",
+            "--wordpress-context",
+            "--wordpress-advisories",
+        ] {
+            assert!(!help.contains(flag), "default CLI exposed {flag}");
+        }
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
             "https://example.test/",
         ])
         .is_err());

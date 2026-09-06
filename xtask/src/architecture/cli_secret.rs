@@ -73,6 +73,9 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "oast_admin_token_stdin",
     "openapi_review",
     "rest_review",
+    "wordpress_advisories",
+    "wordpress_context",
+    "wordpress_review",
     "profile",
     "progress",
     "report_dir",
@@ -671,6 +674,10 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("oast_admin_token_file", "Option", Some("PathBuf")),
         ("oast_admin_token_stdin", "bool", None),
         ("openapi_review", "bool", None),
+        ("rest_review", "bool", None),
+        ("wordpress_review", "bool", None),
+        ("wordpress_context", "Option", Some("PathBuf")),
+        ("wordpress_advisories", "Option", Some("PathBuf")),
         ("ssrf_oast_policy", "Option", Some("PathBuf")),
         ("ssrf_oast_review", "bool", None),
         ("authorization_review_policy", "Option", Some("PathBuf")),
@@ -857,6 +864,39 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
+    for (name, expected_type, expected_arg) in [
+        (
+            "wordpress_review",
+            ("bool", None),
+            "long,requires=\"profile\"",
+        ),
+        (
+            "wordpress_context",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"]",
+        ),
+        (
+            "wordpress_advisories",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"]",
+        ),
+    ] {
+        let exact = fields.get(name).is_some_and(|field| {
+            let type_matches = match expected_type {
+                (outer, Some(inner)) => is_one_argument_type(&field.ty, outer, inner),
+                (plain, None) => is_plain_type(&field.ty, plain),
+            };
+            type_matches
+                && exact_cfg_feature_attribute(&field.attrs, "wordpress-review")
+                && exact_arg_attribute(&field.attrs, expected_arg)
+        });
+        if !exact {
+            violations.push(format!(
+                "CLI `{name}` must retain its exact private wordpress-review feature gate and local-input requirements"
+            ));
+        }
+    }
+
     if fields.get("report_dir").is_none_or(|field| {
         !is_one_argument_type(&field.ty, "Option", "PathBuf")
             || !exact_arg_attribute(
@@ -1008,9 +1048,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_flags_conflict",
         "scan_rest_review_flags_conflict",
         "scan_progress_flags_conflict",
+        "scan_wordpress_review_flags_conflict",
         "scan_ssrf_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
+        "wordpress_review_target_conflict",
         "scan_resource_authorization_flags_conflict",
         "select",
         "scan_authorization_flags_conflict",
@@ -1018,9 +1060,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "authorization_context_transport_is_allowed",
         "select",
         "select",
+        "select",
         "authorization_context_transport_is_allowed",
         "for_builtin",
         "with_defense_enforcement_enabled",
+        "load",
         "preflight_report_output",
         "reserve_report_bundle",
         "load",
@@ -1039,15 +1083,15 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 3
+            != 4
         || ordered
             .iter()
             .filter(|name| name.as_str() == "select")
             .count()
-            != 3
+            != 4
     {
         violations.push(format!(
-            "CLI authorization sources must be selected without I/O and loaded exactly once each after flag, progress, transport, profile, defense, and report preflights and before warning/network execution; observed {ordered:?}"
+            "CLI authorization sources and WordPress local inputs must be selected without I/O and loaded exactly once each after flag, progress, transport, profile, and defense validation and before warning/network execution; report destinations must still be preflighted before credential loading; observed {ordered:?}"
         ));
     }
 
@@ -1788,9 +1832,11 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_flags_conflict",
         "scan_rest_review_flags_conflict",
         "scan_progress_flags_conflict",
+        "scan_wordpress_review_flags_conflict",
         "scan_ssrf_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
+        "wordpress_review_target_conflict",
         "scan_resource_authorization_flags_conflict",
         "select",
         "scan_authorization_flags_conflict",
@@ -2214,6 +2260,16 @@ mod tests {
                 "must remain an exact cfg-gated bool",
             ),
             (
+                "    #[cfg(feature = \"wordpress-review\")]\n    #[arg(long, requires = \"profile\")]\n    wordpress_review: bool,",
+                "    #[arg(long, requires = \"profile\")]\n    wordpress_review: bool,",
+                "private wordpress-review feature gate",
+            ),
+            (
+                "requires_all = [\"profile\", \"wordpress_review\"]",
+                "requires_all = [\"profile\"]",
+                "private wordpress-review feature gate",
+            ),
+            (
                 "    #[arg(long, requires = \"profile\")]\n    progress: bool,",
                 "    #[arg(long)]\n    progress: bool,",
                 "ungated bool requiring an explicit profile",
@@ -2242,6 +2298,11 @@ mod tests {
                 "preflight_report_output(report_output.as_deref())?;",
                 "let _deferred_report_preflight = report_output.as_deref();",
                 "preflight the selected report output",
+            ),
+            (
+                "        let wordpress_review = wordpress_review_input\n            .map(|input| input.load(&target))\n            .transpose()?;",
+                "        let wordpress_review = None;",
+                "WordPress local inputs must be selected without I/O and loaded exactly once",
             ),
             (
                 "let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;",

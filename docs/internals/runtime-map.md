@@ -27,6 +27,26 @@ and value-sensitive `Resources` may produce
 cookie, redirect, retry, or write method is used, and the selected operation is
 not chained into SQL, SSTI, XSS, authorization, SSRF, or upload review.
 
+## WordPress evidence review
+
+The non-default `wordpress-review` scanner/CLI feature adds no work by itself.
+With explicit `--profile web-review --wordpress-review`, the existing root
+observer interprets supported structured generator metadata and canonical
+exact-origin WordPress asset-path hints from the complete HTML response that
+the assessment already obtained. Optional context and advisory files are
+strictly acquired by the CLI before runtime construction; the runtime receives
+bounded typed declarations and no path or file handle.
+
+There is no WordPress-specific scanner, action, client, provider, request loop,
+or finalizer. Enabling the review adds zero target/provider requests and zero
+active verifications. One `technology.wordpress-surface-observed@1`
+`Informational` / `KnowledgeOnly` item may describe supported root-response
+hints. Version ranges, prerequisites, catalogue coverage, and uncertainty are
+kept in the same final report audit. They do not authenticate a live
+installation, prove advisory applicability, execute an exploit, or validate
+impact. The feature remains outside `default` and the curated
+`release-bundle`.
+
 > This page describes the executable truth of the current main-line source, not
 > aspirations. A compiled module is not necessarily part of a product runtime.
 > This unreleased development source line uses package version `0.10.0-alpha.3`;
@@ -550,6 +570,7 @@ The following matrix separates build availability from actual execution:
 | normalization-resilience review | scanner and CLI opt-in (`normalization-resilience`) plus explicit runtime flag | one eligible `web-review` parent may produce one transformed candidate/replay child under the shared broker | no | Preview; max one transform/depth one, three child requests/one active verification, `NeedsReview` / `KnowledgeOnly` only |
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
 | REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
+| WordPress evidence review | scanner and CLI opt-in (`wordpress-review`) plus optional bounded local context/catalogue | interprets only structured hints from the existing complete exact-root HTML and supplied declarations; no independent action or transport | no | Preview, development-only; zero added requests/verifications, at most one `Informational` / `KnowledgeOnly` surface item; advisory decisions are audit-only and no exploit/impact validation occurs |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
 | Resource authorization review | scanner and CLI opt-in (`authorization-review`) plus explicit policy and two out-of-band credentials | one exact-origin JSON resource receives primary/peer candidate and independent replay legs through the assessment's shared broker | no | Preview; max one resource, four requests/one active verification, one `NeedsReview` / `KnowledgeOnly` item at most |

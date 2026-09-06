@@ -42,6 +42,8 @@ use super::ssrf_oast_runtime::{
     MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS, MAX_SSRF_OAST_REVIEW_REQUESTS,
     SSRF_OAST_REVIEW_CAPABILITY_ID,
 };
+#[cfg(feature = "wordpress-review")]
+use super::wordpress_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID};
 use super::{
     assessment_item::{
         AssessmentItem, AssessmentItemSet, AssessmentSubjectInventoryEntry,
@@ -57,6 +59,11 @@ use super::{
 use crate::authorization_review::{
     AuthorizationReviewOutcome, HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS,
     HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS,
+};
+#[cfg(feature = "wordpress-review")]
+use crate::wordpress_review::{
+    WordPressCatalogStatus, MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_RESULT_COMPONENTS,
+    MAX_WORDPRESS_RESULT_VERSION_EVIDENCE, MAX_WORDPRESS_SIGNALS,
 };
 use crate::RuntimeBudget;
 
@@ -188,6 +195,22 @@ pub struct AssessmentRunReport {
     rest_review: Option<WebAssessmentRestAudit>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_review: Option<WebAssessmentWordPressAudit>,
+}
+
+#[derive(Default)]
+struct AssessmentReviewAudits {
+    #[cfg(feature = "authorization-review")]
+    authorization_review: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "openapi-review")]
+    openapi_review: Option<WebAssessmentOpenApiAudit>,
+    #[cfg(feature = "rest-review")]
+    rest_review: Option<WebAssessmentRestAudit>,
+    #[cfg(feature = "ssrf-oast-review")]
+    ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_review: Option<WebAssessmentWordPressAudit>,
 }
 
 impl AssessmentRunReport {
@@ -202,20 +225,25 @@ impl AssessmentRunReport {
         #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
         #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
         #[cfg(feature = "ssrf-oast-review")] ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+        #[cfg(feature = "wordpress-review")] wordpress_review: Option<WebAssessmentWordPressAudit>,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
         Self::new_validated(
             run_report,
             items,
             truth,
-            #[cfg(feature = "authorization-review")]
-            authorization_review,
-            #[cfg(feature = "openapi-review")]
-            openapi_review,
-            #[cfg(feature = "rest-review")]
-            rest_review,
-            #[cfg(feature = "ssrf-oast-review")]
-            ssrf_oast_review,
+            AssessmentReviewAudits {
+                #[cfg(feature = "authorization-review")]
+                authorization_review,
+                #[cfg(feature = "openapi-review")]
+                openapi_review,
+                #[cfg(feature = "rest-review")]
+                rest_review,
+                #[cfg(feature = "ssrf-oast-review")]
+                ssrf_oast_review,
+                #[cfg(feature = "wordpress-review")]
+                wordpress_review,
+            },
         )
     }
 
@@ -225,32 +253,27 @@ impl AssessmentRunReport {
         items: AssessmentItemSet,
         truth: CompletedWebAssessmentTruth,
     ) -> Result<Self, AssessmentRunReportError> {
-        Self::new_validated(
-            run_report,
-            items,
-            truth,
-            #[cfg(feature = "authorization-review")]
-            None,
-            #[cfg(feature = "openapi-review")]
-            None,
-            #[cfg(feature = "rest-review")]
-            None,
-            #[cfg(feature = "ssrf-oast-review")]
-            None,
-        )
+        Self::new_validated(run_report, items, truth, AssessmentReviewAudits::default())
     }
 
     fn new_validated(
         run_report: RunReport,
         items: AssessmentItemSet,
         truth: CompletedWebAssessmentTruth,
-        #[cfg(feature = "authorization-review")] authorization_review: Option<
-            WebAssessmentAuthorizationAudit,
-        >,
-        #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
-        #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
-        #[cfg(feature = "ssrf-oast-review")] ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+        audits: AssessmentReviewAudits,
     ) -> Result<Self, AssessmentRunReportError> {
+        let AssessmentReviewAudits {
+            #[cfg(feature = "authorization-review")]
+            authorization_review,
+            #[cfg(feature = "openapi-review")]
+            openapi_review,
+            #[cfg(feature = "rest-review")]
+            rest_review,
+            #[cfg(feature = "ssrf-oast-review")]
+            ssrf_oast_review,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_review,
+        } = audits;
         validate_run_identity(&run_report, truth.target_identity)?;
         validate_run_completion(&run_report)?;
         validate_run_accounting(
@@ -275,6 +298,8 @@ impl AssessmentRunReport {
         validate_rest_audit(rest_review.as_ref(), &items)?;
         #[cfg(feature = "ssrf-oast-review")]
         validate_ssrf_oast_audit(ssrf_oast_review.as_ref(), &items)?;
+        #[cfg(feature = "wordpress-review")]
+        validate_wordpress_audit(wordpress_review.as_ref(), &items)?;
 
         Ok(Self {
             run_report,
@@ -289,6 +314,8 @@ impl AssessmentRunReport {
             rest_review,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_review,
         })
     }
 
@@ -342,6 +369,57 @@ impl AssessmentRunReport {
     pub const fn ssrf_oast_review_audit(&self) -> Option<&WebAssessmentSsrfOastAudit> {
         self.ssrf_oast_review.as_ref()
     }
+
+    /// Returns the optional redaction-safe, transport-free WordPress audit.
+    #[cfg(feature = "wordpress-review")]
+    pub const fn wordpress_review_audit(&self) -> Option<&WebAssessmentWordPressAudit> {
+        self.wordpress_review.as_ref()
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+fn validate_wordpress_audit(
+    audit: Option<&WebAssessmentWordPressAudit>,
+    items: &[AssessmentItem],
+) -> Result<(), AssessmentRunReportError> {
+    let projected = items
+        .iter()
+        .filter(|item| item.capability_id() == WORDPRESS_REVIEW_CAPABILITY_ID)
+        .count();
+    if projected > 1 {
+        return Err(AssessmentRunReportError::WordPressAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return if projected == 0 {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::WordPressAuditMismatch)
+        };
+    };
+    let result = audit.result();
+    let version_evidence_count = result
+        .components()
+        .iter()
+        .try_fold(0_usize, |count, component| {
+            count.checked_add(component.versions().len())
+        });
+    let catalog_consistent = matches!(
+        (result.catalog_status(), result.catalog_metadata()),
+        (WordPressCatalogStatus::CatalogNotSupplied, None)
+            | (WordPressCatalogStatus::Evaluated, Some(_))
+    );
+    if usize::from(audit.signal_count()) > MAX_WORDPRESS_SIGNALS
+        || result.components().len() > MAX_WORDPRESS_RESULT_COMPONENTS
+        || version_evidence_count.is_none_or(|count| count > MAX_WORDPRESS_RESULT_VERSION_EVIDENCE)
+        || result.advisories().len() > MAX_WORDPRESS_ADVISORY_RECORDS
+        || audit.additional_request_count() != 0
+        || audit.item_projected() != (projected == 1)
+        || audit.item_projected() != (audit.signal_count() > 0)
+        || !catalog_consistent
+    {
+        return Err(AssessmentRunReportError::WordPressAuditMismatch);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "ssrf-oast-review")]
@@ -507,6 +585,11 @@ impl fmt::Debug for AssessmentRunReport {
             "ssrf_oast_review_audit_present",
             &self.ssrf_oast_review.is_some(),
         );
+        #[cfg(feature = "wordpress-review")]
+        debug.field(
+            "wordpress_review_audit_present",
+            &self.wordpress_review.is_some(),
+        );
         debug.finish()
     }
 }
@@ -623,6 +706,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "ssrf-oast-review")]
     #[error("SSRF OAST review audit does not match projected item truth")]
     SsrfOastAuditMismatch,
+    /// The optional WordPress audit disagreed with projected item truth.
+    #[cfg(feature = "wordpress-review")]
+    #[error("WordPress review audit does not match projected item truth")]
+    WordPressAuditMismatch,
 }
 
 fn build_run_report(

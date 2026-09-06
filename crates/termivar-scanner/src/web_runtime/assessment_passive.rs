@@ -41,6 +41,8 @@ use super::resource_authorization_runtime::{
 use super::rest_runtime::{project_rest_item, CommittedRestReview};
 #[cfg(feature = "ssrf-oast-review")]
 use super::ssrf_oast_runtime::{project_ssrf_oast_item, CommittedSsrfOastReview};
+#[cfg(feature = "wordpress-review")]
+use super::wordpress_runtime::{project_wordpress_item, CommittedWordPressReview};
 use super::{
     assessment_api_visibility::{project_api_visibility_item, CommittedAssessmentApiVisibility},
     assessment_item::{
@@ -1081,6 +1083,8 @@ pub(crate) struct AssessmentReviewProjectionSources<'a> {
     pub(crate) rest: Option<&'a CommittedRestReview>,
     #[cfg(feature = "ssrf-oast-review")]
     pub(crate) ssrf_oast: Option<&'a CommittedSsrfOastReview>,
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) wordpress: Option<&'a CommittedWordPressReview>,
 }
 
 /// Test adapter that projects only the explicitly authorized root.
@@ -1105,6 +1109,8 @@ pub(crate) fn project_passive_assessment_items(
             rest: None,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast: None,
+            #[cfg(feature = "wordpress-review")]
+            wordpress: None,
         },
         knowledge,
         authorized_root,
@@ -1231,6 +1237,8 @@ fn project_passive_assessment_items_for_root(
             rest: None,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast: None,
+            #[cfg(feature = "wordpress-review")]
+            wordpress: None,
         },
         knowledge,
         root_subject,
@@ -1338,6 +1346,10 @@ fn project_assessment_items_for_subjects(
     #[cfg(feature = "ssrf-oast-review")]
     if let Some(ssrf_oast) = reviews.ssrf_oast {
         project_ssrf_oast_item(&mut context, knowledge, ssrf_oast)?;
+    }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(wordpress) = reviews.wordpress {
+        project_wordpress_item(&mut context, knowledge, wordpress)?;
     }
     Ok(PassiveAssessmentItemProjection {
         items: context.finish(),

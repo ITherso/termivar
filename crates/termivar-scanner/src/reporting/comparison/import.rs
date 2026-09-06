@@ -22,9 +22,11 @@ pub(super) const MAX_ITEMS: usize = 4_096;
 pub(super) const MAX_DISPLAY_BYTES: usize = 1_024;
 pub(super) const MAX_IDENTIFIER_BYTES: usize = 128;
 pub(super) const MAX_REFERENCES: usize = 256;
+pub(super) const MAX_AUDIT_TEXT_BYTES: usize = 2_048;
 const MAX_SUBJECTS: u64 = 1_024;
-// Deepest current wire value: root/items/item/remediation/summary (root=0).
-const MAX_JSON_DEPTH: usize = 4;
+// Deepest current wire value: root/wordpress_review/advisories/advisory/
+// affected_ranges/range/endpoint/field (root=0).
+const MAX_JSON_DEPTH: usize = 7;
 // The largest current object is the 21-field OpenAPI audit; allow no unbounded
 // object collection while exact field inventories below reject unknown fields.
 const MAX_OBJECT_FIELDS: usize = 21;
@@ -55,7 +57,12 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "item_count",
             "items",
         ],
-        &["authorization_review", "openapi_review", "rest_review"],
+        &[
+            "authorization_review",
+            "openapi_review",
+            "rest_review",
+            "wordpress_review",
+        ],
     )?;
     for (key, expected) in [
         ("source_schema", "venom-assessment-run/v1"),
@@ -81,7 +88,12 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         }
     }
     let mut optional_audits = BTreeMap::new();
-    for name in ["authorization_review", "openapi_review", "rest_review"] {
+    for name in [
+        "authorization_review",
+        "openapi_review",
+        "rest_review",
+        "wordpress_review",
+    ] {
         if let Some(value) = root.get(name) {
             audits::validate(name, value, &items)?;
             optional_audits.insert(name.to_owned(), value.clone());
@@ -93,6 +105,12 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         .any(|item| item.capability_id == audits::REST_CAPABILITY)
     {
         check(optional_audits.contains_key("rest_review"))?;
+    }
+    if items
+        .values()
+        .any(|item| item.capability_id == audits::WORDPRESS_CAPABILITY)
+    {
+        check(optional_audits.contains_key("wordpress_review"))?;
     }
     Ok(ImportedDocument {
         metadata: SourceMetadata {
@@ -150,7 +168,7 @@ impl<'de> Visitor<'de> for ValueSeed {
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<Value, E> {
-        if value.len() > MAX_DISPLAY_BYTES {
+        if value.len() > MAX_AUDIT_TEXT_BYTES {
             return Err(de::Error::custom("document string limit"));
         }
         Ok(Value::String(value.to_owned()))

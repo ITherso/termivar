@@ -224,6 +224,37 @@ diagnostic using the same process stderr lock can then also wait behind that OS
 write, so the command cannot promise bounded exit in this host-level failure.
 The writer is never used for scan control or backpressure.
 
+## Opt in to WordPress evidence review from source
+
+The unreleased development source has a non-default `wordpress-review` build
+feature. It is not in the published alpha.2 archives or the curated
+`release-bundle`. Build a separate development executable deliberately:
+
+```bash
+cargo build --locked -p termivar-cli --no-default-features --features wordpress-review
+```
+
+Against an already running, authorized fixture or exact origin, select the
+review explicitly:
+
+```bash
+termivar scan <AUTHORIZED_EXACT_ROOT> \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-context <CONTEXT.json> \
+  --wordpress-advisories <CATALOGUE.json> \
+  --report-dir <NEW_REPORT_DIRECTORY>
+```
+
+The two local files are optional, but each requires `--wordpress-review`.
+WordPress interpretation reuses the complete root HTML already obtained by the
+assessment and adds no request or active verification. Generator metadata and
+asset paths are hints rather than authenticated installation facts; the context
+is an operator declaration, the catalogue is a supplied snapshot, and advisory
+applicability stays audit-only. See the
+[WordPress evidence review contract](wordpress-review.md) and its clearly
+labelled [input examples](examples/wordpress-review/README.md).
+
 ## Export one assessment in two formats
 
 The published `v0.10.0-alpha.2` binary and later development builds whose

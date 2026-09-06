@@ -15,5 +15,8 @@ corpus/decision_loop_authority/*
 !corpus/native_oast_provider/
 corpus/native_oast_provider/*
 !corpus/native_oast_provider/*.bin
+!corpus/json_parser/
+corpus/json_parser/*
+!corpus/json_parser/*.json
 coverage/
 target/

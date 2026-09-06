@@ -126,6 +126,9 @@ and unchanged groups. Disappearance is not verified remediation. See the
   bundle; this does not authenticate its producer, scope, findings, or HTML.
 - Build-accurate text or JSON inventory of the CLI surfaces compiled into the
   exact executable, without starting scanner or provider runtime.
+- An opt-in, transport-free WordPress evidence review over the already observed
+  root HTML plus strict operator-supplied context and advisory catalogues; see
+  the [WordPress review contract](docs/wordpress-review.md).
 - Source-level Rust evidence, reasoning, and reporting contracts for an explicit
   library host; see the [architecture](docs/architecture.md).
 

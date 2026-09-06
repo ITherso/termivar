@@ -294,6 +294,8 @@ jobs:
         run: cargo test --locked -p termivar-cli --test capabilities_cli
       - name: Exercise opt-in live progress CLI
         run: cargo test --locked -p termivar-cli --test progress_cli
+      - name: Exercise opt-in WordPress review CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_review_cli -- --nocapture
       - name: Test first-use fixture and checked-in sample contracts
         run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
       - name: Test release archive verification contracts

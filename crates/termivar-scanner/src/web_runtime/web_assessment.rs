@@ -62,6 +62,11 @@ use super::ssrf_oast_runtime::{
     CommittedSsrfOastReview, SsrfOastReviewConfig, SsrfOastRuntimeResult,
     WebAssessmentSsrfOastAudit, MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS,
 };
+#[cfg(feature = "wordpress-review")]
+use super::wordpress_runtime::{
+    extract_wordpress_signals, CommittedWordPressReview, WebAssessmentWordPressAudit,
+    WordPressReviewBinding, WordPressSignalCollector,
+};
 use super::{
     assessment_api_visibility::{
         build_root_api_visibility_runtime, CommittedAssessmentApiVisibility,
@@ -96,6 +101,8 @@ use crate::ssrf_oast_review::{
     select_observed_query_candidate, SsrfOastAdminToken, SsrfOastReviewPolicy,
     SsrfOastTerminalState,
 };
+#[cfg(feature = "wordpress-review")]
+use crate::wordpress_review::WordPressReviewInputs;
 use crate::{
     http_evidence::{CompleteHttpResponseObservation, CompleteHttpResponseObserver},
     web_actions::NativeWebReviewActionKind,
@@ -1017,6 +1024,10 @@ pub enum WebAssessmentIncompleteReason {
     /// bounded correlated target and provider lifecycle.
     #[cfg(feature = "ssrf-oast-review")]
     SsrfOastReviewIncomplete,
+    /// The explicitly enabled transport-free WordPress interpretation could
+    /// not retain or evaluate its bounded input completely.
+    #[cfg(feature = "wordpress-review")]
+    WordPressReviewIncomplete,
 }
 
 /// Whether every retained subject and eligible document completed within bounds.
@@ -1356,6 +1367,8 @@ pub struct WebAssessmentRunReport {
     rest_review: Option<WebAssessmentRestAudit>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_review: Option<WebAssessmentWordPressAudit>,
     assessment_items: AssessmentItemSet,
     assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
@@ -1387,6 +1400,8 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug.field("rest_review", &self.rest_review);
         #[cfg(feature = "ssrf-oast-review")]
         debug.field("ssrf_oast_review", &self.ssrf_oast_review);
+        #[cfg(feature = "wordpress-review")]
+        debug.field("wordpress_review", &self.wordpress_review);
         debug
             .field("assessment_items", &self.assessment_items)
             .field(
@@ -1456,6 +1471,11 @@ impl WebAssessmentRunReport {
     pub const fn ssrf_oast_review_audit(&self) -> Option<&WebAssessmentSsrfOastAudit> {
         self.ssrf_oast_review.as_ref()
     }
+    /// Returns the optional transport-free WordPress interpretation audit.
+    #[cfg(feature = "wordpress-review")]
+    pub const fn wordpress_review_audit(&self) -> Option<&WebAssessmentWordPressAudit> {
+        self.wordpress_review.as_ref()
+    }
     /// Returns claim-safe items derived only from committed assessment truth.
     pub fn assessment_items(&self) -> &[AssessmentItem] {
         self.assessment_items.items()
@@ -1517,6 +1537,8 @@ impl WebAssessmentRunReport {
             self.rest_review,
             #[cfg(feature = "ssrf-oast-review")]
             self.ssrf_oast_review,
+            #[cfg(feature = "wordpress-review")]
+            self.wordpress_review,
         )
     }
 }
@@ -1652,6 +1674,12 @@ pub enum WebAssessmentRuntimeError {
     #[cfg(feature = "rest-review")]
     #[error("REST review requires OpenAPI review in the same assessment")]
     RestReviewRequiresOpenApiReview,
+    #[cfg(feature = "wordpress-review")]
+    #[error("WordPress evidence review requires an exact origin root target")]
+    WordPressReviewRequiresOriginRoot,
+    #[cfg(feature = "wordpress-review")]
+    #[error("WordPress context root does not match the exact assessment target")]
+    WordPressContextRootMismatch,
     #[error(transparent)]
     Standard(#[from] StandardWebDecisionRuntimeError),
     #[error("web assessment failed after it started")]
@@ -1712,6 +1740,14 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             Self::RestReviewRequiresOpenApiReview => {
                 formatter.write_str("WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview")
             },
+            #[cfg(feature = "wordpress-review")]
+            Self::WordPressReviewRequiresOriginRoot => {
+                formatter.write_str("WebAssessmentRuntimeError::WordPressReviewRequiresOriginRoot")
+            },
+            #[cfg(feature = "wordpress-review")]
+            Self::WordPressContextRootMismatch => {
+                formatter.write_str("WebAssessmentRuntimeError::WordPressContextRootMismatch")
+            },
             Self::Standard(_) => {
                 formatter.write_str("WebAssessmentRuntimeError::Standard(<redacted>)")
             },
@@ -1764,6 +1800,8 @@ pub struct WebAssessmentRuntimeBuilder {
     rest_review: bool,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_review: Option<WordPressReviewInputs>,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
@@ -1788,6 +1826,8 @@ impl WebAssessmentRuntimeBuilder {
             rest_review: false,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review: None,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_review: None,
             root_authorization_context: None,
         }
     }
@@ -1864,6 +1904,13 @@ impl WebAssessmentRuntimeBuilder {
         self.ssrf_oast_review = Some((policy, administrator));
         self
     }
+    /// Enables transport-free WordPress interpretation over the already
+    /// observed root response and validated local declarations.
+    #[cfg(feature = "wordpress-review")]
+    pub fn with_wordpress_review(mut self, inputs: WordPressReviewInputs) -> Self {
+        self.wordpress_review = Some(inputs);
+        self
+    }
     /// Adds one explicitly selected, four-view resource authorization review.
     ///
     /// The policy and move-only principals are consumed by this builder. The
@@ -1907,6 +1954,16 @@ impl WebAssessmentRuntimeBuilder {
         if self.rest_review && !self.openapi_review {
             return Err(WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview);
         }
+        #[cfg(feature = "wordpress-review")]
+        if self.wordpress_review.is_some()
+            && (!self.target.username().is_empty()
+                || self.target.password().is_some()
+                || self.target.path() != "/"
+                || self.target.query().is_some()
+                || self.target.fragment().is_some())
+        {
+            return Err(WebAssessmentRuntimeError::WordPressReviewRequiresOriginRoot);
+        }
         #[cfg(feature = "authorization-review")]
         if self.root_authorization_context.is_some() && self.resource_authorization_review.is_some()
         {
@@ -1928,6 +1985,17 @@ impl WebAssessmentRuntimeBuilder {
         HttpProbe::new(self.target.clone(), HttpProbeMethod::Get)?;
         let root = canonicalize_root(&self.target, self.limits)
             .ok_or(WebAssessmentRuntimeError::InvalidCanonicalTarget)?;
+        #[cfg(feature = "wordpress-review")]
+        if self
+            .wordpress_review
+            .as_ref()
+            .and_then(WordPressReviewInputs::context)
+            .is_some_and(|context| context.root_url() != &root.url)
+        {
+            return Err(WebAssessmentRuntimeError::WordPressContextRootMismatch);
+        }
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_review = self.wordpress_review.map(WordPressReviewBinding::new);
         #[cfg(feature = "authorization-review")]
         if self
             .resource_authorization_review
@@ -2128,6 +2196,8 @@ impl WebAssessmentRuntimeBuilder {
             rest_review: self.rest_review,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_review,
             native_review,
             non_root_structural_review: None,
             xss_structural_review: None,
@@ -2153,6 +2223,8 @@ impl WebAssessmentRuntimeBuilder {
             committed_ssrf_oast_review: None,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review_audit: None,
+            #[cfg(feature = "wordpress-review")]
+            committed_wordpress_review: None,
             #[cfg(feature = "graphql-review")]
             optional_child_parent_defense: None,
             defense_audit: WebAssessmentDefenseAudit::new(if self.defense_enforcement {
@@ -2192,6 +2264,8 @@ pub struct WebAssessmentRuntime {
     rest_review: bool,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<SsrfOastReviewConfig>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_review: Option<WordPressReviewBinding>,
     native_review: Option<AssessmentNativeReviewRuntime>,
     non_root_structural_review: Option<AssessmentNativeReviewRuntime>,
     xss_structural_review: Option<AssessmentNativeReviewRuntime>,
@@ -2217,6 +2291,8 @@ pub struct WebAssessmentRuntime {
     committed_ssrf_oast_review: Option<CommittedSsrfOastReview>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review_audit: Option<WebAssessmentSsrfOastAudit>,
+    #[cfg(feature = "wordpress-review")]
+    committed_wordpress_review: Option<CommittedWordPressReview>,
     #[cfg(feature = "graphql-review")]
     optional_child_parent_defense: Option<AssessmentDefenseController>,
     defense_audit: WebAssessmentDefenseAudit,
@@ -2508,15 +2584,26 @@ impl WebAssessmentRuntime {
                         });
                     }
                 }
+                let subject_observer = AssessmentDiscoveryObserver::new(
+                    self.discovery_policy.clone(),
+                    self.limits,
+                    envelope.clone(),
+                    &subject,
+                    self.authority.cancellation_token(),
+                    timing.deadline(),
+                );
+                #[cfg(feature = "wordpress-review")]
+                let subject_observer = if subject.url == self.root.url && subject.depth == 0 {
+                    if let Some(review) = self.wordpress_review.as_ref() {
+                        subject_observer.with_wordpress_signals(review.collector())
+                    } else {
+                        subject_observer
+                    }
+                } else {
+                    subject_observer
+                };
                 let subject_observer: Arc<dyn CompleteHttpResponseObserver> =
-                    Arc::new(AssessmentDiscoveryObserver::new(
-                        self.discovery_policy.clone(),
-                        self.limits,
-                        envelope.clone(),
-                        &subject,
-                        self.authority.cancellation_token(),
-                        timing.deadline(),
-                    ));
+                    Arc::new(subject_observer);
                 let builder = StandardWebDecisionRuntime::builder(subject.url.clone())
                     .with_assessment_response_observer(
                         subject.method.probe_method(),
@@ -3649,6 +3736,29 @@ impl WebAssessmentRuntime {
             progress_executed_subjects,
             progress_processed_subjects,
         );
+        #[cfg(feature = "wordpress-review")]
+        if let Some(review) = self.wordpress_review.take() {
+            if !reasons.is_empty() {
+                reasons.insert(WebAssessmentIncompleteReason::WordPressReviewIncomplete);
+            } else {
+                let root_subject = EntityId::new(format!("endpoint:{}", self.root.url()))
+                    .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                match review.finish(root_subject) {
+                    Ok(_) if self.authority.cancellation().is_cancelled() => {
+                        reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                        reasons.insert(WebAssessmentIncompleteReason::WordPressReviewIncomplete);
+                    },
+                    Ok(_) if started_at.elapsed() >= self.limits.max_wall_time() => {
+                        reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
+                        reasons.insert(WebAssessmentIncompleteReason::WordPressReviewIncomplete);
+                    },
+                    Ok(committed) => self.committed_wordpress_review = Some(committed),
+                    Err(_) => {
+                        reasons.insert(WebAssessmentIncompleteReason::WordPressReviewIncomplete);
+                    },
+                }
+            }
+        }
         let assessment_projection = match project_assessment_items(
             &self.passive_ledger,
             AssessmentReviewProjectionSources {
@@ -3664,6 +3774,8 @@ impl WebAssessmentRuntime {
                 rest: self.committed_rest_review.as_ref(),
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast: self.committed_ssrf_oast_review.as_ref(),
+                #[cfg(feature = "wordpress-review")]
+                wordpress: self.committed_wordpress_review.as_ref(),
             },
             self.authority.knowledge(),
             &self.root,
@@ -3738,6 +3850,11 @@ impl WebAssessmentRuntime {
             rest_review: self.rest_review_audit.clone(),
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review: self.ssrf_oast_review_audit.clone(),
+            #[cfg(feature = "wordpress-review")]
+            wordpress_review: self
+                .committed_wordpress_review
+                .as_ref()
+                .map(|review| review.audit().clone()),
             assessment_items,
             assessment_projection_incompleteness,
             completion,
@@ -4466,6 +4583,8 @@ pub(crate) struct AssessmentDiscoveryObserver {
     expected_method: HttpProbeMethod,
     cancellation: CancellationToken,
     deadline: Option<tokio::time::Instant>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_signals: Option<WordPressSignalCollector>,
 }
 
 impl AssessmentDiscoveryObserver {
@@ -4486,7 +4605,15 @@ impl AssessmentDiscoveryObserver {
             expected_method: subject.method.probe_method(),
             cancellation,
             deadline,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_signals: None,
         }
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    fn with_wordpress_signals(mut self, collector: WordPressSignalCollector) -> Self {
+        self.wordpress_signals = Some(collector);
+        self
     }
 
     fn stopped(&self) -> bool {
@@ -4834,13 +4961,27 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
             return Ok(evidence);
         };
         let parsed = parse_document(observation.requested_url(), html, self.limits);
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_signals = self
+            .wordpress_signals
+            .as_ref()
+            .map(|_| extract_wordpress_signals(observation.requested_url(), html));
         if self.stopped() {
             return Ok(evidence);
         }
         let admitted = self.admit_document(parsed);
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_evidence = parents.clone();
         evidence.extend(self.evidence_for_document(&observation, admitted, parents)?);
         if self.stopped() {
             evidence.retain(|item| item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE);
+        } else {
+            #[cfg(feature = "wordpress-review")]
+            if let (Some(collector), Some(signals)) =
+                (self.wordpress_signals.as_ref(), wordpress_signals)
+            {
+                collector.record(signals, wordpress_evidence);
+            }
         }
         Ok(evidence)
     }

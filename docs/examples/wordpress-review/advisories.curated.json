@@ -1,0 +1,64 @@
+{
+  "schema": "security.wordpress-advisory-catalog/v1",
+  "catalog": {
+    "id": "termivar-wordpress-official-example",
+    "revision": "2026-09-06.1",
+    "retrieved_on": "2026-09-06"
+  },
+  "records": [
+    {
+      "id": "GHSA-fpp7-x2x2-2mjf",
+      "component": {
+        "kind": "core",
+        "slug": "wordpress"
+      },
+      "source": {
+        "reference": "https://github.com/WordPress/wordpress-develop/security/advisories/GHSA-fpp7-x2x2-2mjf",
+        "revision": "published-2026-07-17",
+        "retrieved_on": "2026-09-06",
+        "usage_basis": "Manually curated factual identifiers and version ranges with attribution; no advisory narrative or bulk database is redistributed."
+      },
+      "cve": "CVE-2026-60137",
+      "summary": "Facilitated SQL injection in the WordPress core WP_Query author__not_in parameter.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "6.8.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "6.8.6",
+            "inclusive": false
+          }
+        },
+        {
+          "lower": {
+            "version": "6.9.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "6.9.5",
+            "inclusive": false
+          }
+        },
+        {
+          "lower": {
+            "version": "7.0.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "7.0.2",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "6.8.6",
+        "6.9.5",
+        "7.0.2"
+      ],
+      "prerequisites": [],
+      "remediation": "Apply the official security update for the installed branch; the source lists 6.8.6, 6.9.5, and 7.0.2 as patched versions."
+    }
+  ]
+}

@@ -385,7 +385,7 @@ fn malformed_json_duplicate_keys_escaped_duplicates_and_resource_bounds_fail_clo
         b"{\"a\":1,\"a\":2}",
         b"{\"schema\":1,\"\\u0073chema\":2}",
         b"{\"x\":{\"a\":1,\"a\":2}}",
-        b"[[[[[[0]]]]]]",
+        b"[[[[[[[[[0]]]]]]]]]",
         b"{\"x\":1.5}",
         b"{\"x\":1e999}",
         b"{\"x\":\"\xff\"}",
@@ -720,6 +720,23 @@ fn audit_fixtures() -> Vec<(&'static str, &'static str, Value)> {
                 "primary_stable":null, "peer_stable":null, "cross_resources_equivalent":null, "item_projected":false
             }),
         ),
+        (
+            "wordpress_review",
+            "technology.wordpress-surface-observed@1",
+            json!({
+                "schema":"security.wordpress-review-audit/v1",
+                "capability_id":"technology.wordpress-surface-observed@1",
+                "catalog_status":"catalogue_not_supplied",
+                "signal_count":0,
+                "evidence_reference_count":0,
+                "additional_request_count":0,
+                "item_projected":false,
+                "component_count":0,
+                "advisory_count":0,
+                "components":[],
+                "advisories":[]
+            }),
+        ),
     ]
 }
 
@@ -762,6 +779,196 @@ fn all_current_optional_audits_are_feature_independent_bounded_display_snapshots
     }
 }
 
+fn evaluated_wordpress_audit() -> Value {
+    json!({
+        "schema":"security.wordpress-review-audit/v1",
+        "capability_id":"technology.wordpress-surface-observed@1",
+        "catalog_status":"evaluated",
+        "catalog":{"id":"wordpress-security-advisories","revision":"2026-08-01","retrieved_on":"2026-08-01"},
+        "signal_count":1,
+        "evidence_reference_count":1,
+        "additional_request_count":0,
+        "item_projected":true,
+        "component_count":1,
+        "advisory_count":1,
+        "components":[{
+            "identity":{"kind":"core","slug":"wordpress"},
+            "evidence_class":"conflicting",
+            "identity_sources":["generator_metadata","operator_context"],
+            "confidence_classes":["public_declaration","operator_assertion"],
+            "versions":[
+                {"value":"6.9.4","source":"generator_metadata","confidence":"public_declaration"},
+                {"value":"6.9.5","source":"operator_context","confidence":"operator_assertion"}
+            ],
+            "activation":"active"
+        }],
+        "advisories":[{
+            "id":"GHSA-fpp7-x2x2-2mjf",
+            "component":{"kind":"core","slug":"wordpress"},
+            "source":{
+                "reference":"https://github.com/advisories/GHSA-fpp7-x2x2-2mjf",
+                "revision":"github-advisory-2026-08-01",
+                "retrieved_on":"2026-08-01",
+                "usage_basis":"Locally supplied curated record; no catalogue network lookup was performed."
+            },
+            "cve":"CVE-2026-1234",
+            "summary":"A bounded advisory summary <script>inert()</script>",
+            "affected_ranges":[{
+                "lower":{"declared":"6.9.0","inclusive":true},
+                "upper":{"declared":"6.9.5","inclusive":false}
+            }],
+            "fixed_versions":["6.9.5"],
+            "prerequisites":[
+                {"kind":"hosting_os","expected":"linux","outcome":"matched_on_supplied_facts"},
+                {"kind":"patch","expected":"not_applied","patch_id":"upstream-fix","outcome":"unknown"}
+            ],
+            "remediation":"Review the supplied upstream remediation guidance.",
+            "component_evidence":"conflicting",
+            "version_relation":"unknown",
+            "applicability":"indeterminate_missing_evidence",
+            "exploit_execution":"not_performed",
+            "impact_validation":"not_performed"
+        }]
+    })
+}
+
+#[test]
+fn wordpress_audit_is_strict_feature_independent_and_visible_in_all_comparisons() {
+    let audit = evaluated_wordpress_audit();
+    let mut observed = item(1);
+    observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+    let mut after = report(vec![observed]);
+    after["wordpress_review"] = audit.clone();
+    let mut before = after.clone();
+    before["wordpress_review"]["catalog"]["revision"] = json!("2026-07-31");
+
+    let comparison = compare(&before, &after);
+    assert_eq!(
+        comparison["before"]["optional_audits"]["wordpress_review"]["catalog"]["revision"],
+        "2026-07-31"
+    );
+    assert_eq!(
+        comparison["after"]["optional_audits"]["wordpress_review"],
+        audit
+    );
+    assert_eq!(group(&comparison, "unchanged").len(), 1);
+
+    let markdown =
+        compare_reports(&bytes(&before), &bytes(&after), ComparisonFormat::Markdown).unwrap();
+    assert!(markdown.contains("wordpress_review"));
+    assert!(markdown.contains("2026-07-31"));
+    assert!(markdown.contains("2026-08-01"));
+
+    let html = compare_reports(&bytes(&before), &bytes(&after), ComparisonFormat::Html).unwrap();
+    assert!(html.contains("Optional audit: wordpress_review"));
+    assert!(html.contains("2026-07-31"));
+    assert!(html.contains("2026-08-01"));
+    assert!(!html.contains("<script>inert()</script>"));
+    assert!(html.contains("&lt;script&gt;inert()&lt;/script&gt;"));
+
+    let mut unsupported_version = after.clone();
+    unsupported_version["wordpress_review"]["components"][0]["versions"][0]["value"] =
+        json!("6.9-RC1");
+    unsupported_version["wordpress_review"]["advisories"][0]["version_relation"] =
+        json!("unsupported");
+    unsupported_version["wordpress_review"]["advisories"][0]["applicability"] =
+        json!("indeterminate_unsupported");
+    assert_eq!(
+        group(
+            &compare(&unsupported_version, &unsupported_version),
+            "unchanged"
+        )
+        .len(),
+        1
+    );
+
+    let mut no_declared_ranges = after.clone();
+    no_declared_ranges["wordpress_review"]["advisories"][0]["affected_ranges"] = json!([]);
+    assert_eq!(
+        group(
+            &compare(&no_declared_ranges, &no_declared_ranges),
+            "unchanged"
+        )
+        .len(),
+        1
+    );
+
+    for mutation in [
+        ("exploit_execution", json!("performed")),
+        ("impact_validation", json!("performed")),
+        ("version_relation", json!("php_version_compare")),
+    ] {
+        let mut invalid = after.clone();
+        invalid["wordpress_review"]["advisories"][0][mutation.0] = mutation.1;
+        reject(&invalid);
+    }
+    let mut invalid = after.clone();
+    invalid["wordpress_review"]["advisories"][0]["source"]["unexpected"] = json!(true);
+    reject(&invalid);
+    let mut invalid = after.clone();
+    invalid["wordpress_review"]["advisories"][0]["source"]["reference"] =
+        json!("http://insecure.invalid/advisory");
+    reject(&invalid);
+    let mut invalid = after.clone();
+    invalid["wordpress_review"]["catalog"]["retrieved_on"] = json!("2026-02-30");
+    reject(&invalid);
+    let mut invalid = after.clone();
+    invalid["wordpress_review"]["catalog_status"] = json!("catalogue_not_supplied");
+    reject(&invalid);
+    let mut invalid = after.clone();
+    invalid["wordpress_review"]["advisories"][0]["applicability"] =
+        json!("candidate_match_on_declared_facts");
+    reject(&invalid);
+    let mut mixed = after.clone();
+    mixed["wordpress_review"]["advisories"][0]["prerequisites"] = json!([
+        {
+            "kind":"hosting_os",
+            "expected":"windows",
+            "outcome":"contradicted_on_supplied_facts"
+        },
+        {
+            "kind":"unsupported",
+            "expected":"vendor_specific_runtime_state",
+            "outcome":"unsupported"
+        }
+    ]);
+    mixed["wordpress_review"]["advisories"][0]["applicability"] =
+        json!("contradicted_by_declared_facts");
+    assert_eq!(group(&compare(&mixed, &mixed), "unchanged").len(), 1);
+    mixed["wordpress_review"]["advisories"][0]["applicability"] =
+        json!("indeterminate_unsupported");
+    reject(&mixed);
+    for (kind, outcome) in [
+        ("unsupported", "matched_on_supplied_facts"),
+        ("hosting_os", "unsupported"),
+    ] {
+        let mut invalid = after.clone();
+        invalid["wordpress_review"]["advisories"][0]["prerequisites"] = json!([{
+            "kind": kind,
+            "expected": if kind == "unsupported" { "vendor_specific" } else { "linux" },
+            "outcome": outcome
+        }]);
+        invalid["wordpress_review"]["advisories"][0]["applicability"] = if outcome == "unsupported"
+        {
+            json!("indeterminate_unsupported")
+        } else {
+            json!("candidate_match_on_declared_facts")
+        };
+        reject(&invalid);
+    }
+    let mut invalid = after.clone();
+    let duplicate = invalid["wordpress_review"]["components"][0].clone();
+    invalid["wordpress_review"]["components"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate);
+    invalid["wordpress_review"]["component_count"] = json!(2);
+    reject(&invalid);
+    let mut invalid = after;
+    invalid["wordpress_review"]["components"][0]["versions"][0]["value"] = json!("");
+    reject(&invalid);
+}
+
 #[test]
 fn audit_optional_values_and_positive_count_consistency_are_strict() {
     for (name, capability, mut audit) in audit_fixtures() {
@@ -792,6 +999,23 @@ fn audit_optional_values_and_positive_count_consistency_are_strict() {
                 audit["selected_operation_identity"] =
                     json!(format!("openapi-operation-sha256:{}", "b".repeat(64)));
                 audit["status_class"] = json!(2);
+            },
+            "wordpress_review" => {
+                audit["signal_count"] = json!(1);
+                audit["evidence_reference_count"] = json!(1);
+                audit["component_count"] = json!(1);
+                audit["components"] = json!([{
+                    "identity":{"kind":"core","slug":"wordpress"},
+                    "evidence_class":"observed_hint",
+                    "identity_sources":["generator_metadata"],
+                    "confidence_classes":["public_declaration"],
+                    "versions":[{
+                        "value":"6.9.4",
+                        "source":"generator_metadata",
+                        "confidence":"public_declaration"
+                    }],
+                    "activation":null
+                }]);
             },
             _ => {
                 audit["outcome"] = json!("stable_cross_principal_equivalence");

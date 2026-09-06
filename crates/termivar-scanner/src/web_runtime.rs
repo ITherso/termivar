@@ -71,6 +71,8 @@ mod ssrf_oast_runtime;
 mod web_assessment;
 mod web_review_decision;
 mod web_review_execution;
+#[cfg(feature = "wordpress-review")]
+mod wordpress_runtime;
 
 use assessment_defense::AssessmentDefenseController;
 pub(crate) use assessment_defense::{
@@ -170,6 +172,8 @@ pub use web_assessment::{
     HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS, HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,
     HARD_MAX_WEB_ASSESSMENT_WALL_TIME, WEB_ASSESSMENT_CONCURRENCY,
 };
+#[cfg(feature = "wordpress-review")]
+pub use wordpress_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID};
 
 const DEFAULT_BUSINESS_VALUE_PERCENT: u8 = 80;
 const DEFAULT_PLANNING_BUDGET: u64 = 100;

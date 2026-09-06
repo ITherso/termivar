@@ -74,6 +74,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     REST_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     SSRF_OAST_RUNTIME_SOURCE,
+    WORDPRESS_RUNTIME_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
     NATIVE_REVIEW_EXECUTION_SOURCE,
     "crates/termivar-scanner/src/web_runtime/authority.rs",
@@ -112,6 +113,8 @@ const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const SSRF_OAST_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/ssrf_oast_runtime.rs";
+const WORDPRESS_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/wordpress_runtime.rs";
 const NATIVE_OAST_PROVIDER_ADAPTER_SOURCE: &str =
     "crates/termivar-scanner/src/native_oast_provider.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
@@ -2222,6 +2225,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     let mut audit_owners = BTreeMap::<String, usize>::new();
     let mut defense_audit_owners = BTreeMap::<String, usize>::new();
     let mut rest_audit_owners = BTreeMap::<String, usize>::new();
+    let mut wordpress_audit_owners = BTreeMap::<String, usize>::new();
 
     let progress_checkpoint = syntax.items.iter().find_map(|item| match item {
         Item::Enum(item) if item.ident == "WebAssessmentProgressCheckpoint" => Some(item),
@@ -2461,6 +2465,14 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                 if rest_audit_count > 0 {
                     rest_audit_owners.insert(name.clone(), rest_audit_count);
                 }
+                let wordpress_audit_count = item
+                    .fields
+                    .iter()
+                    .filter(|field| type_references_ident(&field.ty, "WebAssessmentWordPressAudit"))
+                    .count();
+                if wordpress_audit_count > 0 {
+                    wordpress_audit_owners.insert(name.clone(), wordpress_audit_count);
+                }
                 if name == "WebAssessmentSubjectReport"
                     && item.fields.iter().any(|field| {
                         type_references_ident(&field.ty, "RuntimeUsage")
@@ -2503,6 +2515,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "ssrf_oast_review")
                     });
+                    let wordpress_review = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "wordpress_review")
+                    });
                     if run_started_at.is_none_or(|field| {
                         !is_plain_ident(&field.ty, "SystemTime")
                             || !attributes_are_exact_cfg_feature(&field.attrs, "reporting")
@@ -2521,6 +2539,9 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                     }) || ssrf_oast_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentSsrfOastAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
+                    }) || wordpress_review.is_none_or(|field| {
+                        !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentWordPressAudit"])
+                            || !attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
                     }) || item.fields.iter().any(|field| {
                         field.ident.as_ref().is_none_or(|ident| {
                             !matches!(
@@ -2530,11 +2551,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                                     | "openapi_review"
                                     | "rest_review"
                                     | "ssrf_oast_review"
+                                    | "wordpress_review"
                             )
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated authorization, OpenAPI, REST, and SSRF/OAST redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -2581,6 +2603,13 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     if rest_audit_owners != expected_rest_audit_owners {
         violations.push(format!(
             "assessment REST audit ownership drifted: expected {expected_rest_audit_owners:?}, observed {rest_audit_owners:?}"
+        ));
+    }
+    let expected_wordpress_audit_owners =
+        BTreeMap::from([("WebAssessmentRunReport".to_owned(), 1usize)]);
+    if wordpress_audit_owners != expected_wordpress_audit_owners {
+        violations.push(format!(
+            "assessment WordPress audit ownership drifted: expected {expected_wordpress_audit_owners:?}, observed {wordpress_audit_owners:?}"
         ));
     }
     for item in &syntax.items {
@@ -4907,7 +4936,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 8
+                fields.len() == 9
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -4932,6 +4961,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("ssrf_oast_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
                     })
+                    && fields.get("wordpress_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentWordPressAudit"])
+                    })
             })
             && private_named_field(item, "authorization_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
@@ -4944,10 +4976,66 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
             })
+            && private_named_field(item, "wordpress_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
+            })
     });
     if !report_shape_is_exact {
+        let observed = report
+            .and_then(private_named_fields)
+            .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
+        violations.push(format!(
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits; observed fields {observed:?}"
+        ));
+    }
+
+    let review_audits_shape_is_exact = syntax.items.iter().any(|item| {
+        let Item::Struct(item) = item else {
+            return false;
+        };
+        item.ident == "AssessmentReviewAudits"
+            && matches!(item.vis, syn::Visibility::Inherited)
+            && attrs_reference_any_ident(&item.attrs, &["Default"])
+            && !attrs_reference_any_ident(
+                &item.attrs,
+                &["Clone", "Copy", "Serialize", "Deserialize"],
+            )
+            && private_named_fields(item).is_some_and(|fields| {
+                fields.len() == 5
+                    && fields.get("authorization_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentAuthorizationAudit"])
+                    })
+                    && fields.get("openapi_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentOpenApiAudit"])
+                    })
+                    && fields.get("rest_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentRestAudit"])
+                    })
+                    && fields.get("ssrf_oast_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
+                    })
+                    && fields.get("wordpress_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentWordPressAudit"])
+                    })
+            })
+            && private_named_field(item, "authorization_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
+            })
+            && private_named_field(item, "openapi_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "openapi-review")
+            })
+            && private_named_field(item, "rest_review")
+                .is_some_and(|field| attributes_are_exact_cfg_feature(&field.attrs, "rest-review"))
+            && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
+            })
+            && private_named_field(item, "wordpress_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
+            })
+    });
+    if !review_audits_shape_is_exact {
         violations.push(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+            "AssessmentReviewAudits must remain one private Default-only container with exactly the five feature-gated redacted audit values"
                 .to_owned(),
         );
     }
@@ -4991,7 +5079,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -5019,7 +5107,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         matches!(method.vis, syn::Visibility::Inherited)
             && method.attrs.is_empty()
             && method.sig.receiver().is_none()
-            && assessment_report_constructor_inputs_are_exact(method, true)
+            && assessment_report_validator_inputs_are_exact(method)
             && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
                     if is_result_of(output, "Self", "AssessmentRunReportError"))
             && block_references_all(
@@ -5040,6 +5128,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_openapi_audit",
                     "validate_rest_audit",
                     "validate_ssrf_oast_audit",
+                    "validate_wordpress_audit",
                     "profile",
                 ],
             )
@@ -5071,10 +5160,11 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && statement_reference_precedes(&method.block, "validate_openapi_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_rest_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_ssrf_oast_audit", "Self")
+            && statement_reference_precedes(&method.block, "validate_wordpress_audit", "Self")
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits before construction"
                 .to_owned(),
         );
     }
@@ -6236,7 +6326,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 4
+    typed.len() == expected_prefix.len() + 5
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -6264,9 +6354,37 @@ fn assessment_report_constructor_inputs_are_exact(
                 attributes_are_exact_cfg_feature(&argument.attrs, "rest-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentRestAudit"])
             })
+        && typed
+            .get(expected_prefix.len() + 3)
+            .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "ssrf-oast-review")
+                    && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentSsrfOastAudit"])
+            })
         && typed.last().is_some_and(|argument| {
-            attributes_are_exact_cfg_feature(&argument.attrs, "ssrf-oast-review")
-                && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentSsrfOastAudit"])
+            attributes_are_exact_cfg_feature(&argument.attrs, "wordpress-review")
+                && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentWordPressAudit"])
+        })
+}
+
+fn assessment_report_validator_inputs_are_exact(method: &syn::ImplItemFn) -> bool {
+    let typed = method
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|argument| match argument {
+            syn::FnArg::Typed(argument) => Some(argument),
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let expected = [
+        "RunReport",
+        "AssessmentItemSet",
+        "CompletedWebAssessmentTruth",
+        "AssessmentReviewAudits",
+    ];
+    typed.len() == expected.len()
+        && typed.iter().zip(expected).all(|(argument, expected)| {
+            argument.attrs.is_empty() && is_plain_ident(&argument.ty, expected)
         })
 }
 
@@ -8258,7 +8376,8 @@ impl OwnershipVisitor<'_> {
         {
             return;
         }
-        if NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
+        if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
+            || self.source == WORDPRESS_RUNTIME_SOURCE)
             && segments.iter().any(|segment| {
                 matches!(
                     normalize_identifier(segment),
@@ -8267,7 +8386,7 @@ impl OwnershipVisitor<'_> {
             })
         {
             self.violations.insert(format!(
-                "{} references forbidden native-review network authority {}; reuse only the host-owned shared runtime authority",
+                "{} references forbidden transport-owning review authority {}; reuse only the host-owned shared runtime authority",
                 self.source,
                 display_path(segments)
             ));
@@ -8396,14 +8515,15 @@ impl OwnershipVisitor<'_> {
             }
             if let TokenTree::Ident(identifier) = token {
                 let identifier = normalize_identifier(&ident_name(identifier)).to_owned();
-                if NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
+                if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
+                    || self.source == WORDPRESS_RUNTIME_SOURCE)
                     && matches!(
                         identifier.as_str(),
                         "HttpRequestBroker" | "RequestAccountingBroker" | "RuntimeBudget"
                     )
                 {
                     self.violations.insert(format!(
-                        "{} hides forbidden native-review network authority {identifier} inside a macro",
+                        "{} hides forbidden transport-owning review authority {identifier} inside a macro",
                         self.source
                     ));
                 }
@@ -8584,6 +8704,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
+                    "wordpress_runtime"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "resource_authorization_runtime"
                 )
                 | ("crates/termivar-scanner/src/web_runtime.rs", "scan_profile")
@@ -8648,6 +8772,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "ssrf_oast_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "ssrf-oast-review")
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "wordpress_runtime"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "wordpress-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime/web_assessment.rs"
             && module == "normalization_transform_catalog"
         {
@@ -9707,6 +9835,29 @@ mod tests {
     }
 
     #[test]
+    fn wordpress_runtime_is_a_transport_free_bounded_consumer() {
+        assert!(BOUNDED_RUNTIME_SOURCES.contains(&WORDPRESS_RUNTIME_SOURCE));
+        assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&WORDPRESS_RUNTIME_SOURCE));
+        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&WORDPRESS_RUNTIME_SOURCE));
+
+        for source in [
+            "use reqwest::Client; fn escape() { let _ = Client::new(); }",
+            "use crate::http_evidence::HttpRequestBroker;",
+            "use crate::runtime_budget::RequestAccountingBroker;",
+            "use crate::RuntimeBudget;",
+            "fn escape() { policy!(RuntimeBudget::new()); }",
+        ] {
+            let violations = inspect_bounded_source(WORDPRESS_RUNTIME_SOURCE, source)
+                .unwrap()
+                .join("\n");
+            assert!(
+                !violations.is_empty(),
+                "WordPress runtime authority escape unexpectedly passed: {source}"
+            );
+        }
+    }
+
+    #[test]
     fn constructor_inventory_resolves_self_and_raw_aliases_in_every_source() {
         let self_indirection = r#"
             use crate::runtime_budget::RequestAccountingBroker as Accounting;
@@ -10566,6 +10717,10 @@ mod tests {
             ),
             (
                 "crates/termivar-scanner/src/web_runtime.rs",
+                "#[cfg(feature = \"wordpress-review\")] mod wordpress_runtime;",
+            ),
+            (
+                "crates/termivar-scanner/src/web_runtime.rs",
                 "#[cfg(feature = \"authorization-review\")] mod resource_authorization_runtime;",
             ),
             (
@@ -10610,6 +10765,22 @@ mod tests {
             assert!(
                 violations.contains("unregistered external submodule"),
                 "resource authorization runtime feature boundary unexpectedly passed: {source}: {violations}"
+            );
+        }
+
+        for source in [
+            "mod wordpress_runtime;",
+            "#[cfg(feature = \"scanning\")] mod wordpress_runtime;",
+            "#[cfg(feature = \"wordpress-review\")] pub mod wordpress_runtime;",
+            "#[cfg(any(feature = \"wordpress-review\", feature = \"scanning\"))] mod wordpress_runtime;",
+        ] {
+            let violations =
+                inspect_bounded_source("crates/termivar-scanner/src/web_runtime.rs", source)
+                    .unwrap()
+                    .join("\n");
+            assert!(
+                violations.contains("unregistered external submodule"),
+                "WordPress runtime feature boundary unexpectedly passed: {source}: {violations}"
             );
         }
 
@@ -11938,7 +12109,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -11954,7 +12125,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -11970,7 +12141,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -11986,7 +12157,23 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, and SSRF/OAST audits"
+                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+            ),
+            "{violations}"
+        );
+
+        let missing_wordpress_audit = report_source.replacen(
+            "    #[cfg(feature = \"wordpress-review\")]\n    wordpress_review: Option<WebAssessmentWordPressAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_wordpress_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_wordpress_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12001,7 +12188,9 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits"),
+            violations.contains(
+                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+            ),
             "{violations}"
         );
 
@@ -12015,7 +12204,9 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits"),
+            violations.contains(
+                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+            ),
             "{violations}"
         );
 
@@ -12029,7 +12220,9 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits"),
+            violations.contains(
+                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+            ),
             "{violations}"
         );
 
@@ -12043,9 +12236,56 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("feature-gated authorization, OpenAPI, REST, and SSRF/OAST audits"),
+            violations.contains(
+                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+            ),
             "{violations}"
         );
+
+        let unvalidated_wordpress_audit = report_source.replacen(
+            "        #[cfg(feature = \"wordpress-review\")]\n        validate_wordpress_audit(wordpress_review.as_ref(), &items)?;",
+            "        #[cfg(feature = \"wordpress-review\")]\n        let _ = wordpress_review.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_wordpress_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_wordpress_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+            ),
+            "{violations}"
+        );
+
+        for escaped_audit_container in [
+            report_source.replacen(
+                "#[derive(Default)]\nstruct AssessmentReviewAudits {",
+                "#[derive(Default, Serialize)]\nstruct AssessmentReviewAudits {",
+                1,
+            ),
+            report_source.replacen(
+                "#[derive(Default)]\nstruct AssessmentReviewAudits {",
+                "#[derive(Default)]\npub(crate) struct AssessmentReviewAudits {",
+                1,
+            ),
+            report_source.replacen(
+                "#[derive(Default)]\nstruct AssessmentReviewAudits {",
+                "#[derive(Default)]\nstruct AssessmentReviewAudits {\n    nested_audit: Option<Box<AssessmentReviewAudits>>,\n",
+                1,
+            ),
+        ] {
+            assert_ne!(escaped_audit_container, report_source);
+            let violations = inspect_assessment_report_boundary(&escaped_audit_container)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains(
+                    "AssessmentReviewAudits must remain one private Default-only container with exactly the five feature-gated redacted audit values"
+                ),
+                "{violations}"
+            );
+        }
 
         let caller_supplied_run = report_source.replacen(
             "pub(crate) fn from_completed_truth(\n        items: AssessmentItemSet,",
@@ -12428,6 +12668,7 @@ mod tests {
             pub struct WebAssessmentDefenseAudit { mode: String }
             pub struct WebAssessmentRestAudit { outcome: String }
             pub struct WebAssessmentSsrfOastAudit { outcome: String }
+            pub struct WebAssessmentWordPressAudit { outcome: String }
             #[non_exhaustive]
             pub enum WebAssessmentProgressCheckpoint {
                 AssessmentStarted,
@@ -12468,6 +12709,8 @@ mod tests {
                 rest_review: Option<WebAssessmentRestAudit>,
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+                #[cfg(feature = "wordpress-review")]
+                wordpress_review: Option<WebAssessmentWordPressAudit>,
                 transport: TransportDispatchAudit,
                 defense: WebAssessmentDefenseAudit,
             }
@@ -12596,7 +12839,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, and SSRF/OAST redacted audit fields"
+                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -12611,7 +12854,55 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, and SSRF/OAST redacted audit fields"
+                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
+            ),
+            "{violations}"
+        );
+
+        let wordpress_serde = valid.replace(
+            "pub struct WebAssessmentWordPressAudit",
+            "#[derive(Serialize)] pub struct WebAssessmentWordPressAudit",
+        );
+        assert_ne!(wordpress_serde, valid);
+        let violations = inspect_web_assessment_models(&wordpress_serde)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("serde wire contract"), "{violations}");
+
+        let public_wordpress_field = valid.replace(
+            "wordpress_review: Option<WebAssessmentWordPressAudit>",
+            "pub wordpress_review: Option<WebAssessmentWordPressAudit>",
+        );
+        assert_ne!(public_wordpress_field, valid);
+        let violations = inspect_web_assessment_models(&public_wordpress_field)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("exposes fields"), "{violations}");
+
+        let nested_wordpress_audit = valid.replace(
+            "subject: String",
+            "subject: String, wordpress_review: Option<WebAssessmentWordPressAudit>",
+        );
+        assert_ne!(nested_wordpress_audit, valid);
+        let violations = inspect_web_assessment_models(&nested_wordpress_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("WordPress audit ownership drifted"),
+            "{violations}"
+        );
+
+        let missing_wordpress_audit = valid.replace(
+            "                #[cfg(feature = \"wordpress-review\")]\n                wordpress_review: Option<WebAssessmentWordPressAudit>,\n",
+            "",
+        );
+        assert_ne!(missing_wordpress_audit, valid);
+        let violations = inspect_web_assessment_models(&missing_wordpress_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );

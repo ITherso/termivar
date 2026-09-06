@@ -62,6 +62,26 @@ uses no credentials or cookies, and does not chain the route into SQL, SSTI,
 XSS, authorization, SSRF, or upload review. See
 [REST read-only review](internals/rest-readonly-review.md).
 
+## Optional WordPress evidence review
+
+The non-default `wordpress-review` feature adds one explicitly enabled,
+transport-free interpretation to the same `WebAssessmentRuntime`. It requires
+`--profile web-review --wordpress-review`; optional
+`--wordpress-context FILE` and `--wordpress-advisories FILE` inputs are opened,
+bounded, and validated by the CLI before secrets or network construction. The
+runtime receives typed values, not filesystem authority.
+
+V1 reuses only the complete root HTML already obtained by the assessment. It
+recognizes supported generator metadata and canonical same-origin WordPress
+core/plugin/theme asset paths, adds no request or active verification, and does
+not fetch an asset or advisory. Public declarations, structural hints, and
+operator assertions retain distinct source/confidence semantics. Advisory range
+and prerequisite decisions remain an optional audit; they do not authenticate
+an installation, execute an exploit, validate impact, or mint a vulnerability
+finding. Supported root-response hints may project one
+`technology.wordpress-surface-observed@1` item as `Informational` /
+`KnowledgeOnly`. See [WordPress evidence review](wordpress-review.md).
+
 `termivar-scanner` contains the default deterministic evidence/reasoning/runtime stack plus feature-gated historical scan contracts, optional analysis modules, plugins, events, persistence models, and bounded report rendering.
 
 ## Default deterministic runtime

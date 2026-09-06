@@ -95,6 +95,27 @@ fn bounded_openapi_regression_inputs_satisfy_the_semantic_oracle() {
 }
 
 #[test]
+fn committed_wordpress_inputs_satisfy_both_bounded_parser_oracles() {
+    for seed in [
+        &include_bytes!("../../corpus/json_parser/wordpress-context.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-advisories.json")[..],
+    ] {
+        assert!(seed.len() <= termivar_fuzz_harness::MAX_WORDPRESS_FUZZ_INPUT_BYTES);
+        termivar_fuzz_harness::check_wordpress_review(seed);
+    }
+
+    for malformed in [
+        &b""[..],
+        &b"{"[..],
+        &br#"{"schema":"security.wordpress-context/v1","schema":"security.wordpress-context/v1"}"#[..],
+        &br#"{"schema":"security.wordpress-context/v2","root":"https://example.test/","components":[]}"#[..],
+        &br#"{"schema":"security.wordpress-advisory-catalog/v1","catalog":{},"records":[]}"#[..],
+    ] {
+        termivar_fuzz_harness::check_wordpress_review(malformed);
+    }
+}
+
+#[test]
 fn bounded_oast_regression_inputs_satisfy_the_semantic_oracle() {
     for scenario in 0_u8..12 {
         for boundary in [0_u8, 1, 31, 32, 63, 64, 127, u8::MAX] {

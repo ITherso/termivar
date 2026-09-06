@@ -38,6 +38,8 @@ use termivar_scanner::web_runtime::{
 use termivar_scanner::web_runtime::{
     WebAssessmentAuthorizationAudit, RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
 };
+#[cfg(feature = "wordpress-review")]
+use termivar_scanner::wordpress_review::WordPressReviewInputs;
 use termivar_scanner::{
     DecisionLoopCommand, DecisionStopReason, ReportFormat, ReportGenerator, RuntimeBudgetDimension,
     RuntimeLimitExceeded, SemanticEntityType, SemanticExtractionResult,
@@ -565,6 +567,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "ssrf-oast-review")]
     pub(crate) ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) wordpress_review: Option<WordPressReviewInputs>,
 }
 
 pub(crate) async fn run_profile_scan(
@@ -584,6 +588,8 @@ pub(crate) async fn run_profile_scan(
         resource_authorization_review,
         #[cfg(feature = "ssrf-oast-review")]
         ssrf_oast_review,
+        #[cfg(feature = "wordpress-review")]
+        wordpress_review,
     } = runtime_options;
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
@@ -639,6 +645,14 @@ pub(crate) async fn run_profile_scan(
                 )
                 .into());
             }
+            #[cfg(feature = "wordpress-review")]
+            if wordpress_review.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WordPress evidence review requires the web-review profile",
+                )
+                .into());
+            }
             if !output.baseline_compatible() || root_authorization_context.is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -666,6 +680,8 @@ pub(crate) async fn run_profile_scan(
                     resource_authorization_review,
                     #[cfg(feature = "ssrf-oast-review")]
                     ssrf_oast_review,
+                    #[cfg(feature = "wordpress-review")]
+                    wordpress_review,
                 },
             )
             .await
@@ -719,6 +735,8 @@ struct WebReviewRunOptions {
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_review: Option<WordPressReviewInputs>,
 }
 
 async fn run_web_review(
@@ -739,6 +757,8 @@ async fn run_web_review(
         resource_authorization_review,
         #[cfg(feature = "ssrf-oast-review")]
         ssrf_oast_review,
+        #[cfg(feature = "wordpress-review")]
+        wordpress_review,
     } = options;
     if rest_review && !openapi_review {
         return Err(std::io::Error::new(
@@ -820,6 +840,10 @@ async fn run_web_review(
     #[cfg(feature = "ssrf-oast-review")]
     if let Some((policy, administrator)) = ssrf_oast_review {
         builder = builder.with_ssrf_oast_review(policy, administrator);
+    }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(inputs) = wordpress_review {
+        builder = builder.with_wordpress_review(inputs);
     }
     let mut runtime = builder.build()?;
     let mut progress = if progress_requested {
@@ -1530,6 +1554,8 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         WebAssessmentIncompleteReason::OpenApiReviewIncomplete => "openapi_review_incomplete",
         #[cfg(feature = "rest-review")]
         WebAssessmentIncompleteReason::RestReviewIncomplete => "rest_review_incomplete",
+        #[cfg(feature = "wordpress-review")]
+        WebAssessmentIncompleteReason::WordPressReviewIncomplete => "wordpress_review_incomplete",
         #[cfg(feature = "authorization-review")]
         WebAssessmentIncompleteReason::AuthorizationReviewIncomplete => {
             "authorization_review_incomplete"
@@ -2061,6 +2087,29 @@ lifetime_ms = 5000
         );
     }
 
+    #[cfg(feature = "wordpress-review")]
+    #[tokio::test]
+    async fn baseline_rejects_wordpress_review_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                wordpress_review: Some(WordPressReviewInputs::new(None, None)),
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("WordPress evidence review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "WordPress evidence review requires the web-review profile"
+        );
+    }
+
     fn minimal_baseline_document(disposition: AssessmentDisposition) -> WebAssessmentDocument {
         WebAssessmentDocument {
             schema_version: WEB_ASSESSMENT_SCHEMA_V1,
@@ -2290,6 +2339,11 @@ lifetime_ms = 5000
         assert_eq!(
             incomplete_reason_code(&WebAssessmentIncompleteReason::RestReviewIncomplete),
             "rest_review_incomplete"
+        );
+        #[cfg(feature = "wordpress-review")]
+        assert_eq!(
+            incomplete_reason_code(&WebAssessmentIncompleteReason::WordPressReviewIncomplete),
+            "wordpress_review_incomplete"
         );
 
         let stops = [

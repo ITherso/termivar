@@ -1,0 +1,1 @@
+{"schema":"security.wordpress-context/v1","root":"https://example.test/","hosting_os":"linux","multisite":"unknown","components":[{"kind":"plugin","slug":"sample-plugin","version":"1.2.0","activation":"active","patches":[{"id":"vendor-backport-1","state":"applied"}]},{"kind":"core","slug":"wordpress","version":"6.9.4"}]}

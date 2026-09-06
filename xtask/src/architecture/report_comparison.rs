@@ -527,29 +527,33 @@ impl ComparisonVisitor<'_> {
             .map(|segment| segment.ident.to_string())
             .collect();
         let joined = parts.join("::");
+        let exact_inert_advisory_url_parse = self.relative
+            == "reporting/comparison/import/audits.rs"
+            && matches!(joined.as_str(), "url" | "url::Url" | "url::Url::parse");
         if parts.first().is_some_and(|root| {
             root == "crate"
                 || root.starts_with("termivar_")
                 || root.starts_with("venom_")
-                || [
-                    "tokio",
-                    "reqwest",
-                    "hyper",
-                    "hyper_util",
-                    "axum",
-                    "url",
-                    "rand",
-                    "getrandom",
-                    "chrono",
-                    "time",
-                    "libc",
-                    "windows",
-                ]
-                .contains(&root.as_str())
+                || (!exact_inert_advisory_url_parse
+                    && [
+                        "tokio",
+                        "reqwest",
+                        "hyper",
+                        "hyper_util",
+                        "axum",
+                        "url",
+                        "rand",
+                        "getrandom",
+                        "chrono",
+                        "time",
+                        "libc",
+                        "windows",
+                    ]
+                    .contains(&root.as_str()))
         }) {
-            self.reject(
-                "cannot import or construct runtime, network, clock, random, or platform authority",
-            );
+            self.reject(&format!(
+                "cannot import or construct runtime, network, clock, random, or platform authority through `{joined}`"
+            ));
         }
         if parts.first().is_some_and(|root| root == "std")
             && ![
@@ -586,6 +590,7 @@ impl ComparisonVisitor<'_> {
                     "super::MAX_COMPARISON_INPUT_BYTES",
                 ][..],
                 "reporting/comparison/import/audits.rs" => &[
+                    "super::array",
                     "super::boolean",
                     "super::check",
                     "super::digest",
@@ -595,12 +600,14 @@ impl ComparisonVisitor<'_> {
                     "super::optional_boolean",
                     "super::optional_text",
                     "super::optional_token",
+                    "super::required",
                     "super::string",
                     "super::text",
                     "super::token",
                     "super::ComparisonError",
                     "super::ImportedItem",
                     "super::Value",
+                    "super::MAX_AUDIT_TEXT_BYTES",
                     "super::MAX_IDENTIFIER_BYTES",
                 ][..],
                 "reporting/comparison/html.rs" => &[
@@ -889,6 +896,24 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let violations = check(root).unwrap();
         assert!(violations.is_empty(), "{violations:#?}");
+    }
+
+    #[test]
+    fn wordpress_advisory_url_validation_cannot_open_network_authority() {
+        for addition in [
+            "fn escape() { let _ = url::Url::from_file_path(\"advisory.json\"); }",
+            "fn escape() { let _ = url::Url::join(&url::Url::parse(\"https://example.invalid\").unwrap(), \"next\"); }",
+            "fn escape() { let _ = reqwest::get(\"https://example.invalid\"); }",
+        ] {
+            let mutation = format!("{AUDITS}\n{addition}");
+            let violations = source_violations("reporting/comparison/import/audits.rs", &mutation)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("cannot import or construct runtime, network, clock, random, or platform authority"),
+                "accepted advisory-import authority extension {addition}: {violations}"
+            );
+        }
     }
 
     #[test]

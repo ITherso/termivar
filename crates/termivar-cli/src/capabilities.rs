@@ -256,6 +256,7 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
         ("release-bundle", cfg!(feature = "release-bundle")),
         ("rest-review", cfg!(feature = "rest-review")),
         ("ssrf-oast-review", cfg!(feature = "ssrf-oast-review")),
+        ("wordpress-review", cfg!(feature = "wordpress-review")),
     ]
     .into_iter()
     .map(|(name, compiled)| BuildFeatureDescriptor {
@@ -566,6 +567,24 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/audits/native-oast-corrective-maintenance.md",
         ),
         surface!(
+            "option.wordpress-review",
+            "WordPress evidence review",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("wordpress-review"),
+            cfg!(feature = "wordpress-review"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &[
+                "--profile web-review",
+                "--wordpress-review",
+                "optional --wordpress-context FILE",
+                "optional --wordpress-advisories FILE",
+            ],
+            "Interprets existing response evidence and explicit bounded local declarations; it adds no target requests. A missing catalogue is catalogue_not_supplied, never an all-clear, and no exploit or impact validation is performed.",
+            "docs/wordpress-review.md",
+        ),
+        surface!(
             "command.legacy-scan",
             "Legacy scanner",
             SurfaceGroup::Optional,
@@ -732,7 +751,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 21);
+        assert_eq!(document.surfaces.len(), 22);
 
         let keys = document
             .surfaces
@@ -764,6 +783,7 @@ mod tests {
                 "option.rest-review",
                 "option.resource-authorization-review",
                 "option.ssrf-oast-review",
+                "option.wordpress-review",
                 "command.legacy-scan",
                 "command.api",
                 "command.proxy",
@@ -842,6 +862,7 @@ mod tests {
                 "authorization-review-policy",
             ),
             ("option.ssrf-oast-review", "ssrf-oast-review"),
+            ("option.wordpress-review", "wordpress-review"),
         ] {
             let state = document
                 .surfaces
@@ -947,6 +968,12 @@ mod tests {
             (
                 "option.ssrf-oast-review",
                 Some("ssrf-oast-review"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.wordpress-review",
+                Some("wordpress-review"),
                 "preview",
                 "implemented",
             ),

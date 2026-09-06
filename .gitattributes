@@ -19,3 +19,7 @@ docs/examples/report-compare/provenance.json -text
 docs/examples/report-bundle/assessment-001/assessment.html -text
 docs/examples/report-bundle/assessment-001/assessment.json -text
 docs/examples/report-bundle/assessment-001/manifest.json -text
+
+# The curated WordPress catalogue records its exact SHA-256 in accompanying
+# provenance notes. Preserve those bytes across native checkouts.
+docs/examples/wordpress-review/advisories.curated.json -text

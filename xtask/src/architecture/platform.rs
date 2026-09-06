@@ -35,6 +35,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "openapi-review",
     "rest-review",
     "ssrf-oast-review",
+    "wordpress-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -61,6 +62,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "openapi-review",
     "rest-review",
     "ssrf-oast-review",
+    "wordpress-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -88,6 +90,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "plugins",
     "reporting",
     "scanning",
+    "wordpress-review",
     "threat-intel",
 ];
 
@@ -110,6 +113,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "plugins",
     "reporting",
     "scanning",
+    "wordpress-review",
 ];
 
 const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
@@ -216,6 +220,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("oast", "feature=\"oast-correlation\""),
     ("native_oast_provider", "feature=\"oast-native-provider\""),
     ("ssrf_oast_review", "feature=\"ssrf-oast-review\""),
+    ("wordpress_review", "feature=\"wordpress-review\""),
     ("persistence", "feature=\"platform-models\""),
     ("plugin", "feature=\"plugins\""),
     ("post_exploitation", "feature=\"platform-models\""),
@@ -1259,6 +1264,10 @@ fn cli_feature_violations(
             &["termivar-scanner/ssrf-oast-review"][..],
         ),
         (
+            "wordpress-review",
+            &["termivar-scanner/wordpress-review"][..],
+        ),
+        (
             "normalization-resilience",
             &["termivar-scanner/normalization-resilience"][..],
         ),
@@ -1490,6 +1499,21 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             "authorization-review",
             &[
                 "authorization-review",
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "wordpress-review",
+            &[
+                "wordpress-review",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -4448,7 +4472,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 6
+        || report_call.args.len() != 7
     {
         return false;
     }
@@ -4469,6 +4493,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "ssrf_oast_review", "ssrf-oast-review")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(argument, "wordpress_review", "wordpress-review")
         })
 }
 
@@ -4725,7 +4752,117 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ),
             ("openapi_review", "Option<AssessmentOpenApiAuditDocument>"),
             ("rest_review", "Option<AssessmentRestAuditDocument>"),
+            (
+                "wordpress_review",
+                "Option<AssessmentWordPressAuditDocument>",
+            ),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
+        ],
+    ),
+    (
+        "AssessmentWordPressAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("catalog_status", "&'static str"),
+            ("catalog", "Option<WordPressCatalogDocument>"),
+            ("signal_count", "u16"),
+            ("evidence_reference_count", "u16"),
+            ("additional_request_count", "u8"),
+            ("item_projected", "bool"),
+            ("component_count", "usize"),
+            ("advisory_count", "usize"),
+            ("components", "Vec<WordPressComponentDocument>"),
+            ("advisories", "Vec<WordPressAdvisoryDocument>"),
+        ],
+    ),
+    (
+        "WordPressCatalogDocument",
+        &[],
+        &[
+            ("id", "String"),
+            ("revision", "String"),
+            ("retrieved_on", "String"),
+        ],
+    ),
+    (
+        "WordPressComponentIdentityDocument",
+        &[],
+        &[("kind", "&'static str"), ("slug", "String")],
+    ),
+    (
+        "WordPressComponentDocument",
+        &[],
+        &[
+            ("identity", "WordPressComponentIdentityDocument"),
+            ("evidence_class", "&'static str"),
+            ("identity_sources", "Vec<&'static str>"),
+            ("confidence_classes", "Vec<&'static str>"),
+            ("versions", "Vec<WordPressVersionEvidenceDocument>"),
+            ("activation", "Option<&'static str>"),
+        ],
+    ),
+    (
+        "WordPressVersionEvidenceDocument",
+        &[],
+        &[
+            ("value", "String"),
+            ("source", "&'static str"),
+            ("confidence", "&'static str"),
+        ],
+    ),
+    (
+        "WordPressAdvisoryDocument",
+        &[],
+        &[
+            ("id", "String"),
+            ("component", "WordPressComponentIdentityDocument"),
+            ("source", "WordPressAdvisorySourceDocument"),
+            ("cve", "Option<String>"),
+            ("summary", "String"),
+            ("affected_ranges", "Vec<WordPressAffectedRangeDocument>"),
+            ("fixed_versions", "Vec<String>"),
+            ("prerequisites", "Vec<WordPressPrerequisiteDocument>"),
+            ("remediation", "Option<String>"),
+            ("component_evidence", "&'static str"),
+            ("version_relation", "&'static str"),
+            ("applicability", "&'static str"),
+            ("exploit_execution", "&'static str"),
+            ("impact_validation", "&'static str"),
+        ],
+    ),
+    (
+        "WordPressAdvisorySourceDocument",
+        &[],
+        &[
+            ("reference", "String"),
+            ("revision", "String"),
+            ("retrieved_on", "String"),
+            ("usage_basis", "String"),
+        ],
+    ),
+    (
+        "WordPressAffectedRangeDocument",
+        &[],
+        &[
+            ("lower", "Option<WordPressVersionEndpointDocument>"),
+            ("upper", "Option<WordPressVersionEndpointDocument>"),
+        ],
+    ),
+    (
+        "WordPressVersionEndpointDocument",
+        &[],
+        &[("declared", "String"), ("inclusive", "bool")],
+    ),
+    (
+        "WordPressPrerequisiteDocument",
+        &[],
+        &[
+            ("kind", "&'static str"),
+            ("expected", "String"),
+            ("patch_id", "Option<String>"),
+            ("outcome", "&'static str"),
         ],
     ),
     (
@@ -4913,6 +5050,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "authorization-review" => "feature=\"authorization-review\"",
         "openapi-review" => "feature=\"openapi-review\"",
         "rest-review" => "feature=\"rest-review\"",
+        "wordpress-review" => "feature=\"wordpress-review\"",
         _ => return false,
     };
     attributes.len() == 2
@@ -4947,6 +5085,16 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentAuthorizationAuditDocument"
                 | "AssessmentOpenApiAuditDocument"
                 | "AssessmentRestAuditDocument"
+                | "AssessmentWordPressAuditDocument"
+                | "WordPressCatalogDocument"
+                | "WordPressComponentIdentityDocument"
+                | "WordPressComponentDocument"
+                | "WordPressVersionEvidenceDocument"
+                | "WordPressAdvisoryDocument"
+                | "WordPressAdvisorySourceDocument"
+                | "WordPressAffectedRangeDocument"
+                | "WordPressVersionEndpointDocument"
+                | "WordPressPrerequisiteDocument"
                 | "AssessmentItemDocument"
                 | "AssessmentBasisLinkageDocument"
                 | "AssessmentRemediationDocument"
@@ -4987,6 +5135,18 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 },
                 "AssessmentRestAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"rest-review\")"
+                },
+                "AssessmentWordPressAuditDocument"
+                | "WordPressCatalogDocument"
+                | "WordPressComponentIdentityDocument"
+                | "WordPressComponentDocument"
+                | "WordPressVersionEvidenceDocument"
+                | "WordPressAdvisoryDocument"
+                | "WordPressAdvisorySourceDocument"
+                | "WordPressAffectedRangeDocument"
+                | "WordPressVersionEndpointDocument"
+                | "WordPressPrerequisiteDocument" => {
+                    "all(feature=\"scanning\",feature=\"wordpress-review\")"
                 },
                 _ => "feature=\"scanning\"",
             };
@@ -5038,11 +5198,15 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         reporting_audit_field_attributes_are_exact(&field.attrs, "openapi-review")
                     } else if name == "AssessmentDocument" && field_name == "rest_review" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "rest-review")
-                    } else if name == "AssessmentRestAuditDocument"
+                    } else if name == "AssessmentDocument" && field_name == "wordpress_review" {
+                        reporting_audit_field_attributes_are_exact(&field.attrs, "wordpress-review")
+                    } else if (name == "AssessmentRestAuditDocument"
                         && matches!(
                             field_name.as_str(),
                             "selected_operation_identity" | "documented_response" | "status_class"
-                        )
+                        ))
+                        || (name == "AssessmentWordPressAuditDocument" && field_name == "catalog")
+                        || (name == "WordPressPrerequisiteDocument" && field_name == "patch_id")
                     {
                         field.attrs.len() == 1
                             && reporting_serde_skip_option_is_none(&field.attrs[0])
@@ -7404,8 +7568,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 71_138;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x05d7_a24d_3d72_66b3_3f25_fb45_c86f_f061;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 89_111;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x306c_90c5_9315_2ee3_ec10_375c_0b88_3711;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -7513,6 +7677,26 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
+    "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::WebAssessmentWordPressAudit",
+    "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
+    "crate::wordpress_review::MAX_WORDPRESS_RESULT_COMPONENTS",
+    "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE",
+    "crate::wordpress_review::MAX_WORDPRESS_SIGNALS",
+    "crate::wordpress_review::WordPressActivationState",
+    "crate::wordpress_review::WordPressApplicability",
+    "crate::wordpress_review::WordPressCatalogStatus",
+    "crate::wordpress_review::WordPressComponentEvidenceClass",
+    "crate::wordpress_review::WordPressComponentKind",
+    "crate::wordpress_review::WordPressEvidenceConfidence",
+    "crate::wordpress_review::WordPressEvidenceSource",
+    "crate::wordpress_review::WordPressExecutionStatus",
+    "crate::wordpress_review::WordPressHostingOs",
+    "crate::wordpress_review::WordPressMultisiteState",
+    "crate::wordpress_review::WordPressPatchState",
+    "crate::wordpress_review::WordPressPrerequisite",
+    "crate::wordpress_review::WordPressPrerequisiteOutcome",
+    "crate::wordpress_review::WordPressVersionRelation",
     "serde::Serialize",
     "std::error::Error",
     "std::fmt",
@@ -7529,9 +7713,11 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentWordPressAuditDocument::from_audit",
     "AssessmentRestAuditDocument::from_audit",
     "AssessmentOpenApiAuditDocument::from_audit",
     "AssessmentAuthorizationAuditDocument::from_audit",
+    "AssessmentWordPressAuditDocument::from_audit",
     "AssessmentBasis::Differential",
     "AssessmentBasis::Observation",
     "AssessmentBasis::Verifier",
@@ -7559,6 +7745,53 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AuthorizationReviewOutcome::StableCrossPrincipalEquivalence",
     "AuthorizationReviewOutcome::Truncated",
     "AuthorizationReviewOutcome::UnsupportedMedia",
+    "WordPressActivationState::Active",
+    "WordPressActivationState::Inactive",
+    "WordPressActivationState::NetworkActive",
+    "WordPressActivationState::Unknown",
+    "WordPressApplicability::CandidateMatchOnDeclaredFacts",
+    "WordPressApplicability::ContradictedByDeclaredFacts",
+    "WordPressApplicability::IndeterminateMissingEvidence",
+    "WordPressApplicability::IndeterminateUnsupported",
+    "WordPressCatalogStatus::CatalogNotSupplied",
+    "WordPressCatalogStatus::Evaluated",
+    "WordPressComponentEvidenceClass::Conflicting",
+    "WordPressComponentEvidenceClass::ObservedHint",
+    "WordPressComponentEvidenceClass::OperatorSupplied",
+    "WordPressComponentEvidenceClass::Unknown",
+    "WordPressComponentKind::Core",
+    "WordPressComponentKind::Plugin",
+    "WordPressComponentKind::Theme",
+    "WordPressEvidenceConfidence::OperatorAssertion",
+    "WordPressEvidenceConfidence::PublicDeclaration",
+    "WordPressEvidenceConfidence::StructuralHint",
+    "WordPressEvidenceSource::GeneratorMetadata",
+    "WordPressEvidenceSource::OperatorContext",
+    "WordPressEvidenceSource::SameOriginAssetPath",
+    "WordPressExecutionStatus::NotPerformed",
+    "WordPressHostingOs::Bsd",
+    "WordPressHostingOs::Linux",
+    "WordPressHostingOs::Macos",
+    "WordPressHostingOs::Other",
+    "WordPressHostingOs::Windows",
+    "WordPressMultisiteState::Disabled",
+    "WordPressMultisiteState::Enabled",
+    "WordPressPatchState::Applied",
+    "WordPressPatchState::NotApplied",
+    "WordPressPatchState::Unknown",
+    "WordPressPrerequisite::Activation",
+    "WordPressPrerequisite::HostingOs",
+    "WordPressPrerequisite::Multisite",
+    "WordPressPrerequisite::Patch",
+    "WordPressPrerequisite::Unsupported",
+    "WordPressPrerequisiteOutcome::ContradictedOnSuppliedFacts",
+    "WordPressPrerequisiteOutcome::MatchedOnSuppliedFacts",
+    "WordPressPrerequisiteOutcome::Unknown",
+    "WordPressPrerequisiteOutcome::Unsupported",
+    "WordPressVersionRelation::OutsideDeclaredRanges",
+    "WordPressVersionRelation::Unknown",
+    "WordPressVersionRelation::Unsupported",
+    "WordPressVersionRelation::WithinDeclaredRange",
     "OpenApiRuntimeOutcome::BudgetExhausted",
     "OpenApiRuntimeOutcome::Cancelled",
     "OpenApiRuntimeOutcome::DefensiveInterference",
@@ -7666,10 +7899,31 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::WebAssessmentAuthorizationAudit",
     "crate::web_runtime::WebAssessmentOpenApiAudit",
     "crate::web_runtime::WebAssessmentRestAudit",
+    "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::WebAssessmentWordPressAudit",
     "crate::authorization_review::AuthorizationReviewOutcome",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "crate::rest_review::RestDocumentedResponseClass",
+    "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
+    "crate::wordpress_review::MAX_WORDPRESS_RESULT_COMPONENTS",
+    "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE",
+    "crate::wordpress_review::MAX_WORDPRESS_SIGNALS",
+    "crate::wordpress_review::WordPressActivationState",
+    "crate::wordpress_review::WordPressApplicability",
+    "crate::wordpress_review::WordPressCatalogStatus",
+    "crate::wordpress_review::WordPressComponentEvidenceClass",
+    "crate::wordpress_review::WordPressComponentIdentity",
+    "crate::wordpress_review::WordPressComponentKind",
+    "crate::wordpress_review::WordPressEvidenceConfidence",
+    "crate::wordpress_review::WordPressEvidenceSource",
+    "crate::wordpress_review::WordPressExecutionStatus",
+    "crate::wordpress_review::WordPressHostingOs",
+    "crate::wordpress_review::WordPressMultisiteState",
+    "crate::wordpress_review::WordPressPatchState",
+    "crate::wordpress_review::WordPressPrerequisite",
+    "crate::wordpress_review::WordPressPrerequisiteOutcome",
+    "crate::wordpress_review::WordPressVersionRelation",
     "fmt::Arguments",
     "fmt::Display",
     "fmt::Error",
@@ -7683,6 +7937,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "io::Write",
     "serde::Serialize",
     "serde_json::to_writer",
+    "serde_json::to_string",
     "std::error::Error",
     "std::fmt",
     "std::io",
@@ -7751,6 +8006,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "render_with_limit",
     "run_status_token",
     "serde_json::to_writer",
+    "serde_json::to_string",
     "severity_token",
     "starts_csv_formula_after_whitespace",
     "std::str::from_utf8",
@@ -7772,6 +8028,21 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "write_markdown_optional_assessment_text",
     "write_markdown_optional_decimal",
     "write_visible_codepoint",
+    "wordpress_activation",
+    "wordpress_applicability",
+    "wordpress_catalog_status",
+    "wordpress_component_identity",
+    "wordpress_component_kind",
+    "wordpress_confidence",
+    "wordpress_evidence_class",
+    "wordpress_evidence_source",
+    "wordpress_execution",
+    "wordpress_hosting_os",
+    "wordpress_multisite",
+    "wordpress_patch",
+    "wordpress_prerequisite",
+    "wordpress_prerequisite_outcome",
+    "wordpress_version_relation",
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
@@ -7907,6 +8178,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "to_rfc3339",
     "to_string",
     "try_reserve",
+    "try_fold",
     "unwrap_or",
     "unwrap_or_else",
     "url_like_operation_count",
@@ -7918,6 +8190,48 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "wall_time_ms",
     "write_operation_count",
     "write_str",
+    "activation",
+    "additional_request_count",
+    "advisories",
+    "affected_ranges",
+    "applicability",
+    "catalog_metadata",
+    "catalog_status",
+    "component",
+    "component_evidence",
+    "components",
+    "confidence_classes",
+    "copied",
+    "cve",
+    "declared",
+    "evidence_class",
+    "evidence_reference_count",
+    "exploit_execution",
+    "fixed_versions",
+    "identity",
+    "identity_sources",
+    "impact_validation",
+    "inclusive",
+    "kind",
+    "lower",
+    "prerequisite",
+    "prerequisites",
+    "record",
+    "reference",
+    "result",
+    "retrieved_on",
+    "revision",
+    "signal_count",
+    "slug",
+    "source",
+    "to_vec",
+    "upper",
+    "usage_basis",
+    "value",
+    "version_relation",
+    "versions",
+    "wire_json",
+    "wordpress_review_audit",
 ];
 
 const ALLOWED_REPORTING_MACROS: &[&str] = &["format", "format_args", "matches", "vec"];
@@ -7981,6 +8295,32 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::RestRuntimeOutcome"
                 )
             });
+        let wordpress_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID"
+                        | "crate::web_runtime::WebAssessmentWordPressAudit"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS"
+                        | "crate::wordpress_review::MAX_WORDPRESS_RESULT_COMPONENTS"
+                        | "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE"
+                        | "crate::wordpress_review::MAX_WORDPRESS_SIGNALS"
+                        | "crate::wordpress_review::WordPressActivationState"
+                        | "crate::wordpress_review::WordPressApplicability"
+                        | "crate::wordpress_review::WordPressCatalogStatus"
+                        | "crate::wordpress_review::WordPressComponentEvidenceClass"
+                        | "crate::wordpress_review::WordPressComponentKind"
+                        | "crate::wordpress_review::WordPressEvidenceConfidence"
+                        | "crate::wordpress_review::WordPressEvidenceSource"
+                        | "crate::wordpress_review::WordPressExecutionStatus"
+                        | "crate::wordpress_review::WordPressHostingOs"
+                        | "crate::wordpress_review::WordPressMultisiteState"
+                        | "crate::wordpress_review::WordPressPatchState"
+                        | "crate::wordpress_review::WordPressPrerequisite"
+                        | "crate::wordpress_review::WordPressPrerequisiteOutcome"
+                        | "crate::wordpress_review::WordPressVersionRelation"
+                )
+            });
         let attributes_are_exact = if assessment_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -8000,12 +8340,17 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"rest-review\")")
+        } else if wordpress_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
         } else {
             item.attrs.is_empty()
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated authorization, OpenAPI, and REST audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated authorization, OpenAPI, REST, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -8075,13 +8420,15 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"authorization-review\"")
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
+                    | Some("feature=\"wordpress-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, authorization, OpenAPI, and REST audit feature gates"
+                "reporting production source may contain only the exact scanning, authorization, OpenAPI, REST, and WordPress audit feature gates"
                     .to_owned(),
             );
         }
@@ -8358,7 +8705,8 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
     let exact_internal_assessment_path = ALLOWED_REPORTING_QUALIFIED_PATHS.contains(&key.as_str())
         && (key.starts_with("crate::web_runtime::")
             || key.starts_with("crate::authorization_review::")
-            || key.starts_with("crate::rest_review::"));
+            || key.starts_with("crate::rest_review::")
+            || key.starts_with("crate::wordpress_review::"));
     if (root == "crate" || root == "super" || (root == "self" && segments.len() > 1))
         && !exact_internal_assessment_path
     {
@@ -8810,6 +9158,7 @@ mod tests {
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("openapi-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("rest-review".to_owned(), vec!["openapi-review".to_owned()]);
+        features.insert("wordpress-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert(
             "normalization-resilience".to_owned(),
             vec!["scanning".to_owned()],
@@ -9116,6 +9465,40 @@ mod tests {
         assert!(cli_feature_violations(&cli_features, &dependencies)
             .iter()
             .any(|violation| violation.contains("default features must remain empty")));
+    }
+
+    #[test]
+    fn wordpress_review_is_non_default_transport_free_and_excluded_from_release_bundle() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert!(!raw_feature_closure(&features, "default").contains("wordpress-review"));
+        assert_eq!(
+            features.get("wordpress-review").unwrap(),
+            &["scanning".to_owned()]
+        );
+
+        features.remove("wordpress-review");
+        assert!(feature_violations(&features)
+            .iter()
+            .any(|violation| violation.contains("wordpress-review")));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert!(cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .all(|feature| feature != "wordpress-review"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("wordpress-review".to_owned());
+        assert!(
+            cli_feature_violations(&cli_features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
     }
 
     #[test]
@@ -10710,6 +11093,8 @@ mod tests {
                         self.rest_review,
                         #[cfg(feature = "ssrf-oast-review")]
                         self.ssrf_oast_review,
+                        #[cfg(feature = "wordpress-review")]
+                        self.wordpress_review,
                     )
                 }
             }
@@ -10727,7 +11112,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -10765,6 +11150,7 @@ mod tests {
             typed_assessment_bridge.replace("self.rest_review,", "forged_rest_review,"),
             typed_assessment_bridge
                 .replace("self.ssrf_oast_review,", "forged_ssrf_oast_review,"),
+            typed_assessment_bridge.replace("self.wordpress_review,", "forged_wordpress_review,"),
         ] {
             assert!(!reporting_cross_file_source_violations(
                 "web_runtime/web_assessment.rs",
@@ -11257,6 +11643,20 @@ mod tests {
                     RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
                 },
             };
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            use crate::{
+                web_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID},
+                wordpress_review::{
+                    WordPressActivationState, WordPressApplicability, WordPressCatalogStatus,
+                    WordPressComponentEvidenceClass, WordPressComponentKind,
+                    WordPressEvidenceConfidence, WordPressEvidenceSource,
+                    WordPressExecutionStatus, WordPressHostingOs, WordPressMultisiteState,
+                    WordPressPatchState, WordPressPrerequisite, WordPressPrerequisiteOutcome,
+                    WordPressVersionRelation, MAX_WORDPRESS_ADVISORY_RECORDS,
+                    MAX_WORDPRESS_RESULT_COMPONENTS, MAX_WORDPRESS_RESULT_VERSION_EVIDENCE,
+                    MAX_WORDPRESS_SIGNALS,
+                },
+            };
         "#
     }
 
@@ -11607,7 +12007,104 @@ mod tests {
                 #[cfg(feature = "rest-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 rest_review: Option<AssessmentRestAuditDocument>,
+                #[cfg(feature = "wordpress-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                wordpress_review: Option<AssessmentWordPressAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct AssessmentWordPressAuditDocument {
+                schema: &'static str,
+                capability_id: &'static str,
+                catalog_status: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                catalog: Option<WordPressCatalogDocument>,
+                signal_count: u16,
+                evidence_reference_count: u16,
+                additional_request_count: u8,
+                item_projected: bool,
+                component_count: usize,
+                advisory_count: usize,
+                components: Vec<WordPressComponentDocument>,
+                advisories: Vec<WordPressAdvisoryDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressCatalogDocument {
+                id: String,
+                revision: String,
+                retrieved_on: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressComponentIdentityDocument {
+                kind: &'static str,
+                slug: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressComponentDocument {
+                identity: WordPressComponentIdentityDocument,
+                evidence_class: &'static str,
+                identity_sources: Vec<&'static str>,
+                confidence_classes: Vec<&'static str>,
+                versions: Vec<WordPressVersionEvidenceDocument>,
+                activation: Option<&'static str>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressVersionEvidenceDocument {
+                value: String,
+                source: &'static str,
+                confidence: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAdvisoryDocument {
+                id: String,
+                component: WordPressComponentIdentityDocument,
+                source: WordPressAdvisorySourceDocument,
+                cve: Option<String>,
+                summary: String,
+                affected_ranges: Vec<WordPressAffectedRangeDocument>,
+                fixed_versions: Vec<String>,
+                prerequisites: Vec<WordPressPrerequisiteDocument>,
+                remediation: Option<String>,
+                component_evidence: &'static str,
+                version_relation: &'static str,
+                applicability: &'static str,
+                exploit_execution: &'static str,
+                impact_validation: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAdvisorySourceDocument {
+                reference: String,
+                revision: String,
+                retrieved_on: String,
+                usage_basis: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAffectedRangeDocument {
+                lower: Option<WordPressVersionEndpointDocument>,
+                upper: Option<WordPressVersionEndpointDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressVersionEndpointDocument {
+                declared: String,
+                inclusive: bool,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressPrerequisiteDocument {
+                kind: &'static str,
+                expected: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                patch_id: Option<String>,
+                outcome: &'static str,
             }
             #[cfg(all(feature = "scanning", feature = "rest-review"))]
             #[derive(Serialize)]
@@ -11788,6 +12285,20 @@ mod tests {
             "{violations}"
         );
 
+        let public_wordpress_audit = source.replace(
+            "                wordpress_review: Option<AssessmentWordPressAuditDocument>,",
+            "                pub wordpress_review: Option<AssessmentWordPressAuditDocument>,",
+        );
+        assert_ne!(public_wordpress_audit, source);
+        let violations = reporting_document_contract_violations(&public_wordpress_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
         let nested_rest_audit = source.replace(
             "                replay_stable: bool,\n                item_projected: bool,",
             "                replay_stable: bool,\n                nested_audit: Option<AssessmentRestAuditDocument>,\n                item_projected: bool,",
@@ -11799,6 +12310,34 @@ mod tests {
         assert!(
             violations.contains("AssessmentRestAuditDocument")
                 && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let nested_wordpress_audit = source.replace(
+            "                catalog_status: &'static str,\n                #[serde(skip_serializing_if = \"Option::is_none\")]",
+            "                catalog_status: &'static str,\n                nested_audit: Option<Box<AssessmentWordPressAuditDocument>>,\n                #[serde(skip_serializing_if = \"Option::is_none\")]",
+        );
+        assert_ne!(nested_wordpress_audit, source);
+        let violations = reporting_document_contract_violations(&nested_wordpress_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentWordPressAuditDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let deserializable_wordpress_audit = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentWordPressAuditDocument",
+            "#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\n            #[derive(Serialize, Deserialize)]\n            struct AssessmentWordPressAuditDocument",
+        );
+        assert_ne!(deserializable_wordpress_audit, source);
+        let violations = reporting_document_contract_violations(&deserializable_wordpress_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentWordPressAuditDocument")
+                && violations.contains("derives must be exactly"),
             "{violations}"
         );
 
@@ -11845,6 +12384,20 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("AssessmentDocument")
                     && violation.contains("fields must remain exactly"))
+        );
+
+        let ungated_wordpress_audit = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentWordPressAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentWordPressAuditDocument",
+        );
+        assert_ne!(ungated_wordpress_audit, source);
+        let violations = reporting_document_contract_violations(&ungated_wordpress_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentWordPressAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
         );
     }
 
@@ -11962,6 +12515,10 @@ mod tests {
             (
                 "ssrf-oast-review".to_owned(),
                 vec!["termivar-scanner/ssrf-oast-review".to_owned()],
+            ),
+            (
+                "wordpress-review".to_owned(),
+                vec!["termivar-scanner/wordpress-review".to_owned()],
             ),
             (
                 "graphql-review".to_owned(),
@@ -12344,6 +12901,7 @@ mod tests {
             "api-adapter",
             "proxy-adapter",
             "ssrf-oast-review",
+            "wordpress-review",
         ] {
             assert!(features
                 .get("release-bundle")
@@ -12822,6 +13380,7 @@ mod tests {
             #[cfg(feature = "oast-native-provider")] pub(crate) mod native_oast_provider;
             #[cfg(feature = "oast-correlation")] pub mod oast;
             #[cfg(feature = "ssrf-oast-review")] pub mod ssrf_oast_review;
+            #[cfg(feature = "wordpress-review")] pub mod wordpress_review;
             #[cfg(feature = "platform-models")] pub mod persistence;
             #[cfg(feature = "plugins")] pub mod plugin;
             #[cfg(feature = "platform-models")] pub mod post_exploitation;

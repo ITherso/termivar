@@ -22,6 +22,7 @@ const FEATURE_NAMES: &[&str] = &[
     "release-bundle",
     "rest-review",
     "ssrf-oast-review",
+    "wordpress-review",
 ];
 
 fn manifest_release_bundle_members() -> Vec<&'static str> {
@@ -133,6 +134,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         ("release-bundle", cfg!(feature = "release-bundle")),
         ("rest-review", cfg!(feature = "rest-review")),
         ("ssrf-oast-review", cfg!(feature = "ssrf-oast-review")),
+        ("wordpress-review", cfg!(feature = "wordpress-review")),
     ] {
         assert_eq!(
             states[feature],
@@ -144,6 +146,40 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.rest-review"),
         states["rest-review"]
     );
+    assert_eq!(
+        surface_state(&document, "option.wordpress-review"),
+        states["wordpress-review"]
+    );
+    let wordpress = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.wordpress-review")
+        .expect("WordPress surface");
+    assert_eq!(wordpress["documentation"], "docs/wordpress-review.md");
+    assert_eq!(
+        wordpress["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--wordpress-review",
+            "optional --wordpress-context FILE",
+            "optional --wordpress-advisories FILE"
+        ])
+    );
+    let wordpress_limit = wordpress["limitation"]
+        .as_str()
+        .expect("WordPress limitation");
+    for required in [
+        "no target requests",
+        "catalogue_not_supplied",
+        "never an all-clear",
+        "no exploit or impact validation",
+    ] {
+        assert!(
+            wordpress_limit.contains(required),
+            "missing WordPress limitation `{required}`"
+        );
+    }
     assert_eq!(
         surface_state(&document, "option.live-assessment-progress"),
         "compiled"
@@ -236,6 +272,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
             "--authorization-review-policy",
         ),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
+        ("option.wordpress-review", "--wordpress-review"),
     ] {
         assert_eq!(
             surface_state(&document, key) == "compiled",
@@ -352,6 +389,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "legacy-scanner",
         "proxy-adapter",
         "ssrf-oast-review",
+        "wordpress-review",
     ];
     match case.as_str() {
         "default" | "no-default" => {

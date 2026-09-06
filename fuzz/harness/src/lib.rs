@@ -202,6 +202,91 @@ pub fn check_openapi_review(data: &[u8]) {
     }
 }
 
+/// Maximum byte buffer retained by the WordPress JSON parser harness.
+pub const MAX_WORDPRESS_FUZZ_INPUT_BYTES: usize =
+    termivar_scanner::wordpress_review::MAX_WORDPRESS_ADVISORY_CATALOG_BYTES;
+
+/// Exercises both bounded WordPress input parsers on the same arbitrary bytes.
+///
+/// The harness checks parser determinism and the canonical ordering contracts
+/// that keep context and advisory evaluation independent from JSON member and
+/// sequence ordering. It owns no filesystem or network authority.
+pub fn check_wordpress_review(data: &[u8]) {
+    use termivar_scanner::wordpress_review::{
+        parse_wordpress_advisory_catalog, parse_wordpress_context, NumericDottedVersion,
+        MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_CONTEXT_COMPONENTS,
+        MAX_WORDPRESS_FIXED_VERSIONS_PER_ADVISORY, MAX_WORDPRESS_PATCH_ASSERTIONS_PER_COMPONENT,
+        MAX_WORDPRESS_PREREQUISITES_PER_ADVISORY, MAX_WORDPRESS_RANGES_PER_ADVISORY,
+    };
+
+    if data.len() > MAX_WORDPRESS_FUZZ_INPUT_BYTES {
+        return;
+    }
+
+    let context = parse_wordpress_context(data);
+    let repeated_context = parse_wordpress_context(data);
+    assert_eq!(
+        context, repeated_context,
+        "identical WordPress context input must be deterministic"
+    );
+    if let Ok(context) = context {
+        assert!(context.components().len() <= MAX_WORDPRESS_CONTEXT_COMPONENTS);
+        assert!(context
+            .components()
+            .windows(2)
+            .all(|pair| pair[0].identity() < pair[1].identity()));
+        assert!(context.components().iter().all(|component| {
+            component.patches().len() <= MAX_WORDPRESS_PATCH_ASSERTIONS_PER_COMPONENT
+                && component
+                    .patches()
+                    .windows(2)
+                    .all(|pair| pair[0].id() < pair[1].id())
+        }));
+
+        let root = context.root_url();
+        assert!(matches!(root.scheme(), "http" | "https"));
+        assert!(root.has_host());
+        assert!(root.username().is_empty());
+        assert!(root.password().is_none());
+        assert_eq!(root.path(), "/");
+        assert!(root.query().is_none());
+        assert!(root.fragment().is_none());
+    }
+
+    let catalog = parse_wordpress_advisory_catalog(data);
+    let repeated_catalog = parse_wordpress_advisory_catalog(data);
+    assert_eq!(
+        catalog, repeated_catalog,
+        "identical WordPress advisory input must be deterministic"
+    );
+    if let Ok(catalog) = catalog {
+        assert!(catalog.records().len() <= MAX_WORDPRESS_ADVISORY_RECORDS);
+        assert!(catalog
+            .records()
+            .windows(2)
+            .all(|pair| pair[0].id() < pair[1].id()));
+        for record in catalog.records() {
+            assert!(record.affected_ranges().len() <= MAX_WORDPRESS_RANGES_PER_ADVISORY);
+            assert!(record
+                .affected_ranges()
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]));
+            assert!(record.fixed_versions().len() <= MAX_WORDPRESS_FIXED_VERSIONS_PER_ADVISORY);
+            assert!(record.fixed_versions().windows(2).all(|pair| {
+                NumericDottedVersion::parse(&pair[0])
+                    .expect("validated fixed version must remain parseable")
+                    < NumericDottedVersion::parse(&pair[1])
+                        .expect("validated fixed version must remain parseable")
+            }));
+            assert!(record.prerequisites().len() <= MAX_WORDPRESS_PREREQUISITES_PER_ADVISORY);
+            assert!(record
+                .prerequisites()
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]));
+        }
+    }
+}
+
 // Compile the exact private production extractor into this fuzz-only crate.
 // The scanner wires the same source as `http_evidence::form_controls`; this
 // keeps the normal production API private while avoiding a copied harness.

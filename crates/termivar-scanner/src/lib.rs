@@ -76,6 +76,8 @@ pub mod web_actions;
 pub mod web_planning;
 pub mod web_reasoning;
 pub mod web_verification;
+#[cfg(feature = "wordpress-review")]
+pub mod wordpress_review;
 
 pub use semantic::{
     AuthArtifactKind, EntityExtractor, LimitsError, SemanticEntity, SemanticEntityType,

@@ -76,6 +76,10 @@ rest-review = ["openapi-review"]
 # Credentials and network authority remain owned by the web-assessment host.
 authorization-review = ["scanning"]
 
+# Explicitly enabled WordPress interpretation over the already-observed root
+# response and bounded operator-supplied local data. It adds no transport.
+wordpress-review = ["scanning"]
+
 # Provider-neutral, transport-free correlation contracts for host-minted
 # external-interaction tokens and bounded DNS/HTTP callback receipts.
 oast-correlation = ["core", "dep:zeroize"]
@@ -131,14 +135,14 @@ lua = ["core", "dep:mlua", "dep:tokio"]
 
 # Historical compatibility aggregate enabling every opt-in source surface.
 # This is not a supported product tier or a production-readiness claim.
-full = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "platform-models", "reporting", "plugins", "lua"]
+full = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "platform-models", "reporting", "plugins", "lua"]
 
 # Minimal deterministic scanner runtime
 minimal = ["core", "scanning"]
 
 # Historical compatibility aggregate excluding threat intelligence.
 # It is not an enterprise distribution or supported package.
-enterprise = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "platform-models", "reporting", "plugins", "lua"]
+enterprise = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "platform-models", "reporting", "plugins", "lua"]
 
 # Historical alias for the all-opt-in compatibility aggregate.
 research = ["full"]

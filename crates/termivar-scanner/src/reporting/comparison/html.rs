@@ -99,6 +99,14 @@ fn source(
         write_html_text(output, value)?;
         output.push_str("</dd>")?;
     }
+    for (name, value) in &metadata.optional_audits {
+        let value = serde_json::to_string(value).map_err(|_| ReportError::Serialization)?;
+        output.push_str("<dt>Optional audit: ")?;
+        write_html_text(output, name)?;
+        output.push_str("</dt><dd class=\"hash\">")?;
+        write_html_text(output, &value)?;
+        output.push_str("</dd>")?;
+    }
     output.push_fmt(format_args!(
         "<dt>Supplied counts</dt><dd>{} observations · {} subjects</dd></dl></div>",
         metadata.item_count, metadata.subject_count

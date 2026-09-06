@@ -22,6 +22,17 @@ registry, completeness lifecycle, and final report. It emits at most
 or body, uses no credential/cookie, and does not chain to SQL, SSTI, XSS,
 authorization, SSRF, or upload review.
 
+The separately non-default `wordpress-review` feature also stays inside that
+single assessment boundary. With explicit `--profile web-review
+--wordpress-review`, it receives only the existing complete root-response HTML
+observation and optional CLI-validated local context/catalogue values. It owns
+no client, broker, budget, provider, filesystem path, or independent report and
+adds zero target/provider requests. Its bounded typed interpretation is folded
+into the same evidence registry, completeness decision, item set, and final
+report. Public hints may yield one `Informational` / `KnowledgeOnly` surface
+item; operator declarations and advisory bibliography add no execution or claim
+authority. Exploit execution and impact validation are not performed.
+
 This document defines dependency direction and runtime ownership for the unreleased Termivar `0.10.0-alpha.3` development source line. It is a design contract, not a production-readiness claim.
 
 The editable diagrams.net source is [architecture.drawio](architecture.drawio). A presentation- and print-friendly export is available as [architecture.svg](images/architecture.svg).

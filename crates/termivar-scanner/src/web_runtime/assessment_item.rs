@@ -760,6 +760,11 @@ impl AssessmentProjectionContext {
         Ok(reference)
     }
 
+    #[cfg(feature = "wordpress-review")]
+    pub(super) fn has_evidence(&self, evidence_id: &EvidenceId) -> bool {
+        self.evidence.contains_key(evidence_id)
+    }
+
     #[cfg(test)]
     pub(crate) fn registered_evidence_count(&self) -> usize {
         self.evidence.len()

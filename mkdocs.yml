@@ -33,6 +33,7 @@ nav:
       - OpenAPI contract catalog: internals/openapi-contract-catalog.md
       - OpenAPI surface review: internals/openapi-surface-review.md
       - REST read-only review: internals/rest-readonly-review.md
+      - WordPress evidence review: wordpress-review.md
       - Normalization resilience: internals/normalization-resilience.md
       - Defense observation: internals/defense-observation.md
       - Artifact signature scanning: artifact-signatures.md

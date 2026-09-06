@@ -22,6 +22,7 @@ on:
       - "crates/termivar-scanner/src/oast.rs"
       - "crates/termivar-scanner/src/native_oast_provider.rs"
       - "crates/termivar-scanner/src/ssrf_oast_review.rs"
+      - "crates/termivar-scanner/src/wordpress_review.rs"
       - "crates/termivar-oast/**"
       - ".github/workflows/fuzz.yml"
   schedule:

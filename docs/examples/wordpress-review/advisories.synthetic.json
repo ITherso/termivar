@@ -1,0 +1,116 @@
+{
+  "schema": "security.wordpress-advisory-catalog/v1",
+  "catalog": {
+    "id": "termivar-synthetic-wordpress-example",
+    "revision": "synthetic-v1",
+    "retrieved_on": "2026-09-06"
+  },
+  "records": [
+    {
+      "id": "SYNTHETIC-PLUGIN-MATCH-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "synthetic-active-plugin"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/synthetic/plugin-match-0001",
+        "revision": "synthetic-v1",
+        "retrieved_on": "2026-09-06",
+        "usage_basis": "Fictional test data created for Termivar documentation; not a real advisory."
+      },
+      "summary": "Synthetic active-plugin interval match used only to demonstrate evaluation output.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "1.0.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "2.0.0",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "2.0.0"
+      ],
+      "prerequisites": [
+        {
+          "kind": "activation",
+          "equals": "active"
+        }
+      ],
+      "remediation": "Synthetic remediation text; do not apply it to a real component."
+    },
+    {
+      "id": "SYNTHETIC-PLUGIN-UNSUPPORTED-VERSION-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "synthetic-prerelease-plugin"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/synthetic/plugin-unsupported-version-0001",
+        "revision": "synthetic-v1",
+        "retrieved_on": "2026-09-06",
+        "usage_basis": "Fictional test data created for Termivar documentation; not a real advisory."
+      },
+      "summary": "Synthetic record whose declared prerelease version is outside V1 numeric-dotted comparison support.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "2.0.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "3.0.0",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "3.0.0"
+      ],
+      "prerequisites": [
+        {
+          "kind": "activation",
+          "equals": "active"
+        }
+      ]
+    },
+    {
+      "id": "SYNTHETIC-THEME-CONTRADICTED-0001",
+      "component": {
+        "kind": "theme",
+        "slug": "synthetic-inactive-theme"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/synthetic/theme-contradicted-0001",
+        "revision": "synthetic-v1",
+        "retrieved_on": "2026-09-06",
+        "usage_basis": "Fictional test data created for Termivar documentation; not a real advisory."
+      },
+      "summary": "Synthetic in-range theme record with an activation prerequisite contradicted by supplied context.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "1.0.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "2.0.0",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "2.0.0"
+      ],
+      "prerequisites": [
+        {
+          "kind": "activation",
+          "equals": "active"
+        }
+      ]
+    }
+  ]
+}

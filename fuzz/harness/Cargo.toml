@@ -12,7 +12,7 @@ serde_json = "1"
 sha2 = "0.10"
 termivar-core = { path = "../../crates/termivar-core" }
 termivar-oast = { path = "../../crates/termivar-oast", default-features = false, features = ["client"] }
-termivar-scanner = { path = "../../crates/termivar-scanner", default-features = false, features = ["ssrf-oast-review"] }
+termivar-scanner = { path = "../../crates/termivar-scanner", default-features = false, features = ["ssrf-oast-review", "wordpress-review"] }
 thiserror = "1"
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-util = "0.7"

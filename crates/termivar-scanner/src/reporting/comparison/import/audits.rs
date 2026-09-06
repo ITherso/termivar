@@ -1,14 +1,29 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
 use super::{
-    boolean, check, digest, keys, number, object, optional_boolean, optional_text, optional_token,
-    string, text, token, ComparisonError, ImportedItem, Value, MAX_IDENTIFIER_BYTES,
+    array, boolean, check, digest, keys, number, object, optional_boolean, optional_text,
+    optional_token, required, string, text, token, ComparisonError, ImportedItem, Value,
+    MAX_AUDIT_TEXT_BYTES, MAX_IDENTIFIER_BYTES,
 };
 use std::collections::BTreeMap;
 
 pub(super) const REST_CAPABILITY: &str = "api.rest-readonly-surface-observed@1";
+pub(super) const WORDPRESS_CAPABILITY: &str = "technology.wordpress-surface-observed@1";
 const OPENAPI_CAPABILITY: &str = "api.openapi-contract-observed@1";
 const AUTHORIZATION_CAPABILITY: &str = "authorization.resource-cross-principal-equivalence@1";
+const MAX_WORDPRESS_SIGNALS: u64 = 256;
+// These stable wire bounds mirror the feature-owned evaluator constants. The
+// importer is intentionally available without `wordpress-review`, so it cannot
+// depend on that feature-gated module directly.
+const MAX_WORDPRESS_CONTEXT_COMPONENTS: usize = 256;
+const MAX_WORDPRESS_RESULT_COMPONENTS: usize =
+    MAX_WORDPRESS_SIGNALS as usize + MAX_WORDPRESS_CONTEXT_COMPONENTS;
+const MAX_WORDPRESS_RESULT_VERSION_EVIDENCE: usize =
+    MAX_WORDPRESS_SIGNALS as usize + MAX_WORDPRESS_CONTEXT_COMPONENTS;
+const MAX_WORDPRESS_ADVISORIES: usize = 4_096;
+const MAX_WORDPRESS_RANGES: usize = 16;
+const MAX_WORDPRESS_FIXED_VERSIONS: usize = 16;
+const MAX_WORDPRESS_PREREQUISITES: usize = 8;
 
 pub(super) fn validate(
     name: &str,
@@ -20,8 +35,501 @@ pub(super) fn validate(
         "openapi_review" => openapi(fields, count(items, OPENAPI_CAPABILITY)),
         "rest_review" => rest(fields, count(items, REST_CAPABILITY)),
         "authorization_review" => authorization(fields, count(items, AUTHORIZATION_CAPABILITY)),
+        "wordpress_review" => wordpress(fields, count(items, WORDPRESS_CAPABILITY)),
         _ => Err(ComparisonError::InvalidDocument),
     }
+}
+
+fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<(), ComparisonError> {
+    keys(
+        fields,
+        &[
+            "schema",
+            "capability_id",
+            "catalog_status",
+            "signal_count",
+            "evidence_reference_count",
+            "additional_request_count",
+            "item_projected",
+            "component_count",
+            "advisory_count",
+            "components",
+            "advisories",
+        ],
+        &["catalog"],
+    )?;
+    check(
+        string(fields, "schema")? == "security.wordpress-review-audit/v1"
+            && string(fields, "capability_id")? == WORDPRESS_CAPABILITY,
+    )?;
+    let status = token(
+        fields,
+        "catalog_status",
+        &["catalogue_not_supplied", "evaluated"],
+    )?;
+    match (status, fields.get("catalog")) {
+        ("catalogue_not_supplied", None) => {},
+        ("evaluated", Some(value)) => catalog(object(value)?)?,
+        _ => return Err(ComparisonError::InvalidDocument),
+    }
+    let signal_count = number(fields, "signal_count", MAX_WORDPRESS_SIGNALS)?;
+    let evidence_count = number(fields, "evidence_reference_count", MAX_WORDPRESS_SIGNALS)?;
+    check(number(fields, "additional_request_count", 0)? == 0)?;
+    let projected = boolean(fields, "item_projected")?;
+    check(
+        count <= 1
+            && projected == (count == 1)
+            && projected == (signal_count > 0)
+            && projected == (evidence_count > 0),
+    )?;
+
+    let components = array(fields, "components")?;
+    check(
+        components.len() <= MAX_WORDPRESS_RESULT_COMPONENTS
+            && number(
+                fields,
+                "component_count",
+                MAX_WORDPRESS_RESULT_COMPONENTS as u64,
+            )? == components.len() as u64,
+    )?;
+    let mut component_identities = std::collections::BTreeSet::new();
+    let mut version_count = 0_usize;
+    for value in components {
+        let (identity, versions) = component(object(value)?)?;
+        version_count = version_count
+            .checked_add(versions)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        check(version_count <= MAX_WORDPRESS_RESULT_VERSION_EVIDENCE)?;
+        check(component_identities.insert(identity))?;
+    }
+
+    let advisories = array(fields, "advisories")?;
+    check(
+        advisories.len() <= MAX_WORDPRESS_ADVISORIES
+            && number(fields, "advisory_count", MAX_WORDPRESS_ADVISORIES as u64)?
+                == advisories.len() as u64
+            && (status == "evaluated" || advisories.is_empty()),
+    )?;
+    let mut advisory_ids = std::collections::BTreeSet::new();
+    for value in advisories {
+        let id = advisory(object(value)?)?;
+        check(advisory_ids.insert(id))?;
+    }
+    Ok(())
+}
+
+fn catalog(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonError> {
+    keys(fields, &["id", "revision", "retrieved_on"], &[])?;
+    identifier(text(fields, "id", MAX_IDENTIFIER_BYTES)?)?;
+    identifier(text(fields, "revision", MAX_IDENTIFIER_BYTES)?)?;
+    date(text(fields, "retrieved_on", MAX_IDENTIFIER_BYTES)?)
+}
+
+fn component(fields: &serde_json::Map<String, Value>) -> Result<(String, usize), ComparisonError> {
+    keys(
+        fields,
+        &[
+            "identity",
+            "evidence_class",
+            "identity_sources",
+            "confidence_classes",
+            "versions",
+            "activation",
+        ],
+        &[],
+    )?;
+    let identity = component_identity(object(required(fields, "identity")?)?)?;
+    token(
+        fields,
+        "evidence_class",
+        &[
+            "observed_hint",
+            "operator_supplied",
+            "conflicting",
+            "unknown",
+        ],
+    )?;
+    token_array(
+        fields,
+        "identity_sources",
+        &[
+            "generator_metadata",
+            "same_origin_asset_path",
+            "operator_context",
+        ],
+        3,
+    )?;
+    token_array(
+        fields,
+        "confidence_classes",
+        &[
+            "public_declaration",
+            "structural_hint",
+            "operator_assertion",
+        ],
+        3,
+    )?;
+    let versions = array(fields, "versions")?;
+    check(versions.len() <= MAX_WORDPRESS_RESULT_VERSION_EVIDENCE)?;
+    let mut unique_versions = std::collections::BTreeSet::new();
+    for value in versions {
+        let version = object(value)?;
+        keys(version, &["value", "source", "confidence"], &[])?;
+        let value = source_version(text(version, "value", 64)?)?;
+        let source = token(
+            version,
+            "source",
+            &[
+                "generator_metadata",
+                "same_origin_asset_path",
+                "operator_context",
+            ],
+        )?;
+        let confidence = token(
+            version,
+            "confidence",
+            &[
+                "public_declaration",
+                "structural_hint",
+                "operator_assertion",
+            ],
+        )?;
+        check(
+            confidence
+                == match source {
+                    "generator_metadata" => "public_declaration",
+                    "same_origin_asset_path" => "structural_hint",
+                    "operator_context" => "operator_assertion",
+                    _ => return Err(ComparisonError::InvalidDocument),
+                },
+        )?;
+        check(unique_versions.insert((value, source)))?;
+    }
+    optional_token(
+        fields,
+        "activation",
+        &["active", "inactive", "network_active", "unknown"],
+    )?;
+    Ok((identity, versions.len()))
+}
+
+fn component_identity(fields: &serde_json::Map<String, Value>) -> Result<String, ComparisonError> {
+    keys(fields, &["kind", "slug"], &[])?;
+    let kind = token(fields, "kind", &["core", "plugin", "theme"])?;
+    let slug = text(fields, "slug", 64)?;
+    check(valid_slug(slug) && ((kind == "core") == (slug == "wordpress")))?;
+    Ok(format!("{kind}:{slug}"))
+}
+
+fn advisory(fields: &serde_json::Map<String, Value>) -> Result<String, ComparisonError> {
+    keys(
+        fields,
+        &[
+            "id",
+            "component",
+            "source",
+            "cve",
+            "summary",
+            "affected_ranges",
+            "fixed_versions",
+            "prerequisites",
+            "remediation",
+            "component_evidence",
+            "version_relation",
+            "applicability",
+            "exploit_execution",
+            "impact_validation",
+        ],
+        &[],
+    )?;
+    let id = text(fields, "id", MAX_IDENTIFIER_BYTES)?;
+    identifier(id)?;
+    component_identity(object(required(fields, "component")?)?)?;
+    advisory_source(object(required(fields, "source")?)?)?;
+    if let Some(cve) = optional_text(fields, "cve", MAX_IDENTIFIER_BYTES)? {
+        check(valid_cve(cve))?;
+    }
+    bounded_text(text(fields, "summary", 1_024)?, 1_024)?;
+    if let Some(remediation) = optional_text(fields, "remediation", MAX_AUDIT_TEXT_BYTES)? {
+        bounded_text(remediation, MAX_AUDIT_TEXT_BYTES)?;
+    }
+
+    let ranges = array(fields, "affected_ranges")?;
+    check(ranges.len() <= MAX_WORDPRESS_RANGES)?;
+    for value in ranges {
+        affected_range(object(value)?)?;
+    }
+    let fixed_versions = array(fields, "fixed_versions")?;
+    check(fixed_versions.len() <= MAX_WORDPRESS_FIXED_VERSIONS)?;
+    let mut fixed = std::collections::BTreeSet::new();
+    for value in fixed_versions {
+        let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        check(fixed.insert(numeric_components(value)?))?;
+    }
+    let prerequisites = array(fields, "prerequisites")?;
+    check(prerequisites.len() <= MAX_WORDPRESS_PREREQUISITES)?;
+    let mut prerequisite_outcomes = Vec::with_capacity(prerequisites.len());
+    for value in prerequisites {
+        prerequisite_outcomes.push(prerequisite(object(value)?)?);
+    }
+    let component_evidence = token(
+        fields,
+        "component_evidence",
+        &[
+            "observed_hint",
+            "operator_supplied",
+            "conflicting",
+            "unknown",
+        ],
+    )?;
+    let version_relation = token(
+        fields,
+        "version_relation",
+        &[
+            "within_declared_range",
+            "outside_declared_ranges",
+            "unknown",
+            "unsupported",
+        ],
+    )?;
+    let applicability = token(
+        fields,
+        "applicability",
+        &[
+            "candidate_match_on_declared_facts",
+            "contradicted_by_declared_facts",
+            "indeterminate_missing_evidence",
+            "indeterminate_unsupported",
+        ],
+    )?;
+    let expected_applicability = if version_relation == "outside_declared_ranges"
+        || prerequisite_outcomes.contains(&"contradicted_on_supplied_facts")
+    {
+        "contradicted_by_declared_facts"
+    } else if version_relation == "unsupported" || prerequisite_outcomes.contains(&"unsupported") {
+        "indeterminate_unsupported"
+    } else if matches!(component_evidence, "unknown" | "conflicting")
+        || version_relation == "unknown"
+        || prerequisite_outcomes.contains(&"unknown")
+    {
+        "indeterminate_missing_evidence"
+    } else {
+        "candidate_match_on_declared_facts"
+    };
+    check(applicability == expected_applicability)?;
+    check(
+        string(fields, "exploit_execution")? == "not_performed"
+            && string(fields, "impact_validation")? == "not_performed",
+    )?;
+    Ok(id.to_owned())
+}
+
+fn advisory_source(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonError> {
+    keys(
+        fields,
+        &["reference", "revision", "retrieved_on", "usage_basis"],
+        &[],
+    )?;
+    let reference = text(fields, "reference", MAX_AUDIT_TEXT_BYTES)?;
+    let url = url::Url::parse(reference).map_err(|_| ComparisonError::InvalidDocument)?;
+    check(
+        url.scheme() == "https"
+            && url.has_host()
+            && url.username().is_empty()
+            && url.password().is_none(),
+    )?;
+    identifier(text(fields, "revision", MAX_IDENTIFIER_BYTES)?)?;
+    date(text(fields, "retrieved_on", MAX_IDENTIFIER_BYTES)?)?;
+    bounded_text(text(fields, "usage_basis", 256)?, 256)?;
+    Ok(())
+}
+
+fn affected_range(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonError> {
+    keys(fields, &["lower", "upper"], &[])?;
+    let mut present = false;
+    let mut lower = None;
+    let mut upper = None;
+    for name in ["lower", "upper"] {
+        let value = required(fields, name)?;
+        if !value.is_null() {
+            present = true;
+            let endpoint = object(value)?;
+            keys(endpoint, &["declared", "inclusive"], &[])?;
+            let endpoint = (
+                numeric_components(text(endpoint, "declared", 64)?)?,
+                boolean(endpoint, "inclusive")?,
+            );
+            if name == "lower" {
+                lower = Some(endpoint);
+            } else {
+                upper = Some(endpoint);
+            }
+        }
+    }
+    check(present)?;
+    if let (Some((lower, lower_inclusive)), Some((upper, upper_inclusive))) = (lower, upper) {
+        check(lower < upper || (lower == upper && lower_inclusive && upper_inclusive))?;
+    }
+    Ok(())
+}
+
+fn prerequisite(fields: &serde_json::Map<String, Value>) -> Result<&str, ComparisonError> {
+    keys(fields, &["kind", "expected", "outcome"], &["patch_id"])?;
+    let kind = token(
+        fields,
+        "kind",
+        &[
+            "hosting_os",
+            "multisite",
+            "activation",
+            "patch",
+            "unsupported",
+        ],
+    )?;
+    let expected = text(fields, "expected", MAX_IDENTIFIER_BYTES)?;
+    match kind {
+        "hosting_os" => check(["linux", "windows", "macos", "bsd", "other"].contains(&expected))?,
+        "multisite" => check(["enabled", "disabled"].contains(&expected))?,
+        "activation" => check(["active", "inactive", "network_active"].contains(&expected))?,
+        "patch" => {
+            check(["applied", "not_applied"].contains(&expected))?;
+            identifier(text(fields, "patch_id", MAX_IDENTIFIER_BYTES)?)?;
+        },
+        "unsupported" => identifier(expected)?,
+        _ => return Err(ComparisonError::InvalidDocument),
+    }
+    check((kind == "patch") == fields.contains_key("patch_id"))?;
+    let outcome = token(
+        fields,
+        "outcome",
+        &[
+            "matched_on_supplied_facts",
+            "contradicted_on_supplied_facts",
+            "unknown",
+            "unsupported",
+        ],
+    )?;
+    check((kind == "unsupported") == (outcome == "unsupported"))?;
+    Ok(outcome)
+}
+
+fn token_array(
+    fields: &serde_json::Map<String, Value>,
+    name: &str,
+    allowed: &[&str],
+    limit: usize,
+) -> Result<(), ComparisonError> {
+    let values = array(fields, name)?;
+    check(!values.is_empty() && values.len() <= limit)?;
+    let mut unique = std::collections::BTreeSet::new();
+    for value in values {
+        let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        check(allowed.contains(&value) && unique.insert(value))?;
+    }
+    Ok(())
+}
+
+fn numeric_components(value: &str) -> Result<Vec<u32>, ComparisonError> {
+    check(!value.is_empty() && value.len() <= 64)?;
+    let mut components = value
+        .split('.')
+        .map(|part| {
+            if part.is_empty()
+                || !part.bytes().all(|byte| byte.is_ascii_digit())
+                || (part.len() > 1 && part.starts_with('0'))
+            {
+                return Err(ComparisonError::InvalidDocument);
+            }
+            part.parse::<u32>()
+                .map_err(|_| ComparisonError::InvalidDocument)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    check(!components.is_empty() && components.len() <= 8)?;
+    while components.len() > 1 && components.last() == Some(&0) {
+        components.pop();
+    }
+    Ok(components)
+}
+
+fn source_version(value: &str) -> Result<&str, ComparisonError> {
+    bounded_text(value, 64)
+}
+
+fn bounded_text(value: &str, maximum: usize) -> Result<&str, ComparisonError> {
+    check(!value.is_empty() && value.len() <= maximum && !value.chars().any(char::is_control))?;
+    Ok(value)
+}
+
+fn identifier(value: &str) -> Result<(), ComparisonError> {
+    check(
+        !value.is_empty()
+            && value.len() <= MAX_IDENTIFIER_BYTES
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'.' | b'_' | b':' | b'/' | b'@' | b'-')
+            }),
+    )
+}
+
+fn date(value: &str) -> Result<(), ComparisonError> {
+    let bytes = value.as_bytes();
+    check(
+        bytes.len() == 10
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit()),
+    )?;
+    let year = decimal(&bytes[0..4])?;
+    let month = decimal(&bytes[5..7])?;
+    let day = decimal(&bytes[8..10])?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let maximum = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
+    check(day > 0 && day <= maximum)
+}
+
+fn decimal(bytes: &[u8]) -> Result<u32, ComparisonError> {
+    bytes
+        .iter()
+        .try_fold(0_u32, |value, digit| {
+            value.checked_mul(10)?.checked_add(u32::from(*digit - b'0'))
+        })
+        .ok_or(ComparisonError::InvalidDocument)
+}
+
+fn valid_slug(value: &str) -> bool {
+    if value.is_empty() || value.len() > 64 {
+        return false;
+    }
+    let mut previous_hyphen = true;
+    for byte in value.bytes() {
+        match byte {
+            b'a'..=b'z' | b'0'..=b'9' => previous_hyphen = false,
+            b'-' if !previous_hyphen => previous_hyphen = true,
+            _ => return false,
+        }
+    }
+    !previous_hyphen
+}
+
+fn valid_cve(value: &str) -> bool {
+    let mut parts = value.split('-');
+    parts.next() == Some("CVE")
+        && parts
+            .next()
+            .is_some_and(|year| year.len() == 4 && year.bytes().all(|byte| byte.is_ascii_digit()))
+        && parts.next().is_some_and(|id| {
+            (4..=10).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        && parts.next().is_none()
 }
 
 fn count(items: &BTreeMap<String, ImportedItem>, capability: &str) -> usize {
