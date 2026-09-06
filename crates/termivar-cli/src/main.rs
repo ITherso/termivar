@@ -1157,10 +1157,17 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
 async fn run_existing_command(command: Option<Commands>) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Some(Commands::Scan(args)) => run_deterministic_scan(*args).await?,
-        Some(Commands::Capabilities(_) | Commands::Report { .. }) => {
+        Some(Commands::Capabilities(_)) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "offline commands must be dispatched before runtime initialization",
+                "offline capabilities command must be dispatched before runtime initialization",
+            )
+            .into());
+        },
+        Some(Commands::Report { .. }) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "offline report commands must be dispatched before runtime initialization",
             )
             .into());
         },

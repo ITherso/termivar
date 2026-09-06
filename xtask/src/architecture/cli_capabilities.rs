@@ -267,7 +267,11 @@ fn dispatch_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     let runtime = function_source(source, "run_existing_command").unwrap_or_default();
     if !runtime.contains("Commands :: Capabilities (_)")
         || !runtime.contains("Commands :: Report { .. }")
-        || !runtime.contains("offline commands must be dispatched before runtime initialization")
+        || !runtime.contains(
+            "offline capabilities command must be dispatched before runtime initialization",
+        )
+        || !runtime
+            .contains("offline report commands must be dispatched before runtime initialization")
     {
         violations
             .push("the async command dispatcher must reject misplaced offline commands".to_owned());
@@ -596,7 +600,7 @@ mod tests {
             ),
             ("fn main()", "#[tokio::main] async fn main()"),
             (
-                "Some(Commands::Capabilities(_) | Commands::Report { .. })",
+                "Some(Commands::Capabilities(_))",
                 "Some(Commands::Report { .. })",
             ),
         ] {
