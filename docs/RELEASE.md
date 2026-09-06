@@ -57,16 +57,29 @@ immutable `v0.9.0-alpha` source commit. CI pins Rust
 the current scope and the documented scanner exception.
 
 The `v0.10.0-alpha.1` prerelease is published. Current `main` uses the
-unreleased `0.10.0-alpha.2` development identity so later source cannot be
-confused with that immutable release. Before publishing `0.10.0-alpha.2`:
+`0.10.0-alpha.2` development identity so later source cannot be confused with
+that immutable release. Alpha.2's dated changelog section, support-on-
+publication declaration, and curated note are **PREPARED / NOT PUBLISHED**.
+Their presence in source does not establish a tag, GitHub Release, downloadable
+archive, checksum file, attestation, or support start.
 
-1. move its reviewed changes from `Unreleased` into a dated
-   `0.10.0-alpha.2` section;
-2. update the tag-time release metadata contract and add its curated release
-   note;
-3. create the release and annotated tag only after every release check passes;
-4. resolve that tag to its immutable peeled commit; and
-5. advance the workspace version before the first later source commit.
+Before publishing `0.10.0-alpha.2` in a separately authorized operation:
+
+1. require the repository's exact alpha.2 prepared-state regression plus
+   `cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2` on the
+   exact candidate, and review the prepared prose;
+2. require all candidate gates plus all four native packaged-binary acceptance
+   jobs to pass for that same source commit;
+3. create the annotated tag only from the approved candidate commit;
+4. let the create-once workflow revalidate and publish that exact tag, then
+   verify its peeled commit and release assets; and
+5. mark alpha.2 support as active and advance the workspace version before the
+   first later source commit.
+
+A prepared support row is a commitment that support starts if publication
+succeeds, not a claim that the candidate can already be downloaded. Main-run
+archives remain temporary workflow evidence and are not tag-labelled release
+assets or published checksums.
 
 Do not baseline the scanner against mutable `main` or describe the current
 transition as patch-compatible with `v0.9.0-alpha`.

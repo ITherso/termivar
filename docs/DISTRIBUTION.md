@@ -6,7 +6,14 @@ audited; the published prerelease does not acquire later source fixes.
 | Choice | Exact identity | Build features |
 | --- | --- | --- |
 | Published prerelease | [v0.10.0-alpha.1](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1), release ID `382219595`, tag commit `2212b2590c6193a18915dcd33ad2bb31e1a9ef7b` | Existing `release-bundle` |
-| Reviewed development source | `0.10.0-alpha.2` at `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` | Default CLI build, or explicit `release-bundle` |
+| Pinned first-use development example (not the current release candidate) | `0.10.0-alpha.2` at `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` | Default CLI build, or explicit `release-bundle` |
+
+Alpha.2 release metadata is **PREPARED / NOT PUBLISHED**. There is currently no
+`v0.10.0-alpha.2` tag, GitHub Release, downloadable alpha.2 archive,
+`SHA256SUMS`, or tag-bound attestation. Main-workflow archives named with
+`termivar-main-...` are temporary candidate evidence, not published release
+downloads. Keep using the alpha.1 links above unless GitHub shows a separately
+published alpha.2 release.
 
 The CLI's default feature list is empty; its scanner dependency enables
 `scanning` and `reporting`. The existing release bundle additionally compiles
@@ -259,10 +266,12 @@ feature labels are explicit caller declarations, not facts inferred from help.
 
 ## Release status and unsupported channels
 
-The development line has no matching prebuilt release. The historical
-`v0.9.0-alpha` archives predate the deterministic-default remediation and are
-not an installation path for this guide. Future releases use the existing
-[release process](RELEASE.md); this walkthrough changes no release or tag.
+The alpha.2 development line has prepared metadata but no matching published
+prebuilt release. Its support declaration starts only on publication. The
+historical `v0.9.0-alpha` archives predate the deterministic-default remediation
+and are not an installation path for this guide. Future releases use the
+existing [release process](RELEASE.md); this walkthrough changes no release or
+tag.
 
 There is no supported Homebrew/Apt/AUR/Snap/Chocolatey/Scoop/crates.io package,
 repository installer, automatic updater, signed-platform binary channel,

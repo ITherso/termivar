@@ -21,6 +21,16 @@ use cargo_metadata::MetadataCommand;
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 #[cfg(test)]
 const RELEASE_AUDIT_RUNNER_PATH: &str = "      - \"scripts/ci/run-cargo-audit.sh\"";
+const RELEASE_ACCEPTANCE_PATHS: &[&str] = &[
+    "scripts/first_use.py",
+    "scripts/report_bundle_example.py",
+    "scripts/release_candidate_acceptance.py",
+    "scripts/verify_release_archive.py",
+    "scripts/tests/test_release_candidate_acceptance.py",
+    "scripts/tests/test_verify_release_archive.py",
+    "docs/examples/report-compare/before.json",
+    "docs/examples/report-compare/after.json",
+];
 const CANONICAL_FORMAT_GATE: &str = "run: cargo +1.88.0 fmt --all -- --check";
 const RELEASE_FORMAT_STEP: &str =
     "      - name: Check formatting\n        run: cargo +1.88.0 fmt --all -- --check";
@@ -31,12 +41,29 @@ const MSRV_CLIPPY_GATE: &str =
 const RELEASE_CLIPPY_STEP: &str =
     "      - name: Run Clippy\n        run: cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings";
 const METADATA_GATE: &str = "cargo run --locked -p xtask -- release-metadata \"$tag_version\"";
+const PREPARED_RELEASE_METADATA_GATE: &str = r#"      - name: Verify prepared alpha.2 release metadata
+        run: cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2"#;
 const INITIAL_TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"$GITHUB_REF\")\" = tag";
 const MAIN_ANCESTRY_GATE: &str = "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main";
 const VERSION_EQUALITY_GATE: &str = "test \"$tag_version\" = \"$workspace_version\"";
 const RELEASE_BUILD_GATE: &str = "run: cargo build --locked --release --target ${{ matrix.target }} -p termivar-cli --features release-bundle";
 const UNIX_SMOKE_VERSION_GATE: &str = "test \"$version_output\" = \"termivar 0.10.0-alpha.2\"";
 const WINDOWS_SMOKE_VERSION_GATE: &str = "if ($versionOutput -ne \"termivar 0.10.0-alpha.2\") {";
+const WINDOWS_SMOKE_VERSION_EXECUTION: &str = r#"          $versionOutput = (& $releaseBinary --version)
+          if ($LASTEXITCODE -ne 0) {
+            throw "release --version failed"
+          }
+          $versionOutput = ($versionOutput | Out-String).Trim()"#;
+const WINDOWS_SMOKE_HELP_EXECUTION: &str = r#"          $helpOutput = (& $releaseBinary --help)
+          if ($LASTEXITCODE -ne 0) {
+            throw "release --help failed"
+          }
+          $helpOutput = ($helpOutput | Out-String)"#;
+const WINDOWS_SMOKE_SCAN_HELP_EXECUTION: &str = r#"          $scanHelp = (& $releaseBinary scan --help)
+          if ($LASTEXITCODE -ne 0) {
+            throw "release scan --help failed"
+          }
+          $scanHelp = ($scanHelp | Out-String)"#;
 const UNIX_QUARANTINE_SMOKE_GATE: &str =
     "if grep -Eq '^  (legacy-scan|api|proxy)[[:space:]]' <<<\"$help_output\"; then";
 const WINDOWS_QUARANTINE_SMOKE_GATE: &str =
@@ -74,6 +101,63 @@ const RELEASE_CREATE_GATE: &str = "gh release create \"$GITHUB_REF_NAME\" \\";
 const RELEASE_NOTES_FLAG_GATE: &str = "--notes-file \"$notes_file\" \\";
 const RELEASE_TITLE_GATE: &str = "--title \"Termivar $GITHUB_REF_NAME\" \\";
 const RELEASE_PRERELEASE_GATE: &str = "--prerelease";
+const RELEASE_ACCEPTANCE_RUNNER: &str = "scripts/release_candidate_acceptance.py";
+const RELEASE_ACCEPTANCE_TEST: &str = r#"      - name: Test packaged release candidate acceptance contracts
+        run: python -m unittest discover -s scripts/tests -p test_release_candidate_acceptance.py"#;
+const RELEASE_ACCEPTANCE_PYTHON: &str = r#"      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12""#;
+const UNIX_RELEASE_ACCEPTANCE: &str = r#"      - name: Accept packaged release archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="dist/termivar-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          extract_dir="${RUNNER_TEMP}/termivar-release-candidate-extract-${{ matrix.target }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          evidence_dir="${RUNNER_TEMP}/termivar-release-candidate-evidence-${{ matrix.target }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$extract_dir"
+          test ! -e "$evidence_dir"
+          python scripts/release_candidate_acceptance.py \
+            --archive "$archive" \
+            --target "${{ matrix.target }}" \
+            --archive-ref "$GITHUB_REF_NAME" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --extract-to "$extract_dir" \
+            --evidence-dir "$evidence_dir" \
+            --expect-version 0.10.0-alpha.2"#;
+const WINDOWS_RELEASE_ACCEPTANCE: &str = r#"      - name: Accept packaged release archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = "dist/termivar-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "termivar-release-candidate-extract-${{ matrix.target }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $evidenceDir = Join-Path $env:RUNNER_TEMP "termivar-release-candidate-evidence-${{ matrix.target }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ((Test-Path -LiteralPath $extractDir) -or (Test-Path -LiteralPath $evidenceDir)) {
+            throw "release acceptance destination already exists"
+          }
+          & python scripts/release_candidate_acceptance.py `
+            --archive $archive `
+            --target "${{ matrix.target }}" `
+            --archive-ref $env:GITHUB_REF_NAME `
+            --source-sha $env:GITHUB_SHA `
+            --run-id $env:GITHUB_RUN_ID `
+            --run-attempt $env:GITHUB_RUN_ATTEMPT `
+            --extract-to $extractDir `
+            --evidence-dir $evidenceDir `
+            --expect-version 0.10.0-alpha.2
+          if ($LASTEXITCODE -ne 0) {
+            throw "packaged release acceptance failed"
+          }"#;
+const RELEASE_ACCEPTANCE_EVIDENCE: &str = r#"      - name: Upload bounded release-candidate acceptance evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packaged-acceptance-${{ matrix.target }}
+          path: ${{ runner.temp }}/termivar-release-candidate-evidence-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}/acceptance.json
+          if-no-files-found: error
+          retention-days: 30"#;
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
 const FIRST_USE_TEMP_PREFIX: &str = "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}";
 const REPORT_BUNDLE_SMOKE_GATE: &str = r#"      - name: Exercise single-run report bundle CLI
@@ -129,6 +213,8 @@ const EXPECTED_ARCHITECTURE_JOB: &str = r#"  architecture:
         run: cargo test --locked -p xtask development_line
       - name: Verify post-release development-line provenance
         run: cargo run --locked -p xtask -- development-line
+      - name: Verify prepared alpha.2 release metadata
+        run: cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2
       - name: Verify workspace and reasoning boundaries
         run: cargo run --locked -p xtask -- architecture
       - name: Test transport-free scanner contracts
@@ -335,6 +421,9 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
 
     let mut violations = workflow_pin_violations(&files);
     violations.extend(release_workflow_policy_violations(&files));
+    violations.extend(release_candidate_acceptance_workflow_policy_violations(
+        &files,
+    ));
     violations.extend(security_workflow_policy_violations(&files));
     let audit_runner_path = workspace_root.join(AUDIT_RUNNER);
     let audit_runner = match fs::read_to_string(&audit_runner_path) {
@@ -351,6 +440,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(report_bundle_workflow_policy_violations(&files));
     violations.extend(report_verification_workflow_policy_violations(&files));
     violations.extend(capabilities_workflow_policy_violations(&files));
+    violations.extend(release_acceptance_test_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
         &files,
@@ -457,6 +547,27 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     violations
 }
 
+fn release_acceptance_test_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed packaged release acceptance test workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    if job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Test packaged release candidate acceptance contracts",
+        RELEASE_ACCEPTANCE_TEST,
+    ) {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed packaged release acceptance contract tests"
+        )]
+    }
+}
+
 fn job_has_exact_step(contents: &str, job_name: &str, step_name: &str, expected: &str) -> bool {
     let jobs = named_job_blocks(contents, job_name);
     let [job] = jobs.as_slice() else {
@@ -555,11 +666,15 @@ fn development_line_workflow_policy_violations(files: &[(String, String)]) -> Ve
         && jobs[0].contains(DEVELOPMENT_LINE_DEFAULTS)
         && jobs[0].contains(DEVELOPMENT_LINE_CHECKOUT)
         && jobs[0].contains(DEVELOPMENT_LINE_GATE)
+        && jobs[0].contains(PREPARED_RELEASE_METADATA_GATE)
         && jobs[0].contains(ARCHITECTURE_GATE)
         && jobs[0]
             .find(DEVELOPMENT_LINE_GATE)
+            .zip(jobs[0].find(PREPARED_RELEASE_METADATA_GATE))
             .zip(jobs[0].find(ARCHITECTURE_GATE))
-            .is_some_and(|(development, architecture)| development < architecture)
+            .is_some_and(|((development, metadata), architecture)| {
+                development < metadata && metadata < architecture
+            })
         && !jobs[0]
             .lines()
             .map(str::trim)
@@ -568,7 +683,7 @@ fn development_line_workflow_policy_violations(files: &[(String, String)]) -> Ve
         Vec::new()
     } else {
         vec![format!(
-            "{TESTS_WORKFLOW}: `Architecture Boundaries` must match the reviewed exact-head contract, fetch complete tag history, and run the unsuppressed development-line gate before architecture validation"
+            "{TESTS_WORKFLOW}: `Architecture Boundaries` must match the reviewed exact-head contract, fetch complete tag history, and run the unsuppressed development-line and prepared alpha.2 metadata gates before architecture validation"
         )]
     }
 }
@@ -950,6 +1065,147 @@ fn coverage_build_input_policy_violations(
         }
     }
     Ok(violations)
+}
+
+fn release_candidate_acceptance_workflow_policy_violations(
+    files: &[(String, String)],
+) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == RELEASE_WORKFLOW) else {
+        return vec![format!(
+            "{RELEASE_WORKFLOW}: reviewed packaged release acceptance workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let jobs = named_job_blocks(&normalized, "build-release");
+    let [job] = jobs.as_slice() else {
+        return vec![format!(
+            "{RELEASE_WORKFLOW}: expected exactly one reviewed native release build job"
+        )];
+    };
+    let mut violations = Vec::new();
+
+    let paths_are_complete = release_push_paths(&normalized).is_some_and(|paths| {
+        RELEASE_ACCEPTANCE_PATHS.iter().all(|required| {
+            paths
+                .iter()
+                .filter(|path| {
+                    path.strip_prefix('"')
+                        .and_then(|path| path.strip_suffix('"'))
+                        == Some(*required)
+                })
+                .count()
+                == 1
+        })
+    });
+    if !paths_are_complete {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: release path filters must include each reviewed packaged-acceptance runner, imported helper, regression test, and fixed comparison fixture exactly once"
+        ));
+    }
+
+    if job.matches(RELEASE_ACCEPTANCE_PYTHON).count() != 1 {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: native release acceptance must install the reviewed pinned Python 3.12 toolchain exactly once"
+        ));
+    }
+    for (step_name, expected, platform) in [
+        (
+            "Accept packaged release archive (Unix)",
+            UNIX_RELEASE_ACCEPTANCE,
+            "Unix",
+        ),
+        (
+            "Accept packaged release archive (Windows)",
+            WINDOWS_RELEASE_ACCEPTANCE,
+            "Windows",
+        ),
+        (
+            "Upload bounded release-candidate acceptance evidence",
+            RELEASE_ACCEPTANCE_EVIDENCE,
+            "evidence upload",
+        ),
+    ] {
+        if !job_has_exact_step(&normalized, "build-release", step_name, expected) {
+            violations.push(format!(
+                "{RELEASE_WORKFLOW}: native release acceptance must retain the exact unsuppressed {platform} step"
+            ));
+        }
+    }
+
+    if job.matches(RELEASE_ACCEPTANCE_RUNNER).count() != 2 {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: the packaged archive acceptance runner must execute exactly once on each native platform branch"
+        ));
+    }
+
+    let find_step = |name: &str| job.find(&format!("      - name: {name}"));
+    let python_setup = job.find(RELEASE_ACCEPTANCE_PYTHON);
+    let ordering_is_reviewed = python_setup
+        .zip(find_step("Accept packaged release archive (Unix)"))
+        .is_some_and(|(python, acceptance)| python < acceptance)
+        && python_setup
+            .zip(find_step("Accept packaged release archive (Windows)"))
+            .is_some_and(|(python, acceptance)| python < acceptance)
+        && find_step("Package Unix archive")
+            .zip(find_step("Accept packaged release archive (Unix)"))
+            .is_some_and(|(package, acceptance)| package < acceptance)
+        && find_step("Package Windows archive")
+            .zip(find_step("Accept packaged release archive (Windows)"))
+            .is_some_and(|(package, acceptance)| package < acceptance)
+        && find_step("Accept packaged release archive (Unix)")
+            .zip(find_step(
+                "Upload bounded release-candidate acceptance evidence",
+            ))
+            .is_some_and(|(acceptance, evidence)| acceptance < evidence)
+        && find_step("Accept packaged release archive (Windows)")
+            .zip(find_step(
+                "Upload bounded release-candidate acceptance evidence",
+            ))
+            .is_some_and(|(acceptance, evidence)| acceptance < evidence)
+        && find_step("Upload bounded release-candidate acceptance evidence")
+            .zip(find_step("Generate build provenance"))
+            .is_some_and(|(evidence, provenance)| evidence < provenance)
+        && find_step("Generate build provenance")
+            .zip(find_step("Upload release archive"))
+            .is_some_and(|(provenance, archive)| provenance < archive);
+    if !ordering_is_reviewed {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: each native archive must be packaged and accepted before bounded evidence, tag-only provenance, and release-archive upload"
+        ));
+    }
+
+    if job
+        .lines()
+        .map(str::trim)
+        .any(|line| line.starts_with("continue-on-error:"))
+    {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: native packaged acceptance must not suppress failures with `continue-on-error`"
+        ));
+    }
+
+    for (snippet, purpose) in [
+        (
+            WINDOWS_SMOKE_VERSION_EXECUTION,
+            "check the Windows `--version` process exit",
+        ),
+        (
+            WINDOWS_SMOKE_HELP_EXECUTION,
+            "check the Windows `--help` process exit",
+        ),
+        (
+            WINDOWS_SMOKE_SCAN_HELP_EXECUTION,
+            "check the Windows `scan --help` process exit",
+        ),
+    ] {
+        if job.matches(snippet).count() != 1 {
+            violations.push(format!(
+                "{RELEASE_WORKFLOW}: native release smoke must {purpose} before trusting captured text"
+            ));
+        }
+    }
+
+    violations
 }
 
 fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
@@ -1632,6 +1888,18 @@ mod tests {
     }
 
     #[test]
+    fn repository_release_candidate_acceptance_is_exact() {
+        let contents = include_str!("../../../.github/workflows/release.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations = release_candidate_acceptance_workflow_policy_violations(&[(
+                RELEASE_WORKFLOW.to_owned(),
+                fixture,
+            )]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
     fn repository_security_job_matches_the_reviewed_formatter_and_clippy_contract() {
         let contents = include_str!("../../../.github/workflows/tests.yml");
         let violations = security_workflow_policy_violations(&[(
@@ -1768,6 +2036,47 @@ mod tests {
     }
 
     #[test]
+    fn repository_release_acceptance_contract_tests_run_on_all_smoke_platforms() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations = release_acceptance_test_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                fixture,
+            )]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn release_acceptance_contract_tests_reject_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(RELEASE_ACCEPTANCE_TEST, "", 1),
+            valid.replacen(
+                "test_release_candidate_acceptance.py",
+                "test_verify_release_archive.py",
+                1,
+            ),
+            valid.replacen(
+                RELEASE_ACCEPTANCE_TEST,
+                &format!("{RELEASE_ACCEPTANCE_TEST}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations = release_acceptance_test_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                mutation,
+            )]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("release acceptance"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
     fn capabilities_smoke_rejects_omission_substitution_and_suppression() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         for mutation in [
@@ -1863,7 +2172,7 @@ mod tests {
     }
 
     #[test]
-    fn development_line_workflow_rejects_missing_history_suppression_and_reordering() {
+    fn development_line_and_prepared_metadata_workflow_rejects_contract_mutations() {
         let path = TESTS_WORKFLOW.to_owned();
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let mutations = [
@@ -1873,14 +2182,34 @@ mod tests {
             valid.replacen("          fetch-depth: 0\n", "", 1),
             valid.replacen("          fetch-tags: true\n", "", 1),
             valid.replacen(DEVELOPMENT_LINE_GATE, "", 1),
+            valid.replacen(PREPARED_RELEASE_METADATA_GATE, "", 1),
+            valid.replacen(
+                "release-metadata 0.10.0-alpha.2",
+                "release-metadata 0.10.0-alpha.1",
+                1,
+            ),
+            valid.replacen(
+                "cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2",
+                "cargo run -p xtask -- release-metadata 0.10.0-alpha.2",
+                1,
+            ),
             valid.replacen(
                 DEVELOPMENT_LINE_GATE,
                 &format!("{DEVELOPMENT_LINE_GATE}\n        continue-on-error: true"),
                 1,
             ),
             valid.replacen(
-                &format!("{DEVELOPMENT_LINE_GATE}\n{ARCHITECTURE_GATE}"),
-                &format!("{ARCHITECTURE_GATE}\n{DEVELOPMENT_LINE_GATE}"),
+                PREPARED_RELEASE_METADATA_GATE,
+                &format!("{PREPARED_RELEASE_METADATA_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+            valid.replacen(
+                &format!(
+                    "{DEVELOPMENT_LINE_GATE}\n{PREPARED_RELEASE_METADATA_GATE}\n{ARCHITECTURE_GATE}"
+                ),
+                &format!(
+                    "{DEVELOPMENT_LINE_GATE}\n{ARCHITECTURE_GATE}\n{PREPARED_RELEASE_METADATA_GATE}"
+                ),
                 1,
             ),
             valid.replacen(
@@ -1891,6 +2220,18 @@ mod tests {
             valid.replacen(
                 DEVELOPMENT_LINE_GATE,
                 &format!("{DEVELOPMENT_LINE_GATE}\n        shell: bash {{0}} || true"),
+                1,
+            ),
+            valid.replacen(
+                PREPARED_RELEASE_METADATA_GATE,
+                &format!("{PREPARED_RELEASE_METADATA_GATE}\n        if: false"),
+                1,
+            ),
+            valid.replacen(
+                PREPARED_RELEASE_METADATA_GATE,
+                &format!(
+                    "{PREPARED_RELEASE_METADATA_GATE}\n        shell: bash {{0}} || true"
+                ),
                 1,
             ),
             valid.replacen(
@@ -2155,6 +2496,105 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(cargo_audit_policy_violations(&hostile_top_level_defaults, runner).is_empty());
+    }
+
+    #[test]
+    fn release_candidate_acceptance_rejects_omission_source_order_and_suppression_mutations() {
+        let valid = include_str!("../../../.github/workflows/release.yml").replace("\r\n", "\n");
+        let without_unix_acceptance =
+            valid.replacen(&format!("{UNIX_RELEASE_ACCEPTANCE}\n"), "", 1);
+        let acceptance_before_package = without_unix_acceptance.replacen(
+            "      - name: Package Unix archive",
+            &format!("{UNIX_RELEASE_ACCEPTANCE}\n      - name: Package Unix archive"),
+            1,
+        );
+        let (before_build_python, after_build_python) = valid
+            .rsplit_once(RELEASE_ACCEPTANCE_PYTHON)
+            .expect("reviewed build-release Python setup");
+        let without_build_python = format!("{before_build_python}{after_build_python}");
+        let python_after_acceptance = without_build_python.replacen(
+            UNIX_RELEASE_ACCEPTANCE,
+            &format!("{UNIX_RELEASE_ACCEPTANCE}\n{RELEASE_ACCEPTANCE_PYTHON}"),
+            1,
+        );
+
+        let mut mutations = vec![
+            without_build_python,
+            python_after_acceptance,
+            valid.replacen(UNIX_RELEASE_ACCEPTANCE, "", 1),
+            valid.replacen(WINDOWS_RELEASE_ACCEPTANCE, "", 1),
+            valid.replacen(RELEASE_ACCEPTANCE_EVIDENCE, "", 1),
+            valid.replacen(
+                "--expect-version 0.10.0-alpha.2",
+                "--expect-version 0.10.0-alpha.1",
+                1,
+            ),
+            valid.replacen(
+                "--archive \"$archive\"",
+                "--archive target/release/termivar",
+                1,
+            ),
+            valid.replacen(
+                "python scripts/release_candidate_acceptance.py \\",
+                "python scripts/first_use.py \\",
+                1,
+            ),
+            valid.replacen("            --target \"${{ matrix.target }}\" \\\n", "", 1),
+            valid.replacen("--source-sha \"$GITHUB_SHA\"", "--source-sha deadbeef", 1),
+            valid.replacen(
+                UNIX_RELEASE_ACCEPTANCE,
+                &UNIX_RELEASE_ACCEPTANCE.replacen(
+                    "if: runner.os != 'Windows'",
+                    "if: runner.os == 'Windows'",
+                    1,
+                ),
+                1,
+            ),
+            valid.replacen(
+                UNIX_RELEASE_ACCEPTANCE,
+                &UNIX_RELEASE_ACCEPTANCE.replacen("if: runner.os != 'Windows'", "if: false", 1),
+                1,
+            ),
+            valid.replacen(
+                UNIX_RELEASE_ACCEPTANCE,
+                &format!("{UNIX_RELEASE_ACCEPTANCE}\n        continue-on-error: true"),
+                1,
+            ),
+            valid.replacen(
+                "          if ($LASTEXITCODE -ne 0) {\n            throw \"packaged release acceptance failed\"\n          }",
+                "",
+                1,
+            ),
+            valid.replacen(
+                "name: packaged-acceptance-${{ matrix.target }}",
+                "name: release-acceptance-${{ matrix.target }}",
+                1,
+            ),
+            valid.replacen(
+                "-${{ github.run_attempt }}/acceptance.json",
+                "-${{ github.run_attempt }}/",
+                1,
+            ),
+            valid.replacen(WINDOWS_SMOKE_VERSION_EXECUTION, "", 1),
+            valid.replacen(WINDOWS_SMOKE_HELP_EXECUTION, "", 1),
+            valid.replacen(WINDOWS_SMOKE_SCAN_HELP_EXECUTION, "", 1),
+            acceptance_before_package,
+        ];
+        for path in RELEASE_ACCEPTANCE_PATHS {
+            mutations.push(valid.replacen(&format!("      - \"{path}\"\n"), "", 1));
+        }
+
+        for (index, mutation) in mutations.into_iter().enumerate() {
+            assert_ne!(mutation, valid, "mutation must alter the release workflow");
+            let violations = release_candidate_acceptance_workflow_policy_violations(&[(
+                RELEASE_WORKFLOW.to_owned(),
+                mutation,
+            )]);
+            assert!(
+                !violations.is_empty(),
+                "mutated acceptance contract {index} passed"
+            );
+        }
     }
 
     #[test]

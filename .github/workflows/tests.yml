@@ -45,6 +45,8 @@ jobs:
         run: cargo test --locked -p xtask development_line
       - name: Verify post-release development-line provenance
         run: cargo run --locked -p xtask -- development-line
+      - name: Verify prepared alpha.2 release metadata
+        run: cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2
       - name: Verify workspace and reasoning boundaries
         run: cargo run --locked -p xtask -- architecture
       - name: Test transport-free scanner contracts
@@ -281,6 +283,8 @@ jobs:
         run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
       - name: Test release archive verification contracts
         run: python -m unittest discover -s scripts/tests -p test_verify_release_archive.py
+      - name: Test packaged release candidate acceptance contracts
+        run: python -m unittest discover -s scripts/tests -p test_release_candidate_acceptance.py
       - name: Accept the actual development CLI against its own loopback fixture
         run: >-
           python scripts/first_use.py

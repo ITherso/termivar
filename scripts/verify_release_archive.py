@@ -177,6 +177,55 @@ def _extract_fresh(directory: Path, name: str, binary: bytes) -> None:
         raise
 
 
+def _archive_binary(snapshot: bytes, archive_name: str, expected_name: str) -> bytes:
+    if archive_name.endswith(".zip") and expected_name == "termivar.exe":
+        return _zip_binary(snapshot, expected_name)
+    if archive_name.endswith(".tar.gz") and expected_name == "termivar":
+        return _tar_binary(snapshot, expected_name)
+    raise VerificationError("archive type and expected binary name are inconsistent")
+
+
+def inspect_archive(archive_path: Path, expected_archive_name: str,
+                    expected_name: str, extract_to: Path | None = None) -> dict:
+    """Inspect one exact candidate archive without claiming published provenance.
+
+    The expected archive/member identities must come from a separate, closed
+    caller-owned target map. This helper deliberately does not accept a checksum
+    manifest: a digest calculated beside an unpublished candidate would identify
+    those bytes, but would not authenticate them.
+    """
+    if sys.version_info < (3, 12, 4):
+        raise VerificationError("Python 3.12.4 or newer is required")
+    if (not expected_archive_name
+            or Path(expected_archive_name).name != expected_archive_name
+            or archive_path.name != expected_archive_name):
+        raise VerificationError("archive basename is not the exact expected candidate asset")
+    try:
+        metadata = archive_path.lstat()
+    except OSError as error:
+        raise VerificationError("candidate archive is unavailable") from error
+    if not stat.S_ISREG(metadata.st_mode) or archive_path.is_symlink():
+        raise VerificationError("candidate archive must be a regular non-link file")
+    snapshot = _read_snapshot(archive_path, MAX_ARCHIVE_BYTES)
+    try:
+        binary = _archive_binary(snapshot, expected_archive_name, expected_name)
+    except (OSError, EOFError, UnicodeError, tarfile.TarError, zipfile.BadZipFile, zlib.error,
+            NotImplementedError, struct.error) as error:
+        raise VerificationError("archive is malformed or outside the supported release shape") from error
+    if extract_to is not None:
+        _extract_fresh(extract_to, expected_name, binary)
+    return {
+        "archive": expected_archive_name,
+        "archive_bytes": len(snapshot),
+        "archive_sha256": hashlib.sha256(snapshot).hexdigest(),
+        "entry_count": 1,
+        "member": expected_name,
+        "member_bytes": len(binary),
+        "member_sha256": hashlib.sha256(binary).hexdigest(),
+        "extracted": extract_to is not None,
+    }
+
+
 def verify_archive(archive_path: Path, checksums_path: Path, extract_to: Path | None = None) -> dict:
     """Validate local bytes and return a deterministic, path-free inspection."""
     if sys.version_info < (3, 12, 4):
@@ -189,8 +238,7 @@ def verify_archive(archive_path: Path, checksums_path: Path, extract_to: Path | 
         raise VerificationError("archive SHA-256 does not match the selected manifest entry")
     expected_name = ARCHIVES[archive_path.name]
     try:
-        binary = (_zip_binary(snapshot, expected_name) if archive_path.name.endswith(".zip")
-                  else _tar_binary(snapshot, expected_name))
+        binary = _archive_binary(snapshot, archive_path.name, expected_name)
     except (OSError, EOFError, UnicodeError, tarfile.TarError, zipfile.BadZipFile, zlib.error,
             NotImplementedError, struct.error) as error:
         raise VerificationError("archive is malformed or outside the supported release shape") from error

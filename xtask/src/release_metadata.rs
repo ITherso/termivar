@@ -16,6 +16,11 @@ use std::{
 
 const CURRENT_RELEASE: &str = "0.10.0-alpha.1";
 const CURRENT_RELEASE_DATE: &str = "2026-09-03";
+const PREPARED_RELEASE_MARKER: &str = "PREPARED / NOT PUBLISHED";
+#[cfg(test)]
+const PREPARED_RELEASE_NOTE_MARKER: &str = "PREPARED RELEASE METADATA";
+const PREPARED_SUPPORT_STATE: &str = "On publication";
+const PREPARED_SUPPORT_PROMISE: &str = "support starts on publication";
 const MAX_RELEASE_NOTE_BYTES: u64 = 128 * 1024;
 const VERSIONED_PACKAGES: &[&str] = &[
     "termivar-api",
@@ -141,21 +146,28 @@ fn metadata_violations(version: &str, changelog: &str, security: &str) -> Vec<St
             "CHANGELOG.md must define the exact `{release_link}` reference"
         ));
     }
-    let compare_link =
-        format!("[Unreleased]: https://github.com/ITherso/termivar/compare/v{version}...HEAD");
+    let comparison_base = newest_dated_release_version(changelog).unwrap_or(version);
+    let compare_link = format!(
+        "[Unreleased]: https://github.com/ITherso/termivar/compare/v{comparison_base}...HEAD"
+    );
     if !changelog.lines().any(|line| line == compare_link) {
         violations.push(format!(
-            "CHANGELOG.md must advance the Unreleased comparison to `v{version}`"
+            "CHANGELOG.md must advance the Unreleased comparison to `v{comparison_base}`"
         ));
     }
 
-    let supported_row_prefix = format!("| `v{version}` | Yes |");
-    if !security
-        .lines()
-        .any(|line| line.starts_with(&supported_row_prefix))
-    {
+    let published_row_prefix = format!("| `v{version}` | Yes |");
+    let prepared_row_prefix = format!("| `v{version}` | {PREPARED_SUPPORT_STATE} |");
+    let support_is_declared = security.lines().any(|line| {
+        line.starts_with(&published_row_prefix)
+            || (version != CURRENT_RELEASE
+                && line.starts_with(&prepared_row_prefix)
+                && line.contains(PREPARED_RELEASE_MARKER)
+                && line.contains(PREPARED_SUPPORT_PROMISE))
+    });
+    if !support_is_declared {
         violations.push(format!(
-            "SECURITY.md must list released `v{version}` as supported"
+            "SECURITY.md must list `v{version}` as supported or use the exact prepared-on-publication state"
         ));
     }
 
@@ -309,7 +321,6 @@ fn release_note_text_violations(version: &str, note: &str) -> Vec<String> {
                 .to_owned(),
         );
     }
-
     for required in REQUIRED_RELEASE_NOTE_SECTIONS {
         let heading = format!("## {required}");
         if markdown_section(&normalized, &heading).is_none() {
@@ -377,6 +388,70 @@ fn markdown_section(document: &str, heading: &str) -> Option<String> {
     )
 }
 
+fn newest_dated_release_version(changelog: &str) -> Option<&str> {
+    changelog.lines().find_map(|line| {
+        let (version, date) = line.strip_prefix("## [")?.split_once("] - ")?;
+        (!version.is_empty() && is_iso_date(date)).then_some(version)
+    })
+}
+
+#[cfg(test)]
+fn prepared_candidate_violations(
+    version: &str,
+    expected_date: &str,
+    changelog: &str,
+    security: &str,
+    release_note: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let expected_heading = format!("## [{version}] - {expected_date}");
+    let first_release_heading = changelog
+        .lines()
+        .skip_while(|line| *line != "## [Unreleased]")
+        .skip(1)
+        .find(|line| line.starts_with("## ["));
+    if first_release_heading != Some(expected_heading.as_str()) {
+        violations.push(format!(
+            "prepared candidate must place exact `{expected_heading}` immediately after the Unreleased section, before any other release-like heading"
+        ));
+    }
+
+    let prepared_section = changelog
+        .lines()
+        .skip_while(|line| *line != expected_heading)
+        .skip(1)
+        .take_while(|line| !line.starts_with("## ["))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !prepared_section.contains(PREPARED_RELEASE_MARKER) {
+        violations.push(format!(
+            "prepared candidate changelog section must state `{PREPARED_RELEASE_MARKER}`"
+        ));
+    }
+
+    let candidate_rows: Vec<_> = security
+        .lines()
+        .filter(|line| line.starts_with(&format!("| `v{version}` |")))
+        .collect();
+    let exact_prepared_row = candidate_rows.len() == 1
+        && candidate_rows[0].starts_with(&format!("| `v{version}` | {PREPARED_SUPPORT_STATE} |"))
+        && candidate_rows[0].contains(PREPARED_RELEASE_MARKER)
+        && candidate_rows[0].contains(PREPARED_SUPPORT_PROMISE);
+    if !exact_prepared_row {
+        violations.push(format!(
+            "prepared candidate SECURITY.md must contain exactly one `v{version}` row with `{PREPARED_SUPPORT_STATE}`, `{PREPARED_RELEASE_MARKER}`, and `{PREPARED_SUPPORT_PROMISE}`"
+        ));
+    }
+
+    if !release_note.contains(PREPARED_RELEASE_NOTE_MARKER) {
+        violations.push(format!(
+            "prepared candidate release note must state `{PREPARED_RELEASE_NOTE_MARKER}`"
+        ));
+    }
+
+    violations
+}
+
 fn is_iso_date(value: &str) -> bool {
     value.len() == 10
         && value.bytes().enumerate().all(|(index, byte)| match index {
@@ -388,12 +463,17 @@ fn is_iso_date(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        metadata_violations, package_version_violations, release_note_file_violations,
-        release_note_text_violations, validate_version_token, CURRENT_RELEASE,
-        MAX_RELEASE_NOTE_BYTES, VERSIONED_PACKAGES,
+        metadata_violations, newest_dated_release_version, package_version_violations,
+        prepared_candidate_violations, release_note_file_violations, release_note_text_violations,
+        validate_version_token, CURRENT_RELEASE, MAX_RELEASE_NOTE_BYTES, PREPARED_RELEASE_MARKER,
+        PREPARED_RELEASE_NOTE_MARKER, PREPARED_SUPPORT_PROMISE, PREPARED_SUPPORT_STATE,
+        VERSIONED_PACKAGES,
     };
     use std::{collections::BTreeMap, fs, path::Path};
     use tempfile::tempdir;
+
+    const PREPARED_RELEASE: &str = "0.10.0-alpha.2";
+    const PREPARED_RELEASE_DATE: &str = "2026-09-06";
 
     fn changelog() -> String {
         format!(
@@ -413,6 +493,29 @@ mod tests {
         )
     }
 
+    fn prepared_changelog() -> String {
+        format!(
+            "# Changelog\n\n## [Unreleased]\n\n## [{PREPARED_RELEASE}] - {PREPARED_RELEASE_DATE}\n\n> **{PREPARED_RELEASE_MARKER}:** candidate metadata only.\n\n### Added\n\n- Added bounded release behavior.\n\n[Unreleased]: https://github.com/ITherso/termivar/compare/v{PREPARED_RELEASE}...HEAD\n[{PREPARED_RELEASE}]: https://github.com/ITherso/termivar/releases/tag/v{PREPARED_RELEASE}\n"
+        )
+    }
+
+    fn prepared_security() -> String {
+        format!(
+            "## Supported versions\n\n| Version | Supported | Notes |\n| --- | --- | --- |\n| `v{CURRENT_RELEASE}` | Yes | Published prerelease |\n| `v{PREPARED_RELEASE}` | {PREPARED_SUPPORT_STATE} | {PREPARED_RELEASE_MARKER}; {PREPARED_SUPPORT_PROMISE} |\n"
+        )
+    }
+
+    fn prepared_release_note() -> String {
+        release_note()
+            .replace(CURRENT_RELEASE, PREPARED_RELEASE)
+            .replace(
+                "\n\n## What this release is",
+                &format!(
+                    "\n\n> [!NOTE]\n> {PREPARED_RELEASE_NOTE_MARKER}.\n\n## What this release is"
+                ),
+            )
+    }
+
     fn packages() -> BTreeMap<String, String> {
         VERSIONED_PACKAGES
             .iter()
@@ -426,6 +529,190 @@ mod tests {
         assert!(violations.is_empty(), "{violations:?}");
         assert!(release_note_text_violations(CURRENT_RELEASE, &release_note()).is_empty());
         assert!(package_version_violations(CURRENT_RELEASE, &packages()).is_empty());
+    }
+
+    #[test]
+    fn prepared_later_release_metadata_is_accepted_without_rewriting_alpha1() {
+        assert!(metadata_violations(
+            PREPARED_RELEASE,
+            &prepared_changelog(),
+            &prepared_security()
+        )
+        .is_empty());
+        assert!(
+            release_note_text_violations(PREPARED_RELEASE, &prepared_release_note()).is_empty()
+        );
+        assert!(prepared_candidate_violations(
+            PREPARED_RELEASE,
+            PREPARED_RELEASE_DATE,
+            &prepared_changelog(),
+            &prepared_security(),
+            &prepared_release_note(),
+        )
+        .is_empty());
+        assert!(metadata_violations(CURRENT_RELEASE, &changelog(), &security()).is_empty());
+        assert!(release_note_text_violations(CURRENT_RELEASE, &release_note()).is_empty());
+    }
+
+    #[test]
+    fn unreleased_comparison_tracks_the_newest_dated_release() {
+        let stale = prepared_changelog().replace(
+            &format!(
+                "[Unreleased]: https://github.com/ITherso/termivar/compare/v{PREPARED_RELEASE}...HEAD"
+            ),
+            &format!(
+                "[Unreleased]: https://github.com/ITherso/termivar/compare/v{CURRENT_RELEASE}...HEAD"
+            ),
+        );
+        assert!(
+            metadata_violations(PREPARED_RELEASE, &stale, &prepared_security())
+                .iter()
+                .any(|violation| violation.contains("advance the Unreleased comparison"))
+        );
+        assert!(
+            metadata_violations(CURRENT_RELEASE, &prepared_changelog(), &prepared_security())
+                .iter()
+                .all(|violation| !violation.contains("advance the Unreleased comparison"))
+        );
+    }
+
+    #[test]
+    fn prepared_candidate_state_fails_closed_without_blocking_published_metadata() {
+        for missing in [PREPARED_RELEASE_MARKER, PREPARED_SUPPORT_PROMISE] {
+            let input = prepared_security().replace(missing, "missing-prepared-contract");
+            assert!(prepared_candidate_violations(
+                PREPARED_RELEASE,
+                PREPARED_RELEASE_DATE,
+                &prepared_changelog(),
+                &input,
+                &prepared_release_note(),
+            )
+            .iter()
+            .any(|violation| violation.contains("SECURITY.md")));
+        }
+
+        let missing_changelog_marker = prepared_changelog()
+            .replace(PREPARED_RELEASE_MARKER, "candidate-status-was-not-declared");
+        assert!(prepared_candidate_violations(
+            PREPARED_RELEASE,
+            PREPARED_RELEASE_DATE,
+            &missing_changelog_marker,
+            &prepared_security(),
+            &prepared_release_note(),
+        )
+        .iter()
+        .any(|violation| violation.contains(PREPARED_RELEASE_MARKER)));
+
+        let missing_note_marker = prepared_release_note().replace(
+            PREPARED_RELEASE_NOTE_MARKER,
+            "candidate-status-was-not-declared",
+        );
+        assert!(prepared_candidate_violations(
+            PREPARED_RELEASE,
+            PREPARED_RELEASE_DATE,
+            &prepared_changelog(),
+            &prepared_security(),
+            &missing_note_marker,
+        )
+        .iter()
+        .any(|violation| violation.contains(PREPARED_RELEASE_NOTE_MARKER)));
+
+        let published_security = prepared_security().replace(
+            &format!(
+                "| `v{PREPARED_RELEASE}` | {PREPARED_SUPPORT_STATE} | {PREPARED_RELEASE_MARKER}; {PREPARED_SUPPORT_PROMISE} |"
+            ),
+            &format!("| `v{PREPARED_RELEASE}` | Yes | Published prerelease |"),
+        );
+        let published_note = prepared_release_note().replace(
+            PREPARED_RELEASE_NOTE_MARKER,
+            "This note remains valid after publication",
+        );
+        assert!(
+            metadata_violations(PREPARED_RELEASE, &prepared_changelog(), &published_security,)
+                .is_empty()
+        );
+        assert!(release_note_text_violations(PREPARED_RELEASE, &published_note).is_empty());
+        assert!(!prepared_candidate_violations(
+            PREPARED_RELEASE,
+            PREPARED_RELEASE_DATE,
+            &prepared_changelog(),
+            &published_security,
+            &published_note,
+        )
+        .is_empty());
+
+        let alpha1_as_prepared = security().replace(
+            "| Yes | Current prerelease |",
+            &format!(
+                "| {PREPARED_SUPPORT_STATE} | {PREPARED_RELEASE_MARKER}; {PREPARED_SUPPORT_PROMISE} |"
+            ),
+        );
+        assert!(
+            metadata_violations(CURRENT_RELEASE, &changelog(), &alpha1_as_prepared)
+                .iter()
+                .any(|violation| violation.contains("prepared-on-publication"))
+        );
+    }
+
+    #[test]
+    fn prepared_candidate_rejects_reordered_or_malformed_release_headings() {
+        for inserted_heading in [
+            format!("## [{CURRENT_RELEASE}] - 2026-09-03"),
+            "## [bogus] - not-a-date".to_owned(),
+        ] {
+            let input = prepared_changelog().replace(
+                &format!("## [{PREPARED_RELEASE}] - {PREPARED_RELEASE_DATE}"),
+                &format!(
+                    "{inserted_heading}\n\n### Added\n\n- misplaced heading.\n\n## [{PREPARED_RELEASE}] - {PREPARED_RELEASE_DATE}"
+                ),
+            );
+            assert!(
+                prepared_candidate_violations(
+                    PREPARED_RELEASE,
+                    PREPARED_RELEASE_DATE,
+                    &input,
+                    &prepared_security(),
+                    &prepared_release_note(),
+                )
+                .iter()
+                .any(|violation| violation.contains("before any other release-like heading")),
+                "accepted heading inserted before the candidate: {inserted_heading}"
+            );
+        }
+
+        let headings = format!(
+            "## [Unreleased]\n\n## [bogus] - not-a-date\n\n## [{PREPARED_RELEASE}] - {PREPARED_RELEASE_DATE}\n"
+        );
+        assert_eq!(
+            newest_dated_release_version(&headings),
+            Some(PREPARED_RELEASE),
+            "malformed headings must not become the comparison base"
+        );
+    }
+
+    #[test]
+    fn repository_alpha2_candidate_metadata_passes_the_normal_validator() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask must be inside the workspace");
+        let changelog =
+            fs::read_to_string(workspace.join("CHANGELOG.md")).expect("read repository changelog");
+        let security =
+            fs::read_to_string(workspace.join("SECURITY.md")).expect("read security policy");
+        let release_note = fs::read_to_string(
+            workspace.join(format!(".github/release-notes/v{PREPARED_RELEASE}.md")),
+        )
+        .expect("read alpha.2 release note");
+        assert!(metadata_violations(PREPARED_RELEASE, &changelog, &security).is_empty());
+        assert!(release_note_file_violations(workspace, PREPARED_RELEASE).is_empty());
+        assert!(prepared_candidate_violations(
+            PREPARED_RELEASE,
+            PREPARED_RELEASE_DATE,
+            &changelog,
+            &security,
+            &release_note,
+        )
+        .is_empty());
     }
 
     #[test]

@@ -4,8 +4,30 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ## [Unreleased]
 
+## [0.10.0-alpha.2] - 2026-09-06
+
+> **PREPARED / NOT PUBLISHED:** this dated section records the reviewed
+> alpha.2 candidate contents. The tag, downloadable archives, checksums, and
+> GitHub Release do not exist until a separately authorized publication.
+
 ### Added
 
+- Added `termivar report compare`, a bounded offline comparison of two
+  complete rendered-assessment JSON documents. It emits deterministic text,
+  JSON, or standalone HTML groups without rescanning, authenticating the
+  source documents, or treating disappearance as verified remediation.
+- Added `termivar scan --report-dir`, which renders HTML and JSON from one
+  completed in-memory assessment and publishes them with a manifest containing
+  exact byte lengths and SHA-256 digests. A completed manifest identifies the
+  bundle bytes; it is not a signature or source attestation.
+- Added `termivar report verify`, a read-only offline check of the strict
+  three-file bundle layout, payload hashes, supported assessment schema, and
+  declared summary. It does not execute HTML, authenticate the producer, or
+  evaluate the original scan or its findings.
+- Added `termivar capabilities`, a synchronous offline inventory of the exact
+  CLI feature gates compiled into that executable. It separates build state,
+  maturity, implementation status, and runtime prerequisites; the
+  `release-bundle` marker is composition metadata, not trusted provenance.
 - Added a non-default SSRF OAST query review for one operator-authorized,
   structurally eligible query parameter. One `.invalid` control and two
   independently allocated HTTPS callback targets use exactly three anonymous,
@@ -38,12 +60,17 @@ All notable changes to Termivar are recorded here. Releases use the categories f
   suppression, expiry/cancellation, and raw-value-free receipts. It performs
   no network I/O, registers no scanner action, emits no finding, and dispatches
   no SSRF or XXE payload.
+- Added version-labelled first-use, report comparison, report bundle, and
+  verification examples backed by the real CLI and benign local fixtures.
 
 ### Changed
 
 - Advanced the post-`v0.10.0-alpha.1` development line to
   `0.10.0-alpha.2`. A required provenance gate now rejects commits that keep a
   workspace version after its matching release tag.
+- Refined the public documentation site and reporting guidance around actual
+  report output, explicit authority, feature maturity, and offline tooling
+  without expanding scanner behavior or release-bundle membership.
 
 ### Fixed
 
@@ -51,6 +78,29 @@ All notable changes to Termivar are recorded here. Releases use the categories f
   output so incomplete and ineligible reviews report their outcome, request
   and active-verification counts, replay state, and item-projection state
   without retaining response bodies or sensitive values.
+- Bounded native OAST session retention and HTTP resource lifetimes, separated
+  provider diagnostic classes from authentication failures, and based request
+  reporting on admitted operations rather than receipt-vector length.
+- Hardened CLI and provider credential intake with same-handle regular-file
+  validation, final-component no-follow opening where supported, and
+  zeroizing ownership across fallible application-owned input paths. Trusted
+  parent directories and operating-system-owned secret storage remain outside
+  those guarantees.
+- Corrected report-comparison output details, report-bundle destination
+  preflight behavior, and their exact architecture and cross-platform
+  regression contracts.
+- Aligned required and release Rust 1.88 Clippy gates and applied the equivalent
+  captured-identifier formatting accepted by both toolchains. Scanner control
+  flow and deterministic identifier bytes are unchanged.
+
+### Security
+
+- Preserved exact target/provider ceilings, typed evidence authority, stable
+  wire and digest identities, and one scanner/runtime lifecycle while adding
+  the bounded lifecycle and credential-input hardening above.
+- The active SSRF polling/verification issue recorded as F3 remains deferred,
+  unresolved, and outside the downloadable `release-bundle`; alpha.2 does not
+  claim it is fixed or that SSRF is confirmed.
 
 ## [0.10.0-alpha.1] - 2026-09-03
 
@@ -353,6 +403,7 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 - This alpha has not completed an independent security audit and is not production-ready.
 
-[Unreleased]: https://github.com/ITherso/termivar/compare/v0.10.0-alpha.1...HEAD
+[Unreleased]: https://github.com/ITherso/termivar/compare/v0.10.0-alpha.2...HEAD
+[0.10.0-alpha.2]: https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2
 [0.10.0-alpha.1]: https://github.com/ITherso/termivar/compare/v0.9.0-alpha...v0.10.0-alpha.1
 [0.9.0-alpha]: https://github.com/ITherso/venom/releases/tag/v0.9.0-alpha

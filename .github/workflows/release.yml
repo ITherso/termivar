@@ -21,6 +21,14 @@ on:
       - "theme/**"
       - "rustfmt.toml"
       - "scripts/ci/run-cargo-audit.sh"
+      - "scripts/first_use.py"
+      - "scripts/report_bundle_example.py"
+      - "scripts/release_candidate_acceptance.py"
+      - "scripts/verify_release_archive.py"
+      - "scripts/tests/test_release_candidate_acceptance.py"
+      - "scripts/tests/test_verify_release_archive.py"
+      - "docs/examples/report-compare/before.json"
+      - "docs/examples/report-compare/after.json"
       - ".github/workflows/release.yml"
       - ".github/release-notes/**"
 
@@ -206,6 +214,9 @@ jobs:
             binary: termivar.exe
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
         with:
           toolchain: "1.88.0"
@@ -242,12 +253,24 @@ jobs:
         shell: pwsh
         run: |
           $releaseBinary = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          $versionOutput = ((& $releaseBinary --version) | Out-String).Trim()
+          $versionOutput = (& $releaseBinary --version)
+          if ($LASTEXITCODE -ne 0) {
+            throw "release --version failed"
+          }
+          $versionOutput = ($versionOutput | Out-String).Trim()
           if ($versionOutput -ne "termivar 0.10.0-alpha.2") {
             throw "unexpected release binary identity"
           }
-          $helpOutput = ((& $releaseBinary --help) | Out-String)
-          $scanHelp = ((& $releaseBinary scan --help) | Out-String)
+          $helpOutput = (& $releaseBinary --help)
+          if ($LASTEXITCODE -ne 0) {
+            throw "release --help failed"
+          }
+          $helpOutput = ($helpOutput | Out-String)
+          $scanHelp = (& $releaseBinary scan --help)
+          if ($LASTEXITCODE -ne 0) {
+            throw "release scan --help failed"
+          }
+          $scanHelp = ($scanHelp | Out-String)
           if (-not $helpOutput.Contains("Termivar")) {
             throw "release help does not identify Termivar"
           }
@@ -283,6 +306,57 @@ jobs:
           New-Item -ItemType Directory -Path dist/stage -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/stage/termivar.exe"
           Compress-Archive -Path "dist/stage/termivar.exe" -DestinationPath "dist/termivar-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
+      - name: Accept packaged release archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="dist/termivar-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          extract_dir="${RUNNER_TEMP}/termivar-release-candidate-extract-${{ matrix.target }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          evidence_dir="${RUNNER_TEMP}/termivar-release-candidate-evidence-${{ matrix.target }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$extract_dir"
+          test ! -e "$evidence_dir"
+          python scripts/release_candidate_acceptance.py \
+            --archive "$archive" \
+            --target "${{ matrix.target }}" \
+            --archive-ref "$GITHUB_REF_NAME" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --extract-to "$extract_dir" \
+            --evidence-dir "$evidence_dir" \
+            --expect-version 0.10.0-alpha.2
+      - name: Accept packaged release archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = "dist/termivar-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
+          $extractDir = Join-Path $env:RUNNER_TEMP "termivar-release-candidate-extract-${{ matrix.target }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $evidenceDir = Join-Path $env:RUNNER_TEMP "termivar-release-candidate-evidence-${{ matrix.target }}-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ((Test-Path -LiteralPath $extractDir) -or (Test-Path -LiteralPath $evidenceDir)) {
+            throw "release acceptance destination already exists"
+          }
+          & python scripts/release_candidate_acceptance.py `
+            --archive $archive `
+            --target "${{ matrix.target }}" `
+            --archive-ref $env:GITHUB_REF_NAME `
+            --source-sha $env:GITHUB_SHA `
+            --run-id $env:GITHUB_RUN_ID `
+            --run-attempt $env:GITHUB_RUN_ATTEMPT `
+            --extract-to $extractDir `
+            --evidence-dir $evidenceDir `
+            --expect-version 0.10.0-alpha.2
+          if ($LASTEXITCODE -ne 0) {
+            throw "packaged release acceptance failed"
+          }
+      - name: Upload bounded release-candidate acceptance evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packaged-acceptance-${{ matrix.target }}
+          path: ${{ runner.temp }}/termivar-release-candidate-evidence-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}/acceptance.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Generate build provenance
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1

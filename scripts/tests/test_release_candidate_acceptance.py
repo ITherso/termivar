@@ -1,0 +1,472 @@
+"""Local release-candidate acceptance tests; no public target or real release."""
+
+from __future__ import annotations
+
+import contextlib
+import gzip
+import hashlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tarfile
+import tempfile
+import unittest
+from unittest import mock
+
+
+SCRIPTS = Path(__file__).resolve().parents[1]
+REPOSITORY = SCRIPTS.parent
+sys.path.insert(0, str(SCRIPTS))
+SCRIPT = SCRIPTS / "release_candidate_acceptance.py"
+SPEC = importlib.util.spec_from_file_location("release_candidate_acceptance", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+runner = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(runner)
+
+PAYLOAD = b"synthetic packaged binary fixture; never executed\n"
+TARGET = "x86_64-pc-windows-msvc"
+ARCHIVE_NAME = f"termivar-main-{TARGET}.zip"
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def tar_bytes(name: str = "termivar", *, extra: bool = False) -> bytes:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w:gz", format=tarfile.USTAR_FORMAT) as archive:
+        member = tarfile.TarInfo(name)
+        member.mode = 0o755
+        member.size = len(PAYLOAD)
+        archive.addfile(member, io.BytesIO(PAYLOAD))
+        if extra:
+            other = tarfile.TarInfo("unexpected")
+            other.mode = 0o644
+            other.size = 1
+            archive.addfile(other, io.BytesIO(b"x"))
+    return output.getvalue()
+
+
+def write_bundle(directory: Path, item_count: int = 2) -> bytes:
+    directory.mkdir()
+    html = b"<!doctype html><html><body>bounded release fixture</body></html>"
+    items = [{"fixture": index} for index in range(item_count)]
+    assessment = {
+        "schema": runner.report_bundle_example.ASSESSMENT_SCHEMA,
+        "profile": "web-review",
+        "status": "complete",
+        "subject_count": 1,
+        "item_count": item_count,
+        "items": items,
+    }
+    assessment_bytes = json.dumps(assessment, separators=(",", ":")).encode()
+    manifest = {
+        "schema": runner.report_bundle_example.BUNDLE_SCHEMA,
+        "producer": {"product": "Termivar", "version": runner.EXPECTED_VERSION},
+        "assessment": {
+            "profile": "web-review", "status": "complete",
+            "subject_count": 1, "item_count": item_count,
+        },
+        "files": [
+            {
+                "name": "assessment.html", "format": "html",
+                "media_type": "text/html; charset=utf-8",
+                "byte_length": len(html), "sha256": digest(html),
+            },
+            {
+                "name": "assessment.json", "format": "json",
+                "media_type": "application/json",
+                "byte_length": len(assessment_bytes), "sha256": digest(assessment_bytes),
+            },
+        ],
+    }
+    (directory / "assessment.html").write_bytes(html)
+    (directory / "assessment.json").write_bytes(assessment_bytes)
+    (directory / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return assessment_bytes
+
+
+class FakeServer:
+    def __init__(self) -> None:
+        self.counts = {
+            "root": 1, "example": 0, "unknown": 0,
+            "unsupported": 0, "invalid": 0,
+        }
+
+    def snapshot(self) -> dict:
+        return self.counts.copy()
+
+
+class FakeFixture:
+    active = None
+
+    def __init__(self) -> None:
+        self.server = FakeServer()
+        self.origin = "http://127.0.0.1:48123/"
+
+    def __enter__(self):
+        FakeFixture.active = self
+        return self
+
+    def __exit__(self, *exc):
+        FakeFixture.active = None
+
+
+def capabilities(*, include_ssrf: bool = False) -> dict:
+    compiled = {"release-bundle", *runner.RELEASE_MEMBERS}
+    if include_ssrf:
+        compiled.add("ssrf-oast-review")
+    features = [
+        {"name": name, "build_state": "compiled" if name in compiled else "not_compiled"}
+        for name in runner.ALL_FEATURES
+    ]
+    surfaces = [
+        {"label": "Compiled CLI capabilities", "build_state": "compiled"},
+        {"label": "SSRF OAST query review",
+         "build_state": "compiled" if include_ssrf else "not_compiled"},
+    ]
+    return {
+        "schema": runner.CAPABILITIES_SCHEMA,
+        "product": "Termivar",
+        "package_version": runner.EXPECTED_VERSION,
+        "runtime_execution": "not_performed",
+        "cli_package_features": features,
+        "surfaces": surfaces,
+        "build_origin_authenticity": (
+            "Self-reported package version and compile features do not establish source "
+            "authenticity, an official release origin, or runtime readiness."
+        ),
+    }
+
+
+def fake_help(arguments: list[str]) -> bytes:
+    if arguments == ["--help"]:
+        return (b"Termivar\nCommands:\n  scan  bounded scan\n  artifact  local file\n"
+                b"  report  offline reports\n  capabilities  build inventory\n")
+    if arguments == ["scan", "--help"]:
+        return (b"Usage: termivar scan [OPTIONS]\n"
+                b"--report-dir --normalization-resilience --graphql-review "
+                b"--openapi-review --rest-review --authorization-review-policy\n")
+    if arguments == ["report", "--help"]:
+        return b"Commands:\n  compare  compare reports\n  verify  verify bundle\n"
+    raise AssertionError(arguments)
+
+
+class FakeCommands:
+    def __init__(self, root: Path, include_ssrf: bool = False,
+                 extra_incomplete_request: bool = False) -> None:
+        self.root = root
+        self.include_ssrf = include_ssrf
+        self.extra_incomplete_request = extra_incomplete_request
+        self.arguments: list[list[str]] = []
+
+    def __call__(self, argv, directory, record):
+        arguments = argv[1:]
+        self.arguments.append(arguments)
+        stdout = b""
+        stderr = b""
+        exit_code = 0
+        fixture = FakeFixture.active
+        if arguments == ["--version"]:
+            stdout = f"termivar {runner.EXPECTED_VERSION}\n".encode()
+        elif arguments in (["--help"], ["scan", "--help"], ["report", "--help"]):
+            stdout = fake_help(arguments)
+        elif arguments == ["capabilities"]:
+            cap = capabilities(include_ssrf=self.include_ssrf)
+            states = "\n".join(
+                f"[{surface['build_state']}] {surface['label']}"
+                for surface in cap["surfaces"])
+            stdout = ("Termivar CLI capabilities\n"
+                      "runtime_execution: not_performed\n" + states + "\n").encode()
+        elif arguments == ["capabilities", "--format", "json"]:
+            stdout = json.dumps(capabilities(include_ssrf=self.include_ssrf)).encode()
+        elif arguments[0] == "scan":
+            destination = Path(arguments[arguments.index("--report-dir") + 1])
+            target = arguments[1]
+            profile = arguments[arguments.index("--profile") + 1]
+            if destination.name == "existing-bundle":
+                exit_code, stderr = 1, b"report bundle destination already exists\n"
+            elif profile == "baseline":
+                exit_code, stderr = 2, b"--report-dir requires --profile web-review\n"
+            elif destination.name == "assessment-bundle" and destination.exists():
+                exit_code, stderr = 1, b"report bundle destination already exists\n"
+            elif destination.name == "assessment-bundle":
+                assert fixture is not None and target == fixture.origin
+                fixture.server.counts["root"] += 3
+                write_bundle(destination)
+                stderr = b"Report bundle completed\n"
+            elif destination.name == "incomplete-must-not-exist":
+                assert fixture is not None and target.endswith("/example")
+                fixture.server.counts["example"] += 3
+                if self.extra_incomplete_request:
+                    fixture.server.counts["unknown"] += 1
+                exit_code = 1
+                stdout = json.dumps({
+                    "schema_version": "web-assessment/v2",
+                    "disposition": "incomplete",
+                    "incomplete_reasons": ["assessment_subject_identity_unavailable"],
+                }).encode()
+            else:
+                raise AssertionError(arguments)
+        elif arguments[:2] == ["report", "verify"]:
+            bundle = Path(arguments[arguments.index("--dir") + 1])
+            manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+            expected = manifest["files"][0]["sha256"]
+            observed = digest((bundle / "assessment.html").read_bytes())
+            matched = expected == observed
+            exit_code = 0 if matched else 1
+            stdout = json.dumps({
+                "schema": runner.VERIFICATION_SCHEMA,
+                "status": "integrity_match" if matched else "not_verified",
+                "reason_codes": [] if matched else ["payload_digest_mismatch"],
+            }).encode()
+        elif arguments[:2] == ["report", "compare"]:
+            before = Path(arguments[arguments.index("--before") + 1])
+            after = Path(arguments[arguments.index("--after") + 1])
+            if before.name == "before.json":
+                groups = {
+                    "only_in_after": [{}], "only_in_before": [{}],
+                    "changed": [{"changed_fields": ["redacted_summary"]}],
+                    "unchanged": [{}],
+                }
+            else:
+                item_count = json.loads(before.read_text(encoding="utf-8"))["item_count"]
+                groups = {
+                    "only_in_after": [], "only_in_before": [], "changed": [],
+                    "unchanged": [{} for _ in range(item_count)],
+                }
+            stdout = json.dumps({
+                "schema": runner.COMPARISON_SCHEMA,
+                "scope_assurance": "operator-declared",
+                "before": {"sha256": runner.first_use.digest_file(before)},
+                "after": {"sha256": runner.first_use.digest_file(after)},
+                **groups,
+            }).encode()
+        else:
+            raise AssertionError(arguments)
+        record["exit_code"] = exit_code
+        record["stdout"] = {"bytes": len(stdout), "sha256": digest(stdout)}
+        record["stderr"] = {"bytes": len(stderr), "sha256": digest(stderr)}
+        return stdout, stderr
+
+
+class ArchiveInspectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def test_candidate_archive_helper_reuses_strict_parser_and_extracts_same_bytes(self):
+        name = "termivar-main-x86_64-unknown-linux-gnu.tar.gz"
+        data = tar_bytes()
+        archive = self.root / name
+        archive.write_bytes(data)
+        output = self.root / "extract"
+        result = runner.verify_release_archive.inspect_archive(
+            archive, name, "termivar", output)
+        self.assertEqual((output / "termivar").read_bytes(), PAYLOAD)
+        self.assertEqual(result["archive_sha256"], digest(data))
+        self.assertEqual(result["member_sha256"], digest(PAYLOAD))
+        self.assertEqual(result["entry_count"], 1)
+        self.assertNotIn(str(self.root), json.dumps(result))
+
+    def test_candidate_archive_helper_rejects_extra_member_type_mismatch_and_existing_output(self):
+        name = "termivar-main-x86_64-unknown-linux-gnu.tar.gz"
+        archive = self.root / name
+        archive.write_bytes(tar_bytes(extra=True))
+        with self.assertRaises(runner.verify_release_archive.VerificationError):
+            runner.verify_release_archive.inspect_archive(archive, name, "termivar")
+        archive.write_bytes(tar_bytes())
+        with self.assertRaisesRegex(
+                runner.verify_release_archive.VerificationError, "inconsistent"):
+            runner.verify_release_archive.inspect_archive(archive, name, "termivar.exe")
+        output = self.root / "existing"
+        output.mkdir()
+        marker = output / "marker"
+        marker.write_bytes(b"preserve")
+        with self.assertRaises(FileExistsError):
+            runner.verify_release_archive.inspect_archive(archive, name, "termivar", output)
+        self.assertEqual(marker.read_bytes(), b"preserve")
+
+
+class CandidateOrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.archive = self.root / ARCHIVE_NAME
+        self.archive.write_bytes(b"closed synthetic archive fixture")
+        self.extract = self.root / "extract"
+        self.evidence = self.root / "evidence"
+        self.environment = mock.patch.dict(os.environ, {}, clear=True)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def inspect(self, archive, expected_archive, expected_member, extract_to=None):
+        self.assertEqual(archive, self.archive)
+        self.assertEqual(expected_archive, ARCHIVE_NAME)
+        self.assertEqual(expected_member, "termivar.exe")
+        extract_to.mkdir(mode=0o700)
+        binary = extract_to / expected_member
+        binary.write_bytes(PAYLOAD)
+        return {
+            "archive": ARCHIVE_NAME,
+            "archive_bytes": self.archive.stat().st_size,
+            "archive_sha256": runner.first_use.digest_file(self.archive),
+            "entry_count": 1,
+            "member": expected_member,
+            "member_bytes": len(PAYLOAD),
+            "member_sha256": digest(PAYLOAD),
+            "extracted": True,
+        }
+
+    def execute(self, *, include_ssrf=False, extra_incomplete_request=False):
+        commands = FakeCommands(
+            self.root,
+            include_ssrf=include_ssrf,
+            extra_incomplete_request=extra_incomplete_request,
+        )
+        with mock.patch.object(runner.platform, "system", return_value="Windows"), \
+                mock.patch.object(runner.platform, "machine", return_value="AMD64"), \
+                mock.patch.object(runner.first_use, "Fixture", FakeFixture), \
+                mock.patch.object(runner.first_use, "run_command", side_effect=commands):
+            result = runner.run_acceptance(
+                self.archive, TARGET, "main", "a" * 40, "123", "1",
+                self.extract, self.evidence, runner.EXPECTED_VERSION,
+                inspect=self.inspect,
+            )
+        return result, commands
+
+    def test_full_packaged_acceptance_checks_interfaces_and_application_paths(self):
+        result, commands = self.execute()
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["claims"]["native_packaged_binary_executed"])
+        self.assertFalse(result["claims"]["candidate_hashes_or_capabilities_authenticate_source"])
+        self.assertEqual(result["capabilities"]["compiled_members"], list(runner.RELEASE_MEMBERS))
+        self.assertEqual(result["application"]["bundle_scan_requests"]["root"], 3)
+        self.assertEqual(result["application"]["begun_incomplete_requests"], {
+            "example": 3, "invalid": 0, "root": 0,
+            "unknown": 0, "unsupported": 0,
+        })
+        self.assertEqual(
+            result["application"]["offline_and_preflight_requests"]["capabilities-text"],
+            {"example": 0, "invalid": 0, "root": 0, "unknown": 0, "unsupported": 0},
+        )
+        self.assertEqual(
+            result["application"]["offline_and_preflight_requests"]["capabilities-json"],
+            {"example": 0, "invalid": 0, "root": 0, "unknown": 0, "unsupported": 0},
+        )
+        self.assertEqual(result["application"]["synthetic_comparison"]["counts"],
+                         runner.SYNTHETIC_COUNTS)
+        self.assertEqual(result["application"]["verification"], {
+            "status": "integrity_match",
+            "mismatch_status": "not_verified",
+            "mismatch_reason": "payload_digest_mismatch",
+        })
+        self.assertEqual([path.name for path in self.evidence.iterdir()], [runner.EVIDENCE_NAME])
+        stored = json.loads((self.evidence / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(stored, result)
+        encoded = json.dumps(result)
+        self.assertNotIn(str(self.root), encoded)
+        self.assertNotIn("127.0.0.1", encoded)
+        self.assertLessEqual(len(runner._encode_evidence(result)), runner.EVIDENCE_LIMIT)
+        self.assertEqual(len(commands.arguments), 15)
+        self.assertEqual(runner.first_use.digest_file(self.archive),
+                         result["archive"]["archive_sha256"])
+
+    def test_wrong_release_composition_fails_with_bounded_evidence(self):
+        result, _ = self.execute(include_ssrf=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("feature composition", result["failure"])
+        self.assertFalse(result["claims"]["native_packaged_binary_executed"])
+        self.assertEqual([path.name for path in self.evidence.iterdir()], [runner.EVIDENCE_NAME])
+        self.assertLessEqual((self.evidence / runner.EVIDENCE_NAME).stat().st_size,
+                             runner.EVIDENCE_LIMIT)
+
+    def test_extra_incomplete_request_category_fails_acceptance(self):
+        result, _ = self.execute(extra_incomplete_request=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("begun-incomplete scan request trace", result["failure"])
+
+    def test_directory_entry_limits_reject_before_unbounded_materialization(self):
+        crowded_parent = self.root / "crowded"
+        crowded_parent.mkdir()
+        archive = crowded_parent / ARCHIVE_NAME
+        archive.write_bytes(b"candidate")
+        for index in range(runner.MAX_PARENT_ENTRIES):
+            (crowded_parent / f"entry-{index:03}").write_bytes(b"x")
+        with self.assertRaisesRegex(runner.AcceptanceError, "bounded entry count"):
+            runner._assert_single_candidate_archive(archive)
+
+        crowded_bundle = self.root / "crowded-bundle"
+        crowded_bundle.mkdir()
+        for index in range(9):
+            (crowded_bundle / f"entry-{index:02}").write_bytes(b"x")
+        with self.assertRaisesRegex(runner.AcceptanceError, "bounded entry count"):
+            runner._snapshot_files(crowded_bundle)
+
+    def test_preflight_rejects_identity_overlap_extra_candidate_and_proxy(self):
+        cases = [
+            {"source_sha": "A" * 40},
+            {"archive_ref": "feature-branch"},
+            {"expected_version": "0.10.0-alpha.1"},
+            {"run_id": "0"},
+            {"extract": self.evidence, "evidence": self.evidence},
+        ]
+        for index, overrides in enumerate(cases):
+            with self.subTest(index=index):
+                extract = overrides.get("extract", self.root / f"extract-{index}")
+                evidence = overrides.get("evidence", self.root / f"evidence-{index}")
+                with mock.patch.object(runner.platform, "system", return_value="Windows"), \
+                        mock.patch.object(runner.platform, "machine", return_value="AMD64"):
+                    with self.assertRaises(runner.AcceptanceError):
+                        runner.run_acceptance(
+                            self.archive, TARGET, overrides.get("archive_ref", "main"),
+                            overrides.get("source_sha", "a" * 40),
+                            overrides.get("run_id", "1"), "1", extract, evidence,
+                            overrides.get("expected_version", runner.EXPECTED_VERSION),
+                            inspect=self.inspect,
+                        )
+        other = self.root / "termivar-main-x86_64-unknown-linux-gnu.tar.gz"
+        other.write_bytes(b"other")
+        with mock.patch.object(runner.platform, "system", return_value="Windows"), \
+                mock.patch.object(runner.platform, "machine", return_value="AMD64"):
+            with self.assertRaisesRegex(runner.AcceptanceError, "exactly one"):
+                runner.run_acceptance(
+                    self.archive, TARGET, "main", "a" * 40, "1", "1",
+                    self.root / "extract-extra", self.root / "evidence-extra",
+                    runner.EXPECTED_VERSION, inspect=self.inspect)
+        other.unlink()
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "configured"}, clear=True):
+            with self.assertRaisesRegex(runner.AcceptanceError, "proxy"):
+                runner.run_acceptance(
+                    self.archive, TARGET, "main", "a" * 40, "1", "1",
+                    self.root / "extract-proxy", self.root / "evidence-proxy",
+                    runner.EXPECTED_VERSION, inspect=self.inspect)
+
+    def test_cli_contract_uses_one_primary_evidence_file_and_failure_exit(self):
+        failed = {"schema": runner.SCHEMA, "status": "failed"}
+        with mock.patch.object(runner, "run_acceptance", return_value=failed), \
+                mock.patch.object(runner.sys, "stdout") as stdout:
+            stdout.buffer = io.BytesIO()
+            exit_code = runner.main([
+                "--archive", str(self.archive), "--target", TARGET,
+                "--archive-ref", "main", "--source-sha", "a" * 40,
+                "--run-id", "1", "--run-attempt", "1",
+                "--extract-to", str(self.extract), "--evidence-dir", str(self.evidence),
+                "--expect-version", runner.EXPECTED_VERSION,
+            ])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(json.loads(stdout.buffer.getvalue()), failed)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                runner.main(["--unknown"])
+        self.assertEqual(error.exception.code, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
