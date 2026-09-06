@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import gzip
 import hashlib
 import importlib.util
@@ -13,6 +14,7 @@ from pathlib import Path
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -30,6 +32,39 @@ PAYLOAD = b"synthetic packaged binary fixture; never executed\n"
 TARGET = "x86_64-pc-windows-msvc"
 ARCHIVE_NAME = f"termivar-main-{TARGET}.zip"
 TEST_VERSION = "0.10.0-alpha.3"
+
+# This is deliberately independent of release_candidate_acceptance.py. If a
+# package feature is added without an explicit curated-build classification,
+# the release helper and this fixture must not share the same omission.
+EXPECTED_RELEASE_MEMBERS = (
+    "artifact-adapter",
+    "normalization-resilience",
+    "graphql-review",
+    "openapi-review",
+    "rest-review",
+    "authorization-review",
+)
+EXPECTED_EXCLUDED_FEATURES = (
+    "api-adapter",
+    "legacy-scanner",
+    "proxy-adapter",
+    "ssrf-oast-review",
+    "wordpress-review",
+)
+EXPECTED_FEATURE_STATES = {
+    "api-adapter": "not_compiled",
+    "artifact-adapter": "compiled",
+    "authorization-review": "compiled",
+    "graphql-review": "compiled",
+    "legacy-scanner": "not_compiled",
+    "normalization-resilience": "compiled",
+    "openapi-review": "compiled",
+    "proxy-adapter": "not_compiled",
+    "release-bundle": "compiled",
+    "rest-review": "compiled",
+    "ssrf-oast-review": "not_compiled",
+    "wordpress-review": "not_compiled",
+}
 
 
 def digest(data: bytes) -> str:
@@ -118,17 +153,32 @@ class FakeFixture:
 
 
 def capabilities(*, include_ssrf: bool = False) -> dict:
-    compiled = {"release-bundle", *runner.RELEASE_MEMBERS}
+    states = EXPECTED_FEATURE_STATES.copy()
     if include_ssrf:
-        compiled.add("ssrf-oast-review")
+        states["ssrf-oast-review"] = "compiled"
     features = [
-        {"name": name, "build_state": "compiled" if name in compiled else "not_compiled"}
-        for name in runner.ALL_FEATURES
+        {"name": name, "build_state": state}
+        for name, state in sorted(states.items())
     ]
     surfaces = [
-        {"label": "Compiled CLI capabilities", "build_state": "compiled"},
-        {"label": "SSRF OAST query review",
-         "build_state": "compiled" if include_ssrf else "not_compiled"},
+        {
+            "key": "inventory.compiled-cli-capabilities",
+            "label": "Compiled CLI capabilities",
+            "compile_feature": None,
+            "build_state": "compiled",
+        },
+        {
+            "key": "option.ssrf-oast-review",
+            "label": "SSRF OAST query review",
+            "compile_feature": "ssrf-oast-review",
+            "build_state": "compiled" if include_ssrf else "not_compiled",
+        },
+        {
+            "key": "option.wordpress-review",
+            "label": "WordPress evidence review",
+            "compile_feature": "wordpress-review",
+            "build_state": "not_compiled",
+        },
     ]
     return {
         "schema": runner.CAPABILITIES_SCHEMA,
@@ -142,6 +192,46 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "authenticity, an official release origin, or runtime readiness."
         ),
     }
+
+
+def capabilities_text(document: dict) -> bytes:
+    states = "\n".join(
+        f"[{surface['build_state']}] {surface['label']}"
+        for surface in document["surfaces"]
+    )
+    return ("Termivar CLI capabilities\n"
+            "runtime_execution: not_performed\n" + states + "\n").encode()
+
+
+class CapabilityCommands:
+    def __init__(self, document: dict, text: bytes | None = None) -> None:
+        self.document = document
+        self.text = capabilities_text(document) if text is None else text
+
+    def run(self, identifier, arguments, *, expected_stderr_empty):
+        self.assert_offline_call(identifier, arguments, expected_stderr_empty)
+        if arguments == ["capabilities"]:
+            return self.text, b""
+        return json.dumps(self.document).encode(), b""
+
+    @staticmethod
+    def assert_offline_call(identifier, arguments, expected_stderr_empty):
+        assert identifier in {"capabilities-text", "capabilities-json"}
+        assert arguments in (["capabilities"], ["capabilities", "--format", "json"])
+        assert expected_stderr_empty is True
+
+
+def cargo_feature_contract_violations(features: dict) -> list[str]:
+    violations = []
+    expected = set(EXPECTED_FEATURE_STATES)
+    observed = set(features) - {"default"}
+    if observed != expected:
+        violations.append("CLI feature inventory requires deliberate classification")
+    if features.get("default") != []:
+        violations.append("termivar-cli default feature composition changed")
+    if tuple(features.get("release-bundle", ())) != EXPECTED_RELEASE_MEMBERS:
+        violations.append("release-bundle membership changed")
+    return violations
 
 
 def fake_help(arguments: list[str]) -> bytes:
@@ -180,11 +270,13 @@ class FakeCommands:
     def __init__(self, root: Path, include_ssrf: bool = False,
                  extra_incomplete_request: bool = False,
                  omit_progress_help: bool = False,
+                 exposed_wordpress_option: str | None = None,
                  progress_stderr: bytes | None = None) -> None:
         self.root = root
         self.include_ssrf = include_ssrf
         self.extra_incomplete_request = extra_incomplete_request
         self.omit_progress_help = omit_progress_help
+        self.exposed_wordpress_option = exposed_wordpress_option
         self.progress_stderr = progress_stderr
         self.arguments: list[list[str]] = []
 
@@ -201,13 +293,11 @@ class FakeCommands:
             stdout = fake_help(arguments)
             if arguments == ["scan", "--help"] and self.omit_progress_help:
                 stdout = stdout.replace(b"--progress ", b"")
+            if arguments == ["scan", "--help"] and self.exposed_wordpress_option:
+                stdout += f"{self.exposed_wordpress_option}\n".encode()
         elif arguments == ["capabilities"]:
             cap = capabilities(include_ssrf=self.include_ssrf)
-            states = "\n".join(
-                f"[{surface['build_state']}] {surface['label']}"
-                for surface in cap["surfaces"])
-            stdout = ("Termivar CLI capabilities\n"
-                      "runtime_execution: not_performed\n" + states + "\n").encode()
+            stdout = capabilities_text(cap)
         elif arguments == ["capabilities", "--format", "json"]:
             stdout = json.dumps(capabilities(include_ssrf=self.include_ssrf)).encode()
         elif arguments[0] == "scan":
@@ -283,6 +373,95 @@ class FakeCommands:
         return stdout, stderr
 
 
+class CapabilityInventoryContractTests(unittest.TestCase):
+    def validate(self, document: dict, text: bytes | None = None) -> dict:
+        return runner._validate_capabilities(
+            CapabilityCommands(document, text), TEST_VERSION)
+
+    def assert_rejected(self, document: dict, message: str,
+                        text: bytes | None = None) -> None:
+        with self.assertRaisesRegex(runner.AcceptanceError, message):
+            self.validate(document, text)
+
+    def test_independent_current_inventory_and_wordpress_surface_pass(self):
+        document = capabilities()
+        rows = document["cli_package_features"]
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 7)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 5)
+        result = self.validate(document)
+        self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
+        self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
+
+    def test_missing_wordpress_and_same_length_wrong_name_fail(self):
+        missing = capabilities()
+        missing["cli_package_features"] = [
+            row for row in missing["cli_package_features"]
+            if row["name"] != "wordpress-review"
+        ]
+        self.assert_rejected(missing, "inventory is incomplete")
+
+        wrong = capabilities()
+        next(row for row in wrong["cli_package_features"]
+             if row["name"] == "wordpress-review")["name"] = "wordpresx-review"
+        self.assert_rejected(wrong, "feature names changed")
+
+    def test_compiled_state_drift_fails_for_selected_and_excluded_features(self):
+        cases = [
+            ("wordpress-review", "compiled"),
+            ("api-adapter", "compiled"),
+            ("openapi-review", "not_compiled"),
+        ]
+        for name, state in cases:
+            with self.subTest(name=name, state=state):
+                document = capabilities()
+                next(row for row in document["cli_package_features"]
+                     if row["name"] == name)["build_state"] = state
+                self.assert_rejected(document, "feature composition")
+
+    def test_malformed_duplicate_and_unknown_feature_rows_fail_closed(self):
+        malformed = capabilities()
+        malformed["cli_package_features"][0]["build_state"] = "maybe"
+        self.assert_rejected(malformed, "invalid or duplicated")
+
+        duplicate = capabilities()
+        duplicate["cli_package_features"][-1] = copy.deepcopy(
+            duplicate["cli_package_features"][0])
+        self.assert_rejected(duplicate, "invalid or duplicated")
+
+        unknown = capabilities()
+        unknown["cli_package_features"].append(
+            {"name": "future-unclassified-review", "build_state": "not_compiled"})
+        self.assert_rejected(unknown, "inventory is incomplete")
+
+    def test_wordpress_surface_state_text_agreement_and_authenticity_are_pinned(self):
+        compiled_surface = capabilities()
+        next(surface for surface in compiled_surface["surfaces"]
+             if surface["key"] == "option.wordpress-review")["build_state"] = "compiled"
+        self.assert_rejected(compiled_surface, "WordPress surface")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(b"WordPress evidence review", b"other")
+        self.assert_rejected(document, "text and JSON views disagree", text)
+
+        overclaim = capabilities()
+        overclaim["build_origin_authenticity"] = "authenticated official source"
+        self.assert_rejected(overclaim, "overstates build provenance")
+
+    def test_cargo_manifest_features_require_deliberate_classification(self):
+        manifest = tomllib.loads(
+            (REPOSITORY / "crates/termivar-cli/Cargo.toml").read_text(encoding="utf-8"))
+        features = manifest["features"]
+        self.assertEqual(cargo_feature_contract_violations(features), [])
+
+        simulated = copy.deepcopy(features)
+        simulated["future-unclassified-review"] = []
+        self.assertEqual(
+            cargo_feature_contract_violations(simulated),
+            ["CLI feature inventory requires deliberate classification"],
+        )
+
+
 class ArchiveInspectionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -354,12 +533,14 @@ class CandidateOrchestrationTests(unittest.TestCase):
         }
 
     def execute(self, *, include_ssrf=False, extra_incomplete_request=False,
-                omit_progress_help=False, progress_stderr=None):
+                omit_progress_help=False, exposed_wordpress_option=None,
+                progress_stderr=None, path_suffix=""):
         commands = FakeCommands(
             self.root,
             include_ssrf=include_ssrf,
             extra_incomplete_request=extra_incomplete_request,
             omit_progress_help=omit_progress_help,
+            exposed_wordpress_option=exposed_wordpress_option,
             progress_stderr=progress_stderr,
         )
         with mock.patch.object(runner.platform, "system", return_value="Windows"), \
@@ -368,7 +549,8 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 mock.patch.object(runner.first_use, "run_command", side_effect=commands):
             result = runner.run_acceptance(
                 self.archive, TARGET, "main", "a" * 40, "123", "1",
-                self.extract, self.evidence, TEST_VERSION,
+                self.root / f"extract{path_suffix}",
+                self.root / f"evidence{path_suffix}", TEST_VERSION,
                 inspect=self.inspect,
             )
         return result, commands
@@ -378,7 +560,14 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertTrue(result["claims"]["native_packaged_binary_executed"])
         self.assertFalse(result["claims"]["candidate_hashes_or_capabilities_authenticate_source"])
-        self.assertEqual(result["capabilities"]["compiled_members"], list(runner.RELEASE_MEMBERS))
+        self.assertEqual(
+            result["capabilities"]["compiled_members"],
+            list(EXPECTED_RELEASE_MEMBERS),
+        )
+        self.assertEqual(
+            result["capabilities"]["excluded_features"],
+            list(EXPECTED_EXCLUDED_FEATURES),
+        )
         self.assertEqual(result["application"]["bundle_scan_requests"]["root"], 3)
         self.assertEqual(result["application"]["begun_incomplete_requests"], {
             "example": 3, "invalid": 0, "root": 0,
@@ -435,6 +624,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
         result, _ = self.execute(omit_progress_help=True)
         self.assertEqual(result["status"], "failed")
         self.assertIn("scan help omits --progress", result["failure"])
+
+    def test_packaged_help_must_not_expose_excluded_wordpress_options(self):
+        for index, option in enumerate(("--wordpress-review", "--wordpress-context",
+                                        "--wordpress-advisories")):
+            with self.subTest(option=option):
+                result, _ = self.execute(
+                    exposed_wordpress_option=option,
+                    path_suffix=f"-wordpress-help-{index}",
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("WordPress option", result["failure"])
 
     def test_packaged_progress_must_have_bounded_complete_lifecycle(self):
         malformed = (

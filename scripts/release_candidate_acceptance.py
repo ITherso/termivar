@@ -63,6 +63,7 @@ EXCLUDED_FEATURES = (
     "legacy-scanner",
     "proxy-adapter",
     "ssrf-oast-review",
+    "wordpress-review",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
 GROUPS = ("only_in_after", "only_in_before", "changed", "unchanged")
@@ -293,6 +294,10 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
         require(option in scan_text, f"scan help omits release-bundle option {option}")
     require("--ssrf-oast-review" not in scan_text,
             "scan help unexpectedly exposes ssrf-oast-review")
+    for option in ("--wordpress-review", "--wordpress-context",
+                   "--wordpress-advisories"):
+        require(option not in scan_text,
+                f"scan help unexpectedly exposes excluded WordPress option {option}")
     for command in ("compare", "verify"):
         require(re.search(rf"(?m)^\s+{command}(?:\s|$)", report_text) is not None,
                 f"report help omits {command}")
@@ -346,6 +351,14 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
                 "capabilities surface state is invalid")
         require(f"[{state}] {label}" in text_value,
                 "capabilities text and JSON views disagree")
+    wordpress_surfaces = [
+        surface for surface in surfaces
+        if surface.get("key") == "option.wordpress-review"
+    ]
+    require(len(wordpress_surfaces) == 1
+            and wordpress_surfaces[0].get("compile_feature") == "wordpress-review"
+            and wordpress_surfaces[0].get("build_state") == "not_compiled",
+            "packaged WordPress surface is not exactly classified as not_compiled")
     return {
         "schema": document["schema"],
         "runtime_execution": document["runtime_execution"],
