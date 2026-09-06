@@ -328,8 +328,8 @@ fn progress_is_observable_while_analyze_is_still_in_flight_and_stdout_stays_json
     let started = numeric_progress_field(terminal, "subjects_started=");
     let processed = numeric_progress_field(terminal, "subjects_processed=");
     assert_eq!(
-        active, 0,
-        "the inert HTML fixture charges no active verification"
+        active, 1,
+        "the bounded native review charges exactly one active verification"
     );
     assert_eq!(started, 1, "the fixture executes exactly one root subject");
     assert_eq!(
