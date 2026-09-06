@@ -135,13 +135,13 @@ member surface states while `release-bundle` remains `not_compiled`.
 
 These excerpts are from real Windows x86_64 development binaries built in
 separate directories from source implementation commit
-`61191acc4001d8447672fdc584280897d346b36a` on 2026-09-06. Both reported
+`5bd1260e1d9f57226046a6a955662c32fcad6464` on 2026-09-06. Both reported
 `0.10.0-alpha.2`, 20 surface records, and
 `runtime_execution: not_performed`:
 
 ```text
 # cargo build --locked -p termivar-cli
-# executable SHA-256: 40cdf09b7edb3f6acb7382e4bc94530ccbe41c4c026203f18453e4d09874ccfc
+# executable SHA-256: 55d6eec93eb21869ae134e4572564f315430b9b3ee03ab559ec506474493a72d
 [compiled] Compiled CLI capabilities (command, preview; implemented)
 [compiled] Bounded deterministic scan (command, preview; implemented)
 [not_compiled] REST read-only review (scan_option, preview; implemented)
@@ -150,7 +150,7 @@ separate directories from source implementation commit
 
 ```text
 # cargo build --locked -p termivar-cli --no-default-features --features release-bundle
-# executable SHA-256: acd62eab7364d498bb4bfb80072aaf6ca759fe8a635d88860b38cea1eb4e8f36
+# executable SHA-256: 35ebb7a766653c94263f589c12e0fda71f44d551a192244de7a10b739b782782
 release-bundle=compiled
 artifact-adapter=compiled
 authorization-review=compiled
