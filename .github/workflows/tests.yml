@@ -292,6 +292,8 @@ jobs:
           cargo run --locked -p termivar-cli -- --help
       - name: Exercise compiled CLI capabilities offline
         run: cargo test --locked -p termivar-cli --test capabilities_cli
+      - name: Exercise opt-in live progress CLI
+        run: cargo test --locked -p termivar-cli --test progress_cli
       - name: Test first-use fixture and checked-in sample contracts
         run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
       - name: Test release archive verification contracts

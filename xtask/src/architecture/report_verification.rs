@@ -933,8 +933,9 @@ mod tests {
     const DISPATCH: &str = include_str!("../../../crates/termivar-cli/src/report_compare.rs");
 
     fn mutate(source: &str, from: &str, to: &str) -> String {
-        assert!(source.contains(from), "stale mutation anchor: {from}");
-        source.replacen(from, to, 1)
+        let normalized = source.replace("\r\n", "\n");
+        assert!(normalized.contains(from), "stale mutation anchor: {from}");
+        normalized.replacen(from, to, 1)
     }
 
     fn assert_rejected(source: &str, expected: &str) {

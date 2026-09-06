@@ -145,6 +145,33 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         states["rest-review"]
     );
     assert_eq!(
+        surface_state(&document, "option.live-assessment-progress"),
+        "compiled"
+    );
+    let progress = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.live-assessment-progress")
+        .expect("live progress surface");
+    assert_eq!(
+        progress["prerequisites"],
+        serde_json::json!(["--profile web-review", "--progress"])
+    );
+    assert_eq!(progress["group"], "everyday");
+    assert_eq!(progress["kind"], "scan_option");
+    let limitation = progress["limitation"]
+        .as_str()
+        .expect("progress limitation");
+    for required in [
+        "stderr-only",
+        "last-observed",
+        "no ETA",
+        "neither controls execution",
+    ] {
+        assert!(limitation.contains(required), "missing `{required}`");
+    }
+    assert_eq!(
         surface_state(&document, "command.api"),
         states["api-adapter"]
     );
@@ -196,6 +223,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         assert!(report.contains(command));
     }
     for (key, option) in [
+        ("option.live-assessment-progress", "--progress"),
         (
             "option.normalization-resilience",
             "--normalization-resilience",
@@ -352,6 +380,11 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         other => panic!("unknown matrix case {other}"),
     }
     assert_eq!(document["runtime_execution"], "not_performed");
+    assert_eq!(
+        surface_state(&document, "option.live-assessment-progress"),
+        "compiled",
+        "the UI option is always compiled and is not a Cargo feature"
+    );
     assert!(document["build_origin_authenticity"]
         .as_str()
         .unwrap()

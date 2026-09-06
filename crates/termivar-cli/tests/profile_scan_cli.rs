@@ -456,6 +456,7 @@ fn report_output_is_complete_atomic_and_never_overwritten() {
         "json",
         "--report-output",
         path_text.as_str(),
+        "--progress",
         server.url.as_str(),
     ];
     let first = termivar()
@@ -471,6 +472,9 @@ fn report_output_is_complete_atomic_and_never_overwritten() {
         first.stdout.is_empty(),
         "file mode must not duplicate stdout"
     );
+    let first_stderr = String::from_utf8(first.stderr).expect("progress is UTF-8");
+    assert!(first_stderr.contains("[progress] state=publishing_report"));
+    assert!(first_stderr.contains("[progress] state=completed"));
     let original = std::fs::read(&path).expect("completed report file must exist");
     let value: serde_json::Value =
         serde_json::from_slice(&original).expect("report file must be complete JSON");
@@ -482,6 +486,10 @@ fn report_output_is_complete_atomic_and_never_overwritten() {
         .expect("failed to rerun termivar");
     assert!(!second.status.success(), "existing output must be rejected");
     assert!(second.stdout.is_empty());
+    assert!(
+        !String::from_utf8_lossy(&second.stderr).contains("[progress]"),
+        "preflight refusal must not start progress presentation"
+    );
     assert_eq!(std::fs::read(&path).unwrap(), original);
     std::fs::remove_file(path).expect("test report cleanup");
 }
@@ -507,6 +515,7 @@ fn incomplete_web_review_emits_diagnostic_and_never_creates_report_output() {
             "json",
             "--report-output",
             path_text.as_str(),
+            "--progress",
             target.as_str(),
         ])
         .output()
@@ -514,6 +523,9 @@ fn incomplete_web_review_emits_diagnostic_and_never_creates_report_output() {
 
     assert!(!output.status.success(), "incomplete run must exit nonzero");
     assert!(!path.exists(), "incomplete run published a report artifact");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[progress] state=incomplete"));
+    assert!(!stderr.contains("[progress] state=completed"));
     let value = parse_stdout(&output);
     assert_eq!(value["schema_version"], "web-assessment/v2");
     assert_eq!(value["disposition"], "incomplete");

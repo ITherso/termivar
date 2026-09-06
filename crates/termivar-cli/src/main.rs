@@ -25,6 +25,7 @@ mod assessment_scan;
 mod auth_input;
 mod capabilities;
 mod decision_scan;
+mod progress;
 mod report_bundle;
 mod report_compare;
 mod report_verify;
@@ -147,6 +148,19 @@ fn scan_profile_flags_conflict(
         Some("`--graphql-review` requires `--profile web-review`")
     } else if openapi_review && profile != Some(CliScanProfile::WebReview) {
         Some("`--openapi-review` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
+/// Rejects live presentation outside the one supported explicit assessment
+/// profile before output reservation, secret loading, or runtime construction.
+fn scan_progress_flags_conflict(
+    profile: Option<CliScanProfile>,
+    progress: bool,
+) -> Option<&'static str> {
+    if progress && profile != Some(CliScanProfile::WebReview) {
+        Some("`--progress` requires `--profile web-review`")
     } else {
         None
     }
@@ -288,6 +302,11 @@ struct ScanArgs {
     /// unchanged.
     #[arg(long, value_enum)]
     profile: Option<CliScanProfile>,
+    /// Show bounded, lossy assessment lifecycle updates on stderr. This UI is
+    /// available only with an explicit `--profile web-review`; reports and
+    /// diagnostics keep their existing output channels.
+    #[arg(long, requires = "profile")]
+    progress: bool,
     /// Apply monotonic defense suppression. Valid only with
     /// `--profile web-review`; observation and shadow planning remain enabled
     /// without this flag.
@@ -549,6 +568,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         format,
         explain,
         profile,
+        progress,
         enforce_defense,
         #[cfg(feature = "normalization-resilience")]
         normalization_resilience,
@@ -607,6 +627,12 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .exit();
     }
     if let Some(message) = scan_rest_review_flags_conflict(profile, openapi_review, rest_review) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    if let Some(message) = scan_progress_flags_conflict(profile, progress) {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -778,6 +804,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             profile,
             output_request,
             assessment_scan::ProfileScanRuntimeOptions {
+                progress,
                 root_authorization_context,
                 normalization_resilience,
                 graphql_review,
@@ -797,8 +824,12 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 return Err(error);
             },
         };
-        let (rendered, report_artifact, post_render_failure) = execution.into_parts();
+        let (rendered, report_artifact, post_render_failure, mut progress_session) =
+            execution.into_parts();
         if !rendered.is_empty() {
+            if let Some(progress) = progress_session.as_mut() {
+                progress.transition(progress::ProgressStage::WritingStdout);
+            }
             use std::io::Write as _;
             let stdout = std::io::stdout();
             let mut output = stdout.lock();
@@ -807,24 +838,45 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 .and_then(|()| output.flush())
             {
                 abort_report_bundle_after_failure(&mut report_bundle);
+                finish_progress_failed(&mut progress_session, None);
                 return Err(error.into());
             }
         }
         if let Some(artifact) = report_artifact {
+            if let Some(progress) = progress_session.as_mut() {
+                progress.transition(progress::ProgressStage::PublishingReport);
+            }
             match artifact {
                 assessment_scan::AssessmentScanArtifact::SingleFile(artifact) => {
-                    let output = report_output.as_deref().ok_or_else(|| {
-                        std::io::Error::other("report artifact has no authorized output path")
-                    })?;
-                    write_report_atomically(output, artifact.as_bytes())?;
+                    let Some(output) = report_output.as_deref() else {
+                        finish_progress_failed(&mut progress_session, None);
+                        return Err(std::io::Error::other(
+                            "report artifact has no authorized output path",
+                        )
+                        .into());
+                    };
+                    if let Err(error) = write_report_atomically(output, artifact.as_bytes()) {
+                        finish_progress_failed(&mut progress_session, None);
+                        return Err(error.into());
+                    }
                 },
                 assessment_scan::AssessmentScanArtifact::Bundle(bundle) => {
-                    let reservation = report_bundle.take().ok_or_else(|| {
-                        std::io::Error::other(
+                    let Some(reservation) = report_bundle.take() else {
+                        finish_progress_failed(&mut progress_session, None);
+                        return Err(std::io::Error::other(
                             "report bundle artifact has no reserved output directory",
                         )
-                    })?;
-                    reservation.publish(&bundle)?;
+                        .into());
+                    };
+                    if let Err(error) = reservation.publish(&bundle) {
+                        let commit = if error.committed() {
+                            progress::BundleCommitState::Committed
+                        } else {
+                            progress::BundleCommitState::NotCommitted
+                        };
+                        finish_progress_failed(&mut progress_session, Some(commit));
+                        return Err(error.into());
+                    }
                     eprintln!(
                         "Report bundle completed: assessment.html, assessment.json, manifest.json"
                     );
@@ -833,14 +885,29 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         }
         if let Some(failure) = post_render_failure {
             abort_report_bundle_after_failure(&mut report_bundle);
+            if let Some(progress) = progress_session.as_mut() {
+                let stage = match failure {
+                    assessment_scan::AssessmentScanPostRenderFailure::Incomplete => {
+                        progress::ProgressStage::Incomplete
+                    },
+                    assessment_scan::AssessmentScanPostRenderFailure::Failed => {
+                        progress::ProgressStage::Failed
+                    },
+                };
+                progress.finish(stage, None);
+            }
             return Err(std::io::Error::other(failure.message()).into());
         }
         if report_bundle.is_some() {
             abort_report_bundle_after_failure(&mut report_bundle);
+            finish_progress_failed(&mut progress_session, None);
             return Err(std::io::Error::other(
                 "completed assessment did not produce its requested report bundle",
             )
             .into());
+        }
+        if let Some(progress) = progress_session.as_mut() {
+            progress.finish(progress::ProgressStage::Completed, None);
         }
         return Ok(());
     }
@@ -861,6 +928,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         },
     }
     Ok(())
+}
+
+fn finish_progress_failed(
+    progress: &mut Option<progress::ProgressSession>,
+    bundle_commit: Option<progress::BundleCommitState>,
+) {
+    if let Some(progress) = progress.as_mut() {
+        progress.finish(progress::ProgressStage::Failed, bundle_commit);
+    }
 }
 
 fn abort_report_bundle_after_failure(
@@ -1237,6 +1313,7 @@ mod tests {
         assert_eq!(args.format, OutputFormat::Text);
         assert!(!args.explain);
         assert_eq!(args.profile, None);
+        assert!(!args.progress);
         assert!(!args.enforce_defense);
         #[cfg(feature = "normalization-resilience")]
         assert!(!args.normalization_resilience);
@@ -1466,6 +1543,38 @@ mod tests {
             scan_profile_flags_conflict(None, false, false, false, false, false),
             None
         );
+    }
+
+    #[test]
+    fn live_progress_is_explicit_web_review_only_for_both_scan_spellings() {
+        assert!(
+            Cli::try_parse_from(["termivar", "scan", "--progress", "https://example.test/",])
+                .is_err()
+        );
+        assert_eq!(
+            scan_progress_flags_conflict(Some(CliScanProfile::Baseline), true),
+            Some("`--progress` requires `--profile web-review`")
+        );
+        assert_eq!(scan_progress_flags_conflict(None, false), None);
+
+        for command in ["scan", "decision-scan"] {
+            let cli = Cli::try_parse_from([
+                "termivar",
+                command,
+                "--profile",
+                "web-review",
+                "--progress",
+                "https://example.test/",
+            ])
+            .unwrap();
+            let args = parsed_scan_args(&cli);
+            assert_eq!(args.profile, Some(CliScanProfile::WebReview));
+            assert!(args.progress);
+            assert_eq!(
+                scan_progress_flags_conflict(args.profile, args.progress),
+                None
+            );
+        }
     }
 
     #[cfg(feature = "normalization-resilience")]

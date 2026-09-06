@@ -48,6 +48,7 @@ use url::Url;
 
 use crate::{
     decision_scan::{self, DecisionScanSummary, OutcomeView},
+    progress::{ProgressSession, ProgressStage},
     report_bundle::{self, RenderedReportBundle},
 };
 
@@ -56,6 +57,29 @@ pub(crate) const WEB_ASSESSMENT_SCHEMA_V1: &str = "web-assessment/v1";
 /// Diagnostic audit used only when web-review is incomplete or fails after
 /// starting. Completed items use the centralized rendered-assessment schema.
 pub(crate) const WEB_ASSESSMENT_SCHEMA_V2: &str = "web-assessment/v2";
+const PROGRESS_PERIOD: std::time::Duration = std::time::Duration::from_secs(1);
+
+struct ProgressCadence {
+    period: std::time::Duration,
+    deadline: tokio::time::Instant,
+}
+
+impl ProgressCadence {
+    fn new(started_at: tokio::time::Instant, period: std::time::Duration) -> Self {
+        Self {
+            period,
+            deadline: started_at + period,
+        }
+    }
+
+    const fn deadline(&self) -> tokio::time::Instant {
+        self.deadline
+    }
+
+    fn advance_after_emission(&mut self, emitted_at: tokio::time::Instant) {
+        self.deadline = emitted_at + self.period;
+    }
+}
 
 /// Stable status that the caller applies only after writing the complete document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +111,7 @@ pub(crate) struct AssessmentScanExecution {
     rendered: String,
     report_artifact: Option<AssessmentScanArtifact>,
     post_render_failure: Option<AssessmentScanPostRenderFailure>,
+    progress: Option<ProgressSession>,
 }
 
 #[derive(Debug)]
@@ -103,11 +128,13 @@ impl AssessmentScanExecution {
         String,
         Option<AssessmentScanArtifact>,
         Option<AssessmentScanPostRenderFailure>,
+        Option<ProgressSession>,
     ) {
         (
             self.rendered,
             self.report_artifact,
             self.post_render_failure,
+            self.progress,
         )
     }
 }
@@ -527,6 +554,7 @@ enum AssessmentItemsReport {
 /// must never call this function.
 #[derive(Default)]
 pub(crate) struct ProfileScanRuntimeOptions {
+    pub(crate) progress: bool,
     pub(crate) root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     pub(crate) normalization_resilience: bool,
     pub(crate) graphql_review: bool,
@@ -546,6 +574,7 @@ pub(crate) async fn run_profile_scan(
     runtime_options: ProfileScanRuntimeOptions,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
     let ProfileScanRuntimeOptions {
+        progress,
         root_authorization_context,
         normalization_resilience,
         graphql_review,
@@ -559,6 +588,13 @@ pub(crate) async fn run_profile_scan(
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
         (BuiltInScanProfile::Baseline, ScanProfileScope::SingleResource) => {
+            if progress {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "live progress requires the web-review profile",
+                )
+                .into());
+            }
             if normalization_resilience {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -611,7 +647,7 @@ pub(crate) async fn run_profile_scan(
                 .into());
             }
             let document = run_baseline(target, target_origin, profile).await?;
-            render_execution(document, output.diagnostic_json())
+            render_execution(document, output.diagnostic_json(), None)
         },
         (BuiltInScanProfile::WebReview, ScanProfileScope::ExactOrigin) => {
             run_web_review(
@@ -620,6 +656,7 @@ pub(crate) async fn run_profile_scan(
                     target_origin,
                     profile,
                     output,
+                    progress,
                     root_authorization_context,
                     normalization_resilience,
                     graphql_review,
@@ -672,6 +709,7 @@ struct WebReviewRunOptions {
     target_origin: String,
     profile: ScanProfileV1,
     output: ProfileScanOutput,
+    progress: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     normalization_resilience: bool,
     graphql_review: bool,
@@ -691,6 +729,7 @@ async fn run_web_review(
         target_origin,
         profile,
         output,
+        progress: progress_requested,
         root_authorization_context,
         normalization_resilience,
         graphql_review,
@@ -783,10 +822,51 @@ async fn run_web_review(
         builder = builder.with_ssrf_oast_review(policy, administrator);
     }
     let mut runtime = builder.build()?;
-    match runtime.analyze().await {
+    let mut progress = if progress_requested {
+        let observer = runtime.progress_observer().ok_or_else(|| {
+            std::io::Error::other("assessment progress observer could not be created")
+        })?;
+        Some(ProgressSession::start(observer))
+    } else {
+        None
+    };
+    let analysis = runtime.analyze();
+    tokio::pin!(analysis);
+    let runtime_result = if let Some(session) = progress.as_mut() {
+        let mut cadence = ProgressCadence::new(tokio::time::Instant::now(), PROGRESS_PERIOD);
+        let timer = tokio::time::sleep_until(cadence.deadline());
+        tokio::pin!(timer);
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut analysis => break result,
+                () = &mut timer => {
+                    session.periodic_snapshot();
+                    cadence.advance_after_emission(tokio::time::Instant::now());
+                    timer.as_mut().reset(cadence.deadline());
+                },
+            }
+        }
+    } else {
+        analysis.await
+    };
+    match runtime_result {
         Ok(report) if matches!(report.completion(), WebAssessmentCompletion::Complete) => {
-            let product = ReportGenerator::compose_assessment(report, profile)?;
-            match output {
+            if let Some(session) = progress.as_mut() {
+                session.observe_final_usage(report.usage());
+                session.transition(ProgressStage::ComposingReport);
+            }
+            let product = match ReportGenerator::compose_assessment(report, profile) {
+                Ok(product) => product,
+                Err(error) => {
+                    finish_progress_failed(&mut progress);
+                    return Err(error.into());
+                },
+            };
+            if let Some(session) = progress.as_mut() {
+                session.transition(ProgressStage::RenderingReport);
+            }
+            let execution: Result<AssessmentScanExecution, Box<dyn Error>> = match output {
                 ProfileScanOutput::Stdout {
                     diagnostic_json,
                     report_format,
@@ -796,40 +876,69 @@ async fn run_web_review(
                     } else {
                         ReportFormat::Markdown
                     });
-                    Ok(AssessmentScanExecution {
-                        rendered: ReportGenerator::generate_assessment(&product, format)?,
-                        report_artifact: None,
-                        post_render_failure: None,
-                    })
+                    ReportGenerator::generate_assessment(&product, format)
+                        .map(|rendered| AssessmentScanExecution {
+                            rendered,
+                            report_artifact: None,
+                            post_render_failure: None,
+                            progress: None,
+                        })
+                        .map_err(Into::into)
                 },
                 ProfileScanOutput::SingleFile { report_format, .. } => {
-                    Ok(AssessmentScanExecution {
-                        rendered: String::new(),
-                        report_artifact: Some(AssessmentScanArtifact::SingleFile(
-                            ReportGenerator::generate_assessment(&product, report_format)?,
-                        )),
-                        post_render_failure: None,
-                    })
+                    ReportGenerator::generate_assessment(&product, report_format)
+                        .map(|rendered| AssessmentScanExecution {
+                            rendered: String::new(),
+                            report_artifact: Some(AssessmentScanArtifact::SingleFile(rendered)),
+                            post_render_failure: None,
+                            progress: None,
+                        })
+                        .map_err(Into::into)
                 },
-                ProfileScanOutput::Bundle { .. } => Ok(AssessmentScanExecution {
-                    rendered: String::new(),
-                    report_artifact: Some(AssessmentScanArtifact::Bundle(
-                        report_bundle::render_report_bundle(&product)?,
-                    )),
-                    post_render_failure: None,
-                }),
+                ProfileScanOutput::Bundle { .. } => report_bundle::render_report_bundle(&product)
+                    .map(|bundle| AssessmentScanExecution {
+                        rendered: String::new(),
+                        report_artifact: Some(AssessmentScanArtifact::Bundle(bundle)),
+                        post_render_failure: None,
+                        progress: None,
+                    }),
+            };
+            match execution {
+                Ok(mut execution) => {
+                    execution.progress = progress;
+                    Ok(execution)
+                },
+                Err(error) => {
+                    finish_progress_failed(&mut progress);
+                    Err(error)
+                },
             }
         },
-        Ok(report) => render_execution(
-            document_from_web_review_report(target_origin, profile, &report),
-            output.diagnostic_json(),
-        ),
-        Err(source) => match source.failure_receipt() {
-            Some(receipt) => render_execution(
-                document_from_web_review_failure(target_origin, profile, receipt),
+        Ok(report) => {
+            if let Some(session) = progress.as_mut() {
+                session.observe_final_usage(report.usage());
+            }
+            render_execution(
+                document_from_web_review_report(target_origin, profile, &report),
                 output.diagnostic_json(),
-            ),
-            None => Err(Box::new(source)),
+                progress,
+            )
+        },
+        Err(source) => match source.failure_receipt() {
+            Some(receipt) => {
+                if let Some(session) = progress.as_mut() {
+                    session.observe_final_usage(receipt.usage());
+                }
+                render_execution(
+                    document_from_web_review_failure(target_origin, profile, receipt),
+                    output.diagnostic_json(),
+                    progress,
+                )
+            },
+            None => {
+                finish_progress_failed(&mut progress);
+                Err(Box::new(source))
+            },
         },
     }
 }
@@ -837,12 +946,23 @@ async fn run_web_review(
 fn render_execution(
     document: WebAssessmentDocument,
     format_is_json: bool,
+    mut progress: Option<ProgressSession>,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
+    if let Some(session) = progress.as_mut() {
+        session.transition(ProgressStage::RenderingReport);
+    }
     let post_render_failure = document.disposition.post_render_failure();
-    let mut rendered = if format_is_json {
-        serde_json::to_string_pretty(&document)?
+    let rendered = if format_is_json {
+        serde_json::to_string_pretty(&document).map_err(Into::into)
     } else {
-        render_text(&document)
+        Ok(render_text(&document))
+    };
+    let mut rendered: String = match rendered {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            finish_progress_failed(&mut progress);
+            return Err(error);
+        },
     };
     if !rendered.ends_with('\n') {
         rendered.push('\n');
@@ -851,7 +971,14 @@ fn render_execution(
         rendered,
         report_artifact: None,
         post_render_failure,
+        progress,
     })
+}
+
+fn finish_progress_failed(progress: &mut Option<ProgressSession>) {
+    if let Some(session) = progress.as_mut() {
+        session.finish(ProgressStage::Failed, None);
+    }
 }
 
 fn document_from_baseline_summary(
@@ -1704,6 +1831,39 @@ fn append_assessment_item_lines(lines: &mut Vec<String>, report: &AssessmentItem
 mod tests {
     use super::*;
 
+    #[test]
+    fn progress_cadence_delays_a_new_period_after_an_overdue_emission() {
+        let started_at = tokio::time::Instant::now();
+        let mut cadence = ProgressCadence::new(started_at, PROGRESS_PERIOD);
+        assert_eq!(cadence.deadline(), started_at + PROGRESS_PERIOD);
+
+        let overdue_emission = started_at + PROGRESS_PERIOD + std::time::Duration::from_millis(900);
+        cadence.advance_after_emission(overdue_emission);
+        assert_eq!(cadence.deadline(), overdue_emission + PROGRESS_PERIOD);
+    }
+
+    #[tokio::test]
+    async fn baseline_rejects_live_progress_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                progress: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("live progress is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "live progress requires the web-review profile"
+        );
+    }
+
     #[tokio::test]
     async fn baseline_rejects_normalization_resilience_before_transport() {
         let error = run_profile_scan(
@@ -1939,6 +2099,7 @@ lifetime_ms = 5000
         let execution = render_execution(
             minimal_baseline_document(AssessmentDisposition::Complete),
             true,
+            None,
         )
         .expect("safe DTO serializes");
         let value: serde_json::Value =
@@ -1958,6 +2119,7 @@ lifetime_ms = 5000
         let execution = render_execution(
             minimal_baseline_document(AssessmentDisposition::Failed),
             false,
+            None,
         )
         .expect("text rendering is infallible");
         assert!(execution.rendered.contains("disposition: failed\n"));

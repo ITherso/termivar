@@ -169,6 +169,61 @@ command; the published alpha.2 archives include it. Compiling
 `ssrf-oast-review` separately does not close corrective-maintenance F3, which
 remains deferred, out of scope, and unresolved.
 
+## Live assessment progress
+
+The unreleased `0.10.0-alpha.3` development source adds opt-in live progress
+for an explicit `web-review` assessment:
+
+```bash
+termivar scan <AUTHORIZED_TARGET> \
+  --profile web-review \
+  --progress \
+  --format json > assessment.json 2> progress.log
+```
+
+The published `v0.10.0-alpha.2` archives do not contain `--progress`. The flag
+is rejected for no-profile invocations (including a bare `decision-scan`) and
+for `baseline` before secret loading, output reservation, or network
+construction. The `decision-scan` alias accepts it when `--profile web-review`
+is explicit. It does not enable a scanner capability or add requests.
+
+Progress is a bounded, best-effort presentation channel on stderr. Report
+Markdown/JSON on stdout and files selected with `--report-output` or
+`--report-dir` keep their existing bytes and schemas. Each ASCII line begins
+with `[progress]` and names a coarse lifecycle state such as
+`assessment_running`, `composing_report`, `rendering_report`,
+`writing_stdout`, `publishing_report`, or a terminal state. Periodic running
+snapshots are sampled once per second; a slow sink may cause intermediate
+snapshots to be coalesced or dropped rather than delaying the assessment.
+
+The counters are explicitly last-observed accounting snapshots.
+`accounted_requests` is cumulative parent-broker request accounting, including
+already-accounted child activity; it is not a response count.
+`accounted_active_verifications` is a cumulative charged-verification count,
+not current concurrency. `subjects_started` counts child-runtime execution
+boundaries; `subjects_processed` counts subject states committed for report
+projection, not successful subjects or findings. Neither predicts future work.
+Before the first runtime checkpoint, unavailable counts are shown as `unknown`
+rather than being presented as measured zeroes.
+Elapsed milliseconds use a separate monotonic presentation clock. It starts
+after runtime construction, immediately before the one assessment analysis,
+and ends when the terminal line is prepared after the selected stdout or file
+publication succeeds or fails. It therefore includes report composition,
+rendering, publication, and progress handoff time; it does not replace, extend,
+or alter the runtime deadline clock.
+
+There is no percentage, ETA, endpoint, finding title, severity, vulnerability
+verdict, or raw evidence in this stream. A terminal `completed` state means the
+selected report output also completed; render or publication failure remains a
+distinct `failed` state. On bundle-publication failure, the terminal record can
+state whether the manifest commit point was reached, without exposing the
+directory. Progress-write failure disables further presentation and does not
+change the scan result. If an operating-system stderr write blocks forever,
+one detached presentation worker may remain until process exit. A later
+diagnostic using the same process stderr lock can then also wait behind that OS
+write, so the command cannot promise bounded exit in this host-level failure.
+The writer is never used for scan control or backpressure.
+
 ## Export one assessment in two formats
 
 The published `v0.10.0-alpha.2` binary and later development builds whose

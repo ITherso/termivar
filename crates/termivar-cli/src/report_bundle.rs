@@ -631,8 +631,7 @@ pub(crate) struct ReportBundlePublicationError {
 }
 
 impl ReportBundlePublicationError {
-    #[cfg(test)]
-    fn committed(&self) -> bool {
+    pub(crate) const fn committed(&self) -> bool {
         self.committed
     }
 

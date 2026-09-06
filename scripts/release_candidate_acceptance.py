@@ -66,6 +66,20 @@ EXCLUDED_FEATURES = (
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
 GROUPS = ("only_in_after", "only_in_before", "changed", "unchanged")
+PROGRESS_PREFIX = b"[progress]"
+PROGRESS_LINE_LIMIT = 512
+PROGRESS_TOTAL_LIMIT = 64 * 1024
+PROGRESS_LINE = re.compile(
+    rb"^\[progress\] state=(assessment_running|composing_report|rendering_report|"
+    rb"writing_stdout|publishing_report|completed|incomplete|failed) "
+    rb"elapsed_ms=(?:0|[1-9][0-9]*) "
+    rb"accounted_requests=(?:unknown|0|[1-9][0-9]*) "
+    rb"accounted_active_verifications=(?:unknown|0|[1-9][0-9]*) "
+    rb"subjects_started=(?:unknown|0|[1-9][0-9]*) "
+    rb"subjects_processed=(?:unknown|0|[1-9][0-9]*) "
+    rb"counts=last_observed(?: bundle_commit=(?:not_committed|committed))?\r?\n$",
+    re.ASCII,
+)
 SYNTHETIC_COUNTS = {
     "only_in_after": 1,
     "only_in_before": 1,
@@ -273,6 +287,7 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
         require(re.search(rf"(?m)^\s+{re.escape(command)}(?:\s|$)", top_text) is None,
                 f"top-level help unexpectedly exposes {command}")
     require("--report-dir" in scan_text, "scan help omits --report-dir")
+    require("--progress" in scan_text, "scan help omits --progress")
     for option in ("--normalization-resilience", "--graphql-review", "--openapi-review",
                    "--rest-review", "--authorization-review-policy"):
         require(option in scan_text, f"scan help omits release-bundle option {option}")
@@ -347,6 +362,51 @@ def _validate_verification(document: dict, status: str) -> None:
             "Report Verify result does not match its expected status")
 
 
+def _validate_progress(stderr: bytes, forbidden_values: tuple[bytes, ...]) -> dict:
+    lines = [
+        line for line in stderr.splitlines(keepends=True)
+        if line.startswith(PROGRESS_PREFIX)
+    ]
+    require(lines, "bundle scan emitted no opted-in progress records")
+    require(sum(len(line) for line in lines) <= PROGRESS_TOTAL_LIMIT,
+            "bundle scan progress exceeded its documented total bound")
+    require(all(len(line) <= PROGRESS_LINE_LIMIT and line.isascii()
+                and PROGRESS_LINE.fullmatch(line) is not None for line in lines),
+            "bundle scan progress record shape or bound changed")
+    progress = b"".join(lines)
+    require(all(value not in progress for value in forbidden_values),
+            "bundle scan progress exposed a private target or output path")
+    lowered = progress.lower()
+    require(all(token not in lowered for token in
+                (b"eta=", b"finding", b"verdict", b"vulnerability")),
+            "bundle scan progress introduced an ETA or finding claim")
+    states = [
+        PROGRESS_LINE.fullmatch(line).group(1).decode("ascii")
+        for line in lines
+    ]
+    lifecycle = (
+        "assessment_running", "composing_report", "rendering_report",
+        "publishing_report", "completed",
+    )
+    running_count = 0
+    for state in states:
+        if state != "assessment_running":
+            break
+        running_count += 1
+    require(running_count > 0
+            and states[running_count:] == list(lifecycle[1:])
+            and "writing_stdout" not in states,
+            "bundle scan progress lifecycle changed")
+    return {
+        "channel": "stderr",
+        "line_count": len(lines),
+        "bytes": sum(len(line) for line in lines),
+        "states": states,
+        "counts_semantics": "last_observed",
+        "eta_or_finding_claims": "absent",
+    }
+
+
 def _run_fixture_acceptance(
         runner: CandidateRunner, work: Path, expected_version: str) -> dict:
     fixture = runner.fixture
@@ -374,10 +434,15 @@ def _run_fixture_acceptance(
     require(not preflight.exists(), "preflight refusal created a bundle directory")
 
     bundle_path = work / "assessment-bundle"
-    stdout, _ = runner.run("bundle-scan", [
-        "scan", fixture.origin, "--profile", "web-review", "--report-dir", str(bundle_path),
+    stdout, progress_stderr = runner.run("bundle-scan", [
+        "scan", fixture.origin, "--profile", "web-review", "--progress",
+        "--report-dir", str(bundle_path),
     ], expected_stderr_empty=False)
     require(stdout == b"", "successful bundle scan wrote a report to stdout")
+    progress = _validate_progress(
+        progress_stderr,
+        (fixture.origin.encode("utf-8"), str(bundle_path).encode("utf-8")),
+    )
     bundle = report_bundle_example.validate_bundle(bundle_path)
     require(bundle["producer"] == {"product": "Termivar", "version": expected_version},
             "bundle producer identity changed")
@@ -488,6 +553,7 @@ def _run_fixture_acceptance(
             "assessment": bundle["assessment"],
             "files": bundle["files"],
         },
+        "live_progress": progress,
         "verification": {
             "status": verification["status"],
             "mismatch_status": mismatch["status"],

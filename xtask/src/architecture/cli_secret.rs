@@ -74,6 +74,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "openapi_review",
     "rest_review",
     "profile",
+    "progress",
     "report_dir",
     "report_format",
     "report_output",
@@ -662,6 +663,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("format", "OutputFormat", None),
         ("explain", "bool", None),
         ("profile", "Option", Some("CliScanProfile")),
+        ("progress", "bool", None),
         ("enforce_defense", "bool", None),
         ("graphql_review", "bool", None),
         ("normalization_resilience", "bool", None),
@@ -695,6 +697,20 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         violations.push(format!(
             "CLI Scan field inventory and types must remain exact so no raw credential, token, cookie, or header argument can be added; observed {observed_field_names:?}"
         ));
+    }
+    let field_order = scan_fields
+        .named
+        .iter()
+        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .collect::<Vec<_>>();
+    if !field_order
+        .windows(3)
+        .any(|fields| fields == ["profile", "progress", "enforce_defense"])
+    {
+        violations.push(
+            "CLI `progress` must remain immediately after `profile` and before execution-affecting scan options"
+                .to_owned(),
+        );
     }
     let observed_auth_fields = fields
         .keys()
@@ -801,6 +817,28 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     }) {
         violations.push(
             "CLI `openapi_review` must remain an exact cfg-gated bool requiring the explicit scan profile"
+                .to_owned(),
+        );
+    }
+
+    if fields.get("progress").is_none_or(|field| {
+        !is_plain_type(&field.ty, "bool")
+            || !exact_arg_attribute(&field.attrs, "long,requires=\"profile\"")
+            || field.attrs.iter().any(|attribute| {
+                attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr")
+            })
+    }) {
+        violations.push(
+            "CLI `progress` must remain an ungated bool requiring an explicit profile".to_owned(),
+        );
+    }
+
+    if !compact.contains(
+        "fnscan_progress_flags_conflict(profile:Option<CliScanProfile>,progress:bool,)->Option<&'staticstr>{ifprogress&&profile!=Some(CliScanProfile::WebReview){Some(\"`--progress`requires`--profileweb-review`\")}else{None}}",
+    ) || compact.matches("fnscan_progress_flags_conflict(").count() != 1
+    {
+        violations.push(
+            "CLI progress validation must retain the exact explicit web-review-only, value-free preflight"
                 .to_owned(),
         );
     }
@@ -968,6 +1006,8 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     let ordered = ordered_boundary_references(run);
     let expected = [
         "scan_flags_conflict",
+        "scan_rest_review_flags_conflict",
+        "scan_progress_flags_conflict",
         "scan_ssrf_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
@@ -992,6 +1032,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     if !contains_ordered_subsequence(&ordered, &expected)
         || ordered
             .iter()
+            .filter(|name| name.as_str() == "scan_progress_flags_conflict")
+            .count()
+            != 1
+        || ordered
+            .iter()
             .filter(|name| name.as_str() == "load")
             .count()
             != 3
@@ -1002,7 +1047,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             != 3
     {
         violations.push(format!(
-            "CLI authorization sources must be selected without I/O and loaded exactly once each after flag, transport, profile, defense, and report preflights and before warning/network execution; observed {ordered:?}"
+            "CLI authorization sources must be selected without I/O and loaded exactly once each after flag, progress, transport, profile, defense, and report preflights and before warning/network execution; observed {ordered:?}"
         ));
     }
 
@@ -1741,6 +1786,8 @@ fn source_dispatch_is_exact(items: &[(String, String)]) -> bool {
 fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
     const OBSERVED: &[&str] = &[
         "scan_flags_conflict",
+        "scan_rest_review_flags_conflict",
+        "scan_progress_flags_conflict",
         "scan_ssrf_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
@@ -2167,6 +2214,21 @@ mod tests {
                 "must remain an exact cfg-gated bool",
             ),
             (
+                "    #[arg(long, requires = \"profile\")]\n    progress: bool,",
+                "    #[arg(long)]\n    progress: bool,",
+                "ungated bool requiring an explicit profile",
+            ),
+            (
+                "if progress && profile != Some(CliScanProfile::WebReview)",
+                "if progress && profile.is_none()",
+                "exact explicit web-review-only",
+            ),
+            (
+                "if let Some(message) = scan_progress_flags_conflict(profile, progress) {",
+                "if false {",
+                "after flag, progress, transport",
+            ),
+            (
                 "conflicts_with_all = [\"report_format\", \"report_output\"]",
                 "conflicts_with = \"report_format\"",
                 "conflicting with both single-report output options",
@@ -2215,6 +2277,28 @@ mod tests {
                 needle,
             );
         }
+
+        let scan_args_offset = CLI_MAIN
+            .find("struct ScanArgs")
+            .expect("checked-in ScanArgs exists");
+        let (prefix, scan_args_and_rest) = CLI_MAIN.split_at(scan_args_offset);
+        let reordered_scan_args = scan_args_and_rest
+            .replacen(
+                "profile: Option<CliScanProfile>,",
+                "__termivar_progress_slot: bool,",
+                1,
+            )
+            .replacen("progress: bool,", "profile: Option<CliScanProfile>,", 1)
+            .replacen("__termivar_progress_slot: bool,", "progress: bool,", 1);
+        let reordered_progress = format!("{prefix}{reordered_scan_args}");
+        assert_ne!(reordered_progress, CLI_MAIN);
+        let violations = inspect_cli_auth_surface(&reordered_progress)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("immediately after `profile`"),
+            "{violations}"
+        );
     }
 
     #[test]

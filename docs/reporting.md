@@ -125,6 +125,52 @@ while the command returns nonzero; it does not report publication success.
 Directory-metadata crash durability is best effort, and filesystems without the
 required same-directory hard-link semantics fail nonzero.
 
+### Optional live progress channel
+
+The unreleased `0.10.0-alpha.3` development source accepts `--progress` only
+with an explicit `--profile web-review`. Published `v0.10.0-alpha.2` archives
+do not contain the flag. It is a bounded, lossy stderr presentation channel;
+it does not alter assessment execution, deadlines, request ceilings, report
+selection, or any report schema.
+
+```bash
+termivar scan <AUTHORIZED_TARGET> \
+  --profile web-review \
+  --progress \
+  --report-format html \
+  --report-output assessment.html 2> progress.log
+```
+
+Every emitted line is fixed-shape ASCII beginning with `[progress]`. Lifecycle
+states separate assessment execution, composition, rendering, stdout writing,
+file or bundle publication, and terminal completion/failure. Periodic running
+snapshots are sampled once per second and may be coalesced or dropped when the
+stderr sink is slow. A blocked stderr sink cannot exert assessment
+backpressure; at most one detached presentation writer may remain until process
+exit. If that OS write retains the shared process stderr lock, later diagnostics
+can also wait behind it; the 250 ms worker handoff is not a universal bounded
+process-exit guarantee. Progress I/O failure disables the channel without
+changing the scan result.
+
+All numeric fields use `counts=last_observed`. Accounted requests and active
+verifications are cumulative parent-budget charges, not completed responses or
+current concurrency. `subjects_started` marks child-runtime execution and
+`subjects_processed` marks state committed for report projection; neither is a
+success or finding count. Counts not yet supplied by a runtime checkpoint are
+rendered as `unknown`, not inferred zeroes. The stream provides no percentage,
+ETA, target/path, finding, severity, or vulnerability verdict. It remains
+outside stdout, rendered documents, bundle payloads, and manifests, preserving
+machine-readable output purity. A successful terminal state follows successful
+selected-output publication; a bundle publication failure can report only its
+typed manifest commit state.
+
+The monotonic `elapsed_ms` presentation clock starts after runtime construction,
+immediately before the one assessment analysis. Its terminal observation is
+taken after the selected stdout or file publication succeeds or fails, so it
+includes composition, rendering, publication, and progress handoff time. It is
+separate from and does not replace, pause, extend, or alter the assessment
+deadline clock.
+
 ## Single-run report bundles
 
 The published `v0.10.0-alpha.2` binary and later development source can render

@@ -200,6 +200,8 @@ const REPORT_VERIFICATION_SMOKE_GATE: &str = r#"      - name: Exercise offline r
         run: cargo test --locked -p termivar-cli --test report_verify_cli"#;
 const CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exercise compiled CLI capabilities offline
         run: cargo test --locked -p termivar-cli --test capabilities_cli"#;
+const PROGRESS_SMOKE_GATE: &str = r#"      - name: Exercise opt-in live progress CLI
+        run: cargo test --locked -p termivar-cli --test progress_cli"#;
 const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capabilities matrix
         run: |
           set -euo pipefail
@@ -487,6 +489,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(report_bundle_workflow_policy_violations(&files));
     violations.extend(report_verification_workflow_policy_violations(&files));
     violations.extend(capabilities_workflow_policy_violations(&files));
+    violations.extend(progress_workflow_policy_violations(&files));
     violations.extend(release_acceptance_test_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
@@ -592,6 +595,27 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
         ));
     }
     violations
+}
+
+fn progress_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed live-progress runtime-smoke workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    if job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise opt-in live progress CLI",
+        PROGRESS_SMOKE_GATE,
+    ) {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed live-progress CLI integration test"
+        )]
+    }
 }
 
 fn release_acceptance_test_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
@@ -2110,6 +2134,40 @@ mod tests {
             let violations =
                 capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), fixture)]);
             assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn repository_live_progress_smoke_is_exact_on_all_platforms() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations =
+                progress_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), fixture)]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn live_progress_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(PROGRESS_SMOKE_GATE, "", 1),
+            valid.replacen(
+                PROGRESS_SMOKE_GATE,
+                "      - name: Exercise opt-in live progress CLI\n        run: cargo test --locked -p termivar-cli --test profile_scan_cli",
+                1,
+            ),
+            valid.replacen(
+                PROGRESS_SMOKE_GATE,
+                &format!("{PROGRESS_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                progress_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("live-progress"), "{violations:?}");
         }
     }
 

@@ -6,6 +6,7 @@
 
 use std::{collections::BTreeSet, error::Error, fs, path::Path};
 
+use proc_macro2::{TokenStream, TokenTree};
 use syn::{visit::Visit, Expr, ImplItem, Item, ItemFn, Lit, Type, UseTree, Visibility};
 
 const CLI_MAIN_SOURCE: &str = "crates/termivar-cli/src/main.rs";
@@ -43,6 +44,10 @@ fn assessment_flow_violations(source: &str) -> Result<Vec<String>, syn::Error> {
         || visitor.invalid
         || visitor.order != ["analyze", "compose", "bundle"]
         || visitor.analyze != 1
+        || visitor.analysis_future != 1
+        || visitor.analysis_pin != 1
+        || visitor.analysis_select != 1
+        || visitor.analysis_await != 1
         || visitor.compose != 1
         || visitor.bundle != 1
     {
@@ -58,6 +63,10 @@ fn assessment_flow_violations(source: &str) -> Result<Vec<String>, syn::Error> {
 #[derive(Default)]
 struct AssessmentFlowVisitor {
     analyze: usize,
+    analysis_future: usize,
+    analysis_pin: usize,
+    analysis_select: usize,
+    analysis_await: usize,
     compose: usize,
     bundle: usize,
     invalid: bool,
@@ -65,14 +74,28 @@ struct AssessmentFlowVisitor {
 }
 
 impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
+    fn visit_local(&mut self, item: &'ast syn::Local) {
+        let is_analysis_binding = matches!(&item.pat, syn::Pat::Ident(binding)
+            if binding.ident == "analysis")
+            && item.init.as_ref().is_some_and(|initialization| {
+                matches!(initialization.expr.as_ref(), Expr::MethodCall(call)
+                    if call.method == "analyze"
+                        && expression_is_path(call.receiver.as_ref(), "runtime")
+                        && call.args.is_empty())
+            });
+        if is_analysis_binding {
+            self.analyze += 1;
+            self.analysis_future += 1;
+            self.order.push("analyze");
+            return;
+        }
+        syn::visit::visit_local(self, item);
+    }
+
     fn visit_expr_await(&mut self, item: &'ast syn::ExprAwait) {
         match item.base.as_ref() {
-            Expr::MethodCall(call) if call.method == "analyze" => {
-                self.analyze += 1;
-                self.order.push("analyze");
-                if !expression_is_path(call.receiver.as_ref(), "runtime") || !call.args.is_empty() {
-                    self.invalid = true;
-                }
+            Expr::Path(path) if path.path.is_ident("analysis") => {
+                self.analysis_await += 1;
                 return;
             },
             _ => {},
@@ -115,6 +138,33 @@ impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
         }
         syn::visit::visit_expr_call(self, item);
     }
+
+    fn visit_macro(&mut self, item: &'ast syn::Macro) {
+        let name = item
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string());
+        if token_stream_contains_identifier(item.tokens.clone(), "analyze") {
+            self.invalid = true;
+        }
+        if token_stream_contains_identifier(item.tokens.clone(), "analysis") {
+            match name.as_deref() {
+                Some("pin") => self.analysis_pin += 1,
+                Some("select") => self.analysis_select += 1,
+                _ => {},
+            }
+        }
+        syn::visit::visit_macro(self, item);
+    }
+}
+
+fn token_stream_contains_identifier(stream: TokenStream, expected: &str) -> bool {
+    stream.into_iter().any(|token| match token {
+        TokenTree::Ident(identifier) => identifier == expected,
+        TokenTree::Group(group) => token_stream_contains_identifier(group.stream(), expected),
+        _ => false,
+    })
 }
 
 fn render_wrapper_is_exact(function: &ItemFn) -> bool {
@@ -875,7 +925,13 @@ mod tests {
 
     const VALID_ASSESSMENT_FLOW: &str = r#"
         async fn run_web_review() {
-            let report = runtime.analyze().await;
+            let analysis = runtime.analyze();
+            tokio::pin!(analysis);
+            let report = if show_progress {
+                tokio::select! { result = &mut analysis => result }
+            } else {
+                analysis.await
+            };
             let product = ReportGenerator::compose_assessment(report, profile);
             let bundle = report_bundle::render_report_bundle(&product);
         }
@@ -1093,12 +1149,20 @@ mod tests {
             .is_empty());
         for (from, to) in [
             (
-                "let report = runtime.analyze().await;",
-                "let report = runtime.analyze().await; let _duplicate = runtime.analyze().await;",
+                "let analysis = runtime.analyze();",
+                "let analysis = runtime.analyze(); let _duplicate = runtime.analyze();",
             ),
             (
-                "let report = runtime.analyze().await;",
-                "let _pending = runtime.analyze(); let report = runtime.analyze().await;",
+                "tokio::pin!(analysis);",
+                "let _unpinned = &analysis;",
+            ),
+            (
+                "tokio::select! { result = &mut analysis => result }",
+                "analysis.await",
+            ),
+            (
+                "analysis.await",
+                "other_analysis.await",
             ),
             (
                 "ReportGenerator::compose_assessment(report, profile)",

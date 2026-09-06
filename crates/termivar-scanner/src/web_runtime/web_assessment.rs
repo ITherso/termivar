@@ -20,6 +20,7 @@ use termivar_core::{
     EvidenceOrigin, EvidenceSource, EvidenceValue, HttpEvidencePredicate, PredicateDescriptor,
 };
 use thiserror::Error;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -857,6 +858,77 @@ pub struct WebAssessmentUsage {
     request_body_bytes: u64,
     response_bytes: u64,
     elapsed_ms: u64,
+}
+
+/// Coarse orchestration boundary associated with a live assessment snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum WebAssessmentProgressCheckpoint {
+    AssessmentStarted,
+    SubjectExecutionStarted,
+    SubjectStateCommitted,
+    InventoryReconciled,
+    ProjectionStarted,
+    FinishedSnapshot,
+}
+
+/// A safe, last-observed view of live assessment accounting.
+///
+/// Request and active-verification counts come from the same parent broker
+/// that enforces the assessment budget. Subject counts are published only at
+/// general orchestration boundaries. The snapshot is presentation data: it
+/// carries no target, evidence, planner, budget, or execution authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebAssessmentProgressSnapshot {
+    checkpoint: WebAssessmentProgressCheckpoint,
+    executed_subjects: usize,
+    subjects_processed: usize,
+    requests_accounted: u32,
+    active_verifications_accounted: u16,
+}
+
+impl WebAssessmentProgressSnapshot {
+    /// Returns the general orchestration boundary observed by this snapshot.
+    pub const fn checkpoint(self) -> WebAssessmentProgressCheckpoint {
+        self.checkpoint
+    }
+
+    /// Returns subjects that reached the child-runtime execution boundary.
+    pub const fn executed_subjects(self) -> usize {
+        self.executed_subjects
+    }
+
+    /// Returns executed subjects whose child result reached report projection.
+    pub const fn subjects_processed(self) -> usize {
+        self.subjects_processed
+    }
+
+    /// Returns cumulative requests admitted and charged by the parent broker.
+    pub const fn requests_accounted(self) -> u32 {
+        self.requests_accounted
+    }
+
+    /// Returns cumulative active-verification dispatches charged by the parent
+    /// broker. This is not a count of concurrently in-flight requests.
+    pub const fn active_verifications_accounted(self) -> u16 {
+        self.active_verifications_accounted
+    }
+}
+
+/// Read-only live observation handle for one opted-in assessment.
+///
+/// The handle can only read a coalesced scalar snapshot. It cannot mutate the
+/// runtime, select work, dispatch requests, or influence completion. A missing
+/// snapshot means no orchestration checkpoint has yet been published.
+pub struct WebAssessmentProgressObserver {
+    receiver: watch::Receiver<Option<WebAssessmentProgressSnapshot>>,
+}
+
+impl WebAssessmentProgressObserver {
+    /// Returns the latest safe snapshot without async or network work.
+    pub fn latest(&self) -> Option<WebAssessmentProgressSnapshot> {
+        *self.receiver.borrow()
+    }
 }
 
 impl WebAssessmentUsage {
@@ -2038,6 +2110,7 @@ impl WebAssessmentRuntimeBuilder {
             root: root_subject,
             initial_reasons,
             started: false,
+            progress: None,
             defense_enforcement: self.defense_enforcement,
             #[cfg(feature = "normalization-resilience")]
             normalization_resilience: self.normalization_resilience,
@@ -2105,6 +2178,7 @@ pub struct WebAssessmentRuntime {
     root: WebAssessmentSubject,
     initial_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     started: bool,
+    progress: Option<watch::Sender<Option<WebAssessmentProgressSnapshot>>>,
     defense_enforcement: bool,
     #[cfg(feature = "normalization-resilience")]
     normalization_resilience: bool,
@@ -2286,6 +2360,39 @@ impl WebAssessmentRuntime {
         self.started
     }
 
+    /// Creates the single read-only progress observer before execution starts.
+    ///
+    /// `None` means the runtime already started or an observer was already
+    /// created. Calling this method is the only path that allocates progress
+    /// state; ordinary assessments carry no progress buffer or channel.
+    pub fn progress_observer(&mut self) -> Option<WebAssessmentProgressObserver> {
+        if self.started || self.progress.is_some() {
+            return None;
+        }
+        let (sender, receiver) = watch::channel(None);
+        self.progress = Some(sender);
+        Some(WebAssessmentProgressObserver { receiver })
+    }
+
+    fn publish_progress(
+        &self,
+        checkpoint: WebAssessmentProgressCheckpoint,
+        executed_subjects: usize,
+        subjects_processed: usize,
+    ) {
+        let Some(progress) = &self.progress else {
+            return;
+        };
+        let accounting = self.authority.request_accounting().snapshot();
+        progress.send_replace(Some(WebAssessmentProgressSnapshot {
+            checkpoint,
+            executed_subjects,
+            subjects_processed,
+            requests_accounted: accounting.total_requests(),
+            active_verifications_accounted: accounting.active_verifications(),
+        }));
+    }
+
     pub async fn analyze(&mut self) -> Result<WebAssessmentRunReport, WebAssessmentRuntimeError> {
         if self.started {
             return Err(WebAssessmentRuntimeError::AlreadyStarted);
@@ -2305,6 +2412,13 @@ impl WebAssessmentRuntime {
         let mut known_subjects = BTreeMap::from([(self.root.url.to_string(), self.root.clone())]);
         let mut current_layer = vec![self.root.clone()];
         let mut stop = false;
+        let mut progress_executed_subjects = 0_usize;
+        let mut progress_processed_subjects = 0_usize;
+        self.publish_progress(
+            WebAssessmentProgressCheckpoint::AssessmentStarted,
+            progress_executed_subjects,
+            progress_processed_subjects,
+        );
 
         while !current_layer.is_empty() && !stop {
             current_layer.sort_by(|left, right| left.url.as_str().cmp(right.url.as_str()));
@@ -2512,6 +2626,12 @@ impl WebAssessmentRuntime {
                         )),
                     });
                 }
+                progress_executed_subjects = progress_executed_subjects.saturating_add(1);
+                self.publish_progress(
+                    WebAssessmentProgressCheckpoint::SubjectExecutionStarted,
+                    progress_executed_subjects,
+                    progress_processed_subjects,
+                );
                 let standard_result = runtime.analyze().await;
                 #[cfg(feature = "authorization-review")]
                 let resource_authorization_binding = runtime.take_resource_authorization_review();
@@ -3293,6 +3413,12 @@ impl WebAssessmentRuntime {
                     },
                 }
                 subject_reports.push(subject_report);
+                progress_processed_subjects = progress_processed_subjects.saturating_add(1);
+                self.publish_progress(
+                    WebAssessmentProgressCheckpoint::SubjectStateCommitted,
+                    progress_executed_subjects,
+                    progress_processed_subjects,
+                );
                 if should_stop {
                     stop = true;
                     break;
@@ -3392,6 +3518,11 @@ impl WebAssessmentRuntime {
                 });
             },
         }
+        self.publish_progress(
+            WebAssessmentProgressCheckpoint::InventoryReconciled,
+            progress_executed_subjects,
+            progress_processed_subjects,
+        );
         #[cfg(feature = "graphql-review")]
         if self.graphql_review {
             if !reasons.is_empty() {
@@ -3513,6 +3644,11 @@ impl WebAssessmentRuntime {
             .chain(self.normalization_review.iter())
             .map(|review| &review.ledger)
             .collect::<Vec<_>>();
+        self.publish_progress(
+            WebAssessmentProgressCheckpoint::ProjectionStarted,
+            progress_executed_subjects,
+            progress_processed_subjects,
+        );
         let assessment_projection = match project_assessment_items(
             &self.passive_ledger,
             AssessmentReviewProjectionSources {
@@ -3577,6 +3713,11 @@ impl WebAssessmentRuntime {
         } else {
             WebAssessmentCompletion::Incomplete { reasons }
         };
+        self.publish_progress(
+            WebAssessmentProgressCheckpoint::FinishedSnapshot,
+            usage.executed_subjects(),
+            progress_processed_subjects,
+        );
         Ok(WebAssessmentRunReport {
             #[cfg(feature = "reporting")]
             run_started_at,

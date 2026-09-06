@@ -150,19 +150,42 @@ def fake_help(arguments: list[str]) -> bytes:
                 b"  report  offline reports\n  capabilities  build inventory\n")
     if arguments == ["scan", "--help"]:
         return (b"Usage: termivar scan [OPTIONS]\n"
-                b"--report-dir --normalization-resilience --graphql-review "
+                b"--report-dir --progress --normalization-resilience --graphql-review "
                 b"--openapi-review --rest-review --authorization-review-policy\n")
     if arguments == ["report", "--help"]:
         return b"Commands:\n  compare  compare reports\n  verify  verify bundle\n"
     raise AssertionError(arguments)
 
 
+VALID_PROGRESS = (
+    b"[progress] state=assessment_running elapsed_ms=0 accounted_requests=0 "
+    b"accounted_active_verifications=0 subjects_started=0 subjects_processed=0 "
+    b"counts=last_observed\n"
+    b"[progress] state=composing_report elapsed_ms=10 accounted_requests=3 "
+    b"accounted_active_verifications=0 subjects_started=1 subjects_processed=1 "
+    b"counts=last_observed\n"
+    b"[progress] state=rendering_report elapsed_ms=11 accounted_requests=3 "
+    b"accounted_active_verifications=0 subjects_started=1 subjects_processed=1 "
+    b"counts=last_observed\n"
+    b"[progress] state=publishing_report elapsed_ms=12 accounted_requests=3 "
+    b"accounted_active_verifications=0 subjects_started=1 subjects_processed=1 "
+    b"counts=last_observed\n"
+    b"[progress] state=completed elapsed_ms=13 accounted_requests=3 "
+    b"accounted_active_verifications=0 subjects_started=1 subjects_processed=1 "
+    b"counts=last_observed\n"
+)
+
+
 class FakeCommands:
     def __init__(self, root: Path, include_ssrf: bool = False,
-                 extra_incomplete_request: bool = False) -> None:
+                 extra_incomplete_request: bool = False,
+                 omit_progress_help: bool = False,
+                 progress_stderr: bytes | None = None) -> None:
         self.root = root
         self.include_ssrf = include_ssrf
         self.extra_incomplete_request = extra_incomplete_request
+        self.omit_progress_help = omit_progress_help
+        self.progress_stderr = progress_stderr
         self.arguments: list[list[str]] = []
 
     def __call__(self, argv, directory, record):
@@ -176,6 +199,8 @@ class FakeCommands:
             stdout = f"termivar {TEST_VERSION}\n".encode()
         elif arguments in (["--help"], ["scan", "--help"], ["report", "--help"]):
             stdout = fake_help(arguments)
+            if arguments == ["scan", "--help"] and self.omit_progress_help:
+                stdout = stdout.replace(b"--progress ", b"")
         elif arguments == ["capabilities"]:
             cap = capabilities(include_ssrf=self.include_ssrf)
             states = "\n".join(
@@ -197,9 +222,12 @@ class FakeCommands:
                 exit_code, stderr = 1, b"report bundle destination already exists\n"
             elif destination.name == "assessment-bundle":
                 assert fixture is not None and target == fixture.origin
+                assert "--progress" in arguments
                 fixture.server.counts["root"] += 3
                 write_bundle(destination)
-                stderr = b"Report bundle completed\n"
+                progress = (VALID_PROGRESS if self.progress_stderr is None
+                            else self.progress_stderr)
+                stderr = progress + b"Report bundle completed\n"
             elif destination.name == "incomplete-must-not-exist":
                 assert fixture is not None and target.endswith("/example")
                 fixture.server.counts["example"] += 3
@@ -325,11 +353,14 @@ class CandidateOrchestrationTests(unittest.TestCase):
             "extracted": True,
         }
 
-    def execute(self, *, include_ssrf=False, extra_incomplete_request=False):
+    def execute(self, *, include_ssrf=False, extra_incomplete_request=False,
+                omit_progress_help=False, progress_stderr=None):
         commands = FakeCommands(
             self.root,
             include_ssrf=include_ssrf,
             extra_incomplete_request=extra_incomplete_request,
+            omit_progress_help=omit_progress_help,
+            progress_stderr=progress_stderr,
         )
         with mock.patch.object(runner.platform, "system", return_value="Windows"), \
                 mock.patch.object(runner.platform, "machine", return_value="AMD64"), \
@@ -363,6 +394,13 @@ class CandidateOrchestrationTests(unittest.TestCase):
         )
         self.assertEqual(result["application"]["synthetic_comparison"]["counts"],
                          runner.SYNTHETIC_COUNTS)
+        progress = result["application"]["live_progress"]
+        self.assertEqual(progress["channel"], "stderr")
+        self.assertEqual(progress["states"][0], "assessment_running")
+        self.assertIn("publishing_report", progress["states"])
+        self.assertEqual(progress["states"][-1], "completed")
+        self.assertEqual(progress["eta_or_finding_claims"], "absent")
+        self.assertLessEqual(progress["bytes"], runner.PROGRESS_TOTAL_LIMIT)
         self.assertEqual(result["application"]["verification"], {
             "status": "integrity_match",
             "mismatch_status": "not_verified",
@@ -392,6 +430,33 @@ class CandidateOrchestrationTests(unittest.TestCase):
         result, _ = self.execute(extra_incomplete_request=True)
         self.assertEqual(result["status"], "failed")
         self.assertIn("begun-incomplete scan request trace", result["failure"])
+
+    def test_packaged_help_must_expose_opted_in_progress(self):
+        result, _ = self.execute(omit_progress_help=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("scan help omits --progress", result["failure"])
+
+    def test_packaged_progress_must_have_bounded_complete_lifecycle(self):
+        malformed = (
+            b"[progress] state=completed elapsed_ms=1 accounted_requests=3 "
+            b"accounted_active_verifications=0 subjects_started=1 subjects_processed=1 "
+            b"counts=last_observed\n"
+        )
+        result, _ = self.execute(progress_stderr=malformed)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("progress lifecycle changed", result["failure"])
+
+    def test_packaged_progress_rejects_running_regression_after_composition(self):
+        composing = VALID_PROGRESS.index(b"[progress] state=composing_report")
+        rendering = VALID_PROGRESS.index(b"[progress] state=rendering_report")
+        regressed = (
+            VALID_PROGRESS[:rendering]
+            + VALID_PROGRESS[:composing]
+            + VALID_PROGRESS[rendering:]
+        )
+        result, _ = self.execute(progress_stderr=regressed)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("progress lifecycle changed", result["failure"])
 
     def test_caller_supplied_version_selects_main_or_matching_tag_identity(self):
         for version, archive_ref in [

@@ -360,6 +360,19 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/runtime-map.md",
         ),
         surface!(
+            "option.live-assessment-progress",
+            "Live assessment progress",
+            SurfaceGroup::Everyday,
+            SurfaceKind::ScanOption,
+            None,
+            true,
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &["--profile web-review", "--progress"],
+            "Bounded, lossy stderr-only lifecycle display with last-observed counters and no ETA; it neither controls execution nor adds detection authority.",
+            "docs/GETTING_STARTED.md#live-assessment-progress",
+        ),
+        surface!(
             "output.assessment-reports",
             "Assessment report formats",
             SurfaceGroup::Everyday,
@@ -719,7 +732,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 20);
+        assert_eq!(document.surfaces.len(), 21);
 
         let keys = document
             .surfaces
@@ -737,6 +750,7 @@ mod tests {
                 "command.scan",
                 "profile.baseline",
                 "profile.web-review",
+                "option.live-assessment-progress",
                 "output.assessment-reports",
                 "output.report-bundle",
                 "command.report-compare",
@@ -815,6 +829,7 @@ mod tests {
         }
         let scan = command.find_subcommand("scan").unwrap();
         for (key, flag) in [
+            ("option.live-assessment-progress", "progress"),
             (
                 "option.normalization-resilience",
                 "normalization-resilience",
@@ -876,6 +891,12 @@ mod tests {
             ("command.scan", None, "preview", "implemented"),
             ("profile.baseline", None, "preview", "implemented"),
             ("profile.web-review", None, "preview", "implemented"),
+            (
+                "option.live-assessment-progress",
+                None,
+                "preview",
+                "implemented",
+            ),
             ("output.assessment-reports", None, "preview", "implemented"),
             ("output.report-bundle", None, "preview", "implemented"),
             ("command.report-compare", None, "preview", "implemented"),
@@ -972,6 +993,19 @@ mod tests {
         assert_eq!(alias.maturity.as_str(), "deprecated");
         assert_eq!(alias.relation, "compatibility_alias_same_engine");
 
+        let progress = find("option.live-assessment-progress");
+        assert_eq!(
+            progress.prerequisites,
+            ["--profile web-review", "--progress"]
+        );
+        assert!(matches!(progress.group, SurfaceGroup::Everyday));
+        assert!(matches!(progress.kind, SurfaceKind::ScanOption));
+        assert!(matches!(progress.build_state, BuildState::Compiled));
+        assert!(progress.limitation.contains("stderr-only"));
+        assert!(progress.limitation.contains("last-observed"));
+        assert!(progress.limitation.contains("no ETA"));
+        assert!(progress.limitation.contains("neither controls execution"));
+
         assert_eq!(
             find("output.assessment-reports").prerequisites,
             [
@@ -1015,6 +1049,22 @@ mod tests {
             "web-review",
         ])
         .is_ok());
+        assert!(crate::Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "https://example.test",
+            "--profile",
+            "web-review",
+            "--progress",
+        ])
+        .is_ok());
+        assert!(crate::Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "https://example.test",
+            "--progress",
+        ])
+        .is_err());
         for invalid in [
             vec![
                 "termivar",

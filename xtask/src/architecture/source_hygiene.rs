@@ -15,8 +15,12 @@ use syn::{
     parse::Parser,
     punctuated::Punctuated,
     visit::{self, Visit},
-    Attribute, ExprMethodCall, Meta, MetaList, Token,
+    Attribute, Expr, ExprCall, ExprMethodCall, Item, Meta, MetaList, Token, TypePath,
 };
+
+use super::{has_cfg_test, item_attributes};
+
+const PROGRESS_WRITER_SOURCE: &str = "crates/termivar-cli/src/progress.rs";
 
 const SCAN_TASK_BOUNDARY_SOURCES: &[&str] = &[
     "crates/termivar-scanner/src/runner.rs",
@@ -47,7 +51,46 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         let source = fs::read_to_string(path)?;
         violations.extend(unwrap_or_default_violations(relative_path, &source)?);
     }
+    if !workspace_root.join(PROGRESS_WRITER_SOURCE).is_file() {
+        violations.push(format!(
+            "progress writer ownership source `{PROGRESS_WRITER_SOURCE}` is missing"
+        ));
+    }
+    let cli_main = fs::read_to_string(workspace_root.join("crates/termivar-cli/src/main.rs"))?;
+    violations.extend(progress_module_violations(&cli_main)?);
+    let cli_sources = guarded_rust_sources(workspace_root)?
+        .into_iter()
+        .filter(|path| display_path(workspace_root, path).starts_with("crates/termivar-cli/src/"))
+        .collect::<Vec<_>>();
+    for path in cli_sources {
+        let relative = display_path(workspace_root, &path);
+        let source = fs::read_to_string(path)?;
+        violations.extend(progress_writer_thread_violations(&relative, &source)?);
+    }
     Ok(violations)
+}
+
+fn progress_module_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let modules = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.ident == "progress" => Some(module),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if modules.len() == 1
+        && matches!(modules[0].vis, syn::Visibility::Inherited)
+        && modules[0].content.is_none()
+        && modules[0].attrs.is_empty()
+    {
+        Ok(Vec::new())
+    } else {
+        Ok(vec![
+            "CLI progress writer must remain one private direct `progress.rs` module".to_owned(),
+        ])
+    }
 }
 
 fn guarded_rust_sources(workspace_root: &Path) -> io::Result<Vec<PathBuf>> {
@@ -168,6 +211,136 @@ fn unwrap_or_default_violations(path: &str, source: &str) -> Result<Vec<String>,
     )])
 }
 
+fn progress_writer_thread_violations(path: &str, source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut visitor = ProductionThreadVisitor::default();
+    visitor.visit_file(&syntax);
+    let owns_thread_surface = visitor.builder_new > 0
+        || visitor.direct_thread_spawn > 0
+        || visitor.async_spawn > 0
+        || visitor.join_handles > 0;
+    if path == PROGRESS_WRITER_SOURCE {
+        if visitor.builder_new == 1
+            && visitor.named_workers == 1
+            && visitor.spawn_methods == 1
+            && visitor.direct_thread_spawn == 0
+            && visitor.async_spawn == 0
+            && visitor.join_handles == 1
+        {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![format!(
+                "progress output must own exactly one named thread::Builder worker and one JoinHandle, with no direct or async spawn escape; observed builders={}, named_workers={}, spawn_methods={}, direct_spawns={}, async_spawns={}, join_handles={}",
+                visitor.builder_new,
+                visitor.named_workers,
+                visitor.spawn_methods,
+                visitor.direct_thread_spawn,
+                visitor.async_spawn,
+                visitor.join_handles,
+            )])
+        }
+    } else if owns_thread_surface {
+        Ok(vec![format!(
+            "CLI production thread ownership escaped `{PROGRESS_WRITER_SOURCE}` into `{path}`"
+        )])
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct ProductionThreadVisitor {
+    builder_new: usize,
+    named_workers: usize,
+    spawn_methods: usize,
+    direct_thread_spawn: usize,
+    async_spawn: usize,
+    join_handles: usize,
+}
+
+impl ProductionThreadVisitor {
+    fn path_ends_with(path: &syn::Path, expected: &[&str]) -> bool {
+        let actual = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        actual.ends_with(
+            &expected
+                .iter()
+                .map(|segment| (*segment).to_owned())
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+impl<'ast> Visit<'ast> for ProductionThreadVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !has_cfg_test(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        if !has_cfg_test(&item.attrs) {
+            visit::visit_impl_item_fn(self, item);
+        }
+    }
+
+    fn visit_expr_call(&mut self, expression: &'ast ExprCall) {
+        if let Expr::Path(function) = expression.func.as_ref() {
+            if Self::path_ends_with(&function.path, &["thread", "Builder", "new"]) {
+                self.builder_new += 1;
+            }
+            if Self::path_ends_with(&function.path, &["thread", "spawn"]) {
+                self.direct_thread_spawn += 1;
+            }
+            if Self::path_ends_with(&function.path, &["tokio", "spawn"])
+                || function
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "spawn_blocking")
+            {
+                self.async_spawn += 1;
+            }
+        }
+        visit::visit_expr_call(self, expression);
+    }
+
+    fn visit_expr_method_call(&mut self, expression: &'ast ExprMethodCall) {
+        if expression.method == "name"
+            && expression.args.len() == 1
+            && matches!(expression.args.first(), Some(Expr::MethodCall(call))
+                if call.method == "to_owned"
+                    && matches!(call.receiver.as_ref(), Expr::Lit(literal)
+                        if matches!(&literal.lit, syn::Lit::Str(value)
+                            if value.value() == "termivar-progress")))
+        {
+            self.named_workers += 1;
+        }
+        if expression.method == "spawn" {
+            self.spawn_methods += 1;
+        }
+        if expression.method == "spawn_blocking" {
+            self.async_spawn += 1;
+        }
+        visit::visit_expr_method_call(self, expression);
+    }
+
+    fn visit_type_path(&mut self, item_type: &'ast TypePath) {
+        if item_type
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "JoinHandle")
+        {
+            self.join_handles += 1;
+        }
+        visit::visit_type_path(self, item_type);
+    }
+}
+
 #[derive(Default)]
 struct UnwrapOrDefaultVisitor {
     count: usize,
@@ -277,5 +450,86 @@ mod tests {
         assert!(unwrap_or_default_violations("runner.rs", source)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn progress_writer_thread_ownership_is_exact_and_test_threads_are_ignored() {
+        let valid = r#"
+            use std::thread::{self, JoinHandle};
+            struct ProgressOutput { worker: Option<JoinHandle<()>> }
+            fn start() {
+                let _worker = thread::Builder::new().name("termivar-progress".to_owned())
+                    .spawn(|| {}).unwrap();
+            }
+            #[cfg(test)]
+            mod tests { fn fixture() { std::thread::spawn(|| {}); } }
+            impl ProgressOutput {
+                #[cfg(test)]
+                fn fixture() { std::thread::spawn(|| {}); }
+            }
+        "#;
+        assert!(
+            progress_writer_thread_violations(PROGRESS_WRITER_SOURCE, valid)
+                .unwrap()
+                .is_empty()
+        );
+
+        let direct_spawn = valid.replace(
+            "let _worker = thread::Builder::new()",
+            "thread::spawn(|| {}); let _worker = thread::Builder::new()",
+        );
+        assert_ne!(direct_spawn, valid);
+        let violations = progress_writer_thread_violations(PROGRESS_WRITER_SOURCE, &direct_spawn)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("no direct or async spawn escape"),
+            "{violations}"
+        );
+
+        let async_escape = valid.replace(
+            "let _worker = thread::Builder::new()",
+            "tokio::spawn(async {}); let _worker = thread::Builder::new()",
+        );
+        assert_ne!(async_escape, valid);
+        let violations = progress_writer_thread_violations(PROGRESS_WRITER_SOURCE, &async_escape)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("no direct or async spawn escape"),
+            "{violations}"
+        );
+
+        let violations =
+            progress_writer_thread_violations("crates/termivar-cli/src/assessment_scan.rs", valid)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("thread ownership escaped"),
+            "{violations}"
+        );
+
+        let detached = valid.replace("worker: Option<JoinHandle<()>>", "worker: bool");
+        let violations = progress_writer_thread_violations(PROGRESS_WRITER_SOURCE, &detached)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("one JoinHandle"), "{violations}");
+    }
+
+    #[test]
+    fn progress_module_is_private_direct_and_unconditional() {
+        assert!(progress_module_violations("mod progress;")
+            .unwrap()
+            .is_empty());
+        for source in [
+            "pub mod progress;",
+            "#[path = \"alternate.rs\"] mod progress;",
+            "#[cfg(test)] mod progress;",
+            "mod progress {}",
+            "mod progress; mod progress;",
+        ] {
+            let violations = progress_module_violations(source).unwrap().join("\n");
+            assert!(violations.contains("private direct"), "{violations}");
+        }
     }
 }

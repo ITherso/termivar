@@ -13405,7 +13405,8 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("exact report-only cfg inventory")));
 
-        let scanner = include_str!("../../../crates/termivar-scanner/src/lib.rs");
+        let scanner =
+            include_str!("../../../crates/termivar-scanner/src/lib.rs").replace("\r\n", "\n");
         let missing_surface = scanner.replacen(
             "#[cfg(feature = \"platform-models\")]\npub mod api_gateway;",
             "",

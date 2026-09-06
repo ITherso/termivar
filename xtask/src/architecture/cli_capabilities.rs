@@ -533,6 +533,12 @@ mod tests {
     const MAIN: &str = include_str!("../../../crates/termivar-cli/src/main.rs");
     const MANIFEST: &str = include_str!("../../../crates/termivar-cli/Cargo.toml");
 
+    fn mutate(source: &str, from: &str, to: &str) -> String {
+        let normalized = source.replace("\r\n", "\n");
+        assert!(normalized.contains(from), "stale mutation anchor: {from}");
+        normalized.replacen(from, to, 1)
+    }
+
     #[test]
     fn repository_capabilities_boundary_is_exact() {
         assert!(capabilities_violations(SOURCE, MANIFEST)
@@ -580,8 +586,7 @@ mod tests {
             ("64 * 1024", "128 * 1024"),
             ("cfg!(feature = \"rest-review\")", "false"),
         ] {
-            let mutated = SOURCE.replacen(from, to, 1);
-            assert_ne!(mutated, SOURCE, "mutation did not apply: {from}");
+            let mutated = mutate(SOURCE, from, to);
             assert!(
                 !capabilities_violations(&mutated, MANIFEST)
                     .unwrap()

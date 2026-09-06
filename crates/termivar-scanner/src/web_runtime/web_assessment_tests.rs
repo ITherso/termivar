@@ -89,6 +89,107 @@ fn defense_mode_is_explicit_and_defaults_to_observation_only() {
     );
 }
 
+#[test]
+fn live_progress_observation_is_single_opt_in_and_carries_no_initial_claim() {
+    let target = Url::parse("https://example.test/").unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(target).build().unwrap();
+
+    let observer = runtime
+        .progress_observer()
+        .expect("first pre-start observer is available");
+    assert!(observer.latest().is_none());
+    assert!(runtime.progress_observer().is_none());
+    assert!(!runtime.has_started());
+}
+
+#[tokio::test]
+async fn live_progress_reports_a_real_in_flight_subject_then_exact_final_usage() {
+    let server = serve(|_| FixtureReply::Stall).await;
+    let target = server.url("/progress-stall");
+    let cancellation = CancellationToken::new();
+    let policy = HttpEvidencePolicy::new(
+        [target.clone()],
+        Duration::from_secs(2),
+        DEFAULT_WEB_ASSESSMENT_MAX_RESPONSE_BODY_BYTES,
+    )
+    .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(target)
+        .http_policy(policy)
+        .cancellation_token(cancellation.clone())
+        .build()
+        .unwrap();
+    let observer = runtime.progress_observer().unwrap();
+    let request_seen = server.request_notification();
+    let analysis = tokio::spawn(async move { runtime.analyze().await });
+
+    tokio::time::timeout(Duration::from_secs(2), request_seen.notified())
+        .await
+        .expect("fixture request must start");
+    let running = observer.latest().expect("live subject checkpoint");
+    assert_eq!(
+        running.checkpoint(),
+        WebAssessmentProgressCheckpoint::SubjectExecutionStarted
+    );
+    assert_eq!(running.executed_subjects(), 1);
+    assert_eq!(running.subjects_processed(), 0);
+    assert_eq!(running.requests_accounted(), 0);
+    assert_eq!(running.active_verifications_accounted(), 0);
+    assert!(!analysis.is_finished());
+
+    cancellation.cancel();
+    let report = analysis
+        .await
+        .expect("analysis task")
+        .expect("cancelled assessment returns an incomplete report");
+    let finished = observer.latest().expect("final usage checkpoint");
+    assert_eq!(
+        finished.checkpoint(),
+        WebAssessmentProgressCheckpoint::FinishedSnapshot
+    );
+    assert_eq!(
+        finished.executed_subjects(),
+        report.usage().executed_subjects()
+    );
+    assert_eq!(
+        finished.requests_accounted(),
+        report.usage().total_requests()
+    );
+    assert_eq!(
+        finished.active_verifications_accounted(),
+        report.usage().active_verifications()
+    );
+    assert!(finished.subjects_processed() <= finished.executed_subjects());
+    assert!(matches!(
+        report.completion(),
+        WebAssessmentCompletion::Incomplete { .. }
+    ));
+    assert_eq!(server.hit_count("/progress-stall").await, 1);
+}
+
+#[tokio::test]
+async fn dropping_the_progress_observer_cannot_stop_or_expand_the_assessment() {
+    let server = serve(|_| FixtureReply::Response(FixtureResponse::html("root"))).await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_wall_time(Duration::from_secs(10))
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .build()
+        .unwrap();
+    let observer = runtime.progress_observer().unwrap();
+    drop(observer);
+
+    let report = runtime.analyze().await.unwrap();
+    assert!(
+        matches!(report.completion(), WebAssessmentCompletion::Complete),
+        "unexpected completion after observer drop: {:?}",
+        report.completion()
+    );
+    assert_eq!(report.usage().total_requests(), 1);
+    assert_eq!(report.usage().active_verifications(), 0);
+    assert_eq!(server.hit_count("/").await, 1);
+}
+
 #[tokio::test]
 async fn default_assessment_does_not_dispatch_native_review_mutations() {
     let server = serve(|_| FixtureReply::Response(FixtureResponse::html("root"))).await;

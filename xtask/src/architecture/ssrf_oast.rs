@@ -799,7 +799,7 @@ fn string_set(values: &[&str]) -> BTreeSet<String> {
 }
 
 fn read(workspace_root: &Path, relative: &str) -> Result<String, io::Error> {
-    fs::read_to_string(workspace_root.join(relative))
+    fs::read_to_string(workspace_root.join(relative)).map(|source| source.replace("\r\n", "\n"))
 }
 
 fn checked_repository_path(workspace_root: &Path, relative: &str) -> Result<PathBuf, io::Error> {

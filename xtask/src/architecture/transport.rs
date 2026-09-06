@@ -226,6 +226,9 @@ const WEB_ASSESSMENT_PUBLIC_EXPORTS: &[&str] = &[
     "WebAssessmentLimits",
     "WebAssessmentLimitsError",
     "WebAssessmentMethod",
+    "WebAssessmentProgressCheckpoint",
+    "WebAssessmentProgressObserver",
+    "WebAssessmentProgressSnapshot",
     "WebAssessmentRunReport",
     "WebAssessmentRuntime",
     "WebAssessmentRuntimeBuilder",
@@ -2220,6 +2223,199 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     let mut defense_audit_owners = BTreeMap::<String, usize>::new();
     let mut rest_audit_owners = BTreeMap::<String, usize>::new();
 
+    let progress_checkpoint = syntax.items.iter().find_map(|item| match item {
+        Item::Enum(item) if item.ident == "WebAssessmentProgressCheckpoint" => Some(item),
+        _ => None,
+    });
+    let checkpoint_is_exact = progress_checkpoint.is_some_and(|item| {
+        matches!(item.vis, syn::Visibility::Public(_))
+            && item
+                .attrs
+                .iter()
+                .any(|attribute| attribute.path().is_ident("non_exhaustive"))
+            && item
+                .variants
+                .iter()
+                .map(|variant| ident_name(&variant.ident))
+                .eq([
+                    "AssessmentStarted",
+                    "SubjectExecutionStarted",
+                    "SubjectStateCommitted",
+                    "InventoryReconciled",
+                    "ProjectionStarted",
+                    "FinishedSnapshot",
+                ]
+                .into_iter()
+                .map(str::to_owned))
+            && item
+                .variants
+                .iter()
+                .all(|variant| matches!(variant.fields, syn::Fields::Unit))
+    });
+    if !checkpoint_is_exact {
+        violations.push(
+            "assessment progress checkpoint must remain the exact payload-free orchestration allowlist"
+                .to_owned(),
+        );
+    }
+
+    let progress_snapshot = syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "WebAssessmentProgressSnapshot" => Some(item),
+        _ => None,
+    });
+    let snapshot_is_exact = progress_snapshot.is_some_and(|item| {
+        let syn::Fields::Named(fields) = &item.fields else {
+            return false;
+        };
+        let expected = [
+            ("checkpoint", "WebAssessmentProgressCheckpoint"),
+            ("executed_subjects", "usize"),
+            ("subjects_processed", "usize"),
+            ("requests_accounted", "u32"),
+            ("active_verifications_accounted", "u16"),
+        ];
+        matches!(item.vis, syn::Visibility::Public(_))
+            && fields.named.len() == expected.len()
+            && fields
+                .named
+                .iter()
+                .zip(expected)
+                .all(|(field, (name, ty))| {
+                    matches!(field.vis, syn::Visibility::Inherited)
+                        && field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == name)
+                        && field.attrs.is_empty()
+                        && is_plain_ident(&field.ty, ty)
+                })
+    });
+    if !snapshot_is_exact {
+        violations.push(
+            "assessment progress snapshot must remain an exact private scalar projection with no authority, target, evidence, or raw-value field"
+                .to_owned(),
+        );
+    }
+
+    let progress_observer = syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "WebAssessmentProgressObserver" => Some(item),
+        _ => None,
+    });
+    let observer_is_exact = progress_observer.is_some_and(|item| {
+        let syn::Fields::Named(fields) = &item.fields else {
+            return false;
+        };
+        matches!(item.vis, syn::Visibility::Public(_))
+            && fields.named.len() == 1
+            && fields.named.first().is_some_and(|field| {
+                matches!(field.vis, syn::Visibility::Inherited)
+                    && field
+                        .ident
+                        .as_ref()
+                        .is_some_and(|ident| ident_name(ident) == "receiver")
+                    && field.attrs.is_empty()
+                    && is_watch_channel_of_progress_snapshot(&field.ty, "Receiver")
+            })
+    });
+    if !observer_is_exact {
+        violations.push(
+            "assessment progress observer must remain one private read-only watch receiver over safe snapshots"
+                .to_owned(),
+        );
+    }
+
+    let runtime_progress_is_exact = syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item) if item.ident == "WebAssessmentRuntime" => Some(item),
+            _ => None,
+        })
+        .is_some_and(|item| {
+            let progress_fields = item
+                .fields
+                .iter()
+                .filter(|field| {
+                    field
+                        .ident
+                        .as_ref()
+                        .is_some_and(|ident| ident_name(ident) == "progress")
+                })
+                .collect::<Vec<_>>();
+            progress_fields.len() == 1
+                && matches!(progress_fields[0].vis, syn::Visibility::Inherited)
+                && progress_fields[0].attrs.is_empty()
+                && is_optional_watch_channel_of_progress_snapshot(&progress_fields[0].ty, "Sender")
+        });
+    if !runtime_progress_is_exact {
+        violations.push(
+            "WebAssessmentRuntime must own exactly one private optional progress sender and no detached progress authority"
+                .to_owned(),
+        );
+    }
+
+    let mut progress_public_methods = BTreeMap::from([
+        (
+            "WebAssessmentProgressCheckpoint".to_owned(),
+            BTreeSet::new(),
+        ),
+        ("WebAssessmentProgressObserver".to_owned(), BTreeSet::new()),
+        ("WebAssessmentProgressSnapshot".to_owned(), BTreeSet::new()),
+    ]);
+    for item in &syntax.items {
+        let Item::Impl(item) = item else {
+            continue;
+        };
+        if item.trait_.is_some() {
+            continue;
+        }
+        let Some(owner) = type_last_identifier(item.self_ty.as_ref()).filter(|owner| {
+            matches!(
+                owner.as_str(),
+                "WebAssessmentProgressCheckpoint"
+                    | "WebAssessmentProgressSnapshot"
+                    | "WebAssessmentProgressObserver"
+            )
+        }) else {
+            continue;
+        };
+        for member in &item.items {
+            if let syn::ImplItem::Fn(method) = member {
+                if matches!(method.vis, syn::Visibility::Public(_)) {
+                    progress_public_methods
+                        .entry(owner.clone())
+                        .or_default()
+                        .insert(ident_name(&method.sig.ident));
+                }
+            }
+        }
+    }
+    let expected_progress_methods = BTreeMap::from([
+        (
+            "WebAssessmentProgressCheckpoint".to_owned(),
+            BTreeSet::new(),
+        ),
+        (
+            "WebAssessmentProgressObserver".to_owned(),
+            BTreeSet::from(["latest".to_owned()]),
+        ),
+        (
+            "WebAssessmentProgressSnapshot".to_owned(),
+            BTreeSet::from([
+                "active_verifications_accounted".to_owned(),
+                "checkpoint".to_owned(),
+                "executed_subjects".to_owned(),
+                "requests_accounted".to_owned(),
+                "subjects_processed".to_owned(),
+            ]),
+        ),
+    ]);
+    if progress_public_methods != expected_progress_methods {
+        violations.push(format!(
+            "assessment progress public accessor allowlist drifted: expected {expected_progress_methods:?}, observed {progress_public_methods:?}"
+        ));
+    }
+
     for item in &syntax.items {
         match item {
             Item::Struct(item) if !has_cfg_test(&item.attrs) => {
@@ -2420,6 +2616,37 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
         }
     }
     Ok(violations)
+}
+
+fn is_watch_channel_of_progress_snapshot(item_type: &syn::Type, channel: &str) -> bool {
+    let syn::Type::Path(path) = item_type else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 2 {
+        return false;
+    }
+    let mut segments = path.path.segments.iter();
+    let Some(namespace) = segments.next() else {
+        return false;
+    };
+    let Some(channel_segment) = segments.next() else {
+        return false;
+    };
+    if ident_name(&namespace.ident) != "watch" || ident_name(&channel_segment.ident) != channel {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &channel_segment.arguments else {
+        return false;
+    };
+    arguments.args.len() == 1
+        && matches!(arguments.args.first(), Some(syn::GenericArgument::Type(item_type))
+            if is_generic_of_idents(item_type, "Option", &["WebAssessmentProgressSnapshot"]))
+}
+
+fn is_optional_watch_channel_of_progress_snapshot(item_type: &syn::Type, channel: &str) -> bool {
+    generic_type_arguments(item_type, "Option").is_some_and(|arguments| {
+        arguments.len() == 1 && is_watch_channel_of_progress_snapshot(arguments[0], channel)
+    })
 }
 
 fn attrs_reference_serde(attributes: &[syn::Attribute]) -> bool {
@@ -11107,6 +11334,12 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("unexpected"), "{violations}");
+        let missing_progress_observer = valid.replace("WebAssessmentProgressObserver, ", "");
+        assert_ne!(missing_progress_observer, valid);
+        let violations = inspect_web_assessment_facade(&missing_progress_observer)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("missing"), "{violations}");
         let public_module = valid.replace("mod web_assessment;", "pub mod web_assessment;");
         let violations = inspect_web_assessment_facade(&public_module)
             .unwrap()
@@ -12195,6 +12428,35 @@ mod tests {
             pub struct WebAssessmentDefenseAudit { mode: String }
             pub struct WebAssessmentRestAudit { outcome: String }
             pub struct WebAssessmentSsrfOastAudit { outcome: String }
+            #[non_exhaustive]
+            pub enum WebAssessmentProgressCheckpoint {
+                AssessmentStarted,
+                SubjectExecutionStarted,
+                SubjectStateCommitted,
+                InventoryReconciled,
+                ProjectionStarted,
+                FinishedSnapshot,
+            }
+            pub struct WebAssessmentProgressSnapshot {
+                checkpoint: WebAssessmentProgressCheckpoint,
+                executed_subjects: usize,
+                subjects_processed: usize,
+                requests_accounted: u32,
+                active_verifications_accounted: u16,
+            }
+            impl WebAssessmentProgressSnapshot {
+                pub fn checkpoint(&self) -> WebAssessmentProgressCheckpoint { todo!() }
+                pub fn executed_subjects(&self) -> usize { 0 }
+                pub fn subjects_processed(&self) -> usize { 0 }
+                pub fn requests_accounted(&self) -> u32 { 0 }
+                pub fn active_verifications_accounted(&self) -> u16 { 0 }
+            }
+            pub struct WebAssessmentProgressObserver {
+                receiver: watch::Receiver<Option<WebAssessmentProgressSnapshot>>,
+            }
+            impl WebAssessmentProgressObserver {
+                pub fn latest(&self) -> Option<WebAssessmentProgressSnapshot> { None }
+            }
             pub struct WebAssessmentRunReport {
                 #[cfg(feature = "reporting")]
                 run_started_at: SystemTime,
@@ -12211,6 +12473,7 @@ mod tests {
             }
             pub struct WebAssessmentFailureReceipt { transport: TransportDispatchAudit, defense: WebAssessmentDefenseAudit }
             struct WebAssessmentRuntime {
+                progress: Option<watch::Sender<Option<WebAssessmentProgressSnapshot>>>,
                 defense_audit: WebAssessmentDefenseAudit,
                 #[cfg(feature = "rest-review")]
                 rest_review_audit: Option<WebAssessmentRestAudit>,
@@ -12230,6 +12493,65 @@ mod tests {
         );
         let violations = inspect_web_assessment_models(&serde).unwrap().join("\n");
         assert!(violations.contains("serde wire contract"), "{violations}");
+
+        let progress_serde = valid.replace(
+            "pub struct WebAssessmentProgressSnapshot",
+            "#[derive(Serialize)] pub struct WebAssessmentProgressSnapshot",
+        );
+        assert_ne!(progress_serde, valid);
+        let violations = inspect_web_assessment_models(&progress_serde)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("serde wire contract"), "{violations}");
+
+        let progress_authority = valid.replace(
+            "                checkpoint: WebAssessmentProgressCheckpoint,",
+            "                checkpoint: WebAssessmentProgressCheckpoint,\n                authority: SharedWebRuntimeAuthority,",
+        );
+        assert_ne!(progress_authority, valid);
+        let violations = inspect_web_assessment_models(&progress_authority)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("exact private scalar projection"),
+            "{violations}"
+        );
+
+        let observer_budget = valid.replace(
+            "                receiver: watch::Receiver<Option<WebAssessmentProgressSnapshot>>,",
+            "                receiver: watch::Receiver<Option<WebAssessmentProgressSnapshot>>,\n                budget: RuntimeBudget,",
+        );
+        assert_ne!(observer_budget, valid);
+        let violations = inspect_web_assessment_models(&observer_budget)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("one private read-only watch receiver"),
+            "{violations}"
+        );
+
+        let checkpoint_payload = valid.replace(
+            "                AssessmentStarted,",
+            "                AssessmentStarted(String),",
+        );
+        assert_ne!(checkpoint_payload, valid);
+        let violations = inspect_web_assessment_models(&checkpoint_payload)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("payload-free orchestration allowlist"),
+            "{violations}"
+        );
+
+        let broad_accessor = valid.replace(
+            "                pub fn latest(&self) -> Option<WebAssessmentProgressSnapshot> { None }",
+            "                pub fn latest(&self) -> Option<WebAssessmentProgressSnapshot> { None }\n                pub fn authority(&self) -> SharedWebRuntimeAuthority { todo!() }",
+        );
+        assert_ne!(broad_accessor, valid);
+        let violations = inspect_web_assessment_models(&broad_accessor)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("accessor allowlist"), "{violations}");
 
         let rest_serde = valid.replace(
             "pub struct WebAssessmentRestAudit",
