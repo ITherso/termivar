@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
 
 #[test]
@@ -121,6 +122,30 @@ fn bounded_native_oast_provider_models_cover_owned_seed_matrix() {
         }
     }
     assert_eq!(count, 96, "owned native OAST seed inventory drifted");
+}
+
+#[test]
+fn reported_native_oast_provider_diagnostic_collision_satisfies_the_oracle() {
+    const REPORTED_CRASH: &[u8] = include_bytes!(
+        "../../corpus/native_oast_provider/01-reported-invalid-admin-diagnostic-collision.bin"
+    );
+    const LOGIC_MINIMUM: &[u8] = b"\x03InvalidAdminToken:native OAST ad";
+    const REPORTED_CRASH_SHA256: [u8; 32] = [
+        0xab, 0x8d, 0xba, 0xde, 0xe8, 0xdf, 0x7f, 0x30, 0xd5, 0xe3, 0xe9, 0xc3, 0x48, 0xad, 0x75,
+        0x5f, 0x57, 0xd2, 0x69, 0x46, 0xc2, 0x96, 0x7e, 0x08, 0x2b, 0xa9, 0xe2, 0x2b, 0x77, 0x89,
+        0xc4, 0x0e,
+    ];
+
+    assert_eq!(REPORTED_CRASH.len(), 61);
+    let observed_digest: [u8; 32] = Sha256::digest(REPORTED_CRASH).into();
+    assert!(observed_digest == REPORTED_CRASH_SHA256);
+    assert_eq!(usize::from(REPORTED_CRASH[0] % 11), 3);
+    assert!(REPORTED_CRASH.len() <= termivar_fuzz_harness::MAX_NATIVE_OAST_FUZZ_INPUT_BYTES);
+    termivar_fuzz_harness::check_native_oast_provider(REPORTED_CRASH);
+
+    assert_eq!(LOGIC_MINIMUM.len(), 33);
+    assert_eq!(usize::from(LOGIC_MINIMUM[0] % 11), 3);
+    termivar_fuzz_harness::check_native_oast_provider(LOGIC_MINIMUM);
 }
 
 #[test]

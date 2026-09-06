@@ -12,5 +12,8 @@ corpus/declarative_policy_wire/*
 !corpus/decision_loop_authority/
 corpus/decision_loop_authority/*
 !corpus/decision_loop_authority/*.json
+!corpus/native_oast_provider/
+corpus/native_oast_provider/*
+!corpus/native_oast_provider/*.bin
 coverage/
 target/

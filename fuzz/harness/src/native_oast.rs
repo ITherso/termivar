@@ -2,9 +2,13 @@
 
 use termivar_oast::{
     AdminToken, CallbackDisposition, CallbackId, CallbackMethod, EventCursor, EventId,
-    LoopbackBind, ManagementBearer, NativeOastRoute, ProtocolClass, ProviderConfig, ProviderLimits,
-    ProviderState, PublicOrigin, SessionId, SessionRequest,
+    LoopbackBind, ManagementBearer, NativeOastRoute, ProtocolClass, ProviderConfig, ProviderError,
+    ProviderLimits, ProviderState, PublicOrigin, SessionId, SessionRequest,
 };
+
+const REDACTED_ADMIN_TOKEN_DEBUG: &str = "AdminToken(<redacted>)";
+const INVALID_ADMIN_TOKEN_RENDERING: &str =
+    "InvalidAdminToken:native OAST administrator token is invalid";
 
 /// Maximum byte buffer accepted by the native-provider fuzz oracle.
 pub const MAX_NATIVE_OAST_FUZZ_INPUT_BYTES: usize = 4_096;
@@ -219,16 +223,37 @@ fn check_admin_token(data: &[u8]) {
     let first = AdminToken::new(data.to_vec());
     let repeated = AdminToken::new(data.to_vec());
     assert_eq!(first.is_ok(), repeated.is_ok());
-    let rendered = match first {
-        Ok(token) => format!("{token:?}"),
-        Err(error) => format!("{error:?}:{error}"),
-    };
-    if !data.is_empty() {
-        let supplied = String::from_utf8_lossy(data);
-        if supplied.len() >= 32 {
-            assert!(!rendered.contains(supplied.as_ref()));
-        }
+    match first {
+        Ok(token) => {
+            let rendered = format!("{token:?}");
+            assert!(
+                accepted_admin_token_rendering_is_safe(data, &rendered),
+                "accepted administrator token rendering violated its privacy contract"
+            );
+        },
+        Err(error) => {
+            assert_eq!(error, ProviderError::InvalidAdminToken);
+            let rendered = format!("{error:?}:{error}");
+            assert!(
+                rejected_admin_token_rendering_is_fixed(&rendered),
+                "rejected administrator token rendering violated its fixed diagnostic contract"
+            );
+        },
     }
+}
+
+fn accepted_admin_token_rendering_is_safe(supplied: &[u8], rendered: &str) -> bool {
+    let Ok(supplied) = std::str::from_utf8(supplied) else {
+        return false;
+    };
+    rendered == REDACTED_ADMIN_TOKEN_DEBUG && !rendered.contains(supplied)
+}
+
+fn rejected_admin_token_rendering_is_fixed(rendered: &str) -> bool {
+    // Invalid bytes are not accepted secret material. Pin the complete
+    // fieldless diagnostic instead of treating an arbitrary collision with
+    // its public text as evidence that caller bytes were retained.
+    rendered == INVALID_ADMIN_TOKEN_RENDERING
 }
 
 fn check_state_transitions(data: &[u8]) {
@@ -385,5 +410,54 @@ fn check_fixed_regressions() {
         &b"Bearer\tAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"[..],
     ] {
         assert!(ManagementBearer::session(invalid).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ACCEPTED_SECRET: &[u8] = b"SYNTHETIC-ADMIN-SECRET-8D31C0A4";
+    const REJECTED_DIAGNOSTIC_COLLISION: &[u8] =
+        b"InvalidAdminToken:native OAST administrator token is invalid";
+
+    #[test]
+    fn accepted_admin_token_uses_the_independently_pinned_redaction() {
+        let token = AdminToken::new(ACCEPTED_SECRET.to_vec()).unwrap();
+        let rendered = format!("{token:?}");
+
+        assert!(accepted_admin_token_rendering_is_safe(
+            ACCEPTED_SECRET,
+            &rendered
+        ));
+        assert!(rendered == REDACTED_ADMIN_TOKEN_DEBUG);
+    }
+
+    #[test]
+    fn rejected_input_equal_to_the_public_diagnostic_is_not_secret_evidence() {
+        let error = AdminToken::new(REJECTED_DIAGNOSTIC_COLLISION.to_vec()).unwrap_err();
+        assert_eq!(error, ProviderError::InvalidAdminToken);
+        let rendered = format!("{error:?}:{error}");
+
+        assert!(rendered == INVALID_ADMIN_TOKEN_RENDERING);
+        assert!(rejected_admin_token_rendering_is_fixed(&rendered));
+    }
+
+    #[test]
+    fn deliberately_reflecting_test_double_still_fails_the_privacy_oracle() {
+        struct LeakingAdminToken<'a>(&'a str);
+
+        impl std::fmt::Debug for LeakingAdminToken<'_> {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "AdminToken({})", self.0)
+            }
+        }
+
+        let supplied = std::str::from_utf8(ACCEPTED_SECRET).unwrap();
+        let rendered = format!("{:?}", LeakingAdminToken(supplied));
+        assert!(!accepted_admin_token_rendering_is_safe(
+            ACCEPTED_SECRET,
+            &rendered
+        ));
     }
 }
