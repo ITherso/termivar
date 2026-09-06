@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn repository_alpha2_candidate_metadata_passes_the_normal_validator() {
+    fn repository_published_alpha2_metadata_remains_valid_after_rollover() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask must be inside the workspace");
@@ -705,14 +705,18 @@ mod tests {
         .expect("read alpha.2 release note");
         assert!(metadata_violations(PREPARED_RELEASE, &changelog, &security).is_empty());
         assert!(release_note_file_violations(workspace, PREPARED_RELEASE).is_empty());
-        assert!(prepared_candidate_violations(
-            PREPARED_RELEASE,
-            PREPARED_RELEASE_DATE,
-            &changelog,
-            &security,
-            &release_note,
-        )
-        .is_empty());
+        assert!(release_note_text_violations(PREPARED_RELEASE, &release_note).is_empty());
+        assert!(
+            !prepared_candidate_violations(
+                PREPARED_RELEASE,
+                PREPARED_RELEASE_DATE,
+                &changelog,
+                &security,
+                &release_note,
+            )
+            .is_empty(),
+            "published metadata must not still masquerade as a prepared candidate"
+        );
     }
 
     #[test]

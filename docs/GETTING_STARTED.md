@@ -7,17 +7,18 @@ accuracy or the security of an application.
 
 Choose one binary first:
 
-- [Published prerelease: v0.10.0-alpha.1](DISTRIBUTION.md#try-the-published-prerelease):
+- [Published prerelease: v0.10.0-alpha.2](DISTRIBUTION.md#try-the-published-prerelease):
   manually download, verify, inspect, and extract your platform archive. No
   Rust toolchain is required.
-- [Development source: 0.10.0-alpha.2](DISTRIBUTION.md#build-from-source):
+- [Preserved pinned source example: 0.10.0-alpha.2](DISTRIBUTION.md#build-from-source):
   build package `termivar-cli` from the reviewed full commit
   `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` in a separate source tree.
 
-The older archives do not include maintenance from PRs #109–#111 and are not
-recommended for credentialed or production use. The
+The historical alpha.1 archives do not include maintenance from PRs #109–#111.
+Alpha.2 includes those changes, but neither release is independently audited or
+production-ready. The
 [distribution comparison](DISTRIBUTION.md) records the exact release identity
-and build features. Neither build is independently audited or production-ready.
+and build features.
 
 ## Prerequisites
 
@@ -46,17 +47,17 @@ Linux/macOS:
 
 ```bash
 python3 scripts/first_use.py \
-  --binary ./termivar-alpha1/termivar \
+  --binary ./termivar-alpha2/termivar \
   --output first-use-release-output \
-  --source-ref v0.10.0-alpha.1 \
+  --source-ref v0.10.0-alpha.2 \
   --build-features release-bundle \
-  --expect-version 0.10.0-alpha.1
+  --expect-version 0.10.0-alpha.2
 ```
 
 Windows PowerShell:
 
 ```powershell
-python scripts/first_use.py --binary .\termivar-alpha1\termivar.exe --output first-use-release-output --source-ref v0.10.0-alpha.1 --build-features release-bundle --expect-version 0.10.0-alpha.1
+python scripts/first_use.py --binary .\termivar-alpha2\termivar.exe --output first-use-release-output --source-ref v0.10.0-alpha.2 --build-features release-bundle --expect-version 0.10.0-alpha.2
 if ($LASTEXITCODE -ne 0) { throw "First-use acceptance did not pass; inspect its diagnostics" }
 ```
 
@@ -162,15 +163,17 @@ ssrf-oast-review=not_compiled
 ```
 
 The hashes identify the two files that were executed; they are not build
-attestations. The published `v0.10.0-alpha.1` archives and the earlier pinned
+attestations. The historical `v0.10.0-alpha.1` archives and earlier pinned
 `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` source walkthrough predate this
-command. Compiling `ssrf-oast-review` separately does not close corrective-
-maintenance F3, which remains deferred, out of scope, and unresolved.
+command; the published alpha.2 archives include it. Compiling
+`ssrf-oast-review` separately does not close corrective-maintenance F3, which
+remains deferred, out of scope, and unresolved.
 
-## Export one development assessment in two formats
+## Export one assessment in two formats
 
-A development `0.10.0-alpha.2` binary whose `scan --help` includes
-`--report-dir` can create HTML and JSON from one completed assessment:
+The published `v0.10.0-alpha.2` binary and later development builds whose
+`scan --help` includes `--report-dir` can create HTML and JSON from one completed
+assessment:
 
 ```bash
 termivar scan <AUTHORIZED_TARGET> \
@@ -213,15 +216,15 @@ termivar report compare \
   --same-scope
 ```
 
-This option belongs to development source containing the feature; the published
-`v0.10.0-alpha.1` archives and their checked-in first-use captures do not have
-it. See the [full bundle and manifest contract](reporting.md#single-run-report-bundles).
+The published alpha.2 archives include this option. The preserved alpha.1
+archives and checked-in first-use captures do not. See the
+[full bundle and manifest contract](reporting.md#single-run-report-bundles).
 
 ## Verify a saved bundle offline
 
-A development `0.10.0-alpha.2` binary whose `report --help` includes `verify`
-can check the fixed three-file bundle without scanning, launching, or rendering
-the HTML:
+The published `v0.10.0-alpha.2` binary and later development builds whose
+`report --help` includes `verify` can check the fixed three-file bundle without
+scanning, launching, or rendering the HTML:
 
 ```bash
 # Text result.
@@ -266,8 +269,8 @@ The verifier checks one bundle's supported internal consistency; comparison
 groups observations and separately relies on the operator's same-scope
 assertion. See the
 [full verification contract](reporting.md#offline-report-bundle-verification).
-The published `v0.10.0-alpha.1` archives contain neither `--report-dir` nor
-`report verify`.
+The published alpha.2 archives contain both `--report-dir` and `report verify`;
+the preserved alpha.1 archives contain neither.
 
 ## Open the outputs
 

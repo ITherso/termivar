@@ -5,15 +5,15 @@ audited; the published prerelease does not acquire later source fixes.
 
 | Choice | Exact identity | Build features |
 | --- | --- | --- |
-| Published prerelease | [v0.10.0-alpha.1](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1), release ID `382219595`, tag commit `2212b2590c6193a18915dcd33ad2bb31e1a9ef7b` | Existing `release-bundle` |
-| Pinned first-use development example (not the current release candidate) | `0.10.0-alpha.2` at `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` | Default CLI build, or explicit `release-bundle` |
+| Published prerelease | [v0.10.0-alpha.2](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2), release ID `383577232`, annotated tag object `c2c749c410b274c6719c586087e5d32f222ec8a2`, peeled commit `284a21a83191075615f2086ec935c6f3bf07c2bf` | Existing `release-bundle` |
+| Preserved pinned source example (not current `main`) | `0.10.0-alpha.2` at `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` | Default CLI build, or explicit `release-bundle` |
 
-Alpha.2 release metadata is **PREPARED / NOT PUBLISHED**. There is currently no
-`v0.10.0-alpha.2` tag, GitHub Release, downloadable alpha.2 archive,
-`SHA256SUMS`, or tag-bound attestation. Main-workflow archives named with
-`termivar-main-...` are temporary candidate evidence, not published release
-downloads. Keep using the alpha.1 links above unless GitHub shows a separately
-published alpha.2 release.
+Alpha.2 was published on 2026-09-06 with four native archives and a 478-byte
+`SHA256SUMS` whose SHA-256 is
+`9117984e31523aa4bfc751a182423efd2af0f1581883750fe4f3f2abf11d7499`.
+Current `main` is the unreleased `0.10.0-alpha.3` development line. Main-workflow
+archives named with `termivar-main-...` remain temporary candidate evidence,
+not published release downloads.
 
 The CLI's default feature list is empty; its scanner dependency enables
 `scanning` and `reporting`. The existing release bundle additionally compiles
@@ -22,20 +22,21 @@ The CLI's default feature list is empty; its scanner dependency enables
 features does not opt into their runtime actions. The bundle excludes OAST,
 the legacy runner, the unsupported API listener, and the experimental proxy.
 
-Newer development builds whose top-level help lists `capabilities` can report
-their own compile-time CLI surface states with
+The published alpha.2 executable and later development builds can report their
+own compile-time CLI surface states with
 `termivar capabilities --format json`. This is exact for that executable's
 `termivar-cli` feature gates only. In particular, `release-bundle=compiled`
 means the Cargo composition feature was selected; it is not evidence of an
 official release artifact, tested source SHA, or trusted provenance. Member
 features are reported independently, and no compiled state activates a runtime
-review. The published alpha.1 binary and the pinned `a29ba40...` source binary
-in this guide predate the command, so do not add it to those walkthroughs.
+review. The historical alpha.1 binary and the pinned `a29ba40...` source binary
+in this guide predate the command; the published alpha.2 archives include it.
 
-The alpha.1 archives predate PRs #109–#111. Do not use the older prerelease for
-credentialed or production evaluation. The walkthrough is credential-free and
-loopback-only. See the [maintenance record](audits/native-oast-corrective-maintenance.md)
-for the later fixes and unresolved F3; no OAST setup is part of this guide.
+The historical alpha.1 archives predate PRs #109–#111. Alpha.2 includes those
+maintenance changes, but remains experimental, independently unaudited, and not
+production-ready. The walkthrough is credential-free and loopback-only. See the
+[maintenance record](audits/native-oast-corrective-maintenance.md) for the fixes
+and unresolved F3; no OAST setup is part of this guide.
 
 ## Before either path
 
@@ -60,9 +61,10 @@ git rev-parse HEAD
 Run the remaining commands from that checkout's root. Inspect the scripts and
 record the full revision printed above; it identifies the tools you actually
 obtained, not the pinned source binary or the published release.
-If either script is absent, stop: the alpha.1 tag and the pinned development
-revision below predate these walkthrough tools. Do not switch this tools
-checkout to the older source revision; use the separate source tree below.
+If either script is absent, stop and obtain a reviewed tools checkout that
+contains them. The historical alpha.1 tag and pinned development revision below
+predate these walkthrough tools; do not switch this tools checkout to either
+older revision.
 
 No step needs administrator privileges, global PATH changes, execution-policy
 changes, Gatekeeper bypass, or disabled antivirus/App Control. If host security
@@ -71,14 +73,14 @@ blocks a binary, leave it blocked and report the unexecuted step.
 ## Try the published prerelease
 
 Download only your matching archive and the exact release's
-[SHA256SUMS](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/SHA256SUMS).
+[SHA256SUMS](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2/SHA256SUMS).
 
 | Platform | Archive |
 | --- | --- |
-| Linux x86_64 (GNU) | [termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz) |
-| macOS Apple Silicon | [termivar-v0.10.0-alpha.1-aarch64-apple-darwin.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/termivar-v0.10.0-alpha.1-aarch64-apple-darwin.tar.gz) |
-| macOS Intel | [termivar-v0.10.0-alpha.1-x86_64-apple-darwin.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/termivar-v0.10.0-alpha.1-x86_64-apple-darwin.tar.gz) |
-| Windows x86_64 (MSVC) | [termivar-v0.10.0-alpha.1-x86_64-pc-windows-msvc.zip](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1/termivar-v0.10.0-alpha.1-x86_64-pc-windows-msvc.zip) |
+| Linux x86_64 (GNU) | [termivar-v0.10.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2/termivar-v0.10.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz) |
+| macOS Apple Silicon | [termivar-v0.10.0-alpha.2-aarch64-apple-darwin.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2/termivar-v0.10.0-alpha.2-aarch64-apple-darwin.tar.gz) |
+| macOS Intel | [termivar-v0.10.0-alpha.2-x86_64-apple-darwin.tar.gz](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2/termivar-v0.10.0-alpha.2-x86_64-apple-darwin.tar.gz) |
+| Windows x86_64 (MSVC) | [termivar-v0.10.0-alpha.2-x86_64-pc-windows-msvc.zip](https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2/termivar-v0.10.0-alpha.2-x86_64-pc-windows-msvc.zip) |
 
 The helper selects the **single exact filename** in the checksum manifest,
 rejects missing, duplicate, or malformed entries, and compares the archive
@@ -101,19 +103,19 @@ First select exactly one filename.
 Linux x86_64:
 
 ```bash
-ASSET="termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz"
+ASSET="termivar-v0.10.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz"
 ```
 
 macOS Apple Silicon:
 
 ```bash
-ASSET="termivar-v0.10.0-alpha.1-aarch64-apple-darwin.tar.gz"
+ASSET="termivar-v0.10.0-alpha.2-aarch64-apple-darwin.tar.gz"
 ```
 
 macOS Intel:
 
 ```bash
-ASSET="termivar-v0.10.0-alpha.1-x86_64-apple-darwin.tar.gz"
+ASSET="termivar-v0.10.0-alpha.2-x86_64-apple-darwin.tar.gz"
 ```
 
 Then download and inspect. `curl` is an explicit acquisition prerequisite.
@@ -121,7 +123,7 @@ The download directory must not already exist.
 
 ```bash
 set -eu
-RELEASE_URL="https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1"
+RELEASE_URL="https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2"
 mkdir -m 700 first-use-downloads
 curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
   --output "first-use-downloads/$ASSET" "$RELEASE_URL/$ASSET"
@@ -139,13 +141,13 @@ set -eu
 python3 scripts/verify_release_archive.py \
   --archive "first-use-downloads/$ASSET" \
   --checksums first-use-downloads/SHA256SUMS \
-  --extract-to termivar-alpha1
-./termivar-alpha1/termivar --version
-./termivar-alpha1/termivar --help
-./termivar-alpha1/termivar scan --help
+  --extract-to termivar-alpha2
+./termivar-alpha2/termivar --version
+./termivar-alpha2/termivar --help
+./termivar-alpha2/termivar scan --help
 ```
 
-Expect version `0.10.0-alpha.1`. Continue with the
+Expect version `0.10.0-alpha.2`. Continue with the
 [released-binary walkthrough](GETTING_STARTED.md#run-the-local-walkthrough).
 
 ### Windows PowerShell
@@ -155,8 +157,8 @@ installed Python 3.12.4+ interpreter as `python`.
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$asset = "termivar-v0.10.0-alpha.1-x86_64-pc-windows-msvc.zip"
-$releaseUrl = "https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1"
+$asset = "termivar-v0.10.0-alpha.2-x86_64-pc-windows-msvc.zip"
+$releaseUrl = "https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2"
 New-Item -ItemType Directory -Path first-use-downloads | Out-Null
 Invoke-WebRequest -Uri "$releaseUrl/$asset" -OutFile "first-use-downloads/$asset"
 Invoke-WebRequest -Uri "$releaseUrl/SHA256SUMS" -OutFile first-use-downloads/SHA256SUMS
@@ -167,24 +169,26 @@ if ($LASTEXITCODE -ne 0) { throw "Archive inspection failed" }
 Review the inspection output before the next commands:
 
 ```powershell
-python scripts/verify_release_archive.py --archive "first-use-downloads/$asset" --checksums first-use-downloads/SHA256SUMS --extract-to termivar-alpha1
+python scripts/verify_release_archive.py --archive "first-use-downloads/$asset" --checksums first-use-downloads/SHA256SUMS --extract-to termivar-alpha2
 if ($LASTEXITCODE -ne 0) { throw "Verified extraction failed" }
-.\termivar-alpha1\termivar.exe --version
-.\termivar-alpha1\termivar.exe --help
-.\termivar-alpha1\termivar.exe scan --help
+.\termivar-alpha2\termivar.exe --version
+.\termivar-alpha2\termivar.exe --help
+.\termivar-alpha2\termivar.exe scan --help
 ```
 
-Expect version `0.10.0-alpha.1`. Continue with the
+Expect version `0.10.0-alpha.2`. Continue with the
 [released-binary walkthrough](GETTING_STARTED.md#run-the-local-walkthrough).
-Published-platform acceptance is recorded per actual native execution in the
-[sample provenance](examples/first-use/README.md); downloadable does not mean
-every archive was executed for this walkthrough.
+Published alpha.2 packaged-binary acceptance ran on all four native targets in
+[Release workflow run 34032959112](https://github.com/ITherso/termivar/actions/runs/34032959112).
+The checked-in [first-use sample provenance](examples/first-use/README.md)
+remains the earlier Windows alpha.1 capture and is not relabelled as alpha.2.
 
 ## Build from source
 
-Keep the walkthrough scripts in the tools checkout. Clone a **separate**
-source tree at the concrete reviewed revision below. These commands build
-package `termivar-cli`, whose executable is `termivar`.
+Keep the walkthrough scripts in the tools checkout. The following preserved
+example clones a **separate** source tree at its concrete reviewed alpha.2
+revision. It is not current `main`. These commands build package
+`termivar-cli`, whose executable is `termivar`.
 
 Linux/macOS:
 
@@ -266,12 +270,12 @@ feature labels are explicit caller declarations, not facts inferred from help.
 
 ## Release status and unsupported channels
 
-The alpha.2 development line has prepared metadata but no matching published
-prebuilt release. Its support declaration starts only on publication. The
-historical `v0.9.0-alpha` archives predate the deterministic-default remediation
-and are not an installation path for this guide. Future releases use the
-existing [release process](RELEASE.md); this walkthrough changes no release or
-tag.
+The `v0.10.0-alpha.2` prebuilt release is published and its support declaration
+is active. Current `main` is the unreleased `0.10.0-alpha.3` development line.
+The historical `v0.9.0-alpha` archives predate the deterministic-default
+remediation and are not an installation path for this guide. Future releases
+use the existing [release process](RELEASE.md); this walkthrough changes no
+release or tag.
 
 There is no supported Homebrew/Apt/AUR/Snap/Chocolatey/Scoop/crates.io package,
 repository installer, automatic updater, signed-platform binary channel,

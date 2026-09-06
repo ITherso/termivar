@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect one locally downloaded alpha.1 archive; optionally extract it.
+"""Inspect one locally downloaded alpha.2 archive; optionally extract it.
 
 Requires Python 3.12.4+. This is not an installer: it never downloads, builds,
 executes a binary, changes PATH, or bypasses platform security controls.
@@ -26,7 +26,7 @@ import zipfile
 import zlib
 
 
-RELEASE_TAG = "v0.10.0-alpha.1"
+RELEASE_TAG = "v0.10.0-alpha.2"
 ARCHIVES = {
     f"termivar-{RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz": "termivar",
     f"termivar-{RELEASE_TAG}-x86_64-apple-darwin.tar.gz": "termivar",
@@ -59,7 +59,7 @@ def _read_snapshot(path: Path, limit: int) -> bytes:
 
 def _selected_digest(manifest: bytes, archive_name: str) -> str:
     if archive_name not in ARCHIVES:
-        raise VerificationError("archive basename is not an exact supported alpha.1 asset")
+        raise VerificationError("archive basename is not an exact supported alpha.2 asset")
     if len(manifest) > MAX_MANIFEST_BYTES:
         raise VerificationError("checksum manifest exceeds the compiled byte limit")
     try:
@@ -261,7 +261,7 @@ def verify_archive(archive_path: Path, checksums_path: Path, extract_to: Path | 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--archive", type=Path, required=True, help="one exact alpha.1 platform archive")
+    parser.add_argument("--archive", type=Path, required=True, help="one exact alpha.2 platform archive")
     parser.add_argument("--checksums", type=Path, required=True, help="local SHA256SUMS from the exact release")
     parser.add_argument("--extract-to", type=Path, help="explicitly extract after verification into a new directory")
     args = parser.parse_args(argv)

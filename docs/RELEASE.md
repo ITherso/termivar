@@ -56,30 +56,23 @@ immutable `v0.9.0-alpha` source commit. CI pins Rust
 [Repository health](repository-health.md#public-api-compatibility-scope) for
 the current scope and the documented scanner exception.
 
-The `v0.10.0-alpha.1` prerelease is published. Current `main` uses the
-`0.10.0-alpha.2` development identity so later source cannot be confused with
-that immutable release. Alpha.2's dated changelog section, support-on-
-publication declaration, and curated note are **PREPARED / NOT PUBLISHED**.
-Their presence in source does not establish a tag, GitHub Release, downloadable
-archive, checksum file, attestation, or support start.
+The experimental [`v0.10.0-alpha.2` prerelease](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2)
+is published as release ID `383577232`. Annotated tag object
+`c2c749c410b274c6719c586087e5d32f222ec8a2` peels to
+`284a21a83191075615f2086ec935c6f3bf07c2bf`; the release contains four native
+archives and a 478-byte `SHA256SUMS` whose SHA-256 is
+`9117984e31523aa4bfc751a182423efd2af0f1581883750fe4f3f2abf11d7499`.
+Current `main` uses the unreleased `0.10.0-alpha.3` development identity so
+later source cannot be confused with those published bytes.
 
-Before publishing `0.10.0-alpha.2` in a separately authorized operation:
-
-1. require the repository's exact alpha.2 prepared-state regression plus
-   `cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2` on the
-   exact candidate, and review the prepared prose;
-2. require all candidate gates plus all four native packaged-binary acceptance
-   jobs to pass for that same source commit;
-3. create the annotated tag only from the approved candidate commit;
-4. let the create-once workflow revalidate and publish that exact tag, then
-   verify its peeled commit and release assets; and
-5. mark alpha.2 support as active and advance the workspace version before the
-   first later source commit.
-
-A prepared support row is a commitment that support starts if publication
-succeeds, not a claim that the candidate can already be downloaded. Main-run
-archives remain temporary workflow evidence and are not tag-labelled release
-assets or published checksums.
+Alpha.2 followed the process above: prepared metadata and native packaged
+acceptance were reviewed on the exact candidate, the annotated tag was created
+from that commit, and the create-once workflow revalidated and published it.
+The checked-in alpha.2 release note remains the publication-note source; its
+normalized text matches the published release body rather than being rewritten
+after release. Future releases must repeat the same candidate, tag, and
+create-once checks. Main-run archives remain temporary workflow evidence and
+are not tag-labelled release assets or published checksums.
 
 Do not baseline the scanner against mutable `main` or describe the current
 transition as patch-compatible with `v0.9.0-alpha`.

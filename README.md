@@ -15,27 +15,28 @@ not require an LLM.
 
 > Experimental and not production-ready; no independent security audit has been
 > completed. Use only where you have explicit authorization. The published
-> `v0.10.0-alpha.1` prerelease and unreleased `0.10.0-alpha.2` source are different
-> builds. The walkthrough below uses only a credential-free local demonstration.
+> `v0.10.0-alpha.2` prerelease and unreleased `0.10.0-alpha.3` source line are
+> different builds. The walkthrough below uses only a credential-free local
+> demonstration.
 
 ## Try it locally
 
-1. [Download the exact v0.10.0-alpha.1 prerelease](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1),
+1. [Download the exact v0.10.0-alpha.2 prerelease](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2),
    then follow the [Linux, macOS, or Windows verification and extraction steps](docs/DISTRIBUTION.md#try-the-published-prerelease).
    No Rust toolchain is needed for the archived binary.
-2. Alternatively, [build the reviewed development source](docs/DISTRIBUTION.md#build-from-source)
+2. Alternatively, [build the preserved reviewed source example](docs/DISTRIBUTION.md#build-from-source)
    at `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0`.
 3. [Run the local walkthrough](docs/GETTING_STARTED.md). It starts and stops its
    own tiny loopback fixture, runs the actual CLI, and saves separate default,
    JSON-assessment, and HTML-assessment outputs.
 
 The walkthrough tools require Git and Python 3.12.4 or newer. They do not
-download, build, install, or update a binary for you. The older release archives
-do not include maintenance from PRs #109–#111 and are not recommended for
-credentialed or production use.
+download, build, install, or update a binary for you. The historical alpha.1
+archives do not include maintenance from PRs #109–#111; neither prerelease is
+independently audited or production-ready.
 
-A newer development executable whose help lists `capabilities` can describe
-its compile-time CLI surface without starting a scan:
+The published alpha.2 executable can describe its compile-time CLI surface
+without starting a scan:
 
 ```bash
 termivar capabilities
@@ -43,17 +44,19 @@ termivar capabilities --format json
 ```
 
 The output separates compile state, lifecycle, implementation status, and
-runtime prerequisites. It is not a readiness test or proof that the binary is
-an official release; the alpha.1 and pinned `a29ba40...` walkthrough binaries
-predate this command. See the [build-accurate inventory guide](docs/GETTING_STARTED.md#inspect-compiled-cli-capabilities).
+runtime prerequisites. It is not a readiness test or proof of release
+provenance. The historical alpha.1 and pinned `a29ba40...` walkthrough binaries
+predate this command; the published alpha.2 archives include it. See the
+[build-accurate inventory guide](docs/GETTING_STARTED.md#inspect-compiled-cli-capabilities).
 
 [Read the version-labelled example reports](docs/examples/first-use/README.md):
 [HTML](docs/examples/first-use/assessment.html) ·
 [JSON](docs/examples/first-use/assessment.json) ·
 [provenance](docs/examples/first-use/provenance.json).
 
-Actual JSON fragment from the Windows x86_64 alpha.1 binary, captured in an
-isolated directory on 2026-09-05:
+Actual JSON fragment from the
+[Windows x86_64 alpha.1 binary](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1),
+captured in an isolated directory on 2026-09-05:
 
 ```text
 "title":"Permissions-Policy was not observed","disposition":"informational","claim_basis":"observation","severity":null
@@ -78,8 +81,8 @@ above.
 See the [sample reading guide](docs/examples/first-use/README.md) and
 [report contract](docs/reporting.md).
 
-Development `0.10.0-alpha.2` source that includes the report-bundle command can
-export HTML and JSON from one completed assessment and one typed composition:
+The published `v0.10.0-alpha.2` binary and later development source can export
+HTML and JSON from one completed assessment and one typed composition:
 
 ```bash
 termivar scan <AUTHORIZED_TARGET> \
@@ -90,8 +93,8 @@ termivar scan <AUTHORIZED_TARGET> \
 The new directory contains `assessment.html`, `assessment.json`, and a final
 `manifest.json` that identifies the exact report bytes. It does not rerun the
 assessment, and the manifest hashes are integrity metadata rather than a
-signature. This option is not present in the published `v0.10.0-alpha.1`
-archives. See the [bundle publication contract](docs/reporting.md#single-run-report-bundles)
+signature. The preserved alpha.1 examples predate this option; the published
+alpha.2 archives include it. See the [bundle publication contract](docs/reporting.md#single-run-report-bundles)
 and the [recorded loopback example](docs/examples/report-bundle/README.md).
 
 Saved complete assessment JSON files can also be compared without starting a
@@ -115,14 +118,14 @@ and unchanged groups. Disappearance is not verified remediation. See the
 - A bounded, exact-origin web assessment with evidence and completeness records.
 - Human-readable HTML or Markdown and machine-readable JSON or CSV output,
   using the existing report renderer.
-- A single-run development-source bundle containing HTML and JSON rendered
+- A single-run report bundle containing HTML and JSON rendered
   from the same completed assessment, with a manifest published last.
 - Offline Markdown, JSON, or standalone HTML comparison of two supported,
   complete assessment JSON documents.
 - Offline strict V1 consistency verification of a saved three-file report
   bundle; this does not authenticate its producer, scope, findings, or HTML.
 - Build-accurate text or JSON inventory of the CLI surfaces compiled into the
-  exact development executable, without starting scanner or provider runtime.
+  exact executable, without starting scanner or provider runtime.
 - Source-level Rust evidence, reasoning, and reporting contracts for an explicit
   library host; see the [architecture](docs/architecture.md).
 

@@ -32,7 +32,6 @@ COMPARISON_SCHEMA = "termivar-report-comparison/v1"
 EVIDENCE_NAME = "acceptance.json"
 EVIDENCE_LIMIT = 256 * 1024
 MAX_PARENT_ENTRIES = 64
-EXPECTED_VERSION = "0.10.0-alpha.2"
 TARGETS = {
     "x86_64-unknown-linux-gnu": {
         "system": "Linux", "machines": {"x86_64", "amd64"},
@@ -75,7 +74,13 @@ SYNTHETIC_COUNTS = {
 }
 HEX_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
-VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", re.ASCII)
+VERSION = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][A-Za-z0-9-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][A-Za-z0-9-]*))*)?"
+    r"(?:\+[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?",
+    re.ASCII,
+)
 
 
 class AcceptanceError(ValueError):
@@ -125,8 +130,8 @@ def _bounded_directory_entries(directory: Path, limit: int, label: str) -> list[
 def _candidate_identity(archive: Path, target: str, archive_ref: str,
                         expected_version: str) -> tuple[str, str]:
     require(target in TARGETS, "target is not one of the four native release targets")
-    require(expected_version == EXPECTED_VERSION and VERSION.fullmatch(expected_version) is not None,
-            "expected version is not the alpha.2 release-candidate version")
+    require(len(expected_version) <= 128 and VERSION.fullmatch(expected_version) is not None,
+            "expected version is not a valid package version")
     require(archive_ref == "main" or archive_ref == f"v{expected_version}",
             "archive ref must be main or the exact candidate tag")
     target_contract = TARGETS[target]
@@ -251,10 +256,10 @@ class CandidateRunner:
         return stdout, stderr
 
 
-def _validate_help(runner: CandidateRunner) -> dict:
+def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     version, _ = runner.run("version", ["--version"], expected_stderr_empty=True)
-    require(version.decode("utf-8").strip() == f"termivar {EXPECTED_VERSION}",
-            "packaged binary version is not exactly alpha.2")
+    require(version.decode("utf-8").strip() == f"termivar {expected_version}",
+            "packaged binary version does not match the caller's expected version")
     top, _ = runner.run("top-help", ["--help"], expected_stderr_empty=True)
     scan, _ = runner.run("scan-help", ["scan", "--help"], expected_stderr_empty=True)
     report, _ = runner.run("report-help", ["report", "--help"], expected_stderr_empty=True)
@@ -276,10 +281,10 @@ def _validate_help(runner: CandidateRunner) -> dict:
     for command in ("compare", "verify"):
         require(re.search(rf"(?m)^\s+{command}(?:\s|$)", report_text) is not None,
                 f"report help omits {command}")
-    return {"version": f"termivar {EXPECTED_VERSION}", "help_surfaces": "matched"}
+    return {"version": f"termivar {expected_version}", "help_surfaces": "matched"}
 
 
-def _validate_capabilities(runner: CandidateRunner) -> dict:
+def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> dict:
     text, _ = runner.run("capabilities-text", ["capabilities"], expected_stderr_empty=True)
     encoded, _ = runner.run(
         "capabilities-json", ["capabilities", "--format", "json"],
@@ -287,7 +292,7 @@ def _validate_capabilities(runner: CandidateRunner) -> dict:
     document = _parse_json(encoded, "capabilities output")
     require(document.get("schema") == CAPABILITIES_SCHEMA
             and document.get("product") == "Termivar"
-            and document.get("package_version") == EXPECTED_VERSION
+            and document.get("package_version") == expected_version
             and document.get("runtime_execution") == "not_performed",
             "capabilities identity or offline state changed")
     features = document.get("cli_package_features")
@@ -342,7 +347,8 @@ def _validate_verification(document: dict, status: str) -> None:
             "Report Verify result does not match its expected status")
 
 
-def _run_fixture_acceptance(runner: CandidateRunner, work: Path) -> dict:
+def _run_fixture_acceptance(
+        runner: CandidateRunner, work: Path, expected_version: str) -> dict:
     fixture = runner.fixture
     require(fixture is not None, "fixture runner is unavailable")
     readiness = fixture.server.snapshot()
@@ -373,7 +379,7 @@ def _run_fixture_acceptance(runner: CandidateRunner, work: Path) -> dict:
     ], expected_stderr_empty=False)
     require(stdout == b"", "successful bundle scan wrote a report to stdout")
     bundle = report_bundle_example.validate_bundle(bundle_path)
-    require(bundle["producer"] == {"product": "Termivar", "version": EXPECTED_VERSION},
+    require(bundle["producer"] == {"product": "Termivar", "version": expected_version},
             "bundle producer identity changed")
     bundle_snapshot = _snapshot_files(bundle_path)
 
@@ -602,11 +608,12 @@ def run_acceptance(archive: Path, target: str, archive_ref: str, source_sha: str
         runner = CandidateRunner(binary, work)
         result["commands"] = runner.records
         result["claims"]["native_packaged_binary_execution_attempted"] = True
-        result["interfaces"] = _validate_help(runner)
+        result["interfaces"] = _validate_help(runner, expected_version)
         with first_use.Fixture() as fixture:
             runner.fixture = fixture
-            result["capabilities"] = _validate_capabilities(runner)
-            result["application"] = _run_fixture_acceptance(runner, work)
+            result["capabilities"] = _validate_capabilities(runner, expected_version)
+            result["application"] = _run_fixture_acceptance(
+                runner, work, expected_version)
         require(first_use.digest_file(binary) == archive_result["member_sha256"],
                 "packaged binary changed during candidate acceptance")
         require(first_use.digest_file(archive) == archive_result["archive_sha256"],

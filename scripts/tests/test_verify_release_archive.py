@@ -25,8 +25,8 @@ SPEC = importlib.util.spec_from_file_location("verify_release_archive", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 verifier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verifier)
-TAR_NAME = "termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz"
-ZIP_NAME = "termivar-v0.10.0-alpha.1-x86_64-pc-windows-msvc.zip"
+TAR_NAME = "termivar-v0.10.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz"
+ZIP_NAME = "termivar-v0.10.0-alpha.2-x86_64-pc-windows-msvc.zip"
 PAYLOAD = b"benign archive verification fixture; not an executable\n"
 
 
@@ -87,6 +87,7 @@ class ReleaseArchiveTests(unittest.TestCase):
                 self.assertEqual(before, {archive, manifest})
                 result = verifier.verify_archive(archive, manifest)
                 self.assertEqual(set(self.root.iterdir()), before)
+                self.assertEqual(result["release_tag"], "v0.10.0-alpha.2")
                 self.assertEqual(result["archive"], name)
                 self.assertEqual(result["archive_sha256"], hashlib.sha256(data).hexdigest())
                 self.assertEqual(result["member_sha256"], hashlib.sha256(PAYLOAD).hexdigest())

@@ -16,8 +16,8 @@ categories = ["development-tools", "network-programming"]
 workspace = true
 
 [dependencies]
-termivar-core = { version = "0.10.0-alpha.2", path = "../termivar-core", default-features = false }
-termivar-oast = { version = "0.10.0-alpha.2", path = "../termivar-oast", default-features = false, features = ["client"], optional = true }
+termivar-core = { version = "0.10.0-alpha.3", path = "../termivar-core", default-features = false }
+termivar-oast = { version = "0.10.0-alpha.3", path = "../termivar-oast", default-features = false, features = ["client"], optional = true }
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
@@ -44,7 +44,7 @@ mlua = { version = "0.9", default-features = false, features = ["lua54", "vendor
 clap = { workspace = true }
 criterion = "0.5"
 tempfile = { workspace = true }
-termivar-oast = { version = "0.10.0-alpha.2", path = "../termivar-oast", default-features = false, features = ["client", "test-support"] }
+termivar-oast = { version = "0.10.0-alpha.3", path = "../termivar-oast", default-features = false, features = ["client", "test-support"] }
 
 [features]
 # Default product: deterministic evidence/reasoning/runtime surface.

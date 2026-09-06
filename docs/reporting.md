@@ -127,8 +127,8 @@ required same-directory hard-link semantics fail nonzero.
 
 ## Single-run report bundles
 
-Development `0.10.0-alpha.2` source that includes this option can render both
-assessment formats from one completed run:
+The published `v0.10.0-alpha.2` binary and later development source can render
+both assessment formats from one completed run:
 
 ```bash
 termivar scan <AUTHORIZED_TARGET> \
@@ -212,16 +212,17 @@ termivar report compare \
   --same-scope
 ```
 
-The published `v0.10.0-alpha.1` archives predate `--report-dir`; their genuine
-first-use JSON and HTML captures remain separate assessment executions.
+The preserved `v0.10.0-alpha.1` archives predate `--report-dir`; their genuine
+first-use JSON and HTML captures remain separate assessment executions. The
+published alpha.2 archives include the bundle command.
 The [development report-bundle example](examples/report-bundle/README.md)
 records one local loopback run, exact payload hashes, and an offline
 self-comparison without relabelling it as release or effectiveness evidence.
 
 ## Offline report-bundle verification
 
-Development `0.10.0-alpha.2` source that includes Report Bundle Verification
-V1 can check a saved bundle without starting a scan:
+The published `v0.10.0-alpha.2` binary and later development source can check a
+saved bundle with Report Bundle Verification V1 without starting a scan:
 
 ```bash
 # Human-readable result (the default).
@@ -303,8 +304,8 @@ termivar report compare \
 Both report commands are offline document operations, but they answer different
 questions: verification checks one bundle's supported internal consistency;
 comparison groups imported observations from two operator-selected reports.
-Neither certifies security or remediation. The published `v0.10.0-alpha.1`
-archives do not contain `report verify`.
+Neither certifies security or remediation. The published alpha.2 archives
+contain `report verify`; the preserved alpha.1 archives do not.
 
 ## Offline assessment report comparison
 

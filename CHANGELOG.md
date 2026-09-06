@@ -4,11 +4,17 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ## [Unreleased]
 
+### Changed
+
+- Advanced the post-`v0.10.0-alpha.2` development source line to
+  `0.10.0-alpha.3` so later source binaries cannot be confused with the
+  published alpha.2 prerelease.
+
 ## [0.10.0-alpha.2] - 2026-09-06
 
-> **PREPARED / NOT PUBLISHED:** this dated section records the reviewed
-> alpha.2 candidate contents. The tag, downloadable archives, checksums, and
-> GitHub Release do not exist until a separately authorized publication.
+> **PUBLISHED EXPERIMENTAL PRERELEASE:** alpha.2 was published from commit
+> `284a21a83191075615f2086ec935c6f3bf07c2bf` with four native archives and
+> `SHA256SUMS` on the [v0.10.0-alpha.2 release](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2).
 
 ### Added
 

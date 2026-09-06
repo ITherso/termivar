@@ -29,6 +29,7 @@ SPEC.loader.exec_module(runner)
 PAYLOAD = b"synthetic packaged binary fixture; never executed\n"
 TARGET = "x86_64-pc-windows-msvc"
 ARCHIVE_NAME = f"termivar-main-{TARGET}.zip"
+TEST_VERSION = "0.10.0-alpha.3"
 
 
 def digest(data: bytes) -> str:
@@ -65,7 +66,7 @@ def write_bundle(directory: Path, item_count: int = 2) -> bytes:
     assessment_bytes = json.dumps(assessment, separators=(",", ":")).encode()
     manifest = {
         "schema": runner.report_bundle_example.BUNDLE_SCHEMA,
-        "producer": {"product": "Termivar", "version": runner.EXPECTED_VERSION},
+        "producer": {"product": "Termivar", "version": TEST_VERSION},
         "assessment": {
             "profile": "web-review", "status": "complete",
             "subject_count": 1, "item_count": item_count,
@@ -132,7 +133,7 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
     return {
         "schema": runner.CAPABILITIES_SCHEMA,
         "product": "Termivar",
-        "package_version": runner.EXPECTED_VERSION,
+        "package_version": TEST_VERSION,
         "runtime_execution": "not_performed",
         "cli_package_features": features,
         "surfaces": surfaces,
@@ -172,7 +173,7 @@ class FakeCommands:
         exit_code = 0
         fixture = FakeFixture.active
         if arguments == ["--version"]:
-            stdout = f"termivar {runner.EXPECTED_VERSION}\n".encode()
+            stdout = f"termivar {TEST_VERSION}\n".encode()
         elif arguments in (["--help"], ["scan", "--help"], ["report", "--help"]):
             stdout = fake_help(arguments)
         elif arguments == ["capabilities"]:
@@ -336,7 +337,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 mock.patch.object(runner.first_use, "run_command", side_effect=commands):
             result = runner.run_acceptance(
                 self.archive, TARGET, "main", "a" * 40, "123", "1",
-                self.extract, self.evidence, runner.EXPECTED_VERSION,
+                self.extract, self.evidence, TEST_VERSION,
                 inspect=self.inspect,
             )
         return result, commands
@@ -392,6 +393,39 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("begun-incomplete scan request trace", result["failure"])
 
+    def test_caller_supplied_version_selects_main_or_matching_tag_identity(self):
+        for version, archive_ref in [
+                ("0.10.0-alpha.2", "v0.10.0-alpha.2"),
+                (TEST_VERSION, "main")]:
+            suffix = runner.TARGETS[TARGET]["suffix"]
+            archive = self.root / f"termivar-{archive_ref}-{TARGET}{suffix}"
+            self.assertEqual(
+                runner._candidate_identity(archive, TARGET, archive_ref, version),
+                (archive.name, "termivar.exe"),
+            )
+        mismatched = self.root / f"termivar-v0.10.0-alpha.2-{TARGET}.zip"
+        with self.assertRaisesRegex(runner.AcceptanceError, "exact candidate tag"):
+            runner._candidate_identity(
+                mismatched, TARGET, "v0.10.0-alpha.2", TEST_VERSION)
+        for invalid in ("01.2.3", "1.2.3-..", "1.2", "v1.2.3", "1.2.3/other"):
+            with self.subTest(invalid=invalid), \
+                    self.assertRaisesRegex(runner.AcceptanceError, "valid package version"):
+                runner._candidate_identity(self.archive, TARGET, "main", invalid)
+
+    def test_packaged_identity_must_match_caller_supplied_version(self):
+        commands = FakeCommands(self.root)
+        with mock.patch.object(runner.platform, "system", return_value="Windows"), \
+                mock.patch.object(runner.platform, "machine", return_value="AMD64"), \
+                mock.patch.object(runner.first_use, "Fixture", FakeFixture), \
+                mock.patch.object(runner.first_use, "run_command", side_effect=commands):
+            result = runner.run_acceptance(
+                self.archive, TARGET, "main", "a" * 40, "123", "1",
+                self.root / "extract-alpha2", self.root / "evidence-alpha2",
+                "0.10.0-alpha.2", inspect=self.inspect,
+            )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("caller", result["failure"])
+
     def test_directory_entry_limits_reject_before_unbounded_materialization(self):
         crowded_parent = self.root / "crowded"
         crowded_parent.mkdir()
@@ -413,7 +447,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
         cases = [
             {"source_sha": "A" * 40},
             {"archive_ref": "feature-branch"},
-            {"expected_version": "0.10.0-alpha.1"},
+            {"expected_version": "not-a-version"},
             {"run_id": "0"},
             {"extract": self.evidence, "evidence": self.evidence},
         ]
@@ -428,7 +462,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
                             self.archive, TARGET, overrides.get("archive_ref", "main"),
                             overrides.get("source_sha", "a" * 40),
                             overrides.get("run_id", "1"), "1", extract, evidence,
-                            overrides.get("expected_version", runner.EXPECTED_VERSION),
+                            overrides.get("expected_version", TEST_VERSION),
                             inspect=self.inspect,
                         )
         other = self.root / "termivar-main-x86_64-unknown-linux-gnu.tar.gz"
@@ -439,14 +473,14 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 runner.run_acceptance(
                     self.archive, TARGET, "main", "a" * 40, "1", "1",
                     self.root / "extract-extra", self.root / "evidence-extra",
-                    runner.EXPECTED_VERSION, inspect=self.inspect)
+                    TEST_VERSION, inspect=self.inspect)
         other.unlink()
         with mock.patch.dict(os.environ, {"HTTPS_PROXY": "configured"}, clear=True):
             with self.assertRaisesRegex(runner.AcceptanceError, "proxy"):
                 runner.run_acceptance(
                     self.archive, TARGET, "main", "a" * 40, "1", "1",
                     self.root / "extract-proxy", self.root / "evidence-proxy",
-                    runner.EXPECTED_VERSION, inspect=self.inspect)
+                    TEST_VERSION, inspect=self.inspect)
 
     def test_cli_contract_uses_one_primary_evidence_file_and_failure_exit(self):
         failed = {"schema": runner.SCHEMA, "status": "failed"}
@@ -458,7 +492,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 "--archive-ref", "main", "--source-sha", "a" * 40,
                 "--run-id", "1", "--run-attempt", "1",
                 "--extract-to", str(self.extract), "--evidence-dir", str(self.evidence),
-                "--expect-version", runner.EXPECTED_VERSION,
+                "--expect-version", TEST_VERSION,
             ])
         self.assertEqual(exit_code, 1)
         self.assertEqual(json.loads(stdout.buffer.getvalue()), failed)

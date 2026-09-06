@@ -35,9 +35,9 @@
     <span class="tmv-status-dot" aria-hidden="true"></span>
     <div>
       <strong>Experimental alpha.</strong>
-      Current <code>main</code> is the unreleased <code>0.10.0-alpha.2</code>
+      Current <code>main</code> is the unreleased <code>0.10.0-alpha.3</code>
       development line and is not production-ready. The published
-      <a href="https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1"><code>v0.10.0-alpha.1</code> prerelease</a>
+      <a href="https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2"><code>v0.10.0-alpha.2</code> prerelease</a>
       does not include later source changes. Use only on systems you own or are
       explicitly authorized to test.
     </div>

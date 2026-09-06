@@ -41,14 +41,30 @@ const MSRV_CLIPPY_GATE: &str =
 const RELEASE_CLIPPY_STEP: &str =
     "      - name: Run Clippy\n        run: cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings";
 const METADATA_GATE: &str = "cargo run --locked -p xtask -- release-metadata \"$tag_version\"";
-const PREPARED_RELEASE_METADATA_GATE: &str = r#"      - name: Verify prepared alpha.2 release metadata
-        run: cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2"#;
+const PINNED_ALPHA2_METADATA_GATE: &str = r#"      - name: Verify published alpha.2 metadata at its tagged source
+        run: |
+          set -euo pipefail
+          published_version=0.10.0-alpha.2
+          published_commit=284a21a83191075615f2086ec935c6f3bf07c2bf
+          published_tag_object=c2c749c410b274c6719c586087e5d32f222ec8a2
+          published_tag="refs/tags/v${published_version}"
+          test "$(git cat-file -t "$published_tag")" = tag
+          test "$(git rev-parse "$published_tag")" = "$published_tag_object"
+          test "$(git rev-parse "${published_tag}^{commit}")" = "$published_commit"
+          snapshot="${RUNNER_TEMP}/termivar-published-metadata-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$snapshot"
+          mkdir -m 700 "$snapshot"
+          git archive --format=tar "$published_commit" | tar --extract --directory "$snapshot"
+          cargo run --locked --manifest-path "$snapshot/xtask/Cargo.toml" -- release-metadata "$published_version""#;
 const INITIAL_TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"$GITHUB_REF\")\" = tag";
 const MAIN_ANCESTRY_GATE: &str = "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main";
 const VERSION_EQUALITY_GATE: &str = "test \"$tag_version\" = \"$workspace_version\"";
 const RELEASE_BUILD_GATE: &str = "run: cargo build --locked --release --target ${{ matrix.target }} -p termivar-cli --features release-bundle";
-const UNIX_SMOKE_VERSION_GATE: &str = "test \"$version_output\" = \"termivar 0.10.0-alpha.2\"";
-const WINDOWS_SMOKE_VERSION_GATE: &str = "if ($versionOutput -ne \"termivar 0.10.0-alpha.2\") {";
+const WORKSPACE_VERSION_ENV: &str =
+    "          EXPECTED_VERSION: ${{ steps.workspace_version.outputs.version }}";
+const UNIX_SMOKE_VERSION_GATE: &str = "test \"$version_output\" = \"termivar $EXPECTED_VERSION\"";
+const WINDOWS_SMOKE_VERSION_GATE: &str =
+    "if ($versionOutput -ne \"termivar $env:EXPECTED_VERSION\") {";
 const WINDOWS_SMOKE_VERSION_EXECUTION: &str = r#"          $versionOutput = (& $releaseBinary --version)
           if ($LASTEXITCODE -ne 0) {
             throw "release --version failed"
@@ -107,9 +123,25 @@ const RELEASE_ACCEPTANCE_TEST: &str = r#"      - name: Test packaged release can
 const RELEASE_ACCEPTANCE_PYTHON: &str = r#"      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12""#;
+const WORKSPACE_VERSION_STEP: &str = r#"      - name: Read checked-out workspace version
+        id: workspace_version
+        shell: python
+        run: |
+          import os
+          import re
+          import tomllib
+
+          with open("Cargo.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["workspace"]["package"]["version"]
+          if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", version) is None:
+              raise SystemExit("workspace package version is invalid")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8", newline="\n") as output:
+              output.write(f"version={version}\n")"#;
 const UNIX_RELEASE_ACCEPTANCE: &str = r#"      - name: Accept packaged release archive (Unix)
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ steps.workspace_version.outputs.version }}
         run: |
           set -euo pipefail
           archive="dist/termivar-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
@@ -126,10 +158,12 @@ const UNIX_RELEASE_ACCEPTANCE: &str = r#"      - name: Accept packaged release a
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --extract-to "$extract_dir" \
             --evidence-dir "$evidence_dir" \
-            --expect-version 0.10.0-alpha.2"#;
+            --expect-version "$EXPECTED_VERSION""#;
 const WINDOWS_RELEASE_ACCEPTANCE: &str = r#"      - name: Accept packaged release archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ steps.workspace_version.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
           $archive = "dist/termivar-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip"
@@ -147,7 +181,7 @@ const WINDOWS_RELEASE_ACCEPTANCE: &str = r#"      - name: Accept packaged releas
             --run-attempt $env:GITHUB_RUN_ATTEMPT `
             --extract-to $extractDir `
             --evidence-dir $evidenceDir `
-            --expect-version 0.10.0-alpha.2
+            --expect-version $env:EXPECTED_VERSION
           if ($LASTEXITCODE -ne 0) {
             throw "packaged release acceptance failed"
           }"#;
@@ -213,8 +247,21 @@ const EXPECTED_ARCHITECTURE_JOB: &str = r#"  architecture:
         run: cargo test --locked -p xtask development_line
       - name: Verify post-release development-line provenance
         run: cargo run --locked -p xtask -- development-line
-      - name: Verify prepared alpha.2 release metadata
-        run: cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2
+      - name: Verify published alpha.2 metadata at its tagged source
+        run: |
+          set -euo pipefail
+          published_version=0.10.0-alpha.2
+          published_commit=284a21a83191075615f2086ec935c6f3bf07c2bf
+          published_tag_object=c2c749c410b274c6719c586087e5d32f222ec8a2
+          published_tag="refs/tags/v${published_version}"
+          test "$(git cat-file -t "$published_tag")" = tag
+          test "$(git rev-parse "$published_tag")" = "$published_tag_object"
+          test "$(git rev-parse "${published_tag}^{commit}")" = "$published_commit"
+          snapshot="${RUNNER_TEMP}/termivar-published-metadata-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$snapshot"
+          mkdir -m 700 "$snapshot"
+          git archive --format=tar "$published_commit" | tar --extract --directory "$snapshot"
+          cargo run --locked --manifest-path "$snapshot/xtask/Cargo.toml" -- release-metadata "$published_version"
       - name: Verify workspace and reasoning boundaries
         run: cargo run --locked -p xtask -- architecture
       - name: Test transport-free scanner contracts
@@ -603,6 +650,7 @@ fn first_use_workflow_policy_violations(files: &[(String, String)]) -> Vec<Strin
 
     let required = [
         (format!("--output \"{FIRST_USE_TEMP_PREFIX}-source\""), 1),
+        ("--expect-version 0.10.0-alpha.3".to_owned(), 1),
         (
             format!("download_dir=\"{FIRST_USE_TEMP_PREFIX}-release-download\""),
             1,
@@ -612,6 +660,20 @@ fn first_use_workflow_policy_violations(files: &[(String, String)]) -> Vec<Strin
             1,
         ),
         ("mkdir -m 700 \"$download_dir\"".to_owned(), 1),
+        (
+            "release_url=https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2"
+                .to_owned(),
+            1,
+        ),
+        (
+            "archive=termivar-v0.10.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz".to_owned(),
+            1,
+        ),
+        (
+            "9117984e31523aa4bfc751a182423efd2af0f1581883750fe4f3f2abf11d7499  $download_dir/SHA256SUMS"
+                .to_owned(),
+            1,
+        ),
         ("--output \"$download_dir/SHA256SUMS\"".to_owned(), 1),
         ("--output \"$download_dir/$archive\"".to_owned(), 1),
         (
@@ -625,6 +687,8 @@ fn first_use_workflow_policy_violations(files: &[(String, String)]) -> Vec<Strin
             1,
         ),
         (format!("--output \"{FIRST_USE_TEMP_PREFIX}-release\""), 1),
+        ("--source-ref v0.10.0-alpha.2".to_owned(), 1),
+        ("--expect-version 0.10.0-alpha.2".to_owned(), 1),
         (format!("{FIRST_USE_TEMP_PREFIX}-source/"), 1),
         (format!("{FIRST_USE_TEMP_PREFIX}-release/"), 1),
     ];
@@ -666,11 +730,11 @@ fn development_line_workflow_policy_violations(files: &[(String, String)]) -> Ve
         && jobs[0].contains(DEVELOPMENT_LINE_DEFAULTS)
         && jobs[0].contains(DEVELOPMENT_LINE_CHECKOUT)
         && jobs[0].contains(DEVELOPMENT_LINE_GATE)
-        && jobs[0].contains(PREPARED_RELEASE_METADATA_GATE)
+        && jobs[0].contains(PINNED_ALPHA2_METADATA_GATE)
         && jobs[0].contains(ARCHITECTURE_GATE)
         && jobs[0]
             .find(DEVELOPMENT_LINE_GATE)
-            .zip(jobs[0].find(PREPARED_RELEASE_METADATA_GATE))
+            .zip(jobs[0].find(PINNED_ALPHA2_METADATA_GATE))
             .zip(jobs[0].find(ARCHITECTURE_GATE))
             .is_some_and(|((development, metadata), architecture)| {
                 development < metadata && metadata < architecture
@@ -683,7 +747,7 @@ fn development_line_workflow_policy_violations(files: &[(String, String)]) -> Ve
         Vec::new()
     } else {
         vec![format!(
-            "{TESTS_WORKFLOW}: `Architecture Boundaries` must match the reviewed exact-head contract, fetch complete tag history, and run the unsuppressed development-line and prepared alpha.2 metadata gates before architecture validation"
+            "{TESTS_WORKFLOW}: `Architecture Boundaries` must match the reviewed exact-head contract, fetch complete tag history, and run the unsuppressed development-line and pinned tagged-source alpha.2 metadata gates before architecture validation"
         )]
     }
 }
@@ -1108,6 +1172,13 @@ fn release_candidate_acceptance_workflow_policy_violations(
             "{RELEASE_WORKFLOW}: native release acceptance must install the reviewed pinned Python 3.12 toolchain exactly once"
         ));
     }
+    if job.matches(WORKSPACE_VERSION_STEP).count() != 1
+        || job.matches(WORKSPACE_VERSION_ENV).count() != 4
+    {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: release smoke and packaged acceptance must share one independently parsed checked-out workspace version"
+        ));
+    }
     for (step_name, expected, platform) in [
         (
             "Accept packaged release archive (Unix)",
@@ -1140,9 +1211,16 @@ fn release_candidate_acceptance_workflow_policy_violations(
 
     let find_step = |name: &str| job.find(&format!("      - name: {name}"));
     let python_setup = job.find(RELEASE_ACCEPTANCE_PYTHON);
+    let workspace_version = job.find(WORKSPACE_VERSION_STEP);
     let ordering_is_reviewed = python_setup
-        .zip(find_step("Accept packaged release archive (Unix)"))
-        .is_some_and(|(python, acceptance)| python < acceptance)
+        .zip(workspace_version)
+        .is_some_and(|(python, version)| python < version)
+        && workspace_version
+            .zip(find_step("Build release binary"))
+            .is_some_and(|(version, build)| version < build)
+        && python_setup
+            .zip(find_step("Accept packaged release archive (Unix)"))
+            .is_some_and(|(python, acceptance)| python < acceptance)
         && python_setup
             .zip(find_step("Accept packaged release archive (Windows)"))
             .is_some_and(|(python, acceptance)| python < acceptance)
@@ -2161,6 +2239,26 @@ mod tests {
                 "      - name: Retain bounded first-use acceptance evidence\n        if: success()",
                 1,
             ),
+            valid.replacen(
+                "--expect-version 0.10.0-alpha.3",
+                "--expect-version 0.10.0-alpha.2",
+                1,
+            ),
+            valid.replacen(
+                "releases/download/v0.10.0-alpha.2",
+                "releases/download/v0.10.0-alpha.1",
+                1,
+            ),
+            valid.replacen(
+                "9117984e31523aa4bfc751a182423efd2af0f1581883750fe4f3f2abf11d7499",
+                "7e815a89385f7470a01656b407735b337cf45a0aec9fec84ffd4eab6bf54cf5e",
+                1,
+            ),
+            valid.replacen(
+                "--source-ref v0.10.0-alpha.2",
+                "--source-ref v0.10.0-alpha.1",
+                1,
+            ),
         ];
         for mutation in mutations {
             assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
@@ -2172,25 +2270,72 @@ mod tests {
     }
 
     #[test]
-    fn development_line_and_prepared_metadata_workflow_rejects_contract_mutations() {
+    fn development_line_and_pinned_metadata_workflow_rejects_contract_mutations() {
         let path = TESTS_WORKFLOW.to_owned();
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
-        let mutations = [
+        let mutations = vec![
             valid.replacen(DEVELOPMENT_LINE_DEFAULTS, "", 1),
             valid.replacen("        shell: bash\n", "        shell: bash {0} || true\n", 1),
             valid.replacen("        working-directory: .\n", "        working-directory: elsewhere\n", 1),
             valid.replacen("          fetch-depth: 0\n", "", 1),
             valid.replacen("          fetch-tags: true\n", "", 1),
             valid.replacen(DEVELOPMENT_LINE_GATE, "", 1),
-            valid.replacen(PREPARED_RELEASE_METADATA_GATE, "", 1),
+            valid.replacen(PINNED_ALPHA2_METADATA_GATE, "", 1),
             valid.replacen(
-                "release-metadata 0.10.0-alpha.2",
-                "release-metadata 0.10.0-alpha.1",
+                "published_version=0.10.0-alpha.2",
+                "published_version=0.10.0-alpha.1",
                 1,
             ),
             valid.replacen(
-                "cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2",
-                "cargo run -p xtask -- release-metadata 0.10.0-alpha.2",
+                "published_commit=284a21a83191075615f2086ec935c6f3bf07c2bf",
+                "published_commit=284a21a83191075615f2086ec935c6f3bf07c2b",
+                1,
+            ),
+            valid.replacen(
+                "published_tag_object=c2c749c410b274c6719c586087e5d32f222ec8a2",
+                "published_tag_object=c2c749c410b274c6719c586087e5d32f222ec8a",
+                1,
+            ),
+            valid.replacen("          test \"$(git cat-file -t \"$published_tag\")\" = tag\n", "", 1),
+            valid.replacen(
+                "          test \"$(git rev-parse \"$published_tag\")\" = \"$published_tag_object\"\n",
+                "",
+                1,
+            ),
+            valid.replacen(
+                "git rev-parse \"${published_tag}^{commit}\"",
+                "git rev-parse HEAD",
+                1,
+            ),
+            valid.replacen(
+                "git archive --format=tar \"$published_commit\"",
+                "git archive --format=tar \"$GITHUB_SHA\"",
+                1,
+            ),
+            valid.replacen(
+                "cargo run --locked --manifest-path \"$snapshot/xtask/Cargo.toml\" -- release-metadata \"$published_version\"",
+                "cargo run --locked -p xtask -- release-metadata \"$published_version\"",
+                1,
+            ),
+            valid.replacen(
+                "cargo run --locked --manifest-path",
+                "cargo run --manifest-path",
+                1,
+            ),
+            valid.replacen(
+                "\"$snapshot/xtask/Cargo.toml\"",
+                "\"xtask/Cargo.toml\"",
+                1,
+            ),
+            valid.replacen(
+                "snapshot=\"${RUNNER_TEMP}/termivar-published-metadata-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"",
+                "snapshot=\"${RUNNER_TEMP}/termivar-published-metadata\"",
+                1,
+            ),
+            valid.replacen("          test ! -e \"$snapshot\"\n", "", 1),
+            valid.replacen(
+                "          set -euo pipefail\n          published_version=0.10.0-alpha.2",
+                "          published_version=0.10.0-alpha.2",
                 1,
             ),
             valid.replacen(
@@ -2199,16 +2344,16 @@ mod tests {
                 1,
             ),
             valid.replacen(
-                PREPARED_RELEASE_METADATA_GATE,
-                &format!("{PREPARED_RELEASE_METADATA_GATE}\n        continue-on-error: true"),
+                PINNED_ALPHA2_METADATA_GATE,
+                &format!("{PINNED_ALPHA2_METADATA_GATE}\n        continue-on-error: true"),
                 1,
             ),
             valid.replacen(
                 &format!(
-                    "{DEVELOPMENT_LINE_GATE}\n{PREPARED_RELEASE_METADATA_GATE}\n{ARCHITECTURE_GATE}"
+                    "{DEVELOPMENT_LINE_GATE}\n{PINNED_ALPHA2_METADATA_GATE}\n{ARCHITECTURE_GATE}"
                 ),
                 &format!(
-                    "{DEVELOPMENT_LINE_GATE}\n{ARCHITECTURE_GATE}\n{PREPARED_RELEASE_METADATA_GATE}"
+                    "{DEVELOPMENT_LINE_GATE}\n{ARCHITECTURE_GATE}\n{PINNED_ALPHA2_METADATA_GATE}"
                 ),
                 1,
             ),
@@ -2223,15 +2368,20 @@ mod tests {
                 1,
             ),
             valid.replacen(
-                PREPARED_RELEASE_METADATA_GATE,
-                &format!("{PREPARED_RELEASE_METADATA_GATE}\n        if: false"),
+                PINNED_ALPHA2_METADATA_GATE,
+                &format!("{PINNED_ALPHA2_METADATA_GATE}\n        if: false"),
                 1,
             ),
             valid.replacen(
-                PREPARED_RELEASE_METADATA_GATE,
+                PINNED_ALPHA2_METADATA_GATE,
                 &format!(
-                    "{PREPARED_RELEASE_METADATA_GATE}\n        shell: bash {{0}} || true"
+                    "{PINNED_ALPHA2_METADATA_GATE}\n        shell: bash {{0}} || true"
                 ),
+                1,
+            ),
+            valid.replacen(
+                "git archive --format=tar \"$published_commit\" | tar --extract --directory \"$snapshot\"",
+                "git archive --format=tar \"$published_commit\" | tar --extract --directory \"$snapshot\" || true",
                 1,
             ),
             valid.replacen(
@@ -2524,11 +2674,19 @@ mod tests {
             valid.replacen(UNIX_RELEASE_ACCEPTANCE, "", 1),
             valid.replacen(WINDOWS_RELEASE_ACCEPTANCE, "", 1),
             valid.replacen(RELEASE_ACCEPTANCE_EVIDENCE, "", 1),
+            valid.replacen(WORKSPACE_VERSION_STEP, "", 1),
+            valid.replacen(WORKSPACE_VERSION_ENV, "", 1),
             valid.replacen(
+                "--expect-version \"$EXPECTED_VERSION\"",
                 "--expect-version 0.10.0-alpha.2",
-                "--expect-version 0.10.0-alpha.1",
                 1,
             ),
+            valid.replacen(
+                "with open(\"Cargo.toml\", \"rb\") as manifest:",
+                "with open(\"target/version.txt\", \"rb\") as manifest:",
+                1,
+            ),
+            valid.replacen("        id: workspace_version\n", "", 1),
             valid.replacen(
                 "--archive \"$archive\"",
                 "--archive target/release/termivar",

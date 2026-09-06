@@ -1,6 +1,6 @@
 # Project Status
 
-The latest published release is the experimental **v0.10.0-alpha.1** prerelease. Current `main` is the unreleased `0.10.0-alpha.2` development line; the published binaries do not include its later changes. The historical **v0.9.0-alpha** release under the former Venom name predates the remediated runtime. Termivar is an experimental Rust security-testing project centered on a bounded deterministic decision runtime, and it is not production-ready.
+The latest published release is the experimental **v0.10.0-alpha.2** prerelease. Current `main` is the unreleased `0.10.0-alpha.3` development line; the published binaries do not include its later changes. The historical **v0.9.0-alpha** release under the former Venom name predates the remediated runtime. Termivar is an experimental Rust security-testing project centered on a bounded deterministic decision runtime, and it is not production-ready.
 
 ## Why alpha
 
@@ -56,7 +56,8 @@ Distributed multi-node production readiness is tracked separately for v1.1 and d
 
 ## Evidence
 
-- [Published v0.10.0-alpha.1 prerelease](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1)
+- [Published v0.10.0-alpha.2 prerelease](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2)
+- [Earlier v0.10.0-alpha.1 prerelease](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.1)
 - [Historical former-name v0.9.0-alpha release](https://github.com/ITherso/venom/releases/tag/v0.9.0-alpha)
 - [Feature lifecycle](FEATURES.md)
 - [Repository health](docs/repository-health.md)

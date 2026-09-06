@@ -45,8 +45,21 @@ jobs:
         run: cargo test --locked -p xtask development_line
       - name: Verify post-release development-line provenance
         run: cargo run --locked -p xtask -- development-line
-      - name: Verify prepared alpha.2 release metadata
-        run: cargo run --locked -p xtask -- release-metadata 0.10.0-alpha.2
+      - name: Verify published alpha.2 metadata at its tagged source
+        run: |
+          set -euo pipefail
+          published_version=0.10.0-alpha.2
+          published_commit=284a21a83191075615f2086ec935c6f3bf07c2bf
+          published_tag_object=c2c749c410b274c6719c586087e5d32f222ec8a2
+          published_tag="refs/tags/v${published_version}"
+          test "$(git cat-file -t "$published_tag")" = tag
+          test "$(git rev-parse "$published_tag")" = "$published_tag_object"
+          test "$(git rev-parse "${published_tag}^{commit}")" = "$published_commit"
+          snapshot="${RUNNER_TEMP}/termivar-published-metadata-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$snapshot"
+          mkdir -m 700 "$snapshot"
+          git archive --format=tar "$published_commit" | tar --extract --directory "$snapshot"
+          cargo run --locked --manifest-path "$snapshot/xtask/Cargo.toml" -- release-metadata "$published_version"
       - name: Verify workspace and reasoning boundaries
         run: cargo run --locked -p xtask -- architecture
       - name: Test transport-free scanner contracts
@@ -292,7 +305,7 @@ jobs:
           --output "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-source"
           --source-ref ${{ github.event.pull_request.head.sha || github.sha }}
           --build-features default
-          --expect-version 0.10.0-alpha.2
+          --expect-version 0.10.0-alpha.3
       - name: Acquire the exact published Linux prerelease for separate acceptance
         if: runner.os == 'Linux'
         shell: bash
@@ -301,11 +314,11 @@ jobs:
           download_dir="${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-download"
           extract_dir="${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-binary"
           mkdir -m 700 "$download_dir"
-          release_url=https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.1
-          archive=termivar-v0.10.0-alpha.1-x86_64-unknown-linux-gnu.tar.gz
+          release_url=https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2
+          archive=termivar-v0.10.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz
           curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/SHA256SUMS" --output "$download_dir/SHA256SUMS"
           curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/$archive" --output "$download_dir/$archive"
-          echo "7e815a89385f7470a01656b407735b337cf45a0aec9fec84ffd4eab6bf54cf5e  $download_dir/SHA256SUMS" | sha256sum --check --strict -
+          echo "9117984e31523aa4bfc751a182423efd2af0f1581883750fe4f3f2abf11d7499  $download_dir/SHA256SUMS" | sha256sum --check --strict -
           python scripts/verify_release_archive.py --archive "$download_dir/$archive" --checksums "$download_dir/SHA256SUMS"
           python scripts/verify_release_archive.py --archive "$download_dir/$archive" --checksums "$download_dir/SHA256SUMS" --extract-to "$extract_dir"
       - name: Accept the verified published Linux binary without a source substitute
@@ -314,9 +327,9 @@ jobs:
           python scripts/first_use.py
           --binary "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-binary/termivar"
           --output "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release"
-          --source-ref v0.10.0-alpha.1
+          --source-ref v0.10.0-alpha.2
           --build-features release-bundle
-          --expect-version 0.10.0-alpha.1
+          --expect-version 0.10.0-alpha.2
       - name: Retain bounded first-use acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

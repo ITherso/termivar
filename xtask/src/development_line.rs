@@ -170,7 +170,7 @@ mod tests {
             .expect("xtask must be inside the workspace");
         assert_eq!(
             workspace_version(workspace).expect("resolve workspace version"),
-            "0.10.0-alpha.2"
+            "0.10.0-alpha.3"
         );
     }
 
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn commit_beyond_matching_tag_requires_a_version_advance() {
         let repository = repository();
-        git(repository.path(), &["tag", "v0.10.0-alpha.1"]);
+        git(repository.path(), &["tag", "v0.10.0-alpha.2"]);
         git(
             repository.path(),
             &[
@@ -231,11 +231,11 @@ mod tests {
                 "post-release change",
             ],
         );
-        let error = check_repository(repository.path(), "0.10.0-alpha.1")
+        let error = check_repository(repository.path(), "0.10.0-alpha.2")
             .expect_err("tagged version must not identify later source")
             .to_string();
         assert!(error.contains("advance the development-line version"));
-        assert!(check_repository(repository.path(), "0.10.0-alpha.2").is_ok());
+        assert!(check_repository(repository.path(), "0.10.0-alpha.3").is_ok());
     }
 
     #[test]
