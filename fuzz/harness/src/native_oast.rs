@@ -417,7 +417,7 @@ fn check_fixed_regressions() {
 mod tests {
     use super::*;
 
-    const ACCEPTED_SECRET: &[u8] = b"SYNTHETIC-ADMIN-SECRET-8D31C0A4";
+    const ACCEPTED_SECRET: &[u8] = b"FUZZ-ONLY-OAST-ADMIN-TOKEN-8D31C0A4";
     const REJECTED_DIAGNOSTIC_COLLISION: &[u8] =
         b"InvalidAdminToken:native OAST administrator token is invalid";
 
