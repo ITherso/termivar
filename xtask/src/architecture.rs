@@ -18,6 +18,7 @@ use syn::{
 
 mod artifact;
 mod brand;
+mod cli_capabilities;
 mod cli_secret;
 mod deployment;
 mod domain_modularization;
@@ -298,6 +299,7 @@ pub(crate) fn check(workspace_root: &Path) -> Result<(), Box<dyn Error>> {
     let mut violations = workspace_graph_violations(workspace_root)?;
     violations.extend(module_boundary_violations(workspace_root)?);
     violations.extend(brand::check(workspace_root)?);
+    violations.extend(cli_capabilities::check(workspace_root)?);
     violations.extend(cli_secret::check(workspace_root)?);
     violations.extend(artifact::check(workspace_root)?);
     violations.extend(domain_modularization::check(workspace_root)?);

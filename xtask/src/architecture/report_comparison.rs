@@ -67,11 +67,14 @@ fn cli_violations(main: &str, comparison: &str) -> Result<Vec<String>, syn::Erro
         .collect();
     let expected = r#"fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
         let cli = Cli::parse();
-        if let Some(Commands::Report { command }) = cli.command {
-            return report_compare::run(command);
+        match cli.command {
+            Some(Commands::Capabilities(args)) => capabilities::run(args).map_err(Into::into),
+            Some(Commands::Report { command }) => report_compare::run(command),
+            command => {
+                run_existing_command(command)?;
+                Ok(std::process::ExitCode::SUCCESS)
+            },
         }
-        run_existing_command(cli.command)?;
-        Ok(std::process::ExitCode::SUCCESS)
     }"#;
     let mut violations = Vec::new();
     if main_items.len() != 1
@@ -863,8 +866,9 @@ mod tests {
     const CLI: &str = include_str!("../../../crates/termivar-cli/src/report_compare.rs");
 
     fn mutate(source: &str, from: &str, to: &str) -> String {
-        assert!(source.contains(from), "stale mutation anchor: {from}");
-        source.replacen(from, to, 1)
+        let normalized = source.replace("\r\n", "\n");
+        assert!(normalized.contains(from), "stale mutation anchor: {from}");
+        normalized.replacen(from, to, 1)
     }
 
     #[test]
@@ -984,8 +988,8 @@ mod tests {
             ),
             ("fn main()", "#[tokio::main] async fn main()"),
             (
-                "return report_compare::run(command);",
-                "return run_existing_command(Some(Commands::Report { command }));",
+                "Some(Commands::Report { command }) => report_compare::run(command),",
+                "Some(Commands::Report { command }) => { run_existing_command(Some(Commands::Report { command }))?; Ok(std::process::ExitCode::SUCCESS) },",
             ),
         ] {
             assert!(

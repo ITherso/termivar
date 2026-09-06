@@ -23,6 +23,7 @@
 mod artifact_adapter;
 mod assessment_scan;
 mod auth_input;
+mod capabilities;
 mod decision_scan;
 mod report_bundle;
 mod report_compare;
@@ -495,6 +496,8 @@ struct ScanArgs {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Describe CLI surfaces compiled into this executable; nothing is executed.
+    Capabilities(capabilities::CapabilitiesArgs),
     /// Run the bounded deterministic scanner against an authorized origin.
     #[command(visible_alias = "decision-scan")]
     Scan(Box<ScanArgs>),
@@ -1140,21 +1143,24 @@ fn legacy_disposition(disposition: OutcomeStatus) -> &'static str {
 
 fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    if let Some(Commands::Report { command }) = cli.command {
-        return report_compare::run(command);
+    match cli.command {
+        Some(Commands::Capabilities(args)) => capabilities::run(args).map_err(Into::into),
+        Some(Commands::Report { command }) => report_compare::run(command),
+        command => {
+            run_existing_command(command)?;
+            Ok(std::process::ExitCode::SUCCESS)
+        },
     }
-    run_existing_command(cli.command)?;
-    Ok(std::process::ExitCode::SUCCESS)
 }
 
 #[tokio::main]
 async fn run_existing_command(command: Option<Commands>) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Some(Commands::Scan(args)) => run_deterministic_scan(*args).await?,
-        Some(Commands::Report { .. }) => {
+        Some(Commands::Capabilities(_) | Commands::Report { .. }) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "offline report commands must be dispatched before runtime initialization",
+                "offline commands must be dispatched before runtime initialization",
             )
             .into());
         },

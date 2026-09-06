@@ -158,6 +158,15 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
           cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
+      - name: Verify compiled CLI capabilities matrix
+        run: |
+          set -euo pipefail
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=default cargo test --locked -p termivar-cli --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=no-default cargo test --locked -p termivar-cli --no-default-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=release-bundle cargo test --locked -p termivar-cli --no-default-features --features release-bundle --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
@@ -266,6 +275,8 @@ jobs:
         run: |
           cargo run --locked -p termivar-cli -- --version
           cargo run --locked -p termivar-cli -- --help
+      - name: Exercise compiled CLI capabilities offline
+        run: cargo test --locked -p termivar-cli --test capabilities_cli
       - name: Test first-use fixture and checked-in sample contracts
         run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
       - name: Test release archive verification contracts

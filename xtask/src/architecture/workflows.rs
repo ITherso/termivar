@@ -74,6 +74,17 @@ const REPORT_BUNDLE_SMOKE_GATE: &str = r#"      - name: Exercise single-run repo
         run: cargo test --locked -p termivar-cli --test report_bundle_cli"#;
 const REPORT_VERIFICATION_SMOKE_GATE: &str = r#"      - name: Exercise offline report bundle verification CLI
         run: cargo test --locked -p termivar-cli --test report_verify_cli"#;
+const CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exercise compiled CLI capabilities offline
+        run: cargo test --locked -p termivar-cli --test capabilities_cli"#;
+const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capabilities matrix
+        run: |
+          set -euo pipefail
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=default cargo test --locked -p termivar-cli --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=no-default cargo test --locked -p termivar-cli --no-default-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=release-bundle cargo test --locked -p termivar-cli --no-default-features --features release-bundle --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const SECURITY_WORKFLOW: &str = ".github/workflows/security.yml";
 const AUDIT_RUNNER: &str = "scripts/ci/run-cargo-audit.sh";
 const DEVELOPMENT_LINE_CHECKOUT: &str = r#"      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -331,6 +342,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(first_use_workflow_policy_violations(&files));
     violations.extend(report_bundle_workflow_policy_violations(&files));
     violations.extend(report_verification_workflow_policy_violations(&files));
+    violations.extend(capabilities_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
         &files,
@@ -403,6 +415,56 @@ fn report_verification_workflow_policy_violations(files: &[(String, String)]) ->
         vec![format!(
             "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed report-verification CLI integration test"
         )]
+    }
+}
+
+fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed CLI capabilities workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let mut violations = Vec::new();
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise compiled CLI capabilities offline",
+        CAPABILITIES_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed CLI capabilities integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "unit-tests",
+        "Verify compiled CLI capabilities matrix",
+        CAPABILITIES_MATRIX_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: unit tests must run the exact sequential CLI capabilities build matrix"
+        ));
+    }
+    violations
+}
+
+fn job_has_exact_step(contents: &str, job_name: &str, step_name: &str, expected: &str) -> bool {
+    let jobs = named_job_blocks(contents, job_name);
+    let [job] = jobs.as_slice() else {
+        return false;
+    };
+    let marker = format!("      - name: {step_name}");
+    let starts = job
+        .match_indices(&marker)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    starts.len() == 1 && {
+        let tail = &job[starts[0]..];
+        let end = tail[1..]
+            .find("\n      - ")
+            .map_or(tail.len(), |offset| offset + 1);
+        tail[..end].trim_end() == expected
     }
 }
 
@@ -1671,6 +1733,66 @@ mod tests {
                 violations[0].contains("report-verification"),
                 "{violations:?}"
             );
+        }
+    }
+
+    #[test]
+    fn repository_cli_capabilities_checks_are_exact() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), fixture)]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn capabilities_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(CAPABILITIES_SMOKE_GATE, "", 1),
+            valid.replacen(
+                CAPABILITIES_SMOKE_GATE,
+                "      - name: Exercise compiled CLI capabilities offline\n        run: cargo test --locked -p termivar-cli --test report_verify_cli",
+                1,
+            ),
+            valid.replacen(
+                CAPABILITIES_SMOKE_GATE,
+                &format!("{CAPABILITIES_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("capabilities"), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn capabilities_matrix_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let rest_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
+        for mutation in [
+            valid.replacen(CAPABILITIES_MATRIX_GATE, "", 1),
+            valid.replacen(rest_case, "", 1),
+            valid.replacen(
+                "--features release-bundle --test capabilities_cli",
+                "--features graphql-review --test capabilities_cli",
+                1,
+            ),
+            valid.replacen(
+                CAPABILITIES_MATRIX_GATE,
+                &format!("{CAPABILITIES_MATRIX_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("capabilities"), "{violations:?}");
         }
     }
 
