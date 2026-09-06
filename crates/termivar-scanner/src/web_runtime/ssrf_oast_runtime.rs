@@ -1528,7 +1528,7 @@ fn mutation_plan(
 
 fn assessment_identity(subject: &EntityId) -> String {
     let digest = Sha256::digest(subject.as_str().as_bytes());
-    format!("assessment-{:x}", digest)
+    format!("assessment-{digest:x}")
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1849,6 +1849,15 @@ mod tests {
     };
 
     const ADMIN_SECRET: &[u8] = b"SSRF-OAST-RUNTIME-ADMIN-MUST-NOT-LEAK-91C8";
+
+    #[test]
+    fn assessment_identity_keeps_the_existing_prefix_and_digest_bytes() {
+        let subject = EntityId::new("endpoint:https://example.test/").unwrap();
+        assert_eq!(
+            assessment_identity(&subject),
+            "assessment-4d5c4f4e055344698360e30846d555a83c7bc086cdd21af36a5bf73d7505dda9"
+        );
+    }
 
     struct LoopbackFixture {
         target: url::Url,

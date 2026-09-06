@@ -24,6 +24,12 @@ const RELEASE_AUDIT_RUNNER_PATH: &str = "      - \"scripts/ci/run-cargo-audit.sh
 const CANONICAL_FORMAT_GATE: &str = "run: cargo +1.88.0 fmt --all -- --check";
 const RELEASE_FORMAT_STEP: &str =
     "      - name: Check formatting\n        run: cargo +1.88.0 fmt --all -- --check";
+const STABLE_CLIPPY_GATE: &str =
+    "cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings";
+const MSRV_CLIPPY_GATE: &str =
+    "cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings";
+const RELEASE_CLIPPY_STEP: &str =
+    "      - name: Run Clippy\n        run: cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings";
 const METADATA_GATE: &str = "cargo run --locked -p xtask -- release-metadata \"$tag_version\"";
 const INITIAL_TAG_TYPE_GATE: &str = "test \"$(git cat-file -t \"$GITHUB_REF\")\" = tag";
 const MAIN_ANCESTRY_GATE: &str = "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main";
@@ -144,14 +150,16 @@ const EXPECTED_SECURITY_JOB: &str = r#"  security-tests:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Install canonical Rust 1.88.0 formatter
-        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --no-self-update
+      - name: Install canonical Rust 1.88.0 formatter and Clippy
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt --no-self-update
       - name: Check canonical formatting
         run: cargo +1.88.0 fmt --all -- --check
       - name: Run pinned RustSec audit
         run: bash scripts/ci/run-cargo-audit.sh
-      - name: Run clippy (security lints)
-        run: cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings"#;
+      - name: Run current-stable Clippy (security lints)
+        run: cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Run Rust 1.88.0 Clippy (release parity)
+        run: cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings"#;
 const EXPECTED_DEPENDENCY_POLICY_JOB: &str = r#"  rust-dependencies:
     name: Rust dependency policy
     runs-on: ubuntu-latest
@@ -573,9 +581,13 @@ fn security_workflow_policy_violations(files: &[(String, String)]) -> Vec<String
     };
     let normalized = contents.replace("\r\n", "\n");
     let jobs = named_job_blocks(&normalized, "security-tests");
-    if jobs.len() != 1 || jobs[0] != EXPECTED_SECURITY_JOB {
+    if jobs.len() != 1
+        || jobs[0] != EXPECTED_SECURITY_JOB
+        || jobs[0].matches(STABLE_CLIPPY_GATE).count() != 1
+        || jobs[0].matches(MSRV_CLIPPY_GATE).count() != 1
+    {
         return vec![format!(
-            "{TESTS_WORKFLOW}: `Security Tests` must match the reviewed contract exactly; it installs canonical Rust 1.88.0 rustfmt, calls the pinned shared RustSec runner, checks the whole workspace without suppression, and retains current-stable Clippy with `-D warnings`"
+            "{TESTS_WORKFLOW}: `Security Tests` must match the reviewed contract exactly; it installs canonical Rust 1.88.0 rustfmt and Clippy, calls the pinned shared RustSec runner, and runs both current-stable and Rust 1.88.0 Clippy across the whole workspace with `-D warnings`"
         )];
     }
     Vec::new()
@@ -968,6 +980,14 @@ fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String>
     if release_gate_jobs.len() != 1 || !release_gate_jobs[0].contains(RELEASE_FORMAT_STEP) {
         violations.push(format!(
             "{RELEASE_WORKFLOW}: Release gates must run canonical Rust 1.88.0 formatting with `{CANONICAL_FORMAT_GATE}`"
+        ));
+    }
+    if release_gate_jobs.len() != 1
+        || release_gate_jobs[0].matches(RELEASE_CLIPPY_STEP).count() != 1
+        || normalized.matches(MSRV_CLIPPY_GATE).count() != 1
+    {
+        violations.push(format!(
+            "{RELEASE_WORKFLOW}: Release gates must run exactly one strict Rust 1.88.0 Clippy step with `{MSRV_CLIPPY_GATE}`"
         ));
     }
     if release_gate_jobs.iter().any(|job| {
@@ -1537,6 +1557,7 @@ mod tests {
     fn reviewed_release_workflow_fixture() -> String {
         let mut lines = vec![
             RELEASE_FORMAT_STEP.to_owned(),
+            RELEASE_CLIPPY_STEP.to_owned(),
             INITIAL_TAG_TYPE_GATE.to_owned(),
             MAIN_ANCESTRY_GATE.to_owned(),
             VERSION_EQUALITY_GATE.to_owned(),
@@ -1903,12 +1924,13 @@ mod tests {
             1
         );
 
-        let mutations = [
+        let mut mutations = vec![
             valid.replacen(
-                "      - name: Install canonical Rust 1.88.0 formatter\n        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --no-self-update\n",
+                "      - name: Install canonical Rust 1.88.0 formatter and Clippy\n        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt --no-self-update\n",
                 "",
                 1,
             ),
+            valid.replacen("--component clippy,rustfmt", "--component rustfmt", 1),
             valid.replacen("cargo +1.88.0 fmt", "cargo +stable fmt", 1),
             valid.replacen("fmt --all -- --check", "fmt -p xtask -- --check", 1),
             valid.replacen(
@@ -1917,12 +1939,22 @@ mod tests {
                 1,
             ),
             valid.replacen("name: Security Tests", "name: Security Checks", 1),
-            valid.replacen(
-                "cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings",
-                "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
-                1,
-            ),
+            valid.replacen(STABLE_CLIPPY_GATE, "", 1),
+            valid.replacen(MSRV_CLIPPY_GATE, "", 1),
+            valid.replacen("cargo +stable clippy", "cargo clippy", 1),
+            valid.replacen("cargo +1.88.0 clippy", "cargo +stable clippy", 1),
         ];
+        for gate in [STABLE_CLIPPY_GATE, MSRV_CLIPPY_GATE] {
+            for (required, weakened) in [
+                (" --workspace", ""),
+                (" --all-targets", ""),
+                (" --all-features", ""),
+                (" --locked", ""),
+                (" -- -D warnings", ""),
+            ] {
+                mutations.push(valid.replacen(gate, &gate.replacen(required, weakened, 1), 1));
+            }
+        }
         for mutation in mutations {
             let violations = security_workflow_policy_violations(&[(path.clone(), mutation)]);
             assert_eq!(violations.len(), 1, "{violations:?}");
@@ -2159,6 +2191,61 @@ mod tests {
             release_workflow_policy_violations(&[(RELEASE_WORKFLOW.to_owned(), misplaced)]);
         assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(violations[0].contains("canonical Rust 1.88.0"));
+    }
+
+    #[test]
+    fn release_workflow_requires_exact_unsuppressed_msrv_clippy() {
+        let path = RELEASE_WORKFLOW.to_owned();
+        let valid = reviewed_release_workflow_fixture();
+        assert!(release_workflow_policy_violations(&[(path.clone(), valid.clone())]).is_empty());
+
+        let mut mutations = vec![
+            valid.replacen(RELEASE_CLIPPY_STEP, "", 1),
+            valid.replacen("cargo +1.88.0 clippy", "cargo clippy", 1),
+            valid.replacen("cargo +1.88.0 clippy", "cargo +stable clippy", 1),
+            format!("{valid}\n{RELEASE_CLIPPY_STEP}"),
+            format!(
+                "{}\n  release-docs:\n{}\n",
+                valid.replacen(RELEASE_CLIPPY_STEP, "", 1),
+                RELEASE_CLIPPY_STEP
+            ),
+        ];
+        for (required, weakened) in [
+            (" --workspace", ""),
+            (" --all-targets", ""),
+            (" --all-features", ""),
+            (" --locked", ""),
+            (" -- -D warnings", ""),
+        ] {
+            mutations.push(valid.replacen(
+                RELEASE_CLIPPY_STEP,
+                &RELEASE_CLIPPY_STEP.replacen(required, weakened, 1),
+                1,
+            ));
+        }
+
+        for mutation in mutations {
+            let violations = release_workflow_policy_violations(&[(path.clone(), mutation)]);
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains("Clippy")),
+                "{violations:?}"
+            );
+        }
+
+        let suppressed = valid.replacen(
+            RELEASE_CLIPPY_STEP,
+            &format!("{RELEASE_CLIPPY_STEP}\n        continue-on-error: true"),
+            1,
+        );
+        let violations = release_workflow_policy_violations(&[(path, suppressed)]);
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("must not suppress")),
+            "{violations:?}"
+        );
     }
 
     #[test]

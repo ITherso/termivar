@@ -383,14 +383,16 @@ jobs:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Install canonical Rust 1.88.0 formatter
-        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --no-self-update
+      - name: Install canonical Rust 1.88.0 formatter and Clippy
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt --no-self-update
       - name: Check canonical formatting
         run: cargo +1.88.0 fmt --all -- --check
       - name: Run pinned RustSec audit
         run: bash scripts/ci/run-cargo-audit.sh
-      - name: Run clippy (security lints)
+      - name: Run current-stable Clippy (security lints)
         run: cargo +stable clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Run Rust 1.88.0 Clippy (release parity)
+        run: cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   code-coverage:
     name: Code Coverage
