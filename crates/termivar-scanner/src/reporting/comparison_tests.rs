@@ -1092,7 +1092,7 @@ fn wordpress_document(audit: Value) -> Value {
     document
 }
 
-fn wordpress_comparison<'a>(comparison: &'a Value) -> &'a Value {
+fn wordpress_comparison(comparison: &Value) -> &Value {
     comparison
         .get("wordpress_review_comparison")
         .expect("a supplied WordPress audit has a semantic comparison")
