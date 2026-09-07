@@ -1792,7 +1792,7 @@ fn cross_run_wordpress_compare_separates_inventory_and_advisory_changes() {
         let observed = server.requests.lock().unwrap().clone();
         let expected_runs = if bundle == &before_bundle { 1 } else { 2 };
         assert_eq!(observed.len(), EXPECTED_REQUESTS.len() * expected_runs);
-        for request_trace in observed.chunks_exact(EXPECTED_REQUESTS.len()) {
+        for request_trace in observed.chunks(EXPECTED_REQUESTS.len()) {
             assert_eq!(request_trace, EXPECTED_REQUESTS.map(str::to_owned));
         }
     }

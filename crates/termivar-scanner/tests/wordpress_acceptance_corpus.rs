@@ -139,7 +139,7 @@ fn reviewed_corpus_matches_independently_written_outcomes_and_denominators() {
         .iter()
         .find(|evaluation| evaluation.record().id() == "REVIEWED-CANDIDATE")
         .expect("candidate record");
-    assert_eq!(candidate.record().affected_ranges().len(), 2);
+    assert_eq!(candidate.record().affected_range_count(), 2);
     assert_eq!(candidate.record().cve(), None);
 }
 
