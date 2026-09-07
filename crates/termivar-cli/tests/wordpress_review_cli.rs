@@ -1870,10 +1870,22 @@ fn cross_run_wordpress_compare_separates_inventory_and_advisory_changes() {
     });
     for comparison in [&forward, &reverse] {
         assert_eq!(comparison["schema"], "termivar-report-comparison/v1");
+        assert_eq!(comparison["before"]["item_count"], 5);
+        assert_eq!(comparison["after"]["item_count"], 5);
         assert!(comparison["only_in_before"].as_array().unwrap().is_empty());
         assert!(comparison["only_in_after"].as_array().unwrap().is_empty());
         assert!(comparison["changed"].as_array().unwrap().is_empty());
-        assert_eq!(comparison["unchanged"].as_array().unwrap().len(), 1);
+        let unchanged = comparison["unchanged"].as_array().unwrap();
+        assert_eq!(unchanged.len(), 5);
+        assert_eq!(
+            unchanged
+                .iter()
+                .filter(|item| {
+                    item["capability_id"] == "technology.wordpress-surface-observed@1"
+                })
+                .count(),
+            1
+        );
 
         let wordpress = &comparison["wordpress_review_comparison"];
         assert_eq!(
