@@ -1659,14 +1659,14 @@ fn missing_defiant_record_link_fails_before_runtime_or_bundle_reservation() {
 #[test]
 fn cross_run_wordpress_compare_separates_inventory_and_advisory_changes() {
     const ROOT: &str = r#"<!doctype html><html><body>
-        <script src="/wp-content/plugins/synthetic-stage-e-plugin/app.js"></script>
+        <link rel="stylesheet" href="/wp-content/plugins/synthetic-stage-e-plugin/style.css">
         bounded comparison fixture
         </body></html>"#;
     const EXPECTED_REQUESTS: [&str; 4] = [
         "GET / HTTP/1.1",
         "GET / HTTP/1.1",
         "GET / HTTP/1.1",
-        "HEAD /wp-content/plugins/synthetic-stage-e-plugin/app.js HTTP/1.1",
+        "HEAD /wp-content/plugins/synthetic-stage-e-plugin/style.css HTTP/1.1",
     ];
     const CATALOG_ID: &str = "termivar-stage-e-semantic-comparison";
     const ADVISORY_ID: &str = "SYNTHETIC-STAGE-E-ADVISORY-0001";
