@@ -396,6 +396,20 @@ mod tests {
     }
 
     #[test]
+    fn generator_that_withholds_its_version_retains_only_the_core_hint() {
+        let signals =
+            extract_wordpress_signals(&origin(), r#"<meta name="generator" content="WordPress">"#);
+
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].identity(), &WordPressComponentIdentity::core());
+        assert_eq!(signals[0].version(), None);
+        assert_eq!(
+            signals[0].source(),
+            WordPressEvidenceSource::GeneratorMetadata
+        );
+    }
+
+    #[test]
     fn prose_comments_scripts_anchors_and_foreign_assets_are_not_signals() {
         let signals = extract_wordpress_signals(
             &origin(),

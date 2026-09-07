@@ -1938,19 +1938,17 @@ mod tests {
     );
     const FIRST_ID: &str = "00000000-0000-4000-8000-000000000001";
     const SECOND_ID: &str = "00000000-0000-4000-8000-000000000002";
+    const FIXTURE_SHA256: [u8; 32] = [
+        0xd9, 0xed, 0x31, 0x40, 0xf4, 0x4a, 0xe1, 0xe0, 0xa3, 0x74, 0x6b, 0xeb, 0x99, 0x37, 0xde,
+        0x2d, 0x82, 0x9d, 0x28, 0xc0, 0x68, 0x10, 0x11, 0x20, 0xa9, 0x10, 0x4c, 0x33, 0x49, 0x90,
+        0x1d, 0xb7,
+    ];
 
     #[test]
     fn synthetic_production_fixture_is_streamed_into_the_reviewed_typed_contract() {
         let import = parse_wordfence_v3_production(FIXTURE).unwrap();
         assert_eq!(import.byte_length(), FIXTURE.len() as u64);
-        assert_eq!(
-            import.sha256(),
-            &[
-                0xd9, 0xed, 0x31, 0x40, 0xf4, 0x4a, 0xe1, 0xe0, 0xa3, 0x74, 0x6b, 0xeb, 0x99, 0x37,
-                0xde, 0x2d, 0x82, 0x9d, 0x28, 0xc0, 0x68, 0x10, 0x11, 0x20, 0xa9, 0x10, 0x4c, 0x33,
-                0x49, 0x90, 0x1d, 0xb7,
-            ]
-        );
+        assert_eq!(import.sha256(), &FIXTURE_SHA256);
         assert_eq!(import.record_count(), 2);
         assert_eq!(import.software_association_count(), 3);
         assert_eq!(import.affected_range_count(), 4);
@@ -2060,6 +2058,72 @@ mod tests {
             parse_wordfence_v3_production(trailing.as_bytes()),
             Err(WordfenceV3ProductionError::MalformedJson)
         );
+    }
+
+    #[test]
+    fn unknown_nested_software_range_cwe_cvss_and_notice_fields_fail_closed() {
+        let fixture = String::from_utf8(FIXTURE.to_vec()).unwrap();
+        for (location, needle, replacement) in [
+            (
+                "software",
+                r#""slug": "termivar-fixture-component","#,
+                r#""slug": "termivar-fixture-component", "future_software_field": true,"#,
+            ),
+            (
+                "affected range",
+                r#""from_version": "1.0.0","#,
+                r#""from_version": "1.0.0", "future_range_field": true,"#,
+            ),
+            (
+                "CWE",
+                r#""id": 9999,"#,
+                r#""id": 9999, "future_cwe_field": true,"#,
+            ),
+            (
+                "CVSS",
+                r#""vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N","#,
+                r#""vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N", "future_cvss_field": true,"#,
+            ),
+            (
+                "notice party",
+                r#""notice": "Synthetic fixture material created for Termivar parser testing.","#,
+                r#""notice": "Synthetic fixture material created for Termivar parser testing.", "future_notice_field": true,"#,
+            ),
+        ] {
+            let document = fixture.replacen(needle, replacement, 1);
+            assert_ne!(document, fixture, "test mutation missed {location}");
+            assert_eq!(
+                parse_wordfence_v3_production(document.as_bytes()),
+                Err(WordfenceV3ProductionError::UnsupportedValue),
+                "unknown {location} field must not be silently discarded"
+            );
+        }
+    }
+
+    #[test]
+    fn truncated_root_key_record_and_final_object_are_rejected_as_malformed() {
+        let first_key = FIXTURE
+            .windows(FIRST_ID.len())
+            .position(|window| window == FIRST_ID.as_bytes())
+            .unwrap();
+        let first_software = FIXTURE
+            .windows(b"\"software\"".len())
+            .position(|window| window == b"\"software\"")
+            .unwrap();
+        let final_close = FIXTURE.iter().rposition(|byte| *byte == b'}').unwrap();
+        for (location, end) in [
+            ("root opener", 1),
+            ("root key", first_key + 7),
+            ("record", first_software + 6),
+            ("middle", FIXTURE.len() / 2),
+            ("final object", final_close),
+        ] {
+            assert_eq!(
+                parse_wordfence_v3_production(&FIXTURE[..end]),
+                Err(WordfenceV3ProductionError::MalformedJson),
+                "truncation at {location} must not be accepted as a prefix"
+            );
+        }
     }
 
     #[test]
@@ -2325,6 +2389,92 @@ mod tests {
         bytes: &'a [u8],
         position: usize,
         observed: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    #[derive(Default)]
+    struct DeterministicReadTrace {
+        data_reads: usize,
+        interrupted_reads: usize,
+        eof_reads: usize,
+        bytes_returned: usize,
+    }
+
+    struct DeterministicChunkReader<'a> {
+        bytes: &'a [u8],
+        position: usize,
+        maximum_chunk: usize,
+        interrupt_before_each_result: bool,
+        interruption_pending: bool,
+        trace: std::rc::Rc<std::cell::RefCell<DeterministicReadTrace>>,
+    }
+
+    impl Read for DeterministicChunkReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            if self.interrupt_before_each_result && self.interruption_pending {
+                self.interruption_pending = false;
+                self.trace.borrow_mut().interrupted_reads += 1;
+                return Err(std::io::Error::from(ErrorKind::Interrupted));
+            }
+            if self.position == self.bytes.len() {
+                self.trace.borrow_mut().eof_reads += 1;
+                return Ok(0);
+            }
+            let copied = buffer
+                .len()
+                .min(self.maximum_chunk)
+                .min(self.bytes.len() - self.position);
+            buffer[..copied].copy_from_slice(&self.bytes[self.position..self.position + copied]);
+            self.position += copied;
+            self.interruption_pending = self.interrupt_before_each_result;
+            let mut trace = self.trace.borrow_mut();
+            trace.data_reads += 1;
+            trace.bytes_returned += copied;
+            Ok(copied)
+        }
+    }
+
+    #[test]
+    fn one_byte_chunked_and_interrupted_readers_complete_once_through_eof() {
+        for (label, maximum_chunk, interrupted) in [
+            ("one-byte", 1_usize, false),
+            ("chunked", 37, false),
+            ("interrupted", 29, true),
+        ] {
+            let trace =
+                std::rc::Rc::new(std::cell::RefCell::new(DeterministicReadTrace::default()));
+            let reader = DeterministicChunkReader {
+                bytes: FIXTURE,
+                position: 0,
+                maximum_chunk,
+                interrupt_before_each_result: interrupted,
+                interruption_pending: interrupted,
+                trace: std::rc::Rc::clone(&trace),
+            };
+            let import = parse_wordfence_v3_production(reader).unwrap();
+            assert_eq!(import.byte_length(), FIXTURE.len() as u64, "{label}");
+            assert_eq!(import.sha256(), &FIXTURE_SHA256, "{label}");
+            assert_eq!(import.record_count(), 2, "{label}");
+            assert_eq!(import.software_association_count(), 3, "{label}");
+            assert_eq!(import.affected_range_count(), 4, "{label}");
+
+            let trace = trace.borrow();
+            let expected_data_reads = FIXTURE.len().div_ceil(maximum_chunk);
+            assert_eq!(trace.data_reads, expected_data_reads, "{label}");
+            assert_eq!(trace.bytes_returned, FIXTURE.len(), "{label}");
+            assert_eq!(trace.eof_reads, 1, "{label}");
+            assert_eq!(
+                trace.interrupted_reads,
+                if interrupted {
+                    expected_data_reads + 1
+                } else {
+                    0
+                },
+                "{label}"
+            );
+        }
     }
 
     impl Read for OneByteCountingReader<'_> {

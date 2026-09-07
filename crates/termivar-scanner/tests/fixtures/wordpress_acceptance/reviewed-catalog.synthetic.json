@@ -1,0 +1,94 @@
+{
+  "schema": "security.wordpress-advisory-catalog/v2",
+  "catalog": {
+    "id": "stage-e-reviewed-synthetic",
+    "revision": "reviewed-r1",
+    "retrieved_on": "2026-09-07"
+  },
+  "records": [
+    {
+      "id": "REVIEWED-CANDIDATE",
+      "component": { "kind": "plugin", "slug": "shared-slug" },
+      "source": {
+        "reference": "https://example.invalid/stage-e/reviewed-candidate",
+        "revision": "reviewed-r1",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "original synthetic Stage E acceptance record"
+      },
+      "comparison_profile": "php-release-subset/v1",
+      "summary": "Synthetic prerelease candidate with a supplied activation fact",
+      "affected_ranges": [
+        {
+          "lower": { "version": "2.4.0-beta0", "inclusive": true },
+          "upper": { "version": "2.4.0", "inclusive": false }
+        },
+        {
+          "lower": { "version": "3.0.0", "inclusive": true },
+          "upper": { "version": "3.1.0", "inclusive": false }
+        }
+      ],
+      "fixed_versions": ["2.4.0", "3.1.0"],
+      "prerequisites": [
+        { "kind": "activation", "equals": "active" }
+      ],
+      "remediation": "Review the fictional source-declared fixed versions through the operator's normal process"
+    },
+    {
+      "id": "REVIEWED-MISSING-VERSION",
+      "component": { "kind": "theme", "slug": "shared-slug" },
+      "source": {
+        "reference": "https://example.invalid/stage-e/reviewed-missing-version",
+        "revision": "reviewed-r1",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "original synthetic Stage E acceptance record"
+      },
+      "comparison_profile": "numeric-dotted/v1",
+      "summary": "Synthetic theme record whose supplied component has no version",
+      "affected_ranges": [
+        { "upper": { "version": "3.0.0", "inclusive": false } }
+      ],
+      "fixed_versions": ["3.0.0"]
+    },
+    {
+      "id": "REVIEWED-UNSUPPORTED-VERSION",
+      "component": { "kind": "core", "slug": "wordpress" },
+      "source": {
+        "reference": "https://example.invalid/stage-e/reviewed-unsupported-version",
+        "revision": "reviewed-r1",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "original synthetic Stage E acceptance record"
+      },
+      "comparison_profile": "numeric-dotted/v1",
+      "summary": "Synthetic numeric record paired with an unsupported vendor version spelling",
+      "affected_ranges": [
+        {
+          "lower": { "version": "6.0.0", "inclusive": true },
+          "upper": { "version": "7.0.0", "inclusive": false }
+        }
+      ],
+      "fixed_versions": ["7.0.0"]
+    },
+    {
+      "id": "REVIEWED-UNKNOWN-PREREQUISITE",
+      "component": { "kind": "plugin", "slug": "unknown-prerequisite" },
+      "source": {
+        "reference": "https://example.invalid/stage-e/reviewed-unknown-prerequisite",
+        "revision": "reviewed-r1",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "original synthetic Stage E acceptance record"
+      },
+      "comparison_profile": "numeric-dotted/v1",
+      "summary": "Synthetic in-range record with no supplied multisite fact",
+      "affected_ranges": [
+        {
+          "lower": { "version": "1.0.0", "inclusive": true },
+          "upper": { "version": "2.0.0", "inclusive": false }
+        }
+      ],
+      "fixed_versions": ["2.0.0"],
+      "prerequisites": [
+        { "kind": "multisite", "equals": "enabled" }
+      ]
+    }
+  ]
+}

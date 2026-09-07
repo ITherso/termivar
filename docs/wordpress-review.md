@@ -337,6 +337,51 @@ records the public-schema-only expectations used by the parser and end-to-end
 acceptance. It is not a live export, no provider credential was used, and this
 does not establish compatibility with a complete current feed snapshot.
 
+## Development acceptance evidence
+
+The source tree keeps a separate, synthetic WordPress acceptance corpus under
+`crates/termivar-scanner/tests/fixtures/wordpress_acceptance`. Its literal
+expectations are maintained independently from the evaluator implementation,
+and its reviewed and holdout inputs are labelled separately. The reviewed set
+contains four records: one declared-data candidate, two missing-evidence
+results, and one unsupported result. The holdout set contains two records: one
+contradicted result and one missing-evidence result. These are conformance
+denominators for the declared fixtures, not a detection-accuracy percentage.
+
+The same acceptance layer covers missing inventory categories, must-use and
+drop-in plugin rows, parent themes, and plugin/theme identities that share a
+slug. A generated large-input case reads 4,096 synthetic external records and
+selects exactly one relevant association while accounting for 4,095 deliberate
+exclusions. It records byte and retained-data measurements plus non-contract
+timing observations; it does not model or certify a complete provider feed.
+
+A process-level feature-enabled test performs two assessments against the same
+benign loopback origin, changes only declared local WordPress inputs, verifies
+both report bundles, and compares them in both directions. The expected
+component-version and advisory range/fix dimensions are literal test oracles.
+The two scans must retain the same request trace, while Verify and Compare add
+no target request. Existing CI executes that test natively on Linux, Windows,
+and macOS. The four-platform curated release check remains a separate negative
+composition guard because WordPress is intentionally excluded from
+`release-bundle`.
+
+No actual Wordfence vendor export was supplied for this acceptance corpus.
+Large real-feed behavior, source authenticity, complete provider coverage, and
+peak resident memory across every platform therefore remain unestablished.
+The repository's small curated WordPress-project example retains its separate
+primary-source factual provenance; it is not relabelled as vendor-feed data.
+
+| Acceptance surface | Status | Evidence boundary |
+| --- | --- | --- |
+| Saved plugin/theme/core inventories | Implemented and tested | Synthetic WP-CLI-shaped files; Termivar does not run WP-CLI |
+| Declared Wordfence V3 Production input | Implemented and tested | Public-schema synthetic data only |
+| Reviewed/holdout evaluator outcomes | Implemented and tested | Six fictional records with literal expected denominators |
+| Cross-run semantic Report Compare | Implemented and tested | One benign exact-origin fixture; no remediation causality |
+| Feature-enabled native CLI | Implemented and tested in CI | Linux, Windows, and macOS runners; not a fresh-machine certification |
+| Curated release bundle | WordPress intentionally unsupported | The packaged capability remains `not_compiled` |
+| Real vendor snapshot and live API | Not tested / unsupported | No supplied export, account, API key, or network retrieval |
+| Exploit and impact validation | Unsupported | Both remain `not_performed` |
+
 ## Reading the WordPress report
 
 The HTML and Markdown assessment reports present operator-relevant fields from

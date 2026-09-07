@@ -206,7 +206,8 @@ pub fn check_openapi_review(data: &[u8]) {
 pub const MAX_WORDPRESS_FUZZ_INPUT_BYTES: usize =
     termivar_scanner::wordpress_review::MAX_WORDPRESS_ADVISORY_CATALOG_BYTES;
 
-/// Exercises both bounded WordPress input parsers on the same arbitrary bytes.
+/// Exercises the bounded WordPress context, catalogue, external-feed and saved
+/// inventory parsers on the same arbitrary bytes.
 ///
 /// The harness checks parser determinism and the canonical ordering contracts
 /// that keep context and advisory evaluation independent from JSON member and
@@ -214,8 +215,9 @@ pub const MAX_WORDPRESS_FUZZ_INPUT_BYTES: usize =
 pub fn check_wordpress_review(data: &[u8]) {
     use termivar_scanner::wordpress_review::{
         parse_wordfence_v3_production, parse_wordpress_advisory_catalog, parse_wordpress_context,
-        NumericDottedVersion, PhpReleaseSubsetVersion, WordPressAdvisoryCatalogSchema,
-        WordPressComparisonProfile, MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION,
+        parse_wordpress_saved_inventory, NumericDottedVersion, PhpReleaseSubsetVersion,
+        WordPressAdvisoryCatalogSchema, WordPressComparisonProfile,
+        WordPressInventoryCategoryStatus, MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION,
         MAX_WORDFENCE_V3_RECORDS, MAX_WORDFENCE_V3_SOFTWARE_ASSOCIATIONS,
         MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_CONTEXT_COMPONENTS,
         MAX_WORDPRESS_FIXED_VERSIONS_PER_ADVISORY, MAX_WORDPRESS_PATCH_ASSERTIONS_PER_COMPONENT,
@@ -352,6 +354,58 @@ pub fn check_wordpress_review(data: &[u8]) {
                             && view.association().key() == association.key()
                     }));
             }
+        }
+    }
+
+    let inventory_root = url::Url::parse("https://wordpress-fuzz.invalid/")
+        .expect("fixed fuzz inventory root must remain valid");
+    for (plugins, themes, core) in [
+        (Some(data), None, None),
+        (None, Some(data), None),
+        (None, None, Some(data)),
+    ] {
+        let inventory =
+            parse_wordpress_saved_inventory(inventory_root.clone(), plugins, themes, core);
+        let repeated_inventory =
+            parse_wordpress_saved_inventory(inventory_root.clone(), plugins, themes, core);
+        assert_eq!(
+            inventory, repeated_inventory,
+            "identical saved WordPress inventory input must be deterministic"
+        );
+        if let Ok(inventory) = inventory {
+            let summary = inventory.summary();
+            // Retained component identities and unsupported drop-in rows share
+            // the parser's deliberate aggregate context-component budget.
+            assert!(
+                summary
+                    .component_count()
+                    .checked_add(summary.limitations().len())
+                    .is_some_and(|count| count <= MAX_WORDPRESS_CONTEXT_COMPONENTS)
+            );
+            assert_eq!(
+                summary.coverage().plugins(),
+                if plugins.is_some() {
+                    WordPressInventoryCategoryStatus::Supplied
+                } else {
+                    WordPressInventoryCategoryStatus::NotSupplied
+                }
+            );
+            assert_eq!(
+                summary.coverage().themes(),
+                if themes.is_some() {
+                    WordPressInventoryCategoryStatus::Supplied
+                } else {
+                    WordPressInventoryCategoryStatus::NotSupplied
+                }
+            );
+            assert_eq!(
+                summary.coverage().core(),
+                if core.is_some() {
+                    WordPressInventoryCategoryStatus::Supplied
+                } else {
+                    WordPressInventoryCategoryStatus::NotSupplied
+                }
+            );
         }
     }
 

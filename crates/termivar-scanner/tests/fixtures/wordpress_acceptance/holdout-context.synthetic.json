@@ -1,0 +1,17 @@
+{
+  "schema": "security.wordpress-context/v1",
+  "root": "https://example.test/",
+  "components": [
+    {
+      "kind": "core",
+      "slug": "wordpress",
+      "version": "6.8.2"
+    },
+    {
+      "kind": "plugin",
+      "slug": "holdout-plugin",
+      "version": "1.5.0",
+      "activation": "inactive"
+    }
+  ]
+}

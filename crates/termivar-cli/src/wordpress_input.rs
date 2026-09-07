@@ -538,6 +538,73 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn opened_inventory_handle_stays_bound_to_the_original_final_component() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected_path = directory.path().join("inventory.json");
+        let displaced_path = directory.path().join("opened-inventory.json");
+        let original = br#"[{"name":"original","status":"active","version":"1.0"}]"#;
+        let replacement = br#"[{"name":"replacement","status":"active","version":"9.9"}]"#;
+        std::fs::write(&selected_path, original).unwrap();
+
+        let mut opened = open_bounded_regular_file(selected_path.clone(), 1024).unwrap();
+        std::fs::rename(&selected_path, &displaced_path).unwrap();
+        std::fs::write(&selected_path, replacement).unwrap();
+
+        let mut captured = Vec::new();
+        opened.read_to_end(&mut captured).unwrap();
+        assert_eq!(captured, original);
+        assert_eq!(std::fs::read(&selected_path).unwrap(), replacement);
+        assert_eq!(std::fs::read(&displaced_path).unwrap(), original);
+    }
+
+    #[test]
+    fn failed_saved_inventory_parsing_preserves_every_selected_input_byte() {
+        let directory = tempfile::tempdir().unwrap();
+        let plugins_path = directory.path().join("PRIVATE-plugins.json");
+        let themes_path = directory.path().join("PRIVATE-themes.json");
+        let core_path = directory.path().join("PRIVATE-core.txt");
+        let plugins = br#"[{"name":"sample","status":"active","version":"1.0"}]"#;
+        let malformed_themes = br#"[{"name":"theme","status":"parent","version":"2.0""#;
+        let core = b"6.9.4\n";
+        std::fs::write(&plugins_path, plugins).unwrap();
+        std::fs::write(&themes_path, malformed_themes).unwrap();
+        std::fs::write(&core_path, core).unwrap();
+        let before = [
+            Sha256::digest(plugins),
+            Sha256::digest(malformed_themes),
+            Sha256::digest(core),
+        ];
+
+        let selected = WordPressReviewInput::select(
+            true,
+            None,
+            None,
+            None,
+            Some(plugins_path.clone()),
+            Some(themes_path.clone()),
+            Some(core_path.clone()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            selected
+                .load(&Url::parse("https://example.test/").unwrap())
+                .unwrap_err(),
+            WordPressInputError::InvalidSavedInventory
+        );
+
+        for (path, expected) in [
+            (&plugins_path, &before[0]),
+            (&themes_path, &before[1]),
+            (&core_path, &before[2]),
+        ] {
+            let bytes = std::fs::read(path).unwrap();
+            assert_eq!(&Sha256::digest(bytes), expected);
+        }
+    }
+
     #[test]
     fn missing_and_non_regular_sources_are_typed_without_paths() {
         let directory = tempfile::tempdir().unwrap();

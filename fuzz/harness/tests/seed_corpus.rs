@@ -101,6 +101,12 @@ fn committed_wordpress_inputs_satisfy_bounded_profile_aware_parser_oracles() {
         &include_bytes!("../../corpus/json_parser/wordpress-advisories.json")[..],
         &include_bytes!("../../corpus/json_parser/wordpress-advisories-v2.json")[..],
         &include_bytes!("../../corpus/json_parser/wordpress-wordfence-v3-production.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-inventory-plugins-valid.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-inventory-themes-valid.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-inventory-duplicate.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-inventory-status-invalid.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-inventory-core-valid.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-inventory-core-malformed.json")[..],
     ] {
         assert!(seed.len() <= termivar_fuzz_harness::MAX_WORDPRESS_FUZZ_INPUT_BYTES);
         termivar_fuzz_harness::check_wordpress_review(seed);
@@ -125,6 +131,53 @@ fn committed_wordpress_inputs_satisfy_bounded_profile_aware_parser_oracles() {
     ] {
         termivar_fuzz_harness::check_wordpress_review(malformed);
     }
+}
+
+#[test]
+fn saved_inventory_seeds_have_independent_expected_outcomes() {
+    use termivar_scanner::wordpress_review::{
+        parse_wordpress_saved_inventory, WordPressInventoryCategoryStatus, WordPressReviewError,
+    };
+
+    let root = url::Url::parse("https://wordpress-fuzz.invalid/").unwrap();
+    let plugins = include_bytes!("../../corpus/json_parser/wordpress-inventory-plugins-valid.json");
+    let themes = include_bytes!("../../corpus/json_parser/wordpress-inventory-themes-valid.json");
+    let core = include_bytes!("../../corpus/json_parser/wordpress-inventory-core-valid.json");
+    let inventory =
+        parse_wordpress_saved_inventory(root.clone(), Some(plugins), Some(themes), Some(core))
+            .unwrap();
+    assert_eq!(inventory.summary().component_count(), 5);
+    assert_eq!(inventory.summary().limitations().len(), 1);
+    assert_eq!(
+        inventory.summary().coverage().plugins(),
+        WordPressInventoryCategoryStatus::Supplied
+    );
+    assert_eq!(
+        inventory.summary().coverage().themes(),
+        WordPressInventoryCategoryStatus::Supplied
+    );
+    assert_eq!(
+        inventory.summary().coverage().core(),
+        WordPressInventoryCategoryStatus::Supplied
+    );
+
+    let duplicate = include_bytes!("../../corpus/json_parser/wordpress-inventory-duplicate.json");
+    assert_eq!(
+        parse_wordpress_saved_inventory(root.clone(), Some(duplicate), None, None),
+        Err(WordPressReviewError::DuplicateComponent)
+    );
+    let invalid_status =
+        include_bytes!("../../corpus/json_parser/wordpress-inventory-status-invalid.json");
+    assert_eq!(
+        parse_wordpress_saved_inventory(root.clone(), Some(invalid_status), None, None),
+        Err(WordPressReviewError::InvalidInventory)
+    );
+    let malformed_core =
+        include_bytes!("../../corpus/json_parser/wordpress-inventory-core-malformed.json");
+    assert_eq!(
+        parse_wordpress_saved_inventory(root, None, None, Some(malformed_core)),
+        Err(WordPressReviewError::InvalidInventory)
+    );
 }
 
 #[test]

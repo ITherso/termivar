@@ -1,0 +1,51 @@
+{
+  "schema": "security.wordpress-advisory-catalog/v2",
+  "catalog": {
+    "id": "stage-e-holdout-synthetic",
+    "revision": "holdout-r1",
+    "retrieved_on": "2026-09-07"
+  },
+  "records": [
+    {
+      "id": "HOLDOUT-CONFLICTING-CORE",
+      "component": { "kind": "core", "slug": "wordpress" },
+      "source": {
+        "reference": "https://example.invalid/stage-e/holdout-conflicting-core",
+        "revision": "holdout-r1",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "original synthetic holdout record"
+      },
+      "comparison_profile": "numeric-dotted/v1",
+      "summary": "Synthetic core record evaluated with conflicting version declarations",
+      "affected_ranges": [
+        {
+          "lower": { "version": "6.8.0", "inclusive": true },
+          "upper": { "version": "6.9.0", "inclusive": false }
+        }
+      ],
+      "fixed_versions": ["6.9.0"]
+    },
+    {
+      "id": "HOLDOUT-CONTRADICTED-ACTIVATION",
+      "component": { "kind": "plugin", "slug": "holdout-plugin" },
+      "source": {
+        "reference": "https://example.invalid/stage-e/holdout-contradicted-activation",
+        "revision": "holdout-r1",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "original synthetic holdout record"
+      },
+      "comparison_profile": "numeric-dotted/v1",
+      "summary": "Synthetic in-range record contradicted by supplied activation state",
+      "affected_ranges": [
+        {
+          "lower": { "version": "1.0.0", "inclusive": true },
+          "upper": { "version": "2.0.0", "inclusive": false }
+        }
+      ],
+      "fixed_versions": ["2.0.0"],
+      "prerequisites": [
+        { "kind": "activation", "equals": "active" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+[
+  {"name":"seed-plugin","status":"active","version":"1.2.3","update":false,"auto_update":"off"},
+  {"name":"seed-mu-plugin","status":"must-use","version":""},
+  {"name":"object-cache.php","status":"dropin","version":""}
+]

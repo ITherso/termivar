@@ -1655,3 +1655,408 @@ fn missing_defiant_record_link_fails_before_runtime_or_bundle_reservation() {
     assert!(server.requests.lock().unwrap().is_empty());
     assert!(!report_directory.exists());
 }
+
+#[test]
+fn cross_run_wordpress_compare_separates_inventory_and_advisory_changes() {
+    const ROOT: &str = r#"<!doctype html><html><body>
+        <script src="/wp-content/plugins/synthetic-stage-e-plugin/app.js"></script>
+        bounded comparison fixture
+        </body></html>"#;
+    const EXPECTED_REQUESTS: [&str; 4] = [
+        "GET / HTTP/1.1",
+        "GET / HTTP/1.1",
+        "GET / HTTP/1.1",
+        "HEAD /wp-content/plugins/synthetic-stage-e-plugin/app.js HTTP/1.1",
+    ];
+    const CATALOG_ID: &str = "termivar-stage-e-semantic-comparison";
+    const ADVISORY_ID: &str = "SYNTHETIC-STAGE-E-ADVISORY-0001";
+    const COMPONENT_SLUG: &str = "synthetic-stage-e-plugin";
+
+    let directory = tempfile::tempdir().unwrap();
+    let before_plugins_path = directory.path().join("PRIVATE-STAGE-E-BEFORE-PLUGINS.json");
+    let after_plugins_path = directory.path().join("PRIVATE-STAGE-E-AFTER-PLUGINS.json");
+    let before_catalogue_path = directory
+        .path()
+        .join("PRIVATE-STAGE-E-BEFORE-CATALOGUE.json");
+    let after_catalogue_path = directory
+        .path()
+        .join("PRIVATE-STAGE-E-AFTER-CATALOGUE.json");
+    let before_bundle = directory.path().join("before-assessment");
+    let after_bundle = directory.path().join("after-assessment");
+
+    let before_plugins = serde_json::to_vec(&serde_json::json!([{
+        "name": COMPONENT_SLUG,
+        "status": "active",
+        "version": "1.1.0"
+    }]))
+    .unwrap();
+    let after_plugins = serde_json::to_vec(&serde_json::json!([{
+        "name": COMPONENT_SLUG,
+        "status": "active",
+        "version": "1.2.0"
+    }]))
+    .unwrap();
+    let catalogue = |upper: &str, fixed: &str| {
+        serde_json::to_vec(&serde_json::json!({
+            "schema": "security.wordpress-advisory-catalog/v2",
+            "catalog": {
+                "id": CATALOG_ID,
+                "revision": "synthetic-stage-e-r1",
+                "retrieved_on": "2026-09-07"
+            },
+            "records": [{
+                "id": ADVISORY_ID,
+                "component": {"kind": "plugin", "slug": COMPONENT_SLUG},
+                "source": {
+                    "reference": "https://example.invalid/termivar/stage-e/advisory-0001",
+                    "revision": "synthetic-stage-e-r1",
+                    "retrieved_on": "2026-09-07",
+                    "usage_basis": "Fictional Stage E comparison data; not a real advisory."
+                },
+                "comparison_profile": "numeric-dotted/v1",
+                "summary": "Synthetic comparison record for independent process acceptance.",
+                "affected_ranges": [{
+                    "lower": {"version": "1.0.0", "inclusive": true},
+                    "upper": {"version": upper, "inclusive": false}
+                }],
+                "fixed_versions": [fixed],
+                "prerequisites": [{"kind": "activation", "equals": "active"}],
+                "remediation": "Review the source declaration through the normal update process."
+            }]
+        }))
+        .unwrap()
+    };
+    let before_catalogue = catalogue("2.0.0", "2.0.0");
+    let after_catalogue = catalogue("2.1.0", "2.1.0");
+
+    for (path, bytes) in [
+        (&before_plugins_path, before_plugins.as_slice()),
+        (&after_plugins_path, after_plugins.as_slice()),
+        (&before_catalogue_path, before_catalogue.as_slice()),
+        (&after_catalogue_path, after_catalogue.as_slice()),
+    ] {
+        fs::write(path, bytes).unwrap();
+    }
+    let input_snapshots = [
+        (
+            before_plugins_path.clone(),
+            before_plugins.clone(),
+            sha256(&before_plugins),
+        ),
+        (
+            after_plugins_path.clone(),
+            after_plugins.clone(),
+            sha256(&after_plugins),
+        ),
+        (
+            before_catalogue_path.clone(),
+            before_catalogue.clone(),
+            sha256(&before_catalogue),
+        ),
+        (
+            after_catalogue_path.clone(),
+            after_catalogue.clone(),
+            sha256(&after_catalogue),
+        ),
+    ];
+
+    let server = serve(ROOT);
+    for (plugins, catalogue, bundle) in [
+        (&before_plugins_path, &before_catalogue_path, &before_bundle),
+        (&after_plugins_path, &after_catalogue_path, &after_bundle),
+    ] {
+        let scan = termivar()
+            .args([
+                "scan",
+                "--profile",
+                "web-review",
+                "--wordpress-review",
+                "--wordpress-plugins-json",
+            ])
+            .arg(plugins)
+            .arg("--wordpress-advisories")
+            .arg(catalogue)
+            .arg("--report-dir")
+            .arg(bundle)
+            .arg(&server.url)
+            .output()
+            .expect("WordPress comparison scan must start");
+        assert!(
+            scan.status.success(),
+            "scan stdout: {}\nscan stderr: {}",
+            String::from_utf8_lossy(&scan.stdout),
+            String::from_utf8_lossy(&scan.stderr)
+        );
+        assert!(scan.stdout.is_empty());
+
+        let observed = server.requests.lock().unwrap().clone();
+        let expected_runs = if bundle == &before_bundle { 1 } else { 2 };
+        assert_eq!(observed.len(), EXPECTED_REQUESTS.len() * expected_runs);
+        for request_trace in observed.chunks_exact(EXPECTED_REQUESTS.len()) {
+            assert_eq!(request_trace, EXPECTED_REQUESTS.map(str::to_owned));
+        }
+    }
+
+    let requests_after_scans = server.requests.lock().unwrap().clone();
+    let bundle_snapshots = [&before_bundle, &after_bundle]
+        .into_iter()
+        .flat_map(|bundle| {
+            ["assessment.html", "assessment.json", "manifest.json"].map(|name| {
+                let path = bundle.join(name);
+                let bytes = fs::read(&path).unwrap();
+                let digest = sha256(&bytes);
+                (path, bytes, digest)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for bundle in [&before_bundle, &after_bundle] {
+        let verify = termivar()
+            .args(["report", "verify", "--dir"])
+            .arg(bundle)
+            .args(["--format", "json"])
+            .output()
+            .expect("bundle verification must start");
+        assert!(
+            verify.status.success(),
+            "verify stdout: {}\nverify stderr: {}",
+            String::from_utf8_lossy(&verify.stdout),
+            String::from_utf8_lossy(&verify.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+        assert_eq!(result["status"], "integrity_match");
+        eprintln!(
+            "stage-e bundle observation: bundle={} assessment_json_bytes={} assessment_html_bytes={} target_requests={}",
+            if bundle == &before_bundle {
+                "before"
+            } else {
+                "after"
+            },
+            fs::metadata(bundle.join("assessment.json")).unwrap().len(),
+            fs::metadata(bundle.join("assessment.html")).unwrap().len(),
+            requests_after_scans.len(),
+        );
+    }
+
+    let run_compare = |before: &Path, after: &Path| {
+        let output = termivar()
+            .args(["report", "compare", "--before"])
+            .arg(before.join("assessment.json"))
+            .arg("--after")
+            .arg(after.join("assessment.json"))
+            .args(["--same-scope", "--format", "json"])
+            .output()
+            .expect("WordPress report comparison must start");
+        assert!(
+            output.status.success(),
+            "compare stdout: {}\ncompare stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let forward = run_compare(&before_bundle, &after_bundle);
+    let reverse = run_compare(&after_bundle, &before_bundle);
+
+    let expected_component_key = serde_json::json!({
+        "kind": "plugin",
+        "slug": COMPONENT_SLUG
+    });
+    let expected_advisory_key = serde_json::json!({
+        "source_kind": "termivar_catalog",
+        "source_namespace": CATALOG_ID,
+        "upstream_id": ADVISORY_ID,
+        "component": expected_component_key
+    });
+    for comparison in [&forward, &reverse] {
+        assert_eq!(comparison["schema"], "termivar-report-comparison/v1");
+        assert!(comparison["only_in_before"].as_array().unwrap().is_empty());
+        assert!(comparison["only_in_after"].as_array().unwrap().is_empty());
+        assert!(comparison["changed"].as_array().unwrap().is_empty());
+        assert_eq!(comparison["unchanged"].as_array().unwrap().len(), 1);
+
+        let wordpress = &comparison["wordpress_review_comparison"];
+        assert_eq!(
+            wordpress["schema"],
+            "termivar-wordpress-review-comparison/v1"
+        );
+        assert_eq!(wordpress["status"], "compared");
+        assert_eq!(wordpress["methodology"]["status"], "unchanged");
+        assert!(wordpress["methodology"]["changed_fields"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(wordpress["components"]["paired_unchanged_count"], 0);
+        assert_eq!(
+            wordpress["components"]["paired_changed"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            wordpress["components"]["paired_changed"][0]["key"],
+            expected_component_key
+        );
+        assert_eq!(
+            wordpress["components"]["paired_changed"][0]["changed_dimensions"],
+            serde_json::json!(["component_evidence"])
+        );
+        assert!(wordpress["components"]["only_in_before"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(wordpress["components"]["only_in_after"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 0);
+        assert_eq!(
+            wordpress["advisories"]["paired_changed"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            wordpress["advisories"]["paired_changed"][0]["key"],
+            expected_advisory_key
+        );
+        assert_eq!(
+            wordpress["advisories"]["paired_changed"][0]["changed_dimensions"],
+            serde_json::json!(["affected_ranges", "source_fix_information"])
+        );
+        assert!(wordpress["advisories"]["only_in_before"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(wordpress["advisories"]["only_in_after"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        for side in ["before", "after"] {
+            let advisory = &wordpress["advisories"]["paired_changed"][0][side];
+            assert_eq!(
+                advisory["comparison_methodology"]["comparison_profile"],
+                "numeric-dotted/v1"
+            );
+            assert_eq!(
+                advisory["evaluation_basis"]["version_resolution"],
+                "supported_equivalent"
+            );
+            assert_eq!(
+                advisory["evaluation_basis"]["version_resolution_reason"],
+                "single_supported_version"
+            );
+            assert_eq!(
+                advisory["evaluation_basis"]["version_relation"],
+                "within_declared_range"
+            );
+            assert_eq!(
+                advisory["evaluation_basis"]["exploit_execution"],
+                "not_performed"
+            );
+            assert_eq!(
+                advisory["evaluation_basis"]["impact_validation"],
+                "not_performed"
+            );
+            assert_eq!(
+                advisory["applicability"]["applicability"],
+                "candidate_match_on_declared_facts"
+            );
+        }
+    }
+
+    let forward_component =
+        &forward["wordpress_review_comparison"]["components"]["paired_changed"][0];
+    assert_eq!(
+        forward_component["before"]["component_evidence"]["versions"][0]["value"],
+        "1.1.0"
+    );
+    assert_eq!(
+        forward_component["after"]["component_evidence"]["versions"][0]["value"],
+        "1.2.0"
+    );
+    let reverse_component =
+        &reverse["wordpress_review_comparison"]["components"]["paired_changed"][0];
+    assert_eq!(
+        reverse_component["before"]["component_evidence"]["versions"][0]["value"],
+        "1.2.0"
+    );
+    assert_eq!(
+        reverse_component["after"]["component_evidence"]["versions"][0]["value"],
+        "1.1.0"
+    );
+
+    let forward_advisory =
+        &forward["wordpress_review_comparison"]["advisories"]["paired_changed"][0];
+    assert_eq!(
+        forward_advisory["before"]["affected_ranges"]["affected_ranges"][0]["upper"]["declared"],
+        "2.0.0"
+    );
+    assert_eq!(
+        forward_advisory["after"]["affected_ranges"]["affected_ranges"][0]["upper"]["declared"],
+        "2.1.0"
+    );
+    assert_eq!(
+        forward_advisory["before"]["source_fix_information"]["fixed_versions"],
+        serde_json::json!(["2.0.0"])
+    );
+    assert_eq!(
+        forward_advisory["after"]["source_fix_information"]["fixed_versions"],
+        serde_json::json!(["2.1.0"])
+    );
+    let reverse_advisory =
+        &reverse["wordpress_review_comparison"]["advisories"]["paired_changed"][0];
+    assert_eq!(
+        reverse_advisory["before"]["source_fix_information"]["fixed_versions"],
+        serde_json::json!(["2.1.0"])
+    );
+    assert_eq!(
+        reverse_advisory["after"]["source_fix_information"]["fixed_versions"],
+        serde_json::json!(["2.0.0"])
+    );
+
+    fn assert_no_causal_verdict(value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Array(values) => {
+                values.iter().for_each(assert_no_causal_verdict);
+            },
+            serde_json::Value::Object(values) => {
+                values.values().for_each(assert_no_causal_verdict);
+            },
+            serde_json::Value::String(value) => {
+                assert!(
+                    !matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "fixed"
+                            | "resolved"
+                            | "verified_remediated"
+                            | "new_vulnerability"
+                            | "newly_discovered_vulnerability"
+                    ),
+                    "comparison emitted an unsupported causal verdict: {value}"
+                );
+            },
+            _ => {},
+        }
+    }
+    assert_no_causal_verdict(&forward);
+    assert_no_causal_verdict(&reverse);
+
+    for (path, expected_bytes, expected_digest) in input_snapshots {
+        let observed = fs::read(path).unwrap();
+        assert_eq!(observed, expected_bytes);
+        assert_eq!(sha256(&observed), expected_digest);
+    }
+    for (path, expected_bytes, expected_digest) in bundle_snapshots {
+        let observed = fs::read(path).unwrap();
+        assert_eq!(observed, expected_bytes);
+        assert_eq!(sha256(&observed), expected_digest);
+    }
+    assert_eq!(
+        server.requests.lock().unwrap().as_slice(),
+        requests_after_scans,
+        "offline Verify and Compare must add no target requests"
+    );
+}
