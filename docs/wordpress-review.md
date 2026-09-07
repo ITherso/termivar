@@ -337,6 +337,39 @@ records the public-schema-only expectations used by the parser and end-to-end
 acceptance. It is not a live export, no provider credential was used, and this
 does not establish compatibility with a complete current feed snapshot.
 
+## Reading the WordPress report
+
+The HTML and Markdown assessment reports present operator-relevant fields from
+the same typed WordPress audit in structured sections. **Source and coverage**
+identifies the native
+catalogue or external snapshot, its normalization/comparison policy, saved
+inventory category coverage, and reconciled association counts. **Component
+evidence** keeps observed root-response hints distinct from operator-supplied
+inventory declarations and shows every retained version with its source and
+confidence class.
+
+Advisory evaluations are mutually grouped as **Review candidates**,
+**Contradicted on supplied facts**, or **Evaluation limitations**. A review
+candidate means only that the supplied declarations matched the supported
+catalogue rule. A contradicted result does not establish that the installation
+is safe. Missing or conflicting versions, unknown prerequisites, unsupported
+ranges, and unresolved source-comparison semantics remain visible as
+limitations rather than disappearing from the report.
+
+Fixed or patched versions and remediation text are labelled
+**source-declared remediation information**. They are guidance for the
+operator's normal compatibility and update process, not an automatic update or
+a verified local fix. The report states `exploit_execution=not_performed` and
+`impact_validation=not_performed`; association counts are not added to the one
+WordPress surface observation as vulnerability counts.
+
+JSON retains the complete versioned audit contract and CSV retains its existing
+bounded audit projection. Offline Verify checks the saved document and bundle
+contract, not advisory truth. At this stage Report Compare preserves and shows
+the optional audit bytes but does not yet attribute WordPress changes to
+inventory, advisory, or methodology causes; use its result as a document
+comparison, not remediation proof.
+
 ## Result and claim limits
 
 The WordPress audit belongs to the same final assessment report and evidence

@@ -1481,6 +1481,22 @@ fn wordfence_production_bundle_is_source_qualified_and_offline_tools_preserve_re
         1
     );
     let html = fs::read_to_string(bundle.join("assessment.html")).unwrap();
+    for expected in [
+        "Source and coverage",
+        "Component evidence",
+        "Review candidates",
+        "Evaluation limitations",
+        "Source-declared remediation information",
+        "wordfence-v3/source-semantics-unresolved/v1",
+        "Source-declared patched versions",
+        "not_performed",
+    ] {
+        assert!(html.contains(expected), "HTML omitted {expected}");
+    }
+    assert!(html.contains("<strong>0</strong><span>Review candidates</span>"));
+    assert!(html.contains("<strong>3</strong><span>Evaluation limitations</span>"));
+    assert!(!html.contains("<script"));
+    assert!(!html.contains("confirmed_vulnerability"));
     assert!(html.contains("External source attribution"));
     assert!(
         html.contains("href=\"https://example.invalid/termivar/wordfence-v3/fixture-advisory-1\"")

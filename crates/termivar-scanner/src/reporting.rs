@@ -1116,10 +1116,13 @@ fn render_assessment_html(
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
 <title>Termivar assessment report</title><style>\
 :root{color-scheme:light dark}body{font:14px/1.5 system-ui,sans-serif;margin:2rem;max-width:90rem}\
-h1,h2{line-height:1.2}.meta{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem}\
-.item{border:1px solid currentColor;padding:1rem;margin-block:1rem}.item dl{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem}\
+h1,h2,h3{line-height:1.2}.meta{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem}\
+.item,.wp-detail{border:1px solid currentColor;padding:1rem;margin-block:1rem}.item dl,.wp-detail dl{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem}\
 .disposition{border:2px solid currentColor;display:inline-block;font-weight:700;padding:.15rem .4rem}\
-code{overflow-wrap:anywhere}.empty{font-style:italic}</style></head><body><main>\
+.wp-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:.75rem;margin-block:1rem}\
+.wp-card{border:1px solid currentColor;padding:.75rem}.wp-card strong{display:block;font-size:1.4rem}\
+.wp-note{border-inline-start:.3rem solid currentColor;padding:.5rem .75rem}.wp-detail summary{cursor:pointer;font-weight:700}\
+code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:italic}@media print{.wp-detail>*{display:block!important}}</style></head><body><main>\
 <h1>Termivar assessment report</h1><p><strong>Lifecycle status:</strong> completed typed assessment.</p><dl class=\"meta\">",
     )?;
     for (label, value) in document.metadata() {
@@ -1170,7 +1173,7 @@ code{overflow-wrap:anywhere}.empty{font-style:italic}</style></head><body><main>
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         output.push_str("<section><h2>WordPress evidence review audit</h2><dl class=\"meta\">")?;
-        for (label, value) in audit.metadata()? {
+        for (label, value) in audit.metadata() {
             output.push_str("<dt>")?;
             write_html_text(&mut output, label)?;
             output.push_str("</dt><dd><code>")?;
@@ -1178,6 +1181,7 @@ code{overflow-wrap:anywhere}.empty{font-style:italic}</style></head><body><main>
             output.push_str("</code></dd>")?;
         }
         output.push_str("</dl>")?;
+        write_wordpress_presentation(&mut WordPressPresentationEmitter::Html(&mut output), audit)?;
         write_html_wordpress_external_attribution(&mut output, audit)?;
         output.push_str("</section>")?;
     }
@@ -1231,6 +1235,832 @@ fn write_html_optional_assessment_text(
     }
 }
 
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Clone, Copy)]
+enum WordPressPresentationInline<'a> {
+    Literal(&'static str),
+    Code(&'a str),
+    Count(usize),
+    Bytes(u64),
+    Bool(bool),
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+enum WordPressPresentationEmitter<'a> {
+    Html(&'a mut RenderBuffer),
+    Markdown(&'a mut RenderBuffer),
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_presentation(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    audit: &AssessmentWordPressAuditDocument,
+) -> Result<(), ReportError> {
+    let counts = audit.presentation_counts();
+    emitter.note(
+        "Interpretation boundary: review candidates are source-data comparisons, not confirmed vulnerabilities. Processing completion does not establish exhaustive coverage, exploitability, impact, or remediation.",
+    )?;
+    emitter.overview(&[
+        ("Components", audit.component_count),
+        ("Review candidates", counts.review_candidates),
+        ("Evaluation limitations", counts.limitations),
+        ("Contradicted on supplied facts", counts.contradicted),
+        ("Evaluations with source guidance", counts.source_guidance),
+    ])?;
+
+    emitter.heading("Source and coverage")?;
+    emitter.begin_fields()?;
+    wordpress_code_field(emitter, "Catalogue status", audit.catalog_status)?;
+    if let Some(catalog) = &audit.catalog {
+        wordpress_code_field(emitter, "Catalogue identity", &catalog.id)?;
+        wordpress_code_field(emitter, "Catalogue revision", &catalog.revision)?;
+        wordpress_code_field(
+            emitter,
+            "Source-declared retrieval date",
+            &catalog.retrieved_on,
+        )?;
+        if let Some(schema) = audit.catalog_schema {
+            wordpress_code_field(emitter, "Catalogue schema", schema)?;
+        }
+    }
+    if let Some(inventory) = &audit.inventory_import {
+        wordpress_code_field(emitter, "Core inventory", inventory.coverage.core)?;
+        wordpress_code_field(emitter, "Plugin inventory", inventory.coverage.plugins)?;
+        wordpress_code_field(emitter, "Theme inventory", inventory.coverage.themes)?;
+        wordpress_count_field(
+            emitter,
+            "Imported inventory components",
+            inventory.component_count,
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Inventory limitations",
+            inventory.limitations.len(),
+        )?;
+    } else {
+        wordpress_code_field(emitter, "Saved inventory coverage", "not supplied")?;
+    }
+    if let Some(external) = &audit.external_review {
+        wordpress_code_field(
+            emitter,
+            "Advisory source namespace",
+            external.source_namespace,
+        )?;
+        wordpress_code_field(emitter, "Advisory source format", external.source_format)?;
+        wordpress_code_field(emitter, "Normalization mapping", external.mapping_revision)?;
+        wordpress_code_field(emitter, "Comparison policy", external.comparison_policy)?;
+        wordpress_bytes_field(emitter, "Input bytes", external.input.byte_length)?;
+        wordpress_code_field(emitter, "Input byte digest", &external.input.sha256)?;
+        wordpress_code_field(
+            emitter,
+            "Input semantic digest",
+            &external.input.semantic_sha256,
+        )?;
+        for (label, count) in [
+            ("Parsed source records", external.counts.parsed_records),
+            (
+                "Software associations",
+                external.counts.software_associations,
+            ),
+            (
+                "Relevant associations",
+                external.counts.selected_associations,
+            ),
+            (
+                "Evaluable associations",
+                external.counts.evaluable_associations,
+            ),
+            (
+                "Unsupported relevant associations",
+                external.counts.unsupported_associations,
+            ),
+            (
+                "Irrelevant associations excluded",
+                external.counts.excluded_associations,
+            ),
+        ] {
+            wordpress_count_field(emitter, label, count)?;
+        }
+    }
+    emitter.end_fields()?;
+
+    if let Some(inventory) = &audit.inventory_import {
+        emitter.heading("Saved inventory provenance and limitations")?;
+        for input in &inventory.inputs {
+            emitter.begin_record()?;
+            emitter.inline(WordPressPresentationInline::Code(input.class))?;
+            emitter.end_record_title()?;
+            wordpress_count_field(emitter, "Exact-read bytes", input.byte_length)?;
+            wordpress_code_field(emitter, "SHA-256", &input.sha256)?;
+            emitter.end_record()?;
+        }
+        if inventory.limitations.is_empty() {
+            emitter.empty("No typed inventory-row limitations were recorded.")?;
+        } else {
+            for limitation in &inventory.limitations {
+                emitter.begin_record()?;
+                emitter.inline(WordPressPresentationInline::Literal(
+                    "Unsupported inventory row: ",
+                ))?;
+                emitter.inline(WordPressPresentationInline::Code(&limitation.declared_name))?;
+                emitter.end_record_title()?;
+                wordpress_code_field(emitter, "Status", limitation.status)?;
+                wordpress_code_field(emitter, "Reason", limitation.reason)?;
+                wordpress_optional_code_field(
+                    emitter,
+                    "Declared version",
+                    limitation.version.as_deref(),
+                )?;
+                emitter.end_record()?;
+            }
+        }
+    }
+
+    emitter.heading("Component evidence")?;
+    if audit.components.is_empty() {
+        emitter.empty("No component evidence was retained.")?;
+    } else {
+        for component in &audit.components {
+            write_wordpress_component(emitter, component)?;
+        }
+    }
+
+    emitter.heading("Execution boundary")?;
+    emitter.paragraph(
+        "The WordPress review interprets retained and operator-supplied data only; it does not execute an exploit or validate impact.",
+    )?;
+    emitter.begin_fields()?;
+    wordpress_code_field(emitter, "Exploit execution", "not_performed")?;
+    wordpress_code_field(emitter, "Impact validation", "not_performed")?;
+    emitter.end_fields()?;
+
+    write_wordpress_evaluation_group(
+        emitter,
+        audit,
+        WordPressPresentationGroup::ReviewCandidate,
+        "Review candidates",
+        "These records match only on the supplied declarations and still require operator review.",
+    )?;
+    write_wordpress_evaluation_group(
+        emitter,
+        audit,
+        WordPressPresentationGroup::Contradicted,
+        "Contradicted on supplied facts",
+        "These declared-data evaluations did not match; they do not establish that the installation is safe.",
+    )?;
+    write_wordpress_evaluation_group(
+        emitter,
+        audit,
+        WordPressPresentationGroup::Limitation,
+        "Evaluation limitations",
+        "Missing, conflicting, unsupported, or source-semantics-limited data prevented a stronger evaluation.",
+    )?;
+
+    emitter.heading("Source-declared remediation information")?;
+    emitter.note(
+        "Source-declared fixed versions, patched versions, and remediation remain attached to each evaluation above. They are not an automatic update, a verified fix, or a minimum safe version across every maintained branch. A false source patched flag means only that the association did not declare a fix; it does not establish permanent unpatchability.",
+    )?;
+    emitter.begin_fields()?;
+    wordpress_count_field(
+        emitter,
+        "Evaluations with source guidance",
+        counts.source_guidance,
+    )?;
+    emitter.end_fields()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_component(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    component: &WordPressComponentDocument,
+) -> Result<(), ReportError> {
+    emitter.begin_record()?;
+    emitter.inline(WordPressPresentationInline::Code(component.identity.kind))?;
+    emitter.inline(WordPressPresentationInline::Literal(":"))?;
+    emitter.inline(WordPressPresentationInline::Code(&component.identity.slug))?;
+    emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+    emitter.inline(WordPressPresentationInline::Code(component.evidence_class))?;
+    emitter.end_record_title()?;
+    wordpress_code_field(emitter, "Evidence class", component.evidence_class)?;
+    wordpress_optional_code_field(emitter, "Activation", component.activation)?;
+    wordpress_optional_code_field(emitter, "Inventory status", component.inventory_status)?;
+    write_wordpress_values(
+        emitter,
+        "Identity sources",
+        component.identity_sources.iter().copied(),
+        "none recorded",
+    )?;
+    write_wordpress_values(
+        emitter,
+        "Confidence classes",
+        component.confidence_classes.iter().copied(),
+        "none recorded",
+    )?;
+    if component.versions.is_empty() {
+        wordpress_code_field(emitter, "Version evidence", "missing")?;
+    } else {
+        emitter.begin_list_field("Version evidence")?;
+        for version in &component.versions {
+            emitter.begin_list_item()?;
+            emitter.inline(WordPressPresentationInline::Code(&version.value))?;
+            emitter.inline(WordPressPresentationInline::Literal(" from "))?;
+            emitter.inline(WordPressPresentationInline::Code(version.source))?;
+            emitter.inline(WordPressPresentationInline::Literal(" with "))?;
+            emitter.inline(WordPressPresentationInline::Code(version.confidence))?;
+            emitter.end_list_item()?;
+        }
+        emitter.end_list_field()?;
+    }
+    emitter.end_record()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_evaluation_group(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    audit: &AssessmentWordPressAuditDocument,
+    group: WordPressPresentationGroup,
+    title: &'static str,
+    explanation: &'static str,
+) -> Result<(), ReportError> {
+    emitter.heading(title)?;
+    emitter.paragraph(explanation)?;
+    let mut rendered = 0_usize;
+    for advisory in &audit.advisories {
+        if wordpress_advisory_group(advisory) == group {
+            write_wordpress_advisory(emitter, advisory)?;
+            rendered += 1;
+        }
+    }
+    if group == WordPressPresentationGroup::Limitation {
+        if let Some(external) = &audit.external_review {
+            for evaluation in &external.evaluations {
+                write_wordpress_external_evaluation(emitter, external, evaluation)?;
+                rendered += 1;
+            }
+        }
+    }
+    if rendered == 0 {
+        emitter.empty("No records in this group.")?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_advisory(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    advisory: &WordPressAdvisoryDocument,
+) -> Result<(), ReportError> {
+    emitter.begin_record()?;
+    emitter.inline(WordPressPresentationInline::Code(&advisory.id))?;
+    emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+    emitter.inline(WordPressPresentationInline::Code(advisory.component.kind))?;
+    emitter.inline(WordPressPresentationInline::Literal(":"))?;
+    emitter.inline(WordPressPresentationInline::Code(&advisory.component.slug))?;
+    emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+    emitter.inline(WordPressPresentationInline::Code(advisory.applicability))?;
+    emitter.end_record_title()?;
+    wordpress_code_field(emitter, "Applicability", advisory.applicability)?;
+    wordpress_code_field(emitter, "Version relation", advisory.version_relation)?;
+    wordpress_code_field(
+        emitter,
+        "Comparison profile",
+        advisory
+            .comparison_profile
+            .unwrap_or("numeric-dotted/v1 (implicit catalogue contract)"),
+    )?;
+    wordpress_code_field(
+        emitter,
+        "Version resolution",
+        advisory
+            .version_resolution
+            .unwrap_or("not recorded by audit schema"),
+    )?;
+    wordpress_code_field(
+        emitter,
+        "Version-resolution reason",
+        advisory
+            .version_resolution_reason
+            .unwrap_or("not recorded by audit schema"),
+    )?;
+    wordpress_code_field(emitter, "Component evidence", advisory.component_evidence)?;
+    wordpress_code_field(emitter, "Source reference", &advisory.source.reference)?;
+    wordpress_code_field(emitter, "Source revision", &advisory.source.revision)?;
+    wordpress_code_field(
+        emitter,
+        "Source-declared retrieval date",
+        &advisory.source.retrieved_on,
+    )?;
+    wordpress_code_field(emitter, "Source usage basis", &advisory.source.usage_basis)?;
+    wordpress_optional_code_field(emitter, "CVE", advisory.cve.as_deref())?;
+    wordpress_code_field(emitter, "Source summary", &advisory.summary)?;
+    if advisory.affected_ranges.is_empty() {
+        wordpress_code_field(emitter, "Affected ranges", "none declared")?;
+    } else {
+        emitter.begin_list_field("Affected ranges")?;
+        for range in &advisory.affected_ranges {
+            emitter.begin_list_item()?;
+            emitter.inline(WordPressPresentationInline::Literal("lower "))?;
+            write_wordpress_endpoint(emitter, range.lower.as_ref())?;
+            emitter.inline(WordPressPresentationInline::Literal("; upper "))?;
+            write_wordpress_endpoint(emitter, range.upper.as_ref())?;
+            emitter.end_list_item()?;
+        }
+        emitter.end_list_field()?;
+    }
+    write_wordpress_values(
+        emitter,
+        "Source-declared fixed versions",
+        advisory.fixed_versions.iter().map(String::as_str),
+        "none declared",
+    )?;
+    if advisory.prerequisites.is_empty() {
+        wordpress_code_field(emitter, "Prerequisites", "none declared")?;
+    } else {
+        emitter.begin_list_field("Prerequisites")?;
+        for prerequisite in &advisory.prerequisites {
+            emitter.begin_list_item()?;
+            emitter.inline(WordPressPresentationInline::Code(prerequisite.kind))?;
+            emitter.inline(WordPressPresentationInline::Literal(" expected "))?;
+            emitter.inline(WordPressPresentationInline::Code(&prerequisite.expected))?;
+            emitter.inline(WordPressPresentationInline::Literal(": "))?;
+            emitter.inline(WordPressPresentationInline::Code(prerequisite.outcome))?;
+            if let Some(patch_id) = &prerequisite.patch_id {
+                emitter.inline(WordPressPresentationInline::Literal("; patch "))?;
+                emitter.inline(WordPressPresentationInline::Code(patch_id))?;
+            }
+            emitter.end_list_item()?;
+        }
+        emitter.end_list_field()?;
+    }
+    wordpress_optional_code_field(
+        emitter,
+        "Source-declared remediation",
+        advisory.remediation.as_deref(),
+    )?;
+    emitter.end_record()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_endpoint(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    endpoint: Option<&WordPressVersionEndpointDocument>,
+) -> Result<(), ReportError> {
+    if let Some(endpoint) = endpoint {
+        emitter.inline(WordPressPresentationInline::Code(&endpoint.declared))?;
+        emitter.inline(WordPressPresentationInline::Literal(
+            if endpoint.inclusive {
+                " (inclusive)"
+            } else {
+                " (exclusive)"
+            },
+        ))
+    } else {
+        emitter.inline(WordPressPresentationInline::Code("unbounded/unknown"))
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_external_evaluation(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    external: &WordPressExternalReviewDocument,
+    evaluation: &WordPressExternalEvaluationDocument,
+) -> Result<(), ReportError> {
+    emitter.begin_record()?;
+    emitter.inline(WordPressPresentationInline::Code(
+        &evaluation.key.upstream_id,
+    ))?;
+    emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+    emitter.inline(WordPressPresentationInline::Code(
+        evaluation.key.component.kind,
+    ))?;
+    emitter.inline(WordPressPresentationInline::Literal(":"))?;
+    emitter.inline(WordPressPresentationInline::Code(
+        &evaluation.key.component.slug,
+    ))?;
+    emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+    emitter.inline(WordPressPresentationInline::Code(evaluation.applicability))?;
+    emitter.end_record_title()?;
+    wordpress_code_field(
+        emitter,
+        "Source namespace",
+        &evaluation.key.source_namespace,
+    )?;
+    wordpress_code_field(emitter, "Source title", &evaluation.title)?;
+    wordpress_code_field(emitter, "Source component name", &evaluation.display_name)?;
+    wordpress_bool_field(
+        emitter,
+        "Source informational classification",
+        evaluation.informational,
+    )?;
+    wordpress_code_field(emitter, "Source description", &evaluation.description)?;
+    wordpress_code_field(emitter, "Comparison policy", external.comparison_policy)?;
+    wordpress_code_field(emitter, "Applicability", evaluation.applicability)?;
+    wordpress_code_field(emitter, "Version relation", evaluation.version_relation)?;
+    wordpress_code_field(
+        emitter,
+        "Version evidence resolution",
+        evaluation.version_evidence_resolution.status,
+    )?;
+    emitter.begin_field("Version evidence rows / distinct spellings")?;
+    emitter.inline(WordPressPresentationInline::Count(
+        evaluation.version_evidence_resolution.evidence_row_count,
+    ))?;
+    emitter.inline(WordPressPresentationInline::Literal(" / "))?;
+    emitter.inline(WordPressPresentationInline::Count(
+        evaluation
+            .version_evidence_resolution
+            .distinct_spelling_count,
+    ))?;
+    emitter.end_field()?;
+    wordpress_code_field(emitter, "Component evidence", evaluation.component_evidence)?;
+    wordpress_optional_code_field(emitter, "CVE", evaluation.cve.as_deref())?;
+    wordpress_optional_code_field(
+        emitter,
+        "Source CVE reference",
+        evaluation.cve_link.as_deref(),
+    )?;
+    if let Some(cwe) = &evaluation.cwe {
+        emitter.begin_field("Source CWE metadata")?;
+        emitter.inline(WordPressPresentationInline::Literal("CWE-"))?;
+        emitter.inline(WordPressPresentationInline::Bytes(u64::from(cwe.id)))?;
+        emitter.inline(WordPressPresentationInline::Literal(" / "))?;
+        emitter.inline(WordPressPresentationInline::Code(&cwe.name))?;
+        emitter.end_field()?;
+        wordpress_code_field(emitter, "Source CWE description", &cwe.description)?;
+    } else {
+        wordpress_code_field(emitter, "Source CWE metadata", "not declared")?;
+    }
+    if let Some(cvss) = &evaluation.cvss {
+        emitter.begin_field("Source-declared CVSS metadata")?;
+        emitter.inline(WordPressPresentationInline::Code(&cvss.score))?;
+        emitter.inline(WordPressPresentationInline::Literal(" / "))?;
+        emitter.inline(WordPressPresentationInline::Code(cvss.rating))?;
+        emitter.inline(WordPressPresentationInline::Literal(" / "))?;
+        emitter.inline(WordPressPresentationInline::Code(&cvss.vector))?;
+        emitter.end_field()?;
+    } else {
+        wordpress_code_field(emitter, "Source-declared CVSS metadata", "not declared")?;
+    }
+    wordpress_optional_code_field(
+        emitter,
+        "Source published date",
+        evaluation.source_dates.published.as_deref(),
+    )?;
+    wordpress_optional_code_field(
+        emitter,
+        "Source updated date",
+        evaluation.source_dates.updated.as_deref(),
+    )?;
+    write_wordpress_values(
+        emitter,
+        "Source bibliography",
+        evaluation.references.iter().map(String::as_str),
+        "none declared",
+    )?;
+    write_wordpress_values(
+        emitter,
+        "Source researchers",
+        evaluation.researchers.iter().map(String::as_str),
+        "none declared",
+    )?;
+    write_wordpress_values(
+        emitter,
+        "Source notice identifiers",
+        evaluation.notice_ids.iter().map(String::as_str),
+        "none declared",
+    )?;
+    if evaluation.affected_ranges.is_empty() {
+        wordpress_code_field(emitter, "Source-declared affected ranges", "none declared")?;
+    } else {
+        emitter.begin_list_field("Source-declared affected ranges")?;
+        for range in &evaluation.affected_ranges {
+            emitter.begin_list_item()?;
+            emitter.inline(WordPressPresentationInline::Code(&range.label))?;
+            emitter.inline(WordPressPresentationInline::Literal(": "))?;
+            emitter.inline(WordPressPresentationInline::Code(range.from_kind))?;
+            emitter.inline(WordPressPresentationInline::Literal(" "))?;
+            emitter.inline(WordPressPresentationInline::Code(&range.from_version))?;
+            emitter.inline(WordPressPresentationInline::Literal(
+                if range.from_inclusive {
+                    " inclusive to "
+                } else {
+                    " exclusive to "
+                },
+            ))?;
+            emitter.inline(WordPressPresentationInline::Code(range.to_kind))?;
+            emitter.inline(WordPressPresentationInline::Literal(" "))?;
+            emitter.inline(WordPressPresentationInline::Code(&range.to_version))?;
+            emitter.inline(WordPressPresentationInline::Literal(
+                if range.to_inclusive {
+                    " inclusive"
+                } else {
+                    " exclusive"
+                },
+            ))?;
+            emitter.end_list_item()?;
+        }
+        emitter.end_list_field()?;
+    }
+    wordpress_bool_field(emitter, "Source patched flag", evaluation.source_patched)?;
+    write_wordpress_values(
+        emitter,
+        "Source-declared patched versions",
+        evaluation
+            .source_patched_versions
+            .iter()
+            .map(String::as_str),
+        "none declared",
+    )?;
+    wordpress_code_field(
+        emitter,
+        "Source-declared remediation",
+        &evaluation.source_remediation,
+    )?;
+    emitter.end_record()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn wordpress_code_field(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    label: &'static str,
+    value: &str,
+) -> Result<(), ReportError> {
+    emitter.begin_field(label)?;
+    emitter.inline(WordPressPresentationInline::Code(value))?;
+    emitter.end_field()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn wordpress_optional_code_field(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    label: &'static str,
+    value: Option<&str>,
+) -> Result<(), ReportError> {
+    wordpress_code_field(emitter, label, value.unwrap_or("not declared"))
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn wordpress_count_field(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    label: &'static str,
+    value: usize,
+) -> Result<(), ReportError> {
+    emitter.begin_field(label)?;
+    emitter.inline(WordPressPresentationInline::Count(value))?;
+    emitter.end_field()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn wordpress_bytes_field(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    label: &'static str,
+    value: u64,
+) -> Result<(), ReportError> {
+    emitter.begin_field(label)?;
+    emitter.inline(WordPressPresentationInline::Bytes(value))?;
+    emitter.end_field()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn wordpress_bool_field(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    label: &'static str,
+    value: bool,
+) -> Result<(), ReportError> {
+    emitter.begin_field(label)?;
+    emitter.inline(WordPressPresentationInline::Bool(value))?;
+    emitter.end_field()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_values<'a, I>(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    label: &'static str,
+    values: I,
+    empty: &'static str,
+) -> Result<(), ReportError>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return wordpress_code_field(emitter, label, empty);
+    };
+    emitter.begin_list_field(label)?;
+    emitter.begin_list_item()?;
+    emitter.inline(WordPressPresentationInline::Code(first))?;
+    emitter.end_list_item()?;
+    for value in values {
+        emitter.begin_list_item()?;
+        emitter.inline(WordPressPresentationInline::Code(value))?;
+        emitter.end_list_item()?;
+    }
+    emitter.end_list_field()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressPresentationEmitter<'_> {
+    fn inline(&mut self, value: WordPressPresentationInline<'_>) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => match value {
+                WordPressPresentationInline::Literal(value) => output.push_str(value),
+                WordPressPresentationInline::Code(value) => {
+                    output.push_str("<code>")?;
+                    write_html_text(output, value)?;
+                    output.push_str("</code>")
+                },
+                WordPressPresentationInline::Count(value) => {
+                    output.push_fmt(format_args!("{value}"))
+                },
+                WordPressPresentationInline::Bytes(value) => {
+                    output.push_fmt(format_args!("{value}"))
+                },
+                WordPressPresentationInline::Bool(value) => {
+                    output.push_str(if value { "true" } else { "false" })
+                },
+            },
+            Self::Markdown(output) => match value {
+                WordPressPresentationInline::Literal(value) => output.push_str(value),
+                WordPressPresentationInline::Code(value) => write_markdown_code_span(output, value),
+                WordPressPresentationInline::Count(value) => {
+                    output.push_fmt(format_args!("{value}"))
+                },
+                WordPressPresentationInline::Bytes(value) => {
+                    output.push_fmt(format_args!("{value}"))
+                },
+                WordPressPresentationInline::Bool(value) => {
+                    output.push_str(if value { "true" } else { "false" })
+                },
+            },
+        }
+    }
+
+    fn heading(&mut self, title: &'static str) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => {
+                output.push_str("<h3>")?;
+                write_html_text(output, title)?;
+                output.push_str("</h3>")
+            },
+            Self::Markdown(output) => {
+                output.push_str("\n### ")?;
+                output.push_str(title)?;
+                output.push_str("\n\n")
+            },
+        }
+    }
+
+    fn paragraph(&mut self, text: &'static str) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => {
+                output.push_str("<p>")?;
+                write_html_text(output, text)?;
+                output.push_str("</p>")
+            },
+            Self::Markdown(output) => {
+                output.push_str(text)?;
+                output.push_str("\n\n")
+            },
+        }
+    }
+
+    fn note(&mut self, text: &'static str) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => {
+                output.push_str("<p class=\"wp-note\">")?;
+                write_html_text(output, text)?;
+                output.push_str("</p>")
+            },
+            Self::Markdown(output) => {
+                output.push_str("\n> ")?;
+                output.push_str(text)?;
+                output.push_str("\n\n")
+            },
+        }
+    }
+
+    fn overview(&mut self, cards: &[(&'static str, usize)]) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => {
+                output.push_str("<div class=\"wp-summary\">")?;
+                for (label, count) in cards {
+                    output.push_str("<div class=\"wp-card\"><strong>")?;
+                    output.push_fmt(format_args!("{count}"))?;
+                    output.push_str("</strong><span>")?;
+                    write_html_text(output, label)?;
+                    output.push_str("</span></div>")?;
+                }
+                output.push_str("</div>")
+            },
+            Self::Markdown(output) => {
+                output.push_str("### Overview\n\n")?;
+                for (label, count) in cards {
+                    output.push_fmt(format_args!("- {label}: `{count}`\n"))?;
+                }
+                output.push_char('\n')
+            },
+        }
+    }
+
+    fn begin_fields(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("<dl class=\"meta\">"),
+            Self::Markdown(_) => Ok(()),
+        }
+    }
+
+    fn end_fields(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("</dl>"),
+            Self::Markdown(output) => output.push_char('\n'),
+        }
+    }
+
+    fn begin_field(&mut self, label: &'static str) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => {
+                output.push_str("<dt>")?;
+                write_html_text(output, label)?;
+                output.push_str("</dt><dd>")
+            },
+            Self::Markdown(output) => output.push_fmt(format_args!("- {label}: ")),
+        }
+    }
+
+    fn end_field(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("</dd>"),
+            Self::Markdown(output) => output.push_char('\n'),
+        }
+    }
+
+    fn begin_list_field(&mut self, label: &'static str) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => {
+                output.push_str("<dt>")?;
+                write_html_text(output, label)?;
+                output.push_str("</dt><dd><ul>")
+            },
+            Self::Markdown(output) => output.push_fmt(format_args!("- {label}:\n")),
+        }
+    }
+
+    fn begin_list_item(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("<li>"),
+            Self::Markdown(output) => output.push_str("  - "),
+        }
+    }
+
+    fn end_list_item(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("</li>"),
+            Self::Markdown(output) => output.push_char('\n'),
+        }
+    }
+
+    fn end_list_field(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("</ul></dd>"),
+            Self::Markdown(_) => Ok(()),
+        }
+    }
+
+    fn begin_record(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("<details class=\"wp-detail\" open><summary>"),
+            Self::Markdown(output) => output.push_str("#### "),
+        }
+    }
+
+    fn end_record_title(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("</summary><dl>"),
+            Self::Markdown(output) => output.push_str("\n\n"),
+        }
+    }
+
+    fn end_record(&mut self) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => output.push_str("</dl></details>"),
+            Self::Markdown(output) => output.push_char('\n'),
+        }
+    }
+
+    fn empty(&mut self, text: &'static str) -> Result<(), ReportError> {
+        match self {
+            Self::Html(output) => {
+                output.push_str("<p class=\"empty\">")?;
+                write_html_text(output, text)?;
+                output.push_str("</p>")
+            },
+            Self::Markdown(output) => {
+                output.push_str(text)?;
+                output.push_char('\n')
+            },
+        }
+    }
+}
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 fn write_html_wordpress_external_attribution(
     output: &mut RenderBuffer,
@@ -1317,11 +2147,15 @@ fn render_assessment_markdown(
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         output.push_str("\n## WordPress evidence review audit\n\n")?;
-        for (label, value) in audit.metadata()? {
+        for (label, value) in audit.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
             output.push_char('\n')?;
         }
+        write_wordpress_presentation(
+            &mut WordPressPresentationEmitter::Markdown(&mut output),
+            audit,
+        )?;
         write_markdown_wordpress_external_attribution(&mut output, audit)?;
     }
     output.push_str("\n## Assessment items\n\n")?;
@@ -2171,6 +3005,22 @@ struct WordPressPrerequisiteDocument {
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WordPressPresentationGroup {
+    ReviewCandidate,
+    Contradicted,
+    Limitation,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+struct WordPressPresentationCounts {
+    review_candidates: usize,
+    contradicted: usize,
+    limitations: usize,
+    source_guidance: usize,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 impl AssessmentWordPressAuditDocument {
     fn from_audit(audit: &WebAssessmentWordPressAudit) -> Self {
         let result = audit.result();
@@ -2464,8 +3314,8 @@ impl AssessmentWordPressAuditDocument {
         serde_json::to_string(self).map_err(|_| ReportError::Serialization)
     }
 
-    fn metadata(&self) -> Result<Vec<(&'static str, String)>, ReportError> {
-        Ok(vec![
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
             ("Audit schema", self.schema.to_owned()),
             ("Capability", self.capability_id.to_owned()),
             ("Catalog status", self.catalog_status.to_owned()),
@@ -2481,9 +3331,60 @@ impl AssessmentWordPressAuditDocument {
             ("Item projected", self.item_projected.to_string()),
             ("Component count", self.component_count.to_string()),
             ("Advisory count", self.advisory_count.to_string()),
-            ("Bounded audit detail", self.wire_json()?),
-        ])
+        ]
     }
+
+    fn presentation_counts(&self) -> WordPressPresentationCounts {
+        let mut counts = WordPressPresentationCounts {
+            review_candidates: 0,
+            contradicted: 0,
+            limitations: self
+                .external_review
+                .as_ref()
+                .map_or(0, |external| external.evaluations.len()),
+            source_guidance: self.external_review.as_ref().map_or(0, |external| {
+                external
+                    .evaluations
+                    .iter()
+                    .filter(|evaluation| external_evaluation_has_source_guidance(evaluation))
+                    .count()
+            }),
+        };
+        for advisory in &self.advisories {
+            match wordpress_advisory_group(advisory) {
+                WordPressPresentationGroup::ReviewCandidate => counts.review_candidates += 1,
+                WordPressPresentationGroup::Contradicted => counts.contradicted += 1,
+                WordPressPresentationGroup::Limitation => counts.limitations += 1,
+            }
+            if advisory_has_source_guidance(advisory) {
+                counts.source_guidance += 1;
+            }
+        }
+        counts
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn wordpress_advisory_group(advisory: &WordPressAdvisoryDocument) -> WordPressPresentationGroup {
+    match advisory.applicability {
+        "candidate_match_on_declared_facts" => WordPressPresentationGroup::ReviewCandidate,
+        "contradicted_by_declared_facts" => WordPressPresentationGroup::Contradicted,
+        _ => WordPressPresentationGroup::Limitation,
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn advisory_has_source_guidance(advisory: &WordPressAdvisoryDocument) -> bool {
+    !advisory.fixed_versions.is_empty() || advisory.remediation.is_some()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn external_evaluation_has_source_guidance(
+    evaluation: &WordPressExternalEvaluationDocument,
+) -> bool {
+    evaluation.source_patched
+        || !evaluation.source_patched_versions.is_empty()
+        || !evaluation.source_remediation.is_empty()
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -5073,6 +5974,245 @@ mod tests {
 
     #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
     #[test]
+    fn wordpress_human_reports_group_typed_results_without_claim_promotion_or_wire_dump() {
+        let cases = [
+            (
+                observed_wordpress_assessment_document(),
+                0_usize,
+                1_usize,
+                "SYNTHETIC-REPORTING-WORDPRESS-0001",
+            ),
+            (
+                profiled_wordpress_assessment_document(),
+                1,
+                0,
+                "php-release-subset/v1",
+            ),
+            (
+                external_wordpress_assessment_document(),
+                0,
+                1,
+                "wordfence-v3/source-semantics-unresolved/v1",
+            ),
+        ];
+
+        for (document, candidates, limitations, distinguishing_value) in cases {
+            let html =
+                render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+            let markdown =
+                render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX)
+                    .unwrap();
+
+            for rendered in [&html, &markdown] {
+                for heading in [
+                    "Source and coverage",
+                    "Component evidence",
+                    "Review candidates",
+                    "Contradicted on supplied facts",
+                    "Evaluation limitations",
+                    "Source-declared remediation information",
+                ] {
+                    assert!(rendered.contains(heading), "missing {heading}");
+                }
+                assert!(rendered.contains(distinguishing_value));
+                assert!(rendered.contains("not_performed"));
+                assert!(!rendered.contains("confirmed_vulnerability"));
+                assert!(!rendered.contains("verified_remediation"));
+                assert!(!rendered.contains("\"external_review\":"));
+                assert!(!rendered.contains("\"advisories\":"));
+            }
+
+            assert!(html.contains(&format!(
+                "<strong>{candidates}</strong><span>Review candidates</span>"
+            )));
+            assert!(html.contains(&format!(
+                "<strong>{limitations}</strong><span>Evaluation limitations</span>"
+            )));
+            assert!(markdown.contains(&format!("- Review candidates: `{candidates}`")));
+            assert!(markdown.contains(&format!("- Evaluation limitations: `{limitations}`")));
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn wordpress_human_grouping_is_mutually_exclusive_ordered_and_deterministic() {
+        const ADVISORY_ID: &str = "SYNTHETIC-REPORTING-WORDPRESS-0001";
+        let candidate = profiled_wordpress_assessment_document();
+        let mut contradicted = profiled_wordpress_assessment_document();
+        let contradicted_advisory =
+            &mut contradicted.wordpress_review.as_mut().unwrap().advisories[0];
+        contradicted_advisory.applicability = "contradicted_by_declared_facts";
+        contradicted_advisory.version_relation = "outside_declared_ranges";
+        let limitation = observed_wordpress_assessment_document();
+
+        for (document, expected_counts) in [
+            (candidate, [1_usize, 0_usize, 0_usize]),
+            (contradicted, [0, 1, 0]),
+            (limitation, [0, 0, 1]),
+        ] {
+            for format in [ReportFormat::Html, ReportFormat::Markdown] {
+                let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+                let repeated = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+                assert_eq!(rendered, repeated);
+
+                let heading = |title| match format {
+                    ReportFormat::Html => format!("<h3>{title}</h3>"),
+                    ReportFormat::Markdown => format!("### {title}\n"),
+                    _ => unreachable!(),
+                };
+                let candidate_heading = rendered.find(&heading("Review candidates")).unwrap();
+                let contradicted_heading = rendered
+                    .find(&heading("Contradicted on supplied facts"))
+                    .unwrap();
+                let limitation_heading = rendered.find(&heading("Evaluation limitations")).unwrap();
+                let remediation_heading = rendered
+                    .find(&heading("Source-declared remediation information"))
+                    .unwrap();
+                assert!(candidate_heading < contradicted_heading);
+                assert!(contradicted_heading < limitation_heading);
+                assert!(limitation_heading < remediation_heading);
+                assert_eq!(rendered.matches(ADVISORY_ID).count(), 1);
+                assert_eq!(rendered.matches("not_performed").count(), 2);
+
+                let advisory = rendered.find(ADVISORY_ID).unwrap();
+                let (expected_start, expected_end) = if expected_counts[0] == 1 {
+                    (candidate_heading, contradicted_heading)
+                } else if expected_counts[1] == 1 {
+                    (contradicted_heading, limitation_heading)
+                } else {
+                    (limitation_heading, remediation_heading)
+                };
+                assert!(expected_start < advisory && advisory < expected_end);
+
+                for (label, count) in [
+                    ("Review candidates", expected_counts[0]),
+                    ("Contradicted on supplied facts", expected_counts[1]),
+                    ("Evaluation limitations", expected_counts[2]),
+                ] {
+                    let expected = match format {
+                        ReportFormat::Html => {
+                            format!("<strong>{count}</strong><span>{label}</span>")
+                        },
+                        ReportFormat::Markdown => format!("- {label}: `{count}`"),
+                        _ => unreachable!(),
+                    };
+                    assert!(
+                        rendered.contains(&expected),
+                        "{format:?} omitted {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn saved_inventory_human_report_distinguishes_supplied_and_missing_categories() {
+        let mut document = saved_inventory_wordpress_assessment_document();
+        document
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .inventory_import
+            .as_mut()
+            .unwrap()
+            .limitations
+            .push(WordPressInventoryLimitationDocument {
+                declared_name: "synthetic-dropin.php".to_owned(),
+                version: Some("1.0".to_owned()),
+                status: "drop_in",
+                reason: "drop_in_identity_is_not_catalog_slug",
+            });
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+
+        for rendered in [&html, &markdown] {
+            for expected in [
+                "Core inventory",
+                "Plugin inventory",
+                "Theme inventory",
+                "not_supplied",
+                "supplied",
+                "Saved inventory provenance and limitations",
+                "wp_cli_plugins_json",
+                "operator_supplied",
+                "operator_context",
+                "operator_assertion",
+                "1.2.3-vendor",
+                "Unsupported inventory row",
+                "synthetic-dropin.php",
+                "drop_in_identity_is_not_catalog_slug",
+            ] {
+                assert!(rendered.contains(expected), "missing {expected}");
+            }
+            assert!(!rendered.contains("PRIVATE"));
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn external_wordpress_human_report_reconciles_source_counts_and_declared_guidance() {
+        let document = external_wordpress_assessment_document();
+        for format in [ReportFormat::Html, ReportFormat::Markdown] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            for expected in [
+                "Parsed source records",
+                "Software associations",
+                "Relevant associations",
+                "Evaluable associations",
+                "Unsupported relevant associations",
+                "Irrelevant associations excluded",
+                "source_comparison_semantics_unresolved",
+                "missing",
+                "Source patched flag",
+                "Source-declared patched versions",
+                "Source-declared remediation",
+                "Source-declared CVSS metadata",
+                "Source informational classification",
+                "Source bibliography",
+                "Source researchers",
+                "Source notice identifiers",
+                "Synthetic Fixture Author",
+                "not_performed",
+            ] {
+                assert!(rendered.contains(expected), "{format:?} missing {expected}");
+            }
+            assert!(rendered.contains("Evaluations with source guidance"));
+            assert!(!rendered.contains("Records with source guidance"));
+            assert!(rendered.contains("not an automatic update"));
+            assert!(rendered.contains("not confirmed vulnerabilities"));
+            assert!(!rendered.contains("eleven verified vulnerabilities"));
+            assert_eq!(
+                rendered
+                    .matches("Synthetic fixture guidance: review a source-declared patched version")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn wordpress_human_presentation_respects_the_report_output_limit() {
+        let document = external_wordpress_assessment_document();
+        for format in [ReportFormat::Html, ReportFormat::Markdown] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert_eq!(
+                render_assessment_with_limit(&document, format, rendered.len()),
+                Ok(rendered.clone())
+            );
+            assert_eq!(
+                render_assessment_with_limit(&document, format, rendered.len() - 1),
+                Err(ReportError::OutputLimitExceeded {
+                    limit: rendered.len() - 1
+                })
+            );
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
     fn external_wordpress_reporting_preserves_parser_accepted_safe_text() {
         const ID: &str = "00000000-0000-4000-8000-000000000001";
         let mut source: serde_json::Value = serde_json::from_slice(include_bytes!(
@@ -5112,6 +6252,17 @@ mod tests {
             "[1.0.0, 1.2.3]\n"
         );
         assert!(comparison::import_assessment_summary(rendered.as_bytes()).is_ok());
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        assert!(html.contains("Synthetic\\u{000A}report title"));
+        assert!(html.contains("Synthetic\\u{0009}description"));
+        assert!(!html.contains("Synthetic\nreport title"));
+        assert!(!html.contains("<script"));
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        assert!(markdown.contains("Synthetic\\u{000A}report title"));
+        assert!(markdown.contains("Synthetic\\u{0009}description"));
+        assert!(!markdown.contains("Synthetic\nreport title"));
 
         let mut invalid = parsed;
         invalid["wordpress_review"]["external_review"]["evaluations"][0]["title"] =
