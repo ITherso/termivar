@@ -18,6 +18,16 @@ use serde_json::{Map, Number, Value};
 use thiserror::Error;
 use url::Url;
 
+mod inventory;
+
+pub use inventory::{
+    parse_wordpress_saved_inventory, WordPressInventoryCategoryStatus,
+    WordPressInventoryEntryStatus, WordPressInventoryLimitation,
+    WordPressInventoryLimitationReason, WordPressLocalInputClass, WordPressLocalInputProvenance,
+    WordPressSavedInventory, WordPressSavedInventoryCoverage, WordPressSavedInventorySummary,
+    MAX_WORDPRESS_SAVED_INVENTORY_BYTES,
+};
+
 pub use crate::wordpress_version::{
     NumericDottedVersion, NumericDottedVersionError, PhpReleaseSubsetVersion,
     PhpReleaseSubsetVersionError, WordPressComparisonProfile,
@@ -168,6 +178,7 @@ pub struct WordPressContextComponent {
     version: Option<String>,
     activation: Option<WordPressActivationState>,
     patches: Vec<WordPressPatchAssertion>,
+    inventory_status: Option<WordPressInventoryEntryStatus>,
 }
 
 impl WordPressContextComponent {
@@ -189,6 +200,11 @@ impl WordPressContextComponent {
     #[must_use]
     pub fn patches(&self) -> &[WordPressPatchAssertion] {
         &self.patches
+    }
+
+    #[must_use]
+    pub const fn inventory_status(&self) -> Option<WordPressInventoryEntryStatus> {
+        self.inventory_status
     }
 }
 
@@ -539,6 +555,8 @@ impl WordPressAdvisoryCatalogSchema {
 pub struct WordPressReviewInputs {
     context: Option<WordPressContext>,
     catalog: Option<WordPressAdvisoryCatalog>,
+    inventory_summary: Option<WordPressSavedInventorySummary>,
+    local_input_provenance: Vec<WordPressLocalInputProvenance>,
 }
 
 impl WordPressReviewInputs {
@@ -547,7 +565,34 @@ impl WordPressReviewInputs {
         context: Option<WordPressContext>,
         catalog: Option<WordPressAdvisoryCatalog>,
     ) -> Self {
-        Self { context, catalog }
+        Self {
+            context,
+            catalog,
+            inventory_summary: None,
+            local_input_provenance: Vec::new(),
+        }
+    }
+
+    /// Builds review inputs from one validated saved-inventory selection.
+    ///
+    /// `provenance` must contain exactly one entry for every supplied inventory
+    /// category and its byte length must match the bytes parsed for that
+    /// category. Digests are retained as operator-input provenance; they are
+    /// not authentication of WP-CLI or of the selected target.
+    pub fn from_saved_inventory(
+        inventory: WordPressSavedInventory,
+        catalog: Option<WordPressAdvisoryCatalog>,
+        provenance: Vec<WordPressLocalInputProvenance>,
+    ) -> Result<Self, WordPressReviewError> {
+        let (context, inventory_summary, expected_inputs) = inventory.into_parts();
+        let local_input_provenance =
+            inventory::validate_inventory_provenance(&expected_inputs, provenance)?;
+        Ok(Self {
+            context: Some(context),
+            catalog,
+            inventory_summary: Some(inventory_summary),
+            local_input_provenance,
+        })
     }
 
     #[must_use]
@@ -558,6 +603,16 @@ impl WordPressReviewInputs {
     #[must_use]
     pub const fn catalog(&self) -> Option<&WordPressAdvisoryCatalog> {
         self.catalog.as_ref()
+    }
+
+    #[must_use]
+    pub const fn inventory_summary(&self) -> Option<&WordPressSavedInventorySummary> {
+        self.inventory_summary.as_ref()
+    }
+
+    #[must_use]
+    pub fn local_input_provenance(&self) -> &[WordPressLocalInputProvenance] {
+        &self.local_input_provenance
     }
 }
 
@@ -672,6 +727,7 @@ pub struct WordPressComponentAssessment {
     confidence_classes: Vec<WordPressEvidenceConfidence>,
     versions: Vec<WordPressVersionEvidence>,
     activation: Option<WordPressActivationState>,
+    inventory_status: Option<WordPressInventoryEntryStatus>,
 }
 
 impl WordPressComponentAssessment {
@@ -703,6 +759,11 @@ impl WordPressComponentAssessment {
     #[must_use]
     pub const fn activation(&self) -> Option<WordPressActivationState> {
         self.activation
+    }
+
+    #[must_use]
+    pub const fn inventory_status(&self) -> Option<WordPressInventoryEntryStatus> {
+        self.inventory_status
     }
 }
 
@@ -841,6 +902,8 @@ pub struct WordPressReviewResult {
     catalog_metadata: Option<WordPressCatalogMetadata>,
     components: Vec<WordPressComponentAssessment>,
     advisories: Vec<WordPressAdvisoryEvaluation>,
+    inventory_summary: Option<WordPressSavedInventorySummary>,
+    local_input_provenance: Vec<WordPressLocalInputProvenance>,
 }
 
 impl WordPressReviewResult {
@@ -868,6 +931,16 @@ impl WordPressReviewResult {
     pub fn advisories(&self) -> &[WordPressAdvisoryEvaluation] {
         &self.advisories
     }
+
+    #[must_use]
+    pub const fn inventory_summary(&self) -> Option<&WordPressSavedInventorySummary> {
+        self.inventory_summary.as_ref()
+    }
+
+    #[must_use]
+    pub fn local_input_provenance(&self) -> &[WordPressLocalInputProvenance] {
+        &self.local_input_provenance
+    }
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -876,6 +949,8 @@ pub enum WordPressReviewError {
     ContextTooLarge,
     #[error("WordPress advisory catalog exceeds its byte limit")]
     CatalogTooLarge,
+    #[error("saved WordPress inventory exceeds its aggregate byte limit")]
+    InventoryTooLarge,
     #[error("WordPress input is empty")]
     EmptyInput,
     #[error("WordPress input contains a duplicate object key")]
@@ -888,6 +963,12 @@ pub enum WordPressReviewError {
     UnsupportedSchema,
     #[error("WordPress context is invalid")]
     InvalidContext,
+    #[error("saved WordPress inventory is invalid")]
+    InvalidInventory,
+    #[error("saved WordPress inventory exceeds its component limit")]
+    InventoryComponentLimitExceeded,
+    #[error("saved WordPress inventory provenance does not match its supplied inputs")]
+    InvalidInventoryProvenance,
     #[error("WordPress advisory catalog is invalid")]
     InvalidCatalog,
     #[error("WordPress component identity is invalid")]
@@ -939,6 +1020,7 @@ pub fn parse_wordpress_context(bytes: &[u8]) -> Result<WordPressContext, WordPre
             version,
             activation: component.activation.map(Into::into),
             patches,
+            inventory_status: None,
         });
     }
     components.sort_by(|left, right| left.identity.cmp(&right.identity));
@@ -1142,6 +1224,7 @@ pub fn evaluate_wordpress_review(
                 .confidence_classes
                 .insert(WordPressEvidenceConfidence::OperatorAssertion);
             aggregate.activation = component.activation;
+            aggregate.inventory_status = component.inventory_status;
             if let Some(version) = &component.version {
                 aggregate.versions.insert(WordPressVersionEvidence {
                     value: version.clone(),
@@ -1176,6 +1259,8 @@ pub fn evaluate_wordpress_review(
             catalog_metadata: None,
             components,
             advisories: Vec::new(),
+            inventory_summary: inputs.inventory_summary.clone(),
+            local_input_provenance: inputs.local_input_provenance.clone(),
         });
     };
     let work = catalog.records().iter().try_fold(0_usize, |work, record| {
@@ -1278,6 +1363,8 @@ pub fn evaluate_wordpress_review(
         catalog_metadata: Some(catalog.metadata().clone()),
         components,
         advisories,
+        inventory_summary: inputs.inventory_summary.clone(),
+        local_input_provenance: inputs.local_input_provenance.clone(),
     })
 }
 
@@ -1287,6 +1374,7 @@ struct ComponentAggregate {
     confidence_classes: BTreeSet<WordPressEvidenceConfidence>,
     versions: BTreeSet<WordPressVersionEvidence>,
     activation: Option<WordPressActivationState>,
+    inventory_status: Option<WordPressInventoryEntryStatus>,
 }
 
 fn component_assessment(
@@ -1321,6 +1409,7 @@ fn component_assessment(
         confidence_classes: aggregate.confidence_classes.iter().copied().collect(),
         versions: aggregate.versions.iter().cloned().collect(),
         activation: aggregate.activation,
+        inventory_status: aggregate.inventory_status,
     }
 }
 
@@ -3440,6 +3529,7 @@ mod tests {
                 version: None,
                 activation: None,
                 patches: Vec::new(),
+                inventory_status: None,
             })
             .collect();
         let context = WordPressContext {
@@ -3477,6 +3567,7 @@ mod tests {
                 version: Some(format!("2.0.{index}")),
                 activation: None,
                 patches: Vec::new(),
+                inventory_status: None,
             })
             .collect();
         let context = WordPressContext {

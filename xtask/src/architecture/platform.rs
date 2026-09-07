@@ -4777,7 +4777,12 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("schema", "&'static str"),
             ("capability_id", "&'static str"),
             ("catalog_status", "&'static str"),
+            ("catalog_schema", "Option<&'static str>"),
             ("catalog", "Option<WordPressCatalogDocument>"),
+            (
+                "inventory_import",
+                "Option<WordPressInventoryImportDocument>",
+            ),
             ("signal_count", "u16"),
             ("evidence_reference_count", "u16"),
             ("additional_request_count", "u8"),
@@ -4812,6 +4817,45 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("confidence_classes", "Vec<&'static str>"),
             ("versions", "Vec<WordPressVersionEvidenceDocument>"),
             ("activation", "Option<&'static str>"),
+            ("inventory_status", "Option<&'static str>"),
+        ],
+    ),
+    (
+        "WordPressInventoryImportDocument",
+        &[],
+        &[
+            ("coverage", "WordPressInventoryCoverageDocument"),
+            ("component_count", "usize"),
+            ("limitations", "Vec<WordPressInventoryLimitationDocument>"),
+            ("inputs", "Vec<WordPressInventoryInputDocument>"),
+        ],
+    ),
+    (
+        "WordPressInventoryCoverageDocument",
+        &[],
+        &[
+            ("core", "&'static str"),
+            ("plugins", "&'static str"),
+            ("themes", "&'static str"),
+        ],
+    ),
+    (
+        "WordPressInventoryLimitationDocument",
+        &[],
+        &[
+            ("declared_name", "String"),
+            ("version", "Option<String>"),
+            ("status", "&'static str"),
+            ("reason", "&'static str"),
+        ],
+    ),
+    (
+        "WordPressInventoryInputDocument",
+        &[],
+        &[
+            ("class", "&'static str"),
+            ("byte_length", "usize"),
+            ("sha256", "String"),
         ],
     ),
     (
@@ -5103,6 +5147,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "WordPressCatalogDocument"
                 | "WordPressComponentIdentityDocument"
                 | "WordPressComponentDocument"
+                | "WordPressInventoryImportDocument"
+                | "WordPressInventoryCoverageDocument"
+                | "WordPressInventoryLimitationDocument"
+                | "WordPressInventoryInputDocument"
                 | "WordPressVersionEvidenceDocument"
                 | "WordPressAdvisoryDocument"
                 | "WordPressAdvisorySourceDocument"
@@ -5154,6 +5202,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "WordPressCatalogDocument"
                 | "WordPressComponentIdentityDocument"
                 | "WordPressComponentDocument"
+                | "WordPressInventoryImportDocument"
+                | "WordPressInventoryCoverageDocument"
+                | "WordPressInventoryLimitationDocument"
+                | "WordPressInventoryInputDocument"
                 | "WordPressVersionEvidenceDocument"
                 | "WordPressAdvisoryDocument"
                 | "WordPressAdvisorySourceDocument"
@@ -5219,7 +5271,15 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                             field_name.as_str(),
                             "selected_operation_identity" | "documented_response" | "status_class"
                         ))
-                        || (name == "AssessmentWordPressAuditDocument" && field_name == "catalog")
+                        || (name == "AssessmentWordPressAuditDocument"
+                            && matches!(
+                                field_name.as_str(),
+                                "catalog_schema" | "catalog" | "inventory_import"
+                            ))
+                        || (name == "WordPressComponentDocument"
+                            && field_name == "inventory_status")
+                        || (name == "WordPressInventoryLimitationDocument"
+                            && field_name == "version")
                         || (name == "WordPressAdvisoryDocument"
                             && matches!(
                                 field_name.as_str(),
@@ -7589,8 +7649,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 93_055;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x6d78_4ff4_bb46_772b_37a4_5f9a_a895_9a36;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 103_822;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x0a93_ca06_5a96_74f3_4874_e6be_6520_acb2;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -7703,7 +7763,10 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_COMPONENTS",
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE",
+    "crate::wordpress_review::MAX_WORDPRESS_SAVED_INVENTORY_BYTES",
     "crate::wordpress_review::MAX_WORDPRESS_SIGNALS",
+    "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA",
+    "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2",
     "crate::wordpress_review::WordPressActivationState",
     "crate::wordpress_review::WordPressAdvisoryCatalogSchema",
     "crate::wordpress_review::WordPressApplicability",
@@ -7715,6 +7778,10 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::WordPressEvidenceSource",
     "crate::wordpress_review::WordPressExecutionStatus",
     "crate::wordpress_review::WordPressHostingOs",
+    "crate::wordpress_review::WordPressInventoryCategoryStatus",
+    "crate::wordpress_review::WordPressInventoryEntryStatus",
+    "crate::wordpress_review::WordPressInventoryLimitationReason",
+    "crate::wordpress_review::WordPressLocalInputClass",
     "crate::wordpress_review::WordPressMultisiteState",
     "crate::wordpress_review::WordPressPatchState",
     "crate::wordpress_review::WordPressPrerequisite",
@@ -7774,6 +7841,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressActivationState::Inactive",
     "WordPressActivationState::NetworkActive",
     "WordPressActivationState::Unknown",
+    "WordPressAdvisoryCatalogSchema::id",
     "WordPressAdvisoryCatalogSchema::V2",
     "WordPressApplicability::CandidateMatchOnDeclaredFacts",
     "WordPressApplicability::ContradictedByDeclaredFacts",
@@ -7802,6 +7870,19 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressHostingOs::Macos",
     "WordPressHostingOs::Other",
     "WordPressHostingOs::Windows",
+    "WordPressInventoryCategoryStatus::NotSupplied",
+    "WordPressInventoryCategoryStatus::Supplied",
+    "WordPressInventoryEntryStatus::Active",
+    "WordPressInventoryEntryStatus::CoreVersionSupplied",
+    "WordPressInventoryEntryStatus::DropIn",
+    "WordPressInventoryEntryStatus::Inactive",
+    "WordPressInventoryEntryStatus::MustUse",
+    "WordPressInventoryEntryStatus::NetworkActive",
+    "WordPressInventoryEntryStatus::Parent",
+    "WordPressInventoryLimitationReason::DropInIdentityIsNotCatalogSlug",
+    "WordPressLocalInputClass::CoreVersionFile",
+    "WordPressLocalInputClass::PluginsJson",
+    "WordPressLocalInputClass::ThemesJson",
     "WordPressMultisiteState::Disabled",
     "WordPressMultisiteState::Enabled",
     "WordPressPatchState::Applied",
@@ -7943,9 +8024,15 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "crate::rest_review::RestDocumentedResponseClass",
     "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
+    "crate::wordpress_review::MAX_WORDPRESS_CONTEXT_COMPONENTS",
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_COMPONENTS",
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE",
+    "crate::wordpress_review::MAX_WORDPRESS_SAVED_INVENTORY_BYTES",
     "crate::wordpress_review::MAX_WORDPRESS_SIGNALS",
+    "crate::wordpress_review::MAX_WORDPRESS_SLUG_BYTES",
+    "crate::wordpress_review::MAX_WORDPRESS_VERSION_BYTES",
+    "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA",
+    "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2",
     "crate::wordpress_review::WordPressActivationState",
     "crate::wordpress_review::WordPressAdvisoryCatalogSchema",
     "crate::wordpress_review::WordPressApplicability",
@@ -7958,6 +8045,10 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::WordPressEvidenceSource",
     "crate::wordpress_review::WordPressExecutionStatus",
     "crate::wordpress_review::WordPressHostingOs",
+    "crate::wordpress_review::WordPressInventoryCategoryStatus",
+    "crate::wordpress_review::WordPressInventoryEntryStatus",
+    "crate::wordpress_review::WordPressInventoryLimitationReason",
+    "crate::wordpress_review::WordPressLocalInputClass",
     "crate::wordpress_review::WordPressMultisiteState",
     "crate::wordpress_review::WordPressPatchState",
     "crate::wordpress_review::WordPressPrerequisite",
@@ -7979,6 +8070,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "serde::Serialize",
     "serde_json::to_writer",
     "serde_json::to_string",
+    "std::collections::BTreeSet::new",
     "std::error::Error",
     "std::fmt",
     "std::io",
@@ -8028,6 +8120,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "fmt::write",
     "io::Error::other",
     "is_bidi_control",
+    "lowercase_hex",
     "longest_backtick_run",
     "optional_bool_token",
     "openapi_outcome",
@@ -8051,13 +8144,18 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "severity_token",
     "starts_csv_formula_after_whitespace",
     "std::str::from_utf8",
+    "std::collections::BTreeSet::new",
     "step_status_token",
     "stop_code_token",
+    "supplied",
     "u32::from",
     "u64::try_from",
     "usize::from",
     "visible_text",
     "valid_opaque_assessment_reference",
+    "valid_inventory_label",
+    "valid_inventory_version",
+    "valid_lowercase_sha256",
     "write_assessment_csv_row",
     "write_csv_cell",
     "write_csv_row",
@@ -8080,6 +8178,10 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_evidence_source",
     "wordpress_execution",
     "wordpress_hosting_os",
+    "wordpress_inventory_category_status",
+    "wordpress_inventory_entry_status",
+    "wordpress_inventory_limitation_reason",
+    "wordpress_local_input_class",
     "wordpress_multisite",
     "wordpress_patch",
     "wordpress_prerequisite",
@@ -8102,6 +8204,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "authorized_origin",
     "authorization_review_audit",
     "basis",
+    "byte_length",
     "bytes",
     "candidate",
     "candidate_source",
@@ -8111,20 +8214,25 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "chain",
     "chars",
     "checked_add",
+    "class",
     "clone",
     "code",
     "collect",
     "completed_at",
+    "component_count",
     "confidence",
     "contains",
     "consumed",
     "count",
     "control",
+    "core",
+    "coverage",
     "cwe",
     "cross_resources_equivalent",
     "dimensions",
     "disposition",
     "deprecated_operation_count",
+    "declared_name",
     "documented_response",
     "duration_ms",
     "ends_with",
@@ -8141,8 +8249,13 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "get_operation_count",
     "id",
     "ignored_path_count",
+    "insert",
     "into_iter",
     "into_assessment_report",
+    "inventory_status",
+    "inventory_status_is_valid",
+    "inventory_summary",
+    "is_ascii_alphanumeric",
     "is_control",
     "is_ascii_digit",
     "is_empty",
@@ -8151,6 +8264,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "is_none_or",
     "is_some",
     "is_some_and",
+    "is_valid",
     "is_whitespace",
     "iter",
     "item_count",
@@ -8160,6 +8274,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "len",
     "len_utf8",
     "limit",
+    "limitations",
+    "local_input_provenance",
     "map",
     "map_err",
     "max",
@@ -8181,6 +8297,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "parts_per_million",
     "peer_stable",
     "policy_id",
+    "plugins",
     "profile_fields_are_valid",
     "profiled_affected_ranges",
     "push",
@@ -8191,6 +8308,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "primary_stable",
     "query_parameter_count",
     "redacted_summary",
+    "reason",
     "remaining",
     "reference_count",
     "replay_matched",
@@ -8202,11 +8320,13 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "required_metadata",
     "response_body_bytes",
     "run_report",
+    "saturating_mul",
     "schema",
     "selected_operation_identity",
     "selected_path_count",
     "semantic_digest",
     "severity",
+    "sha256",
     "started_at",
     "stage",
     "starts_with",
@@ -8219,6 +8339,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "subject_reference",
     "summary",
     "target",
+    "themes",
     "then_some",
     "title",
     "to_owned",
@@ -8355,7 +8476,10 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS"
                         | "crate::wordpress_review::MAX_WORDPRESS_RESULT_COMPONENTS"
                         | "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE"
+                        | "crate::wordpress_review::MAX_WORDPRESS_SAVED_INVENTORY_BYTES"
                         | "crate::wordpress_review::MAX_WORDPRESS_SIGNALS"
+                        | "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA"
+                        | "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2"
                         | "crate::wordpress_review::WordPressActivationState"
                         | "crate::wordpress_review::WordPressAdvisoryCatalogSchema"
                         | "crate::wordpress_review::WordPressApplicability"
@@ -8367,6 +8491,10 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::wordpress_review::WordPressEvidenceSource"
                         | "crate::wordpress_review::WordPressExecutionStatus"
                         | "crate::wordpress_review::WordPressHostingOs"
+                        | "crate::wordpress_review::WordPressInventoryCategoryStatus"
+                        | "crate::wordpress_review::WordPressInventoryEntryStatus"
+                        | "crate::wordpress_review::WordPressInventoryLimitationReason"
+                        | "crate::wordpress_review::WordPressLocalInputClass"
                         | "crate::wordpress_review::WordPressMultisiteState"
                         | "crate::wordpress_review::WordPressPatchState"
                         | "crate::wordpress_review::WordPressPrerequisite"
@@ -9080,6 +9208,14 @@ fn is_public(visibility: &Visibility) -> bool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn without_exact_module_feature_gate(source: &str, feature: &str, module: &str) -> String {
+        let normalized = source.replace("\r\n", "\n");
+        let guarded = format!("#[cfg(feature = \"{feature}\")]\nmod {module};");
+        let ungated = normalized.replacen(&guarded, &format!("mod {module};"), 1);
+        assert_ne!(ungated, normalized, "missing reviewed {module} module gate");
+        ungated
+    }
 
     fn distributed_sources() -> Vec<NamedSource<'static>> {
         vec![
@@ -9927,9 +10063,10 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("NeedsReview / KnowledgeOnly")));
 
-        let ungated = web_runtime.replace(
-            "#[cfg(feature = \"authorization-review\")]\nmod resource_authorization_runtime;",
-            "mod resource_authorization_runtime;",
+        let ungated = without_exact_module_feature_gate(
+            web_runtime,
+            "authorization-review",
+            "resource_authorization_runtime",
         );
         assert!(
             resource_authorization_runtime_module_gate_violations(&ungated)
@@ -10031,10 +10168,8 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("exactly one shared-broker dispatch")));
 
-        let ungated = web_runtime.replace(
-            "#[cfg(feature = \"openapi-review\")]\nmod openapi_runtime;",
-            "mod openapi_runtime;",
-        );
+        let ungated =
+            without_exact_module_feature_gate(web_runtime, "openapi-review", "openapi_runtime");
         assert!(openapi_runtime_module_gate_violations(&ungated)
             .unwrap()
             .iter()
@@ -10167,10 +10302,7 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("detached REST pass")));
 
-        let ungated = web_runtime.replace(
-            "#[cfg(feature = \"rest-review\")]\nmod rest_runtime;",
-            "mod rest_runtime;",
-        );
+        let ungated = without_exact_module_feature_gate(web_runtime, "rest-review", "rest_runtime");
         assert!(rest_runtime_module_gate_violations(&ungated)
             .unwrap()
             .iter()
@@ -10238,10 +10370,8 @@ mod tests {
                 .any(|violation| violation.contains("WebSocket authority"))
         );
 
-        let ungated_runtime = web_runtime.replace(
-            "#[cfg(feature = \"graphql-review\")]\nmod graphql_runtime;",
-            "mod graphql_runtime;",
-        );
+        let ungated_runtime =
+            without_exact_module_feature_gate(web_runtime, "graphql-review", "graphql_runtime");
         assert!(graphql_runtime_module_gate_violations(&ungated_runtime)
             .unwrap()
             .iter()
@@ -11706,12 +11836,16 @@ mod tests {
                     WordPressApplicability, WordPressCatalogStatus, WordPressComparisonProfile,
                     WordPressComponentEvidenceClass, WordPressComponentKind,
                     WordPressEvidenceConfidence, WordPressEvidenceSource,
-                    WordPressExecutionStatus, WordPressHostingOs, WordPressMultisiteState,
-                    WordPressPatchState, WordPressPrerequisite, WordPressPrerequisiteOutcome,
-                    WordPressVersionRelation, WordPressVersionResolution,
-                    WordPressVersionResolutionReason, MAX_WORDPRESS_ADVISORY_RECORDS,
-                    MAX_WORDPRESS_RESULT_COMPONENTS, MAX_WORDPRESS_RESULT_VERSION_EVIDENCE,
-                    MAX_WORDPRESS_SIGNALS,
+                    WordPressExecutionStatus, WordPressHostingOs,
+                    WordPressInventoryCategoryStatus, WordPressInventoryEntryStatus,
+                    WordPressInventoryLimitationReason, WordPressLocalInputClass,
+                    WordPressMultisiteState, WordPressPatchState, WordPressPrerequisite,
+                    WordPressPrerequisiteOutcome, WordPressVersionRelation,
+                    WordPressVersionResolution, WordPressVersionResolutionReason,
+                    MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_RESULT_COMPONENTS,
+                    MAX_WORDPRESS_RESULT_VERSION_EVIDENCE,
+                    MAX_WORDPRESS_SAVED_INVENTORY_BYTES, MAX_WORDPRESS_SIGNALS,
+                    WORDPRESS_ADVISORY_CATALOG_SCHEMA, WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2,
                 },
             };
         "#
@@ -11780,6 +11914,20 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains("imports must be exactly"),
+            "{violations}"
+        );
+
+        let missing_inventory_bound = imports.replace(
+            "                    MAX_WORDPRESS_SAVED_INVENTORY_BYTES, MAX_WORDPRESS_SIGNALS,",
+            "                    MAX_WORDPRESS_SIGNALS,",
+        );
+        assert_ne!(missing_inventory_bound, imports);
+        let violations = reporting_source_import_violations(&missing_inventory_bound)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("imports must be exactly")
+                && violations.contains("MAX_WORDPRESS_SAVED_INVENTORY_BYTES"),
             "{violations}"
         );
     }
@@ -12097,7 +12245,11 @@ mod tests {
                 capability_id: &'static str,
                 catalog_status: &'static str,
                 #[serde(skip_serializing_if = "Option::is_none")]
+                catalog_schema: Option<&'static str>,
+                #[serde(skip_serializing_if = "Option::is_none")]
                 catalog: Option<WordPressCatalogDocument>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                inventory_import: Option<WordPressInventoryImportDocument>,
                 signal_count: u16,
                 evidence_reference_count: u16,
                 additional_request_count: u8,
@@ -12129,6 +12281,39 @@ mod tests {
                 confidence_classes: Vec<&'static str>,
                 versions: Vec<WordPressVersionEvidenceDocument>,
                 activation: Option<&'static str>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                inventory_status: Option<&'static str>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressInventoryImportDocument {
+                coverage: WordPressInventoryCoverageDocument,
+                component_count: usize,
+                limitations: Vec<WordPressInventoryLimitationDocument>,
+                inputs: Vec<WordPressInventoryInputDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressInventoryCoverageDocument {
+                core: &'static str,
+                plugins: &'static str,
+                themes: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressInventoryLimitationDocument {
+                declared_name: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                version: Option<String>,
+                status: &'static str,
+                reason: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressInventoryInputDocument {
+                class: &'static str,
+                byte_length: usize,
+                sha256: String,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
@@ -12412,6 +12597,34 @@ mod tests {
             "{violations}"
         );
 
+        let serialized_null_inventory_import = source.replace(
+            "                #[serde(skip_serializing_if = \"Option::is_none\")]\n                inventory_import: Option<WordPressInventoryImportDocument>,",
+            "                inventory_import: Option<WordPressInventoryImportDocument>,",
+        );
+        assert_ne!(serialized_null_inventory_import, source);
+        let violations = reporting_document_contract_violations(&serialized_null_inventory_import)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentWordPressAuditDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let ungated_inventory_input = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\n            #[derive(Serialize)]\n            struct WordPressInventoryInputDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct WordPressInventoryInputDocument",
+        );
+        assert_ne!(ungated_inventory_input, source);
+        let violations = reporting_document_contract_violations(&ungated_inventory_input)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("WordPressInventoryInputDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
         let nested_rest_audit = source.replace(
             "                replay_stable: bool,\n                item_projected: bool,",
             "                replay_stable: bool,\n                nested_audit: Option<AssessmentRestAuditDocument>,\n                item_projected: bool,",
@@ -12585,6 +12798,11 @@ mod tests {
             "case_reference: Some(verifier.case_reference().to_string()),",
             "case_reference: None,",
         );
+        let dropped_inventory_digest_validation = source.replace(
+            "                || !valid_lowercase_sha256(&input.sha256)",
+            "                || false",
+        );
+        assert_ne!(dropped_inventory_digest_validation, source);
         for mutation in [
             private_detail,
             forged_macro_status,
@@ -12593,6 +12811,7 @@ mod tests {
             doubled_public_cap,
             dropped_basis_count_binding,
             forged_verifier_case_link,
+            dropped_inventory_digest_validation,
         ] {
             assert!(reporting_production_body_inventory_violations(&mutation)
                 .iter()

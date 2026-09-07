@@ -1,0 +1,22 @@
+[
+  {
+    "name": "synthetic-prerelease-plugin",
+    "status": "active",
+    "version": "2.4.0-beta1"
+  },
+  {
+    "name": "synthetic-network-plugin",
+    "status": "active-network",
+    "version": "1.0.0"
+  },
+  {
+    "name": "synthetic-mu-helper",
+    "status": "must-use",
+    "version": ""
+  },
+  {
+    "name": "synthetic-cache.php",
+    "status": "dropin",
+    "version": ""
+  }
+]

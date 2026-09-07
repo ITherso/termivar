@@ -626,8 +626,14 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertIn("scan help omits --progress", result["failure"])
 
     def test_packaged_help_must_not_expose_excluded_wordpress_options(self):
-        for index, option in enumerate(("--wordpress-review", "--wordpress-context",
-                                        "--wordpress-advisories")):
+        for index, option in enumerate((
+            "--wordpress-review",
+            "--wordpress-context",
+            "--wordpress-advisories",
+            "--wordpress-plugins-json",
+            "--wordpress-themes-json",
+            "--wordpress-core-version-file",
+        )):
             with self.subTest(option=option):
                 result, _ = self.execute(
                     exposed_wordpress_option=option,

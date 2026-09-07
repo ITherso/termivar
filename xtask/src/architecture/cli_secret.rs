@@ -74,8 +74,11 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "openapi_review",
     "rest_review",
     "wordpress_advisories",
+    "wordpress_core_version_file",
     "wordpress_context",
+    "wordpress_plugins_json",
     "wordpress_review",
+    "wordpress_themes_json",
     "profile",
     "progress",
     "report_dir",
@@ -678,6 +681,9 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("wordpress_review", "bool", None),
         ("wordpress_context", "Option", Some("PathBuf")),
         ("wordpress_advisories", "Option", Some("PathBuf")),
+        ("wordpress_plugins_json", "Option", Some("PathBuf")),
+        ("wordpress_themes_json", "Option", Some("PathBuf")),
+        ("wordpress_core_version_file", "Option", Some("PathBuf")),
         ("ssrf_oast_policy", "Option", Some("PathBuf")),
         ("ssrf_oast_review", "bool", None),
         ("authorization_review_policy", "Option", Some("PathBuf")),
@@ -873,12 +879,27 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         (
             "wordpress_context",
             ("Option", Some("PathBuf")),
-            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"]",
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"],conflicts_with_all=[\"wordpress_plugins_json\",\"wordpress_themes_json\",\"wordpress_core_version_file\"]",
         ),
         (
             "wordpress_advisories",
             ("Option", Some("PathBuf")),
             "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"]",
+        ),
+        (
+            "wordpress_plugins_json",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"],conflicts_with=\"wordpress_context\"",
+        ),
+        (
+            "wordpress_themes_json",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"],conflicts_with=\"wordpress_context\"",
+        ),
+        (
+            "wordpress_core_version_file",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"],conflicts_with=\"wordpress_context\"",
         ),
     ] {
         let exact = fields.get(name).is_some_and(|field| {

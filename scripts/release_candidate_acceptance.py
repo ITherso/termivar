@@ -295,7 +295,8 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require("--ssrf-oast-review" not in scan_text,
             "scan help unexpectedly exposes ssrf-oast-review")
     for option in ("--wordpress-review", "--wordpress-context",
-                   "--wordpress-advisories"):
+                   "--wordpress-advisories", "--wordpress-plugins-json",
+                   "--wordpress-themes-json", "--wordpress-core-version-file"):
         require(option not in scan_text,
                 f"scan help unexpectedly exposes excluded WordPress option {option}")
     for command in ("compare", "verify"):

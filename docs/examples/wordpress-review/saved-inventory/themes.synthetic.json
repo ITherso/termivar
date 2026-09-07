@@ -1,0 +1,17 @@
+[
+  {
+    "name": "synthetic-active-theme",
+    "status": "active",
+    "version": "3.1"
+  },
+  {
+    "name": "synthetic-parent-theme",
+    "status": "parent",
+    "version": "2.0"
+  },
+  {
+    "name": "synthetic-inactive-theme",
+    "status": "inactive",
+    "version": "1.0"
+  }
+]

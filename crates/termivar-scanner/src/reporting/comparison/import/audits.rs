@@ -27,17 +27,24 @@ const MAX_WORDPRESS_RANGES: usize = 16;
 const MAX_WORDPRESS_FIXED_VERSIONS: usize = 16;
 const MAX_WORDPRESS_PREREQUISITES: usize = 8;
 const MAX_WORDPRESS_VERSION_RESOLUTION_WORK: usize = MAX_WORDPRESS_RESULT_VERSION_EVIDENCE * 2;
+const MAX_WORDPRESS_SAVED_INVENTORY_BYTES: u64 = 1024 * 1024;
+const MAX_WORDPRESS_INVENTORY_INPUTS: usize = 3;
+const MAX_WORDPRESS_INVENTORY_VERSION_BYTES: usize = 64;
+const MAX_WORDPRESS_INVENTORY_LABEL_BYTES: usize = 64;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum WordPressAuditSchema {
     V1,
     V2,
+    V3,
 }
 
 struct ImportedWordPressComponent {
     versions: Vec<String>,
     profiled_evidence: &'static str,
     observed_source: bool,
+    operator_source: bool,
+    inventory_component: bool,
 }
 
 struct ProfiledRange {
@@ -87,11 +94,12 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             "components",
             "advisories",
         ],
-        &["catalog"],
+        &["catalog", "catalog_schema", "inventory_import"],
     )?;
     let schema = match string(fields, "schema")? {
         "security.wordpress-review-audit/v1" => WordPressAuditSchema::V1,
         "security.wordpress-review-audit/v2" => WordPressAuditSchema::V2,
+        "security.wordpress-review-audit/v3" => WordPressAuditSchema::V3,
         _ => return Err(ComparisonError::InvalidDocument),
     };
     check(string(fields, "capability_id")? == WORDPRESS_CAPABILITY)?;
@@ -105,7 +113,36 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         ("evaluated", Some(value)) => catalog(object(value)?)?,
         _ => return Err(ComparisonError::InvalidDocument),
     }
-    check(schema == WordPressAuditSchema::V1 || status == "evaluated")?;
+    check(schema != WordPressAuditSchema::V2 || status == "evaluated")?;
+    let profiled = match schema {
+        WordPressAuditSchema::V1 => {
+            check(
+                !fields.contains_key("catalog_schema") && !fields.contains_key("inventory_import"),
+            )?;
+            false
+        },
+        WordPressAuditSchema::V2 => {
+            check(
+                !fields.contains_key("catalog_schema") && !fields.contains_key("inventory_import"),
+            )?;
+            true
+        },
+        WordPressAuditSchema::V3 => {
+            required(fields, "inventory_import")?;
+            match status {
+                "catalogue_not_supplied" => {
+                    check(!fields.contains_key("catalog_schema"))?;
+                    false
+                },
+                "evaluated" => match string(fields, "catalog_schema")? {
+                    "security.wordpress-advisory-catalog/v1" => false,
+                    "security.wordpress-advisory-catalog/v2" => true,
+                    _ => return Err(ComparisonError::InvalidDocument),
+                },
+                _ => return Err(ComparisonError::InvalidDocument),
+            }
+        },
+    };
     let signal_count = number(fields, "signal_count", MAX_WORDPRESS_SIGNALS)?;
     let evidence_count = number(fields, "evidence_reference_count", MAX_WORDPRESS_SIGNALS)?;
     check(number(fields, "additional_request_count", 0)? == 0)?;
@@ -129,14 +166,14 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
     let mut imported_components = BTreeMap::new();
     let mut version_count = 0_usize;
     for value in components {
-        let (identity, component) = component(object(value)?, schema)?;
+        let (identity, component) = component(object(value)?, schema, profiled)?;
         version_count = version_count
             .checked_add(component.versions.len())
             .ok_or(ComparisonError::InvalidDocument)?;
         check(version_count <= MAX_WORDPRESS_RESULT_VERSION_EVIDENCE)?;
         check(imported_components.insert(identity, component).is_none())?;
     }
-    if schema == WordPressAuditSchema::V2 {
+    if schema != WordPressAuditSchema::V1 {
         check(
             imported_components
                 .values()
@@ -153,7 +190,7 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             && (status == "evaluated" || advisories.is_empty()),
     )?;
     let mut profiled_resolutions = BTreeMap::new();
-    if schema == WordPressAuditSchema::V2 {
+    if profiled {
         let mut resolution_work = 0_usize;
         for (identity, component) in &imported_components {
             for profile in [
@@ -173,13 +210,22 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
     }
     let mut advisory_ids = std::collections::BTreeSet::new();
     for value in advisories {
-        let id = match schema {
-            WordPressAuditSchema::V1 => advisory_v1(object(value)?)?,
-            WordPressAuditSchema::V2 => {
+        let id = match (schema, profiled) {
+            (WordPressAuditSchema::V1 | WordPressAuditSchema::V3, false) => {
+                advisory_v1(object(value)?)?
+            },
+            (WordPressAuditSchema::V2 | WordPressAuditSchema::V3, true) => {
                 advisory_v2(object(value)?, &imported_components, &profiled_resolutions)?
             },
+            _ => return Err(ComparisonError::InvalidDocument),
         };
         check(advisory_ids.insert(id))?;
+    }
+    if schema == WordPressAuditSchema::V3 {
+        inventory_import(
+            object(required(fields, "inventory_import")?)?,
+            &imported_components,
+        )?;
     }
     Ok(())
 }
@@ -194,6 +240,7 @@ fn catalog(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonErro
 fn component(
     fields: &serde_json::Map<String, Value>,
     schema: WordPressAuditSchema,
+    profiled: bool,
 ) -> Result<(String, ImportedWordPressComponent), ComparisonError> {
     keys(
         fields,
@@ -205,7 +252,7 @@ fn component(
             "versions",
             "activation",
         ],
-        &[],
+        &["inventory_status"],
     )?;
     let identity = component_identity(object(required(fields, "identity")?)?)?;
     let evidence_class = token(
@@ -233,7 +280,7 @@ fn component(
         .iter()
         .map(|value| value.as_str().ok_or(ComparisonError::InvalidDocument))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-    if schema == WordPressAuditSchema::V2 {
+    if schema != WordPressAuditSchema::V1 {
         check(!identity_sources.contains("generator_metadata") || identity == "core:wordpress")?;
     }
     let profiled_evidence = if identity_sources
@@ -249,9 +296,6 @@ fn component(
     } else {
         "unknown"
     };
-    if schema == WordPressAuditSchema::V2 {
-        check(evidence_class == profiled_evidence)?;
-    }
     token_array(
         fields,
         "confidence_classes",
@@ -275,7 +319,7 @@ fn component(
             _ => Err(ComparisonError::InvalidDocument),
         })
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-    if schema == WordPressAuditSchema::V2 {
+    if schema != WordPressAuditSchema::V1 {
         check(confidence_classes == expected_confidence_classes)?;
     }
 
@@ -318,7 +362,7 @@ fn component(
                     _ => return Err(ComparisonError::InvalidDocument),
                 },
         )?;
-        if schema == WordPressAuditSchema::V2 {
+        if schema != WordPressAuditSchema::V1 {
             check(source != "generator_metadata" || identity == "core:wordpress")?;
             check(identity_sources.contains(source) && confidence_classes.contains(confidence))?;
         }
@@ -330,8 +374,59 @@ fn component(
         "activation",
         &["active", "inactive", "network_active", "unknown"],
     )?;
-    if schema == WordPressAuditSchema::V2 {
+    if schema != WordPressAuditSchema::V1 {
         check(activation.is_none() || identity_sources.contains("operator_context"))?;
+    }
+    if schema != WordPressAuditSchema::V1 {
+        let expected_evidence = if profiled {
+            profiled_evidence
+        } else {
+            legacy_component_evidence(&version_values, profiled_evidence)?
+        };
+        check(evidence_class == expected_evidence)?;
+    }
+    let inventory_status = if schema == WordPressAuditSchema::V3 {
+        fields
+            .get("inventory_status")
+            .map(|_| {
+                token(
+                    fields,
+                    "inventory_status",
+                    &[
+                        "core_version_supplied",
+                        "active",
+                        "inactive",
+                        "active_network",
+                        "must_use",
+                        "parent",
+                    ],
+                )
+            })
+            .transpose()?
+    } else {
+        check(!fields.contains_key("inventory_status"))?;
+        None
+    };
+    if let Some(status) = inventory_status {
+        check(identity_sources.contains("operator_context"))?;
+        let compatible = match status {
+            "core_version_supplied" => identity == "core:wordpress" && activation.is_none(),
+            "active" => {
+                (identity.starts_with("plugin:") || identity.starts_with("theme:"))
+                    && activation == Some("active")
+            },
+            "inactive" => {
+                (identity.starts_with("plugin:") || identity.starts_with("theme:"))
+                    && activation == Some("inactive")
+            },
+            "active_network" => {
+                identity.starts_with("plugin:") && activation == Some("network_active")
+            },
+            "must_use" => identity.starts_with("plugin:") && activation.is_none(),
+            "parent" => identity.starts_with("theme:") && activation.is_none(),
+            _ => false,
+        };
+        check(compatible)?;
     }
     Ok((
         identity,
@@ -339,8 +434,166 @@ fn component(
             versions: version_values,
             profiled_evidence,
             observed_source: profiled_evidence == "observed_hint",
+            operator_source: identity_sources.contains("operator_context"),
+            inventory_component: inventory_status.is_some(),
         },
     ))
+}
+
+fn legacy_component_evidence(
+    versions: &[String],
+    source_evidence: &'static str,
+) -> Result<&'static str, ComparisonError> {
+    let mut supported = std::collections::BTreeSet::new();
+    let mut unsupported = std::collections::BTreeSet::new();
+    for version in versions {
+        match numeric_components(version) {
+            Ok(version) => {
+                supported.insert(version);
+            },
+            Err(ComparisonError::InvalidDocument) => {
+                unsupported.insert(version.as_str());
+            },
+            Err(error) => return Err(error),
+        }
+    }
+    if supported.len() > 1
+        || unsupported.len() > 1
+        || (!supported.is_empty() && !unsupported.is_empty())
+    {
+        Ok("conflicting")
+    } else {
+        Ok(source_evidence)
+    }
+}
+
+fn inventory_import(
+    fields: &serde_json::Map<String, Value>,
+    components: &BTreeMap<String, ImportedWordPressComponent>,
+) -> Result<(), ComparisonError> {
+    keys(
+        fields,
+        &["coverage", "component_count", "limitations", "inputs"],
+        &[],
+    )?;
+    let coverage = object(required(fields, "coverage")?)?;
+    keys(coverage, &["core", "plugins", "themes"], &[])?;
+    let core = token(coverage, "core", &["supplied", "not_supplied"])?;
+    let plugins = token(coverage, "plugins", &["supplied", "not_supplied"])?;
+    let themes = token(coverage, "themes", &["supplied", "not_supplied"])?;
+
+    let inputs = array(fields, "inputs")?;
+    check(!inputs.is_empty() && inputs.len() <= MAX_WORDPRESS_INVENTORY_INPUTS)?;
+    let mut classes = std::collections::BTreeSet::new();
+    let mut total_bytes = 0_u64;
+    for value in inputs {
+        let input = object(value)?;
+        keys(input, &["class", "byte_length", "sha256"], &[])?;
+        let class = token(
+            input,
+            "class",
+            &[
+                "wp_cli_plugins_json",
+                "wp_cli_themes_json",
+                "wp_cli_core_version_file",
+            ],
+        )?;
+        check(classes.insert(class))?;
+        let byte_length = number(input, "byte_length", MAX_WORDPRESS_SAVED_INVENTORY_BYTES)?;
+        check(byte_length > 0)?;
+        if class == "wp_cli_core_version_file" {
+            check(byte_length <= (MAX_WORDPRESS_INVENTORY_VERSION_BYTES + 2) as u64)?;
+        }
+        check(digest(string(input, "sha256")?, ""))?;
+        total_bytes = total_bytes
+            .checked_add(byte_length)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        check(total_bytes <= MAX_WORDPRESS_SAVED_INVENTORY_BYTES)?;
+    }
+    check((core == "supplied") == classes.contains("wp_cli_core_version_file"))?;
+    check((plugins == "supplied") == classes.contains("wp_cli_plugins_json"))?;
+    check((themes == "supplied") == classes.contains("wp_cli_themes_json"))?;
+
+    for (identity, component) in components {
+        check(component.operator_source == component.inventory_component)?;
+        if component.inventory_component {
+            let category_supplied = if identity == "core:wordpress" {
+                core == "supplied"
+            } else if identity.starts_with("plugin:") {
+                plugins == "supplied"
+            } else if identity.starts_with("theme:") {
+                themes == "supplied"
+            } else {
+                false
+            };
+            check(category_supplied)?;
+        }
+    }
+
+    let inventory_component_count = components
+        .values()
+        .filter(|component| component.inventory_component)
+        .count();
+    check(
+        number(
+            fields,
+            "component_count",
+            MAX_WORDPRESS_CONTEXT_COMPONENTS as u64,
+        )? == inventory_component_count as u64,
+    )?;
+
+    let limitations = array(fields, "limitations")?;
+    check(
+        inventory_component_count
+            .checked_add(limitations.len())
+            .is_some_and(|count| count <= MAX_WORDPRESS_CONTEXT_COMPONENTS),
+    )?;
+    let mut limitation_names = std::collections::BTreeSet::new();
+    for value in limitations {
+        let limitation = object(value)?;
+        keys(
+            limitation,
+            &["declared_name", "status", "reason"],
+            &["version"],
+        )?;
+        check(plugins == "supplied")?;
+        let name = text(
+            limitation,
+            "declared_name",
+            MAX_WORDPRESS_INVENTORY_LABEL_BYTES,
+        )?;
+        check(valid_inventory_label(name) && limitation_names.insert(name))?;
+        if let Some(version) = limitation.get("version") {
+            let version = version.as_str().ok_or(ComparisonError::InvalidDocument)?;
+            check(valid_inventory_version(version))?;
+        }
+        check(token(limitation, "status", &["drop_in"])? == "drop_in")?;
+        check(
+            token(
+                limitation,
+                "reason",
+                &["drop_in_identity_is_not_catalog_slug"],
+            )? == "drop_in_identity_is_not_catalog_slug",
+        )?;
+    }
+    Ok(())
+}
+
+fn valid_inventory_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_INVENTORY_LABEL_BYTES
+        && !matches!(value, "." | "..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_inventory_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_INVENTORY_VERSION_BYTES
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
 }
 
 fn component_identity(fields: &serde_json::Map<String, Value>) -> Result<String, ComparisonError> {

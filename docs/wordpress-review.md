@@ -81,12 +81,86 @@ WP-CLI `plugin list` documentation describes fields including `name`, `status`,
 and `version`, and activation states including active, network-active, and
 inactive: <https://developer.wordpress.org/cli/commands/plugin/list/>. The V1
 Termivar context normalizes WP-CLI's `active-network` spelling to
-`network_active`. It is a small typed selection, not an importer for arbitrary
-raw WP-CLI output, and Termivar never invokes WP-CLI or PHP.
+`network_active`. Termivar also accepts the bounded saved-inventory projection
+described below. It never invokes WP-CLI or PHP.
 
 The complete context file is limited to 1 MiB. See
 [`docs/examples/wordpress-review/context.synthetic.json`](examples/wordpress-review/context.synthetic.json)
 for a deliberately fictional declaration.
+
+## Saved WP-CLI inventory
+
+Instead of authoring `security.wordpress-context/v1`, an operator can save
+three narrow WP-CLI projections before the assessment:
+
+```bash
+wp plugin list --fields=name,status,version --format=json > wordpress-plugins.json
+wp theme list --fields=name,status,version --format=json > wordpress-themes.json
+wp core version > wordpress-core-version.txt
+```
+
+Termivar reads only files already produced by the operator. It does not start
+WP-CLI, PHP, WordPress, or another subprocess. Select any nonempty combination
+of the three inputs with their exact CLI options:
+
+```bash
+termivar scan https://authorized.example/ \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-plugins-json wordpress-plugins.json \
+  --wordpress-themes-json wordpress-themes.json \
+  --wordpress-core-version-file wordpress-core-version.txt \
+  --wordpress-advisories wordpress-advisories.json \
+  --report-dir assessment-wordpress
+```
+
+The saved-inventory options conflict with `--wordpress-context`; they are an
+alternate source for the same bounded operator-context role. Advisory input is
+independent and may be supplied with either form. All selected inventory files
+share one 1 MiB ceiling and one 256-entry ceiling. Plugin and theme inputs must
+be JSON arrays whose rows contain bounded `name`, `status`, and `version`
+strings. The core input is one version line of at most 64 bytes, with at most
+one final LF or CRLF. Duplicate object keys, duplicate component identities,
+unknown fields or statuses, malformed JSON, and limit violations fail closed.
+
+Supported plugin statuses are `active`, `inactive`, `active-network`,
+`must-use`, and `dropin`. Supported theme statuses are `active`, `inactive`,
+and `parent`. `active-network` becomes the typed `network_active` activation.
+That row describes only the supplied WP-CLI inventory entry; it does not prove
+the complete activation topology of a multisite network.
+`must-use` and theme `parent` are retained as inventory classifications without
+inventing a normal activation state. A drop-in name such as `object-cache.php`
+is a filename, not a canonical plugin catalogue slug; it is therefore reported
+as an explicit inventory limitation and is not evaluated as an advisory
+component. Update-related WP-CLI fields, when present in the bounded accepted
+shape, are informational only and never become patch or remediation evidence.
+
+These files are operator-supplied, unauthenticated declarations. Termivar binds
+them to the exact origin selected by the invocation, but parsing does not prove
+that WP-CLI produced them, that they are complete, or that they describe that
+origin. A category that was not supplied is `not_supplied`, which means unknown,
+not empty. Even a supplied empty array does not authenticate absence. Input
+paths are not retained in the assessment. The report records fixed input class,
+exact byte length, and SHA-256 for byte identification; a digest is not a
+signature or source authentication.
+
+The hardened reader opens the final path component without following links and
+validates the same opened handle as a regular file. Parent directories remain a
+trusted boundary; this is not whole-path containment or a concurrent filesystem
+snapshot. Saved inventory is parsed before credentials or scanner construction,
+adds no target/provider requests, and remains operator context in the existing
+single assessment runtime.
+
+Saved inventory produces the additive
+`security.wordpress-review-audit/v3` shape so coverage, entry classifications,
+limitations, and input-byte provenance remain explicit. It does not alter the
+stable context or advisory schemas. Raw version strings remain evidence. A V1
+catalogue still uses `numeric-dotted/v1`; a V2 catalogue evaluates them under
+each record's explicit comparison profile. An unsupported version stays
+indeterminate rather than selecting a profile or falling back automatically.
+
+See the clearly fictional files and commands in the
+[`saved-inventory` example README](examples/wordpress-review/saved-inventory/README.md).
 
 ## Advisory snapshots
 
@@ -241,6 +315,10 @@ reviewed on 2026-09-07:
   <https://developer.wordpress.org/reference/functions/get_the_generator/>
 - WP-CLI plugin inventory fields and states:
   <https://developer.wordpress.org/cli/commands/plugin/list/>
+- WP-CLI theme inventory fields and states:
+  <https://developer.wordpress.org/cli/commands/theme/list/>
+- WP-CLI core version output:
+  <https://developer.wordpress.org/cli/commands/core/version/>
 - PHP version comparison behavior (broader than Termivar's V1 profile):
   <https://www.php.net/manual/en/function.version-compare.php>
 - PHP 8.3.0 comparison implementation pinned at commit

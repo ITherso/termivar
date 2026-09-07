@@ -16,12 +16,18 @@ use std::{
     time::Instant,
 };
 
+use sha2::{Digest, Sha256};
 use termivar_scanner::wordpress_review::{
     parse_wordpress_advisory_catalog, parse_wordpress_context,
 };
 
 fn termivar() -> Command {
     Command::new(env!("CARGO_BIN_EXE_termivar"))
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("{digest:x}")
 }
 
 struct TestServer {
@@ -114,16 +120,37 @@ fn bounded_parser_cost_is_observed_without_becoming_a_timing_contract() {
 
 #[test]
 fn malformed_local_inputs_fail_before_runtime_and_never_echo_content_or_path() {
-    const PRIVATE_DOCUMENT: &str =
-        r#"{"PRIVATE-WORDPRESS-DOCUMENT-5E12F9":"not a supported schema"}"#;
-    for (flag, expected) in [
-        ("--wordpress-context", "InvalidContext"),
-        ("--wordpress-advisories", "InvalidAdvisories"),
+    for (flag, document, expected) in [
+        (
+            "--wordpress-context",
+            br#"{"PRIVATE-WORDPRESS-DOCUMENT-5E12F9":"not a supported schema"}"#.as_slice(),
+            "InvalidContext",
+        ),
+        (
+            "--wordpress-advisories",
+            br#"{"PRIVATE-WORDPRESS-DOCUMENT-5E12F9":"not a supported schema"}"#.as_slice(),
+            "InvalidAdvisories",
+        ),
+        (
+            "--wordpress-plugins-json",
+            br#"[{"name":"one","name":"two","status":"active","version":"1.0"}]"#.as_slice(),
+            "InvalidSavedInventory",
+        ),
+        (
+            "--wordpress-themes-json",
+            br#"[{"name":"example-theme","status":"active-network","version":"1.0"}]"#.as_slice(),
+            "InvalidSavedInventory",
+        ),
+        (
+            "--wordpress-core-version-file",
+            b"6.9.4\nPRIVATE-WORDPRESS-DOCUMENT-5E12F9\n".as_slice(),
+            "InvalidSavedInventory",
+        ),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("PRIVATE-WORDPRESS-PATH-91A4C2.json");
         let report_directory = directory.path().join("must-not-be-reserved");
-        std::fs::write(&input, PRIVATE_DOCUMENT).unwrap();
+        std::fs::write(&input, document).unwrap();
         let server = serve("fixture");
 
         let output = run_with_input(&server, flag, &input, &report_directory);
@@ -142,6 +169,40 @@ fn malformed_local_inputs_fail_before_runtime_and_never_echo_content_or_path() {
         assert!(server.requests.lock().unwrap().is_empty());
         assert!(!report_directory.exists());
     }
+}
+
+#[test]
+fn non_local_inventory_path_is_rejected_before_output_reservation_or_runtime() {
+    let server = serve("fixture");
+    let directory = tempfile::tempdir().unwrap();
+    let report_directory = directory.path().join("must-not-be-reserved");
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-plugins-json",
+            "https://PRIVATE-WORDPRESS-HOST/plugins.json",
+            "--report-dir",
+        ])
+        .arg(&report_directory)
+        .arg(&server.url)
+        .output()
+        .expect("termivar process must start");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("PluginsSource"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(!stderr.contains("PRIVATE-WORDPRESS-HOST"));
+    assert!(!stderr.contains("[ALPHA]"));
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    assert!(server.requests.lock().unwrap().is_empty());
+    assert!(!report_directory.exists());
 }
 
 #[test]
@@ -175,9 +236,9 @@ fn non_root_target_is_rejected_before_runtime_dispatch() {
 #[test]
 fn wordpress_input_validation_precedes_secret_source_loading() {
     let directory = tempfile::tempdir().unwrap();
-    let context = directory.path().join("PRIVATE-BAD-CONTEXT.json");
+    let plugins = directory.path().join("PRIVATE-BAD-PLUGINS.json");
     let missing_secret = directory.path().join("PRIVATE-MISSING-SECRET.txt");
-    std::fs::write(&context, br#"{"schema":"unsupported"}"#).unwrap();
+    std::fs::write(&plugins, br#"{"schema":"unsupported"}"#).unwrap();
     let server = serve("fixture");
     let output = termivar()
         .args([
@@ -185,9 +246,9 @@ fn wordpress_input_validation_precedes_secret_source_loading() {
             "--profile",
             "web-review",
             "--wordpress-review",
-            "--wordpress-context",
+            "--wordpress-plugins-json",
         ])
-        .arg(&context)
+        .arg(&plugins)
         .arg("--auth-file")
         .arg(&missing_secret)
         .arg(&server.url)
@@ -198,11 +259,11 @@ fn wordpress_input_validation_precedes_secret_source_loading() {
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("InvalidContext"),
+        stderr.contains("InvalidSavedInventory"),
         "unexpected stderr: {stderr}"
     );
     assert!(!stderr.contains("authorization-context input source"));
-    assert!(!stderr.contains("PRIVATE-BAD-CONTEXT"));
+    assert!(!stderr.contains("PRIVATE-BAD-PLUGINS"));
     assert!(!stderr.contains("PRIVATE-MISSING-SECRET"));
     assert!(!stderr.contains("[ALPHA]"));
     assert_eq!(server.connections.load(Ordering::SeqCst), 0);
@@ -359,6 +420,247 @@ fn review_selection_adds_no_target_requests_and_keeps_progress_on_stderr() {
     assert_eq!(
         with.connections.load(Ordering::SeqCst),
         without.connections.load(Ordering::SeqCst)
+    );
+}
+
+#[test]
+fn aggregate_saved_inventory_limit_fails_before_output_or_network() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugins = directory.path().join("PRIVATE-LARGE-PLUGINS.json");
+    let themes = directory.path().join("PRIVATE-LARGE-THEMES.json");
+    fs::write(&plugins, vec![b' '; 600 * 1024]).unwrap();
+    fs::write(&themes, vec![b' '; 600 * 1024]).unwrap();
+    let report_directory = directory.path().join("must-not-be-reserved");
+    let server = serve("fixture");
+
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-plugins-json",
+        ])
+        .arg(&plugins)
+        .arg("--wordpress-themes-json")
+        .arg(&themes)
+        .arg("--report-dir")
+        .arg(&report_directory)
+        .arg(&server.url)
+        .output()
+        .expect("termivar process must start");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("InventoryTooLarge"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(!stderr.contains("PRIVATE-LARGE"));
+    assert!(!stderr.contains("[ALPHA]"));
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    assert!(server.requests.lock().unwrap().is_empty());
+    assert!(!report_directory.exists());
+}
+
+#[test]
+fn saved_inventory_bundle_is_path_free_preserves_inputs_and_adds_no_requests() {
+    const ROOT: &str = "<!doctype html><html><body>bounded fixture</body></html>";
+    const PLUGINS: &[u8] = br#"[
+      {"name":"synthetic-active-plugin","status":"active","version":"1.4.0"},
+      {"name":"synthetic-inactive-plugin","status":"inactive","version":"2.0"}
+    ]"#;
+    const THEMES: &[u8] =
+        br#"[{"name":"synthetic-parent-theme","status":"parent","version":"3.2.1"}]"#;
+    const CORE: &[u8] = b"6.9.4\r\n";
+    const ADVISORIES: &[u8] = br#"{"schema":"security.wordpress-advisory-catalog/v1","catalog":{"id":"synthetic-saved-inventory-catalog","revision":"r1","retrieved_on":"2026-09-07"},"records":[]}"#;
+
+    let baseline_server = serve(ROOT);
+    let baseline_directory = tempfile::tempdir().unwrap();
+    let baseline_bundle = baseline_directory.path().join("baseline-assessment");
+    let baseline = termivar()
+        .args(["scan", "--profile", "web-review", "--report-dir"])
+        .arg(&baseline_bundle)
+        .arg(&baseline_server.url)
+        .output()
+        .expect("baseline process must start");
+    assert!(
+        baseline.status.success(),
+        "baseline stdout: {}\nbaseline stderr: {}",
+        String::from_utf8_lossy(&baseline.stdout),
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let server = serve(ROOT);
+    let directory = tempfile::tempdir().unwrap();
+    let plugins_path = directory.path().join("PRIVATE-WP-PLUGINS-PATH-1910.json");
+    let themes_path = directory.path().join("PRIVATE-WP-THEMES-PATH-2020.json");
+    let core_path = directory.path().join("PRIVATE-WP-CORE-PATH-3030.txt");
+    let advisories_path = directory
+        .path()
+        .join("PRIVATE-WP-ADVISORIES-PATH-4040.json");
+    fs::write(&plugins_path, PLUGINS).unwrap();
+    fs::write(&themes_path, THEMES).unwrap();
+    fs::write(&core_path, CORE).unwrap();
+    fs::write(&advisories_path, ADVISORIES).unwrap();
+    let original_inputs = [
+        (plugins_path.clone(), PLUGINS, sha256(PLUGINS)),
+        (themes_path.clone(), THEMES, sha256(THEMES)),
+        (core_path.clone(), CORE, sha256(CORE)),
+        (advisories_path.clone(), ADVISORIES, sha256(ADVISORIES)),
+    ];
+    let bundle = directory.path().join("saved-inventory-assessment");
+
+    let scan = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-plugins-json",
+        ])
+        .arg(&plugins_path)
+        .arg("--wordpress-themes-json")
+        .arg(&themes_path)
+        .arg("--wordpress-core-version-file")
+        .arg(&core_path)
+        .arg("--wordpress-advisories")
+        .arg(&advisories_path)
+        .arg("--report-dir")
+        .arg(&bundle)
+        .arg(&server.url)
+        .output()
+        .expect("saved-inventory process must start");
+    assert!(
+        scan.status.success(),
+        "scan stdout: {}\nscan stderr: {}",
+        String::from_utf8_lossy(&scan.stdout),
+        String::from_utf8_lossy(&scan.stderr)
+    );
+    assert!(scan.stdout.is_empty());
+
+    for (path, expected_bytes, expected_digest) in &original_inputs {
+        let observed = fs::read(path).unwrap();
+        assert_eq!(observed, *expected_bytes);
+        assert_eq!(sha256(&observed), *expected_digest);
+    }
+    let assessment_bytes = fs::read(bundle.join("assessment.json")).unwrap();
+    let assessment: serde_json::Value = serde_json::from_slice(&assessment_bytes).unwrap();
+    let audit = &assessment["wordpress_review"];
+    assert_eq!(audit["schema"], "security.wordpress-review-audit/v3");
+    assert_eq!(audit["catalog_status"], "evaluated");
+    assert_eq!(audit["catalog"]["id"], "synthetic-saved-inventory-catalog");
+    assert_eq!(audit["signal_count"], 0);
+    assert_eq!(audit["evidence_reference_count"], 0);
+    assert_eq!(audit["additional_request_count"], 0);
+    assert_eq!(audit["item_projected"], false);
+    assert_eq!(audit["inventory_import"]["component_count"], 4);
+    assert_eq!(audit["inventory_import"]["coverage"]["plugins"], "supplied");
+    assert_eq!(audit["inventory_import"]["coverage"]["themes"], "supplied");
+    assert_eq!(audit["inventory_import"]["coverage"]["core"], "supplied");
+
+    let inputs = audit["inventory_import"]["inputs"].as_array().unwrap();
+    assert_eq!(inputs.len(), 3);
+    for (class, bytes) in [
+        ("wp_cli_plugins_json", PLUGINS),
+        ("wp_cli_themes_json", THEMES),
+        ("wp_cli_core_version_file", CORE),
+    ] {
+        let input = inputs
+            .iter()
+            .find(|input| input["class"] == class)
+            .unwrap_or_else(|| panic!("missing provenance class {class}"));
+        assert_eq!(input["byte_length"], bytes.len());
+        assert_eq!(input["sha256"], sha256(bytes));
+    }
+    for (slug, version) in [
+        ("wordpress", "6.9.4"),
+        ("synthetic-active-plugin", "1.4.0"),
+        ("synthetic-inactive-plugin", "2.0"),
+        ("synthetic-parent-theme", "3.2.1"),
+    ] {
+        let component = audit["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|component| component["identity"]["slug"] == slug)
+            .unwrap_or_else(|| panic!("missing saved component {slug}"));
+        assert!(component["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["value"] == version
+                    && entry["source"] == "operator_context"
+                    && entry["confidence"] == "operator_assertion"
+            }));
+    }
+
+    let private_directory = directory.path().to_string_lossy().into_owned();
+    for name in ["assessment.html", "assessment.json", "manifest.json"] {
+        let rendered_bytes = fs::read(bundle.join(name)).unwrap();
+        let rendered = String::from_utf8_lossy(&rendered_bytes);
+        for forbidden in [
+            "PRIVATE-WP-PLUGINS-PATH-1910",
+            "PRIVATE-WP-THEMES-PATH-2020",
+            "PRIVATE-WP-CORE-PATH-3030",
+            "PRIVATE-WP-ADVISORIES-PATH-4040",
+            private_directory.as_str(),
+        ] {
+            assert!(!rendered.contains(forbidden), "{name} leaked {forbidden}");
+        }
+    }
+
+    let requests_after_scan = server.requests.lock().unwrap().clone();
+    assert_eq!(
+        requests_after_scan,
+        baseline_server.requests.lock().unwrap().clone(),
+        "saved local inventory must not change target request selection"
+    );
+    let verify = termivar()
+        .args(["report", "verify", "--dir"])
+        .arg(&bundle)
+        .args(["--format", "json"])
+        .output()
+        .expect("bundle verifier must start");
+    assert!(
+        verify.status.success(),
+        "verify stdout: {}\nverify stderr: {}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let verification: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verification["status"], "integrity_match");
+
+    let assessment_path = bundle.join("assessment.json");
+    let compare = termivar()
+        .args(["report", "compare", "--before"])
+        .arg(&assessment_path)
+        .arg("--after")
+        .arg(&assessment_path)
+        .args(["--same-scope", "--format", "json"])
+        .output()
+        .expect("report compare must start");
+    assert!(
+        compare.status.success(),
+        "compare stdout: {}\ncompare stderr: {}",
+        String::from_utf8_lossy(&compare.stdout),
+        String::from_utf8_lossy(&compare.stderr)
+    );
+    let comparison: serde_json::Value = serde_json::from_slice(&compare.stdout).unwrap();
+    assert_eq!(comparison["schema"], "termivar-report-comparison/v1");
+    assert_eq!(
+        comparison["unchanged"].as_array().unwrap().len(),
+        assessment["item_count"].as_u64().unwrap() as usize
+    );
+    for group in ["only_in_after", "only_in_before", "changed"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+    assert_eq!(
+        server.requests.lock().unwrap().as_slice(),
+        requests_after_scan,
+        "offline report tools must not contact the target"
     );
 }
 
