@@ -23,3 +23,7 @@ docs/examples/report-bundle/assessment-001/manifest.json -text
 # The curated WordPress catalogue records its exact SHA-256 in accompanying
 # provenance notes. Preserve those bytes across native checkouts.
 docs/examples/wordpress-review/advisories.curated.json -text
+
+# The synthetic Wordfence-format fixture has an independently recorded exact
+# byte length and digest. Preserve it across native checkouts.
+docs/examples/wordpress-review/wordfence-v3/production.synthetic.json -text

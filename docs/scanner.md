@@ -71,6 +71,13 @@ transport-free interpretation to the same `WebAssessmentRuntime`. It requires
 bounded, and validated by the CLI before secrets or network construction. The
 runtime receives typed values, not filesystem authority.
 
+Feature-enabled development builds also accept the documented saved WP-CLI
+plugin/theme inventories and core-version file. An operator may explicitly
+declare `--wordpress-advisories-format wordfence-v3-production` for an already
+saved Production-format export. That path reads local bytes only: it neither
+obtains an API key nor contacts Wordfence, and unresolved source comparison
+semantics remain indeterminate instead of falling back to a Termivar comparator.
+
 V1 reuses only the complete root HTML already obtained by the assessment. It
 recognizes supported generator metadata and canonical same-origin WordPress
 core/plugin/theme asset paths, adds no request or active verification, and does

@@ -404,9 +404,14 @@ fn validate_wordpress_audit(
             count.checked_add(component.versions().len())
         });
     let catalog_consistent = matches!(
-        (result.catalog_status(), result.catalog_metadata()),
-        (WordPressCatalogStatus::CatalogNotSupplied, None)
-            | (WordPressCatalogStatus::Evaluated, Some(_))
+        (
+            result.catalog_status(),
+            result.catalog_metadata(),
+            result.external_review(),
+        ),
+        (WordPressCatalogStatus::CatalogNotSupplied, None, None)
+            | (WordPressCatalogStatus::Evaluated, Some(_), None)
+            | (WordPressCatalogStatus::Evaluated, None, Some(_))
     );
     if usize::from(audit.signal_count()) > MAX_WORDPRESS_SIGNALS
         || result.components().len() > MAX_WORDPRESS_RESULT_COMPONENTS

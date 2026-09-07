@@ -213,8 +213,10 @@ pub const MAX_WORDPRESS_FUZZ_INPUT_BYTES: usize =
 /// sequence ordering. It owns no filesystem or network authority.
 pub fn check_wordpress_review(data: &[u8]) {
     use termivar_scanner::wordpress_review::{
-        parse_wordpress_advisory_catalog, parse_wordpress_context, NumericDottedVersion,
-        PhpReleaseSubsetVersion, WordPressAdvisoryCatalogSchema, WordPressComparisonProfile,
+        parse_wordfence_v3_production, parse_wordpress_advisory_catalog, parse_wordpress_context,
+        NumericDottedVersion, PhpReleaseSubsetVersion, WordPressAdvisoryCatalogSchema,
+        WordPressComparisonProfile, MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION,
+        MAX_WORDFENCE_V3_RECORDS, MAX_WORDFENCE_V3_SOFTWARE_ASSOCIATIONS,
         MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_CONTEXT_COMPONENTS,
         MAX_WORDPRESS_FIXED_VERSIONS_PER_ADVISORY, MAX_WORDPRESS_PATCH_ASSERTIONS_PER_COMPONENT,
         MAX_WORDPRESS_PREREQUISITES_PER_ADVISORY, MAX_WORDPRESS_RANGES_PER_ADVISORY,
@@ -305,6 +307,51 @@ pub fn check_wordpress_review(data: &[u8]) {
                 .prerequisites()
                 .windows(2)
                 .all(|pair| pair[0] < pair[1]));
+        }
+    }
+
+    let wordfence = parse_wordfence_v3_production(data);
+    let repeated_wordfence = parse_wordfence_v3_production(data);
+    assert_eq!(
+        wordfence, repeated_wordfence,
+        "identical Wordfence Production input must be deterministic"
+    );
+    if let Ok(catalog) = wordfence {
+        assert!(catalog.record_count() <= MAX_WORDFENCE_V3_RECORDS);
+        assert!(catalog.software_association_count() <= MAX_WORDFENCE_V3_SOFTWARE_ASSOCIATIONS);
+        assert_eq!(
+            catalog.software_association_count(),
+            catalog
+                .records()
+                .iter()
+                .map(|record| record.software().len())
+                .sum::<usize>()
+        );
+        assert_eq!(
+            catalog.affected_range_count(),
+            catalog
+                .records()
+                .iter()
+                .flat_map(|record| record.software())
+                .map(|association| association.affected_ranges().len())
+                .sum::<usize>()
+        );
+        assert!(catalog
+            .records()
+            .windows(2)
+            .all(|pair| { pair[0].upstream_id() < pair[1].upstream_id() }));
+        for record in catalog.records() {
+            for association in record.software() {
+                assert!(
+                    association.affected_ranges().len() <= MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION
+                );
+                assert!(catalog
+                    .associations_for(association.component())
+                    .any(|view| {
+                        view.upstream_id() == record.upstream_id()
+                            && view.association().key() == association.key()
+                    }));
+            }
         }
     }
 

@@ -32,6 +32,9 @@ mod report_verify;
 #[cfg(feature = "wordpress-review")]
 mod wordpress_input;
 
+#[cfg(feature = "wordpress-review")]
+use wordpress_input::WordPressAdvisoriesFormat;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{ffi::OsString, path::PathBuf};
 #[cfg(feature = "proxy-adapter")]
@@ -189,19 +192,33 @@ fn scan_rest_review_flags_conflict(
 /// Input paths are selected and validated separately before any secret or
 /// network construction.
 #[cfg(feature = "wordpress-review")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct WordPressReviewFlagSelection {
+    context: bool,
+    advisories: bool,
+    advisories_format: bool,
+    plugins: bool,
+    themes: bool,
+    core_version: bool,
+}
+
+#[cfg(feature = "wordpress-review")]
 fn scan_wordpress_review_flags_conflict(
     profile: Option<CliScanProfile>,
     wordpress_review: bool,
-    context_selected: bool,
-    advisories_selected: bool,
-    plugins_selected: bool,
-    themes_selected: bool,
-    core_version_selected: bool,
+    selected: WordPressReviewFlagSelection,
 ) -> Option<&'static str> {
-    let saved_inventory_selected = plugins_selected || themes_selected || core_version_selected;
-    if (context_selected || advisories_selected || saved_inventory_selected) && !wordpress_review {
+    let saved_inventory_selected = selected.plugins || selected.themes || selected.core_version;
+    if selected.advisories_format && !selected.advisories {
+        Some("`--wordpress-advisories-format` requires `--wordpress-advisories`")
+    } else if (selected.context
+        || selected.advisories
+        || selected.advisories_format
+        || saved_inventory_selected)
+        && !wordpress_review
+    {
         Some("WordPress inputs require explicit `--wordpress-review`")
-    } else if context_selected && saved_inventory_selected {
+    } else if selected.context && saved_inventory_selected {
         Some("saved WordPress inventory inputs conflict with `--wordpress-context`")
     } else if wordpress_review && profile != Some(CliScanProfile::WebReview) {
         Some("`--wordpress-review` requires `--profile web-review`")
@@ -401,6 +418,17 @@ struct ScanArgs {
         requires_all = ["profile", "wordpress_review"]
     )]
     wordpress_advisories: Option<PathBuf>,
+    /// Select the declared schema of `--wordpress-advisories`. The default is
+    /// Termivar's strict native catalogue; external formats are never inferred
+    /// from a filename or document contents.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "FORMAT",
+        requires_all = ["profile", "wordpress_review", "wordpress_advisories"]
+    )]
+    wordpress_advisories_format: Option<WordPressAdvisoriesFormat>,
     /// Read a bounded saved
     /// `wp plugin list --fields=name,status,version --format=json` inventory.
     /// The source is operator-supplied evidence and is never executed.
@@ -682,6 +710,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         #[cfg(feature = "wordpress-review")]
         wordpress_advisories,
         #[cfg(feature = "wordpress-review")]
+        wordpress_advisories_format,
+        #[cfg(feature = "wordpress-review")]
         wordpress_plugins_json,
         #[cfg(feature = "wordpress-review")]
         wordpress_themes_json,
@@ -751,11 +781,14 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     if let Some(message) = scan_wordpress_review_flags_conflict(
         profile,
         wordpress_review,
-        wordpress_context.is_some(),
-        wordpress_advisories.is_some(),
-        wordpress_plugins_json.is_some(),
-        wordpress_themes_json.is_some(),
-        wordpress_core_version_file.is_some(),
+        WordPressReviewFlagSelection {
+            context: wordpress_context.is_some(),
+            advisories: wordpress_advisories.is_some(),
+            advisories_format: wordpress_advisories_format.is_some(),
+            plugins: wordpress_plugins_json.is_some(),
+            themes: wordpress_themes_json.is_some(),
+            core_version: wordpress_core_version_file.is_some(),
+        },
     ) {
         use clap::CommandFactory;
         Cli::command()
@@ -872,6 +905,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_review,
         wordpress_context,
         wordpress_advisories,
+        wordpress_advisories_format,
         wordpress_plugins_json,
         wordpress_themes_json,
         wordpress_core_version_file,
@@ -2095,6 +2129,7 @@ mod tests {
             "--wordpress-review",
             "--wordpress-context",
             "--wordpress-advisories",
+            "--wordpress-advisories-format",
             "--wordpress-plugins-json",
             "--wordpress-themes-json",
             "--wordpress-core-version-file",
@@ -2146,11 +2181,14 @@ mod tests {
             scan_wordpress_review_flags_conflict(
                 baseline.profile,
                 baseline.wordpress_review,
-                baseline.wordpress_context.is_some(),
-                baseline.wordpress_advisories.is_some(),
-                baseline.wordpress_plugins_json.is_some(),
-                baseline.wordpress_themes_json.is_some(),
-                baseline.wordpress_core_version_file.is_some(),
+                WordPressReviewFlagSelection {
+                    context: baseline.wordpress_context.is_some(),
+                    advisories: baseline.wordpress_advisories.is_some(),
+                    advisories_format: baseline.wordpress_advisories_format.is_some(),
+                    plugins: baseline.wordpress_plugins_json.is_some(),
+                    themes: baseline.wordpress_themes_json.is_some(),
+                    core_version: baseline.wordpress_core_version_file.is_some(),
+                },
             ),
             Some("`--wordpress-review` requires `--profile web-review`")
         );
@@ -2165,6 +2203,8 @@ mod tests {
             "context.json",
             "--wordpress-advisories",
             "advisories.json",
+            "--wordpress-advisories-format",
+            "wordfence-v3-production",
             "--progress",
             "https://example.test/",
         ])
@@ -2174,16 +2214,21 @@ mod tests {
         assert!(review.wordpress_review);
         assert!(review.wordpress_context.is_some());
         assert!(review.wordpress_advisories.is_some());
+        assert_eq!(
+            review.wordpress_advisories_format,
+            Some(WordPressAdvisoriesFormat::WordfenceV3Production)
+        );
         assert!(review.progress);
         assert_eq!(
             scan_wordpress_review_flags_conflict(
                 review.profile,
                 review.wordpress_review,
-                true,
-                true,
-                false,
-                false,
-                false,
+                WordPressReviewFlagSelection {
+                    context: true,
+                    advisories: true,
+                    advisories_format: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
             ),
             None
         );
@@ -2204,11 +2249,11 @@ mod tests {
             scan_wordpress_review_flags_conflict(
                 Some(CliScanProfile::WebReview),
                 true,
-                true,
-                false,
-                true,
-                false,
-                false,
+                WordPressReviewFlagSelection {
+                    context: true,
+                    plugins: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
             ),
             Some("saved WordPress inventory inputs conflict with `--wordpress-context`")
         );
@@ -2235,17 +2280,55 @@ mod tests {
         assert!(saved_inventory.wordpress_themes_json.is_some());
         assert!(saved_inventory.wordpress_core_version_file.is_some());
         assert!(saved_inventory.wordpress_advisories.is_some());
+        assert_eq!(saved_inventory.wordpress_advisories_format, None);
         assert_eq!(
             scan_wordpress_review_flags_conflict(
                 saved_inventory.profile,
                 saved_inventory.wordpress_review,
-                false,
-                true,
-                true,
-                true,
-                true,
+                WordPressReviewFlagSelection {
+                    advisories: true,
+                    plugins: true,
+                    themes: true,
+                    core_version: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
             ),
             None
+        );
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-advisories-format",
+            "termivar",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-advisories",
+            "advisories.json",
+            "--wordpress-advisories-format",
+            "unknown-provider",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                WordPressReviewFlagSelection {
+                    advisories_format: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            Some("`--wordpress-advisories-format` requires `--wordpress-advisories`")
         );
         assert_eq!(
             wordpress_review_target_conflict(
@@ -2275,6 +2358,7 @@ mod tests {
             "--wordpress-review",
             "--wordpress-context",
             "--wordpress-advisories",
+            "--wordpress-advisories-format",
             "--wordpress-plugins-json",
             "--wordpress-themes-json",
             "--wordpress-core-version-file",

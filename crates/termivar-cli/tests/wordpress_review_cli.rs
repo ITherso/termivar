@@ -465,6 +465,246 @@ fn aggregate_saved_inventory_limit_fails_before_output_or_network() {
 }
 
 #[test]
+fn malformed_late_wordfence_record_fails_before_output_reservation_or_runtime() {
+    let directory = tempfile::tempdir().unwrap();
+    let advisories = directory
+        .path()
+        .join("PRIVATE-WORDFENCE-LATE-FAILURE-55A1.json");
+    let mut malformed = include_bytes!(
+        "../../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json"
+    )
+    .to_vec();
+    malformed.extend_from_slice(b" true PRIVATE-WORDFENCE-CONTENT-772B");
+    fs::write(&advisories, &malformed).unwrap();
+    let report_directory = directory.path().join("must-not-be-reserved");
+    let server = serve("fixture");
+
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-advisories",
+        ])
+        .arg(&advisories)
+        .args([
+            "--wordpress-advisories-format",
+            "wordfence-v3-production",
+            "--report-dir",
+        ])
+        .arg(&report_directory)
+        .arg(&server.url)
+        .output()
+        .expect("termivar process must start");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("InvalidAdvisories"),
+        "unexpected stderr: {stderr}"
+    );
+    for forbidden in [
+        "PRIVATE-WORDFENCE-LATE-FAILURE-55A1",
+        "PRIVATE-WORDFENCE-CONTENT-772B",
+        "[ALPHA]",
+    ] {
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    assert!(server.requests.lock().unwrap().is_empty());
+    assert!(!report_directory.exists());
+}
+
+#[test]
+fn wordfence_production_bundle_is_source_qualified_offline_and_request_neutral() {
+    const ROOT: &str = "<!doctype html><html><body>bounded fixture</body></html>";
+    const PLUGINS: &[u8] =
+        br#"[{"name":"termivar-fixture-component","status":"active","version":"1.1.0"}]"#;
+    const WORDFENCE: &[u8] = include_bytes!(
+        "../../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json"
+    );
+
+    let baseline_server = serve(ROOT);
+    let baseline_directory = tempfile::tempdir().unwrap();
+    let baseline_bundle = baseline_directory.path().join("baseline-assessment");
+    let baseline = termivar()
+        .args(["scan", "--profile", "web-review", "--report-dir"])
+        .arg(&baseline_bundle)
+        .arg(&baseline_server.url)
+        .output()
+        .expect("baseline process must start");
+    assert!(
+        baseline.status.success(),
+        "baseline stdout: {}\nbaseline stderr: {}",
+        String::from_utf8_lossy(&baseline.stdout),
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let server = serve(ROOT);
+    let directory = tempfile::tempdir().unwrap();
+    let plugins_path = directory.path().join("PRIVATE-WORDFENCE-PLUGINS-11A0.json");
+    let advisories_path = directory
+        .path()
+        .join("PRIVATE-WORDFENCE-PRODUCTION-22B0.json");
+    fs::write(&plugins_path, PLUGINS).unwrap();
+    fs::write(&advisories_path, WORDFENCE).unwrap();
+    let plugin_digest = sha256(PLUGINS);
+    let advisory_digest = sha256(WORDFENCE);
+    let bundle = directory.path().join("wordfence-assessment");
+
+    let scan = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-plugins-json",
+        ])
+        .arg(&plugins_path)
+        .arg("--wordpress-advisories")
+        .arg(&advisories_path)
+        .args([
+            "--wordpress-advisories-format",
+            "wordfence-v3-production",
+            "--report-dir",
+        ])
+        .arg(&bundle)
+        .arg(&server.url)
+        .output()
+        .expect("Wordfence production review process must start");
+    assert!(
+        scan.status.success(),
+        "scan stdout: {}\nscan stderr: {}",
+        String::from_utf8_lossy(&scan.stdout),
+        String::from_utf8_lossy(&scan.stderr)
+    );
+    assert!(scan.stdout.is_empty());
+    assert_eq!(fs::read(&plugins_path).unwrap(), PLUGINS);
+    assert_eq!(fs::read(&advisories_path).unwrap(), WORDFENCE);
+    assert_eq!(sha256(&fs::read(&plugins_path).unwrap()), plugin_digest);
+    assert_eq!(
+        sha256(&fs::read(&advisories_path).unwrap()),
+        advisory_digest
+    );
+
+    let assessment_bytes = fs::read(bundle.join("assessment.json")).unwrap();
+    let assessment: serde_json::Value = serde_json::from_slice(&assessment_bytes).unwrap();
+    let audit = &assessment["wordpress_review"];
+    assert_eq!(audit["schema"], "security.wordpress-review-audit/v4");
+    assert_eq!(audit["catalog_status"], "evaluated");
+    let external = &audit["external_review"];
+    assert_eq!(external["source_namespace"], "wordfence-intelligence");
+    assert_eq!(external["source_format"], "wordfence-v3-production");
+    assert_eq!(
+        external["mapping_revision"],
+        "termivar-wordfence-v3-production/v1"
+    );
+    assert_eq!(
+        external["comparison_policy"],
+        "wordfence-v3/source-semantics-unresolved/v1"
+    );
+    assert_eq!(external["input"]["byte_length"], WORDFENCE.len());
+    assert_eq!(external["input"]["sha256"], advisory_digest);
+    assert_eq!(external["counts"]["parsed_records"], 2);
+    assert_eq!(external["counts"]["software_associations"], 3);
+    assert_eq!(external["counts"]["selected_associations"], 1);
+    assert_eq!(external["counts"]["evaluable_associations"], 0);
+    assert_eq!(external["counts"]["unsupported_associations"], 1);
+    assert_eq!(external["counts"]["excluded_associations"], 2);
+    assert_eq!(external["notices"].as_array().unwrap().len(), 1);
+    let evaluation = &external["evaluations"][0];
+    assert_eq!(evaluation["key"]["component"]["kind"], "plugin");
+    assert_eq!(
+        evaluation["key"]["component"]["slug"],
+        "termivar-fixture-component"
+    );
+    assert_eq!(
+        evaluation["version_relation"],
+        "source_comparison_semantics_unresolved"
+    );
+    assert_eq!(evaluation["applicability"], "indeterminate_unsupported");
+    assert_eq!(
+        evaluation["execution"]["exploit_execution"],
+        "not_performed"
+    );
+    assert_eq!(
+        evaluation["execution"]["impact_validation"],
+        "not_performed"
+    );
+
+    let requests_after_scan = server.requests.lock().unwrap().clone();
+    assert_eq!(
+        requests_after_scan,
+        ["GET / HTTP/1.1", "GET / HTTP/1.1", "GET / HTTP/1.1"].map(str::to_owned),
+        "fixture request trace changed"
+    );
+    assert_eq!(
+        requests_after_scan,
+        baseline_server.requests.lock().unwrap().clone(),
+        "offline Wordfence ingestion must not change target request selection"
+    );
+    let verify = termivar()
+        .args(["report", "verify", "--dir"])
+        .arg(&bundle)
+        .args(["--format", "json"])
+        .output()
+        .expect("bundle verifier must start");
+    assert!(
+        verify.status.success(),
+        "verify stdout: {}\nverify stderr: {}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let verification: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verification["status"], "integrity_match");
+
+    let assessment_path = bundle.join("assessment.json");
+    let compare = termivar()
+        .args(["report", "compare", "--before"])
+        .arg(&assessment_path)
+        .arg("--after")
+        .arg(&assessment_path)
+        .args(["--same-scope", "--format", "json"])
+        .output()
+        .expect("report compare must start");
+    assert!(
+        compare.status.success(),
+        "compare stdout: {}\ncompare stderr: {}",
+        String::from_utf8_lossy(&compare.stdout),
+        String::from_utf8_lossy(&compare.stderr)
+    );
+    let comparison: serde_json::Value = serde_json::from_slice(&compare.stdout).unwrap();
+    assert_eq!(comparison["schema"], "termivar-report-comparison/v1");
+    assert_eq!(
+        comparison["unchanged"].as_array().unwrap().len(),
+        assessment["item_count"].as_u64().unwrap() as usize
+    );
+    for group in ["only_in_after", "only_in_before", "changed"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+    assert_eq!(
+        server.requests.lock().unwrap().as_slice(),
+        requests_after_scan,
+        "offline Verify and Compare must not contact the target"
+    );
+
+    let private_directory = directory.path().to_string_lossy().into_owned();
+    for name in ["assessment.html", "assessment.json", "manifest.json"] {
+        let rendered_bytes = fs::read(bundle.join(name)).unwrap();
+        let rendered = String::from_utf8_lossy(&rendered_bytes);
+        for forbidden in [
+            "PRIVATE-WORDFENCE-PLUGINS-11A0",
+            "PRIVATE-WORDFENCE-PRODUCTION-22B0",
+            private_directory.as_str(),
+        ] {
+            assert!(!rendered.contains(forbidden), "{name} leaked {forbidden}");
+        }
+    }
+}
+
+#[test]
 fn saved_inventory_bundle_is_path_free_preserves_inputs_and_adds_no_requests() {
     const ROOT: &str = "<!doctype html><html><body>bounded fixture</body></html>";
     const PLUGINS: &[u8] = br#"[
@@ -1047,4 +1287,355 @@ fn profiled_catalogue_bundle_keeps_explicit_semantics_and_offline_tools_request_
         requests_after_scan,
         "offline report commands must not contact the target"
     );
+}
+
+#[test]
+fn wordfence_production_bundle_is_source_qualified_and_offline_tools_preserve_requests() {
+    const WORDPRESS_ROOT: &str = r#"<!doctype html><html><head>
+        <meta name="generator" content="WordPress 1.0">
+        <link rel="stylesheet" href="/wp-content/plugins/termivar-fixture-component/style.css">
+        <link rel="stylesheet" href="/wp-content/themes/termivar-fixture-component/style.css">
+        </head><body>bounded external-source fixture</body></html>"#;
+    const PLUGINS: &[u8] =
+        br#"[{"name":"termivar-fixture-component","status":"active","version":"1.1.0"}]"#;
+    const THEMES: &[u8] =
+        br#"[{"name":"termivar-fixture-component","status":"active","version":"2.9.0"}]"#;
+    const CORE: &[u8] = b"1.0\r\n";
+    const EXPECTED_REQUESTS: [&str; 5] = [
+        "GET / HTTP/1.1",
+        "GET / HTTP/1.1",
+        "GET / HTTP/1.1",
+        "HEAD /wp-content/plugins/termivar-fixture-component/style.css HTTP/1.1",
+        "HEAD /wp-content/themes/termivar-fixture-component/style.css HTTP/1.1",
+    ];
+    const EXACT_SOURCE_SHA256: &str =
+        "d9ed3140f44ae1e0a3746beb9937de2d829d28c068101120a9104c3349901db7";
+
+    let baseline_server = serve(WORDPRESS_ROOT);
+    let baseline_directory = tempfile::tempdir().unwrap();
+    let baseline_bundle = baseline_directory.path().join("baseline-assessment");
+    let baseline = termivar()
+        .args(["scan", "--profile", "web-review", "--report-dir"])
+        .arg(&baseline_bundle)
+        .arg(&baseline_server.url)
+        .output()
+        .expect("baseline process must start");
+    assert!(
+        baseline.status.success(),
+        "baseline stdout: {}\nbaseline stderr: {}",
+        String::from_utf8_lossy(&baseline.stdout),
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let server = serve(WORDPRESS_ROOT);
+    let directory = tempfile::tempdir().unwrap();
+    let plugins_path = directory.path().join("PRIVATE-WORDFENCE-PLUGINS.json");
+    let themes_path = directory.path().join("PRIVATE-WORDFENCE-THEMES.json");
+    let core_path = directory.path().join("PRIVATE-WORDFENCE-CORE.txt");
+    fs::write(&plugins_path, PLUGINS).unwrap();
+    fs::write(&themes_path, THEMES).unwrap();
+    fs::write(&core_path, CORE).unwrap();
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json");
+    let source_before = fs::read(&source_path).unwrap();
+    assert_eq!(source_before.len(), 3_883);
+    assert_eq!(sha256(&source_before), EXACT_SOURCE_SHA256);
+    let bundle = directory.path().join("wordfence-assessment");
+
+    let scan = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--format",
+            "json",
+            "--wordpress-review",
+            "--progress",
+            "--wordpress-plugins-json",
+        ])
+        .arg(&plugins_path)
+        .arg("--wordpress-themes-json")
+        .arg(&themes_path)
+        .arg("--wordpress-core-version-file")
+        .arg(&core_path)
+        .arg("--wordpress-advisories")
+        .arg(&source_path)
+        .args([
+            "--wordpress-advisories-format",
+            "wordfence-v3-production",
+            "--report-dir",
+        ])
+        .arg(&bundle)
+        .arg(&server.url)
+        .output()
+        .expect("Wordfence Production process must start");
+    assert!(
+        scan.status.success(),
+        "scan stdout: {}\nscan stderr: {}",
+        String::from_utf8_lossy(&scan.stdout),
+        String::from_utf8_lossy(&scan.stderr)
+    );
+    assert!(scan.stdout.is_empty());
+    let stderr = String::from_utf8(scan.stderr).unwrap();
+    assert!(stderr.contains("[ALPHA]"));
+    for forbidden in [
+        "PRIVATE-WORDFENCE-PLUGINS",
+        "PRIVATE-WORDFENCE-THEMES",
+        "PRIVATE-WORDFENCE-CORE",
+        &directory.path().to_string_lossy(),
+    ] {
+        assert!(!stderr.contains(forbidden), "stderr leaked {forbidden}");
+    }
+
+    assert_eq!(fs::read(&source_path).unwrap(), source_before);
+    assert_eq!(fs::read(&plugins_path).unwrap(), PLUGINS);
+    assert_eq!(fs::read(&themes_path).unwrap(), THEMES);
+    assert_eq!(fs::read(&core_path).unwrap(), CORE);
+    let assessment_bytes = fs::read(bundle.join("assessment.json")).unwrap();
+    let assessment: serde_json::Value = serde_json::from_slice(&assessment_bytes).unwrap();
+    let audit = &assessment["wordpress_review"];
+    assert_eq!(audit["schema"], "security.wordpress-review-audit/v4");
+    assert_eq!(audit["catalog_status"], "evaluated");
+    assert!(audit.get("catalog").is_none());
+    assert_eq!(audit["additional_request_count"], 0);
+    assert_eq!(
+        audit["external_review"]["source_namespace"],
+        "wordfence-intelligence"
+    );
+    assert_eq!(
+        audit["external_review"]["source_format"],
+        "wordfence-v3-production"
+    );
+    assert_eq!(
+        audit["external_review"]["mapping_revision"],
+        "termivar-wordfence-v3-production/v1"
+    );
+    assert_eq!(
+        audit["external_review"]["comparison_policy"],
+        "wordfence-v3/source-semantics-unresolved/v1"
+    );
+    assert_eq!(audit["external_review"]["input"]["byte_length"], 3_883);
+    assert_eq!(
+        audit["external_review"]["input"]["sha256"],
+        EXACT_SOURCE_SHA256
+    );
+    let counts = &audit["external_review"]["counts"];
+    assert_eq!(counts["parsed_records"], 2);
+    assert_eq!(counts["software_associations"], 3);
+    assert_eq!(counts["selected_associations"], 3);
+    assert_eq!(counts["evaluable_associations"], 0);
+    assert_eq!(counts["unsupported_associations"], 3);
+    assert_eq!(counts["excluded_associations"], 0);
+    let evaluations = audit["external_review"]["evaluations"].as_array().unwrap();
+    assert_eq!(evaluations.len(), 3);
+    assert!(evaluations.iter().all(|entry| {
+        entry["version_relation"] == "source_comparison_semantics_unresolved"
+            && entry["applicability"] == "indeterminate_unsupported"
+            && entry["execution"]["exploit_execution"] == "not_performed"
+            && entry["execution"]["impact_validation"] == "not_performed"
+            && entry["record_reference"]
+                .as_str()
+                .is_some_and(|reference| reference.starts_with("https://example.invalid/"))
+    }));
+    let plugin = evaluations
+        .iter()
+        .find(|entry| {
+            entry["key"]["component"]["kind"] == "plugin"
+                && entry["key"]["component"]["slug"] == "termivar-fixture-component"
+        })
+        .unwrap();
+    assert_eq!(
+        plugin["version_evidence_resolution"]["status"],
+        "single_declaration"
+    );
+    assert_eq!(
+        plugin["version_evidence_resolution"]["evidence_row_count"],
+        1
+    );
+    assert_eq!(
+        plugin["version_evidence_resolution"]["distinct_spelling_count"],
+        1
+    );
+    assert!(evaluations.iter().any(|entry| {
+        entry["key"]["component"]["kind"] == "theme"
+            && entry["key"]["component"]["slug"] == "termivar-fixture-component"
+    }));
+    let core = evaluations
+        .iter()
+        .find(|entry| entry["key"]["component"]["kind"] == "core")
+        .unwrap();
+    assert_eq!(
+        core["version_evidence_resolution"]["status"],
+        "repeated_exact_declaration"
+    );
+    assert_eq!(core["version_evidence_resolution"]["evidence_row_count"], 2);
+    assert_eq!(
+        core["version_evidence_resolution"]["distinct_spelling_count"],
+        1
+    );
+    assert_eq!(
+        audit["external_review"]["notices"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let html = fs::read_to_string(bundle.join("assessment.html")).unwrap();
+    assert!(html.contains("External source attribution"));
+    assert!(
+        html.contains("href=\"https://example.invalid/termivar/wordfence-v3/fixture-advisory-1\"")
+    );
+    assert!(html.contains("original synthetic fixture notice"));
+    assert!(html.contains("fictional fixture text may be copied"));
+
+    let requests_after_scan = server.requests.lock().unwrap().clone();
+    assert_eq!(
+        requests_after_scan,
+        EXPECTED_REQUESTS.map(str::to_owned),
+        "fixture request trace changed"
+    );
+    assert_eq!(
+        requests_after_scan,
+        baseline_server.requests.lock().unwrap().clone(),
+        "external advisory interpretation must not add target requests"
+    );
+
+    let verify = termivar()
+        .args(["report", "verify", "--dir"])
+        .arg(&bundle)
+        .args(["--format", "json"])
+        .output()
+        .expect("bundle verifier must start");
+    assert!(
+        verify.status.success(),
+        "verify stdout: {}\nverify stderr: {}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let verification: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verification["status"], "integrity_match");
+
+    let assessment_path = bundle.join("assessment.json");
+    let compare = termivar()
+        .args(["report", "compare", "--before"])
+        .arg(&assessment_path)
+        .arg("--after")
+        .arg(&assessment_path)
+        .args(["--same-scope", "--format", "json"])
+        .output()
+        .expect("report compare must start");
+    assert!(
+        compare.status.success(),
+        "compare stdout: {}\ncompare stderr: {}",
+        String::from_utf8_lossy(&compare.stdout),
+        String::from_utf8_lossy(&compare.stderr)
+    );
+    let comparison: serde_json::Value = serde_json::from_slice(&compare.stdout).unwrap();
+    assert_eq!(comparison["schema"], "termivar-report-comparison/v1");
+    assert_eq!(
+        comparison["unchanged"].as_array().unwrap().len(),
+        assessment["item_count"].as_u64().unwrap() as usize
+    );
+    for group in ["only_in_after", "only_in_before", "changed"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+    assert_eq!(
+        server.requests.lock().unwrap().as_slice(),
+        requests_after_scan,
+        "offline verification and comparison must not contact the target"
+    );
+}
+
+#[test]
+fn malformed_declared_wordfence_input_fails_before_runtime_or_bundle_reservation() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("PRIVATE-WORDFENCE-SOURCE.json");
+    let report_directory = directory.path().join("must-not-be-reserved");
+    fs::write(
+        &input,
+        br#"{"00000000-0000-4000-8000-000000000001":{"id":"different"}}"#,
+    )
+    .unwrap();
+    let server = serve("fixture");
+
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-advisories",
+        ])
+        .arg(&input)
+        .args([
+            "--wordpress-advisories-format",
+            "wordfence-v3-production",
+            "--report-dir",
+        ])
+        .arg(&report_directory)
+        .arg(&server.url)
+        .output()
+        .expect("termivar process must start");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("InvalidAdvisories"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(!stderr.contains("PRIVATE-WORDFENCE-SOURCE"));
+    assert!(!stderr.contains("different"));
+    assert!(!stderr.contains("[ALPHA]"));
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    assert!(server.requests.lock().unwrap().is_empty());
+    assert!(!report_directory.exists());
+}
+
+#[test]
+fn missing_defiant_record_link_fails_before_runtime_or_bundle_reservation() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory
+        .path()
+        .join("PRIVATE-WORDFENCE-RIGHTS-SOURCE.json");
+    let report_directory = directory.path().join("must-not-be-reserved");
+    let source = include_str!(
+        "../../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json"
+    )
+    .replace("termivar_fixture_author", "defiant");
+    fs::write(&input, source).unwrap();
+    let server = serve("fixture");
+
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-advisories",
+        ])
+        .arg(&input)
+        .args([
+            "--wordpress-advisories-format",
+            "wordfence-v3-production",
+            "--report-dir",
+        ])
+        .arg(&report_directory)
+        .arg(&server.url)
+        .output()
+        .expect("termivar process must start");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("InvalidAdvisories"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(!stderr.contains("PRIVATE-WORDFENCE-RIGHTS-SOURCE"));
+    assert!(!stderr.contains("example.invalid"));
+    assert!(!stderr.contains("[ALPHA]"));
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    assert!(server.requests.lock().unwrap().is_empty());
+    assert!(!report_directory.exists());
 }

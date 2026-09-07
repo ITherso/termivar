@@ -1,0 +1,116 @@
+{
+  "00000000-0000-4000-8000-000000000001": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "title": "[SYNTHETIC] Multi-component fixture advisory",
+    "software": [
+      {
+        "type": "plugin",
+        "name": "[SYNTHETIC] Fixture Plugin",
+        "slug": "termivar-fixture-component",
+        "affected_versions": {
+          "[1.0.0, 1.2.3]": {
+            "from_version": "1.0.0",
+            "from_inclusive": true,
+            "to_version": "1.2.3",
+            "to_inclusive": true
+          },
+          "[2.0.0, 2.0.1)": {
+            "from_version": "2.0.0",
+            "from_inclusive": true,
+            "to_version": "2.0.1",
+            "to_inclusive": false
+          }
+        },
+        "patched": true,
+        "patched_versions": [
+          "1.2.4",
+          "2.0.1"
+        ],
+        "remediation": "Synthetic fixture guidance: review a source-declared patched version through the operator's normal update process."
+      },
+      {
+        "type": "theme",
+        "name": "[SYNTHETIC] Fixture Theme",
+        "slug": "termivar-fixture-component",
+        "affected_versions": {
+          "(*, 3.0.0)": {
+            "from_version": "*",
+            "from_inclusive": false,
+            "to_version": "3.0.0",
+            "to_inclusive": false
+          }
+        },
+        "patched": false,
+        "patched_versions": [],
+        "remediation": "Synthetic fixture guidance: no patched version is declared by this record; verify current upstream guidance independently."
+      }
+    ],
+    "informational": false,
+    "description": "Fictional prose created only to exercise bounded Production-format ingestion. It is not a vulnerability claim.",
+    "references": [
+      "https://example.invalid/termivar/wordfence-v3/fixture-advisory-1"
+    ],
+    "cwe": {
+      "id": 9999,
+      "name": "Synthetic fixture weakness",
+      "description": "A fictional category used only to test inert source metadata."
+    },
+    "cvss": {
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+      "score": 5.3,
+      "rating": "Medium"
+    },
+    "cve": null,
+    "cve_link": null,
+    "researchers": [
+      "Synthetic Fixture Author"
+    ],
+    "published": "2026-01-02 03:04:05",
+    "updated": "2026-02-03 04:05:06",
+    "copyrights": {
+      "message": "This is an original synthetic fixture notice, not a provider notice.",
+      "termivar_fixture_author": {
+        "notice": "Synthetic fixture material created for Termivar parser testing.",
+        "license": "This fictional fixture text may be copied with its synthetic label and source-contract note intact.",
+        "license_url": "https://example.invalid/termivar/wordfence-v3/synthetic-fixture-terms"
+      }
+    }
+  },
+  "00000000-0000-4000-8000-000000000002": {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "title": "[SYNTHETIC] Ambiguous version-policy boundary",
+    "software": [
+      {
+        "type": "core",
+        "name": "[SYNTHETIC] WordPress Core Fixture",
+        "slug": "wordpress",
+        "affected_versions": {
+          "[1.0, 1.0.0]": {
+            "from_version": "1.0",
+            "from_inclusive": true,
+            "to_version": "1.0.0",
+            "to_inclusive": true
+          }
+        },
+        "patched": true,
+        "patched_versions": [
+          "1.0.1"
+        ],
+        "remediation": "Synthetic fixture guidance: treat the source-declared patch as advisory metadata, not proof of installed remediation."
+      }
+    ],
+    "informational": true,
+    "description": "Fictional data exposing the deliberate 1.0 versus 1.0.0 comparison-policy question.",
+    "references": [
+      "https://example.invalid/termivar/wordfence-v3/fixture-advisory-2"
+    ],
+    "cwe": null,
+    "cvss": null,
+    "cve": null,
+    "cve_link": null,
+    "researchers": [],
+    "published": null,
+    "updated": null,
+    "copyrights": null
+  }
+}

@@ -100,6 +100,7 @@ fn committed_wordpress_inputs_satisfy_bounded_profile_aware_parser_oracles() {
         &include_bytes!("../../corpus/json_parser/wordpress-context.json")[..],
         &include_bytes!("../../corpus/json_parser/wordpress-advisories.json")[..],
         &include_bytes!("../../corpus/json_parser/wordpress-advisories-v2.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-wordfence-v3-production.json")[..],
     ] {
         assert!(seed.len() <= termivar_fuzz_harness::MAX_WORDPRESS_FUZZ_INPUT_BYTES);
         termivar_fuzz_harness::check_wordpress_review(seed);

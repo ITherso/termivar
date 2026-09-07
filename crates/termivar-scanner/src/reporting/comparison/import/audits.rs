@@ -6,6 +6,7 @@ use super::{
     MAX_AUDIT_TEXT_BYTES, MAX_IDENTIFIER_BYTES,
 };
 use crate::wordpress_version::{ProfiledVersionKey, WordPressComparisonProfile};
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
@@ -31,16 +32,34 @@ const MAX_WORDPRESS_SAVED_INVENTORY_BYTES: u64 = 1024 * 1024;
 const MAX_WORDPRESS_INVENTORY_INPUTS: usize = 3;
 const MAX_WORDPRESS_INVENTORY_VERSION_BYTES: usize = 64;
 const MAX_WORDPRESS_INVENTORY_LABEL_BYTES: usize = 64;
+const MAX_WORDFENCE_V3_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_WORDFENCE_V3_RECORDS: u64 = 100_000;
+const MAX_WORDFENCE_V3_ASSOCIATIONS: u64 = 200_000;
+const MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD: u64 = 2_048;
+const MAX_WORDFENCE_V3_EVALUATIONS: usize = MAX_WORDPRESS_ADVISORIES;
+const MAX_WORDFENCE_V3_RANGES: usize = 64;
+const MAX_WORDFENCE_V3_PATCHED_VERSIONS: usize = 64;
+const MAX_WORDFENCE_V3_REFERENCES: usize = 64;
+const MAX_WORDFENCE_V3_RESEARCHERS: usize = 64;
+const MAX_WORDFENCE_V3_NOTICES: usize = MAX_WORDPRESS_ADVISORIES;
+// Mirrors the feature-owned Production parser's per-record rights-party cap.
+const MAX_WORDFENCE_V3_NOTICE_PARTIES: usize = 15;
+const MAX_WORDFENCE_V3_TITLE_BYTES: usize = 1_024;
+const MAX_WORDFENCE_V3_NAME_BYTES: usize = 1_024;
+const MAX_WORDFENCE_V3_RESEARCHER_BYTES: usize = 512;
+const MAX_WORDFENCE_V3_CVE_BYTES: usize = 32;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum WordPressAuditSchema {
     V1,
     V2,
     V3,
+    V4,
 }
 
 struct ImportedWordPressComponent {
     versions: Vec<String>,
+    evidence_class: String,
     profiled_evidence: &'static str,
     observed_source: bool,
     operator_source: bool,
@@ -94,12 +113,18 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             "components",
             "advisories",
         ],
-        &["catalog", "catalog_schema", "inventory_import"],
+        &[
+            "catalog",
+            "catalog_schema",
+            "inventory_import",
+            "external_review",
+        ],
     )?;
     let schema = match string(fields, "schema")? {
         "security.wordpress-review-audit/v1" => WordPressAuditSchema::V1,
         "security.wordpress-review-audit/v2" => WordPressAuditSchema::V2,
         "security.wordpress-review-audit/v3" => WordPressAuditSchema::V3,
+        "security.wordpress-review-audit/v4" => WordPressAuditSchema::V4,
         _ => return Err(ComparisonError::InvalidDocument),
     };
     check(string(fields, "capability_id")? == WORDPRESS_CAPABILITY)?;
@@ -108,9 +133,20 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         "catalog_status",
         &["catalogue_not_supplied", "evaluated"],
     )?;
-    match (status, fields.get("catalog")) {
-        ("catalogue_not_supplied", None) => {},
-        ("evaluated", Some(value)) => catalog(object(value)?)?,
+    match (status, fields.get("catalog"), schema) {
+        (
+            "catalogue_not_supplied",
+            None,
+            WordPressAuditSchema::V1 | WordPressAuditSchema::V2 | WordPressAuditSchema::V3,
+        ) => {},
+        (
+            "evaluated",
+            Some(value),
+            WordPressAuditSchema::V1 | WordPressAuditSchema::V2 | WordPressAuditSchema::V3,
+        ) => {
+            catalog(object(value)?)?;
+        },
+        ("evaluated", None, WordPressAuditSchema::V4) => {},
         _ => return Err(ComparisonError::InvalidDocument),
     }
     check(schema != WordPressAuditSchema::V2 || status == "evaluated")?;
@@ -141,6 +177,15 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
                 },
                 _ => return Err(ComparisonError::InvalidDocument),
             }
+        },
+        WordPressAuditSchema::V4 => {
+            check(
+                status == "evaluated"
+                    && !fields.contains_key("catalog")
+                    && !fields.contains_key("catalog_schema"),
+            )?;
+            required(fields, "external_review")?;
+            false
         },
     };
     let signal_count = number(fields, "signal_count", MAX_WORDPRESS_SIGNALS)?;
@@ -217,6 +262,9 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             (WordPressAuditSchema::V2 | WordPressAuditSchema::V3, true) => {
                 advisory_v2(object(value)?, &imported_components, &profiled_resolutions)?
             },
+            (WordPressAuditSchema::V4, false) => {
+                return Err(ComparisonError::InvalidDocument);
+            },
             _ => return Err(ComparisonError::InvalidDocument),
         };
         check(advisory_ids.insert(id))?;
@@ -226,6 +274,24 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             object(required(fields, "inventory_import")?)?,
             &imported_components,
         )?;
+    }
+    if schema == WordPressAuditSchema::V4 {
+        external_review(
+            object(required(fields, "external_review")?)?,
+            &imported_components,
+        )?;
+        if let Some(value) = fields.get("inventory_import") {
+            inventory_import(object(value)?, &imported_components)?;
+        } else {
+            check(
+                imported_components
+                    .values()
+                    .all(|component| !component.inventory_component),
+            )?;
+        }
+        check(advisories.is_empty())?;
+    } else {
+        check(!fields.contains_key("external_review"))?;
     }
     Ok(())
 }
@@ -378,14 +444,15 @@ fn component(
         check(activation.is_none() || identity_sources.contains("operator_context"))?;
     }
     if schema != WordPressAuditSchema::V1 {
-        let expected_evidence = if profiled {
+        let expected_evidence = if profiled || schema == WordPressAuditSchema::V4 {
             profiled_evidence
         } else {
             legacy_component_evidence(&version_values, profiled_evidence)?
         };
         check(evidence_class == expected_evidence)?;
     }
-    let inventory_status = if schema == WordPressAuditSchema::V3 {
+    let inventory_status = if matches!(schema, WordPressAuditSchema::V3 | WordPressAuditSchema::V4)
+    {
         fields
             .get("inventory_status")
             .map(|_| {
@@ -432,12 +499,669 @@ fn component(
         identity,
         ImportedWordPressComponent {
             versions: version_values,
+            evidence_class: evidence_class.to_owned(),
             profiled_evidence,
             observed_source: profiled_evidence == "observed_hint",
             operator_source: identity_sources.contains("operator_context"),
             inventory_component: inventory_status.is_some(),
         },
     ))
+}
+
+fn external_review(
+    fields: &serde_json::Map<String, Value>,
+    components: &BTreeMap<String, ImportedWordPressComponent>,
+) -> Result<(), ComparisonError> {
+    keys(
+        fields,
+        &[
+            "source_namespace",
+            "source_format",
+            "mapping_revision",
+            "comparison_policy",
+            "input",
+            "counts",
+            "notices",
+            "evaluations",
+        ],
+        &[],
+    )?;
+    let namespace = string(fields, "source_namespace")?;
+    check(namespace == "wordfence-intelligence")?;
+    check(string(fields, "source_format")? == "wordfence-v3-production")?;
+    check(string(fields, "mapping_revision")? == "termivar-wordfence-v3-production/v1")?;
+    check(string(fields, "comparison_policy")? == "wordfence-v3/source-semantics-unresolved/v1")?;
+
+    let input = object(required(fields, "input")?)?;
+    keys(input, &["byte_length", "sha256", "semantic_sha256"], &[])?;
+    check(number(input, "byte_length", MAX_WORDFENCE_V3_INPUT_BYTES)? > 0)?;
+    check(digest(string(input, "sha256")?, ""))?;
+    check(digest(string(input, "semantic_sha256")?, ""))?;
+
+    let counts = object(required(fields, "counts")?)?;
+    keys(
+        counts,
+        &[
+            "parsed_records",
+            "software_associations",
+            "selected_associations",
+            "evaluable_associations",
+            "unsupported_associations",
+            "excluded_associations",
+        ],
+        &[],
+    )?;
+    let parsed = number(counts, "parsed_records", MAX_WORDFENCE_V3_RECORDS)?;
+    let associations = number(
+        counts,
+        "software_associations",
+        MAX_WORDFENCE_V3_ASSOCIATIONS,
+    )?;
+    let selected = number(
+        counts,
+        "selected_associations",
+        MAX_WORDFENCE_V3_ASSOCIATIONS,
+    )?;
+    let evaluable = number(
+        counts,
+        "evaluable_associations",
+        MAX_WORDFENCE_V3_ASSOCIATIONS,
+    )?;
+    let unsupported = number(
+        counts,
+        "unsupported_associations",
+        MAX_WORDFENCE_V3_ASSOCIATIONS,
+    )?;
+    let excluded = number(
+        counts,
+        "excluded_associations",
+        MAX_WORDFENCE_V3_ASSOCIATIONS,
+    )?;
+    check(
+        external_source_counts_are_valid(parsed, associations)
+            && selected
+                .checked_add(excluded)
+                .is_some_and(|value| value == associations)
+            && evaluable
+                .checked_add(unsupported)
+                .is_some_and(|value| value == selected)
+            && evaluable == 0
+            && unsupported == selected,
+    )?;
+
+    let notices = array(fields, "notices")?;
+    check(notices.len() <= MAX_WORDFENCE_V3_NOTICES)?;
+    let mut notices_by_id = std::collections::BTreeMap::new();
+    for value in notices {
+        let notice = object(value)?;
+        keys(
+            notice,
+            &["id", "message", "party", "notice", "license", "license_url"],
+            &[],
+        )?;
+        let id = text(notice, "id", MAX_IDENTIFIER_BYTES)?;
+        check(prefixed_digest(id, "wordfence-notice-sha256:"))?;
+        let message = external_text(string(notice, "message")?, MAX_AUDIT_TEXT_BYTES, true)?;
+        let party = text(notice, "party", MAX_IDENTIFIER_BYTES)?;
+        check(valid_external_identifier(party, MAX_IDENTIFIER_BYTES))?;
+        check(
+            notices_by_id
+                .insert(id.to_owned(), party.to_owned())
+                .is_none(),
+        )?;
+        let notice_text = external_text(string(notice, "notice")?, MAX_AUDIT_TEXT_BYTES, true)?;
+        let license = external_text(string(notice, "license")?, MAX_AUDIT_TEXT_BYTES, true)?;
+        let license_url = text(notice, "license_url", MAX_AUDIT_TEXT_BYTES)?;
+        inert_url(license_url)?;
+        check(
+            wordfence_notice_id(message, party, notice_text, license, license_url).as_deref()
+                == Some(id),
+        )?;
+    }
+
+    let evaluations = array(fields, "evaluations")?;
+    check(
+        evaluations.len() <= MAX_WORDFENCE_V3_EVALUATIONS
+            && u64::try_from(evaluations.len()).ok() == Some(selected),
+    )?;
+    let mut identities = std::collections::BTreeSet::new();
+    let mut referenced_notices = std::collections::BTreeSet::new();
+    for value in evaluations {
+        let identity = external_evaluation(
+            object(value)?,
+            namespace,
+            components,
+            &notices_by_id,
+            &mut referenced_notices,
+        )?;
+        check(identities.insert(identity))?;
+    }
+    check(referenced_notices == notices_by_id.keys().cloned().collect())?;
+    Ok(())
+}
+
+fn external_source_counts_are_valid(parsed_records: u64, software_associations: u64) -> bool {
+    match parsed_records {
+        0 => software_associations == 0,
+        count => {
+            software_associations >= count
+                && count
+                    .checked_mul(MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD)
+                    .is_some_and(|maximum| software_associations <= maximum)
+        },
+    }
+}
+
+fn external_evaluation(
+    fields: &serde_json::Map<String, Value>,
+    namespace: &str,
+    components: &BTreeMap<String, ImportedWordPressComponent>,
+    notices: &std::collections::BTreeMap<String, String>,
+    referenced_notices: &mut std::collections::BTreeSet<String>,
+) -> Result<String, ComparisonError> {
+    keys(
+        fields,
+        &[
+            "key",
+            "title",
+            "display_name",
+            "informational",
+            "description",
+            "references",
+            "record_reference",
+            "cwe",
+            "cvss",
+            "cve",
+            "cve_link",
+            "researchers",
+            "source_dates",
+            "affected_ranges",
+            "source_patched",
+            "source_patched_versions",
+            "source_remediation",
+            "notice_ids",
+            "component_evidence",
+            "version_evidence_resolution",
+            "version_relation",
+            "applicability",
+            "execution",
+        ],
+        &[],
+    )?;
+    let key = object(required(fields, "key")?)?;
+    keys(key, &["source_namespace", "upstream_id", "component"], &[])?;
+    check(string(key, "source_namespace")? == namespace)?;
+    let upstream_id = text(key, "upstream_id", MAX_IDENTIFIER_BYTES)?;
+    check(valid_uuid(upstream_id))?;
+    let component = component_identity(object(required(key, "component")?)?)?;
+    let imported = components
+        .get(&component)
+        .ok_or(ComparisonError::InvalidDocument)?;
+
+    external_text(
+        text(fields, "title", MAX_WORDFENCE_V3_TITLE_BYTES)?,
+        MAX_WORDFENCE_V3_TITLE_BYTES,
+        false,
+    )?;
+    external_text(
+        text(fields, "display_name", MAX_WORDFENCE_V3_NAME_BYTES)?,
+        MAX_WORDFENCE_V3_NAME_BYTES,
+        false,
+    )?;
+    boolean(fields, "informational")?;
+    external_text(string(fields, "description")?, MAX_AUDIT_TEXT_BYTES, true)?;
+    let references = unique_urls(fields, "references", MAX_WORDFENCE_V3_REFERENCES)?;
+    let record_reference = optional_text(fields, "record_reference", MAX_AUDIT_TEXT_BYTES)?;
+    let expected_record_reference = external_record_reference(&references);
+    check(record_reference == expected_record_reference)?;
+    optional_cwe(required(fields, "cwe")?)?;
+    optional_cvss(required(fields, "cvss")?)?;
+    let cve = optional_text(fields, "cve", MAX_WORDFENCE_V3_CVE_BYTES)?;
+    if let Some(cve) = cve {
+        check(valid_wordfence_cve(cve))?;
+    }
+    let cve_link = optional_text(fields, "cve_link", MAX_AUDIT_TEXT_BYTES)?;
+    if let Some(link) = cve_link {
+        check(cve.is_some())?;
+        inert_url(link)?;
+    }
+    unique_text_array(
+        fields,
+        "researchers",
+        MAX_WORDFENCE_V3_RESEARCHERS,
+        MAX_WORDFENCE_V3_RESEARCHER_BYTES,
+    )?;
+    let source_dates = object(required(fields, "source_dates")?)?;
+    keys(source_dates, &["published", "updated"], &[])?;
+    optional_source_datetime(source_dates, "published")?;
+    optional_source_datetime(source_dates, "updated")?;
+
+    let ranges = array(fields, "affected_ranges")?;
+    check(ranges.len() <= MAX_WORDFENCE_V3_RANGES)?;
+    let mut unique_ranges = std::collections::BTreeSet::new();
+    for value in ranges {
+        let range = object(value)?;
+        keys(
+            range,
+            &[
+                "label",
+                "from_kind",
+                "from_version",
+                "from_inclusive",
+                "to_kind",
+                "to_version",
+                "to_inclusive",
+            ],
+            &[],
+        )?;
+        let label = external_text(text(range, "label", 256)?, 256, false)?;
+        let from = external_range_endpoint(range, "from")?;
+        let to = external_range_endpoint(range, "to")?;
+        check(unique_ranges.insert((label, from, to)))?;
+    }
+
+    boolean(fields, "source_patched")?;
+    unique_versions(
+        fields,
+        "source_patched_versions",
+        MAX_WORDFENCE_V3_PATCHED_VERSIONS,
+    )?;
+    external_text(
+        string(fields, "source_remediation")?,
+        MAX_AUDIT_TEXT_BYTES,
+        true,
+    )?;
+    let evaluation_notice_ids = array(fields, "notice_ids")?;
+    check(evaluation_notice_ids.len() <= MAX_WORDFENCE_V3_NOTICE_PARTIES)?;
+    let mut local_notices = std::collections::BTreeSet::new();
+    for value in evaluation_notice_ids {
+        let id = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        check(notices.contains_key(id) && local_notices.insert(id))?;
+        referenced_notices.insert(id.to_owned());
+    }
+    let has_defiant_notice = evaluation_notice_ids.iter().any(|value| {
+        value
+            .as_str()
+            .and_then(|id| notices.get(id))
+            .is_some_and(|party| party == "defiant")
+    });
+    check(
+        !has_defiant_notice || record_reference.is_some_and(is_wordfence_vulnerability_reference),
+    )?;
+    check(
+        token(
+            fields,
+            "component_evidence",
+            &[
+                "observed_hint",
+                "operator_supplied",
+                "conflicting",
+                "unknown",
+            ],
+        )? == imported.evidence_class.as_str(),
+    )?;
+    external_version_evidence_resolution(
+        object(required(fields, "version_evidence_resolution")?)?,
+        imported,
+    )?;
+    check(
+        string(fields, "version_relation")? == "source_comparison_semantics_unresolved"
+            && string(fields, "applicability")? == "indeterminate_unsupported",
+    )?;
+    let execution = object(required(fields, "execution")?)?;
+    keys(execution, &["exploit_execution", "impact_validation"], &[])?;
+    check(
+        string(execution, "exploit_execution")? == "not_performed"
+            && string(execution, "impact_validation")? == "not_performed",
+    )?;
+    Ok(format!("{namespace}:{upstream_id}:{component}"))
+}
+
+fn external_version_evidence_resolution(
+    fields: &serde_json::Map<String, Value>,
+    component: &ImportedWordPressComponent,
+) -> Result<(), ComparisonError> {
+    keys(
+        fields,
+        &["status", "evidence_row_count", "distinct_spelling_count"],
+        &[],
+    )?;
+    let status = token(
+        fields,
+        "status",
+        &[
+            "missing",
+            "single_declaration",
+            "repeated_exact_declaration",
+            "multiple_distinct_declarations",
+        ],
+    )?;
+    let evidence_row_count = number(
+        fields,
+        "evidence_row_count",
+        MAX_WORDPRESS_RESULT_VERSION_EVIDENCE as u64,
+    )?;
+    let distinct_spelling_count = number(
+        fields,
+        "distinct_spelling_count",
+        MAX_WORDPRESS_RESULT_VERSION_EVIDENCE as u64,
+    )?;
+    let actual_distinct = component
+        .versions
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let expected_status = match (component.versions.len(), actual_distinct) {
+        (0, 0) => "missing",
+        (1, 1) => "single_declaration",
+        (count, 1) if count > 1 => "repeated_exact_declaration",
+        (count, distinct) if count > 1 && distinct > 1 => "multiple_distinct_declarations",
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
+    check(
+        u64::try_from(component.versions.len()).ok() == Some(evidence_row_count)
+            && u64::try_from(actual_distinct).ok() == Some(distinct_spelling_count)
+            && status == expected_status,
+    )
+}
+
+fn external_range_endpoint<'a>(
+    fields: &'a serde_json::Map<String, Value>,
+    prefix: &str,
+) -> Result<(&'a str, &'a str, bool), ComparisonError> {
+    let kind_name = format!("{prefix}_kind");
+    let version_name = format!("{prefix}_version");
+    let inclusive_name = format!("{prefix}_inclusive");
+    let kind = fields
+        .get(&kind_name)
+        .and_then(Value::as_str)
+        .ok_or(ComparisonError::InvalidDocument)?;
+    let version = fields
+        .get(&version_name)
+        .and_then(Value::as_str)
+        .ok_or(ComparisonError::InvalidDocument)?;
+    let inclusive = fields
+        .get(&inclusive_name)
+        .and_then(Value::as_bool)
+        .ok_or(ComparisonError::InvalidDocument)?;
+    check(matches!(kind, "any" | "declared"))?;
+    check(
+        (kind == "any" && version == "*")
+            || (kind == "declared" && version != "*" && valid_external_version(version)),
+    )?;
+    Ok((kind, version, inclusive))
+}
+
+fn optional_cwe(value: &Value) -> Result<(), ComparisonError> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let fields = object(value)?;
+    keys(fields, &["id", "name", "description"], &[])?;
+    check(number(fields, "id", u32::MAX.into())? > 0)?;
+    external_text(
+        text(fields, "name", MAX_WORDFENCE_V3_NAME_BYTES)?,
+        MAX_WORDFENCE_V3_NAME_BYTES,
+        false,
+    )?;
+    external_text(string(fields, "description")?, MAX_AUDIT_TEXT_BYTES, true)?;
+    Ok(())
+}
+
+fn optional_cvss(value: &Value) -> Result<(), ComparisonError> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let fields = object(value)?;
+    keys(fields, &["vector", "score", "rating"], &[])?;
+    let vector = external_text(text(fields, "vector", 256)?, 256, false)?;
+    check(vector.starts_with("CVSS:3.0/") || vector.starts_with("CVSS:3.1/"))?;
+    check(valid_cvss_score(string(fields, "score")?))?;
+    token(
+        fields,
+        "rating",
+        &["none", "low", "medium", "high", "critical"],
+    )?;
+    Ok(())
+}
+
+fn unique_urls<'a>(
+    fields: &'a serde_json::Map<String, Value>,
+    name: &str,
+    limit: usize,
+) -> Result<std::collections::BTreeSet<&'a str>, ComparisonError> {
+    let values = array(fields, name)?;
+    check(values.len() <= limit)?;
+    let mut unique = std::collections::BTreeSet::new();
+    for value in values {
+        let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        inert_url(value)?;
+        check(unique.insert(value))?;
+    }
+    Ok(unique)
+}
+
+fn external_record_reference<'a>(
+    references: &'a std::collections::BTreeSet<&str>,
+) -> Option<&'a str> {
+    references
+        .iter()
+        .copied()
+        .filter(|reference| is_wordfence_vulnerability_reference(reference))
+        .min()
+        .or_else(|| {
+            references
+                .iter()
+                .copied()
+                .filter(|reference| is_strict_https_reference(reference))
+                .min()
+        })
+}
+
+fn is_strict_https_reference(value: &str) -> bool {
+    url::Url::parse(value).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url.has_host()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none()
+            && url.as_str() == value
+    })
+}
+
+fn is_wordfence_vulnerability_reference(value: &str) -> bool {
+    const PREFIX: &str = "/threat-intel/vulnerabilities/";
+    url::Url::parse(value).ok().is_some_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str() == Some("www.wordfence.com")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none()
+            && url.as_str() == value
+            && url.path().starts_with(PREFIX)
+            && url.path().len() > PREFIX.len()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
+}
+
+fn unique_text_array(
+    fields: &serde_json::Map<String, Value>,
+    name: &str,
+    limit: usize,
+    text_limit: usize,
+) -> Result<(), ComparisonError> {
+    let values = array(fields, name)?;
+    check(values.len() <= limit)?;
+    let mut unique = std::collections::BTreeSet::new();
+    for value in values {
+        let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        external_text(value, text_limit, false)?;
+        check(unique.insert(value))?;
+    }
+    Ok(())
+}
+
+fn unique_versions(
+    fields: &serde_json::Map<String, Value>,
+    name: &str,
+    limit: usize,
+) -> Result<(), ComparisonError> {
+    let values = array(fields, name)?;
+    check(values.len() <= limit)?;
+    let mut unique = std::collections::BTreeSet::new();
+    for value in values {
+        let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        check(valid_external_version(value) && unique.insert(value))?;
+    }
+    Ok(())
+}
+
+fn optional_source_datetime(
+    fields: &serde_json::Map<String, Value>,
+    name: &str,
+) -> Result<(), ComparisonError> {
+    let value = required(fields, name)?;
+    if value.is_null() {
+        return Ok(());
+    }
+    source_datetime(value.as_str().ok_or(ComparisonError::InvalidDocument)?)
+}
+
+fn source_datetime(value: &str) -> Result<(), ComparisonError> {
+    let bytes = value.as_bytes();
+    check(
+        bytes.len() == 19
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes[10] == b' '
+            && bytes[13] == b':'
+            && bytes[16] == b':'
+            && bytes.iter().enumerate().all(|(index, byte)| {
+                matches!(index, 4 | 7 | 10 | 13 | 16) || byte.is_ascii_digit()
+            }),
+    )?;
+    date(&value[..10])?;
+    check(
+        decimal(&bytes[11..13])? <= 23
+            && decimal(&bytes[14..16])? <= 59
+            && decimal(&bytes[17..19])? <= 59,
+    )
+}
+
+fn inert_url(value: &str) -> Result<(), ComparisonError> {
+    bounded_text(value, MAX_AUDIT_TEXT_BYTES)?;
+    let url = url::Url::parse(value).map_err(|_| ComparisonError::InvalidDocument)?;
+    check(
+        matches!(url.scheme(), "http" | "https")
+            && url.has_host()
+            && url.username().is_empty()
+            && url.password().is_none(),
+    )
+}
+
+fn external_text(value: &str, maximum: usize, allow_empty: bool) -> Result<&str, ComparisonError> {
+    check(
+        (allow_empty || !value.is_empty())
+            && value.len() <= maximum
+            && !value.chars().any(|character| {
+                character.is_control() && !matches!(character, '\n' | '\r' | '\t')
+            }),
+    )?;
+    Ok(value)
+}
+
+fn valid_external_identifier(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value.is_ascii()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn wordfence_notice_id(
+    message: &str,
+    party: &str,
+    notice: &str,
+    license: &str,
+    license_url: &str,
+) -> Option<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"termivar.wordfence-v3.notice/v1\0");
+    for value in [message, party, notice, license, license_url] {
+        hasher.update(u64::try_from(value.len()).ok()?.to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    let digest = hasher.finalize();
+    Some(format!("wordfence-notice-sha256:{digest:x}"))
+}
+
+fn valid_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
+}
+
+fn valid_wordfence_cve(value: &str) -> bool {
+    if value.len() > MAX_WORDFENCE_V3_CVE_BYTES {
+        return false;
+    }
+    let mut parts = value.split('-');
+    parts.next() == Some("CVE")
+        && parts
+            .next()
+            .is_some_and(|year| year.len() == 4 && year.bytes().all(|byte| byte.is_ascii_digit()))
+        && parts
+            .next()
+            .is_some_and(|id| id.len() >= 4 && id.bytes().all(|byte| byte.is_ascii_digit()))
+        && parts.next().is_none()
+}
+
+fn valid_external_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_INVENTORY_VERSION_BYTES
+        && value != "*"
+        && value.is_ascii()
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+}
+
+fn valid_cvss_score(value: &str) -> bool {
+    let mut parts = value.split('.');
+    let Some(integer) = parts.next() else {
+        return false;
+    };
+    let fraction = parts.next();
+    if parts.next().is_some()
+        || integer.is_empty()
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || (integer.len() > 1 && integer.starts_with('0'))
+        || fraction.is_some_and(|value| {
+            value.len() != 1 || !value.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    {
+        return false;
+    }
+    match integer.parse::<u8>() {
+        Ok(0..=9) => true,
+        Ok(10) => fraction.is_none_or(|value| value == "0"),
+        _ => false,
+    }
+}
+
+fn prefixed_digest(value: &str, prefix: &str) -> bool {
+    value
+        .strip_prefix(prefix)
+        .is_some_and(|digest| digest.len() == 64 && digest.bytes().all(is_lowercase_hex))
+}
+
+fn is_lowercase_hex(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }
 
 fn legacy_component_evidence(

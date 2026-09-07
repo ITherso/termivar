@@ -580,8 +580,12 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "--wordpress-review",
                 "optional --wordpress-context FILE",
                 "optional --wordpress-advisories FILE",
+                "optional --wordpress-advisories-format termivar|wordfence-v3-production",
+                "optional --wordpress-plugins-json FILE",
+                "optional --wordpress-themes-json FILE",
+                "optional --wordpress-core-version-file FILE",
             ],
-            "Interprets existing response evidence and explicit bounded local declarations; it adds no target requests. A missing catalogue is catalogue_not_supplied, never an all-clear, and no exploit or impact validation is performed.",
+            "Interprets existing response evidence and explicit bounded local declarations, including an explicitly selected local Production-format export; it adds no target requests. External source comparison semantics remain indeterminate unless a supported policy is established. A missing catalogue is catalogue_not_supplied, never an all-clear, and no exploit or impact validation is performed.",
             "docs/wordpress-review.md",
         ),
         surface!(

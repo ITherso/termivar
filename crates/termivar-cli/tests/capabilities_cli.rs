@@ -163,7 +163,11 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "--profile web-review",
             "--wordpress-review",
             "optional --wordpress-context FILE",
-            "optional --wordpress-advisories FILE"
+            "optional --wordpress-advisories FILE",
+            "optional --wordpress-advisories-format termivar|wordfence-v3-production",
+            "optional --wordpress-plugins-json FILE",
+            "optional --wordpress-themes-json FILE",
+            "optional --wordpress-core-version-file FILE"
         ])
     );
     let wordpress_limit = wordpress["limitation"]
@@ -174,6 +178,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "catalogue_not_supplied",
         "never an all-clear",
         "no exploit or impact validation",
+        "comparison semantics remain indeterminate",
     ] {
         assert!(
             wordpress_limit.contains(required),

@@ -4,12 +4,13 @@
 //! only scanner-validated values across the runtime boundary; paths and
 //! filesystem authority are never retained by the assessment.
 
-use std::{fmt, io::Read, path::PathBuf};
+use std::{fmt, fs::File, io::Read, path::PathBuf};
 
 use sha2::{Digest, Sha256};
 use termivar_scanner::wordpress_review::{
-    parse_wordpress_advisory_catalog, parse_wordpress_context, parse_wordpress_saved_inventory,
-    WordPressLocalInputClass, WordPressLocalInputProvenance, WordPressReviewInputs,
+    parse_wordfence_v3_production, parse_wordpress_advisory_catalog, parse_wordpress_context,
+    parse_wordpress_saved_inventory, WordPressLocalInputClass, WordPressLocalInputProvenance,
+    WordPressReviewInputs, WordfenceV3ProductionError, MAX_WORDFENCE_V3_PRODUCTION_BYTES,
     MAX_WORDPRESS_SAVED_INVENTORY_BYTES, MAX_WORDPRESS_VERSION_BYTES,
 };
 use url::Url;
@@ -23,10 +24,20 @@ pub(crate) const MAX_WORDPRESS_ADVISORIES_BYTES: usize =
 pub(crate) const MAX_WORDPRESS_INVENTORY_BYTES: usize = MAX_WORDPRESS_SAVED_INVENTORY_BYTES;
 const MAX_WORDPRESS_CORE_VERSION_FILE_BYTES: usize = MAX_WORDPRESS_VERSION_BYTES + 2;
 
+/// Explicit syntax contract for a caller-supplied advisory document. The CLI
+/// never infers this choice from a filename or from partially parsed content.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
+pub(crate) enum WordPressAdvisoriesFormat {
+    #[default]
+    Termivar,
+    WordfenceV3Production,
+}
+
 /// Deferred source selection. Construction performs no filesystem access.
 pub(crate) struct WordPressReviewInput {
     context: Option<PathBuf>,
     advisories: Option<PathBuf>,
+    advisories_format: WordPressAdvisoriesFormat,
     plugins_json: Option<PathBuf>,
     themes_json: Option<PathBuf>,
     core_version_file: Option<PathBuf>,
@@ -41,6 +52,7 @@ impl fmt::Debug for WordPressReviewInput {
                 "advisories",
                 &self.advisories.as_ref().map(|_| "<redacted>"),
             )
+            .field("advisories_format", &self.advisories_format)
             .field(
                 "plugins_json",
                 &self.plugins_json.as_ref().map(|_| "<redacted>"),
@@ -65,6 +77,7 @@ impl WordPressReviewInput {
         enabled: bool,
         context: Option<PathBuf>,
         advisories: Option<PathBuf>,
+        advisories_format: Option<WordPressAdvisoriesFormat>,
         plugins_json: Option<PathBuf>,
         themes_json: Option<PathBuf>,
         core_version_file: Option<PathBuf>,
@@ -72,11 +85,18 @@ impl WordPressReviewInput {
         let saved_inventory_selected =
             plugins_json.is_some() || themes_json.is_some() || core_version_file.is_some();
         if !enabled {
-            return if context.is_some() || advisories.is_some() || saved_inventory_selected {
+            return if context.is_some()
+                || advisories.is_some()
+                || advisories_format.is_some()
+                || saved_inventory_selected
+            {
                 Err(WordPressInputError::ExplicitEnableRequired)
             } else {
                 Ok(None)
             };
+        }
+        if advisories_format.is_some() && advisories.is_none() {
+            return Err(WordPressInputError::AdvisoryFormatRequiresSource);
         }
         if context.is_some() && saved_inventory_selected {
             return Err(WordPressInputError::ContextInventoryConflict);
@@ -84,6 +104,7 @@ impl WordPressReviewInput {
         Ok(Some(Self {
             context,
             advisories,
+            advisories_format: advisories_format.unwrap_or_default(),
             plugins_json,
             themes_json,
             core_version_file,
@@ -97,6 +118,7 @@ impl WordPressReviewInput {
         let Self {
             context,
             advisories,
+            advisories_format,
             plugins_json,
             themes_json,
             core_version_file,
@@ -138,18 +160,25 @@ impl WordPressReviewInput {
             inventory_source_error(WordPressLocalInputClass::CoreVersionFile, error)
         })?;
 
-        let catalog = advisories
-            .map(|path| {
+        let (catalog, wordfence_v3_catalog) = match (advisories, advisories_format) {
+            (None, _) => (None, None),
+            (Some(path), WordPressAdvisoriesFormat::Termivar) => {
                 let bytes = read_bounded_regular_file(path, MAX_WORDPRESS_ADVISORIES_BYTES)
                     .map_err(WordPressInputError::AdvisorySource)?;
-                parse_wordpress_advisory_catalog(&bytes)
-                    .map_err(|_| WordPressInputError::InvalidAdvisories)
-            })
-            .transpose()?;
-        if let Some(context) = context {
-            return Ok(WordPressReviewInputs::new(Some(context), catalog));
-        }
-        if plugins.is_some() || themes.is_some() || core.is_some() {
+                let catalog = parse_wordpress_advisory_catalog(&bytes)
+                    .map_err(|_| WordPressInputError::InvalidAdvisories)?;
+                (Some(catalog), None)
+            },
+            (Some(path), WordPressAdvisoriesFormat::WordfenceV3Production) => {
+                let file = open_bounded_regular_file(path, MAX_WORDFENCE_V3_PRODUCTION_BYTES)
+                    .map_err(WordPressInputError::AdvisorySource)?;
+                let catalog = parse_wordfence_v3_production(file).map_err(map_wordfence_error)?;
+                (None, Some(catalog))
+            },
+        };
+        let inputs = if let Some(context) = context {
+            WordPressReviewInputs::new(Some(context), catalog)
+        } else if plugins.is_some() || themes.is_some() || core.is_some() {
             let inventory = parse_wordpress_saved_inventory(
                 target.clone(),
                 plugins.as_ref().map(CapturedInventoryInput::bytes),
@@ -162,10 +191,18 @@ impl WordPressReviewInput {
                 .flatten()
                 .map(CapturedInventoryInput::provenance)
                 .collect();
-            return WordPressReviewInputs::from_saved_inventory(inventory, catalog, provenance)
-                .map_err(|_| WordPressInputError::InvalidSavedInventory);
+            WordPressReviewInputs::from_saved_inventory(inventory, catalog, provenance)
+                .map_err(|_| WordPressInputError::InvalidSavedInventory)?
+        } else {
+            WordPressReviewInputs::new(None, catalog)
+        };
+        if let Some(catalog) = wordfence_v3_catalog {
+            inputs
+                .with_wordfence_v3_catalog(catalog)
+                .map_err(|_| WordPressInputError::InvalidAdvisories)
+        } else {
+            Ok(inputs)
         }
-        Ok(WordPressReviewInputs::new(None, catalog))
     }
 }
 
@@ -173,6 +210,7 @@ impl WordPressReviewInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WordPressInputError {
     ExplicitEnableRequired,
+    AdvisoryFormatRequiresSource,
     ContextInventoryConflict,
     ContextSource(WordPressFileError),
     AdvisorySource(WordPressFileError),
@@ -191,6 +229,9 @@ impl fmt::Display for WordPressInputError {
         formatter.write_str(match self {
             Self::ExplicitEnableRequired => {
                 "WordPress inputs require explicit `--wordpress-review`"
+            },
+            Self::AdvisoryFormatRequiresSource => {
+                "`--wordpress-advisories-format` requires `--wordpress-advisories`"
             },
             Self::ContextInventoryConflict => {
                 "saved WordPress inventory inputs conflict with `--wordpress-context`"
@@ -297,16 +338,11 @@ fn read_bounded_regular_file(
     path: PathBuf,
     max_bytes: usize,
 ) -> Result<Vec<u8>, WordPressFileError> {
-    validate_explicit_local_file_path(&path)?;
-    let mut file = auth_input::open_regular_file(path).map_err(map_open_error)?;
+    let mut file = open_bounded_regular_file(path, max_bytes)?;
     let declared_length = file
         .metadata()
         .map_err(|_| WordPressFileError::Unavailable)?
         .len();
-    if declared_length > u64::try_from(max_bytes).unwrap_or(u64::MAX) {
-        return Err(WordPressFileError::TooLarge);
-    }
-
     let retained_limit = max_bytes
         .checked_add(1)
         .ok_or(WordPressFileError::TooLarge)?;
@@ -322,6 +358,40 @@ fn read_bounded_regular_file(
         return Err(WordPressFileError::TooLarge);
     }
     Ok(bytes)
+}
+
+fn open_bounded_regular_file(path: PathBuf, max_bytes: usize) -> Result<File, WordPressFileError> {
+    validate_explicit_local_file_path(&path)?;
+    let file = auth_input::open_regular_file(path).map_err(map_open_error)?;
+    let declared_length = file
+        .metadata()
+        .map_err(|_| WordPressFileError::Unavailable)?
+        .len();
+    if declared_length > u64::try_from(max_bytes).unwrap_or(u64::MAX) {
+        return Err(WordPressFileError::TooLarge);
+    }
+    Ok(file)
+}
+
+fn map_wordfence_error(error: WordfenceV3ProductionError) -> WordPressInputError {
+    match error {
+        WordfenceV3ProductionError::ReadFailed => {
+            WordPressInputError::AdvisorySource(WordPressFileError::ReadFailed)
+        },
+        WordfenceV3ProductionError::InputTooLarge => {
+            WordPressInputError::AdvisorySource(WordPressFileError::TooLarge)
+        },
+        WordfenceV3ProductionError::EmptyInput
+        | WordfenceV3ProductionError::RecordTooLarge
+        | WordfenceV3ProductionError::MalformedJson
+        | WordfenceV3ProductionError::DuplicateKey
+        | WordfenceV3ProductionError::StructuralLimitExceeded
+        | WordfenceV3ProductionError::UnsupportedValue
+        | WordfenceV3ProductionError::ConflictingIdentity
+        | WordfenceV3ProductionError::RetainedDataTooLarge => {
+            WordPressInputError::InvalidAdvisories
+        },
+    }
 }
 
 fn validate_explicit_local_file_path(path: &std::path::Path) -> Result<(), WordPressFileError> {
@@ -368,6 +438,7 @@ mod tests {
     fn cli_uses_the_scanner_owned_document_ceilings() {
         assert_eq!(MAX_WORDPRESS_CONTEXT_BYTES, 1024 * 1024);
         assert_eq!(MAX_WORDPRESS_ADVISORIES_BYTES, 4 * 1024 * 1024);
+        assert_eq!(MAX_WORDFENCE_V3_PRODUCTION_BYTES, 256 * 1024 * 1024);
         assert_eq!(MAX_WORDPRESS_INVENTORY_BYTES, 1024 * 1024);
         assert_eq!(MAX_WORDPRESS_CORE_VERSION_FILE_BYTES, 66);
     }
@@ -375,7 +446,7 @@ mod tests {
     #[test]
     fn selection_is_explicit_lazy_and_path_redacted() {
         assert!(
-            WordPressReviewInput::select(false, None, None, None, None, None)
+            WordPressReviewInput::select(false, None, None, None, None, None, None)
                 .unwrap()
                 .is_none()
         );
@@ -387,14 +458,42 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap_err(),
             WordPressInputError::ExplicitEnableRequired
+        );
+        assert_eq!(
+            WordPressReviewInput::select(
+                false,
+                None,
+                None,
+                Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err(),
+            WordPressInputError::ExplicitEnableRequired
+        );
+        assert_eq!(
+            WordPressReviewInput::select(
+                true,
+                None,
+                None,
+                Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err(),
+            WordPressInputError::AdvisoryFormatRequiresSource
         );
         let selected = WordPressReviewInput::select(
             true,
             Some(PathBuf::from("PRIVATE-CONTEXT-PATH")),
             Some(PathBuf::from("PRIVATE-ADVISORY-PATH")),
+            None,
             None,
             None,
             None,
@@ -404,8 +503,9 @@ mod tests {
         let debug = format!("{selected:?}");
         assert!(!debug.contains("PRIVATE-CONTEXT-PATH"));
         assert!(!debug.contains("PRIVATE-ADVISORY-PATH"));
+        assert!(debug.contains("Termivar"));
         assert!(
-            WordPressReviewInput::select(true, None, None, None, None, None)
+            WordPressReviewInput::select(true, None, None, None, None, None, None)
                 .unwrap()
                 .is_some()
         );
@@ -413,6 +513,7 @@ mod tests {
             WordPressReviewInput::select(
                 true,
                 Some(PathBuf::from("PRIVATE-CONTEXT")),
+                None,
                 None,
                 Some(PathBuf::from("PRIVATE-PLUGINS")),
                 None,
@@ -502,6 +603,7 @@ mod tests {
     #[test]
     fn public_errors_never_echo_paths_or_document_text() {
         for error in [
+            WordPressInputError::AdvisoryFormatRequiresSource,
             WordPressInputError::ContextSource(WordPressFileError::Unavailable),
             WordPressInputError::AdvisorySource(WordPressFileError::ReadFailed),
             WordPressInputError::PluginsSource(WordPressFileError::Unavailable),
@@ -536,10 +638,40 @@ mod tests {
         )
         .unwrap();
 
+        for format in [None, Some(WordPressAdvisoriesFormat::Termivar)] {
+            let selected = WordPressReviewInput::select(
+                true,
+                Some(context_path.clone()),
+                Some(advisory_path.clone()),
+                format,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            let inputs = selected
+                .load(&Url::parse("https://example.test/").unwrap())
+                .unwrap();
+            assert_eq!(inputs.context().unwrap().components().len(), 4);
+            assert_eq!(inputs.catalog().unwrap().records().len(), 3);
+        }
+    }
+
+    #[test]
+    fn declared_wordfence_production_export_streams_into_the_external_catalogue_slot() {
+        let directory = tempfile::tempdir().unwrap();
+        let advisory_path = directory.path().join("wordfence-production.json");
+        let bytes = include_bytes!(
+            "../../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json"
+        );
+        std::fs::write(&advisory_path, bytes).unwrap();
+
         let selected = WordPressReviewInput::select(
             true,
-            Some(context_path),
+            None,
             Some(advisory_path),
+            Some(WordPressAdvisoriesFormat::WordfenceV3Production),
             None,
             None,
             None,
@@ -549,8 +681,40 @@ mod tests {
         let inputs = selected
             .load(&Url::parse("https://example.test/").unwrap())
             .unwrap();
-        assert_eq!(inputs.context().unwrap().components().len(), 4);
-        assert_eq!(inputs.catalog().unwrap().records().len(), 3);
+        assert!(inputs.catalog().is_none());
+        let external = inputs.wordfence_v3_catalog().unwrap();
+        assert_eq!(external.byte_length(), bytes.len() as u64);
+        assert_eq!(external.record_count(), 2);
+        assert_eq!(external.software_association_count(), 3);
+    }
+
+    #[test]
+    fn declared_wordfence_production_export_never_falls_back_to_native_catalogue_parsing() {
+        let directory = tempfile::tempdir().unwrap();
+        let advisory_path = directory.path().join("native-catalogue.json");
+        std::fs::write(
+            &advisory_path,
+            include_bytes!("../../../docs/examples/wordpress-review/advisories.synthetic.json"),
+        )
+        .unwrap();
+
+        let selected = WordPressReviewInput::select(
+            true,
+            None,
+            Some(advisory_path),
+            Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            selected
+                .load(&Url::parse("https://example.test/").unwrap())
+                .unwrap_err(),
+            WordPressInputError::InvalidAdvisories
+        );
     }
 
     #[test]
@@ -563,7 +727,7 @@ mod tests {
         )
         .unwrap();
         let selected =
-            WordPressReviewInput::select(true, Some(context_path), None, None, None, None)
+            WordPressReviewInput::select(true, Some(context_path), None, None, None, None, None)
                 .unwrap()
                 .unwrap();
         assert_eq!(
@@ -576,7 +740,7 @@ mod tests {
 
     #[test]
     fn response_only_review_has_no_local_values_or_filesystem_authority() {
-        let selected = WordPressReviewInput::select(true, None, None, None, None, None)
+        let selected = WordPressReviewInput::select(true, None, None, None, None, None, None)
             .unwrap()
             .unwrap();
         let inputs = selected
@@ -605,6 +769,7 @@ mod tests {
 
         let selected = WordPressReviewInput::select(
             true,
+            None,
             None,
             None,
             Some(plugins_path),
@@ -669,6 +834,7 @@ mod tests {
         .unwrap();
         let selected = WordPressReviewInput::select(
             true,
+            None,
             None,
             None,
             Some(plugins_path),

@@ -74,6 +74,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "openapi_review",
     "rest_review",
     "wordpress_advisories",
+    "wordpress_advisories_format",
     "wordpress_core_version_file",
     "wordpress_context",
     "wordpress_plugins_json",
@@ -681,6 +682,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("wordpress_review", "bool", None),
         ("wordpress_context", "Option", Some("PathBuf")),
         ("wordpress_advisories", "Option", Some("PathBuf")),
+        (
+            "wordpress_advisories_format",
+            "Option",
+            Some("WordPressAdvisoriesFormat"),
+        ),
         ("wordpress_plugins_json", "Option", Some("PathBuf")),
         ("wordpress_themes_json", "Option", Some("PathBuf")),
         ("wordpress_core_version_file", "Option", Some("PathBuf")),
@@ -885,6 +891,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             "wordpress_advisories",
             ("Option", Some("PathBuf")),
             "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\"]",
+        ),
+        (
+            "wordpress_advisories_format",
+            ("Option", Some("WordPressAdvisoriesFormat")),
+            "long,value_enum,value_name=\"FORMAT\",requires_all=[\"profile\",\"wordpress_review\",\"wordpress_advisories\"]",
         ),
         (
             "wordpress_plugins_json",
@@ -2288,6 +2299,11 @@ mod tests {
             (
                 "requires_all = [\"profile\", \"wordpress_review\"]",
                 "requires_all = [\"profile\"]",
+                "private wordpress-review feature gate",
+            ),
+            (
+                "requires_all = [\"profile\", \"wordpress_review\", \"wordpress_advisories\"]",
+                "requires_all = [\"profile\", \"wordpress_review\"]",
                 "private wordpress-review feature gate",
             ),
             (

@@ -630,6 +630,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
             "--wordpress-review",
             "--wordpress-context",
             "--wordpress-advisories",
+            "--wordpress-advisories-format",
             "--wordpress-plugins-json",
             "--wordpress-themes-json",
             "--wordpress-core-version-file",

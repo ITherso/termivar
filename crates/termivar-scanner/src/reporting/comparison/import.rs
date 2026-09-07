@@ -27,9 +27,10 @@ const MAX_SUBJECTS: u64 = 1_024;
 // Deepest current wire value: root/wordpress_review/advisories/advisory/
 // affected_ranges/range/endpoint/field (root=0).
 const MAX_JSON_DEPTH: usize = 7;
-// The largest current object is the 21-field OpenAPI audit; allow no unbounded
-// object collection while exact field inventories below reject unknown fields.
-const MAX_OBJECT_FIELDS: usize = 21;
+// The largest current object is the 23-field WordPress external evaluation;
+// allow no unbounded object collection while exact inventories reject unknown
+// fields.
+const MAX_OBJECT_FIELDS: usize = 23;
 
 pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     if bytes.len() > MAX_COMPARISON_INPUT_BYTES {

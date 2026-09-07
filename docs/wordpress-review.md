@@ -268,6 +268,75 @@ The example directory contains three catalogue examples:
   profile-dependent trailing-zero behavior, and rejection of a fictional
   vendor label. They are comparison fixtures, not alleged vulnerabilities.
 
+### Local Wordfence V3 Production-format exports (development source)
+
+The feature-enabled development CLI accepts an explicitly selected, already
+saved Wordfence V3 Production-format JSON file through the existing assessment:
+
+```bash
+termivar scan <AUTHORIZED_EXACT_ROOT> \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-advisories wordfence-production.json \
+  --wordpress-advisories-format wordfence-v3-production \
+  --report-dir <NEW_REPORT_DIRECTORY>
+```
+
+Omitting `--wordpress-advisories-format` retains the existing strict Termivar
+catalogue parser. The choice is never inferred from a filename or document
+contents, and there is no fallback between the two formats.
+
+The adapter does not obtain an API key, call Wordfence, discover a credential,
+or fetch a reference during an assessment. The operator remains responsible for
+obtaining and storing any export under the source's current terms. Wordfence's
+public documentation states that the V3 feed requires token authentication and
+describes distinct Production and Scanner formats. This scope accepts Production
+format only; it does not infer a format from a filename or fall back to the
+Scanner format.
+
+The declared source file is read completely within a separate bounded
+external-import policy before runtime startup. The current hard ceilings are
+256 MiB of input, 100,000 records, 200,000 software associations, 512 KiB per
+record, and 64 MiB of conservatively accounted retained index data; narrower
+per-field, range, and output limits also apply. Crossing a bound fails explicitly
+rather than truncating the source. Root UUID keys, record IDs,
+software associations, structured range bounds, patched-version declarations,
+nullable source dates, references, and rights notices remain source-qualified
+metadata. A patched flag or fixed-version declaration does not prove that the
+selected installation contains a fix. A source CVSS value is not a
+Termivar-calculated installed risk score.
+
+When a selected record carries Defiant copyright terms, preflight requires an
+existing source-declared Wordfence vulnerability-record reference. Only the
+documented `www.wordfence.com/threat-intel/vulnerabilities/` HTTP/HTTPS form is
+accepted; Termivar neither invents nor fetches a missing link. The report emits
+that record link together with the retained notice and licence text. A missing
+required link rejects the input before the assessment starts rather than
+silently publishing an attribution-incomplete copy.
+
+The source format specifies structured range endpoints and inclusivity, but it
+does not by itself establish a comparison algorithm for every vendor version.
+Termivar must not assume that the provider's semantics equal either
+`numeric-dotted/v1` or `php-release-subset/v1`. Unsupported or unresolved source
+semantics remain indeterminate rather than being tried under both profiles until
+one yields a preferred result. The `1.0` versus `1.0.0` boundary is an explicit
+regression case for this distinction.
+
+Reports identify the external format and mapping revision, preserve the
+exact-input byte length and digest, reconcile parsed/association/selected/
+evaluable/unsupported/excluded counts, and retain required notices for material
+they display. These values identify the processed bytes and interpretation; they
+do not authenticate the source, prove snapshot completeness, or establish a
+collection timestamp. Source-declared `published` and `updated` values remain
+distinct from collection time. A filesystem modification time is not substituted
+for any of them.
+
+The independently written
+[`wordfence-v3` synthetic fixture](examples/wordpress-review/wordfence-v3/README.md)
+records the public-schema-only expectations used by the parser and end-to-end
+acceptance. It is not a live export, no provider credential was used, and this
+does not establish compatibility with a complete current feed snapshot.
+
 ## Result and claim limits
 
 The WordPress audit belongs to the same final assessment report and evidence
@@ -319,6 +388,13 @@ reviewed on 2026-09-07:
   <https://developer.wordpress.org/cli/commands/theme/list/>
 - WP-CLI core version output:
   <https://developer.wordpress.org/cli/commands/core/version/>
+- Wordfence V3 Production/Scanner format and authenticated access contract:
+  <https://www.wordfence.com/help/wordfence-intelligence/v3-accessing-and-consuming-the-vulnerability-data-feed/>
+- Wordfence Intelligence terms reviewed for copy/attribution requirements:
+  <https://www.wordfence.com/wordfence-intelligence-terms-and-conditions/>
+- Wordfence CLI comparison implementation pinned at commit
+  `6f1dfc39b2caad558d097404aab4bb0a1c018308`:
+  <https://github.com/wordfence/wordfence-cli/blob/6f1dfc39b2caad558d097404aab4bb0a1c018308/wordfence/util/versioning.py>
 - PHP version comparison behavior (broader than Termivar's V1 profile):
   <https://www.php.net/manual/en/function.version-compare.php>
 - PHP 8.3.0 comparison implementation pinned at commit

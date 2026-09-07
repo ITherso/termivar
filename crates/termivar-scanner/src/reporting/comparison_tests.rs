@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 const SAMPLE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -51,6 +52,23 @@ fn reject(value: &Value) {
 
 fn group(result: &Value, name: &str) -> Vec<Value> {
     result[name].as_array().unwrap().clone()
+}
+
+fn synthetic_wordfence_notice_id(
+    message: &str,
+    party: &str,
+    notice: &str,
+    license: &str,
+    license_url: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"termivar.wordfence-v3.notice/v1\0");
+    for value in [message, party, notice, license, license_url] {
+        digest.update(u64::try_from(value.len()).unwrap().to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    let digest = digest.finalize();
+    format!("wordfence-notice-sha256:{digest:x}")
 }
 
 #[test]
@@ -921,6 +939,485 @@ fn saved_inventory_wordpress_audit_v3() -> Value {
         }],
         "advisories":[]
     })
+}
+
+fn wordfence_external_wordpress_audit_v4() -> Value {
+    json!({
+        "schema":"security.wordpress-review-audit/v4",
+        "capability_id":"technology.wordpress-surface-observed@1",
+        "catalog_status":"evaluated",
+        "inventory_import":{
+            "coverage":{"core":"not_supplied","plugins":"supplied","themes":"not_supplied"},
+            "component_count":1,
+            "limitations":[],
+            "inputs":[{
+                "class":"wp_cli_plugins_json",
+                "byte_length":71,
+                "sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            }]
+        },
+        "external_review":{
+            "source_namespace":"wordfence-intelligence",
+            "source_format":"wordfence-v3-production",
+            "mapping_revision":"termivar-wordfence-v3-production/v1",
+            "comparison_policy":"wordfence-v3/source-semantics-unresolved/v1",
+            "input":{
+                "byte_length":3883,
+                "sha256":"d9ed3140f44ae1e0a3746beb9937de2d829d28c068101120a9104c3349901db7",
+                "semantic_sha256":"1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            },
+            "counts":{
+                "parsed_records":2,
+                "software_associations":3,
+                "selected_associations":1,
+                "evaluable_associations":0,
+                "unsupported_associations":1,
+                "excluded_associations":2
+            },
+            "notices":[{
+                "id":"wordfence-notice-sha256:4ffcd7a3223d808b0f98dd5b51a4bd63a0db073c993b646ec09ae152fefc28d8",
+                "message":"Synthetic rights message.",
+                "party":"termivar_fixture_author",
+                "notice":"Synthetic fixture notice.",
+                "license":"Synthetic fixture licence terms.",
+                "license_url":"https://example.invalid/fixture-terms"
+            }],
+            "evaluations":[{
+                "key":{
+                    "source_namespace":"wordfence-intelligence",
+                    "upstream_id":"00000000-0000-4000-8000-000000000001",
+                    "component":{"kind":"plugin","slug":"termivar-fixture-component"}
+                },
+                "title":"[SYNTHETIC] Multi-component fixture advisory",
+                "display_name":"[SYNTHETIC] Fixture Plugin",
+                "informational":false,
+                "description":"Fictional bounded parser data, not a vulnerability claim.",
+                "references":["https://example.invalid/fixture-advisory"],
+                "record_reference":"https://example.invalid/fixture-advisory",
+                "cwe":null,
+                "cvss":null,
+                "cve":null,
+                "cve_link":null,
+                "researchers":["Synthetic Fixture Author"],
+                "source_dates":{
+                    "published":"2026-01-02 03:04:05",
+                    "updated":"2026-02-03 04:05:06"
+                },
+                "affected_ranges":[{
+                    "label":"[1.0.0, 1.2.3]",
+                    "from_kind":"declared",
+                    "from_version":"1.0.0",
+                    "from_inclusive":true,
+                    "to_kind":"declared",
+                    "to_version":"1.2.3",
+                    "to_inclusive":true
+                }],
+                "source_patched":true,
+                "source_patched_versions":["1.2.4"],
+                "source_remediation":"Review the source-declared version through the normal update process.",
+                "notice_ids":["wordfence-notice-sha256:4ffcd7a3223d808b0f98dd5b51a4bd63a0db073c993b646ec09ae152fefc28d8"],
+                "component_evidence":"operator_supplied",
+                "version_evidence_resolution":{
+                    "status":"single_declaration",
+                    "evidence_row_count":1,
+                    "distinct_spelling_count":1
+                },
+                "version_relation":"source_comparison_semantics_unresolved",
+                "applicability":"indeterminate_unsupported",
+                "execution":{
+                    "exploit_execution":"not_performed",
+                    "impact_validation":"not_performed"
+                }
+            }]
+        },
+        "signal_count":0,
+        "evidence_reference_count":0,
+        "additional_request_count":0,
+        "item_projected":false,
+        "component_count":1,
+        "advisory_count":0,
+        "components":[{
+            "identity":{"kind":"plugin","slug":"termivar-fixture-component"},
+            "evidence_class":"operator_supplied",
+            "identity_sources":["operator_context"],
+            "confidence_classes":["operator_assertion"],
+            "versions":[{
+                "value":"1.1.0",
+                "source":"operator_context",
+                "confidence":"operator_assertion"
+            }],
+            "activation":"active",
+            "inventory_status":"active"
+        }],
+        "advisories":[]
+    })
+}
+
+fn wordfence_external_wordpress_audit_v4_with_notices(count: usize) -> Value {
+    let mut audit = wordfence_external_wordpress_audit_v4();
+    let mut notices = Vec::with_capacity(count);
+    let mut notice_ids = Vec::with_capacity(count);
+    for index in 0..count {
+        let message = format!("Synthetic rights message {index}.");
+        let party = format!("synthetic_party_{index}");
+        let notice = format!("Synthetic fixture notice {index}.");
+        let license = format!("Synthetic fixture licence terms {index}.");
+        let license_url = format!("https://example.invalid/fixture-terms/{index}");
+        let id = synthetic_wordfence_notice_id(&message, &party, &notice, &license, &license_url);
+        notice_ids.push(id.clone());
+        notices.push(json!({
+            "id":id,
+            "message":message,
+            "party":party,
+            "notice":notice,
+            "license":license,
+            "license_url":license_url
+        }));
+    }
+    audit["external_review"]["notices"] = json!(notices);
+    audit["external_review"]["evaluations"][0]["notice_ids"] = json!(notice_ids);
+    audit
+}
+
+#[test]
+fn wordpress_v4_external_review_is_strict_feature_independent_and_raw_free() {
+    let audit = wordfence_external_wordpress_audit_v4();
+    let mut document = report(vec![]);
+    document["wordpress_review"] = audit.clone();
+    let comparison = compare(&document, &document);
+    assert!(group(&comparison, "unchanged").is_empty());
+    assert_eq!(
+        comparison["before"]["optional_audits"]["wordpress_review"],
+        audit
+    );
+
+    for (path, replacement) in [
+        (
+            vec!["external_review", "source_namespace"],
+            json!("unclassified-provider"),
+        ),
+        (
+            vec!["external_review", "source_format"],
+            json!("wordfence-v3-scanner"),
+        ),
+        (vec!["external_review", "mapping_revision"], json!("latest")),
+        (
+            vec!["external_review", "comparison_policy"],
+            json!("php-release-subset/v1"),
+        ),
+        (
+            vec!["external_review", "input", "sha256"],
+            json!("D9ED3140F44AE1E0A3746BEB9937DE2D829D28C068101120A9104C3349901DB7"),
+        ),
+        (
+            vec!["external_review", "counts", "evaluable_associations"],
+            json!(1),
+        ),
+        (
+            vec!["external_review", "counts", "excluded_associations"],
+            json!(1),
+        ),
+        (
+            vec!["external_review", "evaluations", "0", "version_relation"],
+            json!("within_declared_range"),
+        ),
+        (
+            vec!["external_review", "evaluations", "0", "applicability"],
+            json!("candidate_match_on_declared_facts"),
+        ),
+        (
+            vec![
+                "external_review",
+                "evaluations",
+                "0",
+                "version_evidence_resolution",
+                "status",
+            ],
+            json!("multiple_distinct_declarations"),
+        ),
+        (
+            vec![
+                "external_review",
+                "evaluations",
+                "0",
+                "version_evidence_resolution",
+                "evidence_row_count",
+            ],
+            json!(0),
+        ),
+    ] {
+        let mut invalid = document.clone();
+        let mut cursor = &mut invalid["wordpress_review"];
+        for segment in &path[..path.len() - 1] {
+            cursor = if let Ok(index) = segment.parse::<usize>() {
+                &mut cursor[index]
+            } else {
+                &mut cursor[*segment]
+            };
+        }
+        cursor[path[path.len() - 1]] = replacement;
+        reject(&invalid);
+    }
+
+    let mut missing = document.clone();
+    missing["wordpress_review"]
+        .as_object_mut()
+        .unwrap()
+        .remove("external_review");
+    reject(&missing);
+
+    let mut unexpected = document.clone();
+    unexpected["wordpress_review"]["external_review"]["retrieved_on"] = json!("2026-09-07");
+    reject(&unexpected);
+
+    let mut oversized_evaluation_object = document.clone();
+    oversized_evaluation_object["wordpress_review"]["external_review"]["evaluations"][0]
+        ["unexpected_24th_field"] = json!(true);
+    reject(&oversized_evaluation_object);
+
+    let mut unused_notice = document.clone();
+    unused_notice["wordpress_review"]["external_review"]["evaluations"][0]["notice_ids"] =
+        json!([]);
+    reject(&unused_notice);
+
+    let mut notice_identity_mismatch = document.clone();
+    notice_identity_mismatch["wordpress_review"]["external_review"]["notices"][0]["message"] =
+        json!("Changed without changing the content-derived notice identifier.");
+    reject(&notice_identity_mismatch);
+
+    let mut duplicate = document;
+    let evaluation = duplicate["wordpress_review"]["external_review"]["evaluations"][0].clone();
+    duplicate["wordpress_review"]["external_review"]["evaluations"]
+        .as_array_mut()
+        .unwrap()
+        .push(evaluation);
+    duplicate["wordpress_review"]["external_review"]["counts"] = json!({
+        "parsed_records":2,
+        "software_associations":4,
+        "selected_associations":2,
+        "evaluable_associations":0,
+        "unsupported_associations":2,
+        "excluded_associations":2
+    });
+    reject(&duplicate);
+}
+
+#[test]
+fn wordpress_v4_external_counts_preserve_the_source_record_envelope() {
+    for (parsed_records, software_associations, excluded_associations) in
+        [(0_u64, 1_u64, 0_u64), (1, 2_049, 2_048)]
+    {
+        let mut document = report(vec![]);
+        document["wordpress_review"] = wordfence_external_wordpress_audit_v4();
+        let counts = &mut document["wordpress_review"]["external_review"]["counts"];
+        counts["parsed_records"] = json!(parsed_records);
+        counts["software_associations"] = json!(software_associations);
+        counts["excluded_associations"] = json!(excluded_associations);
+        reject(&document);
+    }
+}
+
+#[test]
+fn wordpress_v4_defiant_attribution_requires_the_exact_safe_record_link() {
+    let mut audit = wordfence_external_wordpress_audit_v4();
+    let notice = &mut audit["external_review"]["notices"][0];
+    notice["party"] = json!("defiant");
+    let id = synthetic_wordfence_notice_id(
+        notice["message"].as_str().unwrap(),
+        notice["party"].as_str().unwrap(),
+        notice["notice"].as_str().unwrap(),
+        notice["license"].as_str().unwrap(),
+        notice["license_url"].as_str().unwrap(),
+    );
+    notice["id"] = json!(id.clone());
+    let evaluation = &mut audit["external_review"]["evaluations"][0];
+    evaluation["notice_ids"] = json!([id]);
+    evaluation["references"] = json!([
+        "https://example.invalid/fixture-advisory",
+        "http://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"
+    ]);
+    evaluation["record_reference"] =
+        json!("http://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture");
+    let mut valid = report(vec![]);
+    valid["wordpress_review"] = audit;
+    assert!(group(&compare(&valid, &valid), "unchanged").is_empty());
+
+    let mut https_valid = valid.clone();
+    https_valid["wordpress_review"]["external_review"]["evaluations"][0]["references"] =
+        json!(["https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"]);
+    https_valid["wordpress_review"]["external_review"]["evaluations"][0]["record_reference"] =
+        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture");
+    assert!(group(&compare(&https_valid, &https_valid), "unchanged").is_empty());
+
+    for hostile in [
+        Value::Null,
+        json!("ftp://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
+        json!("https://wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
+        json!("https://www.wordfence.com/help/synthetic-fixture"),
+        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture\" onmouseover=\"x"),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["wordpress_review"]["external_review"]["evaluations"][0]["references"] =
+            json!([hostile.clone()]);
+        invalid["wordpress_review"]["external_review"]["evaluations"][0]["record_reference"] =
+            hostile;
+        reject(&invalid);
+    }
+}
+
+#[test]
+fn wordpress_v4_notice_party_limit_matches_the_producer_record_contract() {
+    let mut supported = report(vec![]);
+    supported["wordpress_review"] = wordfence_external_wordpress_audit_v4_with_notices(15);
+    assert!(group(&compare(&supported, &supported), "unchanged").is_empty());
+
+    let mut unsupported = report(vec![]);
+    unsupported["wordpress_review"] = wordfence_external_wordpress_audit_v4_with_notices(16);
+    reject(&unsupported);
+}
+
+#[test]
+fn wordpress_v4_inventory_is_independently_optional_but_identity_bound() {
+    let mut audit = wordfence_external_wordpress_audit_v4();
+    audit.as_object_mut().unwrap().remove("inventory_import");
+    audit["signal_count"] = json!(1);
+    audit["evidence_reference_count"] = json!(1);
+    audit["item_projected"] = json!(true);
+    audit["components"][0] = json!({
+        "identity":{"kind":"core","slug":"wordpress"},
+        "evidence_class":"observed_hint",
+        "identity_sources":["generator_metadata"],
+        "confidence_classes":["public_declaration"],
+        "versions":[{
+            "value":"1.0",
+            "source":"generator_metadata",
+            "confidence":"public_declaration"
+        }],
+        "activation":null
+    });
+    audit["external_review"]["evaluations"][0]["key"]["component"] =
+        json!({"kind":"core","slug":"wordpress"});
+    audit["external_review"]["evaluations"][0]["component_evidence"] = json!("observed_hint");
+    let mut observed = item(1);
+    observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+    let mut document = report(vec![observed]);
+    document["wordpress_review"] = audit;
+    assert_eq!(group(&compare(&document, &document), "unchanged").len(), 1);
+
+    let mut unbound = document;
+    unbound["wordpress_review"]["external_review"]["evaluations"][0]["key"]["component"] =
+        json!({"kind":"theme","slug":"unobserved-theme"});
+    reject(&unbound);
+}
+
+#[test]
+fn wordpress_v4_version_evidence_resolution_is_comparator_neutral_and_recomputed() {
+    let mut missing = report(vec![]);
+    missing["wordpress_review"] = wordfence_external_wordpress_audit_v4();
+    missing["wordpress_review"]["components"][0]["versions"] = json!([]);
+    missing["wordpress_review"]["external_review"]["evaluations"][0]
+        ["version_evidence_resolution"] = json!({
+        "status":"missing",
+        "evidence_row_count":0,
+        "distinct_spelling_count":0
+    });
+    assert!(group(&compare(&missing, &missing), "unchanged").is_empty());
+
+    let mut observed = item(1);
+    observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+    let mut repeated = report(vec![observed]);
+    repeated["wordpress_review"] = wordfence_external_wordpress_audit_v4();
+    repeated["wordpress_review"]["signal_count"] = json!(1);
+    repeated["wordpress_review"]["evidence_reference_count"] = json!(1);
+    repeated["wordpress_review"]["item_projected"] = json!(true);
+    repeated["wordpress_review"]["components"][0]["evidence_class"] = json!("observed_hint");
+    repeated["wordpress_review"]["components"][0]["identity_sources"] =
+        json!(["same_origin_asset_path", "operator_context"]);
+    repeated["wordpress_review"]["components"][0]["confidence_classes"] =
+        json!(["structural_hint", "operator_assertion"]);
+    repeated["wordpress_review"]["components"][0]["versions"] = json!([
+        {
+            "value":"1.1.0",
+            "source":"same_origin_asset_path",
+            "confidence":"structural_hint"
+        },
+        {
+            "value":"1.1.0",
+            "source":"operator_context",
+            "confidence":"operator_assertion"
+        }
+    ]);
+    repeated["wordpress_review"]["external_review"]["evaluations"][0]["component_evidence"] =
+        json!("observed_hint");
+    repeated["wordpress_review"]["external_review"]["evaluations"][0]
+        ["version_evidence_resolution"] = json!({
+        "status":"repeated_exact_declaration",
+        "evidence_row_count":2,
+        "distinct_spelling_count":1
+    });
+    assert_eq!(group(&compare(&repeated, &repeated), "unchanged").len(), 1);
+
+    let mut distinct = repeated.clone();
+    distinct["wordpress_review"]["components"][0]["versions"][1]["value"] = json!("1.1.0.0");
+    distinct["wordpress_review"]["external_review"]["evaluations"][0]
+        ["version_evidence_resolution"] = json!({
+        "status":"multiple_distinct_declarations",
+        "evidence_row_count":2,
+        "distinct_spelling_count":2
+    });
+    assert_eq!(group(&compare(&distinct, &distinct), "unchanged").len(), 1);
+
+    let mut forged = distinct;
+    forged["wordpress_review"]["external_review"]["evaluations"][0]
+        ["version_evidence_resolution"]["distinct_spelling_count"] = json!(1);
+    reject(&forged);
+}
+
+#[test]
+fn wordpress_v4_reader_matches_external_source_edge_contracts() {
+    let mut audit = wordfence_external_wordpress_audit_v4();
+    audit["external_review"]["evaluations"][0]["cve"] = json!("CVE-2099-1234");
+    audit["external_review"]["evaluations"][0]["affected_ranges"] = json!([]);
+    audit["external_review"]["evaluations"][0]["title"] = json!("Synthetic\nTitle");
+    audit["external_review"]["evaluations"][0]["display_name"] = json!("Synthetic\tComponent");
+    audit["external_review"]["evaluations"][0]["description"] = json!("Synthetic\rdescription");
+    audit["external_review"]["evaluations"][0]["source_remediation"] = json!("");
+    audit["external_review"]["evaluations"][0]["researchers"] = json!(["Synthetic\tResearcher"]);
+    audit["external_review"]["evaluations"][0]["cwe"] = json!({
+        "id":9999,
+        "name":"Synthetic\tCWE",
+        "description":"Synthetic\rCWE detail"
+    });
+    audit["external_review"]["evaluations"][0]["cvss"] = json!({
+        "vector":"CVSS:3.1/AV:N\n",
+        "score":"5.3",
+        "rating":"medium"
+    });
+    let mut document = report(vec![]);
+    document["wordpress_review"] = audit;
+    assert!(group(&compare(&document, &document), "unchanged").is_empty());
+
+    let mut orphan_link = document.clone();
+    orphan_link["wordpress_review"]["external_review"]["evaluations"][0]["cve"] = Value::Null;
+    orphan_link["wordpress_review"]["external_review"]["evaluations"][0]["cve_link"] =
+        json!("https://example.invalid/CVE-2099-1234");
+    reject(&orphan_link);
+
+    let mut uppercase_uuid = document.clone();
+    uppercase_uuid["wordpress_review"]["external_review"]["evaluations"][0]["key"]["upstream_id"] =
+        json!("00000000-0000-4000-8000-00000000000A");
+    reject(&uppercase_uuid);
+
+    let mut invalid_date = document;
+    invalid_date["wordpress_review"]["external_review"]["evaluations"][0]["source_dates"]
+        ["published"] = json!("2026-02-30 03:04:05");
+    reject(&invalid_date);
+
+    let mut disallowed_control = report(vec![]);
+    disallowed_control["wordpress_review"] = wordfence_external_wordpress_audit_v4();
+    disallowed_control["wordpress_review"]["external_review"]["evaluations"][0]["title"] =
+        json!("Synthetic\u{1}Title");
+    reject(&disallowed_control);
 }
 
 #[test]

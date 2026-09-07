@@ -4783,6 +4783,7 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "inventory_import",
                 "Option<WordPressInventoryImportDocument>",
             ),
+            ("external_review", "Option<WordPressExternalReviewDocument>"),
             ("signal_count", "u16"),
             ("evidence_reference_count", "u16"),
             ("additional_request_count", "u8"),
@@ -4856,6 +4857,146 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("class", "&'static str"),
             ("byte_length", "usize"),
             ("sha256", "String"),
+        ],
+    ),
+    (
+        "WordPressExternalReviewDocument",
+        &[],
+        &[
+            ("source_namespace", "&'static str"),
+            ("source_format", "&'static str"),
+            ("mapping_revision", "&'static str"),
+            ("comparison_policy", "&'static str"),
+            ("input", "WordPressExternalInputDocument"),
+            ("counts", "WordPressExternalCountsDocument"),
+            ("notices", "Vec<WordPressExternalNoticeDocument>"),
+            ("evaluations", "Vec<WordPressExternalEvaluationDocument>"),
+        ],
+    ),
+    (
+        "WordPressExternalInputDocument",
+        &[],
+        &[
+            ("byte_length", "u64"),
+            ("sha256", "String"),
+            ("semantic_sha256", "String"),
+        ],
+    ),
+    (
+        "WordPressExternalCountsDocument",
+        &[],
+        &[
+            ("parsed_records", "usize"),
+            ("software_associations", "usize"),
+            ("selected_associations", "usize"),
+            ("evaluable_associations", "usize"),
+            ("unsupported_associations", "usize"),
+            ("excluded_associations", "usize"),
+        ],
+    ),
+    (
+        "WordPressExternalNoticeDocument",
+        &[],
+        &[
+            ("id", "String"),
+            ("message", "String"),
+            ("party", "String"),
+            ("notice", "String"),
+            ("license", "String"),
+            ("license_url", "String"),
+        ],
+    ),
+    (
+        "WordPressExternalEvaluationDocument",
+        &[],
+        &[
+            ("key", "WordPressExternalEvaluationKeyDocument"),
+            ("title", "String"),
+            ("display_name", "String"),
+            ("informational", "bool"),
+            ("description", "String"),
+            ("references", "Vec<String>"),
+            ("record_reference", "Option<String>"),
+            ("cwe", "Option<WordPressExternalCweDocument>"),
+            ("cvss", "Option<WordPressExternalCvssDocument>"),
+            ("cve", "Option<String>"),
+            ("cve_link", "Option<String>"),
+            ("researchers", "Vec<String>"),
+            ("source_dates", "WordPressExternalSourceDatesDocument"),
+            ("affected_ranges", "Vec<WordPressExternalRangeDocument>"),
+            ("source_patched", "bool"),
+            ("source_patched_versions", "Vec<String>"),
+            ("source_remediation", "String"),
+            ("notice_ids", "Vec<String>"),
+            ("component_evidence", "&'static str"),
+            (
+                "version_evidence_resolution",
+                "WordPressExternalVersionEvidenceResolutionDocument",
+            ),
+            ("version_relation", "&'static str"),
+            ("applicability", "&'static str"),
+            ("execution", "WordPressExternalExecutionDocument"),
+        ],
+    ),
+    (
+        "WordPressExternalVersionEvidenceResolutionDocument",
+        &[],
+        &[
+            ("status", "&'static str"),
+            ("evidence_row_count", "usize"),
+            ("distinct_spelling_count", "usize"),
+        ],
+    ),
+    (
+        "WordPressExternalEvaluationKeyDocument",
+        &[],
+        &[
+            ("source_namespace", "String"),
+            ("upstream_id", "String"),
+            ("component", "WordPressComponentIdentityDocument"),
+        ],
+    ),
+    (
+        "WordPressExternalCweDocument",
+        &[],
+        &[("id", "u32"), ("name", "String"), ("description", "String")],
+    ),
+    (
+        "WordPressExternalCvssDocument",
+        &[],
+        &[
+            ("vector", "String"),
+            ("score", "String"),
+            ("rating", "&'static str"),
+        ],
+    ),
+    (
+        "WordPressExternalSourceDatesDocument",
+        &[],
+        &[
+            ("published", "Option<String>"),
+            ("updated", "Option<String>"),
+        ],
+    ),
+    (
+        "WordPressExternalRangeDocument",
+        &[],
+        &[
+            ("label", "String"),
+            ("from_kind", "&'static str"),
+            ("from_version", "String"),
+            ("from_inclusive", "bool"),
+            ("to_kind", "&'static str"),
+            ("to_version", "String"),
+            ("to_inclusive", "bool"),
+        ],
+    ),
+    (
+        "WordPressExternalExecutionDocument",
+        &[],
+        &[
+            ("exploit_execution", "&'static str"),
+            ("impact_validation", "&'static str"),
         ],
     ),
     (
@@ -5151,6 +5292,18 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "WordPressInventoryCoverageDocument"
                 | "WordPressInventoryLimitationDocument"
                 | "WordPressInventoryInputDocument"
+                | "WordPressExternalReviewDocument"
+                | "WordPressExternalInputDocument"
+                | "WordPressExternalCountsDocument"
+                | "WordPressExternalNoticeDocument"
+                | "WordPressExternalEvaluationDocument"
+                | "WordPressExternalVersionEvidenceResolutionDocument"
+                | "WordPressExternalEvaluationKeyDocument"
+                | "WordPressExternalCweDocument"
+                | "WordPressExternalCvssDocument"
+                | "WordPressExternalSourceDatesDocument"
+                | "WordPressExternalRangeDocument"
+                | "WordPressExternalExecutionDocument"
                 | "WordPressVersionEvidenceDocument"
                 | "WordPressAdvisoryDocument"
                 | "WordPressAdvisorySourceDocument"
@@ -5206,6 +5359,18 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "WordPressInventoryCoverageDocument"
                 | "WordPressInventoryLimitationDocument"
                 | "WordPressInventoryInputDocument"
+                | "WordPressExternalReviewDocument"
+                | "WordPressExternalInputDocument"
+                | "WordPressExternalCountsDocument"
+                | "WordPressExternalNoticeDocument"
+                | "WordPressExternalEvaluationDocument"
+                | "WordPressExternalVersionEvidenceResolutionDocument"
+                | "WordPressExternalEvaluationKeyDocument"
+                | "WordPressExternalCweDocument"
+                | "WordPressExternalCvssDocument"
+                | "WordPressExternalSourceDatesDocument"
+                | "WordPressExternalRangeDocument"
+                | "WordPressExternalExecutionDocument"
                 | "WordPressVersionEvidenceDocument"
                 | "WordPressAdvisoryDocument"
                 | "WordPressAdvisorySourceDocument"
@@ -5274,7 +5439,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         || (name == "AssessmentWordPressAuditDocument"
                             && matches!(
                                 field_name.as_str(),
-                                "catalog_schema" | "catalog" | "inventory_import"
+                                "catalog_schema"
+                                    | "catalog"
+                                    | "inventory_import"
+                                    | "external_review"
                             ))
                         || (name == "WordPressComponentDocument"
                             && field_name == "inventory_status")
@@ -7649,8 +7817,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 103_822;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x0a93_ca06_5a96_74f3_4874_e6be_6520_acb2;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 129_038;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xb626_df22_4c90_ca35_8db1_3215_344c_35ae;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -7765,6 +7933,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE",
     "crate::wordpress_review::MAX_WORDPRESS_SAVED_INVENTORY_BYTES",
     "crate::wordpress_review::MAX_WORDPRESS_SIGNALS",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD",
     "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA",
     "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2",
     "crate::wordpress_review::WordPressActivationState",
@@ -7777,6 +7946,10 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::WordPressEvidenceConfidence",
     "crate::wordpress_review::WordPressEvidenceSource",
     "crate::wordpress_review::WordPressExecutionStatus",
+    "crate::wordpress_review::WordPressExternalApplicability",
+    "crate::wordpress_review::WordPressExternalComparisonPolicy",
+    "crate::wordpress_review::WordPressExternalVersionEvidenceStatus",
+    "crate::wordpress_review::WordPressExternalVersionRelation",
     "crate::wordpress_review::WordPressHostingOs",
     "crate::wordpress_review::WordPressInventoryCategoryStatus",
     "crate::wordpress_review::WordPressInventoryEntryStatus",
@@ -7789,6 +7962,8 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::WordPressVersionRelation",
     "crate::wordpress_review::WordPressVersionResolution",
     "crate::wordpress_review::WordPressVersionResolutionReason",
+    "crate::wordpress_review::WordfenceV3CvssRating",
+    "crate::wordpress_review::WordfenceV3RangeValue",
     "serde::Serialize",
     "std::error::Error",
     "std::fmt",
@@ -7865,6 +8040,14 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressEvidenceSource::OperatorContext",
     "WordPressEvidenceSource::SameOriginAssetPath",
     "WordPressExecutionStatus::NotPerformed",
+    "WordPressExternalApplicability::IndeterminateUnsupported",
+    "WordPressExternalComparisonPolicy::WordfenceV3SourceSemanticsUnresolvedV1",
+    "WordPressExternalRangeDocument::is_valid",
+    "WordPressExternalVersionEvidenceStatus::Missing",
+    "WordPressExternalVersionEvidenceStatus::MultipleDistinctDeclarations",
+    "WordPressExternalVersionEvidenceStatus::RepeatedExactDeclaration",
+    "WordPressExternalVersionEvidenceStatus::SingleDeclaration",
+    "WordPressExternalVersionRelation::SourceComparisonSemanticsUnresolved",
     "WordPressHostingOs::Bsd",
     "WordPressHostingOs::Linux",
     "WordPressHostingOs::Macos",
@@ -7910,6 +8093,13 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressVersionResolutionReason::NoVersionEvidence",
     "WordPressVersionResolutionReason::SingleSupportedVersion",
     "WordPressVersionResolutionReason::UnsupportedVersionEvidence",
+    "WordfenceV3CvssRating::Critical",
+    "WordfenceV3CvssRating::High",
+    "WordfenceV3CvssRating::Low",
+    "WordfenceV3CvssRating::Medium",
+    "WordfenceV3CvssRating::None",
+    "WordfenceV3RangeValue::Any",
+    "WordfenceV3RangeValue::Declared",
     "OpenApiRuntimeOutcome::BudgetExhausted",
     "OpenApiRuntimeOutcome::Cancelled",
     "OpenApiRuntimeOutcome::DefensiveInterference",
@@ -7996,6 +8186,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "Self::OutputLimitExceeded",
     "Self::Serialization",
     "StepDocument::from_step",
+    "String::as_str",
     "ToString::to_string",
     "char::from",
     "crate::web_runtime::AssessmentBasis",
@@ -8031,6 +8222,15 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::MAX_WORDPRESS_SIGNALS",
     "crate::wordpress_review::MAX_WORDPRESS_SLUG_BYTES",
     "crate::wordpress_review::MAX_WORDPRESS_VERSION_BYTES",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_PATCHED_VERSIONS",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_NOTICE_PARTIES",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_PRODUCTION_BYTES",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_RECORDS",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_REFERENCES",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_RESEARCHERS",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_SOFTWARE_ASSOCIATIONS",
+    "crate::wordpress_review::MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD",
     "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA",
     "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2",
     "crate::wordpress_review::WordPressActivationState",
@@ -8044,6 +8244,13 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::WordPressEvidenceConfidence",
     "crate::wordpress_review::WordPressEvidenceSource",
     "crate::wordpress_review::WordPressExecutionStatus",
+    "crate::wordpress_review::WordPressExternalAdvisoryEvaluation",
+    "crate::wordpress_review::WordPressExternalApplicability",
+    "crate::wordpress_review::WordPressExternalComparisonPolicy",
+    "crate::wordpress_review::WordPressExternalReview",
+    "crate::wordpress_review::WordPressExternalVersionEvidenceResolution",
+    "crate::wordpress_review::WordPressExternalVersionEvidenceStatus",
+    "crate::wordpress_review::WordPressExternalVersionRelation",
     "crate::wordpress_review::WordPressHostingOs",
     "crate::wordpress_review::WordPressInventoryCategoryStatus",
     "crate::wordpress_review::WordPressInventoryEntryStatus",
@@ -8056,6 +8263,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::WordPressVersionRelation",
     "crate::wordpress_review::WordPressVersionResolution",
     "crate::wordpress_review::WordPressVersionResolutionReason",
+    "crate::wordpress_review::WordfenceV3CvssRating",
+    "crate::wordpress_review::WordfenceV3RangeValue",
     "fmt::Arguments",
     "fmt::Display",
     "fmt::Error",
@@ -8070,6 +8279,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "serde::Serialize",
     "serde_json::to_writer",
     "serde_json::to_string",
+    "std::collections::BTreeMap::new",
+    "std::collections::BTreeSet",
     "std::collections::BTreeSet::new",
     "std::error::Error",
     "std::fmt",
@@ -8090,6 +8301,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "termivar_core::RunStepStatus",
     "termivar_core::RunStopCode",
     "termivar_core::SecuritySeverity",
+    "url::Url::parse",
 ];
 
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
@@ -8117,9 +8329,13 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "authorization_review_outcome_token",
     "char::from",
     "disposition_token",
+    "external_range_value_is_valid",
+    "external_version_evidence_resolution_is_valid",
     "fmt::write",
     "io::Error::other",
     "is_bidi_control",
+    "is_strict_https_reference",
+    "is_wordfence_vulnerability_reference",
     "lowercase_hex",
     "longest_backtick_run",
     "optional_bool_token",
@@ -8145,6 +8361,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "starts_csv_formula_after_whitespace",
     "std::str::from_utf8",
     "std::collections::BTreeSet::new",
+    "std::collections::BTreeMap::new",
     "step_status_token",
     "stop_code_token",
     "supplied",
@@ -8156,16 +8373,20 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "valid_inventory_label",
     "valid_inventory_version",
     "valid_lowercase_sha256",
+    "valid_lowercase_uuid",
+    "valid_prefixed_lowercase_sha256",
     "write_assessment_csv_row",
     "write_csv_cell",
     "write_csv_row",
     "write_html_optional_decimal",
     "write_html_optional_assessment_text",
     "write_html_text",
+    "write_html_wordpress_external_attribution",
     "write_json_codepoint",
     "write_markdown_code_span",
     "write_markdown_optional_assessment_text",
     "write_markdown_optional_decimal",
+    "write_markdown_wordpress_external_attribution",
     "write_visible_codepoint",
     "wordpress_activation",
     "wordpress_applicability",
@@ -8177,6 +8398,17 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_evidence_class",
     "wordpress_evidence_source",
     "wordpress_execution",
+    "wordpress_external_applicability",
+    "wordpress_external_comparison_policy",
+    "wordpress_external_cvss_rating",
+    "wordpress_external_evaluation_document",
+    "wordpress_external_range_value",
+    "wordpress_external_record_reference",
+    "wordpress_external_review_document",
+    "wordpress_external_source_counts_are_valid",
+    "wordpress_external_version_evidence_resolution",
+    "wordpress_external_version_evidence_status",
+    "wordpress_external_version_relation",
     "wordpress_hosting_os",
     "wordpress_inventory_category_status",
     "wordpress_inventory_entry_status",
@@ -8189,6 +8421,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_version_relation",
     "wordpress_version_resolution",
     "wordpress_version_resolution_reason",
+    "url::Url::parse",
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
@@ -8214,6 +8447,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "chain",
     "chars",
     "checked_add",
+    "checked_mul",
     "class",
     "clone",
     "code",
@@ -8231,6 +8465,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "cross_resources_equivalent",
     "dimensions",
     "disposition",
+    "distinct_spelling_count",
     "deprecated_operation_count",
     "declared_name",
     "documented_response",
@@ -8240,6 +8475,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "evidence_ids",
     "evidence",
     "evidence_count",
+    "evidence_row_count",
     "explicit_auth_operation_count",
     "extend_from_slice",
     "find",
@@ -8354,6 +8590,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "rest_review_audit",
     "validate",
     "version",
+    "version_evidence_resolution",
     "verification_outcome",
     "wall_time_ms",
     "write_operation_count",
@@ -8404,6 +8641,64 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "versions",
     "wire_json",
     "wordpress_review_audit",
+    "as_slice",
+    "contains_key",
+    "counts",
+    "cve_link",
+    "cvss",
+    "description",
+    "display_name",
+    "evaluable_associations",
+    "evaluations",
+    "excluded_associations",
+    "external_review",
+    "fragment",
+    "from",
+    "get",
+    "has_host",
+    "host_str",
+    "informational",
+    "key",
+    "keys",
+    "label",
+    "license",
+    "license_url",
+    "map_or",
+    "mapping_revision",
+    "message",
+    "min",
+    "name",
+    "notice",
+    "notice_ids",
+    "notices",
+    "or_else",
+    "parsed_records",
+    "party",
+    "password",
+    "path",
+    "port",
+    "published",
+    "query",
+    "rating",
+    "references",
+    "researchers",
+    "scheme",
+    "score",
+    "selected_associations",
+    "semantic_sha256",
+    "software_associations",
+    "source_format",
+    "source_namespace",
+    "source_patched",
+    "source_patched_versions",
+    "source_remediation",
+    "to",
+    "unsupported_associations",
+    "updated",
+    "upstream_id",
+    "username",
+    "vector",
+    "windows",
 ];
 
 const ALLOWED_REPORTING_MACROS: &[&str] = &["format", "format_args", "matches", "vec"];
@@ -8478,6 +8773,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE"
                         | "crate::wordpress_review::MAX_WORDPRESS_SAVED_INVENTORY_BYTES"
                         | "crate::wordpress_review::MAX_WORDPRESS_SIGNALS"
+                        | "crate::wordpress_review::MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD"
                         | "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA"
                         | "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2"
                         | "crate::wordpress_review::WordPressActivationState"
@@ -8490,6 +8786,10 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::wordpress_review::WordPressEvidenceConfidence"
                         | "crate::wordpress_review::WordPressEvidenceSource"
                         | "crate::wordpress_review::WordPressExecutionStatus"
+                        | "crate::wordpress_review::WordPressExternalApplicability"
+                        | "crate::wordpress_review::WordPressExternalComparisonPolicy"
+                        | "crate::wordpress_review::WordPressExternalVersionEvidenceStatus"
+                        | "crate::wordpress_review::WordPressExternalVersionRelation"
                         | "crate::wordpress_review::WordPressHostingOs"
                         | "crate::wordpress_review::WordPressInventoryCategoryStatus"
                         | "crate::wordpress_review::WordPressInventoryEntryStatus"
@@ -8502,6 +8802,8 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::wordpress_review::WordPressVersionRelation"
                         | "crate::wordpress_review::WordPressVersionResolution"
                         | "crate::wordpress_review::WordPressVersionResolutionReason"
+                        | "crate::wordpress_review::WordfenceV3CvssRating"
+                        | "crate::wordpress_review::WordfenceV3RangeValue"
                 )
             });
         let attributes_are_exact = if assessment_import {
@@ -11836,15 +12138,19 @@ mod tests {
                     WordPressApplicability, WordPressCatalogStatus, WordPressComparisonProfile,
                     WordPressComponentEvidenceClass, WordPressComponentKind,
                     WordPressEvidenceConfidence, WordPressEvidenceSource,
-                    WordPressExecutionStatus, WordPressHostingOs,
+                    WordPressExecutionStatus, WordPressExternalApplicability,
+                    WordPressExternalComparisonPolicy, WordPressExternalVersionEvidenceStatus,
+                    WordPressExternalVersionRelation, WordPressHostingOs,
                     WordPressInventoryCategoryStatus, WordPressInventoryEntryStatus,
                     WordPressInventoryLimitationReason, WordPressLocalInputClass,
                     WordPressMultisiteState, WordPressPatchState, WordPressPrerequisite,
                     WordPressPrerequisiteOutcome, WordPressVersionRelation,
                     WordPressVersionResolution, WordPressVersionResolutionReason,
+                    WordfenceV3CvssRating, WordfenceV3RangeValue,
                     MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_RESULT_COMPONENTS,
                     MAX_WORDPRESS_RESULT_VERSION_EVIDENCE,
                     MAX_WORDPRESS_SAVED_INVENTORY_BYTES, MAX_WORDPRESS_SIGNALS,
+                    MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD,
                     WORDPRESS_ADVISORY_CATALOG_SCHEMA, WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2,
                 },
             };
@@ -11928,6 +12234,34 @@ mod tests {
         assert!(
             violations.contains("imports must be exactly")
                 && violations.contains("MAX_WORDPRESS_SAVED_INVENTORY_BYTES"),
+            "{violations}"
+        );
+
+        let missing_external_source_bound = imports.replace(
+            "                    MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD,\n",
+            "",
+        );
+        assert_ne!(missing_external_source_bound, imports);
+        let violations = reporting_source_import_violations(&missing_external_source_bound)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("imports must be exactly")
+                && violations.contains("MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD"),
+            "{violations}"
+        );
+
+        let missing_external_resolution_status = imports.replace(
+            "                    WordPressExternalComparisonPolicy, WordPressExternalVersionEvidenceStatus,\n",
+            "                    WordPressExternalComparisonPolicy,\n",
+        );
+        assert_ne!(missing_external_resolution_status, imports);
+        let violations = reporting_source_import_violations(&missing_external_resolution_status)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("imports must be exactly")
+                && violations.contains("WordPressExternalVersionEvidenceStatus"),
             "{violations}"
         );
     }
@@ -12250,6 +12584,8 @@ mod tests {
                 catalog: Option<WordPressCatalogDocument>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 inventory_import: Option<WordPressInventoryImportDocument>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                external_review: Option<WordPressExternalReviewDocument>,
                 signal_count: u16,
                 evidence_reference_count: u16,
                 additional_request_count: u8,
@@ -12314,6 +12650,123 @@ mod tests {
                 class: &'static str,
                 byte_length: usize,
                 sha256: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalReviewDocument {
+                source_namespace: &'static str,
+                source_format: &'static str,
+                mapping_revision: &'static str,
+                comparison_policy: &'static str,
+                input: WordPressExternalInputDocument,
+                counts: WordPressExternalCountsDocument,
+                notices: Vec<WordPressExternalNoticeDocument>,
+                evaluations: Vec<WordPressExternalEvaluationDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalInputDocument {
+                byte_length: u64,
+                sha256: String,
+                semantic_sha256: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalCountsDocument {
+                parsed_records: usize,
+                software_associations: usize,
+                selected_associations: usize,
+                evaluable_associations: usize,
+                unsupported_associations: usize,
+                excluded_associations: usize,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalNoticeDocument {
+                id: String,
+                message: String,
+                party: String,
+                notice: String,
+                license: String,
+                license_url: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalEvaluationDocument {
+                key: WordPressExternalEvaluationKeyDocument,
+                title: String,
+                display_name: String,
+                informational: bool,
+                description: String,
+                references: Vec<String>,
+                record_reference: Option<String>,
+                cwe: Option<WordPressExternalCweDocument>,
+                cvss: Option<WordPressExternalCvssDocument>,
+                cve: Option<String>,
+                cve_link: Option<String>,
+                researchers: Vec<String>,
+                source_dates: WordPressExternalSourceDatesDocument,
+                affected_ranges: Vec<WordPressExternalRangeDocument>,
+                source_patched: bool,
+                source_patched_versions: Vec<String>,
+                source_remediation: String,
+                notice_ids: Vec<String>,
+                component_evidence: &'static str,
+                version_evidence_resolution: WordPressExternalVersionEvidenceResolutionDocument,
+                version_relation: &'static str,
+                applicability: &'static str,
+                execution: WordPressExternalExecutionDocument,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalVersionEvidenceResolutionDocument {
+                status: &'static str,
+                evidence_row_count: usize,
+                distinct_spelling_count: usize,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalEvaluationKeyDocument {
+                source_namespace: String,
+                upstream_id: String,
+                component: WordPressComponentIdentityDocument,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalCweDocument {
+                id: u32,
+                name: String,
+                description: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalCvssDocument {
+                vector: String,
+                score: String,
+                rating: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalSourceDatesDocument {
+                published: Option<String>,
+                updated: Option<String>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalRangeDocument {
+                label: String,
+                from_kind: &'static str,
+                from_version: String,
+                from_inclusive: bool,
+                to_kind: &'static str,
+                to_version: String,
+                to_inclusive: bool,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressExternalExecutionDocument {
+                exploit_execution: &'static str,
+                impact_validation: &'static str,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
@@ -12728,6 +13181,41 @@ mod tests {
     }
 
     #[test]
+    fn wordpress_v4_nested_document_shape_mutations_are_rejected() {
+        let source = valid_reporting_document_contract_fixture();
+        assert!(reporting_document_contract_violations(source)
+            .unwrap()
+            .is_empty());
+
+        let missing_semantic_digest =
+            source.replacen("                semantic_sha256: String,\n", "", 1);
+        assert_ne!(missing_semantic_digest, source);
+        let violations = reporting_document_contract_violations(&missing_semantic_digest)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("WordPressExternalInputDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let changed_resolution_count_type = source.replacen(
+            "                distinct_spelling_count: usize,",
+            "                distinct_spelling_count: u64,",
+            1,
+        );
+        assert_ne!(changed_resolution_count_type, source);
+        let violations = reporting_document_contract_violations(&changed_resolution_count_type)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("WordPressExternalVersionEvidenceResolutionDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+    }
+
+    #[test]
     fn reporting_comparison_declaration_does_not_unlock_existing_renderer() {
         let source =
             include_str!("../../../crates/termivar-scanner/src/reporting.rs").replace("\r\n", "\n");
@@ -12803,6 +13291,16 @@ mod tests {
             "                || false",
         );
         assert_ne!(dropped_inventory_digest_validation, source);
+        let removed_external_source_count_bound = source.replace(
+            ".checked_mul(MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD)",
+            ".checked_mul(usize::MAX)",
+        );
+        assert_ne!(removed_external_source_count_bound, source);
+        let forged_external_resolution_status = source.replace(
+            "WordPressExternalVersionEvidenceStatus::Missing => \"missing\",",
+            "WordPressExternalVersionEvidenceStatus::Missing => \"single_declaration\",",
+        );
+        assert_ne!(forged_external_resolution_status, source);
         for mutation in [
             private_detail,
             forged_macro_status,
@@ -12812,6 +13310,8 @@ mod tests {
             dropped_basis_count_binding,
             forged_verifier_case_link,
             dropped_inventory_digest_validation,
+            removed_external_source_count_bound,
+            forged_external_resolution_status,
         ] {
             assert!(reporting_production_body_inventory_violations(&mutation)
                 .iter()

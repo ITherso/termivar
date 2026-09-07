@@ -246,7 +246,25 @@ termivar scan <AUTHORIZED_EXACT_ROOT> \
   --report-dir <NEW_REPORT_DIRECTORY>
 ```
 
-The two local files are optional, but each requires `--wordpress-review`.
+Instead of the native Termivar catalogue, an already saved Wordfence V3
+Production-format export can be selected explicitly:
+
+```bash
+termivar scan <AUTHORIZED_EXACT_ROOT> \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-plugins-json <WP_CLI_PLUGINS.json> \
+  --wordpress-themes-json <WP_CLI_THEMES.json> \
+  --wordpress-core-version-file <CORE_VERSION.txt> \
+  --wordpress-advisories <WORDFENCE_PRODUCTION.json> \
+  --wordpress-advisories-format wordfence-v3-production \
+  --report-dir <NEW_REPORT_DIRECTORY>
+```
+
+All local files are optional, but each requires `--wordpress-review`; the saved
+inventory files conflict with `--wordpress-context`. External format selection
+never fetches the feed or searches for an API key, and omitting it keeps the
+native Termivar catalogue contract.
 WordPress interpretation reuses the complete root HTML already obtained by the
 assessment and adds no request or active verification. Generator metadata and
 asset paths are hints rather than authenticated installation facts; the context
