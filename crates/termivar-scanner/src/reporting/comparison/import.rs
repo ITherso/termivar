@@ -89,6 +89,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         }
     }
     let mut optional_audits = BTreeMap::new();
+    let mut wordpress_review = None;
     for name in [
         "authorization_review",
         "openapi_review",
@@ -96,7 +97,10 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "wordpress_review",
     ] {
         if let Some(value) = root.get(name) {
-            audits::validate(name, value, &items)?;
+            let imported = audits::validate(name, value, &items)?;
+            if name == "wordpress_review" {
+                wordpress_review = imported;
+            }
             optional_audits.insert(name.to_owned(), value.clone());
         }
     }
@@ -127,6 +131,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             optional_audits,
         },
         items,
+        wordpress_review,
     })
 }
 

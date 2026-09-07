@@ -1,11 +1,15 @@
 //! Standalone, display-only comparison screen. Imported values never become code.
 
 use super::super::{write_html_text, RenderBuffer, ReportError};
-use super::{ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, SourceMetadata};
+use super::{
+    ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, SourceMetadata,
+    WordPressEntityChanges, WordPressFacetComparison, WordPressReviewComparison,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-const STYLE: &str = r#":root{color-scheme:light dark;--bg:#f4f6fa;--panel:#fff;--ink:#172235;--muted:#526178;--line:#d8e0eb;--accent:#315ec9;--soft:#eaf0ff;--after:#176b70;--before:#79542c;--changed:#714db3;--same:#526178}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1120px;margin:auto;padding:40px 24px 60px}h1{font-size:clamp(1.9rem,5vw,2.7rem);line-height:1.15;margin:8px 0 14px;letter-spacing:-.035em}h2{font-size:1.15rem;margin:0}h3{font-size:1rem;margin:0}.eyebrow{letter-spacing:.14em;font-size:.72rem;font-weight:750;color:var(--accent);text-transform:uppercase}.muted{color:var(--muted)}.intro{max-width:780px}.notice{border-left:3px solid var(--accent);padding:12px 16px;background:var(--soft);margin:22px 0}.sources{display:grid;grid-template-columns:1fr 1fr;gap:16px}.source,.card,.item{background:var(--panel);border:1px solid var(--line);border-radius:12px}.source{padding:16px}.source h2{margin-bottom:6px}.hash{font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.source dl{font-size:.82rem;margin:8px 0 0}.source dt{font-weight:650}.source dd{margin:0 0 6px;overflow-wrap:anywhere}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:24px 0 12px}.card{padding:16px;border-top:3px solid var(--same)}.card.after{border-top-color:var(--after)}.card.before{border-top-color:var(--before)}.card.changed{border-top-color:var(--changed)}.number{font-size:2rem;line-height:1.15;display:block;font-weight:730}.card p{margin:6px 0 0;font-size:.78rem;color:var(--muted)}.controls{position:sticky;top:0;z-index:1;background:var(--bg);padding:16px 0;border-bottom:1px solid var(--line)}label{display:block;font-weight:650;margin-bottom:6px}input{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;width:100%}.filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}button{font:inherit;font-size:.85rem;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);cursor:pointer}button[aria-pressed=true]{background:var(--accent);color:#fff;border-color:var(--accent)}:focus-visible{outline:3px solid var(--accent);outline-offset:3px}#visible-count{font-size:.85rem;margin:10px 0 0}.items{display:grid;gap:12px;margin-top:20px}.item{padding:18px;overflow-wrap:anywhere}.item-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.badge{font-size:.72rem;font-weight:700;padding:4px 8px;border:1px solid var(--line);border-radius:6px;white-space:nowrap}.capability{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin:6px 0 12px}.summary{margin:0 0 10px;white-space:pre-wrap}.item details{margin-top:14px}.item summary{cursor:pointer;font-weight:650;min-height:30px}.identity{margin:10px 0;color:var(--muted);font-size:.78rem}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:.85rem;margin-top:10px}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}th:first-child{width:22%}thead{background:var(--soft)}tr.different>th::after{content:" · changed";display:block;font-size:.7rem;color:var(--accent)}.empty{padding:28px;text-align:center;border:1px dashed var(--line);border-radius:10px;margin-top:20px}.skip{position:absolute;left:-10000px}.skip:focus{left:16px;top:8px;z-index:3;background:var(--panel);padding:10px}footer{margin-top:30px;border-top:1px solid var(--line);padding-top:16px;font-size:.8rem;color:var(--muted)}[hidden]{display:none!important}@media(prefers-color-scheme:dark){:root{--bg:#111820;--panel:#192330;--ink:#edf2fa;--muted:#b1bdd0;--line:#36455b;--accent:#9bb8ff;--soft:#202e46;--after:#66c1bc;--before:#d4ae7d;--changed:#b7a0e2;--same:#9cacc2}button[aria-pressed=true]{color:#152239}}@media(max-width:620px){main{padding:24px 14px}.sources{grid-template-columns:1fr}.cards{grid-template-columns:1fr 1fr}.item-heading{display:block}.badge{display:inline-block;margin-top:8px}.item{padding:14px}th,td{padding:8px}th:first-child{width:25%}.controls{position:static}}@media print{:root{color-scheme:light;--bg:#fff;--panel:#fff;--ink:#000;--muted:#333;--line:#bbb;--soft:#f0f0f0;--accent:#333}main{max-width:none;padding:0}body{font-size:10pt}.controls,.skip,noscript,#empty-filter{display:none!important}.item[hidden]{display:block!important}.item{break-inside:avoid;border-radius:0;margin-bottom:12px}.items{display:block}details::details-content{content-visibility:visible}details:not([open])>*:not(summary){display:block!important}.table-wrap{overflow:visible}summary{list-style:none}.sources,.cards{break-inside:avoid}.notice{margin:12px 0}footer{font-size:8pt}}"#;
+const STYLE: &str = r#":root{color-scheme:light dark;--bg:#f4f6fa;--panel:#fff;--ink:#172235;--muted:#526178;--line:#d8e0eb;--accent:#315ec9;--soft:#eaf0ff;--after:#176b70;--before:#79542c;--changed:#714db3;--same:#526178}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1120px;margin:auto;padding:40px 24px 60px}h1{font-size:clamp(1.9rem,5vw,2.7rem);line-height:1.15;margin:8px 0 14px;letter-spacing:-.035em}h2{font-size:1.15rem;margin:0}h3{font-size:1rem;margin:0}.eyebrow{letter-spacing:.14em;font-size:.72rem;font-weight:750;color:var(--accent);text-transform:uppercase}.muted{color:var(--muted)}.intro{max-width:780px}.notice{border-left:3px solid var(--accent);padding:12px 16px;background:var(--soft);margin:22px 0}.sources{display:grid;grid-template-columns:1fr 1fr;gap:16px}.source,.card,.item,.wp-review{background:var(--panel);border:1px solid var(--line);border-radius:12px}.source,.wp-review{padding:16px}.source h2,.wp-review h2{margin-bottom:6px}.wp-review{margin:22px 0}.wp-review details{margin-top:12px}.wp-review summary{cursor:pointer;font-weight:650;min-height:30px}.wp-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0}.wp-summary div{background:var(--soft);border-radius:8px;padding:10px}.hash{font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.source dl{font-size:.82rem;margin:8px 0 0}.source dt{font-weight:650}.source dd{margin:0 0 6px;overflow-wrap:anywhere}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:24px 0 12px}.card{padding:16px;border-top:3px solid var(--same)}.card.after{border-top-color:var(--after)}.card.before{border-top-color:var(--before)}.card.changed{border-top-color:var(--changed)}.number{font-size:2rem;line-height:1.15;display:block;font-weight:730}.card p{margin:6px 0 0;font-size:.78rem;color:var(--muted)}.controls{position:sticky;top:0;z-index:1;background:var(--bg);padding:16px 0;border-bottom:1px solid var(--line)}label{display:block;font-weight:650;margin-bottom:6px}input{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;width:100%}.filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}button{font:inherit;font-size:.85rem;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);cursor:pointer}button[aria-pressed=true]{background:var(--accent);color:#fff;border-color:var(--accent)}:focus-visible{outline:3px solid var(--accent);outline-offset:3px}#visible-count{font-size:.85rem;margin:10px 0 0}.items{display:grid;gap:12px;margin-top:20px}.item{padding:18px;overflow-wrap:anywhere}.item-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.badge{font-size:.72rem;font-weight:700;padding:4px 8px;border:1px solid var(--line);border-radius:6px;white-space:nowrap}.capability{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted);margin:6px 0 12px}.summary{margin:0 0 10px;white-space:pre-wrap}.item details{margin-top:14px}.item summary{cursor:pointer;font-weight:650;min-height:30px}.identity{margin:10px 0;color:var(--muted);font-size:.78rem}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:.85rem;margin-top:10px}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}th:first-child{width:22%}thead{background:var(--soft)}tr.different>th::after{content:" · changed";display:block;font-size:.7rem;color:var(--accent)}.empty{padding:28px;text-align:center;border:1px dashed var(--line);border-radius:10px;margin-top:20px}.skip{position:absolute;left:-10000px}.skip:focus{left:16px;top:8px;z-index:3;background:var(--panel);padding:10px}footer{margin-top:30px;border-top:1px solid var(--line);padding-top:16px;font-size:.8rem;color:var(--muted)}[hidden]{display:none!important}@media(prefers-color-scheme:dark){:root{--bg:#111820;--panel:#192330;--ink:#edf2fa;--muted:#b1bdd0;--line:#36455b;--accent:#9bb8ff;--soft:#202e46;--after:#66c1bc;--before:#d4ae7d;--changed:#b7a0e2;--same:#9cacc2}button[aria-pressed=true]{color:#152239}}@media(max-width:620px){main{padding:24px 14px}.sources{grid-template-columns:1fr}.cards{grid-template-columns:1fr 1fr}.wp-summary{grid-template-columns:1fr}.item-heading{display:block}.badge{display:inline-block;margin-top:8px}.item{padding:14px}th,td{padding:8px}th:first-child{width:25%}.controls{position:static}}@media print{:root{color-scheme:light;--bg:#fff;--panel:#fff;--ink:#000;--muted:#333;--line:#bbb;--soft:#f0f0f0;--accent:#333}main{max-width:none;padding:0}body{font-size:10pt}.controls,.skip,noscript,#empty-filter{display:none!important}.item[hidden]{display:block!important}.item{break-inside:avoid;border-radius:0;margin-bottom:12px}.items{display:block}details::details-content{content-visibility:visible}details:not([open])>*:not(summary){display:block!important}.table-wrap{overflow:visible}summary{list-style:none}.sources,.cards,.wp-review{break-inside:avoid}.notice{margin:12px 0}footer{font-size:8pt}}"#;
 
 // This exact program is hashed into CSP; no report data is interpolated here.
 const SCRIPT: &str = r#"(()=>{'use strict';const controls=document.getElementById('controls');const search=document.getElementById('search');const buttons=Array.from(document.querySelectorAll('[data-filter]'));const items=Array.from(document.querySelectorAll('article[data-group]'));const status=document.getElementById('visible-count');const empty=document.getElementById('empty-filter');let group='all';const apply=()=>{const query=search.value.toLocaleLowerCase('en-US').trim();let count=0;for(const item of items){const matches=(group==='all'||item.dataset.group===group)&&item.textContent.toLocaleLowerCase('en-US').includes(query);item.hidden=!matches;if(matches)count++;}status.textContent=count+' of '+items.length+' observations shown';empty.hidden=count!==0;};search.addEventListener('input',apply);for(const button of buttons){button.addEventListener('click',()=>{group=button.dataset.filter;for(const other of buttons)other.setAttribute('aria-pressed',String(other===button));apply();});}let opened=[];window.addEventListener('beforeprint',()=>{opened=Array.from(document.querySelectorAll('details')).map(detail=>[detail,detail.open]);for(const [detail]of opened)detail.open=true;});window.addEventListener('afterprint',()=>{for(const [detail,wasOpen]of opened)detail.open=wasOpen;opened=[];});controls.hidden=false;apply();})();"#;
@@ -26,7 +30,11 @@ pub(super) fn render(
     output.push_str("</style></head><body><a class=\"skip\" href=\"#observations\">Skip to observations</a><main><header><div class=\"eyebrow\">Termivar / Offline report compare</div><h1>Compare observations</h1><p class=\"intro muted\">A side-by-side view of two supplied assessment documents. No assessment was rerun.</p></header><p class=\"notice\"><strong>Disappearance is not verified remediation.</strong> Presence only in the after report does not establish when a condition appeared. Imported claims are displayed, not independently endorsed.</p><section class=\"sources\" aria-label=\"Supplied reports\">")?;
     source(&mut output, "Before report", &document.before)?;
     source(&mut output, "After report", &document.after)?;
-    output.push_str("</section><p class=\"muted\">Scope assurance: operator-declared. Coverage equivalence: not established. Source authenticity: not established by parsing.</p><section class=\"cards\" aria-label=\"Comparison totals\">")?;
+    output.push_str("</section><p class=\"muted\">Scope assurance: operator-declared. Coverage equivalence: not established. Source authenticity: not established by parsing.</p>")?;
+    if let Some(wordpress) = &document.wordpress_review_comparison {
+        wordpress_review(&mut output, wordpress)?;
+    }
+    output.push_str("<section class=\"cards\" aria-label=\"Comparison totals\">")?;
     let groups = [
         (
             "only_in_after",
@@ -100,17 +108,180 @@ fn source(
         output.push_str("</dd>")?;
     }
     for (name, value) in &metadata.optional_audits {
-        let value = serde_json::to_string(value).map_err(|_| ReportError::Serialization)?;
         output.push_str("<dt>Optional audit: ")?;
         write_html_text(output, name)?;
         output.push_str("</dt><dd class=\"hash\">")?;
-        write_html_text(output, &value)?;
+        if name == "wordpress_review" {
+            let serialized =
+                serde_json::to_string(value).map_err(|_| ReportError::Serialization)?;
+            write_html_text(
+                output,
+                value
+                    .get("schema")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("validated supported schema"),
+            )?;
+            output.push_str(" — semantic differences are shown below<details><summary>Validated audit snapshot</summary>")?;
+            write_html_text(output, &serialized)?;
+            output.push_str("</details>")?;
+        } else {
+            let value = serde_json::to_string(value).map_err(|_| ReportError::Serialization)?;
+            write_html_text(output, &value)?;
+        }
         output.push_str("</dd>")?;
     }
     output.push_fmt(format_args!(
         "<dt>Supplied counts</dt><dd>{} observations · {} subjects</dd></dl></div>",
         metadata.item_count, metadata.subject_count
     ))
+}
+
+fn wordpress_review(
+    output: &mut RenderBuffer,
+    comparison: &WordPressReviewComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"wordpress-review-differences\"><h2 id=\"wordpress-review-differences\">WordPress review differences</h2><p class=\"muted\">Validated display-only audit projections are compared under the operator-declared same-scope assertion. This does not rerun a scan or establish remediation, newness, or causation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Declared coverage", comparison.coverage.status.as_str()),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Provenance", comparison.provenance.status.as_str()),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str("</span>. A present-side audit is not enumerated as removed, fixed, or newly discovered.</p>")?;
+    }
+    for (label, facet) in [
+        ("Declared coverage", &comparison.coverage),
+        ("Methodology", &comparison.methodology),
+        ("Provenance", &comparison.provenance),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    wordpress_entities(output, "Components", &comparison.components)?;
+    wordpress_entities(output, "Advisories", &comparison.advisories)?;
+    output.push_str("<details><summary>Interpretation limits</summary><ul>")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn wordpress_facet(
+    output: &mut RenderBuffer,
+    label: &str,
+    facet: &WordPressFacetComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<details><summary>")?;
+    write_html_text(output, label)?;
+    output.push_str(" — ")?;
+    write_html_text(output, &facet.status)?;
+    output.push_str("</summary><p class=\"muted\">")?;
+    write_html_text(output, facet.note)?;
+    output.push_str("</p><div class=\"table-wrap\"><table><caption>")?;
+    write_html_text(output, label)?;
+    output.push_str(" as supplied</caption><thead><tr><th scope=\"col\">Field</th><th scope=\"col\">Before</th><th scope=\"col\">After</th></tr></thead><tbody>")?;
+    let changed_fields = if facet.changed_fields.is_empty() {
+        "None".to_owned()
+    } else {
+        facet.changed_fields.join(", ")
+    };
+    row(
+        output,
+        "Changed fields",
+        Some(&changed_fields),
+        Some(&changed_fields),
+    )?;
+    let before = display_optional_value(facet.before.as_ref())?;
+    let after = display_optional_value(facet.after.as_ref())?;
+    row(output, "Projection", Some(&before), Some(&after))?;
+    output.push_str("</tbody></table></div></details>")
+}
+
+fn wordpress_entities<K: Serialize>(
+    output: &mut RenderBuffer,
+    label: &str,
+    changes: &WordPressEntityChanges<K>,
+) -> Result<(), ReportError> {
+    output.push_str("<details><summary>")?;
+    write_html_text(output, label)?;
+    output.push_fmt(format_args!(
+        " — {} changed, {} only before, {} only after, {} unchanged</summary>",
+        changes.paired_changed.len(),
+        changes.only_in_before.len(),
+        changes.only_in_after.len(),
+        changes.paired_unchanged_count,
+    ))?;
+    for change in &changes.paired_changed {
+        output.push_str(
+            "<h3>Paired identity with changed content</h3><p class=\"identity hash\">Key: ",
+        )?;
+        write_html_text(output, &display_serializable(&change.key)?)?;
+        output.push_str("</p><div class=\"table-wrap\"><table><caption>Changed WordPress dimensions</caption><thead><tr><th scope=\"col\">Dimension</th><th scope=\"col\">Before</th><th scope=\"col\">After</th></tr></thead><tbody>")?;
+        let mut displayed_dimensions = change.changed_dimensions.clone();
+        if change.changed_dimensions.iter().any(|dimension| {
+            matches!(
+                dimension.as_str(),
+                "advisory_content" | "affected_ranges" | "source_fix_information"
+            )
+        }) && !displayed_dimensions
+            .iter()
+            .any(|value| value == "attribution")
+            && (change.before.contains_key("attribution")
+                || change.after.contains_key("attribution"))
+        {
+            displayed_dimensions.push("attribution".to_owned());
+        }
+        for dimension in &displayed_dimensions {
+            let before = change
+                .before
+                .get(dimension)
+                .map(display_value)
+                .transpose()?;
+            let after = change.after.get(dimension).map(display_value).transpose()?;
+            row(output, dimension, before.as_deref(), after.as_deref())?;
+        }
+        output.push_str("</tbody></table></div>")?;
+    }
+    for (side, entities) in [
+        ("before", &changes.only_in_before),
+        ("after", &changes.only_in_after),
+    ] {
+        for entity in entities {
+            output.push_str("<h3>Present only in the supplied ")?;
+            write_html_text(output, side)?;
+            output.push_str(" audit</h3><p class=\"identity hash\">Key: ")?;
+            write_html_text(output, &display_serializable(&entity.key)?)?;
+            output.push_str("</p><p class=\"hash\">Content: ")?;
+            write_html_text(output, &display_serializable(&entity.content)?)?;
+            output.push_str("</p><p class=\"muted\">Interpretation: ")?;
+            write_html_text(output, entity.interpretation)?;
+            output.push_str("</p>")?;
+        }
+    }
+    output.push_str("</details>")
+}
+
+fn display_optional_value(value: Option<&serde_json::Value>) -> Result<String, ReportError> {
+    value.map_or_else(|| Ok("Not recorded".to_owned()), display_value)
+}
+
+fn display_value(value: &serde_json::Value) -> Result<String, ReportError> {
+    serde_json::to_string(value).map_err(|_| ReportError::Serialization)
+}
+
+fn display_serializable(value: &impl Serialize) -> Result<String, ReportError> {
+    serde_json::to_string(value).map_err(|_| ReportError::Serialization)
 }
 
 fn observation(

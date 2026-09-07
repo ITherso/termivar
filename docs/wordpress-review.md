@@ -365,10 +365,43 @@ WordPress surface observation as vulnerability counts.
 
 JSON retains the complete versioned audit contract and CSV retains its existing
 bounded audit projection. Offline Verify checks the saved document and bundle
-contract, not advisory truth. At this stage Report Compare preserves and shows
-the optional audit bytes but does not yet attribute WordPress changes to
-inventory, advisory, or methodology causes; use its result as a document
-comparison, not remediation proof.
+contract, not advisory truth. The matching development Report Compare reader
+can add the semantic WordPress comparison described below; it remains a
+comparison of supplied documents, not remediation proof.
+
+## Offline WordPress comparison
+
+When either supported input to `termivar report compare` contains a WordPress
+audit, the output includes an optional `wordpress_review_comparison` section
+with nested schema `termivar-wordpress-review-comparison/v1`. This is additive:
+the outer `termivar-report-comparison/v1` schema and its four existing item
+groups are unchanged. The section is absent when neither report has a
+WordPress audit.
+
+The required `--same-scope` flag remains only the operator's declaration that
+the selected reports are comparable; it does not authenticate a site or prove
+that both audits observed the same installation. Within that declared scope,
+components match by kind and canonical slug. Native advisory records match by
+`catalog.id`, upstream advisory ID, and component kind/slug. External records
+match by source namespace, upstream ID, and component kind/slug. Titles, CVEs,
+array order, and other display content do not replace those stable keys.
+
+The section reports component evidence, advisory content, affected ranges,
+source-declared fix/remediation, methodology, provenance, coverage, and
+applicability changes as separate dimensions. It does not assign causality
+between them. If one report has no WordPress audit, the result is
+`not_compared` with `coverage_changed`; the available side is not treated as a
+new vulnerability or a resolved condition. The same claim limit applies to an
+advisory disappearance or applicability transition.
+
+Supported `security.wordpress-review-audit/v1` through `/v4` inputs are
+interpreted to the historical depth each contract actually contains; later
+coverage or provenance fields are not invented for earlier versions. An exact
+input SHA-256 identifies bytes, while semantic comparison uses validated typed
+content. A byte change alone therefore does not establish a WordPress meaning
+change, authenticity, or freshness. Compare imports the two saved reports and
+does not rerun the scanner, WP-CLI, PHP, advisory retrieval, or any network
+request.
 
 ## Result and claim limits
 

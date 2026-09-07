@@ -405,6 +405,37 @@ groups:
 - `changed`: matched identity with different supported comparable content;
 - `unchanged`: matched identity with equal supported comparable content.
 
+When at least one imported assessment contains a supported WordPress audit,
+the comparison includes the additive optional
+`wordpress_review_comparison` section. Its nested schema is
+`termivar-wordpress-review-comparison/v1`; the outer comparison remains
+`termivar-report-comparison/v1`, and the four item groups above retain their
+existing identities and meanings. If neither input has a WordPress audit, the
+section is omitted.
+
+WordPress correlation is valid only inside the same operator-declared
+`--same-scope` boundary. Components use component kind plus canonical slug as
+their stable key. Native advisory keys add `catalog.id` and the upstream
+advisory ID; external keys instead add the source namespace and upstream ID.
+Array position, display title, CVE, and report-local ordering are not identity.
+The comparison keeps component evidence, advisory content, affected ranges,
+source-declared fix/remediation information, methodology, provenance, coverage,
+and applicability changes separate rather than attributing one to another.
+
+If exactly one input has a WordPress audit, the WordPress result is
+`not_compared` with `coverage_changed`; records on the present side are not
+classified as newly vulnerable or remediated. More generally, an advisory's
+disappearance or an applicability transition is document change, not proof of
+a fix, a new vulnerability, or a change at the installation.
+
+The importer supports the historical
+`security.wordpress-review-audit/v1` through `/v4` contracts and compares only
+the typed meaning available in each version. Exact-input byte digests identify
+provenance bytes, not semantic identity or source truth: bytes can differ while
+the supported semantic projection remains equal. This comparison only reads
+the two saved reports; it does not rerun the scanner, WP-CLI, PHP, an advisory
+lookup, or any network operation.
+
 Only-in-before does not mean fixed, resolved, verified-remediated, or safe.
 Only-in-after does not establish when an observation first appeared. Unchanged
 means only that the supported display projection is equal; it is not proof of

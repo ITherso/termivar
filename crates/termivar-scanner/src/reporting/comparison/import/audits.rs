@@ -1,11 +1,13 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
+use super::super::{ImportedWordPressAudit, WordPressAdvisoryKey, WordPressComponentKey};
 use super::{
     array, boolean, check, digest, keys, number, object, optional_boolean, optional_text,
     optional_token, required, string, text, token, ComparisonError, ImportedItem, Value,
     MAX_AUDIT_TEXT_BYTES, MAX_IDENTIFIER_BYTES,
 };
 use crate::wordpress_version::{ProfiledVersionKey, WordPressComparisonProfile};
+use serde_json::Map;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -86,13 +88,25 @@ pub(super) fn validate(
     name: &str,
     value: &Value,
     items: &BTreeMap<String, ImportedItem>,
-) -> Result<(), ComparisonError> {
+) -> Result<Option<ImportedWordPressAudit>, ComparisonError> {
     let fields = object(value)?;
     match name {
-        "openapi_review" => openapi(fields, count(items, OPENAPI_CAPABILITY)),
-        "rest_review" => rest(fields, count(items, REST_CAPABILITY)),
-        "authorization_review" => authorization(fields, count(items, AUTHORIZATION_CAPABILITY)),
-        "wordpress_review" => wordpress(fields, count(items, WORDPRESS_CAPABILITY)),
+        "openapi_review" => {
+            openapi(fields, count(items, OPENAPI_CAPABILITY))?;
+            Ok(None)
+        },
+        "rest_review" => {
+            rest(fields, count(items, REST_CAPABILITY))?;
+            Ok(None)
+        },
+        "authorization_review" => {
+            authorization(fields, count(items, AUTHORIZATION_CAPABILITY))?;
+            Ok(None)
+        },
+        "wordpress_review" => {
+            wordpress(fields, count(items, WORDPRESS_CAPABILITY))?;
+            Ok(Some(wordpress_comparison_snapshot(fields)?))
+        },
         _ => Err(ComparisonError::InvalidDocument),
     }
 }
@@ -294,6 +308,344 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         check(!fields.contains_key("external_review"))?;
     }
     Ok(())
+}
+
+fn wordpress_comparison_snapshot(
+    fields: &Map<String, Value>,
+) -> Result<ImportedWordPressAudit, ComparisonError> {
+    let schema = string(fields, "schema")?;
+    let inventory = fields.get("inventory_import").map(object).transpose()?;
+    let external = fields.get("external_review").map(object).transpose()?;
+
+    let methodology = selected_object(
+        fields,
+        &["schema", "catalog_schema"],
+        &[
+            (
+                "source_namespace",
+                external.and_then(|value| value.get("source_namespace")),
+            ),
+            (
+                "source_format",
+                external.and_then(|value| value.get("source_format")),
+            ),
+            (
+                "mapping_revision",
+                external.and_then(|value| value.get("mapping_revision")),
+            ),
+            (
+                "comparison_policy",
+                external.and_then(|value| value.get("comparison_policy")),
+            ),
+        ],
+    )?;
+
+    let coverage = selected_object(
+        fields,
+        &[
+            "catalog_status",
+            "signal_count",
+            "evidence_reference_count",
+            "item_projected",
+            "component_count",
+            "advisory_count",
+        ],
+        &[
+            (
+                "inventory_coverage",
+                inventory.and_then(|value| value.get("coverage")),
+            ),
+            (
+                "inventory_limitations",
+                inventory.and_then(|value| value.get("limitations")),
+            ),
+            (
+                "external_counts",
+                external.and_then(|value| value.get("counts")),
+            ),
+        ],
+    )?;
+
+    let provenance = selected_object(
+        fields,
+        &["catalog"],
+        &[
+            (
+                "inventory_inputs",
+                inventory.and_then(|value| value.get("inputs")),
+            ),
+            (
+                "external_input",
+                external.and_then(|value| value.get("input")),
+            ),
+        ],
+    )?;
+
+    let mut components = BTreeMap::new();
+    for component in array(fields, "components")? {
+        let component = object(component)?;
+        let key = comparison_component_key(object(required(component, "identity")?)?)?;
+        let content = dimensions(&[(
+            "component_evidence",
+            selected_object(
+                component,
+                &[
+                    "evidence_class",
+                    "identity_sources",
+                    "confidence_classes",
+                    "versions",
+                    "activation",
+                    "inventory_status",
+                ],
+                &[],
+            )?,
+        )]);
+        if components.insert(key, content).is_some() {
+            return Err(ComparisonError::AmbiguousIdentity);
+        }
+    }
+
+    let mut advisories = BTreeMap::new();
+    if schema == "security.wordpress-review-audit/v4" {
+        let external = external.ok_or(ComparisonError::InvalidDocument)?;
+        let namespace = string(external, "source_namespace")?;
+        let mut notices = BTreeMap::new();
+        for notice in array(external, "notices")? {
+            let notice = object(notice)?;
+            notices.insert(
+                string(notice, "id")?.to_owned(),
+                canonical_value(&Value::Object(notice.clone()))?,
+            );
+        }
+        for evaluation in array(external, "evaluations")? {
+            let evaluation = object(evaluation)?;
+            let wire_key = object(required(evaluation, "key")?)?;
+            let component = comparison_component_key(object(required(wire_key, "component")?)?)?;
+            let key = WordPressAdvisoryKey {
+                source_kind: "external".to_owned(),
+                source_namespace: namespace.to_owned(),
+                upstream_id: string(wire_key, "upstream_id")?.to_owned(),
+                component,
+            };
+            let mut bound_notices = Map::new();
+            for notice_id in array(evaluation, "notice_ids")? {
+                let notice_id = notice_id.as_str().ok_or(ComparisonError::InvalidDocument)?;
+                let notice = notices
+                    .get(notice_id)
+                    .ok_or(ComparisonError::InvalidDocument)?;
+                bound_notices.insert(notice_id.to_owned(), notice.clone());
+            }
+            let attribution = selected_object(
+                evaluation,
+                &[
+                    "references",
+                    "record_reference",
+                    "cve_link",
+                    "researchers",
+                    "notice_ids",
+                ],
+                &[("notices", Some(&Value::Object(bound_notices)))],
+            )?;
+            let content = dimensions(&[
+                (
+                    "advisory_content",
+                    selected_object(
+                        evaluation,
+                        &[
+                            "title",
+                            "display_name",
+                            "informational",
+                            "description",
+                            "cwe",
+                            "cvss",
+                            "cve",
+                        ],
+                        &[],
+                    )?,
+                ),
+                (
+                    "affected_ranges",
+                    selected_object(evaluation, &["affected_ranges"], &[])?,
+                ),
+                (
+                    "source_fix_information",
+                    selected_object(
+                        evaluation,
+                        &[
+                            "source_patched",
+                            "source_patched_versions",
+                            "source_remediation",
+                        ],
+                        &[],
+                    )?,
+                ),
+                (
+                    "evaluation_basis",
+                    selected_object(
+                        evaluation,
+                        &[
+                            "component_evidence",
+                            "version_evidence_resolution",
+                            "version_relation",
+                            "execution",
+                        ],
+                        &[],
+                    )?,
+                ),
+                (
+                    "applicability",
+                    selected_object(evaluation, &["applicability"], &[])?,
+                ),
+                (
+                    "source_provenance",
+                    selected_object(evaluation, &["source_dates"], &[])?,
+                ),
+                ("attribution", attribution),
+            ]);
+            if advisories.insert(key, content).is_some() {
+                return Err(ComparisonError::AmbiguousIdentity);
+            }
+        }
+    } else {
+        let namespace = fields
+            .get("catalog")
+            .map(object)
+            .transpose()?
+            .map(|catalog| string(catalog, "id"))
+            .transpose()?
+            .unwrap_or("catalogue-not-supplied");
+        for advisory in array(fields, "advisories")? {
+            let advisory = object(advisory)?;
+            let component = comparison_component_key(object(required(advisory, "component")?)?)?;
+            let key = WordPressAdvisoryKey {
+                source_kind: "termivar_catalog".to_owned(),
+                source_namespace: namespace.to_owned(),
+                upstream_id: string(advisory, "id")?.to_owned(),
+                component,
+            };
+            let content = dimensions(&[
+                (
+                    "advisory_content",
+                    selected_object(advisory, &["cve", "summary"], &[])?,
+                ),
+                (
+                    "affected_ranges",
+                    selected_object(advisory, &["affected_ranges"], &[])?,
+                ),
+                (
+                    "source_fix_information",
+                    selected_object(advisory, &["fixed_versions", "remediation"], &[])?,
+                ),
+                (
+                    "comparison_methodology",
+                    selected_object(advisory, &["comparison_profile"], &[])?,
+                ),
+                (
+                    "evaluation_basis",
+                    selected_object(
+                        advisory,
+                        &[
+                            "component_evidence",
+                            "version_resolution",
+                            "version_resolution_reason",
+                            "version_relation",
+                            "prerequisites",
+                            "exploit_execution",
+                            "impact_validation",
+                        ],
+                        &[],
+                    )?,
+                ),
+                (
+                    "applicability",
+                    selected_object(advisory, &["applicability"], &[])?,
+                ),
+                (
+                    "source_provenance",
+                    selected_object(advisory, &["source"], &[])?,
+                ),
+            ]);
+            if advisories.insert(key, content).is_some() {
+                return Err(ComparisonError::AmbiguousIdentity);
+            }
+        }
+    }
+
+    Ok(ImportedWordPressAudit {
+        coverage,
+        inventory_coverage_recorded: inventory.is_some(),
+        methodology,
+        provenance,
+        components,
+        advisories,
+    })
+}
+
+fn comparison_component_key(
+    fields: &Map<String, Value>,
+) -> Result<WordPressComponentKey, ComparisonError> {
+    Ok(WordPressComponentKey {
+        kind: string(fields, "kind")?.to_owned(),
+        slug: string(fields, "slug")?.to_owned(),
+    })
+}
+
+fn dimensions(values: &[(&str, Value)]) -> BTreeMap<String, Value> {
+    values
+        .iter()
+        .filter(|(_, value)| value.as_object().is_none_or(|fields| !fields.is_empty()))
+        .map(|(name, value)| ((*name).to_owned(), value.clone()))
+        .collect()
+}
+
+fn selected_object(
+    fields: &Map<String, Value>,
+    direct_names: &[&str],
+    additional: &[(&str, Option<&Value>)],
+) -> Result<Value, ComparisonError> {
+    let mut selected = Map::new();
+    for name in direct_names {
+        if let Some(value) = fields.get(*name) {
+            selected.insert((*name).to_owned(), canonical_value(value)?);
+        }
+    }
+    for (name, value) in additional {
+        if let Some(value) = value {
+            selected.insert((*name).to_owned(), canonical_value(value)?);
+        }
+    }
+    Ok(Value::Object(selected))
+}
+
+fn canonical_value(value: &Value) -> Result<Value, ComparisonError> {
+    match value {
+        Value::Array(values) => {
+            let values = values
+                .iter()
+                .map(canonical_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut keyed = values
+                .into_iter()
+                .map(|value| {
+                    serde_json::to_string(&value)
+                        .map(|key| (key, value))
+                        .map_err(|_| ComparisonError::Serialization)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            keyed.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok(Value::Array(
+                keyed.into_iter().map(|(_, value)| value).collect(),
+            ))
+        },
+        Value::Object(fields) => {
+            let mut result = Map::new();
+            for (name, value) in fields {
+                result.insert(name.clone(), canonical_value(value)?);
+            }
+            Ok(Value::Object(result))
+        },
+        _ => Ok(value.clone()),
+    }
 }
 
 fn catalog(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonError> {

@@ -1079,6 +1079,369 @@ fn wordfence_external_wordpress_audit_v4_with_notices(count: usize) -> Value {
     audit
 }
 
+fn wordpress_document(audit: Value) -> Value {
+    let items = if audit["item_projected"] == json!(true) {
+        let mut observed = item(1);
+        observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+        vec![observed]
+    } else {
+        Vec::new()
+    };
+    let mut document = report(items);
+    document["wordpress_review"] = audit;
+    document
+}
+
+fn wordpress_comparison<'a>(comparison: &'a Value) -> &'a Value {
+    comparison
+        .get("wordpress_review_comparison")
+        .expect("a supplied WordPress audit has a semantic comparison")
+}
+
+#[test]
+fn wordpress_comparison_is_additive_and_self_comparison_is_unchanged() {
+    let without_wordpress = compare(&report(Vec::new()), &report(Vec::new()));
+    assert!(without_wordpress
+        .get("wordpress_review_comparison")
+        .is_none());
+
+    for audit in [evaluated_wordpress_audit(), evaluated_wordpress_audit_v2()] {
+        let document = wordpress_document(audit);
+        let comparison = compare(&document, &document);
+        let wordpress = wordpress_comparison(&comparison);
+        assert_eq!(
+            wordpress["schema"],
+            "termivar-wordpress-review-comparison/v1"
+        );
+        assert_eq!(wordpress["status"], "compared");
+        assert!(wordpress.get("reason").is_none());
+        assert_eq!(wordpress["components"]["paired_unchanged_count"], 1);
+        assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 1);
+        for entity in ["components", "advisories"] {
+            for class in ["paired_changed", "only_in_before", "only_in_after"] {
+                assert!(wordpress[entity][class].as_array().unwrap().is_empty());
+            }
+        }
+        assert_eq!(group(&comparison, "unchanged").len(), 1);
+        assert!(group(&comparison, "changed").is_empty());
+    }
+}
+
+#[test]
+fn wordpress_set_like_order_does_not_create_semantic_changes() {
+    let mut before = evaluated_wordpress_audit_v2();
+    before["advisories"][0]["affected_ranges"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "lower":{"declared":"3.0.0","inclusive":true},
+            "upper":{"declared":"4.0.0","inclusive":false}
+        }));
+    let mut after = before.clone();
+    after["components"][0]["versions"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    after["advisories"][0]["affected_ranges"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let comparison = compare(&wordpress_document(before), &wordpress_document(after));
+    let wordpress = wordpress_comparison(&comparison);
+    assert_eq!(wordpress["components"]["paired_unchanged_count"], 1);
+    assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 1);
+    assert!(wordpress["components"]["paired_changed"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(wordpress["advisories"]["paired_changed"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let mut before = wordfence_external_wordpress_audit_v4();
+    before["external_review"]["evaluations"][0]["references"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("https://example.invalid/another-reference"));
+    before["external_review"]["evaluations"][0]["record_reference"] =
+        json!("https://example.invalid/another-reference");
+    let mut after = before.clone();
+    after["external_review"]["evaluations"][0]["references"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let comparison = compare(&wordpress_document(before), &wordpress_document(after));
+    let wordpress = wordpress_comparison(&comparison);
+    assert_eq!(wordpress["components"]["paired_unchanged_count"], 1);
+    assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 1);
+}
+
+#[test]
+fn wordpress_component_and_advisory_changes_use_independent_dimensions() {
+    let before = wordpress_document(saved_inventory_wordpress_audit_v3());
+    let mut after = before.clone();
+    after["wordpress_review"]["components"][0]["versions"][0]["value"] = json!("2.0.0");
+    after["wordpress_review"]["components"][0]["activation"] = json!("inactive");
+    after["wordpress_review"]["components"][0]["inventory_status"] = json!("inactive");
+    let comparison = compare(&before, &after);
+    assert_eq!(
+        wordpress_comparison(&comparison)["components"]["paired_changed"][0]["changed_dimensions"],
+        json!(["component_evidence"])
+    );
+
+    let base = wordpress_document(evaluated_wordpress_audit_v2());
+    for (field, replacement, expected) in [
+        (
+            "affected_ranges",
+            json!([{
+                "lower":{"declared":"2.3.0","inclusive":true},
+                "upper":{"declared":"2.4.0","inclusive":false}
+            }]),
+            json!(["affected_ranges"]),
+        ),
+        (
+            "fixed_versions",
+            json!(["2.4.1"]),
+            json!(["source_fix_information"]),
+        ),
+    ] {
+        let mut after = base.clone();
+        after["wordpress_review"]["advisories"][0][field] = replacement;
+        let comparison = compare(&base, &after);
+        assert_eq!(
+            wordpress_comparison(&comparison)["advisories"]["paired_changed"][0]
+                ["changed_dimensions"],
+            expected,
+            "{field}"
+        );
+    }
+
+    let mut revision = base.clone();
+    revision["wordpress_review"]["advisories"][0]["source"]["revision"] = json!("v2-r2");
+    let comparison = compare(&base, &revision);
+    assert_eq!(
+        wordpress_comparison(&comparison)["advisories"]["paired_changed"][0]["changed_dimensions"],
+        json!(["source_provenance"])
+    );
+    assert_eq!(
+        wordpress_comparison(&comparison)["provenance"]["status"],
+        "unchanged"
+    );
+
+    let mut catalog_revision = base.clone();
+    catalog_revision["wordpress_review"]["catalog"]["revision"] = json!("v2-r2");
+    let comparison = compare(&base, &catalog_revision);
+    assert_eq!(
+        wordpress_comparison(&comparison)["provenance"]["changed_fields"],
+        json!(["catalog"])
+    );
+    assert_eq!(
+        wordpress_comparison(&comparison)["advisories"]["paired_unchanged_count"],
+        1
+    );
+}
+
+#[test]
+fn wordpress_methodology_and_applicability_changes_are_not_conflated() {
+    let mut numeric = evaluated_wordpress_audit_v2();
+    numeric["components"][0]["identity_sources"] = json!(["generator_metadata"]);
+    numeric["components"][0]["confidence_classes"] = json!(["public_declaration"]);
+    numeric["components"][0]["versions"] = json!([{
+        "value":"1.0",
+        "source":"generator_metadata",
+        "confidence":"public_declaration"
+    }]);
+    numeric["components"][0]["activation"] = Value::Null;
+    numeric["advisories"][0]["affected_ranges"] = json!([{
+        "lower":{"declared":"0.9","inclusive":true},
+        "upper":{"declared":"2.0","inclusive":false}
+    }]);
+    numeric["advisories"][0]["fixed_versions"] = json!(["2.0"]);
+    numeric["advisories"][0]["comparison_profile"] = json!("numeric-dotted/v1");
+    numeric["advisories"][0]["version_resolution"] = json!("supported_equivalent");
+    numeric["advisories"][0]["version_resolution_reason"] = json!("single_supported_version");
+    let mut php = numeric.clone();
+    php["advisories"][0]["comparison_profile"] = json!("php-release-subset/v1");
+    let numeric = wordpress_document(numeric);
+    let php = wordpress_document(php);
+    let comparison = compare(&numeric, &php);
+    assert_eq!(
+        wordpress_comparison(&comparison)["advisories"]["paired_changed"][0]["changed_dimensions"],
+        json!(["comparison_methodology"])
+    );
+
+    let mut before = evaluated_wordpress_audit_v2();
+    before["advisories"][0]["prerequisites"] = json!([{
+        "kind":"hosting_os",
+        "expected":"linux",
+        "outcome":"unknown"
+    }]);
+    before["advisories"][0]["applicability"] = json!("indeterminate_missing_evidence");
+    let mut after = before.clone();
+    after["advisories"][0]["prerequisites"][0]["outcome"] = json!("matched_on_supplied_facts");
+    after["advisories"][0]["applicability"] = json!("candidate_match_on_declared_facts");
+    let comparison = compare(&wordpress_document(before), &wordpress_document(after));
+    assert_eq!(
+        wordpress_comparison(&comparison)["advisories"]["paired_changed"][0]["changed_dimensions"],
+        json!(["applicability", "evaluation_basis"])
+    );
+}
+
+#[test]
+fn wordpress_simultaneous_and_missing_audit_changes_preserve_uncertainty() {
+    let before = wordpress_document(evaluated_wordpress_audit_v2());
+    let mut after = before.clone();
+    after["wordpress_review"]["components"][0]["activation"] = Value::Null;
+    after["wordpress_review"]["advisories"][0]["summary"] = json!("Updated supplied prose");
+    let comparison = compare(&before, &after);
+    let wordpress = wordpress_comparison(&comparison);
+    assert_eq!(
+        wordpress["components"]["paired_changed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        wordpress["advisories"]["paired_changed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        wordpress["components"]["paired_changed"][0]["changed_dimensions"],
+        json!(["component_evidence"])
+    );
+    assert_eq!(
+        wordpress["advisories"]["paired_changed"][0]["changed_dimensions"],
+        json!(["advisory_content"])
+    );
+
+    let absent = report(Vec::new());
+    let forward = compare(&absent, &before);
+    let reverse = compare(&before, &absent);
+    for (comparison, reason) in [
+        (&forward, "before_audit_missing"),
+        (&reverse, "after_audit_missing"),
+    ] {
+        let wordpress = wordpress_comparison(comparison);
+        assert_eq!(wordpress["status"], "not_compared");
+        assert_eq!(wordpress["reason"], reason);
+        assert_eq!(wordpress["coverage"]["status"], "coverage_changed");
+        for entity in ["components", "advisories"] {
+            assert_eq!(wordpress[entity]["paired_unchanged_count"], 0);
+            for class in ["paired_changed", "only_in_before", "only_in_after"] {
+                assert!(wordpress[entity][class].as_array().unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn wordpress_advisory_keys_require_namespace_upstream_id_and_component() {
+    let before = wordpress_document(evaluated_wordpress_audit());
+    let mut namespace_after = before.clone();
+    namespace_after["wordpress_review"]["catalog"]["id"] = json!("another-reviewed-catalog");
+    let mut upstream_after = before.clone();
+    upstream_after["wordpress_review"]["advisories"][0]["id"] = json!("SYNTHETIC-DIFFERENT-ID");
+    let mut plugin_before = before.clone();
+    plugin_before["wordpress_review"]["components"][0]["identity"] =
+        json!({"kind":"plugin","slug":"shared-component"});
+    plugin_before["wordpress_review"]["advisories"][0]["component"] =
+        json!({"kind":"plugin","slug":"shared-component"});
+    let mut theme_after = plugin_before.clone();
+    theme_after["wordpress_review"]["components"][0]["identity"]["kind"] = json!("theme");
+    theme_after["wordpress_review"]["advisories"][0]["component"]["kind"] = json!("theme");
+
+    for (before, after) in [
+        (&before, &namespace_after),
+        (&before, &upstream_after),
+        (&plugin_before, &theme_after),
+    ] {
+        let comparison = compare(before, after);
+        let advisories = &wordpress_comparison(&comparison)["advisories"];
+        assert!(advisories["paired_changed"].as_array().unwrap().is_empty());
+        assert_eq!(advisories["only_in_before"].as_array().unwrap().len(), 1);
+        assert_eq!(advisories["only_in_after"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            advisories["only_in_before"][0]["interpretation"],
+            "present_only_in_the_supplied_before_audit_not_verified_remediation"
+        );
+        assert_eq!(
+            advisories["only_in_after"][0]["interpretation"],
+            "present_only_in_the_supplied_after_audit_not_verified_newness"
+        );
+        let reversed = compare(after, before);
+        let reversed = &wordpress_comparison(&reversed)["advisories"];
+        assert_eq!(
+            advisories["only_in_before"][0]["key"],
+            reversed["only_in_after"][0]["key"]
+        );
+        assert_eq!(
+            advisories["only_in_after"][0]["key"],
+            reversed["only_in_before"][0]["key"]
+        );
+    }
+
+    let mut title_only = before.clone();
+    title_only["wordpress_review"]["advisories"][0]["summary"] =
+        json!("Different supplied title-like prose");
+    let comparison = compare(&before, &title_only);
+    let advisories = &wordpress_comparison(&comparison)["advisories"];
+    assert_eq!(advisories["paired_changed"].as_array().unwrap().len(), 1);
+    assert!(advisories["only_in_before"].as_array().unwrap().is_empty());
+    assert!(advisories["only_in_after"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn wordpress_v4_distinguishes_raw_input_bytes_from_selected_semantics() {
+    let before = wordpress_document(wordfence_external_wordpress_audit_v4());
+    let mut after = before.clone();
+    after["wordpress_review"]["external_review"]["input"]["sha256"] =
+        json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let comparison = compare(&before, &after);
+    let wordpress = wordpress_comparison(&comparison);
+    assert_eq!(
+        wordpress["provenance"]["status"],
+        "input_bytes_changed_without_selected_semantic_change"
+    );
+    assert_eq!(wordpress["components"]["paired_unchanged_count"], 1);
+    assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 1);
+    assert_eq!(wordpress["methodology"]["status"], "unchanged");
+}
+
+#[test]
+fn wordpress_structured_markdown_and_html_keep_hostile_values_inert() {
+    let before = wordpress_document(evaluated_wordpress_audit());
+    let mut after = before.clone();
+    after["wordpress_review"]["advisories"][0]["summary"] =
+        json!("</script><script>alert('wordpress')</script>");
+
+    let markdown =
+        compare_reports(&bytes(&before), &bytes(&after), ComparisonFormat::Markdown).unwrap();
+    assert!(markdown.contains("## WordPress review differences"));
+    assert!(markdown.contains("advisory_content"));
+    assert!(markdown.contains("does not rerun the scan"));
+
+    let html = compare_reports(&bytes(&before), &bytes(&after), ComparisonFormat::Html).unwrap();
+    let prerendered = html.split("<script>").next().unwrap();
+    assert!(prerendered.contains("id=\"wordpress-review-differences\""));
+    assert!(prerendered.contains("Changed WordPress dimensions"));
+    assert!(prerendered.contains("advisory_content"));
+    assert!(prerendered
+        .contains("&lt;/script&gt;&lt;script&gt;alert(&#39;wordpress&#39;)&lt;/script&gt;"));
+    assert!(!prerendered.contains("<script>alert('wordpress')</script>"));
+    assert_eq!(html.matches("<script>").count(), 1);
+    assert_eq!(html.matches("</script>").count(), 1);
+    assert!(html.contains("default-src 'none'"));
+    assert!(html.contains("connect-src 'none'"));
+    assert!(html.contains("script-src 'sha256-"));
+    assert!(!html.contains("innerHTML"));
+    assert!(html.contains(".textContent"));
+}
+
 #[test]
 fn wordpress_v4_external_review_is_strict_feature_independent_and_raw_free() {
     let audit = wordfence_external_wordpress_audit_v4();
