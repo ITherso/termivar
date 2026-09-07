@@ -479,7 +479,6 @@ fn real_bundle_retains_declared_match_and_indeterminate_results_for_offline_tool
         assert!(!rendered.contains("PRIVATE-WORDPRESS-CATALOGUE"));
         assert!(!rendered.contains(&directory.path().to_string_lossy().to_string()));
     }
-
     let requests_after_scan = server.requests.lock().unwrap().clone();
     let verify = termivar()
         .args(["report", "verify", "--dir"])
@@ -521,5 +520,229 @@ fn real_bundle_retains_declared_match_and_indeterminate_results_for_offline_tool
     assert_eq!(
         server.requests.lock().unwrap().as_slice(),
         requests_after_scan
+    );
+}
+
+#[test]
+fn profiled_catalogue_bundle_keeps_explicit_semantics_and_offline_tools_request_free() {
+    const WORDPRESS_ROOT: &str = r#"<!doctype html><html><head>
+        <meta name="generator" content="WordPress 6.9.4">
+        <link rel="stylesheet" href="/wp-content/plugins/synthetic-prerelease-plugin/style.css">
+        </head><body>bounded profile fixture</body></html>"#;
+    const EXPECTED_REQUESTS: [&str; 4] = [
+        "GET / HTTP/1.1",
+        "GET / HTTP/1.1",
+        "GET / HTTP/1.1",
+        "HEAD /wp-content/plugins/synthetic-prerelease-plugin/style.css HTTP/1.1",
+    ];
+
+    let server = serve(WORDPRESS_ROOT);
+    let directory = tempfile::tempdir().unwrap();
+    let context_path = directory
+        .path()
+        .join("PRIVATE-WORDPRESS-PROFILE-CONTEXT.json");
+    let catalogue_path = directory
+        .path()
+        .join("PRIVATE-WORDPRESS-PROFILE-CATALOGUE.json");
+    let bundle = directory.path().join("wordpress-profile-assessment");
+    let context =
+        include_str!("../../../docs/examples/wordpress-review/context.profiles.synthetic.json")
+            .replace("https://example.test/", &server.url);
+    fs::write(&context_path, context).unwrap();
+    fs::write(
+        &catalogue_path,
+        include_bytes!(
+            "../../../docs/examples/wordpress-review/advisories.profiles.synthetic.json"
+        ),
+    )
+    .unwrap();
+
+    let scan = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-context",
+        ])
+        .arg(&context_path)
+        .arg("--wordpress-advisories")
+        .arg(&catalogue_path)
+        .arg("--report-dir")
+        .arg(&bundle)
+        .arg(&server.url)
+        .output()
+        .expect("termivar process must start");
+    assert!(
+        scan.status.success(),
+        "scan stdout: {}\nscan stderr: {}",
+        String::from_utf8_lossy(&scan.stdout),
+        String::from_utf8_lossy(&scan.stderr)
+    );
+    assert!(scan.stdout.is_empty());
+
+    let assessment_bytes = fs::read(bundle.join("assessment.json")).unwrap();
+    let assessment: serde_json::Value = serde_json::from_slice(&assessment_bytes).unwrap();
+    let audit = &assessment["wordpress_review"];
+    assert_eq!(audit["schema"], "security.wordpress-review-audit/v2");
+    assert_eq!(audit["catalog_status"], "evaluated");
+    assert_eq!(
+        audit["catalog"]["id"],
+        "termivar-synthetic-wordpress-profile-example"
+    );
+    assert_eq!(audit["additional_request_count"], 0);
+    assert_eq!(audit["item_projected"], true);
+
+    let advisories = audit["advisories"].as_array().unwrap();
+    assert_eq!(advisories.len(), 5);
+    let result = |id: &str| {
+        advisories
+            .iter()
+            .find(|advisory| advisory["id"] == id)
+            .unwrap_or_else(|| panic!("missing profiled advisory {id}"))
+    };
+    let assert_profiled = |id: &str,
+                           profile: &str,
+                           resolution: &str,
+                           reason: &str,
+                           relation: &str,
+                           applicability: &str| {
+        let advisory = result(id);
+        assert_eq!(advisory["comparison_profile"], profile, "{id}");
+        assert_eq!(advisory["version_resolution"], resolution, "{id}");
+        assert_eq!(advisory["version_resolution_reason"], reason, "{id}");
+        assert_eq!(advisory["version_relation"], relation, "{id}");
+        assert_eq!(advisory["applicability"], applicability, "{id}");
+        assert_eq!(advisory["exploit_execution"], "not_performed", "{id}");
+        assert_eq!(advisory["impact_validation"], "not_performed", "{id}");
+    };
+
+    assert_profiled(
+        "SYNTHETIC-BETA-NUMERIC-0001",
+        "numeric-dotted/v1",
+        "unsupported",
+        "unsupported_version_evidence",
+        "unsupported",
+        "indeterminate_unsupported",
+    );
+    assert_eq!(
+        result("SYNTHETIC-BETA-NUMERIC-0001")["prerequisites"][0]["outcome"],
+        "matched_on_supplied_facts"
+    );
+    assert_profiled(
+        "SYNTHETIC-BETA-PHP-SUBSET-0001",
+        "php-release-subset/v1",
+        "supported_equivalent",
+        "single_supported_version",
+        "within_declared_range",
+        "candidate_match_on_declared_facts",
+    );
+    assert_eq!(
+        result("SYNTHETIC-BETA-PHP-SUBSET-0001")["prerequisites"][0]["outcome"],
+        "matched_on_supplied_facts"
+    );
+    assert_profiled(
+        "SYNTHETIC-TRAILING-ZERO-NUMERIC-0001",
+        "numeric-dotted/v1",
+        "supported_equivalent",
+        "single_supported_version",
+        "within_declared_range",
+        "candidate_match_on_declared_facts",
+    );
+    assert_profiled(
+        "SYNTHETIC-TRAILING-ZERO-PHP-SUBSET-0001",
+        "php-release-subset/v1",
+        "supported_equivalent",
+        "single_supported_version",
+        "outside_declared_ranges",
+        "contradicted_by_declared_facts",
+    );
+    assert_profiled(
+        "SYNTHETIC-VENDOR-LABEL-UNSUPPORTED-0001",
+        "php-release-subset/v1",
+        "unsupported",
+        "unsupported_version_evidence",
+        "unsupported",
+        "indeterminate_unsupported",
+    );
+
+    assert_eq!(
+        assessment["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["capability_id"] == "technology.wordpress-surface-observed@1")
+            .count(),
+        1
+    );
+    for name in ["assessment.html", "assessment.json", "manifest.json"] {
+        let bytes = fs::read(bundle.join(name)).unwrap();
+        let rendered = String::from_utf8_lossy(&bytes);
+        assert!(!rendered.contains("PRIVATE-WORDPRESS-PROFILE-CONTEXT"));
+        assert!(!rendered.contains("PRIVATE-WORDPRESS-PROFILE-CATALOGUE"));
+        assert!(!rendered.contains(&directory.path().to_string_lossy().to_string()));
+    }
+    let html = fs::read_to_string(bundle.join("assessment.html")).unwrap();
+    for expected in [
+        "security.wordpress-review-audit/v2",
+        "numeric-dotted/v1",
+        "php-release-subset/v1",
+        "unsupported_version_evidence",
+        "single_supported_version",
+        "not_performed",
+    ] {
+        assert!(html.contains(expected), "HTML omitted {expected}");
+    }
+
+    let requests_after_scan = server.requests.lock().unwrap().clone();
+    assert_eq!(
+        requests_after_scan,
+        EXPECTED_REQUESTS.map(str::to_owned),
+        "profile selection must not add target requests"
+    );
+
+    let verify = termivar()
+        .args(["report", "verify", "--dir"])
+        .arg(&bundle)
+        .args(["--format", "json"])
+        .output()
+        .expect("bundle verifier must start");
+    assert!(
+        verify.status.success(),
+        "verify stdout: {}\nverify stderr: {}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let verification: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verification["status"], "integrity_match");
+
+    let assessment_path = bundle.join("assessment.json");
+    let compare = termivar()
+        .args(["report", "compare", "--before"])
+        .arg(&assessment_path)
+        .arg("--after")
+        .arg(&assessment_path)
+        .args(["--same-scope", "--format", "json"])
+        .output()
+        .expect("report compare must start");
+    assert!(
+        compare.status.success(),
+        "compare stdout: {}\ncompare stderr: {}",
+        String::from_utf8_lossy(&compare.stdout),
+        String::from_utf8_lossy(&compare.stderr)
+    );
+    let comparison: serde_json::Value = serde_json::from_slice(&compare.stdout).unwrap();
+    assert_eq!(comparison["schema"], "termivar-report-comparison/v1");
+    assert_eq!(
+        comparison["unchanged"].as_array().unwrap().len(),
+        assessment["item_count"].as_u64().unwrap() as usize
+    );
+    for group in ["only_in_after", "only_in_before", "changed"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+    assert_eq!(
+        server.requests.lock().unwrap().as_slice(),
+        requests_after_scan,
+        "offline report commands must not contact the target"
     );
 }

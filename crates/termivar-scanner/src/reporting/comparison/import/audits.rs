@@ -5,6 +5,8 @@ use super::{
     optional_token, required, string, text, token, ComparisonError, ImportedItem, Value,
     MAX_AUDIT_TEXT_BYTES, MAX_IDENTIFIER_BYTES,
 };
+use crate::wordpress_version::{ProfiledVersionKey, WordPressComparisonProfile};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 pub(super) const REST_CAPABILITY: &str = "api.rest-readonly-surface-observed@1";
@@ -24,6 +26,35 @@ const MAX_WORDPRESS_ADVISORIES: usize = 4_096;
 const MAX_WORDPRESS_RANGES: usize = 16;
 const MAX_WORDPRESS_FIXED_VERSIONS: usize = 16;
 const MAX_WORDPRESS_PREREQUISITES: usize = 8;
+const MAX_WORDPRESS_VERSION_RESOLUTION_WORK: usize = MAX_WORDPRESS_RESULT_VERSION_EVIDENCE * 2;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WordPressAuditSchema {
+    V1,
+    V2,
+}
+
+struct ImportedWordPressComponent {
+    versions: Vec<String>,
+    profiled_evidence: &'static str,
+    observed_source: bool,
+}
+
+struct ProfiledRange {
+    lower: Option<(ProfiledVersionKey, bool)>,
+    upper: Option<(ProfiledVersionKey, bool)>,
+}
+
+struct ProfiledResolution {
+    status: &'static str,
+    reason: &'static str,
+    selected: Option<ProfiledVersionKey>,
+}
+
+struct ImportedPrerequisite<'a> {
+    identity: (String, String, Option<String>),
+    outcome: &'a str,
+}
 
 pub(super) fn validate(
     name: &str,
@@ -58,10 +89,12 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         ],
         &["catalog"],
     )?;
-    check(
-        string(fields, "schema")? == "security.wordpress-review-audit/v1"
-            && string(fields, "capability_id")? == WORDPRESS_CAPABILITY,
-    )?;
+    let schema = match string(fields, "schema")? {
+        "security.wordpress-review-audit/v1" => WordPressAuditSchema::V1,
+        "security.wordpress-review-audit/v2" => WordPressAuditSchema::V2,
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
+    check(string(fields, "capability_id")? == WORDPRESS_CAPABILITY)?;
     let status = token(
         fields,
         "catalog_status",
@@ -72,6 +105,7 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         ("evaluated", Some(value)) => catalog(object(value)?)?,
         _ => return Err(ComparisonError::InvalidDocument),
     }
+    check(schema == WordPressAuditSchema::V1 || status == "evaluated")?;
     let signal_count = number(fields, "signal_count", MAX_WORDPRESS_SIGNALS)?;
     let evidence_count = number(fields, "evidence_reference_count", MAX_WORDPRESS_SIGNALS)?;
     check(number(fields, "additional_request_count", 0)? == 0)?;
@@ -92,15 +126,23 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
                 MAX_WORDPRESS_RESULT_COMPONENTS as u64,
             )? == components.len() as u64,
     )?;
-    let mut component_identities = std::collections::BTreeSet::new();
+    let mut imported_components = BTreeMap::new();
     let mut version_count = 0_usize;
     for value in components {
-        let (identity, versions) = component(object(value)?)?;
+        let (identity, component) = component(object(value)?, schema)?;
         version_count = version_count
-            .checked_add(versions)
+            .checked_add(component.versions.len())
             .ok_or(ComparisonError::InvalidDocument)?;
         check(version_count <= MAX_WORDPRESS_RESULT_VERSION_EVIDENCE)?;
-        check(component_identities.insert(identity))?;
+        check(imported_components.insert(identity, component).is_none())?;
+    }
+    if schema == WordPressAuditSchema::V2 {
+        check(
+            imported_components
+                .values()
+                .any(|component| component.observed_source)
+                == (signal_count > 0),
+        )?;
     }
 
     let advisories = array(fields, "advisories")?;
@@ -110,9 +152,33 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
                 == advisories.len() as u64
             && (status == "evaluated" || advisories.is_empty()),
     )?;
+    let mut profiled_resolutions = BTreeMap::new();
+    if schema == WordPressAuditSchema::V2 {
+        let mut resolution_work = 0_usize;
+        for (identity, component) in &imported_components {
+            for profile in [
+                WordPressComparisonProfile::NumericDottedV1,
+                WordPressComparisonProfile::PhpReleaseSubsetV1,
+            ] {
+                resolution_work = resolution_work
+                    .checked_add(component.versions.len())
+                    .ok_or(ComparisonError::InvalidDocument)?;
+                check(resolution_work <= MAX_WORDPRESS_VERSION_RESOLUTION_WORK)?;
+                profiled_resolutions.insert(
+                    (identity.clone(), profile),
+                    resolve_profiled_component(component, profile)?,
+                );
+            }
+        }
+    }
     let mut advisory_ids = std::collections::BTreeSet::new();
     for value in advisories {
-        let id = advisory(object(value)?)?;
+        let id = match schema {
+            WordPressAuditSchema::V1 => advisory_v1(object(value)?)?,
+            WordPressAuditSchema::V2 => {
+                advisory_v2(object(value)?, &imported_components, &profiled_resolutions)?
+            },
+        };
         check(advisory_ids.insert(id))?;
     }
     Ok(())
@@ -125,7 +191,10 @@ fn catalog(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonErro
     date(text(fields, "retrieved_on", MAX_IDENTIFIER_BYTES)?)
 }
 
-fn component(fields: &serde_json::Map<String, Value>) -> Result<(String, usize), ComparisonError> {
+fn component(
+    fields: &serde_json::Map<String, Value>,
+    schema: WordPressAuditSchema,
+) -> Result<(String, ImportedWordPressComponent), ComparisonError> {
     keys(
         fields,
         &[
@@ -139,7 +208,7 @@ fn component(fields: &serde_json::Map<String, Value>) -> Result<(String, usize),
         &[],
     )?;
     let identity = component_identity(object(required(fields, "identity")?)?)?;
-    token(
+    let evidence_class = token(
         fields,
         "evidence_class",
         &[
@@ -159,6 +228,30 @@ fn component(fields: &serde_json::Map<String, Value>) -> Result<(String, usize),
         ],
         3,
     )?;
+    let identity_sources = array(fields, "identity_sources")?;
+    let identity_sources = identity_sources
+        .iter()
+        .map(|value| value.as_str().ok_or(ComparisonError::InvalidDocument))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    if schema == WordPressAuditSchema::V2 {
+        check(!identity_sources.contains("generator_metadata") || identity == "core:wordpress")?;
+    }
+    let profiled_evidence = if identity_sources
+        .iter()
+        .any(|value| matches!(*value, "generator_metadata" | "same_origin_asset_path"))
+    {
+        "observed_hint"
+    } else if identity_sources
+        .iter()
+        .any(|value| *value == "operator_context")
+    {
+        "operator_supplied"
+    } else {
+        "unknown"
+    };
+    if schema == WordPressAuditSchema::V2 {
+        check(evidence_class == profiled_evidence)?;
+    }
     token_array(
         fields,
         "confidence_classes",
@@ -169,9 +262,27 @@ fn component(fields: &serde_json::Map<String, Value>) -> Result<(String, usize),
         ],
         3,
     )?;
+    let confidence_classes = array(fields, "confidence_classes")?
+        .iter()
+        .map(|value| value.as_str().ok_or(ComparisonError::InvalidDocument))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    let expected_confidence_classes = identity_sources
+        .iter()
+        .map(|source| match *source {
+            "generator_metadata" => Ok("public_declaration"),
+            "same_origin_asset_path" => Ok("structural_hint"),
+            "operator_context" => Ok("operator_assertion"),
+            _ => Err(ComparisonError::InvalidDocument),
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    if schema == WordPressAuditSchema::V2 {
+        check(confidence_classes == expected_confidence_classes)?;
+    }
+
     let versions = array(fields, "versions")?;
     check(versions.len() <= MAX_WORDPRESS_RESULT_VERSION_EVIDENCE)?;
     let mut unique_versions = std::collections::BTreeSet::new();
+    let mut version_values = Vec::with_capacity(versions.len());
     for value in versions {
         let version = object(value)?;
         keys(version, &["value", "source", "confidence"], &[])?;
@@ -179,11 +290,15 @@ fn component(fields: &serde_json::Map<String, Value>) -> Result<(String, usize),
         let source = token(
             version,
             "source",
-            &[
-                "generator_metadata",
-                "same_origin_asset_path",
-                "operator_context",
-            ],
+            if schema == WordPressAuditSchema::V2 {
+                &["generator_metadata", "operator_context"]
+            } else {
+                &[
+                    "generator_metadata",
+                    "same_origin_asset_path",
+                    "operator_context",
+                ]
+            },
         )?;
         let confidence = token(
             version,
@@ -203,14 +318,29 @@ fn component(fields: &serde_json::Map<String, Value>) -> Result<(String, usize),
                     _ => return Err(ComparisonError::InvalidDocument),
                 },
         )?;
+        if schema == WordPressAuditSchema::V2 {
+            check(source != "generator_metadata" || identity == "core:wordpress")?;
+            check(identity_sources.contains(source) && confidence_classes.contains(confidence))?;
+        }
         check(unique_versions.insert((value, source)))?;
+        version_values.push(value.to_owned());
     }
-    optional_token(
+    let activation = optional_token(
         fields,
         "activation",
         &["active", "inactive", "network_active", "unknown"],
     )?;
-    Ok((identity, versions.len()))
+    if schema == WordPressAuditSchema::V2 {
+        check(activation.is_none() || identity_sources.contains("operator_context"))?;
+    }
+    Ok((
+        identity,
+        ImportedWordPressComponent {
+            versions: version_values,
+            profiled_evidence,
+            observed_source: profiled_evidence == "observed_hint",
+        },
+    ))
 }
 
 fn component_identity(fields: &serde_json::Map<String, Value>) -> Result<String, ComparisonError> {
@@ -221,7 +351,7 @@ fn component_identity(fields: &serde_json::Map<String, Value>) -> Result<String,
     Ok(format!("{kind}:{slug}"))
 }
 
-fn advisory(fields: &serde_json::Map<String, Value>) -> Result<String, ComparisonError> {
+fn advisory_v1(fields: &serde_json::Map<String, Value>) -> Result<String, ComparisonError> {
     keys(
         fields,
         &[
@@ -257,7 +387,7 @@ fn advisory(fields: &serde_json::Map<String, Value>) -> Result<String, Compariso
     let ranges = array(fields, "affected_ranges")?;
     check(ranges.len() <= MAX_WORDPRESS_RANGES)?;
     for value in ranges {
-        affected_range(object(value)?)?;
+        affected_range_v1(object(value)?)?;
     }
     let fixed_versions = array(fields, "fixed_versions")?;
     check(fixed_versions.len() <= MAX_WORDPRESS_FIXED_VERSIONS)?;
@@ -270,7 +400,7 @@ fn advisory(fields: &serde_json::Map<String, Value>) -> Result<String, Compariso
     check(prerequisites.len() <= MAX_WORDPRESS_PREREQUISITES)?;
     let mut prerequisite_outcomes = Vec::with_capacity(prerequisites.len());
     for value in prerequisites {
-        prerequisite_outcomes.push(prerequisite(object(value)?)?);
+        prerequisite_outcomes.push(prerequisite(object(value)?)?.outcome);
     }
     let component_evidence = token(
         fields,
@@ -324,6 +454,184 @@ fn advisory(fields: &serde_json::Map<String, Value>) -> Result<String, Compariso
     Ok(id.to_owned())
 }
 
+fn advisory_v2(
+    fields: &serde_json::Map<String, Value>,
+    components: &BTreeMap<String, ImportedWordPressComponent>,
+    resolutions: &BTreeMap<(String, WordPressComparisonProfile), ProfiledResolution>,
+) -> Result<String, ComparisonError> {
+    keys(
+        fields,
+        &[
+            "id",
+            "component",
+            "source",
+            "cve",
+            "summary",
+            "affected_ranges",
+            "fixed_versions",
+            "prerequisites",
+            "remediation",
+            "comparison_profile",
+            "version_resolution",
+            "version_resolution_reason",
+            "component_evidence",
+            "version_relation",
+            "applicability",
+            "exploit_execution",
+            "impact_validation",
+        ],
+        &[],
+    )?;
+    let id = text(fields, "id", MAX_IDENTIFIER_BYTES)?;
+    identifier(id)?;
+    let component_identity = component_identity(object(required(fields, "component")?)?)?;
+    advisory_source(object(required(fields, "source")?)?)?;
+    if let Some(cve) = optional_text(fields, "cve", MAX_IDENTIFIER_BYTES)? {
+        check(valid_cve(cve))?;
+    }
+    bounded_text(text(fields, "summary", 1_024)?, 1_024)?;
+    if let Some(remediation) = optional_text(fields, "remediation", MAX_AUDIT_TEXT_BYTES)? {
+        bounded_text(remediation, MAX_AUDIT_TEXT_BYTES)?;
+    }
+
+    let profile = WordPressComparisonProfile::parse(string(fields, "comparison_profile")?)
+        .map_err(|_| ComparisonError::InvalidDocument)?;
+    let ranges = array(fields, "affected_ranges")?;
+    check(ranges.len() <= MAX_WORDPRESS_RANGES)?;
+    let mut profiled_ranges = Vec::with_capacity(ranges.len());
+    for value in ranges {
+        let range = affected_range_v2(object(value)?, profile)?;
+        check(
+            !profiled_ranges
+                .iter()
+                .any(|existing| profiled_ranges_equivalent(existing, &range)),
+        )?;
+        profiled_ranges.push(range);
+    }
+    let fixed_versions = array(fields, "fixed_versions")?;
+    check(fixed_versions.len() <= MAX_WORDPRESS_FIXED_VERSIONS)?;
+    let mut fixed = Vec::<ProfiledVersionKey>::with_capacity(fixed_versions.len());
+    for value in fixed_versions {
+        let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        let version = parse_profiled_version(profile, value)?;
+        check(
+            !fixed
+                .iter()
+                .any(|existing| profiled_compare(existing, &version).ok() == Some(Ordering::Equal)),
+        )?;
+        fixed.push(version);
+    }
+
+    let prerequisites = array(fields, "prerequisites")?;
+    check(prerequisites.len() <= MAX_WORDPRESS_PREREQUISITES)?;
+    let mut prerequisite_outcomes = Vec::with_capacity(prerequisites.len());
+    let mut prerequisite_identities = std::collections::BTreeSet::new();
+    for value in prerequisites {
+        let prerequisite = prerequisite(object(value)?)?;
+        check(prerequisite_identities.insert(prerequisite.identity))?;
+        prerequisite_outcomes.push(prerequisite.outcome);
+    }
+
+    let component = components.get(&component_identity);
+    let expected_component_evidence = component.map_or("unknown", |value| value.profiled_evidence);
+    let component_evidence = token(
+        fields,
+        "component_evidence",
+        &[
+            "observed_hint",
+            "operator_supplied",
+            "conflicting",
+            "unknown",
+        ],
+    )?;
+    check(component_evidence == expected_component_evidence)?;
+
+    let missing_resolution = ProfiledResolution {
+        status: "missing",
+        reason: "no_version_evidence",
+        selected: None,
+    };
+    let resolution = resolutions
+        .get(&(component_identity, profile))
+        .unwrap_or(&missing_resolution);
+    let version_resolution = token(
+        fields,
+        "version_resolution",
+        &[
+            "missing",
+            "supported_equivalent",
+            "conflicting",
+            "unsupported",
+        ],
+    )?;
+    let version_resolution_reason = token(
+        fields,
+        "version_resolution_reason",
+        &[
+            "no_version_evidence",
+            "single_supported_version",
+            "equivalent_supported_versions",
+            "conflicting_version_evidence",
+            "unsupported_version_evidence",
+        ],
+    )?;
+    check(
+        version_resolution == resolution.status && version_resolution_reason == resolution.reason,
+    )?;
+
+    let expected_relation = profiled_version_relation(resolution, &profiled_ranges)?;
+    let version_relation = token(
+        fields,
+        "version_relation",
+        &[
+            "within_declared_range",
+            "outside_declared_ranges",
+            "unknown",
+            "unsupported",
+        ],
+    )?;
+    check(version_relation == expected_relation)?;
+    let applicability = token(
+        fields,
+        "applicability",
+        &[
+            "candidate_match_on_declared_facts",
+            "contradicted_by_declared_facts",
+            "indeterminate_missing_evidence",
+            "indeterminate_unsupported",
+        ],
+    )?;
+    let expected_applicability =
+        expected_applicability(component_evidence, version_relation, &prerequisite_outcomes);
+    check(applicability == expected_applicability)?;
+    check(
+        string(fields, "exploit_execution")? == "not_performed"
+            && string(fields, "impact_validation")? == "not_performed",
+    )?;
+    Ok(id.to_owned())
+}
+
+fn expected_applicability(
+    component_evidence: &str,
+    version_relation: &str,
+    prerequisite_outcomes: &[&str],
+) -> &'static str {
+    if version_relation == "outside_declared_ranges"
+        || prerequisite_outcomes.contains(&"contradicted_on_supplied_facts")
+    {
+        "contradicted_by_declared_facts"
+    } else if version_relation == "unsupported" || prerequisite_outcomes.contains(&"unsupported") {
+        "indeterminate_unsupported"
+    } else if matches!(component_evidence, "unknown" | "conflicting")
+        || version_relation == "unknown"
+        || prerequisite_outcomes.contains(&"unknown")
+    {
+        "indeterminate_missing_evidence"
+    } else {
+        "candidate_match_on_declared_facts"
+    }
+}
+
 fn advisory_source(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonError> {
     keys(
         fields,
@@ -344,7 +652,7 @@ fn advisory_source(fields: &serde_json::Map<String, Value>) -> Result<(), Compar
     Ok(())
 }
 
-fn affected_range(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonError> {
+fn affected_range_v1(fields: &serde_json::Map<String, Value>) -> Result<(), ComparisonError> {
     keys(fields, &["lower", "upper"], &[])?;
     let mut present = false;
     let mut lower = None;
@@ -373,7 +681,179 @@ fn affected_range(fields: &serde_json::Map<String, Value>) -> Result<(), Compari
     Ok(())
 }
 
-fn prerequisite(fields: &serde_json::Map<String, Value>) -> Result<&str, ComparisonError> {
+fn affected_range_v2(
+    fields: &serde_json::Map<String, Value>,
+    profile: WordPressComparisonProfile,
+) -> Result<ProfiledRange, ComparisonError> {
+    keys(fields, &["lower", "upper"], &[])?;
+    let mut present = false;
+    let mut lower = None;
+    let mut upper = None;
+    for name in ["lower", "upper"] {
+        let value = required(fields, name)?;
+        if !value.is_null() {
+            present = true;
+            let endpoint = object(value)?;
+            keys(endpoint, &["declared", "inclusive"], &[])?;
+            let endpoint = (
+                parse_profiled_version(profile, text(endpoint, "declared", 64)?)?,
+                boolean(endpoint, "inclusive")?,
+            );
+            if name == "lower" {
+                lower = Some(endpoint);
+            } else {
+                upper = Some(endpoint);
+            }
+        }
+    }
+    check(present)?;
+    if let (Some((lower_version, lower_inclusive)), Some((upper_version, upper_inclusive))) =
+        (&lower, &upper)
+    {
+        let ordering = profiled_compare(lower_version, upper_version)?;
+        check(
+            ordering == Ordering::Less
+                || (ordering == Ordering::Equal && *lower_inclusive && *upper_inclusive),
+        )?;
+    }
+    Ok(ProfiledRange { lower, upper })
+}
+
+fn parse_profiled_version(
+    profile: WordPressComparisonProfile,
+    value: &str,
+) -> Result<ProfiledVersionKey, ComparisonError> {
+    ProfiledVersionKey::parse(profile, value).map_err(|_| ComparisonError::InvalidDocument)
+}
+
+fn profiled_compare(
+    left: &ProfiledVersionKey,
+    right: &ProfiledVersionKey,
+) -> Result<Ordering, ComparisonError> {
+    left.compare(right)
+        .map_err(|_| ComparisonError::InvalidDocument)
+}
+
+fn profiled_ranges_equivalent(left: &ProfiledRange, right: &ProfiledRange) -> bool {
+    profiled_endpoints_equivalent(left.lower.as_ref(), right.lower.as_ref())
+        && profiled_endpoints_equivalent(left.upper.as_ref(), right.upper.as_ref())
+}
+
+fn profiled_endpoints_equivalent(
+    left: Option<&(ProfiledVersionKey, bool)>,
+    right: Option<&(ProfiledVersionKey, bool)>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some((left, left_inclusive)), Some((right, right_inclusive))) => {
+            left_inclusive == right_inclusive
+                && profiled_compare(left, right).ok() == Some(Ordering::Equal)
+        },
+        (None, Some(_)) | (Some(_), None) => false,
+    }
+}
+
+fn resolve_profiled_component(
+    component: &ImportedWordPressComponent,
+    profile: WordPressComparisonProfile,
+) -> Result<ProfiledResolution, ComparisonError> {
+    if component.versions.is_empty() {
+        return Ok(ProfiledResolution {
+            status: "missing",
+            reason: "no_version_evidence",
+            selected: None,
+        });
+    }
+
+    let mut supported = None::<ProfiledVersionKey>;
+    let mut supported_conflict = false;
+    let mut unsupported = false;
+    for value in &component.versions {
+        match ProfiledVersionKey::parse(profile, value) {
+            Ok(version) => {
+                if let Some(selected) = supported.as_ref() {
+                    if profiled_compare(selected, &version).ok() != Some(Ordering::Equal) {
+                        supported_conflict = true;
+                    }
+                } else {
+                    supported = Some(version);
+                }
+            },
+            Err(_) => {
+                unsupported = true;
+            },
+        }
+    }
+    if supported_conflict {
+        return Ok(ProfiledResolution {
+            status: "conflicting",
+            reason: "conflicting_version_evidence",
+            selected: None,
+        });
+    }
+    if unsupported || supported.is_none() {
+        return Ok(ProfiledResolution {
+            status: "unsupported",
+            reason: "unsupported_version_evidence",
+            selected: None,
+        });
+    }
+    Ok(ProfiledResolution {
+        status: "supported_equivalent",
+        reason: if component.versions.len() == 1 {
+            "single_supported_version"
+        } else {
+            "equivalent_supported_versions"
+        },
+        selected: supported,
+    })
+}
+
+fn profiled_version_relation(
+    resolution: &ProfiledResolution,
+    ranges: &[ProfiledRange],
+) -> Result<&'static str, ComparisonError> {
+    match resolution.status {
+        "missing" | "conflicting" => Ok("unknown"),
+        "unsupported" => Ok("unsupported"),
+        "supported_equivalent" => {
+            let version = resolution
+                .selected
+                .as_ref()
+                .ok_or(ComparisonError::InvalidDocument)?;
+            if ranges.is_empty() {
+                return Ok("unknown");
+            }
+            for range in ranges {
+                let above_lower = match &range.lower {
+                    None => true,
+                    Some((lower, inclusive)) => match profiled_compare(version, lower)? {
+                        Ordering::Greater => true,
+                        Ordering::Equal => *inclusive,
+                        Ordering::Less => false,
+                    },
+                };
+                let below_upper = match &range.upper {
+                    None => true,
+                    Some((upper, inclusive)) => match profiled_compare(version, upper)? {
+                        Ordering::Less => true,
+                        Ordering::Equal => *inclusive,
+                        Ordering::Greater => false,
+                    },
+                };
+                if above_lower && below_upper {
+                    return Ok("within_declared_range");
+                }
+            }
+            Ok("outside_declared_ranges")
+        },
+        _ => Err(ComparisonError::InvalidDocument),
+    }
+}
+
+fn prerequisite<'a>(
+    fields: &'a serde_json::Map<String, Value>,
+) -> Result<ImportedPrerequisite<'a>, ComparisonError> {
     keys(fields, &["kind", "expected", "outcome"], &["patch_id"])?;
     let kind = token(
         fields,
@@ -387,17 +867,31 @@ fn prerequisite(fields: &serde_json::Map<String, Value>) -> Result<&str, Compari
         ],
     )?;
     let expected = text(fields, "expected", MAX_IDENTIFIER_BYTES)?;
-    match kind {
-        "hosting_os" => check(["linux", "windows", "macos", "bsd", "other"].contains(&expected))?,
-        "multisite" => check(["enabled", "disabled"].contains(&expected))?,
-        "activation" => check(["active", "inactive", "network_active"].contains(&expected))?,
+    let patch_id = match kind {
+        "hosting_os" => {
+            check(["linux", "windows", "macos", "bsd", "other"].contains(&expected))?;
+            None
+        },
+        "multisite" => {
+            check(["enabled", "disabled"].contains(&expected))?;
+            None
+        },
+        "activation" => {
+            check(["active", "inactive", "network_active"].contains(&expected))?;
+            None
+        },
         "patch" => {
             check(["applied", "not_applied"].contains(&expected))?;
-            identifier(text(fields, "patch_id", MAX_IDENTIFIER_BYTES)?)?;
+            let patch_id = text(fields, "patch_id", MAX_IDENTIFIER_BYTES)?;
+            identifier(patch_id)?;
+            Some(patch_id.to_owned())
         },
-        "unsupported" => identifier(expected)?,
+        "unsupported" => {
+            identifier(expected)?;
+            None
+        },
         _ => return Err(ComparisonError::InvalidDocument),
-    }
+    };
     check((kind == "patch") == fields.contains_key("patch_id"))?;
     let outcome = token(
         fields,
@@ -410,7 +904,10 @@ fn prerequisite(fields: &serde_json::Map<String, Value>) -> Result<&str, Compari
         ],
     )?;
     check((kind == "unsupported") == (outcome == "unsupported"))?;
-    Ok(outcome)
+    Ok(ImportedPrerequisite {
+        identity: (kind.to_owned(), expected.to_owned(), patch_id),
+        outcome,
+    })
 }
 
 fn token_array(

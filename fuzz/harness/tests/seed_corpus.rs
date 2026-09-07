@@ -95,13 +95,23 @@ fn bounded_openapi_regression_inputs_satisfy_the_semantic_oracle() {
 }
 
 #[test]
-fn committed_wordpress_inputs_satisfy_both_bounded_parser_oracles() {
+fn committed_wordpress_inputs_satisfy_bounded_profile_aware_parser_oracles() {
     for seed in [
         &include_bytes!("../../corpus/json_parser/wordpress-context.json")[..],
         &include_bytes!("../../corpus/json_parser/wordpress-advisories.json")[..],
+        &include_bytes!("../../corpus/json_parser/wordpress-advisories-v2.json")[..],
     ] {
         assert!(seed.len() <= termivar_fuzz_harness::MAX_WORDPRESS_FUZZ_INPUT_BYTES);
         termivar_fuzz_harness::check_wordpress_review(seed);
+    }
+
+    for version_ordering_seed in [
+        &b"1.0dev1\01.0beta1\01.0"[..],
+        &b"1.0-beta2\01.0-beta10\01.0"[..],
+        &b"1.0\01.0.0\01.0pl1"[..],
+        &b"1.0-alpha1\01.0a1\01.0-beta"[..],
+    ] {
+        termivar_fuzz_harness::check_wordpress_review(version_ordering_seed);
     }
 
     for malformed in [
@@ -110,6 +120,7 @@ fn committed_wordpress_inputs_satisfy_both_bounded_parser_oracles() {
         &br#"{"schema":"security.wordpress-context/v1","schema":"security.wordpress-context/v1"}"#[..],
         &br#"{"schema":"security.wordpress-context/v2","root":"https://example.test/","components":[]}"#[..],
         &br#"{"schema":"security.wordpress-advisory-catalog/v1","catalog":{},"records":[]}"#[..],
+        &br#"{"schema":"security.wordpress-advisory-catalog/v2","catalog":{"id":"seed","revision":"r1","retrieved_on":"2026-09-07"},"records":[{"id":"FUZZ-UNKNOWN-PROFILE","component":{"kind":"plugin","slug":"example"},"source":{"reference":"https://example.invalid/","revision":"r1","retrieved_on":"2026-09-07","usage_basis":"synthetic"},"comparison_profile":"unknown/v1","summary":"synthetic","affected_ranges":[],"fixed_versions":[],"prerequisites":[]}] }"#[..],
     ] {
         termivar_fuzz_harness::check_wordpress_review(malformed);
     }

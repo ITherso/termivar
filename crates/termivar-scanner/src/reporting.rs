@@ -28,13 +28,14 @@ use crate::{
 use crate::{
     web_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID},
     wordpress_review::{
-        WordPressActivationState, WordPressApplicability, WordPressCatalogStatus,
-        WordPressComponentEvidenceClass, WordPressComponentKind, WordPressEvidenceConfidence,
-        WordPressEvidenceSource, WordPressExecutionStatus, WordPressHostingOs,
-        WordPressMultisiteState, WordPressPatchState, WordPressPrerequisite,
-        WordPressPrerequisiteOutcome, WordPressVersionRelation, MAX_WORDPRESS_ADVISORY_RECORDS,
-        MAX_WORDPRESS_RESULT_COMPONENTS, MAX_WORDPRESS_RESULT_VERSION_EVIDENCE,
-        MAX_WORDPRESS_SIGNALS,
+        WordPressActivationState, WordPressAdvisoryCatalogSchema, WordPressApplicability,
+        WordPressCatalogStatus, WordPressComparisonProfile, WordPressComponentEvidenceClass,
+        WordPressComponentKind, WordPressEvidenceConfidence, WordPressEvidenceSource,
+        WordPressExecutionStatus, WordPressHostingOs, WordPressMultisiteState, WordPressPatchState,
+        WordPressPrerequisite, WordPressPrerequisiteOutcome, WordPressVersionRelation,
+        WordPressVersionResolution, WordPressVersionResolutionReason,
+        MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_RESULT_COMPONENTS,
+        MAX_WORDPRESS_RESULT_VERSION_EVIDENCE, MAX_WORDPRESS_SIGNALS,
     },
 };
 use serde::Serialize;
@@ -1855,6 +1856,12 @@ struct WordPressAdvisoryDocument {
     fixed_versions: Vec<String>,
     prerequisites: Vec<WordPressPrerequisiteDocument>,
     remediation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comparison_profile: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_resolution: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_resolution_reason: Option<&'static str>,
     component_evidence: &'static str,
     version_relation: &'static str,
     applicability: &'static str,
@@ -1899,6 +1906,7 @@ struct WordPressPrerequisiteDocument {
 impl AssessmentWordPressAuditDocument {
     fn from_audit(audit: &WebAssessmentWordPressAudit) -> Self {
         let result = audit.result();
+        let profiled = result.catalog_schema() == Some(WordPressAdvisoryCatalogSchema::V2);
         let catalog = result
             .catalog_metadata()
             .map(|metadata| WordPressCatalogDocument {
@@ -1952,24 +1960,45 @@ impl AssessmentWordPressAuditDocument {
                     },
                     cve: record.cve().map(str::to_owned),
                     summary: record.summary().to_owned(),
-                    affected_ranges: record
-                        .affected_ranges()
-                        .iter()
-                        .map(|range| WordPressAffectedRangeDocument {
-                            lower: range
-                                .lower()
-                                .map(|endpoint| WordPressVersionEndpointDocument {
-                                    declared: endpoint.declared().to_owned(),
-                                    inclusive: endpoint.inclusive(),
+                    affected_ranges: if profiled {
+                        record
+                            .profiled_affected_ranges()
+                            .iter()
+                            .map(|range| WordPressAffectedRangeDocument {
+                                lower: range.lower().map(|endpoint| {
+                                    WordPressVersionEndpointDocument {
+                                        declared: endpoint.declared().to_owned(),
+                                        inclusive: endpoint.inclusive(),
+                                    }
                                 }),
-                            upper: range
-                                .upper()
-                                .map(|endpoint| WordPressVersionEndpointDocument {
-                                    declared: endpoint.declared().to_owned(),
-                                    inclusive: endpoint.inclusive(),
+                                upper: range.upper().map(|endpoint| {
+                                    WordPressVersionEndpointDocument {
+                                        declared: endpoint.declared().to_owned(),
+                                        inclusive: endpoint.inclusive(),
+                                    }
                                 }),
-                        })
-                        .collect(),
+                            })
+                            .collect()
+                    } else {
+                        record
+                            .affected_ranges()
+                            .iter()
+                            .map(|range| WordPressAffectedRangeDocument {
+                                lower: range.lower().map(|endpoint| {
+                                    WordPressVersionEndpointDocument {
+                                        declared: endpoint.declared().to_owned(),
+                                        inclusive: endpoint.inclusive(),
+                                    }
+                                }),
+                                upper: range.upper().map(|endpoint| {
+                                    WordPressVersionEndpointDocument {
+                                        declared: endpoint.declared().to_owned(),
+                                        inclusive: endpoint.inclusive(),
+                                    }
+                                }),
+                            })
+                            .collect()
+                    },
                     fixed_versions: record.fixed_versions().to_vec(),
                     prerequisites: evaluation
                         .prerequisites()
@@ -1982,6 +2011,14 @@ impl AssessmentWordPressAuditDocument {
                         })
                         .collect(),
                     remediation: record.remediation().map(str::to_owned),
+                    comparison_profile: profiled
+                        .then_some(wordpress_comparison_profile(record.comparison_profile())),
+                    version_resolution: evaluation
+                        .version_resolution()
+                        .map(wordpress_version_resolution),
+                    version_resolution_reason: evaluation
+                        .version_resolution_reason()
+                        .map(wordpress_version_resolution_reason),
                     component_evidence: wordpress_evidence_class(evaluation.component_evidence()),
                     version_relation: wordpress_version_relation(evaluation.version_relation()),
                     applicability: wordpress_applicability(evaluation.applicability()),
@@ -1991,7 +2028,11 @@ impl AssessmentWordPressAuditDocument {
             })
             .collect::<Vec<_>>();
         Self {
-            schema: "security.wordpress-review-audit/v1",
+            schema: if profiled {
+                "security.wordpress-review-audit/v2"
+            } else {
+                "security.wordpress-review-audit/v1"
+            },
             capability_id: WORDPRESS_REVIEW_CAPABILITY_ID,
             catalog_status: wordpress_catalog_status(result.catalog_status()),
             catalog,
@@ -2021,7 +2062,8 @@ impl AssessmentWordPressAuditDocument {
             .try_fold(0_usize, |count, component| {
                 count.checked_add(component.versions.len())
             });
-        if self.schema != "security.wordpress-review-audit/v1"
+        let profiled = self.schema == "security.wordpress-review-audit/v2";
+        if (!profiled && self.schema != "security.wordpress-review-audit/v1")
             || self.capability_id != WORDPRESS_REVIEW_CAPABILITY_ID
             || !catalog_consistent
             || self.additional_request_count != 0
@@ -2037,6 +2079,11 @@ impl AssessmentWordPressAuditDocument {
             || self.item_projected != (projected == 1)
             || self.item_projected != (self.signal_count > 0)
             || self.item_projected != (self.evidence_reference_count > 0)
+            || (profiled && self.catalog_status != "evaluated")
+            || self
+                .advisories
+                .iter()
+                .any(|advisory| !advisory.profile_fields_are_valid(profiled))
         {
             return Err(ReportError::Serialization);
         }
@@ -2066,6 +2113,33 @@ impl AssessmentWordPressAuditDocument {
             ("Advisory count", self.advisory_count.to_string()),
             ("Bounded audit detail", self.wire_json()?),
         ])
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressAdvisoryDocument {
+    fn profile_fields_are_valid(&self, profiled: bool) -> bool {
+        if !profiled {
+            return self.comparison_profile.is_none()
+                && self.version_resolution.is_none()
+                && self.version_resolution_reason.is_none();
+        }
+        let Some(profile) = self.comparison_profile else {
+            return false;
+        };
+        if !matches!(profile, "numeric-dotted/v1" | "php-release-subset/v1") {
+            return false;
+        }
+        matches!(
+            (self.version_resolution, self.version_resolution_reason),
+            (Some("missing"), Some("no_version_evidence"))
+                | (
+                    Some("supported_equivalent"),
+                    Some("single_supported_version" | "equivalent_supported_versions")
+                )
+                | (Some("conflicting"), Some("conflicting_version_evidence"))
+                | (Some("unsupported"), Some("unsupported_version_evidence"))
+        )
     }
 }
 
@@ -2199,6 +2273,43 @@ const fn wordpress_version_relation(relation: WordPressVersionRelation) -> &'sta
         WordPressVersionRelation::OutsideDeclaredRanges => "outside_declared_ranges",
         WordPressVersionRelation::Unknown => "unknown",
         WordPressVersionRelation::Unsupported => "unsupported",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_comparison_profile(profile: WordPressComparisonProfile) -> &'static str {
+    match profile {
+        WordPressComparisonProfile::NumericDottedV1 => "numeric-dotted/v1",
+        WordPressComparisonProfile::PhpReleaseSubsetV1 => "php-release-subset/v1",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_version_resolution(resolution: WordPressVersionResolution) -> &'static str {
+    match resolution {
+        WordPressVersionResolution::Missing => "missing",
+        WordPressVersionResolution::SupportedEquivalent => "supported_equivalent",
+        WordPressVersionResolution::Conflicting => "conflicting",
+        WordPressVersionResolution::Unsupported => "unsupported",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_version_resolution_reason(
+    reason: WordPressVersionResolutionReason,
+) -> &'static str {
+    match reason {
+        WordPressVersionResolutionReason::NoVersionEvidence => "no_version_evidence",
+        WordPressVersionResolutionReason::SingleSupportedVersion => "single_supported_version",
+        WordPressVersionResolutionReason::EquivalentSupportedVersions => {
+            "equivalent_supported_versions"
+        },
+        WordPressVersionResolutionReason::ConflictingVersionEvidence => {
+            "conflicting_version_evidence"
+        },
+        WordPressVersionResolutionReason::UnsupportedVersionEvidence => {
+            "unsupported_version_evidence"
+        },
     }
 }
 
@@ -3195,6 +3306,9 @@ mod tests {
                     outcome: "unknown",
                 }],
                 remediation: Some("Review the supplied upstream remediation guidance.".to_owned()),
+                comparison_profile: None,
+                version_resolution: None,
+                version_resolution_reason: None,
                 component_evidence: "observed_hint",
                 version_relation: "within_declared_range",
                 applicability: "indeterminate_missing_evidence",
@@ -3202,6 +3316,33 @@ mod tests {
                 impact_validation: "not_performed",
             }],
         });
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    fn profiled_wordpress_assessment_document() -> AssessmentDocument<'static> {
+        let mut document = observed_wordpress_assessment_document();
+        let audit = document.wordpress_review.as_mut().unwrap();
+        audit.schema = "security.wordpress-review-audit/v2";
+        audit.catalog.as_mut().unwrap().revision = "synthetic-v2".to_owned();
+        audit.components[0].versions[0].value = "2.4.0-beta1".to_owned();
+        let advisory = &mut audit.advisories[0];
+        advisory.affected_ranges = vec![WordPressAffectedRangeDocument {
+            lower: Some(WordPressVersionEndpointDocument {
+                declared: "2.4.0-beta0".to_owned(),
+                inclusive: true,
+            }),
+            upper: Some(WordPressVersionEndpointDocument {
+                declared: "2.4.0".to_owned(),
+                inclusive: false,
+            }),
+        }];
+        advisory.fixed_versions = vec!["2.4.0".to_owned()];
+        advisory.comparison_profile = Some("php-release-subset/v1");
+        advisory.version_resolution = Some("supported_equivalent");
+        advisory.version_resolution_reason = Some("single_supported_version");
+        advisory.version_relation = "within_declared_range";
+        advisory.applicability = "candidate_match_on_declared_facts";
         document
     }
 
@@ -3604,6 +3745,11 @@ mod tests {
         );
         assert_eq!(audit["advisories"][0]["exploit_execution"], "not_performed");
         assert_eq!(audit["advisories"][0]["impact_validation"], "not_performed");
+        assert!(audit["advisories"][0].get("comparison_profile").is_none());
+        assert!(audit["advisories"][0].get("version_resolution").is_none());
+        assert!(audit["advisories"][0]
+            .get("version_resolution_reason")
+            .is_none());
 
         let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
         assert!(csv.contains("wordpress_review_audit"));
@@ -3631,6 +3777,45 @@ mod tests {
 
     #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
     #[test]
+    fn profiled_wordpress_reporting_exposes_method_and_uncertainty_in_every_format() {
+        let document = profiled_wordpress_assessment_document();
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let advisory = &parsed["wordpress_review"]["advisories"][0];
+        assert_eq!(
+            parsed["wordpress_review"]["schema"],
+            "security.wordpress-review-audit/v2"
+        );
+        assert_eq!(advisory["comparison_profile"], "php-release-subset/v1");
+        assert_eq!(advisory["version_resolution"], "supported_equivalent");
+        assert_eq!(
+            advisory["version_resolution_reason"],
+            "single_supported_version"
+        );
+        assert_eq!(advisory["version_relation"], "within_declared_range");
+        assert_eq!(
+            advisory["applicability"],
+            "candidate_match_on_declared_facts"
+        );
+        assert_eq!(advisory["exploit_execution"], "not_performed");
+        assert_eq!(advisory["impact_validation"], "not_performed");
+
+        for format in [
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+            ReportFormat::Csv,
+        ] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("security.wordpress-review-audit/v2"));
+            assert!(rendered.contains("php-release-subset/v1"));
+            assert!(rendered.contains("single_supported_version"));
+            assert!(rendered.contains("not_performed"));
+            assert!(!rendered.contains("confirmed_vulnerability"));
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
     fn wordpress_reporting_rejects_inconsistent_audit_truth() {
         let mut extra_request = observed_wordpress_assessment_document();
         extra_request
@@ -3654,6 +3839,28 @@ mod tests {
             .component_count = 2;
         let mut missing_catalog = observed_wordpress_assessment_document();
         missing_catalog.wordpress_review.as_mut().unwrap().catalog = None;
+        let mut v1_profile_leak = observed_wordpress_assessment_document();
+        v1_profile_leak
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .advisories[0]
+            .comparison_profile = Some("numeric-dotted/v1");
+        let mut v2_missing_resolution = profiled_wordpress_assessment_document();
+        v2_missing_resolution
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .advisories[0]
+            .version_resolution = None;
+        let mut v2_contradictory_resolution = profiled_wordpress_assessment_document();
+        let advisory = &mut v2_contradictory_resolution
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .advisories[0];
+        advisory.version_resolution = Some("unsupported");
+        advisory.version_resolution_reason = Some("single_supported_version");
 
         for document in [
             extra_request,
@@ -3661,6 +3868,9 @@ mod tests {
             missing_audit,
             wrong_component_count,
             missing_catalog,
+            v1_profile_leak,
+            v2_missing_resolution,
+            v2_contradictory_resolution,
         ] {
             for format in ReportGenerator::available_formats() {
                 assert_eq!(
@@ -3852,6 +4062,53 @@ mod tests {
             (WordPressVersionRelation::Unsupported, "unsupported"),
         ] {
             assert_eq!(wordpress_version_relation(relation), token);
+        }
+        for (profile, token) in [
+            (
+                WordPressComparisonProfile::NumericDottedV1,
+                "numeric-dotted/v1",
+            ),
+            (
+                WordPressComparisonProfile::PhpReleaseSubsetV1,
+                "php-release-subset/v1",
+            ),
+        ] {
+            assert_eq!(wordpress_comparison_profile(profile), token);
+        }
+        for (resolution, token) in [
+            (WordPressVersionResolution::Missing, "missing"),
+            (
+                WordPressVersionResolution::SupportedEquivalent,
+                "supported_equivalent",
+            ),
+            (WordPressVersionResolution::Conflicting, "conflicting"),
+            (WordPressVersionResolution::Unsupported, "unsupported"),
+        ] {
+            assert_eq!(wordpress_version_resolution(resolution), token);
+        }
+        for (reason, token) in [
+            (
+                WordPressVersionResolutionReason::NoVersionEvidence,
+                "no_version_evidence",
+            ),
+            (
+                WordPressVersionResolutionReason::SingleSupportedVersion,
+                "single_supported_version",
+            ),
+            (
+                WordPressVersionResolutionReason::EquivalentSupportedVersions,
+                "equivalent_supported_versions",
+            ),
+            (
+                WordPressVersionResolutionReason::ConflictingVersionEvidence,
+                "conflicting_version_evidence",
+            ),
+            (
+                WordPressVersionResolutionReason::UnsupportedVersionEvidence,
+                "unsupported_version_evidence",
+            ),
+        ] {
+            assert_eq!(wordpress_version_resolution_reason(reason), token);
         }
         for (applicability, token) in [
             (

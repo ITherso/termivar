@@ -232,6 +232,11 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("threat_intelligence", "feature=\"threat-intel\""),
 ];
 
+/// Pure, feature-independent implementation modules shared by optional
+/// producers and ordinary offline consumers. These stay private and cannot
+/// acquire conditional compilation or a redirected/inline implementation.
+const EXACT_UNGATED_PRIVATE_MODULES: &[&str] = &["wordpress_version"];
+
 const FORBIDDEN_SCANNER_MODULES: &[&str] = &["waf"];
 
 const GRAPHQL_REVIEW_CORE_SOURCE: &str = "crates/termivar-scanner/src/graphql_review.rs";
@@ -1750,6 +1755,12 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
                 "termivar-scanner module `{module_name}` must be declared exactly once"
             )),
         }
+    }
+    for module_name in EXACT_UNGATED_PRIVATE_MODULES {
+        violations.extend(private_natural_child_module_violations(
+            source,
+            module_name,
+        )?);
     }
     Ok(violations)
 }
@@ -4825,6 +4836,9 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("fixed_versions", "Vec<String>"),
             ("prerequisites", "Vec<WordPressPrerequisiteDocument>"),
             ("remediation", "Option<String>"),
+            ("comparison_profile", "Option<&'static str>"),
+            ("version_resolution", "Option<&'static str>"),
+            ("version_resolution_reason", "Option<&'static str>"),
             ("component_evidence", "&'static str"),
             ("version_relation", "&'static str"),
             ("applicability", "&'static str"),
@@ -5206,6 +5220,13 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                             "selected_operation_identity" | "documented_response" | "status_class"
                         ))
                         || (name == "AssessmentWordPressAuditDocument" && field_name == "catalog")
+                        || (name == "WordPressAdvisoryDocument"
+                            && matches!(
+                                field_name.as_str(),
+                                "comparison_profile"
+                                    | "version_resolution"
+                                    | "version_resolution_reason"
+                            ))
                         || (name == "WordPressPrerequisiteDocument" && field_name == "patch_id")
                     {
                         field.attrs.len() == 1
@@ -7568,8 +7589,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 89_111;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x306c_90c5_9315_2ee3_ec10_375c_0b88_3711;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 93_055;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x6d78_4ff4_bb46_772b_37a4_5f9a_a895_9a36;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -7684,8 +7705,10 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE",
     "crate::wordpress_review::MAX_WORDPRESS_SIGNALS",
     "crate::wordpress_review::WordPressActivationState",
+    "crate::wordpress_review::WordPressAdvisoryCatalogSchema",
     "crate::wordpress_review::WordPressApplicability",
     "crate::wordpress_review::WordPressCatalogStatus",
+    "crate::wordpress_review::WordPressComparisonProfile",
     "crate::wordpress_review::WordPressComponentEvidenceClass",
     "crate::wordpress_review::WordPressComponentKind",
     "crate::wordpress_review::WordPressEvidenceConfidence",
@@ -7697,6 +7720,8 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::WordPressPrerequisite",
     "crate::wordpress_review::WordPressPrerequisiteOutcome",
     "crate::wordpress_review::WordPressVersionRelation",
+    "crate::wordpress_review::WordPressVersionResolution",
+    "crate::wordpress_review::WordPressVersionResolutionReason",
     "serde::Serialize",
     "std::error::Error",
     "std::fmt",
@@ -7749,12 +7774,15 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressActivationState::Inactive",
     "WordPressActivationState::NetworkActive",
     "WordPressActivationState::Unknown",
+    "WordPressAdvisoryCatalogSchema::V2",
     "WordPressApplicability::CandidateMatchOnDeclaredFacts",
     "WordPressApplicability::ContradictedByDeclaredFacts",
     "WordPressApplicability::IndeterminateMissingEvidence",
     "WordPressApplicability::IndeterminateUnsupported",
     "WordPressCatalogStatus::CatalogNotSupplied",
     "WordPressCatalogStatus::Evaluated",
+    "WordPressComparisonProfile::NumericDottedV1",
+    "WordPressComparisonProfile::PhpReleaseSubsetV1",
     "WordPressComponentEvidenceClass::Conflicting",
     "WordPressComponentEvidenceClass::ObservedHint",
     "WordPressComponentEvidenceClass::OperatorSupplied",
@@ -7792,6 +7820,15 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressVersionRelation::Unknown",
     "WordPressVersionRelation::Unsupported",
     "WordPressVersionRelation::WithinDeclaredRange",
+    "WordPressVersionResolution::Conflicting",
+    "WordPressVersionResolution::Missing",
+    "WordPressVersionResolution::SupportedEquivalent",
+    "WordPressVersionResolution::Unsupported",
+    "WordPressVersionResolutionReason::ConflictingVersionEvidence",
+    "WordPressVersionResolutionReason::EquivalentSupportedVersions",
+    "WordPressVersionResolutionReason::NoVersionEvidence",
+    "WordPressVersionResolutionReason::SingleSupportedVersion",
+    "WordPressVersionResolutionReason::UnsupportedVersionEvidence",
     "OpenApiRuntimeOutcome::BudgetExhausted",
     "OpenApiRuntimeOutcome::Cancelled",
     "OpenApiRuntimeOutcome::DefensiveInterference",
@@ -7910,8 +7947,10 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE",
     "crate::wordpress_review::MAX_WORDPRESS_SIGNALS",
     "crate::wordpress_review::WordPressActivationState",
+    "crate::wordpress_review::WordPressAdvisoryCatalogSchema",
     "crate::wordpress_review::WordPressApplicability",
     "crate::wordpress_review::WordPressCatalogStatus",
+    "crate::wordpress_review::WordPressComparisonProfile",
     "crate::wordpress_review::WordPressComponentEvidenceClass",
     "crate::wordpress_review::WordPressComponentIdentity",
     "crate::wordpress_review::WordPressComponentKind",
@@ -7924,6 +7963,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::WordPressPrerequisite",
     "crate::wordpress_review::WordPressPrerequisiteOutcome",
     "crate::wordpress_review::WordPressVersionRelation",
+    "crate::wordpress_review::WordPressVersionResolution",
+    "crate::wordpress_review::WordPressVersionResolutionReason",
     "fmt::Arguments",
     "fmt::Display",
     "fmt::Error",
@@ -8031,6 +8072,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_activation",
     "wordpress_applicability",
     "wordpress_catalog_status",
+    "wordpress_comparison_profile",
     "wordpress_component_identity",
     "wordpress_component_kind",
     "wordpress_confidence",
@@ -8043,6 +8085,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_prerequisite",
     "wordpress_prerequisite_outcome",
     "wordpress_version_relation",
+    "wordpress_version_resolution",
+    "wordpress_version_resolution_reason",
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
@@ -8137,6 +8181,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "parts_per_million",
     "peer_stable",
     "policy_id",
+    "profile_fields_are_valid",
+    "profiled_affected_ranges",
     "push",
     "push_char",
     "push_fmt",
@@ -8173,6 +8219,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "subject_reference",
     "summary",
     "target",
+    "then_some",
     "title",
     "to_owned",
     "to_rfc3339",
@@ -8196,9 +8243,11 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "affected_ranges",
     "applicability",
     "catalog_metadata",
+    "catalog_schema",
     "catalog_status",
     "component",
     "component_evidence",
+    "comparison_profile",
     "components",
     "confidence_classes",
     "copied",
@@ -8229,6 +8278,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "usage_basis",
     "value",
     "version_relation",
+    "version_resolution",
+    "version_resolution_reason",
     "versions",
     "wire_json",
     "wordpress_review_audit",
@@ -8306,8 +8357,10 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE"
                         | "crate::wordpress_review::MAX_WORDPRESS_SIGNALS"
                         | "crate::wordpress_review::WordPressActivationState"
+                        | "crate::wordpress_review::WordPressAdvisoryCatalogSchema"
                         | "crate::wordpress_review::WordPressApplicability"
                         | "crate::wordpress_review::WordPressCatalogStatus"
+                        | "crate::wordpress_review::WordPressComparisonProfile"
                         | "crate::wordpress_review::WordPressComponentEvidenceClass"
                         | "crate::wordpress_review::WordPressComponentKind"
                         | "crate::wordpress_review::WordPressEvidenceConfidence"
@@ -8319,6 +8372,8 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::wordpress_review::WordPressPrerequisite"
                         | "crate::wordpress_review::WordPressPrerequisiteOutcome"
                         | "crate::wordpress_review::WordPressVersionRelation"
+                        | "crate::wordpress_review::WordPressVersionResolution"
+                        | "crate::wordpress_review::WordPressVersionResolutionReason"
                 )
             });
         let attributes_are_exact = if assessment_import {
@@ -11647,12 +11702,14 @@ mod tests {
             use crate::{
                 web_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID},
                 wordpress_review::{
-                    WordPressActivationState, WordPressApplicability, WordPressCatalogStatus,
+                    WordPressActivationState, WordPressAdvisoryCatalogSchema,
+                    WordPressApplicability, WordPressCatalogStatus, WordPressComparisonProfile,
                     WordPressComponentEvidenceClass, WordPressComponentKind,
                     WordPressEvidenceConfidence, WordPressEvidenceSource,
                     WordPressExecutionStatus, WordPressHostingOs, WordPressMultisiteState,
                     WordPressPatchState, WordPressPrerequisite, WordPressPrerequisiteOutcome,
-                    WordPressVersionRelation, MAX_WORDPRESS_ADVISORY_RECORDS,
+                    WordPressVersionRelation, WordPressVersionResolution,
+                    WordPressVersionResolutionReason, MAX_WORDPRESS_ADVISORY_RECORDS,
                     MAX_WORDPRESS_RESULT_COMPONENTS, MAX_WORDPRESS_RESULT_VERSION_EVIDENCE,
                     MAX_WORDPRESS_SIGNALS,
                 },
@@ -11704,6 +11761,27 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_wordpress_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\n            use crate::{",
+            "#[cfg(feature = \"scanning\")]\n            use crate::{",
+        );
+        assert_ne!(widened_wordpress_import, imports);
+        let violations = reporting_source_import_violations(&widened_wordpress_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let unrelated_wordpress_import = format!(
+            "{imports}\n#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\nuse crate::wordpress_review::UnrelatedAuthority;"
+        );
+        let violations = reporting_source_import_violations(&unrelated_wordpress_import)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("imports must be exactly"),
+            "{violations}"
+        );
     }
 
     #[test]
@@ -12071,6 +12149,12 @@ mod tests {
                 fixed_versions: Vec<String>,
                 prerequisites: Vec<WordPressPrerequisiteDocument>,
                 remediation: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                comparison_profile: Option<&'static str>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                version_resolution: Option<&'static str>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                version_resolution_reason: Option<&'static str>,
                 component_evidence: &'static str,
                 version_relation: &'static str,
                 applicability: &'static str,
@@ -12295,6 +12379,35 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let public_wordpress_profile = source.replace(
+            "                comparison_profile: Option<&'static str>,",
+            "                pub comparison_profile: Option<&'static str>,",
+        );
+        assert_ne!(public_wordpress_profile, source);
+        let violations = reporting_document_contract_violations(&public_wordpress_profile)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("WordPressAdvisoryDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let serialized_null_wordpress_resolution = source.replace(
+            "                #[serde(skip_serializing_if = \"Option::is_none\")]\n                version_resolution: Option<&'static str>,",
+            "                version_resolution: Option<&'static str>,",
+        );
+        assert_ne!(serialized_null_wordpress_resolution, source);
+        let violations =
+            reporting_document_contract_violations(&serialized_null_wordpress_resolution)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("WordPressAdvisoryDocument")
                 && violations.contains("fields must remain exactly"),
             "{violations}"
         );
@@ -13381,6 +13494,7 @@ mod tests {
             #[cfg(feature = "oast-correlation")] pub mod oast;
             #[cfg(feature = "ssrf-oast-review")] pub mod ssrf_oast_review;
             #[cfg(feature = "wordpress-review")] pub mod wordpress_review;
+            mod wordpress_version;
             #[cfg(feature = "platform-models")] pub mod persistence;
             #[cfg(feature = "plugins")] pub mod plugin;
             #[cfg(feature = "platform-models")] pub mod post_exploitation;
@@ -13418,6 +13532,29 @@ mod tests {
         assert!(oast_violations.iter().any(|violation| {
             violation.contains("module `oast`") && violation.contains("exact cfg")
         }));
+    }
+
+    #[test]
+    fn wordpress_version_module_stays_private_external_and_feature_independent() {
+        assert!(private_natural_child_module_violations(
+            "mod wordpress_version;",
+            "wordpress_version"
+        )
+        .unwrap()
+        .is_empty());
+
+        for source in [
+            "pub mod wordpress_version;",
+            "pub(crate) mod wordpress_version;",
+            "mod wordpress_version {}",
+            "#[cfg(feature = \"wordpress-review\")] mod wordpress_version;",
+            "#[path = \"other.rs\"] mod wordpress_version;",
+            "mod wordpress_version; mod wordpress_version;",
+        ] {
+            let violations =
+                private_natural_child_module_violations(source, "wordpress_version").unwrap();
+            assert!(!violations.is_empty(), "accepted `{source}`");
+        }
     }
 
     #[test]

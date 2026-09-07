@@ -1,0 +1,35 @@
+{
+  "schema": "security.wordpress-context/v1",
+  "root": "https://example.test/",
+  "hosting_os": "linux",
+  "multisite": "disabled",
+  "components": [
+    {
+      "kind": "core",
+      "slug": "wordpress",
+      "version": "6.9.4",
+      "patches": []
+    },
+    {
+      "kind": "plugin",
+      "slug": "synthetic-prerelease-plugin",
+      "version": "2.4.0-beta1",
+      "activation": "active",
+      "patches": []
+    },
+    {
+      "kind": "plugin",
+      "slug": "synthetic-trailing-zero-plugin",
+      "version": "1.0",
+      "activation": "active",
+      "patches": []
+    },
+    {
+      "kind": "plugin",
+      "slug": "synthetic-vendor-label-plugin",
+      "version": "1.0-vendor1",
+      "activation": "active",
+      "patches": []
+    }
+  ]
+}

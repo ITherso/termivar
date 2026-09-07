@@ -18,8 +18,15 @@ use serde_json::{Map, Number, Value};
 use thiserror::Error;
 use url::Url;
 
+pub use crate::wordpress_version::{
+    NumericDottedVersion, NumericDottedVersionError, PhpReleaseSubsetVersion,
+    PhpReleaseSubsetVersionError, WordPressComparisonProfile,
+};
+use crate::wordpress_version::{ProfiledVersionError, ProfiledVersionKey};
+
 pub const WORDPRESS_CONTEXT_SCHEMA: &str = "security.wordpress-context/v1";
 pub const WORDPRESS_ADVISORY_CATALOG_SCHEMA: &str = "security.wordpress-advisory-catalog/v1";
+pub const WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2: &str = "security.wordpress-advisory-catalog/v2";
 pub const MAX_WORDPRESS_CONTEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_WORDPRESS_ADVISORY_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_WORDPRESS_CONTEXT_COMPONENTS: usize = 256;
@@ -38,8 +45,10 @@ pub const MAX_WORDPRESS_RESULT_COMPONENTS: usize =
 /// response signal and each context component can contribute at most one row.
 pub const MAX_WORDPRESS_RESULT_VERSION_EVIDENCE: usize =
     MAX_WORDPRESS_SIGNALS + MAX_WORDPRESS_CONTEXT_COMPONENTS;
-pub const MAX_WORDPRESS_VERSION_COMPONENTS: usize = 8;
-pub const MAX_WORDPRESS_VERSION_BYTES: usize = 64;
+pub const MAX_WORDPRESS_VERSION_COMPONENTS: usize =
+    crate::wordpress_version::MAX_WORDPRESS_VERSION_COMPONENTS;
+pub const MAX_WORDPRESS_VERSION_BYTES: usize =
+    crate::wordpress_version::MAX_WORDPRESS_VERSION_BYTES;
 pub const MAX_WORDPRESS_SLUG_BYTES: usize = 64;
 pub const MAX_WORDPRESS_IDENTIFIER_BYTES: usize = 128;
 pub const MAX_WORDPRESS_REFERENCE_BYTES: usize = 2_048;
@@ -47,6 +56,7 @@ pub const MAX_WORDPRESS_SUMMARY_BYTES: usize = 1_024;
 pub const MAX_WORDPRESS_REMEDIATION_BYTES: usize = 2_048;
 pub const MAX_WORDPRESS_EVALUATION_WORK: usize = MAX_WORDPRESS_ADVISORY_RECORDS
     * (MAX_WORDPRESS_RANGES_PER_ADVISORY + MAX_WORDPRESS_PREREQUISITES_PER_ADVISORY);
+const MAX_WORDPRESS_VERSION_RESOLUTION_WORK: usize = MAX_WORDPRESS_RESULT_VERSION_EVIDENCE * 2;
 
 const MAX_CONTEXT_JSON_NODES: usize = 16_384;
 const MAX_CATALOG_JSON_NODES: usize = 262_144;
@@ -266,61 +276,6 @@ impl WordPressAdvisorySource {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NumericDottedVersion {
-    components: Vec<u32>,
-}
-
-impl NumericDottedVersion {
-    pub fn parse(value: &str) -> Result<Self, NumericDottedVersionError> {
-        if value.is_empty() || value.len() > MAX_WORDPRESS_VERSION_BYTES {
-            return Err(NumericDottedVersionError);
-        }
-        let mut components = Vec::new();
-        for part in value.split('.') {
-            if components.len() == MAX_WORDPRESS_VERSION_COMPONENTS
-                || part.is_empty()
-                || !part.bytes().all(|byte| byte.is_ascii_digit())
-                || (part.len() > 1 && part.starts_with('0'))
-            {
-                return Err(NumericDottedVersionError);
-            }
-            let component = part
-                .bytes()
-                .try_fold(0_u32, |value, digit| {
-                    value.checked_mul(10)?.checked_add(u32::from(digit - b'0'))
-                })
-                .ok_or(NumericDottedVersionError)?;
-            components.push(component);
-        }
-        while components.len() > 1 && components.last() == Some(&0) {
-            components.pop();
-        }
-        Ok(Self { components })
-    }
-
-    #[must_use]
-    pub fn components(&self) -> &[u32] {
-        &self.components
-    }
-}
-
-impl Ord for NumericDottedVersion {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.components.cmp(&other.components)
-    }
-}
-
-impl PartialOrd for NumericDottedVersion {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("unsupported numeric-dotted WordPress version")]
-pub struct NumericDottedVersionError;
-
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct WordPressVersionEndpoint {
     declared: String,
@@ -349,6 +304,68 @@ impl WordPressVersionEndpoint {
 pub struct WordPressAffectedRange {
     lower: Option<WordPressVersionEndpoint>,
     upper: Option<WordPressVersionEndpoint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordPressProfiledVersionEndpoint {
+    declared: String,
+    version: ProfiledVersionKey,
+    inclusive: bool,
+}
+
+impl WordPressProfiledVersionEndpoint {
+    #[must_use]
+    pub fn declared(&self) -> &str {
+        &self.declared
+    }
+
+    #[must_use]
+    pub const fn inclusive(&self) -> bool {
+        self.inclusive
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordPressProfiledAffectedRange {
+    lower: Option<WordPressProfiledVersionEndpoint>,
+    upper: Option<WordPressProfiledVersionEndpoint>,
+}
+
+impl WordPressProfiledAffectedRange {
+    #[must_use]
+    pub const fn lower(&self) -> Option<&WordPressProfiledVersionEndpoint> {
+        self.lower.as_ref()
+    }
+
+    #[must_use]
+    pub const fn upper(&self) -> Option<&WordPressProfiledVersionEndpoint> {
+        self.upper.as_ref()
+    }
+
+    fn contains(&self, version: &ProfiledVersionKey) -> Result<bool, ProfiledVersionError> {
+        let above_lower = self.lower.as_ref().is_none_or(|endpoint| {
+            endpoint.version.compare(version).is_ok_and(|ordering| {
+                ordering == Ordering::Less || (endpoint.inclusive && ordering == Ordering::Equal)
+            })
+        });
+        let below_upper = self.upper.as_ref().is_none_or(|endpoint| {
+            endpoint.version.compare(version).is_ok_and(|ordering| {
+                ordering == Ordering::Greater || (endpoint.inclusive && ordering == Ordering::Equal)
+            })
+        });
+        if self
+            .lower
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.version.compare(version).is_err())
+            || self
+                .upper
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.version.compare(version).is_err())
+        {
+            return Err(ProfiledVersionError);
+        }
+        Ok(above_lower && below_upper)
+    }
 }
 
 impl WordPressAffectedRange {
@@ -402,6 +419,8 @@ pub struct WordPressAdvisoryRecord {
     cve: Option<String>,
     summary: String,
     affected_ranges: Vec<WordPressAffectedRange>,
+    profiled_affected_ranges: Vec<WordPressProfiledAffectedRange>,
+    comparison_profile: WordPressComparisonProfile,
     fixed_versions: Vec<String>,
     prerequisites: Vec<WordPressPrerequisite>,
     remediation: Option<String>,
@@ -439,6 +458,28 @@ impl WordPressAdvisoryRecord {
     }
 
     #[must_use]
+    pub fn profiled_affected_ranges(&self) -> &[WordPressProfiledAffectedRange] {
+        &self.profiled_affected_ranges
+    }
+
+    #[must_use]
+    pub const fn comparison_profile(&self) -> WordPressComparisonProfile {
+        self.comparison_profile
+    }
+
+    #[must_use]
+    pub fn affected_range_count(&self) -> usize {
+        self.affected_ranges.len() + self.profiled_affected_ranges.len()
+    }
+
+    #[must_use]
+    pub fn compare_versions(&self, left: &str, right: &str) -> Option<Ordering> {
+        let left = ProfiledVersionKey::parse(self.comparison_profile, left).ok()?;
+        let right = ProfiledVersionKey::parse(self.comparison_profile, right).ok()?;
+        left.compare(&right).ok()
+    }
+
+    #[must_use]
     pub fn fixed_versions(&self) -> &[String] {
         &self.fixed_versions
     }
@@ -456,11 +497,17 @@ impl WordPressAdvisoryRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WordPressAdvisoryCatalog {
+    schema: WordPressAdvisoryCatalogSchema,
     metadata: WordPressCatalogMetadata,
     records: Vec<WordPressAdvisoryRecord>,
 }
 
 impl WordPressAdvisoryCatalog {
+    #[must_use]
+    pub const fn schema(&self) -> WordPressAdvisoryCatalogSchema {
+        self.schema
+    }
+
     #[must_use]
     pub const fn metadata(&self) -> &WordPressCatalogMetadata {
         &self.metadata
@@ -469,6 +516,22 @@ impl WordPressAdvisoryCatalog {
     #[must_use]
     pub fn records(&self) -> &[WordPressAdvisoryRecord] {
         &self.records
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WordPressAdvisoryCatalogSchema {
+    V1,
+    V2,
+}
+
+impl WordPressAdvisoryCatalogSchema {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::V1 => WORDPRESS_ADVISORY_CATALOG_SCHEMA,
+            Self::V2 => WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2,
+        }
     }
 }
 
@@ -658,6 +721,23 @@ pub enum WordPressVersionRelation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WordPressVersionResolution {
+    Missing,
+    SupportedEquivalent,
+    Conflicting,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WordPressVersionResolutionReason {
+    NoVersionEvidence,
+    SingleSupportedVersion,
+    EquivalentSupportedVersions,
+    ConflictingVersionEvidence,
+    UnsupportedVersionEvidence,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WordPressPrerequisiteOutcome {
     MatchedOnSuppliedFacts,
     ContradictedOnSuppliedFacts,
@@ -701,6 +781,8 @@ pub struct WordPressAdvisoryEvaluation {
     record: WordPressAdvisoryRecord,
     component_evidence: WordPressComponentEvidenceClass,
     version_relation: WordPressVersionRelation,
+    version_resolution: Option<WordPressVersionResolution>,
+    version_resolution_reason: Option<WordPressVersionResolutionReason>,
     prerequisites: Vec<WordPressPrerequisiteEvaluation>,
     applicability: WordPressApplicability,
 }
@@ -719,6 +801,16 @@ impl WordPressAdvisoryEvaluation {
     #[must_use]
     pub const fn version_relation(&self) -> WordPressVersionRelation {
         self.version_relation
+    }
+
+    #[must_use]
+    pub const fn version_resolution(&self) -> Option<WordPressVersionResolution> {
+        self.version_resolution
+    }
+
+    #[must_use]
+    pub const fn version_resolution_reason(&self) -> Option<WordPressVersionResolutionReason> {
+        self.version_resolution_reason
     }
 
     #[must_use]
@@ -745,6 +837,7 @@ impl WordPressAdvisoryEvaluation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WordPressReviewResult {
     catalog_status: WordPressCatalogStatus,
+    catalog_schema: Option<WordPressAdvisoryCatalogSchema>,
     catalog_metadata: Option<WordPressCatalogMetadata>,
     components: Vec<WordPressComponentAssessment>,
     advisories: Vec<WordPressAdvisoryEvaluation>,
@@ -754,6 +847,11 @@ impl WordPressReviewResult {
     #[must_use]
     pub const fn catalog_status(&self) -> WordPressCatalogStatus {
         self.catalog_status
+    }
+
+    #[must_use]
+    pub const fn catalog_schema(&self) -> Option<WordPressAdvisoryCatalogSchema> {
+        self.catalog_schema
     }
 
     #[must_use]
@@ -862,24 +960,50 @@ pub fn parse_wordpress_advisory_catalog(
         MAX_WORDPRESS_ADVISORY_RECORDS,
         WordPressReviewError::CatalogTooLarge,
     )?;
-    require_schema(&value, WORDPRESS_ADVISORY_CATALOG_SCHEMA)?;
-    let wire: CatalogWire =
-        serde_json::from_value(value).map_err(|_| WordPressReviewError::InvalidCatalog)?;
-    validate_identifier(&wire.catalog.id)?;
-    validate_identifier(&wire.catalog.revision)?;
-    validate_date(&wire.catalog.retrieved_on)?;
-    if wire.records.len() > MAX_WORDPRESS_ADVISORY_RECORDS {
+    let schema = match value.get("schema").and_then(Value::as_str) {
+        Some(WORDPRESS_ADVISORY_CATALOG_SCHEMA) => WordPressAdvisoryCatalogSchema::V1,
+        Some(WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2) => WordPressAdvisoryCatalogSchema::V2,
+        _ => return Err(WordPressReviewError::UnsupportedSchema),
+    };
+    let (catalog, records) = match schema {
+        WordPressAdvisoryCatalogSchema::V1 => {
+            let wire: CatalogV1Wire =
+                serde_json::from_value(value).map_err(|_| WordPressReviewError::InvalidCatalog)?;
+            (
+                wire.catalog,
+                wire.records
+                    .into_iter()
+                    .map(AdvisoryRecordInput::from)
+                    .collect::<Vec<_>>(),
+            )
+        },
+        WordPressAdvisoryCatalogSchema::V2 => {
+            let wire: CatalogV2Wire =
+                serde_json::from_value(value).map_err(|_| WordPressReviewError::InvalidCatalog)?;
+            (
+                wire.catalog,
+                wire.records
+                    .into_iter()
+                    .map(AdvisoryRecordInput::try_from)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        },
+    };
+    validate_identifier(&catalog.id)?;
+    validate_identifier(&catalog.revision)?;
+    validate_date(&catalog.retrieved_on)?;
+    if records.len() > MAX_WORDPRESS_ADVISORY_RECORDS {
         return Err(WordPressReviewError::InvalidCatalog);
     }
     let metadata = WordPressCatalogMetadata {
-        id: wire.catalog.id,
-        revision: wire.catalog.revision,
-        retrieved_on: wire.catalog.retrieved_on,
+        id: catalog.id,
+        revision: catalog.revision,
+        retrieved_on: catalog.retrieved_on,
     };
     let mut record_ids = BTreeSet::new();
-    let mut records = Vec::with_capacity(wire.records.len());
+    let mut validated_records = Vec::with_capacity(records.len());
     let mut work = 0_usize;
-    for record in wire.records {
+    for record in records {
         validate_identifier(&record.id)?;
         if !record_ids.insert(record.id.clone()) {
             return Err(WordPressReviewError::DuplicateAdvisory);
@@ -906,24 +1030,47 @@ pub fn parse_wordpress_advisory_catalog(
         if work > MAX_WORDPRESS_EVALUATION_WORK {
             return Err(WordPressReviewError::EvaluationLimitExceeded);
         }
-        let mut affected_ranges = record
-            .affected_ranges
-            .into_iter()
-            .map(validate_range)
-            .collect::<Result<Vec<_>, _>>()?;
-        affected_ranges.sort();
-        affected_ranges.dedup();
-        let mut fixed_versions = Vec::with_capacity(record.fixed_versions.len());
-        let mut fixed_seen = BTreeSet::new();
+        let (affected_ranges, profiled_affected_ranges) = match schema {
+            WordPressAdvisoryCatalogSchema::V1 => {
+                let mut ranges = record
+                    .affected_ranges
+                    .into_iter()
+                    .map(validate_range)
+                    .collect::<Result<Vec<_>, _>>()?;
+                ranges.sort();
+                ranges.dedup();
+                (ranges, Vec::new())
+            },
+            WordPressAdvisoryCatalogSchema::V2 => {
+                let mut ranges = record
+                    .affected_ranges
+                    .into_iter()
+                    .map(|range| validate_profiled_range(range, record.comparison_profile))
+                    .collect::<Result<Vec<_>, _>>()?;
+                ranges.sort_by(compare_profiled_ranges);
+                ranges.dedup_by(|left, right| profiled_ranges_equivalent(left, right));
+                (Vec::new(), ranges)
+            },
+        };
+        let mut fixed_versions: Vec<(ProfiledVersionKey, String)> =
+            Vec::with_capacity(record.fixed_versions.len());
         for fixed in record.fixed_versions {
-            let parsed = NumericDottedVersion::parse(&fixed)
+            let parsed = ProfiledVersionKey::parse(record.comparison_profile, &fixed)
                 .map_err(|_| WordPressReviewError::InvalidVersionRange)?;
-            if !fixed_seen.insert(parsed.clone()) {
+            if fixed_versions
+                .iter()
+                .any(|(existing, _)| existing.compare(&parsed).ok() == Some(Ordering::Equal))
+            {
                 return Err(WordPressReviewError::InvalidCatalog);
             }
             fixed_versions.push((parsed, fixed));
         }
-        fixed_versions.sort_by(|left, right| left.0.cmp(&right.0));
+        fixed_versions.sort_by(|left, right| {
+            left.0
+                .compare(&right.0)
+                .expect("one record has exactly one validated comparison profile")
+                .then_with(|| left.1.cmp(&right.1))
+        });
         let fixed_versions = fixed_versions
             .into_iter()
             .map(|(_, declared)| declared)
@@ -944,20 +1091,26 @@ pub fn parse_wordpress_advisory_catalog(
                 Ok(value)
             })
             .transpose()?;
-        records.push(WordPressAdvisoryRecord {
+        validated_records.push(WordPressAdvisoryRecord {
             id: record.id,
             component,
             source,
             cve: record.cve,
             summary: record.summary,
             affected_ranges,
+            profiled_affected_ranges,
+            comparison_profile: record.comparison_profile,
             fixed_versions,
             prerequisites,
             remediation,
         });
     }
-    records.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(WordPressAdvisoryCatalog { metadata, records })
+    validated_records.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(WordPressAdvisoryCatalog {
+        schema,
+        metadata,
+        records: validated_records,
+    })
 }
 
 pub fn evaluate_wordpress_review(
@@ -1006,19 +1159,27 @@ pub fn evaluate_wordpress_review(
         return Err(WordPressReviewError::ResultLimitExceeded);
     }
     let mut components = Vec::with_capacity(aggregates.len());
+    let profiled_catalog = inputs
+        .catalog()
+        .is_some_and(|catalog| catalog.schema() == WordPressAdvisoryCatalogSchema::V2);
     for (identity, aggregate) in &aggregates {
-        components.push(component_assessment(identity.clone(), aggregate));
+        components.push(component_assessment(
+            identity.clone(),
+            aggregate,
+            profiled_catalog,
+        ));
     }
     let Some(catalog) = inputs.catalog() else {
         return Ok(WordPressReviewResult {
             catalog_status: WordPressCatalogStatus::CatalogNotSupplied,
+            catalog_schema: None,
             catalog_metadata: None,
             components,
             advisories: Vec::new(),
         });
     };
     let work = catalog.records().iter().try_fold(0_usize, |work, record| {
-        work.checked_add(record.affected_ranges.len())?
+        work.checked_add(record.affected_range_count())?
             .checked_add(record.prerequisites.len())
     });
     if work.is_none_or(|work| work > MAX_WORDPRESS_EVALUATION_WORK) {
@@ -1028,14 +1189,64 @@ pub fn evaluate_wordpress_review(
         .iter()
         .map(|assessment| (assessment.identity.clone(), assessment))
         .collect::<BTreeMap<_, _>>();
+    let mut profiled_resolutions = BTreeMap::new();
+    if catalog.schema() == WordPressAdvisoryCatalogSchema::V2 {
+        let profiles = catalog
+            .records()
+            .iter()
+            .map(WordPressAdvisoryRecord::comparison_profile)
+            .collect::<BTreeSet<_>>();
+        let mut resolution_work = 0_usize;
+        for (identity, assessment) in &assessments {
+            for profile in &profiles {
+                resolution_work = resolution_work
+                    .checked_add(assessment.versions().len())
+                    .ok_or(WordPressReviewError::EvaluationLimitExceeded)?;
+                if resolution_work > MAX_WORDPRESS_VERSION_RESOLUTION_WORK {
+                    return Err(WordPressReviewError::EvaluationLimitExceeded);
+                }
+                profiled_resolutions.insert(
+                    ((*identity).clone(), *profile),
+                    resolve_profiled_versions(assessment, *profile),
+                );
+            }
+        }
+    }
     let mut advisories = Vec::with_capacity(catalog.records().len());
     for record in catalog.records() {
         let assessment = assessments.get(record.component());
-        let component_evidence = assessment
-            .map_or(WordPressComponentEvidenceClass::Unknown, |assessment| {
-                assessment.evidence_class
-            });
-        let version_relation = evaluate_version_relation(assessment.copied(), record);
+        let (component_evidence, version_relation, version_resolution, resolution_reason) =
+            match catalog.schema() {
+                WordPressAdvisoryCatalogSchema::V1 => {
+                    let component_evidence = assessment
+                        .map_or(WordPressComponentEvidenceClass::Unknown, |assessment| {
+                            assessment.evidence_class
+                        });
+                    (
+                        component_evidence,
+                        evaluate_version_relation(assessment.copied(), record),
+                        None,
+                        None,
+                    )
+                },
+                WordPressAdvisoryCatalogSchema::V2 => {
+                    let resolution = assessment
+                        .and_then(|assessment| {
+                            profiled_resolutions
+                                .get(&(assessment.identity().clone(), record.comparison_profile()))
+                        })
+                        .cloned()
+                        .unwrap_or_else(VersionResolutionState::missing);
+                    (
+                        assessment.map_or(WordPressComponentEvidenceClass::Unknown, |assessment| {
+                            profile_independent_component_evidence(assessment)
+                        }),
+                        evaluate_profiled_version_relation(&resolution, record),
+                        Some(resolution.status),
+                        Some(resolution.reason),
+                    )
+                },
+            };
         let prerequisites = record
             .prerequisites
             .iter()
@@ -1055,12 +1266,15 @@ pub fn evaluate_wordpress_review(
             record: record.clone(),
             component_evidence,
             version_relation,
+            version_resolution,
+            version_resolution_reason: resolution_reason,
             prerequisites,
             applicability,
         });
     }
     Ok(WordPressReviewResult {
         catalog_status: WordPressCatalogStatus::Evaluated,
+        catalog_schema: Some(catalog.schema()),
         catalog_metadata: Some(catalog.metadata().clone()),
         components,
         advisories,
@@ -1078,8 +1292,9 @@ struct ComponentAggregate {
 fn component_assessment(
     identity: WordPressComponentIdentity,
     aggregate: &ComponentAggregate,
+    profiled_catalog: bool,
 ) -> WordPressComponentAssessment {
-    let conflicting = versions_conflict(&aggregate.versions);
+    let conflicting = !profiled_catalog && versions_conflict(&aggregate.versions);
     let observed = aggregate.sources.iter().any(|source| {
         matches!(
             source,
@@ -1135,6 +1350,125 @@ fn versions_conflict(versions: &BTreeSet<WordPressVersionEvidence>) -> bool {
     normalized.len() > 1
         || unsupported.len() > 1
         || (!normalized.is_empty() && !unsupported.is_empty())
+}
+
+#[derive(Clone)]
+struct VersionResolutionState {
+    status: WordPressVersionResolution,
+    reason: WordPressVersionResolutionReason,
+    version: Option<ProfiledVersionKey>,
+}
+
+impl VersionResolutionState {
+    fn missing() -> Self {
+        Self {
+            status: WordPressVersionResolution::Missing,
+            reason: WordPressVersionResolutionReason::NoVersionEvidence,
+            version: None,
+        }
+    }
+}
+
+fn resolve_profiled_versions(
+    assessment: &WordPressComponentAssessment,
+    profile: WordPressComparisonProfile,
+) -> VersionResolutionState {
+    if assessment.versions.is_empty() {
+        return VersionResolutionState::missing();
+    }
+    let mut supported = None::<ProfiledVersionKey>;
+    let mut supported_conflict = false;
+    let mut unsupported = false;
+    for evidence in &assessment.versions {
+        match ProfiledVersionKey::parse(profile, &evidence.value) {
+            Ok(version) => {
+                if let Some(selected) = supported.as_ref() {
+                    if selected.compare(&version).ok() != Some(Ordering::Equal) {
+                        supported_conflict = true;
+                    }
+                } else {
+                    supported = Some(version);
+                }
+            },
+            Err(_) => {
+                unsupported = true;
+            },
+        }
+    }
+    if supported_conflict {
+        return VersionResolutionState {
+            status: WordPressVersionResolution::Conflicting,
+            reason: WordPressVersionResolutionReason::ConflictingVersionEvidence,
+            version: None,
+        };
+    }
+    if unsupported || supported.is_none() {
+        return VersionResolutionState {
+            status: WordPressVersionResolution::Unsupported,
+            reason: WordPressVersionResolutionReason::UnsupportedVersionEvidence,
+            version: None,
+        };
+    }
+    VersionResolutionState {
+        status: WordPressVersionResolution::SupportedEquivalent,
+        reason: if assessment.versions.len() == 1 {
+            WordPressVersionResolutionReason::SingleSupportedVersion
+        } else {
+            WordPressVersionResolutionReason::EquivalentSupportedVersions
+        },
+        version: supported,
+    }
+}
+
+fn profile_independent_component_evidence(
+    assessment: &WordPressComponentAssessment,
+) -> WordPressComponentEvidenceClass {
+    if assessment.identity_sources.iter().any(|source| {
+        matches!(
+            source,
+            WordPressEvidenceSource::GeneratorMetadata
+                | WordPressEvidenceSource::SameOriginAssetPath
+        )
+    }) {
+        WordPressComponentEvidenceClass::ObservedHint
+    } else if assessment
+        .identity_sources
+        .contains(&WordPressEvidenceSource::OperatorContext)
+    {
+        WordPressComponentEvidenceClass::OperatorSupplied
+    } else {
+        WordPressComponentEvidenceClass::Unknown
+    }
+}
+
+fn evaluate_profiled_version_relation(
+    resolution: &VersionResolutionState,
+    record: &WordPressAdvisoryRecord,
+) -> WordPressVersionRelation {
+    match resolution.status {
+        WordPressVersionResolution::Missing | WordPressVersionResolution::Conflicting => {
+            WordPressVersionRelation::Unknown
+        },
+        WordPressVersionResolution::Unsupported => WordPressVersionRelation::Unsupported,
+        WordPressVersionResolution::SupportedEquivalent => {
+            let Some(version) = resolution.version.as_ref() else {
+                return WordPressVersionRelation::Unsupported;
+            };
+            if record.profiled_affected_ranges.is_empty() {
+                return WordPressVersionRelation::Unknown;
+            }
+            match record
+                .profiled_affected_ranges
+                .iter()
+                .try_fold(false, |matched, range| {
+                    range.contains(version).map(|contains| matched || contains)
+                }) {
+                Ok(true) => WordPressVersionRelation::WithinDeclaredRange,
+                Ok(false) => WordPressVersionRelation::OutsideDeclaredRanges,
+                Err(_) => WordPressVersionRelation::Unsupported,
+            }
+        },
+    }
 }
 
 fn evaluate_version_relation(
@@ -1742,11 +2076,130 @@ struct PatchWire {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CatalogWire {
+struct CatalogV1Wire {
     #[allow(dead_code)]
     schema: String,
     catalog: CatalogMetadataWire,
-    records: Vec<AdvisoryRecordWire>,
+    records: Vec<AdvisoryRecordV1Wire>,
+}
+
+fn validate_profiled_range(
+    range: RangeWire,
+    profile: WordPressComparisonProfile,
+) -> Result<WordPressProfiledAffectedRange, WordPressReviewError> {
+    if range.lower.is_none() && range.upper.is_none() {
+        return Err(WordPressReviewError::InvalidVersionRange);
+    }
+    let lower = range
+        .lower
+        .map(|endpoint| validate_profiled_endpoint(endpoint, profile))
+        .transpose()?;
+    let upper = range
+        .upper
+        .map(|endpoint| validate_profiled_endpoint(endpoint, profile))
+        .transpose()?;
+    if let (Some(lower), Some(upper)) = (&lower, &upper) {
+        match lower
+            .version
+            .compare(&upper.version)
+            .map_err(|_| WordPressReviewError::InvalidVersionRange)?
+        {
+            Ordering::Greater => return Err(WordPressReviewError::InvalidVersionRange),
+            Ordering::Equal if !(lower.inclusive && upper.inclusive) => {
+                return Err(WordPressReviewError::InvalidVersionRange);
+            },
+            Ordering::Less | Ordering::Equal => {},
+        }
+    }
+    Ok(WordPressProfiledAffectedRange { lower, upper })
+}
+
+fn validate_profiled_endpoint(
+    endpoint: EndpointWire,
+    profile: WordPressComparisonProfile,
+) -> Result<WordPressProfiledVersionEndpoint, WordPressReviewError> {
+    let version = ProfiledVersionKey::parse(profile, &endpoint.version)
+        .map_err(|_| WordPressReviewError::InvalidVersionRange)?;
+    Ok(WordPressProfiledVersionEndpoint {
+        declared: endpoint.version,
+        version,
+        inclusive: endpoint.inclusive,
+    })
+}
+
+fn compare_profiled_ranges(
+    left: &WordPressProfiledAffectedRange,
+    right: &WordPressProfiledAffectedRange,
+) -> Ordering {
+    compare_profiled_endpoint_semantics(left.lower.as_ref(), right.lower.as_ref())
+        .then_with(|| {
+            compare_profiled_endpoint_semantics(left.upper.as_ref(), right.upper.as_ref())
+        })
+        .then_with(|| {
+            compare_profiled_endpoint_spellings(left.lower.as_ref(), right.lower.as_ref())
+        })
+        .then_with(|| {
+            compare_profiled_endpoint_spellings(left.upper.as_ref(), right.upper.as_ref())
+        })
+}
+
+fn compare_profiled_endpoint_semantics(
+    left: Option<&WordPressProfiledVersionEndpoint>,
+    right: Option<&WordPressProfiledVersionEndpoint>,
+) -> Ordering {
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(left), Some(right)) => left
+            .version
+            .compare(&right.version)
+            .expect("one record has exactly one validated comparison profile")
+            .then_with(|| left.inclusive.cmp(&right.inclusive)),
+    }
+}
+
+fn compare_profiled_endpoint_spellings(
+    left: Option<&WordPressProfiledVersionEndpoint>,
+    right: Option<&WordPressProfiledVersionEndpoint>,
+) -> Ordering {
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(left), Some(right)) => left.declared.cmp(&right.declared),
+    }
+}
+
+fn profiled_ranges_equivalent(
+    left: &WordPressProfiledAffectedRange,
+    right: &WordPressProfiledAffectedRange,
+) -> bool {
+    profiled_endpoints_equivalent(left.lower.as_ref(), right.lower.as_ref())
+        && profiled_endpoints_equivalent(left.upper.as_ref(), right.upper.as_ref())
+}
+
+fn profiled_endpoints_equivalent(
+    left: Option<&WordPressProfiledVersionEndpoint>,
+    right: Option<&WordPressProfiledVersionEndpoint>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.inclusive == right.inclusive
+                && left.version.compare(&right.version).ok() == Some(Ordering::Equal)
+        },
+        (None, Some(_)) | (Some(_), None) => false,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogV2Wire {
+    #[allow(dead_code)]
+    schema: String,
+    catalog: CatalogMetadataWire,
+    records: Vec<AdvisoryRecordV2Wire>,
 }
 
 #[derive(Deserialize)]
@@ -1759,7 +2212,7 @@ struct CatalogMetadataWire {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AdvisoryRecordWire {
+struct AdvisoryRecordV1Wire {
     id: String,
     component: ComponentIdentityWire,
     source: SourceWire,
@@ -1774,6 +2227,76 @@ struct AdvisoryRecordWire {
     prerequisites: Vec<PrerequisiteWire>,
     #[serde(default)]
     remediation: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdvisoryRecordV2Wire {
+    id: String,
+    component: ComponentIdentityWire,
+    source: SourceWire,
+    comparison_profile: String,
+    #[serde(default)]
+    cve: Option<String>,
+    summary: String,
+    #[serde(default)]
+    affected_ranges: Vec<RangeWire>,
+    #[serde(default)]
+    fixed_versions: Vec<String>,
+    #[serde(default)]
+    prerequisites: Vec<PrerequisiteWire>,
+    #[serde(default)]
+    remediation: Option<String>,
+}
+
+struct AdvisoryRecordInput {
+    id: String,
+    component: ComponentIdentityWire,
+    source: SourceWire,
+    comparison_profile: WordPressComparisonProfile,
+    cve: Option<String>,
+    summary: String,
+    affected_ranges: Vec<RangeWire>,
+    fixed_versions: Vec<String>,
+    prerequisites: Vec<PrerequisiteWire>,
+    remediation: Option<String>,
+}
+
+impl From<AdvisoryRecordV1Wire> for AdvisoryRecordInput {
+    fn from(record: AdvisoryRecordV1Wire) -> Self {
+        Self {
+            id: record.id,
+            component: record.component,
+            source: record.source,
+            comparison_profile: WordPressComparisonProfile::NumericDottedV1,
+            cve: record.cve,
+            summary: record.summary,
+            affected_ranges: record.affected_ranges,
+            fixed_versions: record.fixed_versions,
+            prerequisites: record.prerequisites,
+            remediation: record.remediation,
+        }
+    }
+}
+
+impl TryFrom<AdvisoryRecordV2Wire> for AdvisoryRecordInput {
+    type Error = WordPressReviewError;
+
+    fn try_from(record: AdvisoryRecordV2Wire) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: record.id,
+            component: record.component,
+            source: record.source,
+            comparison_profile: WordPressComparisonProfile::parse(&record.comparison_profile)
+                .map_err(|_| WordPressReviewError::InvalidCatalog)?,
+            cve: record.cve,
+            summary: record.summary,
+            affected_ranges: record.affected_ranges,
+            fixed_versions: record.fixed_versions,
+            prerequisites: record.prerequisites,
+            remediation: record.remediation,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -1959,6 +2482,41 @@ mod tests {
       ]
     }"#;
 
+    const PROFILED_CONTEXT: &str = r#"{
+      "schema":"security.wordpress-context/v1",
+      "root":"https://example.test/",
+      "hosting_os":"linux",
+      "components":[
+        {"kind":"core","slug":"wordpress","version":"2.4.0-beta1","activation":"active"}
+      ]
+    }"#;
+
+    const PROFILED_CATALOG: &str = r#"{
+      "schema":"security.wordpress-advisory-catalog/v2",
+      "catalog":{"id":"synthetic-wordpress-profiled-catalog","revision":"r2","retrieved_on":"2026-09-07"},
+      "records":[
+        {
+          "id":"SYNTHETIC-NUMERIC-BETA",
+          "component":{"kind":"core","slug":"wordpress"},
+          "source":{"reference":"https://example.test/advisories/numeric-beta","revision":"r2","retrieved_on":"2026-09-07","usage_basis":"fictional numeric-profile test record"},
+          "comparison_profile":"numeric-dotted/v1",
+          "summary":"Synthetic numeric profile record",
+          "affected_ranges":[{"lower":{"version":"2.0.0","inclusive":true},"upper":{"version":"3.0.0","inclusive":false}}],
+          "fixed_versions":["3.0.0"]
+        },
+        {
+          "id":"SYNTHETIC-PHP-BETA",
+          "component":{"kind":"core","slug":"wordpress"},
+          "source":{"reference":"https://example.test/advisories/php-beta","revision":"r2","retrieved_on":"2026-09-07","usage_basis":"fictional PHP-subset test record"},
+          "comparison_profile":"php-release-subset/v1",
+          "summary":"Synthetic PHP release-subset profile record",
+          "affected_ranges":[{"lower":{"version":"2.4.0-beta0","inclusive":true},"upper":{"version":"2.4.0","inclusive":false}}],
+          "fixed_versions":["2.4.0"],
+          "prerequisites":[{"kind":"hosting_os","equals":"linux"}]
+        }
+      ]
+    }"#;
+
     fn inputs() -> WordPressReviewInputs {
         WordPressReviewInputs::new(
             Some(parse_wordpress_context(CONTEXT.as_bytes()).unwrap()),
@@ -2068,6 +2626,350 @@ mod tests {
             "https://example.test/advisories/core-1"
         );
         assert_eq!(catalog.records()[0].fixed_versions(), ["6.9.5", "7.0.2"]);
+    }
+
+    #[test]
+    fn catalog_v2_requires_one_explicit_supported_profile_per_record() {
+        let catalog = parse_wordpress_advisory_catalog(PROFILED_CATALOG.as_bytes()).unwrap();
+        assert_eq!(catalog.schema(), WordPressAdvisoryCatalogSchema::V2);
+        assert_eq!(catalog.records().len(), 2);
+        assert_eq!(
+            catalog.records()[0].comparison_profile(),
+            WordPressComparisonProfile::NumericDottedV1
+        );
+        assert_eq!(
+            catalog.records()[1].comparison_profile(),
+            WordPressComparisonProfile::PhpReleaseSubsetV1
+        );
+        assert!(catalog
+            .records()
+            .iter()
+            .all(|record| record.affected_ranges().is_empty()));
+        assert!(catalog
+            .records()
+            .iter()
+            .all(|record| record.profiled_affected_ranges().len() == 1));
+
+        let v1_with_profile = CATALOG.replacen(
+            "\"summary\":\"Synthetic bounded core record\"",
+            "\"comparison_profile\":\"numeric-dotted/v1\",\"summary\":\"Synthetic bounded core record\"",
+            1,
+        );
+        assert_eq!(
+            parse_wordpress_advisory_catalog(v1_with_profile.as_bytes()),
+            Err(WordPressReviewError::InvalidCatalog)
+        );
+
+        let v2_without_profile =
+            PROFILED_CATALOG.replacen("\"comparison_profile\":\"numeric-dotted/v1\",", "", 1);
+        assert_eq!(
+            parse_wordpress_advisory_catalog(v2_without_profile.as_bytes()),
+            Err(WordPressReviewError::InvalidCatalog)
+        );
+
+        let v2_unknown_profile = PROFILED_CATALOG.replacen("numeric-dotted/v1", "semver/v1", 1);
+        assert_eq!(
+            parse_wordpress_advisory_catalog(v2_unknown_profile.as_bytes()),
+            Err(WordPressReviewError::InvalidCatalog)
+        );
+    }
+
+    #[test]
+    fn profiled_evaluation_interprets_beta_only_under_the_selected_profile() {
+        let inputs = WordPressReviewInputs::new(
+            Some(parse_wordpress_context(PROFILED_CONTEXT.as_bytes()).unwrap()),
+            Some(parse_wordpress_advisory_catalog(PROFILED_CATALOG.as_bytes()).unwrap()),
+        );
+        let signals = [WordPressComponentSignal::generator_metadata(Some("2.4.0-beta1")).unwrap()];
+        let result = evaluate_wordpress_review(&signals, &inputs).unwrap();
+        assert!(result.components().iter().all(|component| {
+            component.evidence_class() != WordPressComponentEvidenceClass::Conflicting
+        }));
+
+        assert_eq!(
+            result.catalog_schema(),
+            Some(WordPressAdvisoryCatalogSchema::V2)
+        );
+        let numeric = result
+            .advisories()
+            .iter()
+            .find(|evaluation| evaluation.record().id() == "SYNTHETIC-NUMERIC-BETA")
+            .unwrap();
+        assert_eq!(
+            numeric.version_resolution(),
+            Some(WordPressVersionResolution::Unsupported)
+        );
+        assert_eq!(
+            numeric.version_resolution_reason(),
+            Some(WordPressVersionResolutionReason::UnsupportedVersionEvidence)
+        );
+        assert_eq!(
+            numeric.version_relation(),
+            WordPressVersionRelation::Unsupported
+        );
+        assert_eq!(
+            numeric.applicability(),
+            WordPressApplicability::IndeterminateUnsupported
+        );
+
+        let php = result
+            .advisories()
+            .iter()
+            .find(|evaluation| evaluation.record().id() == "SYNTHETIC-PHP-BETA")
+            .unwrap();
+        assert_eq!(
+            php.version_resolution(),
+            Some(WordPressVersionResolution::SupportedEquivalent)
+        );
+        assert_eq!(
+            php.version_resolution_reason(),
+            Some(WordPressVersionResolutionReason::EquivalentSupportedVersions)
+        );
+        assert_eq!(
+            php.version_relation(),
+            WordPressVersionRelation::WithinDeclaredRange
+        );
+        assert_eq!(
+            php.prerequisites()[0].outcome(),
+            WordPressPrerequisiteOutcome::MatchedOnSuppliedFacts
+        );
+        assert_eq!(
+            php.applicability(),
+            WordPressApplicability::CandidateMatchOnDeclaredFacts
+        );
+        assert_eq!(
+            php.exploit_execution(),
+            WordPressExecutionStatus::NotPerformed
+        );
+        assert_eq!(
+            php.impact_validation(),
+            WordPressExecutionStatus::NotPerformed
+        );
+    }
+
+    #[test]
+    fn profiled_aliases_keep_component_provenance_separate_from_record_resolution() {
+        let context = PROFILED_CONTEXT.replacen("2.4.0-beta1", "2.4.0+beta1", 1);
+        let inputs = WordPressReviewInputs::new(
+            Some(parse_wordpress_context(context.as_bytes()).unwrap()),
+            Some(parse_wordpress_advisory_catalog(PROFILED_CATALOG.as_bytes()).unwrap()),
+        );
+        let signals = [WordPressComponentSignal::generator_metadata(Some("2.4.0-beta1")).unwrap()];
+        let result = evaluate_wordpress_review(&signals, &inputs).unwrap();
+        let component = result
+            .components()
+            .iter()
+            .find(|component| component.identity().kind() == WordPressComponentKind::Core)
+            .unwrap();
+        assert_eq!(
+            component.evidence_class(),
+            WordPressComponentEvidenceClass::ObservedHint
+        );
+
+        let numeric = result
+            .advisories()
+            .iter()
+            .find(|evaluation| evaluation.record().id() == "SYNTHETIC-NUMERIC-BETA")
+            .unwrap();
+        assert_eq!(
+            numeric.version_resolution(),
+            Some(WordPressVersionResolution::Unsupported)
+        );
+        let php = result
+            .advisories()
+            .iter()
+            .find(|evaluation| evaluation.record().id() == "SYNTHETIC-PHP-BETA")
+            .unwrap();
+        assert_eq!(
+            php.version_resolution(),
+            Some(WordPressVersionResolution::SupportedEquivalent)
+        );
+        assert_eq!(
+            php.version_resolution_reason(),
+            Some(WordPressVersionResolutionReason::EquivalentSupportedVersions)
+        );
+    }
+
+    #[test]
+    fn unsupported_profiled_evidence_is_not_invented_as_a_semantic_conflict() {
+        let context = PROFILED_CONTEXT.replacen("2.4.0-beta1", "2.4.0-vendor-a", 1);
+        let inputs = WordPressReviewInputs::new(
+            Some(parse_wordpress_context(context.as_bytes()).unwrap()),
+            Some(parse_wordpress_advisory_catalog(PROFILED_CATALOG.as_bytes()).unwrap()),
+        );
+        let signals =
+            [WordPressComponentSignal::generator_metadata(Some("2.4.0-vendor-b")).unwrap()];
+        let result = evaluate_wordpress_review(&signals, &inputs).unwrap();
+        for advisory in result.advisories() {
+            assert_eq!(
+                advisory.version_resolution(),
+                Some(WordPressVersionResolution::Unsupported)
+            );
+            assert_eq!(
+                advisory.version_resolution_reason(),
+                Some(WordPressVersionResolutionReason::UnsupportedVersionEvidence)
+            );
+            assert_eq!(
+                advisory.applicability(),
+                WordPressApplicability::IndeterminateUnsupported
+            );
+        }
+
+        let mixed_signals =
+            [WordPressComponentSignal::generator_metadata(Some("2.4.0-beta1")).unwrap()];
+        let mixed = evaluate_wordpress_review(&mixed_signals, &inputs).unwrap();
+        for advisory in mixed.advisories() {
+            assert_eq!(
+                advisory.version_resolution(),
+                Some(WordPressVersionResolution::Unsupported)
+            );
+            assert_eq!(
+                advisory.version_resolution_reason(),
+                Some(WordPressVersionResolutionReason::UnsupportedVersionEvidence)
+            );
+        }
+    }
+
+    #[test]
+    fn version_evidence_resolution_is_profile_specific() {
+        let catalog = r#"{
+          "schema":"security.wordpress-advisory-catalog/v2",
+          "catalog":{"id":"synthetic-profile-resolution","revision":"r1","retrieved_on":"2026-09-07"},
+          "records":[
+            {
+              "id":"SYNTHETIC-NUMERIC-TRAILING-ZERO",
+              "component":{"kind":"core","slug":"wordpress"},
+              "source":{"reference":"https://example.test/advisories/numeric-zero","revision":"r1","retrieved_on":"2026-09-07","usage_basis":"fictional profile-resolution test"},
+              "comparison_profile":"numeric-dotted/v1",
+              "summary":"Synthetic numeric trailing-zero record",
+              "affected_ranges":[{"lower":{"version":"1.0","inclusive":true},"upper":{"version":"1.0.0","inclusive":true}}]
+            },
+            {
+              "id":"SYNTHETIC-PHP-TRAILING-ZERO",
+              "component":{"kind":"core","slug":"wordpress"},
+              "source":{"reference":"https://example.test/advisories/php-zero","revision":"r1","retrieved_on":"2026-09-07","usage_basis":"fictional profile-resolution test"},
+              "comparison_profile":"php-release-subset/v1",
+              "summary":"Synthetic PHP trailing-zero record",
+              "affected_ranges":[{"lower":{"version":"1.0","inclusive":true},"upper":{"version":"1.0.0","inclusive":true}}]
+            }
+          ]
+        }"#;
+        let context = r#"{
+          "schema":"security.wordpress-context/v1",
+          "root":"https://example.test/",
+          "components":[{"kind":"core","slug":"wordpress","version":"1.0.0"}]
+        }"#;
+        let inputs = WordPressReviewInputs::new(
+            Some(parse_wordpress_context(context.as_bytes()).unwrap()),
+            Some(parse_wordpress_advisory_catalog(catalog.as_bytes()).unwrap()),
+        );
+        let signals = [WordPressComponentSignal::generator_metadata(Some("1.0")).unwrap()];
+        let result = evaluate_wordpress_review(&signals, &inputs).unwrap();
+        let numeric = result
+            .advisories()
+            .iter()
+            .find(|evaluation| evaluation.record().id().contains("NUMERIC"))
+            .unwrap();
+        assert_eq!(
+            numeric.version_resolution(),
+            Some(WordPressVersionResolution::SupportedEquivalent)
+        );
+        assert_eq!(
+            numeric.version_resolution_reason(),
+            Some(WordPressVersionResolutionReason::EquivalentSupportedVersions)
+        );
+        assert_eq!(
+            numeric.version_relation(),
+            WordPressVersionRelation::WithinDeclaredRange
+        );
+
+        let php = result
+            .advisories()
+            .iter()
+            .find(|evaluation| evaluation.record().id().contains("PHP"))
+            .unwrap();
+        assert_eq!(
+            php.version_resolution(),
+            Some(WordPressVersionResolution::Conflicting)
+        );
+        assert_eq!(
+            php.version_resolution_reason(),
+            Some(WordPressVersionResolutionReason::ConflictingVersionEvidence)
+        );
+        assert_eq!(php.version_relation(), WordPressVersionRelation::Unknown);
+        assert_eq!(
+            php.applicability(),
+            WordPressApplicability::IndeterminateMissingEvidence
+        );
+    }
+
+    #[test]
+    fn profiled_ranges_and_fixed_versions_use_semantic_profile_equality() {
+        let exclusive_equal_aliases = PROFILED_CATALOG
+            .replacen("2.4.0-beta0", "1.0-alpha1", 1)
+            .replacen(
+                "2.4.0\",\"inclusive\":false",
+                "1.0a1\",\"inclusive\":false",
+                1,
+            );
+        assert_eq!(
+            parse_wordpress_advisory_catalog(exclusive_equal_aliases.as_bytes()),
+            Err(WordPressReviewError::InvalidVersionRange)
+        );
+
+        let duplicate_fixed_aliases = PROFILED_CATALOG.replacen(
+            "\"fixed_versions\":[\"2.4.0\"]",
+            "\"fixed_versions\":[\"2.4.0-alpha1\",\"2.4.0a1\"]",
+            1,
+        );
+        assert_eq!(
+            parse_wordpress_advisory_catalog(duplicate_fixed_aliases.as_bytes()),
+            Err(WordPressReviewError::InvalidCatalog)
+        );
+
+        let php_record = parse_wordpress_advisory_catalog(PROFILED_CATALOG.as_bytes())
+            .unwrap()
+            .records()
+            .iter()
+            .find(|record| record.id() == "SYNTHETIC-PHP-BETA")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            php_record.compare_versions("1.0+beta1", "1.0-beta1"),
+            Some(Ordering::Equal)
+        );
+        assert_eq!(
+            php_record.compare_versions("1.0", "1.0.0"),
+            Some(Ordering::Less)
+        );
+        assert_eq!(php_record.compare_versions("1.0-vendor1", "1.0"), None);
+
+        let mut interleaved_aliases: Value = serde_json::from_str(PROFILED_CATALOG).unwrap();
+        interleaved_aliases["records"][1]["affected_ranges"] = serde_json::json!([
+            {
+                "lower":{"version":"1.0-alpha1","inclusive":true},
+                "upper":{"version":"3.0","inclusive":false}
+            },
+            {
+                "lower":{"version":"1.0-alpha1","inclusive":true},
+                "upper":{"version":"4.0","inclusive":false}
+            },
+            {
+                "lower":{"version":"1.0a1","inclusive":true},
+                "upper":{"version":"3.0","inclusive":false}
+            }
+        ]);
+        let bytes = serde_json::to_vec(&interleaved_aliases).unwrap();
+        let catalogue = parse_wordpress_advisory_catalog(&bytes).unwrap();
+        let ranges = catalogue
+            .records()
+            .iter()
+            .find(|record| record.id() == "SYNTHETIC-PHP-BETA")
+            .unwrap()
+            .profiled_affected_ranges();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].lower().unwrap().declared(), "1.0-alpha1");
+        assert_eq!(ranges[0].upper().unwrap().declared(), "3.0");
     }
 
     #[test]

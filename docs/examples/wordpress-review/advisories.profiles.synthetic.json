@@ -1,0 +1,176 @@
+{
+  "schema": "security.wordpress-advisory-catalog/v2",
+  "catalog": {
+    "id": "termivar-synthetic-wordpress-profile-example",
+    "revision": "synthetic-v2",
+    "retrieved_on": "2026-09-07"
+  },
+  "records": [
+    {
+      "id": "SYNTHETIC-BETA-NUMERIC-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "synthetic-prerelease-plugin"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/synthetic/beta-numeric-0001",
+        "revision": "synthetic-v2",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "Fictional profile-comparison data created for Termivar tests; not a real advisory."
+      },
+      "comparison_profile": "numeric-dotted/v1",
+      "summary": "Numeric-only record demonstrating that prerelease evidence remains unsupported.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "2.0.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "3.0.0",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "3.0.0"
+      ],
+      "prerequisites": [
+        {
+          "kind": "activation",
+          "equals": "active"
+        }
+      ]
+    },
+    {
+      "id": "SYNTHETIC-BETA-PHP-SUBSET-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "synthetic-prerelease-plugin"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/synthetic/beta-php-subset-0001",
+        "revision": "synthetic-v2",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "Fictional profile-comparison data created for Termivar tests; not a real advisory."
+      },
+      "comparison_profile": "php-release-subset/v1",
+      "summary": "PHP-subset record demonstrating an explicit prerelease interval.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "2.4.0-beta0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "2.4.0",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "2.4.0"
+      ],
+      "prerequisites": [
+        {
+          "kind": "activation",
+          "equals": "active"
+        }
+      ],
+      "remediation": "Synthetic remediation text; do not apply it to a real component."
+    },
+    {
+      "id": "SYNTHETIC-TRAILING-ZERO-NUMERIC-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "synthetic-trailing-zero-plugin"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/synthetic/trailing-zero-numeric-0001",
+        "revision": "synthetic-v2",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "Fictional profile-comparison data created for Termivar tests; not a real advisory."
+      },
+      "comparison_profile": "numeric-dotted/v1",
+      "summary": "Numeric profile record demonstrating trailing-zero equivalence.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "1.0.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "1.0.0",
+            "inclusive": true
+          }
+        }
+      ],
+      "fixed_versions": [
+        "1.0.1"
+      ],
+      "prerequisites": []
+    },
+    {
+      "id": "SYNTHETIC-TRAILING-ZERO-PHP-SUBSET-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "synthetic-trailing-zero-plugin"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/synthetic/trailing-zero-php-subset-0001",
+        "revision": "synthetic-v2",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "Fictional profile-comparison data created for Termivar tests; not a real advisory."
+      },
+      "comparison_profile": "php-release-subset/v1",
+      "summary": "PHP-subset record demonstrating that an absent release component is not synthesized.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "1.0.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "1.0.0",
+            "inclusive": true
+          }
+        }
+      ],
+      "fixed_versions": [
+        "1.0.1"
+      ],
+      "prerequisites": []
+    },
+    {
+      "id": "SYNTHETIC-VENDOR-LABEL-UNSUPPORTED-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "synthetic-vendor-label-plugin"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/synthetic/vendor-label-unsupported-0001",
+        "revision": "synthetic-v2",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "Fictional profile-comparison data created for Termivar tests; not a real advisory."
+      },
+      "comparison_profile": "php-release-subset/v1",
+      "summary": "PHP-subset record demonstrating rejection of an unknown vendor suffix.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "1.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "2.0",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "2.0"
+      ],
+      "prerequisites": []
+    }
+  ]
+}

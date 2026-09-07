@@ -10,6 +10,10 @@ optional WordPress evidence review:
 - `advisories.synthetic.json` contains fictional records for matched,
   contradicted, and unsupported-version examples. None alleges a real
   vulnerability.
+- `context.profiles.synthetic.json` and
+  `advisories.profiles.synthetic.json` are paired fictional fixtures for the
+  explicit V2 comparison profiles. They do not describe a real installation or
+  advisory.
 
 The curated record is based on the official WordPress project advisory
 `GHSA-fpp7-x2x2-2mjf`, retrieved 2026-09-06:
@@ -71,3 +75,19 @@ together, the independently intended branches are:
 
 These expected decisions are documentation oracles for fictional data. They do
 not reproduce or predict any real WordPress vulnerability.
+
+The V2 profile fixtures add these independently intended branches:
+
+| Fictional record | Explicit profile | Intended decision basis |
+| --- | --- | --- |
+| `SYNTHETIC-BETA-NUMERIC-0001` | `numeric-dotted/v1` | Declared `2.4.0-beta1` is unsupported by the numeric-only profile, so the result remains indeterminate |
+| `SYNTHETIC-BETA-PHP-SUBSET-0001` | `php-release-subset/v1` | The same declaration is within the explicit `[2.4.0-beta0, 2.4.0)` interval and its supplied activation prerequisite matches |
+| `SYNTHETIC-TRAILING-ZERO-NUMERIC-0001` | `numeric-dotted/v1` | Declared `1.0` equals the inclusive `1.0.0` endpoint under V1 trailing-zero normalization |
+| `SYNTHETIC-TRAILING-ZERO-PHP-SUBSET-0001` | `php-release-subset/v1` | Declared `1.0` sorts before the inclusive `1.0.0` endpoint because the PHP subset does not synthesize a release component |
+| `SYNTHETIC-VENDOR-LABEL-UNSUPPORTED-0001` | `php-release-subset/v1` | The unknown `vendor1` label is unsupported rather than stripped or assigned a guessed rank |
+
+These fixtures demonstrate data-selected methodology only. A
+`candidate_match_on_declared_facts` result is not proof of an installed
+vulnerability, exploitability, impact, or an absent backport. The scan still
+performs no exploit execution or impact validation and profile selection adds
+no target requests.

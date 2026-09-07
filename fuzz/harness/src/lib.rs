@@ -214,6 +214,7 @@ pub const MAX_WORDPRESS_FUZZ_INPUT_BYTES: usize =
 pub fn check_wordpress_review(data: &[u8]) {
     use termivar_scanner::wordpress_review::{
         parse_wordpress_advisory_catalog, parse_wordpress_context, NumericDottedVersion,
+        PhpReleaseSubsetVersion, WordPressAdvisoryCatalogSchema, WordPressComparisonProfile,
         MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_CONTEXT_COMPONENTS,
         MAX_WORDPRESS_FIXED_VERSIONS_PER_ADVISORY, MAX_WORDPRESS_PATCH_ASSERTIONS_PER_COMPONENT,
         MAX_WORDPRESS_PREREQUISITES_PER_ADVISORY, MAX_WORDPRESS_RANGES_PER_ADVISORY,
@@ -266,23 +267,67 @@ pub fn check_wordpress_review(data: &[u8]) {
             .windows(2)
             .all(|pair| pair[0].id() < pair[1].id()));
         for record in catalog.records() {
-            assert!(record.affected_ranges().len() <= MAX_WORDPRESS_RANGES_PER_ADVISORY);
-            assert!(record
-                .affected_ranges()
-                .windows(2)
-                .all(|pair| pair[0] < pair[1]));
+            assert!(record.affected_range_count() <= MAX_WORDPRESS_RANGES_PER_ADVISORY);
+            match catalog.schema() {
+                WordPressAdvisoryCatalogSchema::V1 => {
+                    assert_eq!(
+                        record.comparison_profile(),
+                        WordPressComparisonProfile::NumericDottedV1
+                    );
+                    assert!(record.profiled_affected_ranges().is_empty());
+                    assert!(record
+                        .affected_ranges()
+                        .windows(2)
+                        .all(|pair| pair[0] < pair[1]));
+                },
+                WordPressAdvisoryCatalogSchema::V2 => {
+                    assert!(record.affected_ranges().is_empty());
+                    assert_eq!(
+                        record.profiled_affected_ranges().len(),
+                        record.affected_range_count()
+                    );
+                },
+            }
             assert!(record.fixed_versions().len() <= MAX_WORDPRESS_FIXED_VERSIONS_PER_ADVISORY);
             assert!(record.fixed_versions().windows(2).all(|pair| {
-                NumericDottedVersion::parse(&pair[0])
-                    .expect("validated fixed version must remain parseable")
-                    < NumericDottedVersion::parse(&pair[1])
-                        .expect("validated fixed version must remain parseable")
+                record.compare_versions(&pair[0], &pair[1]) == Some(std::cmp::Ordering::Less)
             }));
+            if catalog.schema() == WordPressAdvisoryCatalogSchema::V1 {
+                assert!(record.fixed_versions().windows(2).all(|pair| {
+                    NumericDottedVersion::parse(&pair[0])
+                        .expect("validated V1 fixed version must remain numeric-dotted")
+                        < NumericDottedVersion::parse(&pair[1])
+                            .expect("validated V1 fixed version must remain numeric-dotted")
+                }));
+            }
             assert!(record.prerequisites().len() <= MAX_WORDPRESS_PREREQUISITES_PER_ADVISORY);
             assert!(record
                 .prerequisites()
                 .windows(2)
                 .all(|pair| pair[0] < pair[1]));
+        }
+    }
+
+    // A NUL-separated triple is a harness-only way to exercise ordering laws;
+    // NUL remains unsupported inside every production version string.
+    let parsed_versions = data
+        .split(|byte| *byte == 0)
+        .take(3)
+        .filter_map(|candidate| std::str::from_utf8(candidate).ok())
+        .filter_map(|candidate| PhpReleaseSubsetVersion::parse(candidate).ok())
+        .collect::<Vec<_>>();
+    assert!(parsed_versions
+        .iter()
+        .all(|version| version.cmp(version) == std::cmp::Ordering::Equal));
+    for pair in parsed_versions.windows(2) {
+        assert_eq!(pair[0].cmp(&pair[1]), pair[1].cmp(&pair[0]).reverse());
+    }
+    if let [first, second, third] = parsed_versions.as_slice() {
+        if first <= second && second <= third {
+            assert!(first <= third);
+        }
+        if first >= second && second >= third {
+            assert!(first >= third);
         }
     }
 }

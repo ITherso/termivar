@@ -48,11 +48,130 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
             Err(error) => return Err(error.into()),
         }
     }
+    violations.extend(wordpress_version_purity_violations(&fs::read_to_string(
+        scanner.join("wordpress_version.rs"),
+    )?)?);
     violations.extend(cli_violations(
         &fs::read_to_string(workspace_root.join("crates/termivar-cli/src/main.rs"))?,
         &fs::read_to_string(workspace_root.join("crates/termivar-cli/src/report_compare.rs"))?,
     )?);
     Ok(violations)
+}
+
+fn wordpress_version_purity_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut imports = Vec::new();
+    for item in &syntax.items {
+        if let Item::Use(item) = item {
+            collect_use_paths(&item.tree, String::new(), &mut imports);
+        }
+    }
+    imports.sort();
+    let expected_imports = ["std::cmp::Ordering", "thiserror::Error"];
+    let mut violations = BTreeSet::new();
+    if imports != expected_imports {
+        violations.insert(
+            "private WordPress version helper imports must remain exactly Ordering and thiserror::Error"
+                .to_owned(),
+        );
+    }
+
+    let mut visitor = WordPressVersionPurityVisitor {
+        violations: BTreeSet::new(),
+    };
+    for item in &syntax.items {
+        let exact_tests = matches!(
+            item,
+            Item::Mod(module)
+                if module.ident == "tests"
+                    && matches!(module.vis, Visibility::Inherited)
+                    && module.content.is_some()
+                    && module.attrs.len() == 1
+                    && matches!(
+                        &module.attrs[0].meta,
+                        syn::Meta::List(meta)
+                            if meta.path.is_ident("cfg") && meta.tokens.to_string() == "test"
+                    )
+        );
+        if !exact_tests {
+            visitor.visit_item(item);
+        }
+    }
+    violations.extend(visitor.violations);
+    Ok(violations.into_iter().collect())
+}
+
+struct WordPressVersionPurityVisitor {
+    violations: BTreeSet<String>,
+}
+
+impl WordPressVersionPurityVisitor {
+    fn reject(&mut self, reason: &str) {
+        self.violations.insert(format!(
+            "private WordPress version helper {reason}; offline comparison may depend only on pure bounded parsing and ordering"
+        ));
+    }
+
+    fn inspect_path(&mut self, path: &syn::Path) {
+        let parts = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        if parts.len() < 2 {
+            return;
+        }
+        let joined = parts.join("::");
+        let root = parts.first().map(String::as_str).unwrap_or_default();
+        let allowed_external = matches!(joined.as_str(), "std::cmp::Ordering" | "thiserror::Error");
+        let local_or_primitive = root.chars().next().is_some_and(char::is_uppercase)
+            || matches!(root, "Self" | "u32" | "usize" | "Vec");
+        if !allowed_external && !local_or_primitive {
+            self.reject(&format!("cannot access `{joined}`"));
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for WordPressVersionPurityVisitor {
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        self.inspect_path(path);
+        syn::visit::visit_path(self, path);
+    }
+
+    fn visit_item_mod(&mut self, _: &'ast syn::ItemMod) {
+        self.reject("cannot add a production child module");
+    }
+
+    fn visit_signature(&mut self, signature: &'ast syn::Signature) {
+        if signature.asyncness.is_some() || signature.unsafety.is_some() || signature.abi.is_some()
+        {
+            self.reject("must remain synchronous, safe Rust without a foreign ABI");
+        }
+        syn::visit::visit_signature(self, signature);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if !mac.path.is_ident("matches") {
+            self.reject("may invoke only the built-in matches macro");
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+
+    fn visit_item_static(&mut self, _: &'ast syn::ItemStatic) {
+        self.reject("cannot add global state");
+    }
+
+    fn visit_expr_unsafe(&mut self, _: &'ast syn::ExprUnsafe) {
+        self.reject("cannot use unsafe authority");
+    }
+
+    fn visit_item_extern_crate(&mut self, _: &'ast syn::ItemExternCrate) {
+        self.reject("cannot alias an external crate");
+    }
+
+    fn visit_item_foreign_mod(&mut self, _: &'ast syn::ItemForeignMod) {
+        self.reject("cannot introduce foreign authority");
+    }
 }
 
 fn cli_violations(main: &str, comparison: &str) -> Result<Vec<String>, syn::Error> {
@@ -530,8 +649,15 @@ impl ComparisonVisitor<'_> {
         let exact_inert_advisory_url_parse = self.relative
             == "reporting/comparison/import/audits.rs"
             && matches!(joined.as_str(), "url" | "url::Url" | "url::Url::parse");
+        let exact_inert_wordpress_version = self.relative
+            == "reporting/comparison/import/audits.rs"
+            && matches!(
+                joined.as_str(),
+                "crate::wordpress_version::ProfiledVersionKey"
+                    | "crate::wordpress_version::WordPressComparisonProfile"
+            );
         if parts.first().is_some_and(|root| {
-            root == "crate"
+            (root == "crate" && !exact_inert_wordpress_version)
                 || root.starts_with("termivar_")
                 || root.starts_with("venom_")
                 || (!exact_inert_advisory_url_parse
@@ -867,6 +993,8 @@ mod tests {
         include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import.rs");
     const AUDITS: &str =
         include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import/audits.rs");
+    const WORDPRESS_VERSION: &str =
+        include_str!("../../../crates/termivar-scanner/src/wordpress_version.rs");
     const HTML: &str =
         include_str!("../../../crates/termivar-scanner/src/reporting/comparison/html.rs");
     const MAIN: &str = include_str!("../../../crates/termivar-cli/src/main.rs");
@@ -913,6 +1041,61 @@ mod tests {
                 violations.contains("cannot import or construct runtime, network, clock, random, or platform authority"),
                 "accepted advisory-import authority extension {addition}: {violations}"
             );
+        }
+    }
+
+    #[test]
+    fn wordpress_audit_import_may_use_only_the_exact_private_version_keys() {
+        for addition in [
+            "use crate::wordpress_version::ProfiledVersionKey;",
+            "use crate::wordpress_version::WordPressComparisonProfile;",
+        ] {
+            let violations =
+                source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
+            assert!(
+                violations.is_empty(),
+                "rejected `{addition}`: {violations:?}"
+            );
+        }
+
+        for addition in [
+            "use crate::wordpress_version;",
+            "use crate::wordpress_version::NumericDottedVersion;",
+            "use crate::wordpress_version::PhpReleaseSubsetVersion;",
+            "use crate::wordpress_version::ProfiledVersionError;",
+            "use crate::wordpress_version::ProfiledVersionKey as VersionKey;",
+            "use crate::wordpress_version::*;",
+            "use crate::wordpress_review::WordPressComparisonProfile;",
+            "use crate::web_runtime::WebAssessmentRunReport;",
+            "fn escape() { let _ = crate::wordpress_version::PhpReleaseSubsetVersion::parse(\"1\"); }",
+        ] {
+            let violations =
+                source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
+            assert!(!violations.is_empty(), "accepted `{addition}`");
+        }
+    }
+
+    #[test]
+    fn shared_wordpress_version_helper_remains_pure_and_authority_free() {
+        let violations = wordpress_version_purity_violations(WORDPRESS_VERSION).unwrap();
+        assert!(violations.is_empty(), "{violations:#?}");
+
+        for addition in [
+            "use std::fs::File;",
+            "use std::net::TcpStream;",
+            "use std::process::Command;",
+            "use std::time::SystemTime;",
+            "use reqwest::Client;",
+            "use crate::web_runtime::AssessmentRunReport;",
+            "async fn escape() {}",
+            "fn escape() { unsafe {} }",
+            "include!(\"hidden.rs\");",
+            "static CACHE: usize = 0;",
+            "mod hidden {}",
+        ] {
+            let mutation = format!("{WORDPRESS_VERSION}\n{addition}");
+            let violations = wordpress_version_purity_violations(&mutation).unwrap();
+            assert!(!violations.is_empty(), "accepted `{addition}`");
         }
     }
 

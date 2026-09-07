@@ -1,0 +1,74 @@
+{
+  "schema": "security.wordpress-advisory-catalog/v2",
+  "catalog": {
+    "id": "termivar-fuzz-wordpress-profile-seed",
+    "revision": "seed-v2",
+    "retrieved_on": "2026-09-07"
+  },
+  "records": [
+    {
+      "id": "FUZZ-NUMERIC-PROFILE-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "numeric-profile-seed"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/fuzz/numeric-profile-0001",
+        "revision": "seed-v2",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "Fictional bounded parser seed; not a vulnerability advisory."
+      },
+      "comparison_profile": "numeric-dotted/v1",
+      "summary": "Numeric profile parser seed.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "1.0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "2.0",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "2.0",
+        "2.0.1"
+      ],
+      "prerequisites": []
+    },
+    {
+      "id": "FUZZ-PHP-SUBSET-PROFILE-0001",
+      "component": {
+        "kind": "plugin",
+        "slug": "php-subset-profile-seed"
+      },
+      "source": {
+        "reference": "https://example.invalid/termivar/fuzz/php-subset-profile-0001",
+        "revision": "seed-v2",
+        "retrieved_on": "2026-09-07",
+        "usage_basis": "Fictional bounded parser seed; not a vulnerability advisory."
+      },
+      "comparison_profile": "php-release-subset/v1",
+      "summary": "PHP release-subset parser seed.",
+      "affected_ranges": [
+        {
+          "lower": {
+            "version": "2.4.0-beta0",
+            "inclusive": true
+          },
+          "upper": {
+            "version": "2.4.0",
+            "inclusive": false
+          }
+        }
+      ],
+      "fixed_versions": [
+        "2.4.0",
+        "2.4.0pl1"
+      ],
+      "prerequisites": []
+    }
+  ]
+}

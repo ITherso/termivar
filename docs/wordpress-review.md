@@ -56,7 +56,9 @@ networks.
 
 Every result keeps the identity source, version source, confidence, and any
 contradiction separate. Repetition is not treated as independent evidence, and
-conflicting declarations remain conflicting rather than using last-write-wins.
+no declaration wins merely because it was seen last. V1 retains its numeric
+conflict rules; V2 decides semantic equivalence or conflict separately under
+each record's explicit comparison profile.
 
 ## Operator context
 
@@ -114,6 +116,58 @@ and ordering for separators and labels such as `dev`, `alpha`, `beta`, and
 `RC`. Termivar neither implements that full behavior nor runs PHP. See
 <https://www.php.net/manual/en/function.version-compare.php>.
 
+### Explicit comparison profiles
+
+`security.wordpress-advisory-catalog/v2` requires every record to select one
+closed `comparison_profile`. `numeric-dotted/v1` is exactly the V1 comparator
+described above; its parsing and trailing-zero equality are unchanged.
+`php-release-subset/v1` is an additive, deliberately bounded interpretation of
+common PHP-style release forms. The profile belongs to advisory data, not to
+the observed version string: Termivar does not infer it from a suffix, vendor,
+host, or whichever comparator might produce a match. Missing and unknown
+profiles make the catalogue invalid before runtime construction.
+
+The PHP release subset accepts nonempty ASCII strings of at most 64 bytes with
+one to eight numeric release components. Numeric components are in
+`0..=2147483647`, contain no more than ten digits, and may contain leading
+zeroes. Single `.`, `-`, `_`, or `+` separators are accepted between numeric
+components. One optional recognized suffix may follow the core, adjoining it
+or following one such separator: `dev`, `alpha`/`a`, `beta`/`b`, `RC`/`rc`, or
+`pl`/`p`. One optional numeric suffix counter may likewise adjoin the suffix or
+follow one separator. `+` is a separator here, not SemVer build metadata.
+
+Unknown or vendor labels, other case variants, `v` prefixes, whitespace,
+controls, doubled/leading/trailing separators, multiple suffixes, arbitrary
+build text, overflow, and excessive tokens remain unsupported. Termivar does
+not strip unknown text into a guessed order. The accepted token sequence uses
+the ordering of the documented PHP release forms, including PHP's treatment of
+numeric, prerelease, final, and patch-level parts. It intentionally does not
+inherit numeric-dotted trailing-zero normalization: `1.0` equals `1.0.0` under
+`numeric-dotted/v1`, while `1.0` sorts before `1.0.0` under
+`php-release-subset/v1`. Aliases such as `1.0-alpha1` and `1.0a1` compare
+equally within the PHP subset. This is not full PHP compatibility, SemVer,
+Composer constraint support, or automatic interpretation of vendor schemes.
+
+The V2 evaluator resolves all version evidence separately for each record's
+selected profile. Its saved `security.wordpress-review-audit/v2` record shows
+the `comparison_profile`, a bounded `version_resolution`, and the corresponding
+reason alongside the existing relation, prerequisites, source basis, and
+uncertainty. Unsupported evidence remains evidence; it is not discarded or
+retried with another profile. A profile change is a methodology difference,
+not proof that an installation changed or was remediated. V1 catalogues retain
+the existing `security.wordpress-review-audit/v1` shape.
+
+The V2 component-level evidence class describes only provenance (observed hint,
+operator-supplied, or unknown). Semantic version equivalence, conflict, and
+unsupported input are reported per advisory record under its selected profile;
+they are not collapsed into one global numeric interpretation.
+
+The subset is based on the public PHP `version_compare()` description and the
+pinned PHP 8.3.0 implementation source at commit
+`d26068059e83fe40de3430a512471d194119bee0`. The source is a comparison
+reference, not a runtime dependency:
+<https://github.com/php/php-src/blob/d26068059e83fe40de3430a512471d194119bee0/ext/standard/versioning.c>.
+
 The evaluator checks component identity before version intervals and reports
 version relation and each prerequisite separately. It does not infer an open
 lower bound merely because a bulletin names a fixed version. Disjoint
@@ -124,7 +178,7 @@ facts makes the summary contradicted even when another prerequisite is
 unsupported; absent a contradiction, unsupported evidence remains
 indeterminate rather than becoming a match.
 
-The example directory contains two catalogue types:
+The example directory contains three catalogue examples:
 
 - [`advisories.curated.json`](examples/wordpress-review/advisories.curated.json)
   is one manually curated factual record from an official WordPress project
@@ -133,6 +187,12 @@ The example directory contains two catalogue types:
   uses unmistakably fictional component and record identities to exercise
   matched, contradicted, and unsupported-version decisions. These are not
   alleged vulnerabilities.
+- [`advisories.profiles.synthetic.json`](examples/wordpress-review/advisories.profiles.synthetic.json)
+  and its paired
+  [`context.profiles.synthetic.json`](examples/wordpress-review/context.profiles.synthetic.json)
+  exercise explicit V2 profile selection, prerelease interpretation,
+  profile-dependent trailing-zero behavior, and rejection of a fictional
+  vendor label. They are comparison fixtures, not alleged vulnerabilities.
 
 ## Result and claim limits
 
@@ -173,7 +233,9 @@ offline command starts a scan or adds network requests.
 
 ## Source and scope notes
 
-Development references were reviewed on 2026-09-06:
+The existing development references were reviewed on 2026-09-06. The pinned
+PHP implementation reference for the comparison profiles was additionally
+reviewed on 2026-09-07:
 
 - WordPress generator function reference:
   <https://developer.wordpress.org/reference/functions/get_the_generator/>
@@ -181,6 +243,9 @@ Development references were reviewed on 2026-09-06:
   <https://developer.wordpress.org/cli/commands/plugin/list/>
 - PHP version comparison behavior (broader than Termivar's V1 profile):
   <https://www.php.net/manual/en/function.version-compare.php>
+- PHP 8.3.0 comparison implementation pinned at commit
+  `d26068059e83fe40de3430a512471d194119bee0`:
+  <https://github.com/php/php-src/blob/d26068059e83fe40de3430a512471d194119bee0/ext/standard/versioning.c>
 - WordPress security-release index:
   <https://wordpress.org/news/category/security/>
 

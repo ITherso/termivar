@@ -832,6 +832,59 @@ fn evaluated_wordpress_audit() -> Value {
     })
 }
 
+fn evaluated_wordpress_audit_v2() -> Value {
+    json!({
+        "schema":"security.wordpress-review-audit/v2",
+        "capability_id":"technology.wordpress-surface-observed@1",
+        "catalog_status":"evaluated",
+        "catalog":{"id":"synthetic-profiled-wordpress-catalog","revision":"v2-r1","retrieved_on":"2026-09-07"},
+        "signal_count":1,
+        "evidence_reference_count":1,
+        "additional_request_count":0,
+        "item_projected":true,
+        "component_count":1,
+        "advisory_count":1,
+        "components":[{
+            "identity":{"kind":"core","slug":"wordpress"},
+            "evidence_class":"observed_hint",
+            "identity_sources":["generator_metadata","operator_context"],
+            "confidence_classes":["public_declaration","operator_assertion"],
+            "versions":[
+                {"value":"2.4.0-beta1","source":"generator_metadata","confidence":"public_declaration"},
+                {"value":"2.4.0+beta1","source":"operator_context","confidence":"operator_assertion"}
+            ],
+            "activation":"active"
+        }],
+        "advisories":[{
+            "id":"SYNTHETIC-PROFILED-CORE-1",
+            "component":{"kind":"core","slug":"wordpress"},
+            "source":{
+                "reference":"https://example.test/advisories/profiled-core-1",
+                "revision":"v2-r1",
+                "retrieved_on":"2026-09-07",
+                "usage_basis":"Synthetic comparison-reader contract record."
+            },
+            "cve":null,
+            "summary":"Synthetic PHP-subset profile record",
+            "affected_ranges":[{
+                "lower":{"declared":"2.4.0-beta0","inclusive":true},
+                "upper":{"declared":"2.4.0","inclusive":false}
+            }],
+            "fixed_versions":["2.4.0"],
+            "prerequisites":[],
+            "remediation":null,
+            "comparison_profile":"php-release-subset/v1",
+            "version_resolution":"supported_equivalent",
+            "version_resolution_reason":"equivalent_supported_versions",
+            "component_evidence":"observed_hint",
+            "version_relation":"within_declared_range",
+            "applicability":"candidate_match_on_declared_facts",
+            "exploit_execution":"not_performed",
+            "impact_validation":"not_performed"
+        }]
+    })
+}
+
 #[test]
 fn wordpress_audit_is_strict_feature_independent_and_visible_in_all_comparisons() {
     let audit = evaluated_wordpress_audit();
@@ -967,6 +1020,390 @@ fn wordpress_audit_is_strict_feature_independent_and_visible_in_all_comparisons(
     let mut invalid = after;
     invalid["wordpress_review"]["components"][0]["versions"][0]["value"] = json!("");
     reject(&invalid);
+}
+
+#[test]
+fn wordpress_v1_reader_keeps_its_preprofile_component_acceptance_contract() {
+    let mut audit = evaluated_wordpress_audit();
+    audit["components"][0]["identity"] =
+        json!({"kind":"plugin","slug":"historical-reader-fixture"});
+    audit["components"][0]["evidence_class"] = json!("observed_hint");
+    audit["components"][0]["identity_sources"] = json!(["same_origin_asset_path"]);
+    audit["components"][0]["confidence_classes"] = json!(["structural_hint"]);
+    for version in audit["components"][0]["versions"].as_array_mut().unwrap() {
+        version["source"] = json!("same_origin_asset_path");
+        version["confidence"] = json!("structural_hint");
+    }
+    audit["components"][0]["activation"] = json!("active");
+    audit["advisories"][0]["component"] =
+        json!({"kind":"plugin","slug":"historical-reader-fixture"});
+
+    let mut observed = item(1);
+    observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+    let mut document = report(vec![observed]);
+    document["wordpress_review"] = audit;
+    assert_eq!(group(&compare(&document, &document), "unchanged").len(), 1);
+
+    let mut operator_only = document.clone();
+    operator_only["wordpress_review"]["components"][0]["evidence_class"] =
+        json!("operator_supplied");
+    operator_only["wordpress_review"]["components"][0]["identity_sources"] =
+        json!(["operator_context"]);
+    operator_only["wordpress_review"]["components"][0]["confidence_classes"] =
+        json!(["operator_assertion"]);
+    for version in operator_only["wordpress_review"]["components"][0]["versions"]
+        .as_array_mut()
+        .unwrap()
+    {
+        version["source"] = json!("operator_context");
+        version["confidence"] = json!("operator_assertion");
+    }
+    assert_eq!(
+        group(&compare(&operator_only, &operator_only), "unchanged").len(),
+        1
+    );
+}
+
+#[test]
+fn wordpress_v2_audit_is_profiled_strict_and_feature_independent() {
+    let audit = evaluated_wordpress_audit_v2();
+    let mut observed = item(1);
+    observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+    let mut document = report(vec![observed]);
+    document["wordpress_review"] = audit.clone();
+
+    let comparison = compare(&document, &document);
+    assert_eq!(group(&comparison, "unchanged").len(), 1);
+    assert_eq!(
+        comparison["before"]["optional_audits"]["wordpress_review"],
+        audit
+    );
+
+    let mut reordered = document.clone();
+    reordered["wordpress_review"]["components"][0]["versions"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    assert_eq!(
+        group(&compare(&reordered, &reordered), "unchanged").len(),
+        1
+    );
+
+    for field in [
+        "comparison_profile",
+        "version_resolution",
+        "version_resolution_reason",
+    ] {
+        let mut missing = document.clone();
+        missing["wordpress_review"]["advisories"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        reject(&missing);
+    }
+    for (field, value) in [
+        ("comparison_profile", json!("semver/v1")),
+        ("version_resolution", json!("resolved")),
+        (
+            "version_resolution_reason",
+            json!("equivalent_supported_versions_unknown"),
+        ),
+        ("component_evidence", json!("conflicting")),
+        ("version_relation", json!("outside_declared_ranges")),
+        ("applicability", json!("indeterminate_missing_evidence")),
+    ] {
+        let mut invalid = document.clone();
+        invalid["wordpress_review"]["advisories"][0][field] = value;
+        reject(&invalid);
+    }
+    let mut mismatched_reason = document.clone();
+    mismatched_reason["wordpress_review"]["advisories"][0]["version_resolution_reason"] =
+        json!("single_supported_version");
+    reject(&mismatched_reason);
+
+    let mut numeric_profile_with_php_endpoints = document.clone();
+    numeric_profile_with_php_endpoints["wordpress_review"]["advisories"][0]["comparison_profile"] =
+        json!("numeric-dotted/v1");
+    reject(&numeric_profile_with_php_endpoints);
+
+    let mut legacy_component_conflict = document.clone();
+    legacy_component_conflict["wordpress_review"]["components"][0]["evidence_class"] =
+        json!("conflicting");
+    reject(&legacy_component_conflict);
+
+    let mut version_source_not_declared = document.clone();
+    version_source_not_declared["wordpress_review"]["components"][0]["identity_sources"] =
+        json!(["operator_context"]);
+    version_source_not_declared["wordpress_review"]["components"][0]["confidence_classes"] =
+        json!(["operator_assertion"]);
+    reject(&version_source_not_declared);
+
+    let mut confidence_class_not_declared = document.clone();
+    confidence_class_not_declared["wordpress_review"]["components"][0]["confidence_classes"] =
+        json!(["public_declaration"]);
+    reject(&confidence_class_not_declared);
+
+    let mut asset_path_version = document.clone();
+    asset_path_version["wordpress_review"]["components"][0]["identity_sources"] =
+        json!(["same_origin_asset_path", "operator_context"]);
+    asset_path_version["wordpress_review"]["components"][0]["confidence_classes"] =
+        json!(["structural_hint", "operator_assertion"]);
+    asset_path_version["wordpress_review"]["components"][0]["versions"][0]["source"] =
+        json!("same_origin_asset_path");
+    asset_path_version["wordpress_review"]["components"][0]["versions"][0]["confidence"] =
+        json!("structural_hint");
+    reject(&asset_path_version);
+
+    let mut plugin_generator_version = document.clone();
+    plugin_generator_version["wordpress_review"]["components"][0]["identity"] =
+        json!({"kind":"plugin","slug":"sample-plugin"});
+    plugin_generator_version["wordpress_review"]["advisories"][0]["component"] =
+        json!({"kind":"plugin","slug":"sample-plugin"});
+    reject(&plugin_generator_version);
+
+    let mut plugin_generator_without_version = document.clone();
+    plugin_generator_without_version["wordpress_review"]["components"][0]["identity"] =
+        json!({"kind":"plugin","slug":"sample-plugin"});
+    plugin_generator_without_version["wordpress_review"]["components"][0]["versions"] = json!([]);
+    plugin_generator_without_version["wordpress_review"]["advisories"][0]["component"] =
+        json!({"kind":"plugin","slug":"sample-plugin"});
+    plugin_generator_without_version["wordpress_review"]["advisories"][0]["version_resolution"] =
+        json!("missing");
+    plugin_generator_without_version["wordpress_review"]["advisories"][0]
+        ["version_resolution_reason"] = json!("no_version_evidence");
+    plugin_generator_without_version["wordpress_review"]["advisories"][0]["version_relation"] =
+        json!("unknown");
+    plugin_generator_without_version["wordpress_review"]["advisories"][0]["applicability"] =
+        json!("indeterminate_missing_evidence");
+    reject(&plugin_generator_without_version);
+
+    let mut activation_without_context = document.clone();
+    activation_without_context["wordpress_review"]["components"][0]["identity_sources"] =
+        json!(["generator_metadata"]);
+    activation_without_context["wordpress_review"]["components"][0]["confidence_classes"] =
+        json!(["public_declaration"]);
+    activation_without_context["wordpress_review"]["components"][0]["versions"] = json!([{
+        "value":"2.4.0-beta1",
+        "source":"generator_metadata",
+        "confidence":"public_declaration"
+    }]);
+    activation_without_context["wordpress_review"]["advisories"][0]["version_resolution_reason"] =
+        json!("single_supported_version");
+    reject(&activation_without_context);
+
+    let mut context_only_signal_claim = document.clone();
+    context_only_signal_claim["wordpress_review"]["components"][0]["evidence_class"] =
+        json!("operator_supplied");
+    context_only_signal_claim["wordpress_review"]["components"][0]["identity_sources"] =
+        json!(["operator_context"]);
+    context_only_signal_claim["wordpress_review"]["components"][0]["confidence_classes"] =
+        json!(["operator_assertion"]);
+    for version in context_only_signal_claim["wordpress_review"]["components"][0]["versions"]
+        .as_array_mut()
+        .unwrap()
+    {
+        version["source"] = json!("operator_context");
+        version["confidence"] = json!("operator_assertion");
+    }
+    context_only_signal_claim["wordpress_review"]["advisories"][0]["component_evidence"] =
+        json!("operator_supplied");
+    reject(&context_only_signal_claim);
+
+    let mut duplicate_range = document.clone();
+    let range = duplicate_range["wordpress_review"]["advisories"][0]["affected_ranges"][0].clone();
+    duplicate_range["wordpress_review"]["advisories"][0]["affected_ranges"]
+        .as_array_mut()
+        .unwrap()
+        .push(range);
+    reject(&duplicate_range);
+
+    let mut duplicate_prerequisite = document.clone();
+    duplicate_prerequisite["wordpress_review"]["advisories"][0]["prerequisites"] = json!([
+        {
+            "kind":"hosting_os",
+            "expected":"linux",
+            "outcome":"matched_on_supplied_facts"
+        },
+        {
+            "kind":"hosting_os",
+            "expected":"linux",
+            "outcome":"matched_on_supplied_facts"
+        }
+    ]);
+    reject(&duplicate_prerequisite);
+
+    let mut unsupported = document.clone();
+    unsupported["wordpress_review"]["components"][0]["versions"] = json!([{
+        "value":"2.4.0-vendor1",
+        "source":"generator_metadata",
+        "confidence":"public_declaration"
+    }]);
+    unsupported["wordpress_review"]["components"][0]["evidence_class"] = json!("observed_hint");
+    unsupported["wordpress_review"]["components"][0]["identity_sources"] =
+        json!(["generator_metadata"]);
+    unsupported["wordpress_review"]["components"][0]["confidence_classes"] =
+        json!(["public_declaration"]);
+    unsupported["wordpress_review"]["components"][0]["activation"] = Value::Null;
+    unsupported["wordpress_review"]["advisories"][0]["version_resolution"] = json!("unsupported");
+    unsupported["wordpress_review"]["advisories"][0]["version_resolution_reason"] =
+        json!("unsupported_version_evidence");
+    unsupported["wordpress_review"]["advisories"][0]["version_relation"] = json!("unsupported");
+    unsupported["wordpress_review"]["advisories"][0]["applicability"] =
+        json!("indeterminate_unsupported");
+    assert_eq!(
+        group(&compare(&unsupported, &unsupported), "unchanged").len(),
+        1
+    );
+
+    let mut multiple_unsupported = document.clone();
+    multiple_unsupported["wordpress_review"]["components"][0]["versions"] = json!([
+        {
+            "value":"2.4.0-vendor-a",
+            "source":"generator_metadata",
+            "confidence":"public_declaration"
+        },
+        {
+            "value":"2.4.0-vendor-b",
+            "source":"operator_context",
+            "confidence":"operator_assertion"
+        }
+    ]);
+    multiple_unsupported["wordpress_review"]["advisories"][0]["version_resolution"] =
+        json!("unsupported");
+    multiple_unsupported["wordpress_review"]["advisories"][0]["version_resolution_reason"] =
+        json!("unsupported_version_evidence");
+    multiple_unsupported["wordpress_review"]["advisories"][0]["version_relation"] =
+        json!("unsupported");
+    multiple_unsupported["wordpress_review"]["advisories"][0]["applicability"] =
+        json!("indeterminate_unsupported");
+    assert_eq!(
+        group(
+            &compare(&multiple_unsupported, &multiple_unsupported),
+            "unchanged"
+        )
+        .len(),
+        1
+    );
+
+    let mut v1_observed = item(1);
+    v1_observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+    let mut v1_with_profile_fields = report(vec![v1_observed]);
+    let mut v1_audit = evaluated_wordpress_audit();
+    v1_audit["advisories"][0]["comparison_profile"] = json!("numeric-dotted/v1");
+    v1_with_profile_fields["wordpress_review"] = v1_audit;
+    reject(&v1_with_profile_fields);
+
+    let mut unexpected = document;
+    unexpected["wordpress_review"]["advisories"][0]["comparison_rule"] = json!("execute");
+    reject(&unexpected);
+}
+
+#[test]
+fn wordpress_v2_profiles_drive_resolution_and_range_semantics_explicitly() {
+    let mut php = evaluated_wordpress_audit_v2();
+    php["components"][0]["versions"] = json!([{
+        "value":"1.0",
+        "source":"generator_metadata",
+        "confidence":"public_declaration"
+    }]);
+    php["components"][0]["evidence_class"] = json!("observed_hint");
+    php["components"][0]["identity_sources"] = json!(["generator_metadata"]);
+    php["components"][0]["confidence_classes"] = json!(["public_declaration"]);
+    php["components"][0]["activation"] = Value::Null;
+    php["advisories"][0]["affected_ranges"] = json!([{
+        "lower":{"declared":"1.0.0","inclusive":true},
+        "upper":{"declared":"1.0.0","inclusive":true}
+    }]);
+    php["advisories"][0]["fixed_versions"] = json!(["1.0.0"]);
+    php["advisories"][0]["version_resolution_reason"] = json!("single_supported_version");
+    php["advisories"][0]["version_relation"] = json!("outside_declared_ranges");
+    php["advisories"][0]["applicability"] = json!("contradicted_by_declared_facts");
+
+    let mut observed = item(1);
+    observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+    let mut php_document = report(vec![observed.clone()]);
+    php_document["wordpress_review"] = php.clone();
+    assert_eq!(
+        group(&compare(&php_document, &php_document), "unchanged").len(),
+        1
+    );
+
+    let mut numeric = php;
+    numeric["advisories"][0]["comparison_profile"] = json!("numeric-dotted/v1");
+    numeric["advisories"][0]["version_relation"] = json!("within_declared_range");
+    numeric["advisories"][0]["applicability"] = json!("candidate_match_on_declared_facts");
+    let mut numeric_document = report(vec![observed]);
+    numeric_document["wordpress_review"] = numeric;
+    assert_eq!(
+        group(&compare(&numeric_document, &numeric_document), "unchanged").len(),
+        1
+    );
+
+    let mut wrong_php_relation = php_document;
+    wrong_php_relation["wordpress_review"]["advisories"][0]["version_relation"] =
+        json!("within_declared_range");
+    wrong_php_relation["wordpress_review"]["advisories"][0]["applicability"] =
+        json!("candidate_match_on_declared_facts");
+    reject(&wrong_php_relation);
+
+    let mut aliases = evaluated_wordpress_audit_v2();
+    aliases["components"][0]["versions"] = json!([
+        {"value":"1.0-alpha1","source":"generator_metadata","confidence":"public_declaration"},
+        {"value":"1.0a1","source":"operator_context","confidence":"operator_assertion"}
+    ]);
+    aliases["advisories"][0]["affected_ranges"] = json!([{
+        "lower":{"declared":"1.0-alpha0","inclusive":true},
+        "upper":{"declared":"1.0","inclusive":false}
+    }]);
+    aliases["advisories"][0]["fixed_versions"] = json!(["1.0"]);
+    let mut aliases_document = report(vec![item(1)]);
+    aliases_document["items"][0]["capability_id"] =
+        json!("technology.wordpress-surface-observed@1");
+    aliases_document["wordpress_review"] = aliases.clone();
+    assert_eq!(
+        group(&compare(&aliases_document, &aliases_document), "unchanged").len(),
+        1
+    );
+
+    aliases["advisories"][0]["fixed_versions"] = json!(["1.0-alpha1", "1.0a1"]);
+    aliases_document["wordpress_review"] = aliases;
+    reject(&aliases_document);
+}
+
+#[test]
+fn wordpress_audit_methodology_changes_are_visible_without_changing_item_identity() {
+    let mut observed = item(1);
+    observed["capability_id"] = json!("technology.wordpress-surface-observed@1");
+    let mut before = report(vec![observed.clone()]);
+    before["wordpress_review"] = evaluated_wordpress_audit();
+    let mut after = report(vec![observed]);
+    after["wordpress_review"] = evaluated_wordpress_audit_v2();
+
+    let comparison = compare(&before, &after);
+    assert_eq!(group(&comparison, "unchanged").len(), 1);
+    assert!(group(&comparison, "changed").is_empty());
+    assert_eq!(
+        comparison["before"]["optional_audits"]["wordpress_review"]["schema"],
+        "security.wordpress-review-audit/v1"
+    );
+    assert_eq!(
+        comparison["after"]["optional_audits"]["wordpress_review"]["advisories"][0]
+            ["comparison_profile"],
+        "php-release-subset/v1"
+    );
+
+    let markdown =
+        compare_reports(&bytes(&before), &bytes(&after), ComparisonFormat::Markdown).unwrap();
+    assert!(markdown.contains("security.wordpress-review-audit/v1"));
+    assert!(markdown.contains("security.wordpress-review-audit/v2"));
+    assert!(markdown.contains("php-release-subset/v1"));
+    assert!(!markdown.contains("Fixed"));
+    assert!(!markdown.contains("Verified remediated"));
+
+    let html = compare_reports(&bytes(&before), &bytes(&after), ComparisonFormat::Html).unwrap();
+    assert!(html.contains("security.wordpress-review-audit/v1"));
+    assert!(html.contains("security.wordpress-review-audit/v2"));
+    assert!(html.contains("php-release-subset/v1"));
 }
 
 #[test]
