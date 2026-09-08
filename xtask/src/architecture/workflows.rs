@@ -213,8 +213,6 @@ const WORDPRESS_RESOURCE_ACCEPTANCE_JOB: &str = r#"  wordpress-resource-acceptan
     defaults:
       run:
         shell: bash
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-resource-target-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -229,12 +227,16 @@ const WORDPRESS_RESOURCE_ACCEPTANCE_JOB: &str = r#"  wordpress-resource-acceptan
       - name: Test WordPress resource acceptance contracts
         run: python -m unittest discover -s scripts/tests -p test_wordpress_resource_acceptance.py
       - name: Build feature-minimal WordPress acceptance executables
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-resource-target-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           test ! -e "$CARGO_TARGET_DIR"
           cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review
           cargo +1.88.0 test --release --locked -p termivar-scanner --no-default-features --features wordpress-review --test wordpress_acceptance_corpus --no-run
       - name: Measure synthetic WordPress resource acceptance
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-resource-target-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
           evidence_dir="${RUNNER_TEMP}/termivar-wordpress-resource-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -2359,8 +2361,8 @@ mod tests {
             ),
             ("        if: always()", "        if: success()"),
             (
-                "      - name: Measure synthetic WordPress resource acceptance\n        run: |",
-                "      - name: Measure synthetic WordPress resource acceptance\n        continue-on-error: true\n        run: |",
+                "      - name: Measure synthetic WordPress resource acceptance\n        env:",
+                "      - name: Measure synthetic WordPress resource acceptance\n        continue-on-error: true\n        env:",
             ),
         ];
         for (from, to) in mutations {
