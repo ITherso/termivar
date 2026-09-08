@@ -1,17 +1,26 @@
 #![cfg(feature = "wordpress-review")]
 
-use std::{fmt::Write as _, time::Instant};
+use std::{
+    env,
+    fmt::Write as _,
+    fs::{File, OpenOptions},
+    io::{self, Cursor, Read, Write as IoWrite},
+    time::{Duration, Instant},
+};
 
+use serde::Serialize;
 use termivar_scanner::wordpress_review::{
     evaluate_wordpress_review, parse_wordfence_v3_production, parse_wordpress_advisory_catalog,
     parse_wordpress_context, parse_wordpress_saved_inventory, WordPressActivationState,
-    WordPressApplicability, WordPressComponentKind, WordPressComponentSignal,
-    WordPressExecutionStatus, WordPressExternalApplicability,
+    WordPressApplicability, WordPressComparisonProfile, WordPressComponentKind,
+    WordPressComponentSignal, WordPressExecutionStatus, WordPressExternalApplicability,
+    WordPressExternalRangeReason, WordPressExternalRangeRelation,
     WordPressExternalVersionEvidenceStatus, WordPressExternalVersionRelation,
-    WordPressInventoryCategoryStatus, WordPressInventoryEntryStatus, WordPressLocalInputClass,
-    WordPressLocalInputProvenance, WordPressPrerequisiteOutcome, WordPressReviewInputs,
+    WordPressExternalVersionRelationReason, WordPressInventoryCategoryStatus,
+    WordPressInventoryEntryStatus, WordPressLocalInputClass, WordPressLocalInputProvenance,
+    WordPressPrerequisiteOutcome, WordPressReviewError, WordPressReviewInputs,
     WordPressVersionRelation, WordPressVersionResolution, WordPressVersionResolutionReason,
-    MAX_WORDFENCE_V3_RETAINED_BYTES,
+    WordfenceV3ProductionError, MAX_WORDFENCE_V3_RETAINED_BYTES,
 };
 use url::Url;
 
@@ -484,6 +493,658 @@ fn large_external_snapshot_selects_one_relevant_record_without_semantic_order_dr
         reverse_parse_elapsed.as_millis(),
         forward_evaluation_elapsed.as_millis(),
     );
+}
+
+#[test]
+fn streaming_external_input_retries_interruptions_and_reaches_tail_relevant_record() {
+    const RECORDS: usize = 33;
+    const SELECTED_INDEX: usize = RECORDS - 1;
+
+    let document = large_wordfence_snapshot(RECORDS, SELECTED_INDEX, false);
+    let mut reader = InterruptingChunkReader::new(document.as_bytes(), 17);
+    let import =
+        parse_wordfence_v3_production(&mut reader).expect("bounded interrupted external input");
+
+    assert_eq!(reader.bytes_returned, document.len());
+    assert!(reader.interruptions > 0);
+    assert_eq!(import.record_count(), RECORDS);
+    assert_eq!(
+        import
+            .records()
+            .last()
+            .expect("last parsed record")
+            .upstream_id(),
+        selected_uuid(SELECTED_INDEX)
+    );
+
+    let result = evaluate_wordpress_review(
+        &[],
+        &WordPressReviewInputs::new(Some(resource_probe_context()), None)
+            .with_wordfence_v3_catalog(import)
+            .expect("external catalogue")
+            .with_external_version_profile(WordPressComparisonProfile::NumericDottedV1)
+            .expect("explicit numeric profile"),
+    )
+    .expect("tail-selected external evaluation");
+    let external = result.external_review().expect("external review");
+    assert_eq!(external.counts().selected_associations(), 1);
+    assert_eq!(external.counts().evaluable_associations(), 1);
+    assert_eq!(external.counts().within_associations(), 1);
+    assert_eq!(external.counts().outside_associations(), 0);
+    assert_eq!(external.counts().indeterminate_associations(), 0);
+    assert_eq!(external.evaluations().len(), 1);
+    let evaluation = &external.evaluations()[0];
+    assert_eq!(
+        evaluation.key().upstream_id(),
+        selected_uuid(SELECTED_INDEX)
+    );
+    assert_eq!(
+        evaluation.version_relation(),
+        WordPressExternalVersionRelation::WithinSupportedRangeUnderSelectedPolicy
+    );
+    assert_eq!(
+        evaluation.version_relation_reason(),
+        WordPressExternalVersionRelationReason::ContainingRange
+    );
+    assert_eq!(
+        evaluation.applicability(),
+        WordPressExternalApplicability::VersionMatchUnderSelectedPolicy
+    );
+    assert_eq!(
+        evaluation
+            .range_evaluations()
+            .expect("profiled ranges")
+            .iter()
+            .map(|range| (range.relation(), range.reason()))
+            .collect::<Vec<_>>(),
+        [(
+            WordPressExternalRangeRelation::Contains,
+            WordPressExternalRangeReason::SelectedVersionWithinBounds,
+        )]
+    );
+}
+
+#[test]
+fn external_streaming_read_failure_never_returns_a_partial_import() {
+    let document = large_wordfence_snapshot(8, 7, false);
+    let failure_offset = document.len() - 31;
+    let mut reader = FailingChunkReader {
+        bytes: document.as_bytes(),
+        offset: 0,
+        failure_offset,
+        maximum_chunk: 23,
+    };
+
+    assert_eq!(
+        parse_wordfence_v3_production(&mut reader),
+        Err(WordfenceV3ProductionError::ReadFailed)
+    );
+    assert_eq!(reader.offset, failure_offset);
+}
+
+#[test]
+fn missing_external_version_has_one_deterministic_indeterminate_outcome() {
+    let document = large_wordfence_snapshot(2, 1, false);
+    let import = parse_wordfence_v3_production(document.as_bytes()).expect("external input");
+    let context = parse_wordpress_context(
+        br#"{
+          "schema":"security.wordpress-context/v1",
+          "root":"https://example.test/",
+          "components":[{"kind":"plugin","slug":"selected-plugin"}]
+        }"#,
+    )
+    .expect("versionless selected component");
+    let inputs = WordPressReviewInputs::new(Some(context), None)
+        .with_wordfence_v3_catalog(import)
+        .expect("external catalogue")
+        .with_external_version_profile(WordPressComparisonProfile::NumericDottedV1)
+        .expect("explicit numeric profile");
+
+    let first = evaluate_wordpress_review(&[], &inputs).expect("first evaluation");
+    let second = evaluate_wordpress_review(&[], &inputs).expect("second evaluation");
+    assert_eq!(first, second);
+
+    let external = first.external_review().expect("external review");
+    assert_eq!(external.counts().selected_associations(), 1);
+    assert_eq!(external.counts().evaluable_associations(), 0);
+    assert_eq!(external.counts().within_associations(), 0);
+    assert_eq!(external.counts().outside_associations(), 0);
+    assert_eq!(external.counts().indeterminate_associations(), 1);
+    let evaluation = &external.evaluations()[0];
+    assert_eq!(
+        evaluation.version_relation(),
+        WordPressExternalVersionRelation::Indeterminate
+    );
+    assert_eq!(
+        evaluation.version_relation_reason(),
+        WordPressExternalVersionRelationReason::MissingVersionEvidence
+    );
+    assert_eq!(
+        evaluation.applicability(),
+        WordPressExternalApplicability::Indeterminate
+    );
+    assert_eq!(
+        evaluation
+            .range_evaluations()
+            .expect("profiled ranges")
+            .iter()
+            .map(|range| (range.relation(), range.reason()))
+            .collect::<Vec<_>>(),
+        [(
+            WordPressExternalRangeRelation::NotEvaluated,
+            WordPressExternalRangeReason::MissingVersionEvidence,
+        )]
+    );
+}
+
+/// Native-CI resource probe invoked as a fresh process by the external
+/// acceptance harness. Input generation and OS peak-memory observation stay
+/// outside this child; the child only performs the real bounded import and
+/// pure explicit-policy evaluation.
+#[test]
+#[ignore = "invoked directly by the WordPress resource acceptance harness"]
+fn resource_measurement_case() {
+    let case_value =
+        env::var("TERMIVAR_WORDPRESS_RESOURCE_CASE").expect("resource probe case is required");
+    let (case, expectation) = resource_probe_case(&case_value);
+    let result = if expectation == ResourceProbeExpectation::Baseline {
+        ResourceProbeResult::baseline(case)
+    } else {
+        execute_resource_probe(case)
+    };
+
+    publish_resource_probe_result(&result);
+    assert_resource_probe_expectation(expectation, &result);
+}
+
+const RESOURCE_PROBE_SCHEMA: &str = "termivar-wordpress-resource-probe/v1";
+const RESOURCE_PROBE_RESULT_LIMIT: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceProbeExpectation {
+    Baseline,
+    Completed,
+    RetainedDataTooLarge,
+    InputTooLarge,
+    RecordTooLarge,
+    MalformedJson,
+    DuplicateKey,
+    UnsupportedValue,
+    ResultLimitExceeded,
+}
+
+#[derive(Debug, Serialize)]
+struct ResourceProbeResult {
+    schema: &'static str,
+    case: &'static str,
+    status: &'static str,
+    error_code: Option<&'static str>,
+    input_bytes: Option<u64>,
+    parse_elapsed_ns: Option<u64>,
+    evaluation_elapsed_ns: Option<u64>,
+    parsed_records: Option<usize>,
+    software_associations: Option<usize>,
+    affected_ranges: Option<usize>,
+    retained_bytes: Option<usize>,
+    selected_associations: Option<usize>,
+    evaluable_associations: Option<usize>,
+    within_associations: Option<usize>,
+    outside_associations: Option<usize>,
+    indeterminate_associations: Option<usize>,
+    excluded_associations: Option<usize>,
+    selected_ranges: Option<usize>,
+    evaluated_ranges: Option<usize>,
+}
+
+struct ParsedProbeMetadata {
+    input_bytes: u64,
+    parse_elapsed: Duration,
+    parsed_records: usize,
+    software_associations: usize,
+    affected_ranges: usize,
+    retained_bytes: usize,
+}
+
+impl ResourceProbeResult {
+    const fn baseline(case: &'static str) -> Self {
+        Self {
+            schema: RESOURCE_PROBE_SCHEMA,
+            case,
+            status: "baseline",
+            error_code: None,
+            input_bytes: None,
+            parse_elapsed_ns: None,
+            evaluation_elapsed_ns: None,
+            parsed_records: None,
+            software_associations: None,
+            affected_ranges: None,
+            retained_bytes: None,
+            selected_associations: None,
+            evaluable_associations: None,
+            within_associations: None,
+            outside_associations: None,
+            indeterminate_associations: None,
+            excluded_associations: None,
+            selected_ranges: None,
+            evaluated_ranges: None,
+        }
+    }
+
+    fn parse_rejected(
+        case: &'static str,
+        input_bytes: u64,
+        parse_elapsed: Duration,
+        error: WordfenceV3ProductionError,
+    ) -> Self {
+        Self {
+            schema: RESOURCE_PROBE_SCHEMA,
+            case,
+            status: "rejected",
+            error_code: Some(wordfence_error_code(error)),
+            input_bytes: Some(input_bytes),
+            parse_elapsed_ns: Some(duration_ns(parse_elapsed)),
+            evaluation_elapsed_ns: None,
+            parsed_records: None,
+            software_associations: None,
+            affected_ranges: None,
+            retained_bytes: None,
+            selected_associations: None,
+            evaluable_associations: None,
+            within_associations: None,
+            outside_associations: None,
+            indeterminate_associations: None,
+            excluded_associations: None,
+            selected_ranges: None,
+            evaluated_ranges: None,
+        }
+    }
+
+    fn evaluation_rejected(
+        case: &'static str,
+        parsed: &ParsedProbeMetadata,
+        evaluation_elapsed: Duration,
+        error: WordPressReviewError,
+    ) -> Self {
+        Self {
+            schema: RESOURCE_PROBE_SCHEMA,
+            case,
+            status: "rejected",
+            error_code: Some(review_error_code(error)),
+            input_bytes: Some(parsed.input_bytes),
+            parse_elapsed_ns: Some(duration_ns(parsed.parse_elapsed)),
+            evaluation_elapsed_ns: Some(duration_ns(evaluation_elapsed)),
+            parsed_records: Some(parsed.parsed_records),
+            software_associations: Some(parsed.software_associations),
+            affected_ranges: Some(parsed.affected_ranges),
+            retained_bytes: Some(parsed.retained_bytes),
+            selected_associations: None,
+            evaluable_associations: None,
+            within_associations: None,
+            outside_associations: None,
+            indeterminate_associations: None,
+            excluded_associations: None,
+            selected_ranges: None,
+            evaluated_ranges: None,
+        }
+    }
+}
+
+fn resource_probe_case(value: &str) -> (&'static str, ResourceProbeExpectation) {
+    match value {
+        "baseline" => ("baseline", ResourceProbeExpectation::Baseline),
+        "sparse-small" => ("sparse-small", ResourceProbeExpectation::Completed),
+        "sparse-4096" => ("sparse-4096", ResourceProbeExpectation::Completed),
+        "sparse-16384" => ("sparse-16384", ResourceProbeExpectation::Completed),
+        "sparse-32768" => ("sparse-32768", ResourceProbeExpectation::Completed),
+        "sparse-65536" => (
+            "sparse-65536",
+            ResourceProbeExpectation::RetainedDataTooLarge,
+        ),
+        "sparse-81920" => (
+            "sparse-81920",
+            ResourceProbeExpectation::RetainedDataTooLarge,
+        ),
+        "dense-4096" => ("dense-4096", ResourceProbeExpectation::Completed),
+        "dense-4097" => ("dense-4097", ResourceProbeExpectation::ResultLimitExceeded),
+        "record-over-limit" => (
+            "record-over-limit",
+            ResourceProbeExpectation::RecordTooLarge,
+        ),
+        "title-field-limit-plus-one" => (
+            "title-field-limit-plus-one",
+            ResourceProbeExpectation::UnsupportedValue,
+        ),
+        "input-limit-plus-one" => (
+            "input-limit-plus-one",
+            ResourceProbeExpectation::InputTooLarge,
+        ),
+        "late-malformed" => ("late-malformed", ResourceProbeExpectation::MalformedJson),
+        "duplicate-id" => ("duplicate-id", ResourceProbeExpectation::DuplicateKey),
+        _ => panic!("resource probe case is not in the closed acceptance set"),
+    }
+}
+
+fn execute_resource_probe(case: &'static str) -> ResourceProbeResult {
+    let input_path = env::var_os("TERMIVAR_WORDPRESS_RESOURCE_INPUT")
+        .expect("resource probe input is required for this case");
+    let input = File::open(&input_path).expect("resource probe input could not be opened");
+    let input_metadata = input
+        .metadata()
+        .expect("resource probe input metadata could not be read");
+    assert!(
+        input_metadata.is_file(),
+        "resource probe input must be a regular file"
+    );
+    let input_bytes = input_metadata.len();
+
+    let parse_started = Instant::now();
+    let import = match parse_wordfence_v3_production(input) {
+        Ok(import) => import,
+        Err(error) => {
+            return ResourceProbeResult::parse_rejected(
+                case,
+                input_bytes,
+                parse_started.elapsed(),
+                error,
+            );
+        },
+    };
+    let parse_elapsed = parse_started.elapsed();
+    assert_eq!(
+        import.byte_length(),
+        input_bytes,
+        "resource probe input changed while it was being read"
+    );
+    let parsed = ParsedProbeMetadata {
+        input_bytes,
+        parse_elapsed,
+        parsed_records: import.record_count(),
+        software_associations: import.software_association_count(),
+        affected_ranges: import.affected_range_count(),
+        retained_bytes: import.retained_bytes(),
+    };
+    let inputs = WordPressReviewInputs::new(Some(resource_probe_context()), None)
+        .with_wordfence_v3_catalog(import)
+        .expect("resource probe external catalogue")
+        .with_external_version_profile(WordPressComparisonProfile::NumericDottedV1)
+        .expect("resource probe explicit numeric profile");
+
+    let evaluation_started = Instant::now();
+    let result = match evaluate_wordpress_review(&[], &inputs) {
+        Ok(result) => result,
+        Err(error) => {
+            return ResourceProbeResult::evaluation_rejected(
+                case,
+                &parsed,
+                evaluation_started.elapsed(),
+                error,
+            );
+        },
+    };
+    let evaluation_elapsed = evaluation_started.elapsed();
+    let external = result
+        .external_review()
+        .expect("resource probe external review");
+    let counts = external.counts();
+    assert_eq!(
+        external.comparison_profile(),
+        Some(WordPressComparisonProfile::NumericDottedV1)
+    );
+    let relation_counts =
+        external
+            .evaluations()
+            .iter()
+            .fold([0_usize; 3], |mut totals, evaluation| {
+                let index = match evaluation.version_relation() {
+                    WordPressExternalVersionRelation::WithinSupportedRangeUnderSelectedPolicy => 0,
+                    WordPressExternalVersionRelation::OutsideDeclaredRangesUnderSelectedPolicy => 1,
+                    WordPressExternalVersionRelation::Indeterminate => 2,
+                    WordPressExternalVersionRelation::SourceComparisonSemanticsUnresolved => {
+                        panic!("explicit resource probe returned the unresolved source policy")
+                    },
+                };
+                totals[index] += 1;
+                totals
+            });
+    assert_eq!(
+        relation_counts,
+        [
+            counts.within_associations(),
+            counts.outside_associations(),
+            counts.indeterminate_associations(),
+        ]
+    );
+    assert_eq!(
+        counts.evaluable_associations(),
+        counts.within_associations() + counts.outside_associations()
+    );
+    assert_eq!(
+        counts.selected_associations(),
+        counts.evaluable_associations() + counts.indeterminate_associations()
+    );
+    ResourceProbeResult {
+        schema: RESOURCE_PROBE_SCHEMA,
+        case,
+        status: "completed",
+        error_code: None,
+        input_bytes: Some(parsed.input_bytes),
+        parse_elapsed_ns: Some(duration_ns(parsed.parse_elapsed)),
+        evaluation_elapsed_ns: Some(duration_ns(evaluation_elapsed)),
+        parsed_records: Some(parsed.parsed_records),
+        software_associations: Some(parsed.software_associations),
+        affected_ranges: Some(parsed.affected_ranges),
+        retained_bytes: Some(parsed.retained_bytes),
+        selected_associations: Some(counts.selected_associations()),
+        evaluable_associations: Some(counts.evaluable_associations()),
+        within_associations: Some(counts.within_associations()),
+        outside_associations: Some(counts.outside_associations()),
+        indeterminate_associations: Some(counts.indeterminate_associations()),
+        excluded_associations: Some(counts.excluded_associations()),
+        selected_ranges: Some(counts.selected_ranges()),
+        evaluated_ranges: Some(counts.evaluated_ranges()),
+    }
+}
+
+fn resource_probe_context() -> termivar_scanner::wordpress_review::WordPressContext {
+    parse_wordpress_context(
+        br#"{
+          "schema":"security.wordpress-context/v1",
+          "root":"https://example.test/",
+          "components":[
+            {"kind":"plugin","slug":"selected-plugin","version":"1.5"}
+          ]
+        }"#,
+    )
+    .expect("fixed resource probe context")
+}
+
+fn publish_resource_probe_result(result: &ResourceProbeResult) {
+    let encoded = serde_json::to_vec(result).expect("resource probe result serialization");
+    assert!(
+        encoded
+            .len()
+            .checked_add(1)
+            .is_some_and(|length| length <= RESOURCE_PROBE_RESULT_LIMIT),
+        "resource probe result exceeds its byte limit"
+    );
+    let output_path = env::var_os("TERMIVAR_WORDPRESS_RESOURCE_OUTPUT")
+        .expect("resource probe output is required");
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output_path)
+        .expect("resource probe output could not be created");
+    output
+        .write_all(&encoded)
+        .expect("resource probe output could not be written");
+    output
+        .write_all(b"\n")
+        .expect("resource probe output newline could not be written");
+    output
+        .sync_all()
+        .expect("resource probe output could not be synchronized");
+
+    println!(
+        "TERMIVAR_WORDPRESS_RESOURCE_RESULT={}",
+        std::str::from_utf8(&encoded).expect("JSON output is UTF-8")
+    );
+}
+
+fn assert_resource_probe_expectation(
+    expectation: ResourceProbeExpectation,
+    result: &ResourceProbeResult,
+) {
+    match expectation {
+        ResourceProbeExpectation::Baseline => {
+            assert_eq!(result.status, "baseline");
+            assert_eq!(result.error_code, None);
+        },
+        ResourceProbeExpectation::Completed => {
+            assert_eq!(result.status, "completed");
+            assert_eq!(result.error_code, None);
+        },
+        ResourceProbeExpectation::RetainedDataTooLarge => {
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.error_code, Some("retained_data_too_large"));
+            assert!(result.evaluation_elapsed_ns.is_none());
+        },
+        ResourceProbeExpectation::InputTooLarge => {
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.error_code, Some("input_too_large"));
+            assert!(result.evaluation_elapsed_ns.is_none());
+        },
+        ResourceProbeExpectation::RecordTooLarge => {
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.error_code, Some("record_too_large"));
+            assert!(result.evaluation_elapsed_ns.is_none());
+        },
+        ResourceProbeExpectation::MalformedJson => {
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.error_code, Some("malformed_json"));
+            assert!(result.evaluation_elapsed_ns.is_none());
+        },
+        ResourceProbeExpectation::DuplicateKey => {
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.error_code, Some("duplicate_key"));
+            assert!(result.evaluation_elapsed_ns.is_none());
+        },
+        ResourceProbeExpectation::UnsupportedValue => {
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.error_code, Some("unsupported_value"));
+            assert!(result.evaluation_elapsed_ns.is_none());
+        },
+        ResourceProbeExpectation::ResultLimitExceeded => {
+            assert_eq!(result.status, "rejected");
+            assert_eq!(result.error_code, Some("result_limit_exceeded"));
+            assert!(result.evaluation_elapsed_ns.is_some());
+        },
+    }
+}
+
+const fn wordfence_error_code(error: WordfenceV3ProductionError) -> &'static str {
+    match error {
+        WordfenceV3ProductionError::ReadFailed => "read_failed",
+        WordfenceV3ProductionError::EmptyInput => "empty_input",
+        WordfenceV3ProductionError::InputTooLarge => "input_too_large",
+        WordfenceV3ProductionError::RecordTooLarge => "record_too_large",
+        WordfenceV3ProductionError::MalformedJson => "malformed_json",
+        WordfenceV3ProductionError::DuplicateKey => "duplicate_key",
+        WordfenceV3ProductionError::StructuralLimitExceeded => "structural_limit_exceeded",
+        WordfenceV3ProductionError::UnsupportedValue => "unsupported_value",
+        WordfenceV3ProductionError::ConflictingIdentity => "conflicting_identity",
+        WordfenceV3ProductionError::RetainedDataTooLarge => "retained_data_too_large",
+    }
+}
+
+const fn review_error_code(error: WordPressReviewError) -> &'static str {
+    match error {
+        WordPressReviewError::ContextTooLarge => "context_too_large",
+        WordPressReviewError::CatalogTooLarge => "catalog_too_large",
+        WordPressReviewError::InventoryTooLarge => "inventory_too_large",
+        WordPressReviewError::EmptyInput => "empty_input",
+        WordPressReviewError::DuplicateKey => "duplicate_key",
+        WordPressReviewError::JsonLimitExceeded => "json_limit_exceeded",
+        WordPressReviewError::MalformedJson => "malformed_json",
+        WordPressReviewError::UnsupportedSchema => "unsupported_schema",
+        WordPressReviewError::InvalidContext => "invalid_context",
+        WordPressReviewError::InvalidInventory => "invalid_inventory",
+        WordPressReviewError::InventoryComponentLimitExceeded => {
+            "inventory_component_limit_exceeded"
+        },
+        WordPressReviewError::InvalidInventoryProvenance => "invalid_inventory_provenance",
+        WordPressReviewError::InvalidCatalog => "invalid_catalog",
+        WordPressReviewError::ConflictingAdvisoryInputs => "conflicting_advisory_inputs",
+        WordPressReviewError::ExternalVersionProfileRequiresWordfenceV3 => {
+            "external_version_profile_requires_wordfence_v3"
+        },
+        WordPressReviewError::InvalidExternalCatalog => "invalid_external_catalog",
+        WordPressReviewError::InvalidComponentIdentity => "invalid_component_identity",
+        WordPressReviewError::DuplicateComponent => "duplicate_component",
+        WordPressReviewError::DuplicateAdvisory => "duplicate_advisory",
+        WordPressReviewError::InvalidVersionRange => "invalid_version_range",
+        WordPressReviewError::SignalLimitExceeded => "signal_limit_exceeded",
+        WordPressReviewError::ResultLimitExceeded => "result_limit_exceeded",
+        WordPressReviewError::EvaluationLimitExceeded => "evaluation_limit_exceeded",
+    }
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).expect("resource probe duration fits u64 nanoseconds")
+}
+
+struct InterruptingChunkReader<'a> {
+    cursor: Cursor<&'a [u8]>,
+    maximum_chunk: usize,
+    interrupt_next: bool,
+    interruptions: usize,
+    bytes_returned: usize,
+}
+
+impl<'a> InterruptingChunkReader<'a> {
+    fn new(bytes: &'a [u8], maximum_chunk: usize) -> Self {
+        Self {
+            cursor: Cursor::new(bytes),
+            maximum_chunk,
+            interrupt_next: true,
+            interruptions: 0,
+            bytes_returned: 0,
+        }
+    }
+}
+
+impl Read for InterruptingChunkReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.interrupt_next {
+            self.interrupt_next = false;
+            self.interruptions += 1;
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        self.interrupt_next = true;
+        let maximum = buffer.len().min(self.maximum_chunk);
+        let read = self.cursor.read(&mut buffer[..maximum])?;
+        self.bytes_returned += read;
+        Ok(read)
+    }
+}
+
+struct FailingChunkReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    failure_offset: usize,
+    maximum_chunk: usize,
+}
+
+impl Read for FailingChunkReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.offset == self.failure_offset {
+            return Err(io::Error::other("synthetic bounded read failure"));
+        }
+        let available = self.failure_offset - self.offset;
+        let count = buffer.len().min(self.maximum_chunk).min(available);
+        buffer[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+        self.offset += count;
+        Ok(count)
+    }
 }
 
 fn candidate_context(

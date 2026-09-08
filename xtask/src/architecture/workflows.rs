@@ -204,6 +204,61 @@ const PROGRESS_SMOKE_GATE: &str = r#"      - name: Exercise opt-in live progress
         run: cargo test --locked -p termivar-cli --test progress_cli"#;
 const WORDPRESS_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in WordPress review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_review_cli -- --nocapture"#;
+const WORDPRESS_RESOURCE_ACCEPTANCE_JOB: &str = r#"  wordpress-resource-acceptance:
+    name: WordPress Resource Acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-resource-target-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - name: Test WordPress resource acceptance contracts
+        run: python -m unittest discover -s scripts/tests -p test_wordpress_resource_acceptance.py
+      - name: Build feature-minimal WordPress acceptance executables
+        run: |
+          set -euo pipefail
+          test ! -e "$CARGO_TARGET_DIR"
+          cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review
+          cargo +1.88.0 test --release --locked -p termivar-scanner --no-default-features --features wordpress-review --test wordpress_acceptance_corpus --no-run
+      - name: Measure synthetic WordPress resource acceptance
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/termivar-wordpress-resource-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$evidence_dir"
+          test -x "$CARGO_TARGET_DIR/release/termivar"
+          test -x /usr/bin/time
+          mapfile -t harnesses < <(find "$CARGO_TARGET_DIR/release/deps" -maxdepth 1 -type f -executable -name 'wordpress_acceptance_corpus-*' -print)
+          test "${#harnesses[@]}" -eq 1
+          bash scripts/run-wordpress-resource-acceptance.sh \
+            --probe "${harnesses[0]}" \
+            --binary "$CARGO_TARGET_DIR/release/termivar" \
+            --output-dir "$evidence_dir" \
+            --source-ref "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --expect-version 0.10.0-alpha.3
+      - name: Upload bounded WordPress resource acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wordpress-resource-acceptance-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/termivar-wordpress-resource-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-resource-acceptance.json
+            ${{ runner.temp }}/termivar-wordpress-resource-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-resource-acceptance.md
+          if-no-files-found: error
+          retention-days: 30"#;
 const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capabilities matrix
         run: |
           set -euo pipefail
@@ -493,6 +548,9 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(capabilities_workflow_policy_violations(&files));
     violations.extend(progress_workflow_policy_violations(&files));
     violations.extend(wordpress_review_workflow_policy_violations(&files));
+    violations.extend(wordpress_resource_acceptance_workflow_policy_violations(
+        &files,
+    ));
     violations.extend(release_acceptance_test_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
@@ -638,6 +696,25 @@ fn wordpress_review_workflow_policy_violations(files: &[(String, String)]) -> Ve
     } else {
         vec![format!(
             "{TESTS_WORKFLOW}: three-platform runtime smoke must compile and run the exact feature-minimal WordPress-review CLI integration test"
+        )]
+    }
+}
+
+fn wordpress_resource_acceptance_workflow_policy_violations(
+    files: &[(String, String)],
+) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed WordPress resource-acceptance workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let jobs = named_job_blocks(&normalized, "wordpress-resource-acceptance");
+    if jobs.as_slice() == [WORDPRESS_RESOURCE_ACCEPTANCE_JOB] {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{TESTS_WORKFLOW}: WordPress resource acceptance must match the exact Linux-only, Rust 1.88, feature-minimal, isolated-target, unsuppressed measurement and bounded-evidence contract"
         )]
     }
 }
@@ -2206,6 +2283,102 @@ mod tests {
             )]);
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(violations[0].contains("WordPress-review"), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn repository_wordpress_resource_acceptance_is_exact() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations = wordpress_resource_acceptance_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                fixture,
+            )]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn wordpress_resource_acceptance_rejects_scope_and_evidence_mutations() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert!(valid.contains(WORDPRESS_RESOURCE_ACCEPTANCE_JOB));
+
+        let missing = valid.replacen(WORDPRESS_RESOURCE_ACCEPTANCE_JOB, "", 1);
+        let violations = wordpress_resource_acceptance_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            missing,
+        )]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+
+        let duplicate = format!("{valid}\n\n{WORDPRESS_RESOURCE_ACCEPTANCE_JOB}\n");
+        let violations = wordpress_resource_acceptance_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            duplicate,
+        )]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+
+        let mutations = [
+            ("runs-on: ubuntu-latest", "runs-on: windows-latest"),
+            ("timeout-minutes: 30", "timeout-minutes: 60"),
+            (
+                "${{ runner.temp }}/termivar-wordpress-resource-target-",
+                "target/termivar-wordpress-resource-target-",
+            ),
+            (
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review",
+                "cargo +1.88.0 build --locked -p termivar-cli --no-default-features --features wordpress-review",
+            ),
+            (
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review",
+                "cargo +1.88.0 build --release --locked -p termivar-cli --all-features",
+            ),
+            (
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review",
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features release-bundle",
+            ),
+            (
+                "          cargo +1.88.0 test --release --locked -p termivar-scanner --no-default-features --features wordpress-review --test wordpress_acceptance_corpus --no-run\n",
+                "",
+            ),
+            (
+                "      - name: Test WordPress resource acceptance contracts\n        run: python -m unittest discover -s scripts/tests -p test_wordpress_resource_acceptance.py\n",
+                "",
+            ),
+            (
+                "bash scripts/run-wordpress-resource-acceptance.sh",
+                "python scripts/wordpress_resource_acceptance.py",
+            ),
+            ("          test -x /usr/bin/time\n", ""),
+            (
+                "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+                "uses: actions/upload-artifact@v7",
+            ),
+            (
+                "            ${{ runner.temp }}/termivar-wordpress-resource-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-resource-acceptance.md\n",
+                "",
+            ),
+            ("        if: always()", "        if: success()"),
+            (
+                "      - name: Measure synthetic WordPress resource acceptance\n        run: |",
+                "      - name: Measure synthetic WordPress resource acceptance\n        continue-on-error: true\n        run: |",
+            ),
+        ];
+        for (from, to) in mutations {
+            let mutated_job = WORDPRESS_RESOURCE_ACCEPTANCE_JOB.replacen(from, to, 1);
+            assert_ne!(
+                mutated_job, WORDPRESS_RESOURCE_ACCEPTANCE_JOB,
+                "mutation must alter the reviewed job: {from}"
+            );
+            let mutation = valid.replacen(WORDPRESS_RESOURCE_ACCEPTANCE_JOB, &mutated_job, 1);
+            let violations = wordpress_resource_acceptance_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                mutation,
+            )]);
+            assert_eq!(violations.len(), 1, "{from}: {violations:?}");
+            assert!(
+                violations[0].contains("WordPress resource acceptance"),
+                "{from}: {violations:?}"
+            );
         }
     }
 

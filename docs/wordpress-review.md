@@ -436,6 +436,38 @@ memory measurements are tracked separately from this source-format claim.
 The repository's small curated WordPress-project example retains its separate
 primary-source factual provenance; it is not relabelled as vendor-feed data.
 
+### Linux resource acceptance measurements
+
+The exact-head `WordPress Resource Acceptance` CI job builds the
+feature-minimal `wordpress-review` CLI and its ignored resource probe with Rust
+1.88 in release profile and a fresh runner-temporary Cargo target. It runs each
+synthetic case in a fresh child process and records Linux `/usr/bin/time` peak
+resident set size in KiB together with observed elapsed time, input bytes,
+record/association/range counts, relevant-selection counts, retained-index
+accounting, and output bytes.
+The bounded artifact contains only
+`wordpress-resource-acceptance.json` and
+`wordpress-resource-acceptance.md`.
+
+The synthetic matrix covers a no-input process baseline, a small input,
+accepted distinct sparse inputs at 4,096, 16,384, and 32,768 records, explicit
+retained-index rejections at 65,536 and 81,920 records, and a
+many-relevant-records case that must report its result-limit outcome. Relevant
+rows occur late in the sparse inputs so a successful prefix parse cannot
+satisfy the oracle. Separate typed cases cover raw input, individual record,
+individual field, malformed-tail, duplicate-identity, and interrupted-read
+boundaries; these cases are not presented as process-memory benchmarks.
+
+Peak RSS is an operating-system observation for the measured child process,
+not an exact Rust heap measurement or the configured 64 MiB retained-index
+charge. Independent-process peaks are not subtracted to claim component memory,
+and noisy elapsed timings are evidence from that runner rather than a product
+deadline or performance guarantee. Inputs are generated synthetic data, not a
+Wordfence export. Consequently the measurement does not change
+`real_export_acceptance=NOT_RUN_NO_INPUT`, authenticate a source, or establish
+that every allowed maximum-size combination or future provider snapshot will
+be accepted.
+
 | Acceptance surface | Status | Evidence boundary |
 | --- | --- | --- |
 | Saved plugin/theme/core inventories | Implemented and tested | Synthetic WP-CLI-shaped files; Termivar does not run WP-CLI |
@@ -444,6 +476,7 @@ primary-source factual provenance; it is not relabelled as vendor-feed data.
 | Reviewed/holdout evaluator outcomes | Implemented and tested | Six fictional records with literal expected denominators |
 | Cross-run semantic Report Compare | Implemented and tested | One benign exact-origin fixture; no remediation causality |
 | Feature-enabled native CLI | Implemented and tested in CI | Linux, Windows, and macOS runners; not a fresh-machine certification |
+| Linux process resource evidence | Measured in exact-head CI | Synthetic inputs and child-process peak RSS; not a heap cap or real-feed benchmark |
 | Curated release bundle | WordPress intentionally unsupported | The packaged capability remains `not_compiled` |
 | Real vendor snapshot and live API | Not tested / unsupported | No supplied export, account, API key, or network retrieval |
 | Exploit and impact validation | Unsupported | Both remain `not_performed` |

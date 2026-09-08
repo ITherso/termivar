@@ -366,6 +366,62 @@ jobs:
           cargo test --locked -p termivar-scanner --lib authority_narrows_a_broader_policy_to_one_exact_origin
           cargo test --locked -p termivar-scanner --lib redirect_is_observed_without_following_the_location
 
+  wordpress-resource-acceptance:
+    name: WordPress Resource Acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-resource-target-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - name: Test WordPress resource acceptance contracts
+        run: python -m unittest discover -s scripts/tests -p test_wordpress_resource_acceptance.py
+      - name: Build feature-minimal WordPress acceptance executables
+        run: |
+          set -euo pipefail
+          test ! -e "$CARGO_TARGET_DIR"
+          cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review
+          cargo +1.88.0 test --release --locked -p termivar-scanner --no-default-features --features wordpress-review --test wordpress_acceptance_corpus --no-run
+      - name: Measure synthetic WordPress resource acceptance
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/termivar-wordpress-resource-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$evidence_dir"
+          test -x "$CARGO_TARGET_DIR/release/termivar"
+          test -x /usr/bin/time
+          mapfile -t harnesses < <(find "$CARGO_TARGET_DIR/release/deps" -maxdepth 1 -type f -executable -name 'wordpress_acceptance_corpus-*' -print)
+          test "${#harnesses[@]}" -eq 1
+          bash scripts/run-wordpress-resource-acceptance.sh \
+            --probe "${harnesses[0]}" \
+            --binary "$CARGO_TARGET_DIR/release/termivar" \
+            --output-dir "$evidence_dir" \
+            --source-ref "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --expect-version 0.10.0-alpha.3
+      - name: Upload bounded WordPress resource acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wordpress-resource-acceptance-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/termivar-wordpress-resource-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-resource-acceptance.json
+            ${{ runner.temp }}/termivar-wordpress-resource-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-resource-acceptance.md
+          if-no-files-found: error
+          retention-days: 30
+
   downstream-current-head:
     name: Downstream Current-Head Compile
     runs-on: ubuntu-latest
