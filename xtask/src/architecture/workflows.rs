@@ -2302,6 +2302,9 @@ mod tests {
 
     #[test]
     fn wordpress_resource_acceptance_rejects_scope_and_evidence_mutations() {
+        let violations = wordpress_resource_acceptance_workflow_policy_violations(&[]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         assert!(valid.contains(WORDPRESS_RESOURCE_ACCEPTANCE_JOB));
 
