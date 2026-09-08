@@ -2091,56 +2091,63 @@ fn wordpress_v4_external_counts_preserve_the_source_record_envelope() {
 }
 
 #[test]
-fn wordpress_v4_defiant_attribution_requires_the_exact_safe_record_link() {
-    let mut audit = wordfence_external_wordpress_audit_v4();
-    let notice = &mut audit["external_review"]["notices"][0];
-    notice["party"] = json!("defiant");
-    let id = synthetic_wordfence_notice_id(
-        notice["message"].as_str().unwrap(),
-        notice["party"].as_str().unwrap(),
-        notice["notice"].as_str().unwrap(),
-        notice["license"].as_str().unwrap(),
-        notice["license_url"].as_str().unwrap(),
-    );
-    notice["id"] = json!(id.clone());
-    let evaluation = &mut audit["external_review"]["evaluations"][0];
-    evaluation["notice_ids"] = json!([id]);
-    evaluation["references"] = json!([
-        "https://example.invalid/fixture-advisory",
-        "http://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"
-    ]);
-    evaluation["record_reference"] =
-        json!("http://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture");
-    let mut valid = report(vec![]);
-    valid["wordpress_review"] = audit;
-    assert!(group(&compare(&valid, &valid), "unchanged").is_empty());
-
-    let mut https_valid = valid.clone();
-    https_valid["wordpress_review"]["external_review"]["evaluations"][0]["references"] = json!([
-        "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test"
-    ]);
-    https_valid["wordpress_review"]["external_review"]["evaluations"][0]["record_reference"] = json!(
-        "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test"
-    );
-    assert!(group(&compare(&https_valid, &https_valid), "unchanged").is_empty());
-
-    for hostile in [
-        Value::Null,
-        json!("ftp://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
-        json!("https://wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
-        json!("https://www.wordfence.com/help/synthetic-fixture"),
-        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source="),
-        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test&source=other"),
-        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test&extra=1"),
-        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api%2Dtest"),
-        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture\" onmouseover=\"x"),
+fn wordpress_v4_v5_defiant_attribution_requires_the_exact_safe_record_link() {
+    for mut audit in [
+        wordfence_external_wordpress_audit_v4(),
+        wordfence_external_wordpress_audit_v5(),
     ] {
-        let mut invalid = valid.clone();
-        invalid["wordpress_review"]["external_review"]["evaluations"][0]["references"] =
-            json!([hostile.clone()]);
-        invalid["wordpress_review"]["external_review"]["evaluations"][0]["record_reference"] =
-            hostile;
-        reject(&invalid);
+        let notice = &mut audit["external_review"]["notices"][0];
+        notice["party"] = json!("defiant");
+        let id = synthetic_wordfence_notice_id(
+            notice["message"].as_str().unwrap(),
+            notice["party"].as_str().unwrap(),
+            notice["notice"].as_str().unwrap(),
+            notice["license"].as_str().unwrap(),
+            notice["license_url"].as_str().unwrap(),
+        );
+        notice["id"] = json!(id.clone());
+        let evaluation = &mut audit["external_review"]["evaluations"][0];
+        evaluation["notice_ids"] = json!([id]);
+        evaluation["references"] = json!([
+            "https://example.invalid/fixture-advisory",
+            "http://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"
+        ]);
+        evaluation["record_reference"] =
+            json!("http://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture");
+        let mut valid = report(vec![]);
+        valid["wordpress_review"] = audit;
+        assert!(group(&compare(&valid, &valid), "unchanged").is_empty());
+
+        let mut https_valid = valid.clone();
+        https_valid["wordpress_review"]["external_review"]["evaluations"][0]["references"] = json!([
+            "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test"
+        ]);
+        https_valid["wordpress_review"]["external_review"]["evaluations"][0]["record_reference"] = json!(
+            "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test"
+        );
+        assert!(group(&compare(&https_valid, &https_valid), "unchanged").is_empty());
+
+        for hostile in [
+            Value::Null,
+            json!("ftp://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
+            json!("https://wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
+            json!("https://user@www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
+            json!("https://www.wordfence.com:8443/threat-intel/vulnerabilities/synthetic-fixture"),
+            json!("https://www.wordfence.com/help/synthetic-fixture"),
+            json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source="),
+            json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test&source=other"),
+            json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test&extra=1"),
+            json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api%2Dtest"),
+            json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test#part"),
+            json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture\" onmouseover=\"x"),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["wordpress_review"]["external_review"]["evaluations"][0]["references"] =
+                json!([hostile.clone()]);
+            invalid["wordpress_review"]["external_review"]["evaluations"][0]
+                ["record_reference"] = hostile;
+            reject(&invalid);
+        }
     }
 }
 

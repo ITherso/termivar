@@ -7874,8 +7874,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 188_177;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xd879_e17c_ca8c_34a2_9f4f_ca80_d433_7179;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 188_693;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x4e91_6dde_8a84_f298_7231_1c13_ba27_0ad7;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -8419,6 +8419,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "termivar_core::RunStepStatus",
     "termivar_core::RunStopCode",
     "termivar_core::SecuritySeverity",
+    "url::Url",
     "url::Url::parse",
 ];
 
@@ -8463,6 +8464,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "external_semantic_resolution",
     "external_version_evidence_resolution_is_valid",
     "fmt::write",
+    "has_supported_wordfence_reference_query",
     "io::Error::other",
     "is_bidi_control",
     "is_strict_https_reference",

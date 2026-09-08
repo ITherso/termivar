@@ -1550,8 +1550,8 @@ fn is_official_wordfence_vulnerability_reference(value: &str) -> bool {
 
 fn has_supported_wordfence_reference_query(url: &Url) -> bool {
     const MAX_SOURCE_VALUE_BYTES: usize = 64;
-    // Current Production feeds attach one inert source marker to the record URL.
-    // Keep the allowance narrower than general URL query syntax.
+    // The accepted Production form may attach one inert source marker to the
+    // record URL. Keep the allowance narrower than general URL query syntax.
     match url.query() {
         None => true,
         Some(query) => query.strip_prefix("source=").is_some_and(|value| {

@@ -347,10 +347,13 @@ Termivar-calculated installed risk score.
 When a selected record carries Defiant copyright terms, preflight requires an
 existing source-declared Wordfence vulnerability-record reference. Only the
 documented `www.wordfence.com/threat-intel/vulnerabilities/` HTTP/HTTPS form is
-accepted; Termivar neither invents nor fetches a missing link. The report emits
-that record link together with the retained notice and licence text. A missing
-required link rejects the input before the assessment starts rather than
-silently publishing an attribution-incomplete copy.
+accepted. The record link may have no query or exactly one literal `source`
+parameter whose value is 1–64 unreserved ASCII characters; other, empty,
+duplicate, encoded, or multi-parameter query forms are rejected. Termivar
+neither invents nor fetches a missing link. The report emits that exact record
+link together with the retained notice and licence text. A missing required
+link rejects the input before the assessment starts rather than silently
+publishing an attribution-incomplete copy.
 
 The source format specifies structured range endpoints and inclusivity, but it
 does not by itself establish a comparison algorithm for every vendor version.
