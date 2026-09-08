@@ -165,6 +165,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "optional --wordpress-context FILE",
             "optional --wordpress-advisories FILE",
             "optional --wordpress-advisories-format termivar|wordfence-v3-production",
+            "optional --wordpress-external-version-profile numeric-dotted/v1|php-release-subset/v1 (Wordfence Production only)",
             "optional --wordpress-plugins-json FILE",
             "optional --wordpress-themes-json FILE",
             "optional --wordpress-core-version-file FILE"
@@ -178,7 +179,9 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "catalogue_not_supplied",
         "never an all-clear",
         "no exploit or impact validation",
-        "comparison semantics remain indeterminate",
+        "operator may explicitly select",
+        "source's own comparison semantics remain not established",
+        "Without that selector the external relation stays indeterminate",
     ] {
         assert!(
             wordpress_limit.contains(required),
