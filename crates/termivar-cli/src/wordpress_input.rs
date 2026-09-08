@@ -9,9 +9,10 @@ use std::{fmt, fs::File, io::Read, path::PathBuf};
 use sha2::{Digest, Sha256};
 use termivar_scanner::wordpress_review::{
     parse_wordfence_v3_production, parse_wordpress_advisory_catalog, parse_wordpress_context,
-    parse_wordpress_saved_inventory, WordPressLocalInputClass, WordPressLocalInputProvenance,
-    WordPressReviewInputs, WordfenceV3ProductionError, MAX_WORDFENCE_V3_PRODUCTION_BYTES,
-    MAX_WORDPRESS_SAVED_INVENTORY_BYTES, MAX_WORDPRESS_VERSION_BYTES,
+    parse_wordpress_saved_inventory, WordPressComparisonProfile, WordPressLocalInputClass,
+    WordPressLocalInputProvenance, WordPressReviewInputs, WordfenceV3ProductionError,
+    MAX_WORDFENCE_V3_PRODUCTION_BYTES, MAX_WORDPRESS_SAVED_INVENTORY_BYTES,
+    MAX_WORDPRESS_VERSION_BYTES,
 };
 use url::Url;
 
@@ -33,11 +34,53 @@ pub(crate) enum WordPressAdvisoriesFormat {
     WordfenceV3Production,
 }
 
+/// Closed Termivar comparison rules that an operator may explicitly select
+/// for a local Wordfence Production export. Selection does not establish the
+/// source's own version-comparison semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub(crate) enum WordPressExternalVersionProfile {
+    #[value(name = "numeric-dotted/v1")]
+    NumericDottedV1,
+    #[value(name = "php-release-subset/v1")]
+    PhpReleaseSubsetV1,
+}
+
+impl From<WordPressExternalVersionProfile> for WordPressComparisonProfile {
+    fn from(value: WordPressExternalVersionProfile) -> Self {
+        match value {
+            WordPressExternalVersionProfile::NumericDottedV1 => Self::NumericDottedV1,
+            WordPressExternalVersionProfile::PhpReleaseSubsetV1 => Self::PhpReleaseSubsetV1,
+        }
+    }
+}
+
+/// Closed advisory-decoding choices associated with one optional advisory
+/// source. Keeping them together prevents source interpretation from drifting
+/// away from the file it qualifies.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct WordPressAdvisoryOptions {
+    format: Option<WordPressAdvisoriesFormat>,
+    external_version_profile: Option<WordPressExternalVersionProfile>,
+}
+
+impl WordPressAdvisoryOptions {
+    pub(crate) const fn new(
+        format: Option<WordPressAdvisoriesFormat>,
+        external_version_profile: Option<WordPressExternalVersionProfile>,
+    ) -> Self {
+        Self {
+            format,
+            external_version_profile,
+        }
+    }
+}
+
 /// Deferred source selection. Construction performs no filesystem access.
 pub(crate) struct WordPressReviewInput {
     context: Option<PathBuf>,
     advisories: Option<PathBuf>,
     advisories_format: WordPressAdvisoriesFormat,
+    external_version_profile: Option<WordPressComparisonProfile>,
     plugins_json: Option<PathBuf>,
     themes_json: Option<PathBuf>,
     core_version_file: Option<PathBuf>,
@@ -53,6 +96,12 @@ impl fmt::Debug for WordPressReviewInput {
                 &self.advisories.as_ref().map(|_| "<redacted>"),
             )
             .field("advisories_format", &self.advisories_format)
+            .field(
+                "external_version_profile",
+                &self
+                    .external_version_profile
+                    .map(WordPressComparisonProfile::id),
+            )
             .field(
                 "plugins_json",
                 &self.plugins_json.as_ref().map(|_| "<redacted>"),
@@ -77,17 +126,22 @@ impl WordPressReviewInput {
         enabled: bool,
         context: Option<PathBuf>,
         advisories: Option<PathBuf>,
-        advisories_format: Option<WordPressAdvisoriesFormat>,
+        advisory_options: WordPressAdvisoryOptions,
         plugins_json: Option<PathBuf>,
         themes_json: Option<PathBuf>,
         core_version_file: Option<PathBuf>,
     ) -> Result<Option<Self>, WordPressInputError> {
+        let WordPressAdvisoryOptions {
+            format: advisories_format,
+            external_version_profile,
+        } = advisory_options;
         let saved_inventory_selected =
             plugins_json.is_some() || themes_json.is_some() || core_version_file.is_some();
         if !enabled {
             return if context.is_some()
                 || advisories.is_some()
                 || advisories_format.is_some()
+                || external_version_profile.is_some()
                 || saved_inventory_selected
             {
                 Err(WordPressInputError::ExplicitEnableRequired)
@@ -98,6 +152,14 @@ impl WordPressReviewInput {
         if advisories_format.is_some() && advisories.is_none() {
             return Err(WordPressInputError::AdvisoryFormatRequiresSource);
         }
+        if external_version_profile.is_some() && advisories.is_none() {
+            return Err(WordPressInputError::ExternalVersionProfileRequiresSource);
+        }
+        if external_version_profile.is_some()
+            && advisories_format != Some(WordPressAdvisoriesFormat::WordfenceV3Production)
+        {
+            return Err(WordPressInputError::ExternalVersionProfileRequiresWordfence);
+        }
         if context.is_some() && saved_inventory_selected {
             return Err(WordPressInputError::ContextInventoryConflict);
         }
@@ -105,6 +167,7 @@ impl WordPressReviewInput {
             context,
             advisories,
             advisories_format: advisories_format.unwrap_or_default(),
+            external_version_profile: external_version_profile.map(Into::into),
             plugins_json,
             themes_json,
             core_version_file,
@@ -119,6 +182,7 @@ impl WordPressReviewInput {
             context,
             advisories,
             advisories_format,
+            external_version_profile,
             plugins_json,
             themes_json,
             core_version_file,
@@ -196,9 +260,16 @@ impl WordPressReviewInput {
         } else {
             WordPressReviewInputs::new(None, catalog)
         };
-        if let Some(catalog) = wordfence_v3_catalog {
+        let inputs = if let Some(catalog) = wordfence_v3_catalog {
             inputs
                 .with_wordfence_v3_catalog(catalog)
+                .map_err(|_| WordPressInputError::InvalidAdvisories)?
+        } else {
+            inputs
+        };
+        if let Some(profile) = external_version_profile {
+            inputs
+                .with_external_version_profile(profile)
                 .map_err(|_| WordPressInputError::InvalidAdvisories)
         } else {
             Ok(inputs)
@@ -211,6 +282,8 @@ impl WordPressReviewInput {
 pub(crate) enum WordPressInputError {
     ExplicitEnableRequired,
     AdvisoryFormatRequiresSource,
+    ExternalVersionProfileRequiresSource,
+    ExternalVersionProfileRequiresWordfence,
     ContextInventoryConflict,
     ContextSource(WordPressFileError),
     AdvisorySource(WordPressFileError),
@@ -232,6 +305,12 @@ impl fmt::Display for WordPressInputError {
             },
             Self::AdvisoryFormatRequiresSource => {
                 "`--wordpress-advisories-format` requires `--wordpress-advisories`"
+            },
+            Self::ExternalVersionProfileRequiresSource => {
+                "`--wordpress-external-version-profile` requires `--wordpress-advisories`"
+            },
+            Self::ExternalVersionProfileRequiresWordfence => {
+                "`--wordpress-external-version-profile` requires format `wordfence-v3-production`"
             },
             Self::ContextInventoryConflict => {
                 "saved WordPress inventory inputs conflict with `--wordpress-context`"
@@ -445,17 +524,31 @@ mod tests {
 
     #[test]
     fn selection_is_explicit_lazy_and_path_redacted() {
-        assert!(
-            WordPressReviewInput::select(false, None, None, None, None, None, None)
-                .unwrap()
-                .is_none()
+        assert_eq!(
+            WordPressComparisonProfile::from(WordPressExternalVersionProfile::NumericDottedV1),
+            WordPressComparisonProfile::NumericDottedV1
         );
+        assert_eq!(
+            WordPressComparisonProfile::from(WordPressExternalVersionProfile::PhpReleaseSubsetV1),
+            WordPressComparisonProfile::PhpReleaseSubsetV1
+        );
+        assert!(WordPressReviewInput::select(
+            false,
+            None,
+            None,
+            WordPressAdvisoryOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .is_none());
         assert_eq!(
             WordPressReviewInput::select(
                 false,
                 Some(PathBuf::from("private-context")),
                 None,
-                None,
+                WordPressAdvisoryOptions::default(),
                 None,
                 None,
                 None,
@@ -468,7 +561,10 @@ mod tests {
                 false,
                 None,
                 None,
-                Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                WordPressAdvisoryOptions::new(
+                    Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                    None,
+                ),
                 None,
                 None,
                 None,
@@ -481,7 +577,10 @@ mod tests {
                 true,
                 None,
                 None,
-                Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                WordPressAdvisoryOptions::new(
+                    Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                    None,
+                ),
                 None,
                 None,
                 None,
@@ -489,11 +588,59 @@ mod tests {
             .unwrap_err(),
             WordPressInputError::AdvisoryFormatRequiresSource
         );
+        assert_eq!(
+            WordPressReviewInput::select(
+                true,
+                None,
+                None,
+                WordPressAdvisoryOptions::new(
+                    None,
+                    Some(WordPressExternalVersionProfile::NumericDottedV1),
+                ),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err(),
+            WordPressInputError::ExternalVersionProfileRequiresSource
+        );
+        assert_eq!(
+            WordPressReviewInput::select(
+                true,
+                None,
+                Some(PathBuf::from("PRIVATE-ADVISORY-PATH")),
+                WordPressAdvisoryOptions::new(
+                    None,
+                    Some(WordPressExternalVersionProfile::NumericDottedV1),
+                ),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err(),
+            WordPressInputError::ExternalVersionProfileRequiresWordfence
+        );
+        assert_eq!(
+            WordPressReviewInput::select(
+                false,
+                None,
+                None,
+                WordPressAdvisoryOptions::new(
+                    None,
+                    Some(WordPressExternalVersionProfile::NumericDottedV1),
+                ),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err(),
+            WordPressInputError::ExplicitEnableRequired
+        );
         let selected = WordPressReviewInput::select(
             true,
             Some(PathBuf::from("PRIVATE-CONTEXT-PATH")),
             Some(PathBuf::from("PRIVATE-ADVISORY-PATH")),
-            None,
+            WordPressAdvisoryOptions::default(),
             None,
             None,
             None,
@@ -504,17 +651,23 @@ mod tests {
         assert!(!debug.contains("PRIVATE-CONTEXT-PATH"));
         assert!(!debug.contains("PRIVATE-ADVISORY-PATH"));
         assert!(debug.contains("Termivar"));
-        assert!(
-            WordPressReviewInput::select(true, None, None, None, None, None, None)
-                .unwrap()
-                .is_some()
-        );
+        assert!(WordPressReviewInput::select(
+            true,
+            None,
+            None,
+            WordPressAdvisoryOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .is_some());
         assert_eq!(
             WordPressReviewInput::select(
                 true,
                 Some(PathBuf::from("PRIVATE-CONTEXT")),
                 None,
-                None,
+                WordPressAdvisoryOptions::default(),
                 Some(PathBuf::from("PRIVATE-PLUGINS")),
                 None,
                 None,
@@ -581,7 +734,7 @@ mod tests {
             true,
             None,
             None,
-            None,
+            WordPressAdvisoryOptions::default(),
             Some(plugins_path.clone()),
             Some(themes_path.clone()),
             Some(core_path.clone()),
@@ -671,6 +824,8 @@ mod tests {
     fn public_errors_never_echo_paths_or_document_text() {
         for error in [
             WordPressInputError::AdvisoryFormatRequiresSource,
+            WordPressInputError::ExternalVersionProfileRequiresSource,
+            WordPressInputError::ExternalVersionProfileRequiresWordfence,
             WordPressInputError::ContextSource(WordPressFileError::Unavailable),
             WordPressInputError::AdvisorySource(WordPressFileError::ReadFailed),
             WordPressInputError::PluginsSource(WordPressFileError::Unavailable),
@@ -710,7 +865,7 @@ mod tests {
                 true,
                 Some(context_path.clone()),
                 Some(advisory_path.clone()),
-                format,
+                WordPressAdvisoryOptions::new(format, None),
                 None,
                 None,
                 None,
@@ -738,7 +893,10 @@ mod tests {
             true,
             None,
             Some(advisory_path),
-            Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+            WordPressAdvisoryOptions::new(
+                Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                None,
+            ),
             None,
             None,
             None,
@@ -753,6 +911,27 @@ mod tests {
         assert_eq!(external.byte_length(), bytes.len() as u64);
         assert_eq!(external.record_count(), 2);
         assert_eq!(external.software_association_count(), 3);
+
+        let advisory_path = directory.path().join("wordfence-production-profiled.json");
+        std::fs::write(&advisory_path, bytes).unwrap();
+        let selected = WordPressReviewInput::select(
+            true,
+            None,
+            Some(advisory_path),
+            WordPressAdvisoryOptions::new(
+                Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                Some(WordPressExternalVersionProfile::PhpReleaseSubsetV1),
+            ),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let inputs = selected
+            .load(&Url::parse("https://example.test/").unwrap())
+            .unwrap();
+        assert!(inputs.wordfence_v3_catalog().is_some());
     }
 
     #[test]
@@ -769,7 +948,10 @@ mod tests {
             true,
             None,
             Some(advisory_path),
-            Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+            WordPressAdvisoryOptions::new(
+                Some(WordPressAdvisoriesFormat::WordfenceV3Production),
+                None,
+            ),
             None,
             None,
             None,
@@ -793,10 +975,17 @@ mod tests {
             include_bytes!("../../../docs/examples/wordpress-review/context.synthetic.json"),
         )
         .unwrap();
-        let selected =
-            WordPressReviewInput::select(true, Some(context_path), None, None, None, None, None)
-                .unwrap()
-                .unwrap();
+        let selected = WordPressReviewInput::select(
+            true,
+            Some(context_path),
+            None,
+            WordPressAdvisoryOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             selected
                 .load(&Url::parse("https://other.example.test/").unwrap())
@@ -807,9 +996,17 @@ mod tests {
 
     #[test]
     fn response_only_review_has_no_local_values_or_filesystem_authority() {
-        let selected = WordPressReviewInput::select(true, None, None, None, None, None, None)
-            .unwrap()
-            .unwrap();
+        let selected = WordPressReviewInput::select(
+            true,
+            None,
+            None,
+            WordPressAdvisoryOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
         let inputs = selected
             .load(&Url::parse("https://example.test/").unwrap())
             .unwrap();
@@ -838,7 +1035,7 @@ mod tests {
             true,
             None,
             None,
-            None,
+            WordPressAdvisoryOptions::default(),
             Some(plugins_path),
             Some(themes_path),
             Some(core_path),
@@ -903,7 +1100,7 @@ mod tests {
             true,
             None,
             None,
-            None,
+            WordPressAdvisoryOptions::default(),
             Some(plugins_path),
             Some(themes_path),
             None,

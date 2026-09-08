@@ -653,7 +653,8 @@ impl ComparisonVisitor<'_> {
             == "reporting/comparison/import/audits.rs"
             && matches!(
                 joined.as_str(),
-                "crate::wordpress_version::ProfiledVersionKey"
+                "crate::wordpress_version::checked_accumulate_external_interpretation_work"
+                    | "crate::wordpress_version::ProfiledVersionKey"
                     | "crate::wordpress_version::WordPressComparisonProfile"
             );
         if parts.first().is_some_and(|root| {
@@ -1053,6 +1054,7 @@ mod tests {
     #[test]
     fn wordpress_audit_import_may_use_only_the_exact_private_version_keys() {
         for addition in [
+            "use crate::wordpress_version::checked_accumulate_external_interpretation_work;",
             "use crate::wordpress_version::ProfiledVersionKey;",
             "use crate::wordpress_version::WordPressComparisonProfile;",
         ] {

@@ -286,6 +286,44 @@ Omitting `--wordpress-advisories-format` retains the existing strict Termivar
 catalogue parser. The choice is never inferred from a filename or document
 contents, and there is no fallback between the two formats.
 
+By default, Termivar preserves the external source-comparison limitation: it
+selects relevant associations but does not guess how the source intended every
+version spelling to be ordered. That unchanged path emits
+`security.wordpress-review-audit/v4` with
+`wordfence-v3/source-semantics-unresolved/v1` and indeterminate relations.
+
+An operator can instead request one reproducible Termivar interpretation for
+the supplied external snapshot:
+
+```bash
+termivar scan <AUTHORIZED_EXACT_ROOT> \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-advisories wordfence-production.json \
+  --wordpress-advisories-format wordfence-v3-production \
+  --wordpress-external-version-profile php-release-subset/v1 \
+  --report-dir <NEW_REPORT_DIRECTORY>
+```
+
+The accepted values are `numeric-dotted/v1` and
+`php-release-subset/v1`. This option is valid only with an explicitly supplied
+`wordfence-v3-production` file, `--wordpress-review`, and `--profile
+web-review`; it does not override native Termivar catalogue records. Termivar
+never selects a profile from the filename, source URL, component kind, or the
+outcome it would produce, and it never retries unsupported input under the
+other profile.
+
+Explicit selection emits `security.wordpress-review-audit/v5` and records:
+
+- `comparison_policy=termivar.wordfence-v3-explicit-interpretation/v1`;
+- the selected `comparison_profile`;
+- `policy_selection=explicit_operator`;
+- `source_semantics_assurance=not_established`.
+
+These fields mean that the operator asked Termivar to apply a named local rule.
+They do not claim that Wordfence selected or endorses the rule, that the rule
+matches every component vendor, or that the local inventory is authentic.
+
 The adapter does not obtain an API key, call Wordfence, discover a credential,
 or fetch a reference during an assessment. The operator remains responsible for
 obtaining and storing any export under the source's current terms. Wordfence's
@@ -316,18 +354,43 @@ silently publishing an attribution-incomplete copy.
 
 The source format specifies structured range endpoints and inclusivity, but it
 does not by itself establish a comparison algorithm for every vendor version.
-Termivar must not assume that the provider's semantics equal either
-`numeric-dotted/v1` or `php-release-subset/v1`. Unsupported or unresolved source
-semantics remain indeterminate rather than being tried under both profiles until
-one yields a preferred result. The `1.0` versus `1.0.0` boundary is an explicit
-regression case for this distinction.
+Termivar therefore does not claim that the provider's semantics equal either
+`numeric-dotted/v1` or `php-release-subset/v1`. With no explicit selector,
+source semantics remain unresolved. With one selector, the result is explicitly
+qualified as a Termivar calculation under the operator-selected rule. The
+`1.0` versus `1.0.0` boundary remains an explicit regression case for this
+distinction.
+
+Only the complete endpoint value `*` is the supported unbounded sentinel;
+`1.*` is an unsupported version spelling, not a glob. The selected profile is
+used for both endpoint ordering and membership. A supported version in one
+containing range can produce a qualified positive even when another range is
+unsupported, but the report retains that partial range coverage. A negative
+`outside` result requires every declared range to be supported and conclusively
+outside. Unsupported ranges, missing or conflicting version evidence, reversed
+bounds, and equal bounds made empty by an exclusive endpoint remain
+indeterminate. Termivar does not swap, drop, pad, strip, or retry those values
+under another comparator.
+
+Source-declared patched versions remain advisory metadata and never establish
+the installed patch state. Under an explicit profile, if a supported declared
+patched version also falls inside a supported affected interval in the same
+association, v5 reports
+`source_patched_version_within_affected_range` and keeps the association
+indeterminate. Unsupported patched-version spellings are retained verbatim as
+source guidance; they are not retried under another profile or used to invent
+affected bounds.
 
 Reports identify the external format and mapping revision, preserve the
-exact-input byte length and digest, reconcile parsed/association/selected/
-evaluable/unsupported/excluded counts, and retain required notices for material
-they display. These values identify the processed bytes and interpretation; they
-do not authenticate the source, prove snapshot completeness, or establish a
-collection timestamp. Source-declared `published` and `updated` values remain
+exact-input byte length and digest, and retain required notices for material
+they display. V4 preserves its unresolved selected/unsupported accounting. V5
+adds reconciled denominators for selected associations, decisive within/outside
+relations, indeterminate associations, and evaluated/unsupported/invalid/
+not-evaluated ranges, including qualified-positive partial coverage;
+overlapping coverage qualifications are not added together as if they were
+findings. These values identify the processed bytes and interpretation;
+they do not authenticate the source, prove snapshot completeness, or establish
+a collection timestamp. Source-declared `published` and `updated` values remain
 distinct from collection time. A filesystem modification time is not substituted
 for any of them.
 
@@ -365,9 +428,11 @@ and macOS. The four-platform curated release check remains a separate negative
 composition guard because WordPress is intentionally excluded from
 `release-bundle`.
 
-No actual Wordfence vendor export was supplied for this acceptance corpus.
-Large real-feed behavior, source authenticity, complete provider coverage, and
-peak resident memory across every platform therefore remain unestablished.
+No actual Wordfence vendor export was supplied for this acceptance corpus:
+`real_export_acceptance=NOT_RUN_NO_INPUT`. Public-schema synthetic cases can
+exercise explicit-policy evaluation, but they do not establish live-feed
+compatibility, source authenticity, or complete provider coverage. Process
+memory measurements are tracked separately from this source-format claim.
 The repository's small curated WordPress-project example retains its separate
 primary-source factual provenance; it is not relabelled as vendor-feed data.
 
@@ -375,6 +440,7 @@ primary-source factual provenance; it is not relabelled as vendor-feed data.
 | --- | --- | --- |
 | Saved plugin/theme/core inventories | Implemented and tested | Synthetic WP-CLI-shaped files; Termivar does not run WP-CLI |
 | Declared Wordfence V3 Production input | Implemented and tested | Public-schema synthetic data only |
+| Explicit external version interpretation | Implemented in development source | Operator-selected Termivar profile; source semantics remain `not_established` |
 | Reviewed/holdout evaluator outcomes | Implemented and tested | Six fictional records with literal expected denominators |
 | Cross-run semantic Report Compare | Implemented and tested | One benign exact-origin fixture; no remediation causality |
 | Feature-enabled native CLI | Implemented and tested in CI | Linux, Windows, and macOS runners; not a fresh-machine certification |
@@ -396,10 +462,12 @@ confidence class.
 Advisory evaluations are mutually grouped as **Review candidates**,
 **Contradicted on supplied facts**, or **Evaluation limitations**. A review
 candidate means only that the supplied declarations matched the supported
-catalogue rule. A contradicted result does not establish that the installation
-is safe. Missing or conflicting versions, unknown prerequisites, unsupported
-ranges, and unresolved source-comparison semantics remain visible as
-limitations rather than disappearing from the report.
+catalogue or explicitly selected interpretation rule. A contradicted result
+does not establish that the installation is safe. A qualified external match
+keeps any unsupported-range limitation visible. Missing or conflicting
+versions, unknown prerequisites, unsupported or invalid ranges, and unresolved
+source-comparison semantics remain limitations rather than disappearing from
+the report.
 
 Fixed or patched versions and remediation text are labelled
 **source-declared remediation information**. They are guidance for the
@@ -439,7 +507,7 @@ between them. If one report has no WordPress audit, the result is
 new vulnerability or a resolved condition. The same claim limit applies to an
 advisory disappearance or applicability transition.
 
-Supported `security.wordpress-review-audit/v1` through `/v4` inputs are
+Supported `security.wordpress-review-audit/v1` through `/v5` inputs are
 interpreted to the historical depth each contract actually contains; later
 coverage or provenance fields are not invented for earlier versions. An exact
 input SHA-256 identifies bytes, while semantic comparison uses validated typed
@@ -447,6 +515,12 @@ content. A byte change alone therefore does not establish a WordPress meaning
 change, authenticity, or freshness. Compare imports the two saved reports and
 does not rerun the scanner, WP-CLI, PHP, advisory retrieval, or any network
 request.
+
+For v5, a change in `comparison_policy`, `comparison_profile`, selection
+basis, or source-assurance declaration is reported as a methodology change.
+The same source record and component retain their stable identity across that
+change. A transition between unresolved v4 and evaluated v5 is therefore not
+labelled a newly introduced vulnerability or verified remediation.
 
 ## Result and claim limits
 

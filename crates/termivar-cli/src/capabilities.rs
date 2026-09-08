@@ -581,11 +581,12 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "optional --wordpress-context FILE",
                 "optional --wordpress-advisories FILE",
                 "optional --wordpress-advisories-format termivar|wordfence-v3-production",
+                "optional --wordpress-external-version-profile numeric-dotted/v1|php-release-subset/v1 (Wordfence Production only)",
                 "optional --wordpress-plugins-json FILE",
                 "optional --wordpress-themes-json FILE",
                 "optional --wordpress-core-version-file FILE",
             ],
-            "Interprets existing response evidence and explicit bounded local declarations, including an explicitly selected local Production-format export; it adds no target requests. External source comparison semantics remain indeterminate unless a supported policy is established. A missing catalogue is catalogue_not_supplied, never an all-clear, and no exploit or impact validation is performed.",
+            "Interprets existing response evidence and explicit bounded local declarations, including an explicitly selected local Production-format export; it adds no target requests. For that external format an operator may explicitly select one existing Termivar version rule, while the source's own comparison semantics remain not established. Without that selector the external relation stays indeterminate. A missing catalogue is catalogue_not_supplied, never an all-clear, and no exploit or impact validation is performed.",
             "docs/wordpress-review.md",
         ),
         surface!(
@@ -1036,6 +1037,20 @@ mod tests {
         assert!(progress.limitation.contains("last-observed"));
         assert!(progress.limitation.contains("no ETA"));
         assert!(progress.limitation.contains("neither controls execution"));
+
+        let wordpress = find("option.wordpress-review");
+        assert!(wordpress.prerequisites.contains(
+            &"optional --wordpress-external-version-profile numeric-dotted/v1|php-release-subset/v1 (Wordfence Production only)"
+        ));
+        assert!(wordpress
+            .limitation
+            .contains("operator may explicitly select"));
+        assert!(wordpress
+            .limitation
+            .contains("source's own comparison semantics remain not established"));
+        assert!(wordpress
+            .limitation
+            .contains("Without that selector the external relation stays indeterminate"));
 
         assert_eq!(
             find("output.assessment-reports").prerequisites,

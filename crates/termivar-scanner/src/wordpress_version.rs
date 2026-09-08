@@ -10,6 +10,31 @@ use std::cmp::Ordering;
 
 use thiserror::Error;
 
+/// Returns the bounded interpretation work for one external association:
+/// one visit per range, one parse per declared patched version, and the
+/// patched-version by range checks needed to detect source contradictions.
+pub(crate) fn checked_external_interpretation_work(
+    range_count: usize,
+    patched_version_count: usize,
+) -> Option<usize> {
+    range_count
+        .checked_add(patched_version_count)?
+        .checked_add(range_count.checked_mul(patched_version_count)?)
+}
+
+pub(crate) fn checked_accumulate_external_interpretation_work(
+    current: usize,
+    range_count: usize,
+    patched_version_count: usize,
+    limit: usize,
+) -> Option<usize> {
+    let next = current.checked_add(checked_external_interpretation_work(
+        range_count,
+        patched_version_count,
+    )?)?;
+    (next <= limit).then_some(next)
+}
+
 pub(crate) const MAX_WORDPRESS_VERSION_COMPONENTS: usize = 8;
 pub(crate) const MAX_WORDPRESS_VERSION_BYTES: usize = 64;
 const MAX_PHP_NUMERIC_VALUE: u32 = 2_147_483_647;
@@ -504,5 +529,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn external_interpretation_work_charges_the_patched_range_product() {
+        assert_eq!(checked_external_interpretation_work(0, 0), Some(0));
+        assert_eq!(checked_external_interpretation_work(64, 0), Some(64));
+        assert_eq!(checked_external_interpretation_work(0, 64), Some(64));
+        assert_eq!(checked_external_interpretation_work(64, 64), Some(4_224));
+        assert_eq!(checked_external_interpretation_work(usize::MAX, 1), None);
+        assert_eq!(
+            checked_external_interpretation_work(usize::MAX / 2 + 1, 2),
+            None
+        );
+        assert_eq!(
+            checked_accumulate_external_interpretation_work(95_040, 64, 64, 98_304),
+            None
+        );
+        assert_eq!(
+            checked_accumulate_external_interpretation_work(90_000, 64, 64, 98_304),
+            Some(94_224)
+        );
     }
 }

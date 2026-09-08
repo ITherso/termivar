@@ -32,13 +32,14 @@ use crate::{
         WordPressCatalogStatus, WordPressComparisonProfile, WordPressComponentEvidenceClass,
         WordPressComponentKind, WordPressEvidenceConfidence, WordPressEvidenceSource,
         WordPressExecutionStatus, WordPressExternalApplicability,
-        WordPressExternalComparisonPolicy, WordPressExternalVersionEvidenceStatus,
-        WordPressExternalVersionRelation, WordPressHostingOs, WordPressInventoryCategoryStatus,
-        WordPressInventoryEntryStatus, WordPressInventoryLimitationReason,
-        WordPressLocalInputClass, WordPressMultisiteState, WordPressPatchState,
-        WordPressPrerequisite, WordPressPrerequisiteOutcome, WordPressVersionRelation,
-        WordPressVersionResolution, WordPressVersionResolutionReason, WordfenceV3CvssRating,
-        WordfenceV3RangeValue, MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD,
+        WordPressExternalComparisonPolicy, WordPressExternalRangeReason,
+        WordPressExternalRangeRelation, WordPressExternalVersionEvidenceStatus,
+        WordPressExternalVersionRelation, WordPressExternalVersionRelationReason,
+        WordPressHostingOs, WordPressInventoryCategoryStatus, WordPressInventoryEntryStatus,
+        WordPressInventoryLimitationReason, WordPressLocalInputClass, WordPressMultisiteState,
+        WordPressPatchState, WordPressPrerequisite, WordPressPrerequisiteOutcome,
+        WordPressVersionRelation, WordPressVersionResolution, WordPressVersionResolutionReason,
+        WordfenceV3CvssRating, WordfenceV3RangeValue, MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD,
         MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_RESULT_COMPONENTS,
         MAX_WORDPRESS_RESULT_VERSION_EVIDENCE, MAX_WORDPRESS_SAVED_INVENTORY_BYTES,
         MAX_WORDPRESS_SIGNALS, WORDPRESS_ADVISORY_CATALOG_SCHEMA,
@@ -1309,6 +1310,15 @@ fn write_wordpress_presentation(
         wordpress_code_field(emitter, "Advisory source format", external.source_format)?;
         wordpress_code_field(emitter, "Normalization mapping", external.mapping_revision)?;
         wordpress_code_field(emitter, "Comparison policy", external.comparison_policy)?;
+        if let Some(profile) = external.comparison_profile {
+            wordpress_code_field(emitter, "Comparison profile", profile)?;
+            wordpress_optional_code_field(emitter, "Policy selection", external.policy_selection)?;
+            wordpress_optional_code_field(
+                emitter,
+                "Source comparison semantics assurance",
+                external.source_semantics_assurance,
+            )?;
+        }
         wordpress_bytes_field(emitter, "Input bytes", external.input.byte_length)?;
         wordpress_code_field(emitter, "Input byte digest", &external.input.sha256)?;
         wordpress_code_field(
@@ -1330,16 +1340,49 @@ fn write_wordpress_presentation(
                 "Evaluable associations",
                 external.counts.evaluable_associations,
             ),
-            (
-                "Unsupported relevant associations",
-                external.counts.unsupported_associations,
-            ),
-            (
-                "Irrelevant associations excluded",
-                external.counts.excluded_associations,
-            ),
         ] {
             wordpress_count_field(emitter, label, count)?;
+        }
+        if external.comparison_profile.is_none() {
+            wordpress_count_field(
+                emitter,
+                "Unsupported relevant associations",
+                external.counts.unsupported_associations,
+            )?;
+        }
+        wordpress_count_field(
+            emitter,
+            "Irrelevant associations excluded",
+            external.counts.excluded_associations,
+        )?;
+        for (label, count) in [
+            (
+                "Within-range associations",
+                external.counts.within_associations,
+            ),
+            (
+                "Outside-range associations",
+                external.counts.outside_associations,
+            ),
+            (
+                "Indeterminate associations",
+                external.counts.indeterminate_associations,
+            ),
+            ("Selected source ranges", external.counts.selected_ranges),
+            ("Evaluated ranges", external.counts.evaluated_ranges),
+            ("Containing ranges", external.counts.containing_ranges),
+            ("Noncontaining ranges", external.counts.noncontaining_ranges),
+            ("Unsupported ranges", external.counts.unsupported_ranges),
+            ("Invalid ranges", external.counts.invalid_ranges),
+            ("Ranges not evaluated", external.counts.not_evaluated_ranges),
+            (
+                "Qualified partial-range matches",
+                external.counts.partial_range_coverage_associations,
+            ),
+        ] {
+            if let Some(count) = count {
+                wordpress_count_field(emitter, label, count)?;
+            }
         }
     }
     emitter.end_fields()?;
@@ -1491,9 +1534,9 @@ fn write_wordpress_evaluation_group(
             rendered += 1;
         }
     }
-    if group == WordPressPresentationGroup::Limitation {
-        if let Some(external) = &audit.external_review {
-            for evaluation in &external.evaluations {
+    if let Some(external) = &audit.external_review {
+        for evaluation in &external.evaluations {
+            if wordpress_external_advisory_group(evaluation) == group {
                 write_wordpress_external_evaluation(emitter, external, evaluation)?;
                 rendered += 1;
             }
@@ -1654,8 +1697,24 @@ fn write_wordpress_external_evaluation(
     )?;
     wordpress_code_field(emitter, "Source description", &evaluation.description)?;
     wordpress_code_field(emitter, "Comparison policy", external.comparison_policy)?;
+    if let Some(profile) = external.comparison_profile {
+        wordpress_code_field(emitter, "Comparison profile", profile)?;
+        wordpress_optional_code_field(emitter, "Policy selection", external.policy_selection)?;
+        wordpress_optional_code_field(
+            emitter,
+            "Source comparison semantics assurance",
+            external.source_semantics_assurance,
+        )?;
+    }
     wordpress_code_field(emitter, "Applicability", evaluation.applicability)?;
     wordpress_code_field(emitter, "Version relation", evaluation.version_relation)?;
+    if external.comparison_profile.is_some() {
+        wordpress_optional_code_field(
+            emitter,
+            "Version-relation reason",
+            evaluation.version_relation_reason,
+        )?;
+    }
     wordpress_code_field(
         emitter,
         "Version evidence resolution",
@@ -1672,6 +1731,18 @@ fn write_wordpress_external_evaluation(
             .distinct_spelling_count,
     ))?;
     emitter.end_field()?;
+    if external.comparison_profile.is_some() {
+        wordpress_optional_code_field(
+            emitter,
+            "Semantic version resolution",
+            evaluation.version_evidence_resolution.semantic_status,
+        )?;
+        wordpress_optional_code_field(
+            emitter,
+            "Semantic resolution reason",
+            evaluation.version_evidence_resolution.semantic_reason,
+        )?;
+    }
     wordpress_code_field(emitter, "Component evidence", evaluation.component_evidence)?;
     wordpress_optional_code_field(emitter, "CVE", evaluation.cve.as_deref())?;
     wordpress_optional_code_field(
@@ -1733,7 +1804,7 @@ fn write_wordpress_external_evaluation(
         wordpress_code_field(emitter, "Source-declared affected ranges", "none declared")?;
     } else {
         emitter.begin_list_field("Source-declared affected ranges")?;
-        for range in &evaluation.affected_ranges {
+        for (index, range) in evaluation.affected_ranges.iter().enumerate() {
             emitter.begin_list_item()?;
             emitter.inline(WordPressPresentationInline::Code(&range.label))?;
             emitter.inline(WordPressPresentationInline::Literal(": "))?;
@@ -1757,6 +1828,17 @@ fn write_wordpress_external_evaluation(
                     " exclusive"
                 },
             ))?;
+            if let Some(interpreted) = evaluation
+                .range_evaluations
+                .as_ref()
+                .and_then(|ranges| ranges.get(index))
+            {
+                emitter.inline(WordPressPresentationInline::Literal("; Termivar relation "))?;
+                emitter.inline(WordPressPresentationInline::Code(interpreted.relation))?;
+                emitter.inline(WordPressPresentationInline::Literal(" ("))?;
+                emitter.inline(WordPressPresentationInline::Code(interpreted.reason))?;
+                emitter.inline(WordPressPresentationInline::Literal(")"))?;
+            }
             emitter.end_list_item()?;
         }
         emitter.end_list_field()?;
@@ -2816,6 +2898,12 @@ struct WordPressExternalReviewDocument {
     source_format: &'static str,
     mapping_revision: &'static str,
     comparison_policy: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comparison_profile: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_selection: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_semantics_assurance: Option<&'static str>,
     input: WordPressExternalInputDocument,
     counts: WordPressExternalCountsDocument,
     notices: Vec<WordPressExternalNoticeDocument>,
@@ -2839,6 +2927,28 @@ struct WordPressExternalCountsDocument {
     evaluable_associations: usize,
     unsupported_associations: usize,
     excluded_associations: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    within_associations: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outside_associations: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    indeterminate_associations: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_ranges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evaluated_ranges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    containing_ranges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    noncontaining_ranges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unsupported_ranges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invalid_ranges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_evaluated_ranges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partial_range_coverage_associations: Option<usize>,
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -2869,6 +2979,8 @@ struct WordPressExternalEvaluationDocument {
     researchers: Vec<String>,
     source_dates: WordPressExternalSourceDatesDocument,
     affected_ranges: Vec<WordPressExternalRangeDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    range_evaluations: Option<Vec<WordPressExternalRangeEvaluationDocument>>,
     source_patched: bool,
     source_patched_versions: Vec<String>,
     source_remediation: String,
@@ -2876,6 +2988,8 @@ struct WordPressExternalEvaluationDocument {
     component_evidence: &'static str,
     version_evidence_resolution: WordPressExternalVersionEvidenceResolutionDocument,
     version_relation: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_relation_reason: Option<&'static str>,
     applicability: &'static str,
     execution: WordPressExternalExecutionDocument,
 }
@@ -2886,6 +3000,17 @@ struct WordPressExternalVersionEvidenceResolutionDocument {
     status: &'static str,
     evidence_row_count: usize,
     distinct_spelling_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_reason: Option<&'static str>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressExternalRangeEvaluationDocument {
+    relation: &'static str,
+    reason: &'static str,
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -3026,6 +3151,10 @@ impl AssessmentWordPressAuditDocument {
         let result = audit.result();
         let profiled = result.catalog_schema() == Some(WordPressAdvisoryCatalogSchema::V2);
         let external_schema = result.external_review().is_some();
+        let explicit_external_schema = result.external_review().is_some_and(|review| {
+            review.comparison_policy()
+                == WordPressExternalComparisonPolicy::TermivarWordfenceV3ExplicitInterpretationV1
+        });
         let inventory_import = result.inventory_summary().map(|summary| {
             let coverage = summary.coverage();
             WordPressInventoryImportDocument {
@@ -3184,7 +3313,9 @@ impl AssessmentWordPressAuditDocument {
             })
             .collect::<Vec<_>>();
         Self {
-            schema: if external_schema {
+            schema: if explicit_external_schema {
+                "security.wordpress-review-audit/v5"
+            } else if external_schema {
                 "security.wordpress-review-audit/v4"
             } else if inventory_schema {
                 "security.wordpress-review-audit/v3"
@@ -3221,7 +3352,11 @@ impl AssessmentWordPressAuditDocument {
             .iter()
             .filter(|item| item.capability_id == WORDPRESS_REVIEW_CAPABILITY_ID)
             .count();
-        let external = self.schema == "security.wordpress-review-audit/v4";
+        let external = matches!(
+            self.schema,
+            "security.wordpress-review-audit/v4" | "security.wordpress-review-audit/v5"
+        );
+        let explicit_external = self.schema == "security.wordpress-review-audit/v5";
         let catalog_consistent = if external {
             self.catalog_status == "evaluated" && self.catalog.is_none()
         } else {
@@ -3245,6 +3380,7 @@ impl AssessmentWordPressAuditDocument {
                 | "security.wordpress-review-audit/v2"
                 | "security.wordpress-review-audit/v3"
                 | "security.wordpress-review-audit/v4"
+                | "security.wordpress-review-audit/v5"
         );
         let catalogue_schema_valid = if external {
             self.catalog_schema.is_none()
@@ -3274,7 +3410,7 @@ impl AssessmentWordPressAuditDocument {
             _ => false,
         };
         let external_valid = match (&self.external_review, external) {
-            (Some(review), true) => review.is_valid(&self.components),
+            (Some(review), true) => review.is_valid(&self.components, explicit_external),
             (None, false) => true,
             _ => false,
         };
@@ -3338,10 +3474,7 @@ impl AssessmentWordPressAuditDocument {
         let mut counts = WordPressPresentationCounts {
             review_candidates: 0,
             contradicted: 0,
-            limitations: self
-                .external_review
-                .as_ref()
-                .map_or(0, |external| external.evaluations.len()),
+            limitations: 0,
             source_guidance: self.external_review.as_ref().map_or(0, |external| {
                 external
                     .evaluations
@@ -3350,6 +3483,15 @@ impl AssessmentWordPressAuditDocument {
                     .count()
             }),
         };
+        if let Some(external) = &self.external_review {
+            for evaluation in &external.evaluations {
+                match wordpress_external_advisory_group(evaluation) {
+                    WordPressPresentationGroup::ReviewCandidate => counts.review_candidates += 1,
+                    WordPressPresentationGroup::Contradicted => counts.contradicted += 1,
+                    WordPressPresentationGroup::Limitation => counts.limitations += 1,
+                }
+            }
+        }
         for advisory in &self.advisories {
             match wordpress_advisory_group(advisory) {
                 WordPressPresentationGroup::ReviewCandidate => counts.review_candidates += 1,
@@ -3361,6 +3503,17 @@ impl AssessmentWordPressAuditDocument {
             }
         }
         counts
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn wordpress_external_advisory_group(
+    evaluation: &WordPressExternalEvaluationDocument,
+) -> WordPressPresentationGroup {
+    match evaluation.applicability {
+        "version_match_under_selected_policy" => WordPressPresentationGroup::ReviewCandidate,
+        "no_version_match_under_selected_policy" => WordPressPresentationGroup::Contradicted,
+        _ => WordPressPresentationGroup::Limitation,
     }
 }
 
@@ -3388,13 +3541,45 @@ fn external_evaluation_has_source_guidance(
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+struct WordPressExternalComponentValidation<'a> {
+    component: &'a WordPressComponentDocument,
+    evidence_status: &'static str,
+    evidence_row_count: usize,
+    distinct_spelling_count: usize,
+    semantic_status: Option<&'static str>,
+    semantic_reason: Option<&'static str>,
+    selected_version: Option<crate::wordpress_version::ProfiledVersionKey>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 impl WordPressExternalReviewDocument {
-    fn is_valid(&self, components: &[WordPressComponentDocument]) -> bool {
+    fn is_valid(&self, components: &[WordPressComponentDocument], explicit: bool) -> bool {
+        let selected_profile = match (
+            explicit,
+            self.comparison_profile,
+            self.policy_selection,
+            self.source_semantics_assurance,
+        ) {
+            (false, None, None, None) => None,
+            (
+                true,
+                Some(profile @ ("numeric-dotted/v1" | "php-release-subset/v1")),
+                Some("explicit_operator"),
+                Some("not_established"),
+            ) => Some(profile),
+            _ => return false,
+        };
         if self.source_namespace != "wordfence-intelligence"
             || self.source_format != "wordfence-v3-production"
             || self.mapping_revision != "termivar-wordfence-v3-production/v1"
-            || self.comparison_policy
-                != WordPressExternalComparisonPolicy::WordfenceV3SourceSemanticsUnresolvedV1.id()
+            || (!explicit
+                && self.comparison_policy
+                    != WordPressExternalComparisonPolicy::WordfenceV3SourceSemanticsUnresolvedV1
+                        .id())
+            || (explicit
+                && self.comparison_policy
+                    != WordPressExternalComparisonPolicy::TermivarWordfenceV3ExplicitInterpretationV1
+                        .id())
             || self.input.byte_length == 0
             || self.input.byte_length
                 > crate::wordpress_review::MAX_WORDFENCE_V3_PRODUCTION_BYTES as u64
@@ -3420,8 +3605,7 @@ impl WordPressExternalReviewDocument {
                 .evaluable_associations
                 .checked_add(self.counts.unsupported_associations)
                 != Some(self.counts.selected_associations)
-            || self.counts.evaluable_associations != 0
-            || self.counts.unsupported_associations != self.counts.selected_associations
+            || !self.counts.is_valid(explicit)
         {
             return false;
         }
@@ -3435,15 +3619,58 @@ impl WordPressExternalReviewDocument {
             return false;
         }
 
-        let mut evaluation_ids = std::collections::BTreeSet::new();
-        let mut referenced_notices = std::collections::BTreeSet::new();
-        let evaluations_are_valid = self.evaluations.iter().all(|evaluation| {
-            let Some(component) = components.iter().find(|component| {
-                component.identity.kind == evaluation.key.component.kind
-                    && component.identity.slug == evaluation.key.component.slug
-            }) else {
+        let mut resolution_work = 0_usize;
+        let mut component_validations = std::collections::BTreeMap::new();
+        for component in components {
+            if selected_profile.is_some() {
+                let Some(next_work) = resolution_work.checked_add(component.versions.len()) else {
+                    return false;
+                };
+                resolution_work = next_work;
+                if resolution_work > crate::wordpress_review::MAX_WORDPRESS_VERSION_RESOLUTION_WORK
+                {
+                    return false;
+                }
+            }
+            let Some(validation) = external_component_validation(component, selected_profile)
+            else {
                 return false;
             };
+            if component_validations
+                .insert(
+                    (component.identity.kind, component.identity.slug.as_str()),
+                    validation,
+                )
+                .is_some()
+            {
+                return false;
+            }
+        }
+
+        let mut evaluation_ids = std::collections::BTreeSet::new();
+        let mut referenced_notices = std::collections::BTreeSet::new();
+        let mut interpretation_work = 0_usize;
+        let evaluations_are_valid = self.evaluations.iter().all(|evaluation| {
+            let Some(validation) = component_validations.get(&(
+                evaluation.key.component.kind,
+                evaluation.key.component.slug.as_str(),
+            )) else {
+                return false;
+            };
+            let component = validation.component;
+            if explicit {
+                let Some(next_work) =
+                    crate::wordpress_version::checked_accumulate_external_interpretation_work(
+                        interpretation_work,
+                        evaluation.affected_ranges.len(),
+                        evaluation.source_patched_versions.len(),
+                        crate::wordpress_review::MAX_WORDPRESS_EVALUATION_WORK,
+                    )
+                else {
+                    return false;
+                };
+                interpretation_work = next_work;
+            }
             let identity = (
                 evaluation.key.source_namespace.as_str(),
                 evaluation.key.upstream_id.as_str(),
@@ -3466,14 +3693,15 @@ impl WordPressExternalReviewDocument {
             });
             let expected_record_reference =
                 wordpress_external_record_reference(&evaluation.references);
+            let validated_version = external_version_evidence_resolution_is_valid(
+                &evaluation.version_evidence_resolution,
+                validation,
+            );
             evaluation.key.source_namespace == self.source_namespace
                 && valid_lowercase_uuid(&evaluation.key.upstream_id)
                 && evaluation_ids.insert(identity)
                 && component.evidence_class == evaluation.component_evidence
-                && external_version_evidence_resolution_is_valid(
-                    &evaluation.version_evidence_resolution,
-                    component,
-                )
+                && validated_version.is_some()
                 && evaluation.references.len()
                     <= crate::wordpress_review::MAX_WORDFENCE_V3_REFERENCES
                 && evaluation.researchers.len()
@@ -3496,12 +3724,16 @@ impl WordPressExternalReviewDocument {
                     .affected_ranges
                     .iter()
                     .all(WordPressExternalRangeDocument::is_valid)
-                && evaluation.version_relation == "source_comparison_semantics_unresolved"
-                && evaluation.applicability == "indeterminate_unsupported"
+                && evaluation.is_valid_interpretation(
+                    explicit,
+                    selected_profile,
+                    validated_version.flatten(),
+                )
                 && evaluation.execution.exploit_execution == "not_performed"
                 && evaluation.execution.impact_validation == "not_performed"
         });
         evaluations_are_valid
+            && self.counts.matches_evaluations(&self.evaluations, explicit)
             && referenced_notices == notices_by_id.keys().copied().collect()
             && self.evaluations.windows(2).all(|pair| {
                 (
@@ -3516,6 +3748,259 @@ impl WordPressExternalReviewDocument {
                     pair[1].key.component.slug.as_str(),
                 )
             })
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressExternalCountsDocument {
+    fn is_valid(&self, explicit: bool) -> bool {
+        let extended = [
+            self.within_associations,
+            self.outside_associations,
+            self.indeterminate_associations,
+            self.selected_ranges,
+            self.evaluated_ranges,
+            self.containing_ranges,
+            self.noncontaining_ranges,
+            self.unsupported_ranges,
+            self.invalid_ranges,
+            self.not_evaluated_ranges,
+            self.partial_range_coverage_associations,
+        ];
+        if !explicit {
+            return extended.iter().all(Option::is_none)
+                && self.evaluable_associations == 0
+                && self.unsupported_associations == self.selected_associations;
+        }
+        let [Some(within), Some(outside), Some(indeterminate), Some(selected_ranges), Some(evaluated_ranges), Some(containing), Some(noncontaining), Some(unsupported_ranges), Some(invalid_ranges), Some(not_evaluated_ranges), Some(partial)] =
+            extended
+        else {
+            return false;
+        };
+        within
+            .checked_add(outside)
+            .is_some_and(|value| value == self.evaluable_associations)
+            && self.unsupported_associations == indeterminate
+            && self
+                .evaluable_associations
+                .checked_add(indeterminate)
+                .is_some_and(|value| value == self.selected_associations)
+            && containing
+                .checked_add(noncontaining)
+                .is_some_and(|value| value == evaluated_ranges)
+            && evaluated_ranges
+                .checked_add(unsupported_ranges)
+                .and_then(|value| value.checked_add(invalid_ranges))
+                .and_then(|value| value.checked_add(not_evaluated_ranges))
+                .is_some_and(|value| value == selected_ranges)
+            && partial <= within
+    }
+
+    fn matches_evaluations(
+        &self,
+        evaluations: &[WordPressExternalEvaluationDocument],
+        explicit: bool,
+    ) -> bool {
+        if !explicit {
+            return true;
+        }
+        let mut within = 0_usize;
+        let mut outside = 0_usize;
+        let mut indeterminate = 0_usize;
+        let mut containing = 0_usize;
+        let mut noncontaining = 0_usize;
+        let mut unsupported = 0_usize;
+        let mut invalid = 0_usize;
+        let mut not_evaluated = 0_usize;
+        let mut partial = 0_usize;
+        for evaluation in evaluations {
+            match evaluation.version_relation {
+                "within_supported_range_under_selected_policy" => within += 1,
+                "outside_declared_ranges_under_selected_policy" => outside += 1,
+                "indeterminate" => indeterminate += 1,
+                _ => return false,
+            }
+            if evaluation.version_relation_reason == Some("containing_range_with_partial_coverage")
+            {
+                partial += 1;
+            }
+            let Some(ranges) = &evaluation.range_evaluations else {
+                return false;
+            };
+            for range in ranges {
+                match range.relation {
+                    "contains" => containing += 1,
+                    "does_not_contain" => noncontaining += 1,
+                    "unsupported" => unsupported += 1,
+                    "invalid_under_profile" => invalid += 1,
+                    "not_evaluated" => not_evaluated += 1,
+                    _ => return false,
+                }
+            }
+        }
+        self.within_associations == Some(within)
+            && self.outside_associations == Some(outside)
+            && self.indeterminate_associations == Some(indeterminate)
+            && self.selected_ranges
+                == containing
+                    .checked_add(noncontaining)
+                    .and_then(|value| value.checked_add(unsupported))
+                    .and_then(|value| value.checked_add(invalid))
+                    .and_then(|value| value.checked_add(not_evaluated))
+            && self.containing_ranges == Some(containing)
+            && self.noncontaining_ranges == Some(noncontaining)
+            && self.unsupported_ranges == Some(unsupported)
+            && self.invalid_ranges == Some(invalid)
+            && self.not_evaluated_ranges == Some(not_evaluated)
+            && self.partial_range_coverage_associations == Some(partial)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressExternalEvaluationDocument {
+    fn is_valid_interpretation(
+        &self,
+        explicit: bool,
+        selected_profile: Option<&str>,
+        selected_version: Option<&crate::wordpress_version::ProfiledVersionKey>,
+    ) -> bool {
+        if !explicit {
+            return self.range_evaluations.is_none()
+                && self.version_relation == "source_comparison_semantics_unresolved"
+                && self.version_relation_reason.is_none()
+                && self.applicability == "indeterminate_unsupported";
+        }
+        let Some(ranges) = &self.range_evaluations else {
+            return false;
+        };
+        if ranges.len() != self.affected_ranges.len()
+            || !ranges
+                .iter()
+                .all(WordPressExternalRangeEvaluationDocument::is_valid)
+        {
+            return false;
+        }
+        let Some(profile) = selected_profile else {
+            return false;
+        };
+        let semantic_status = self.version_evidence_resolution.semantic_status;
+        if !ranges
+            .iter()
+            .zip(&self.affected_ranges)
+            .all(|(rendered, source)| {
+                expected_external_range_interpretation(
+                    source,
+                    profile,
+                    semantic_status,
+                    selected_version,
+                ) == Some((rendered.relation, rendered.reason))
+            })
+        {
+            return false;
+        }
+        let contains = ranges.iter().any(|range| range.relation == "contains");
+        let unsupported = ranges.iter().any(|range| range.relation == "unsupported");
+        let invalid = ranges
+            .iter()
+            .any(|range| range.relation == "invalid_under_profile");
+        let source_patched_version_conflict = external_patched_version_conflicts(
+            &self.source_patched_versions,
+            &self.affected_ranges,
+            profile,
+        );
+        let all_outside = !ranges.is_empty()
+            && ranges
+                .iter()
+                .all(|range| range.relation == "does_not_contain");
+        let semantic_status = self.version_evidence_resolution.semantic_status;
+        match (
+            self.version_relation,
+            self.version_relation_reason,
+            self.applicability,
+        ) {
+            (
+                "within_supported_range_under_selected_policy",
+                Some("containing_range"),
+                "version_match_under_selected_policy",
+            ) => {
+                semantic_status == Some("supported_equivalent")
+                    && contains
+                    && !unsupported
+                    && !invalid
+                    && !source_patched_version_conflict
+            },
+            (
+                "within_supported_range_under_selected_policy",
+                Some("containing_range_with_partial_coverage"),
+                "version_match_under_selected_policy",
+            ) => {
+                semantic_status == Some("supported_equivalent")
+                    && contains
+                    && unsupported
+                    && !invalid
+                    && !source_patched_version_conflict
+            },
+            (
+                "outside_declared_ranges_under_selected_policy",
+                Some("all_ranges_outside"),
+                "no_version_match_under_selected_policy",
+            ) => {
+                semantic_status == Some("supported_equivalent")
+                    && all_outside
+                    && !source_patched_version_conflict
+            },
+            ("indeterminate", Some("invalid_affected_range"), "indeterminate") => invalid,
+            (
+                "indeterminate",
+                Some("source_patched_version_within_affected_range"),
+                "indeterminate",
+            ) => !invalid && source_patched_version_conflict,
+            ("indeterminate", Some("missing_version_evidence"), "indeterminate") => {
+                semantic_status == Some("missing") && !invalid && !source_patched_version_conflict
+            },
+            ("indeterminate", Some("conflicting_version_evidence"), "indeterminate") => {
+                semantic_status == Some("conflicting")
+                    && !invalid
+                    && !source_patched_version_conflict
+            },
+            ("indeterminate", Some("unsupported_version_evidence"), "indeterminate") => {
+                semantic_status == Some("unsupported")
+                    && !invalid
+                    && !source_patched_version_conflict
+            },
+            ("indeterminate", Some("missing_affected_ranges"), "indeterminate") => {
+                semantic_status == Some("supported_equivalent")
+                    && ranges.is_empty()
+                    && !source_patched_version_conflict
+            },
+            ("indeterminate", Some("unsupported_affected_range"), "indeterminate") => {
+                semantic_status == Some("supported_equivalent")
+                    && unsupported
+                    && !contains
+                    && !invalid
+                    && !source_patched_version_conflict
+            },
+            _ => false,
+        }
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressExternalRangeEvaluationDocument {
+    fn is_valid(&self) -> bool {
+        matches!(
+            (self.relation, self.reason),
+            ("contains", "selected_version_within_bounds")
+                | ("does_not_contain", "selected_version_outside_bounds")
+                | ("not_evaluated", "missing_version_evidence")
+                | ("not_evaluated", "conflicting_version_evidence")
+                | ("not_evaluated", "unsupported_version_evidence")
+                | ("unsupported", "unsupported_lower_bound")
+                | ("unsupported", "unsupported_upper_bound")
+                | ("unsupported", "unsupported_both_bounds")
+                | ("invalid_under_profile", "reversed_bounds")
+                | ("invalid_under_profile", "empty_exclusive_interval")
+        )
     }
 }
 
@@ -3536,22 +4021,214 @@ fn wordpress_external_source_counts_are_valid(
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
-fn external_version_evidence_resolution_is_valid(
+fn external_version_evidence_resolution_is_valid<'a>(
     resolution: &WordPressExternalVersionEvidenceResolutionDocument,
-    component: &WordPressComponentDocument,
-) -> bool {
+    validation: &'a WordPressExternalComponentValidation<'_>,
+) -> Option<Option<&'a crate::wordpress_version::ProfiledVersionKey>> {
+    (resolution.evidence_row_count == validation.evidence_row_count
+        && resolution.distinct_spelling_count == validation.distinct_spelling_count
+        && resolution.status == validation.evidence_status
+        && resolution.semantic_status == validation.semantic_status
+        && resolution.semantic_reason == validation.semantic_reason)
+        .then_some(validation.selected_version.as_ref())
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn external_component_validation<'a>(
+    component: &'a WordPressComponentDocument,
+    selected_profile: Option<&str>,
+) -> Option<WordPressExternalComponentValidation<'a>> {
     let distinct_spelling_count = component
         .versions
         .iter()
         .map(|version| version.value.as_str())
         .collect::<std::collections::BTreeSet<_>>()
         .len();
-    resolution.evidence_row_count == component.versions.len()
-        && resolution.distinct_spelling_count == distinct_spelling_count
-        && wordpress_external_version_evidence_status(
-            resolution.evidence_row_count,
-            resolution.distinct_spelling_count,
-        ) == Some(resolution.status)
+    let evidence_row_count = component.versions.len();
+    let evidence_status =
+        wordpress_external_version_evidence_status(evidence_row_count, distinct_spelling_count)?;
+    let (semantic_status, semantic_reason, selected_version) = match selected_profile {
+        None => (None, None, None),
+        Some(profile) => {
+            let (status, reason, selected) = external_semantic_resolution(component, profile)?;
+            (Some(status), Some(reason), selected)
+        },
+    };
+    Some(WordPressExternalComponentValidation {
+        component,
+        evidence_status,
+        evidence_row_count,
+        distinct_spelling_count,
+        semantic_status,
+        semantic_reason,
+        selected_version,
+    })
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn external_semantic_resolution(
+    component: &WordPressComponentDocument,
+    profile: &str,
+) -> Option<(
+    &'static str,
+    &'static str,
+    Option<crate::wordpress_version::ProfiledVersionKey>,
+)> {
+    let profile = match profile {
+        "numeric-dotted/v1" => WordPressComparisonProfile::NumericDottedV1,
+        "php-release-subset/v1" => WordPressComparisonProfile::PhpReleaseSubsetV1,
+        _ => return None,
+    };
+    if component.versions.is_empty() {
+        return Some(("missing", "no_version_evidence", None));
+    }
+    let mut selected = None::<crate::wordpress_version::ProfiledVersionKey>;
+    let mut conflicting = false;
+    let mut unsupported = false;
+    for evidence in &component.versions {
+        match crate::wordpress_version::ProfiledVersionKey::parse(profile, &evidence.value) {
+            Ok(version) => {
+                if selected.as_ref().is_some_and(|selected| {
+                    selected.compare(&version).ok() != Some(std::cmp::Ordering::Equal)
+                }) {
+                    conflicting = true;
+                } else if selected.is_none() {
+                    selected = Some(version);
+                }
+            },
+            Err(_) => unsupported = true,
+        }
+    }
+    if conflicting {
+        Some(("conflicting", "conflicting_version_evidence", None))
+    } else if unsupported || selected.is_none() {
+        Some(("unsupported", "unsupported_version_evidence", None))
+    } else if component.versions.len() == 1 {
+        Some(("supported_equivalent", "single_supported_version", selected))
+    } else {
+        Some((
+            "supported_equivalent",
+            "equivalent_supported_versions",
+            selected,
+        ))
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn expected_external_range_interpretation(
+    range: &WordPressExternalRangeDocument,
+    profile: &str,
+    semantic_status: Option<&str>,
+    selected_version: Option<&crate::wordpress_version::ProfiledVersionKey>,
+) -> Option<(&'static str, &'static str)> {
+    let profile = match profile {
+        "numeric-dotted/v1" => WordPressComparisonProfile::NumericDottedV1,
+        "php-release-subset/v1" => WordPressComparisonProfile::PhpReleaseSubsetV1,
+        _ => return None,
+    };
+    let lower = reporting_external_range_endpoint(
+        range.from_kind,
+        &range.from_version,
+        range.from_inclusive,
+        profile,
+    );
+    let upper = reporting_external_range_endpoint(
+        range.to_kind,
+        &range.to_version,
+        range.to_inclusive,
+        profile,
+    );
+    let (lower, upper) = match (lower, upper) {
+        (Err(()), Err(())) => return Some(("unsupported", "unsupported_both_bounds")),
+        (Err(()), Ok(_)) => return Some(("unsupported", "unsupported_lower_bound")),
+        (Ok(_), Err(())) => return Some(("unsupported", "unsupported_upper_bound")),
+        (Ok(lower), Ok(upper)) => (lower, upper),
+    };
+    if let (Some((lower, lower_inclusive)), Some((upper, upper_inclusive))) = (&lower, &upper) {
+        match lower.compare(upper).ok()? {
+            std::cmp::Ordering::Greater => {
+                return Some(("invalid_under_profile", "reversed_bounds"));
+            },
+            std::cmp::Ordering::Equal if !(*lower_inclusive && *upper_inclusive) => {
+                return Some(("invalid_under_profile", "empty_exclusive_interval"));
+            },
+            std::cmp::Ordering::Less | std::cmp::Ordering::Equal => {},
+        }
+    }
+    let Some(selected) = selected_version else {
+        return match semantic_status {
+            Some("missing") => Some(("not_evaluated", "missing_version_evidence")),
+            Some("conflicting") => Some(("not_evaluated", "conflicting_version_evidence")),
+            Some("unsupported") => Some(("not_evaluated", "unsupported_version_evidence")),
+            _ => None,
+        };
+    };
+    if semantic_status != Some("supported_equivalent") {
+        return None;
+    }
+    let above_lower = lower.as_ref().is_none_or(|(lower, inclusive)| {
+        lower.compare(selected).ok().is_some_and(|ordering| {
+            ordering == std::cmp::Ordering::Less
+                || (ordering == std::cmp::Ordering::Equal && *inclusive)
+        })
+    });
+    let below_upper = upper.as_ref().is_none_or(|(upper, inclusive)| {
+        selected.compare(upper).ok().is_some_and(|ordering| {
+            ordering == std::cmp::Ordering::Less
+                || (ordering == std::cmp::Ordering::Equal && *inclusive)
+        })
+    });
+    Some(if above_lower && below_upper {
+        ("contains", "selected_version_within_bounds")
+    } else {
+        ("does_not_contain", "selected_version_outside_bounds")
+    })
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn reporting_external_range_endpoint(
+    kind: &str,
+    value: &str,
+    inclusive: bool,
+    profile: WordPressComparisonProfile,
+) -> Result<Option<(crate::wordpress_version::ProfiledVersionKey, bool)>, ()> {
+    match kind {
+        "any" if value == "*" => Ok(None),
+        "declared" if value != "*" => {
+            crate::wordpress_version::ProfiledVersionKey::parse(profile, value)
+                .map(|version| Some((version, inclusive)))
+                .map_err(|_| ())
+        },
+        _ => Err(()),
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn external_patched_version_conflicts(
+    patched_versions: &[String],
+    ranges: &[WordPressExternalRangeDocument],
+    profile: &str,
+) -> bool {
+    let profile = match profile {
+        "numeric-dotted/v1" => WordPressComparisonProfile::NumericDottedV1,
+        "php-release-subset/v1" => WordPressComparisonProfile::PhpReleaseSubsetV1,
+        _ => return false,
+    };
+    patched_versions.iter().any(|declared| {
+        crate::wordpress_version::ProfiledVersionKey::parse(profile, declared)
+            .ok()
+            .is_some_and(|version| {
+                ranges.iter().any(|range| {
+                    expected_external_range_interpretation(
+                        range,
+                        profile.id(),
+                        Some("supported_equivalent"),
+                        Some(&version),
+                    )
+                    .is_some_and(|(relation, _)| relation == "contains")
+                })
+            })
+    })
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -3911,14 +4588,18 @@ fn wordpress_external_review_document(
     review: &crate::wordpress_review::WordPressExternalReview,
 ) -> WordPressExternalReviewDocument {
     let counts = review.counts();
-    let comparison_policy = wordpress_external_comparison_policy(
-        WordPressExternalComparisonPolicy::WordfenceV3SourceSemanticsUnresolvedV1,
-    );
+    let comparison_policy = wordpress_external_comparison_policy(review.comparison_policy());
+    let explicit = review.comparison_profile().is_some();
     WordPressExternalReviewDocument {
         source_namespace: review.source_namespace(),
         source_format: review.source_format(),
         mapping_revision: review.mapping_revision(),
         comparison_policy,
+        comparison_profile: review
+            .comparison_profile()
+            .map(wordpress_comparison_profile),
+        policy_selection: explicit.then_some("explicit_operator"),
+        source_semantics_assurance: explicit.then_some("not_established"),
         input: WordPressExternalInputDocument {
             byte_length: review.byte_length(),
             sha256: lowercase_hex(review.sha256()),
@@ -3931,6 +4612,18 @@ fn wordpress_external_review_document(
             evaluable_associations: counts.evaluable_associations(),
             unsupported_associations: counts.unsupported_associations(),
             excluded_associations: counts.excluded_associations(),
+            within_associations: explicit.then_some(counts.within_associations()),
+            outside_associations: explicit.then_some(counts.outside_associations()),
+            indeterminate_associations: explicit.then_some(counts.indeterminate_associations()),
+            selected_ranges: explicit.then_some(counts.selected_ranges()),
+            evaluated_ranges: explicit.then_some(counts.evaluated_ranges()),
+            containing_ranges: explicit.then_some(counts.containing_ranges()),
+            noncontaining_ranges: explicit.then_some(counts.noncontaining_ranges()),
+            unsupported_ranges: explicit.then_some(counts.unsupported_ranges()),
+            invalid_ranges: explicit.then_some(counts.invalid_ranges()),
+            not_evaluated_ranges: explicit.then_some(counts.not_evaluated_ranges()),
+            partial_range_coverage_associations: explicit
+                .then_some(counts.partial_range_coverage_associations()),
         },
         notices: review
             .notices()
@@ -3959,6 +4652,9 @@ const fn wordpress_external_comparison_policy(
     match policy {
         WordPressExternalComparisonPolicy::WordfenceV3SourceSemanticsUnresolvedV1 => {
             "wordfence-v3/source-semantics-unresolved/v1"
+        },
+        WordPressExternalComparisonPolicy::TermivarWordfenceV3ExplicitInterpretationV1 => {
+            "termivar.wordfence-v3-explicit-interpretation/v1"
         },
     }
 }
@@ -4016,6 +4712,15 @@ fn wordpress_external_evaluation_document(
                 }
             })
             .collect(),
+        range_evaluations: evaluation.range_evaluations().map(|ranges| {
+            ranges
+                .iter()
+                .map(|range| WordPressExternalRangeEvaluationDocument {
+                    relation: wordpress_external_range_relation(range.relation()),
+                    reason: wordpress_external_range_reason(range.reason()),
+                })
+                .collect()
+        }),
         source_patched: evaluation.source_patched(),
         source_patched_versions: evaluation.source_patched_versions().to_vec(),
         source_remediation: evaluation.source_remediation().to_owned(),
@@ -4025,6 +4730,9 @@ fn wordpress_external_evaluation_document(
             evaluation.version_evidence_resolution(),
         ),
         version_relation: wordpress_external_version_relation(evaluation.version_relation()),
+        version_relation_reason: evaluation.range_evaluations().map(|_| {
+            wordpress_external_version_relation_reason(evaluation.version_relation_reason())
+        }),
         applicability: wordpress_external_applicability(evaluation.applicability()),
         execution: WordPressExternalExecutionDocument {
             exploit_execution: wordpress_execution(evaluation.exploit_execution()),
@@ -4095,6 +4803,12 @@ fn wordpress_external_version_evidence_resolution(
         },
         evidence_row_count: resolution.evidence_row_count(),
         distinct_spelling_count: resolution.distinct_spelling_count(),
+        semantic_status: resolution
+            .semantic_status()
+            .map(wordpress_version_resolution),
+        semantic_reason: resolution
+            .semantic_reason()
+            .map(wordpress_version_resolution_reason),
     }
 }
 
@@ -4141,6 +4855,79 @@ const fn wordpress_external_version_relation(
         WordPressExternalVersionRelation::SourceComparisonSemanticsUnresolved => {
             "source_comparison_semantics_unresolved"
         },
+        WordPressExternalVersionRelation::WithinSupportedRangeUnderSelectedPolicy => {
+            "within_supported_range_under_selected_policy"
+        },
+        WordPressExternalVersionRelation::OutsideDeclaredRangesUnderSelectedPolicy => {
+            "outside_declared_ranges_under_selected_policy"
+        },
+        WordPressExternalVersionRelation::Indeterminate => "indeterminate",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_external_version_relation_reason(
+    reason: WordPressExternalVersionRelationReason,
+) -> &'static str {
+    match reason {
+        WordPressExternalVersionRelationReason::SourceComparisonSemanticsUnresolved => {
+            "source_comparison_semantics_unresolved"
+        },
+        WordPressExternalVersionRelationReason::ContainingRange => "containing_range",
+        WordPressExternalVersionRelationReason::ContainingRangeWithPartialCoverage => {
+            "containing_range_with_partial_coverage"
+        },
+        WordPressExternalVersionRelationReason::AllRangesOutside => "all_ranges_outside",
+        WordPressExternalVersionRelationReason::MissingVersionEvidence => {
+            "missing_version_evidence"
+        },
+        WordPressExternalVersionRelationReason::ConflictingVersionEvidence => {
+            "conflicting_version_evidence"
+        },
+        WordPressExternalVersionRelationReason::UnsupportedVersionEvidence => {
+            "unsupported_version_evidence"
+        },
+        WordPressExternalVersionRelationReason::MissingAffectedRanges => "missing_affected_ranges",
+        WordPressExternalVersionRelationReason::UnsupportedAffectedRange => {
+            "unsupported_affected_range"
+        },
+        WordPressExternalVersionRelationReason::InvalidAffectedRange => "invalid_affected_range",
+        WordPressExternalVersionRelationReason::SourcePatchedVersionWithinAffectedRange => {
+            "source_patched_version_within_affected_range"
+        },
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_external_range_relation(
+    relation: WordPressExternalRangeRelation,
+) -> &'static str {
+    match relation {
+        WordPressExternalRangeRelation::Contains => "contains",
+        WordPressExternalRangeRelation::DoesNotContain => "does_not_contain",
+        WordPressExternalRangeRelation::NotEvaluated => "not_evaluated",
+        WordPressExternalRangeRelation::Unsupported => "unsupported",
+        WordPressExternalRangeRelation::InvalidUnderProfile => "invalid_under_profile",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_external_range_reason(reason: WordPressExternalRangeReason) -> &'static str {
+    match reason {
+        WordPressExternalRangeReason::SelectedVersionWithinBounds => {
+            "selected_version_within_bounds"
+        },
+        WordPressExternalRangeReason::SelectedVersionOutsideBounds => {
+            "selected_version_outside_bounds"
+        },
+        WordPressExternalRangeReason::MissingVersionEvidence => "missing_version_evidence",
+        WordPressExternalRangeReason::ConflictingVersionEvidence => "conflicting_version_evidence",
+        WordPressExternalRangeReason::UnsupportedVersionEvidence => "unsupported_version_evidence",
+        WordPressExternalRangeReason::UnsupportedLowerBound => "unsupported_lower_bound",
+        WordPressExternalRangeReason::UnsupportedUpperBound => "unsupported_upper_bound",
+        WordPressExternalRangeReason::UnsupportedBothBounds => "unsupported_both_bounds",
+        WordPressExternalRangeReason::ReversedBounds => "reversed_bounds",
+        WordPressExternalRangeReason::EmptyExclusiveInterval => "empty_exclusive_interval",
     }
 }
 
@@ -4150,6 +4937,13 @@ const fn wordpress_external_applicability(
 ) -> &'static str {
     match applicability {
         WordPressExternalApplicability::IndeterminateUnsupported => "indeterminate_unsupported",
+        WordPressExternalApplicability::VersionMatchUnderSelectedPolicy => {
+            "version_match_under_selected_policy"
+        },
+        WordPressExternalApplicability::NoVersionMatchUnderSelectedPolicy => {
+            "no_version_match_under_selected_policy"
+        },
+        WordPressExternalApplicability::Indeterminate => "indeterminate",
     }
 }
 
@@ -5360,6 +6154,90 @@ mod tests {
         document
     }
 
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    fn explicitly_profiled_external_wordpress_assessment_document(
+        profile: WordPressComparisonProfile,
+    ) -> AssessmentDocument<'static> {
+        let catalog = crate::wordpress_review::parse_wordfence_v3_production(
+            &include_bytes!(
+                "../../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json"
+            )[..],
+        )
+        .unwrap();
+        let context = crate::wordpress_review::parse_wordpress_context(
+            br#"{
+              "schema":"security.wordpress-context/v1",
+              "root":"https://example.test/",
+              "components":[
+                {"kind":"plugin","slug":"termivar-fixture-component","version":"1.0"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        let inputs = crate::wordpress_review::WordPressReviewInputs::new(Some(context), None)
+            .with_wordfence_v3_catalog(catalog)
+            .unwrap()
+            .with_external_version_profile(profile)
+            .unwrap();
+        let signals = [
+            crate::wordpress_review::WordPressComponentSignal::same_origin_asset(
+                WordPressComponentKind::Plugin,
+                "termivar-fixture-component",
+            )
+            .unwrap(),
+        ];
+        let result = crate::wordpress_review::evaluate_wordpress_review(&signals, &inputs).unwrap();
+
+        let mut document = observed_wordpress_assessment_document();
+        document.items[0].fingerprint =
+            "sha256:2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let audit = document.wordpress_review.as_mut().unwrap();
+        audit.schema = "security.wordpress-review-audit/v5";
+        audit.catalog = None;
+        audit.catalog_schema = None;
+        audit.inventory_import = None;
+        audit.advisories.clear();
+        audit.advisory_count = 0;
+        audit.components = result
+            .components()
+            .iter()
+            .map(|component| WordPressComponentDocument {
+                identity: wordpress_component_identity(component.identity()),
+                evidence_class: wordpress_evidence_class(component.evidence_class()),
+                identity_sources: component
+                    .identity_sources()
+                    .iter()
+                    .copied()
+                    .map(wordpress_evidence_source)
+                    .collect(),
+                confidence_classes: component
+                    .confidence_classes()
+                    .iter()
+                    .copied()
+                    .map(wordpress_confidence)
+                    .collect(),
+                versions: component
+                    .versions()
+                    .iter()
+                    .map(|version| WordPressVersionEvidenceDocument {
+                        value: version.value().to_owned(),
+                        source: wordpress_evidence_source(version.source()),
+                        confidence: wordpress_confidence(version.confidence()),
+                    })
+                    .collect(),
+                activation: component.activation().map(wordpress_activation),
+                inventory_status: component
+                    .inventory_status()
+                    .map(wordpress_inventory_entry_status),
+            })
+            .collect();
+        audit.component_count = audit.components.len();
+        audit.external_review = Some(wordpress_external_review_document(
+            result.external_review().unwrap(),
+        ));
+        document
+    }
+
     #[cfg(feature = "scanning")]
     #[test]
     fn assessment_json_schema_is_additive_minimized_and_linkage_preserving() {
@@ -5869,6 +6747,28 @@ mod tests {
         assert_eq!(external["counts"]["evaluable_associations"], 0);
         assert_eq!(external["counts"]["unsupported_associations"], 1);
         assert_eq!(external["counts"]["excluded_associations"], 2);
+        for absent in [
+            "comparison_profile",
+            "policy_selection",
+            "source_semantics_assurance",
+        ] {
+            assert!(external.get(absent).is_none());
+        }
+        for absent in [
+            "within_associations",
+            "outside_associations",
+            "indeterminate_associations",
+            "selected_ranges",
+            "evaluated_ranges",
+            "containing_ranges",
+            "noncontaining_ranges",
+            "unsupported_ranges",
+            "invalid_ranges",
+            "not_evaluated_ranges",
+            "partial_range_coverage_associations",
+        ] {
+            assert!(external["counts"].get(absent).is_none());
+        }
         assert_eq!(external["notices"].as_array().unwrap().len(), 1);
         let evaluation = &external["evaluations"][0];
         assert_eq!(evaluation["key"]["component"]["kind"], "plugin");
@@ -5893,6 +6793,14 @@ mod tests {
             0
         );
         assert_eq!(evaluation["applicability"], "indeterminate_unsupported");
+        assert!(evaluation.get("range_evaluations").is_none());
+        assert!(evaluation.get("version_relation_reason").is_none());
+        assert!(evaluation["version_evidence_resolution"]
+            .get("semantic_status")
+            .is_none());
+        assert!(evaluation["version_evidence_resolution"]
+            .get("semantic_reason")
+            .is_none());
         assert_eq!(
             evaluation["record_reference"],
             "https://example.invalid/termivar/wordfence-v3/fixture-advisory-1"
@@ -5946,6 +6854,30 @@ mod tests {
             }
             assert!(!rendered.contains("candidate_match_on_declared_facts"));
             assert!(!rendered.contains("confirmed_vulnerability"));
+            for v5_only_label in [
+                "Comparison profile",
+                "Policy selection",
+                "Source comparison semantics assurance",
+                "Version-relation reason",
+                "Semantic version resolution",
+                "Semantic resolution reason",
+                "Within-range associations",
+                "Outside-range associations",
+                "Indeterminate associations",
+                "Selected source ranges",
+                "Evaluated ranges",
+                "Containing ranges",
+                "Noncontaining ranges",
+                "Unsupported ranges",
+                "Invalid ranges",
+                "Ranges not evaluated",
+                "Qualified partial-range matches",
+            ] {
+                assert!(
+                    !rendered.contains(v5_only_label),
+                    "{format:?} changed the v4 presentation with {v5_only_label}"
+                );
+            }
         }
 
         for (parsed_records, software_associations, excluded_associations) in
@@ -5963,6 +6895,247 @@ mod tests {
             counts.parsed_records = parsed_records;
             counts.software_associations = software_associations;
             counts.excluded_associations = excluded_associations;
+            for format in ReportGenerator::available_formats() {
+                assert_eq!(
+                    render_assessment_with_limit(&invalid, *format, usize::MAX),
+                    Err(ReportError::Serialization)
+                );
+            }
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn explicit_external_policy_reporting_is_v5_strict_and_reader_compatible() {
+        for (profile, profile_id, relation, reason, applicability, within, outside) in [
+            (
+                WordPressComparisonProfile::NumericDottedV1,
+                "numeric-dotted/v1",
+                "within_supported_range_under_selected_policy",
+                "containing_range",
+                "version_match_under_selected_policy",
+                1_u64,
+                0_u64,
+            ),
+            (
+                WordPressComparisonProfile::PhpReleaseSubsetV1,
+                "php-release-subset/v1",
+                "outside_declared_ranges_under_selected_policy",
+                "all_ranges_outside",
+                "no_version_match_under_selected_policy",
+                0,
+                1,
+            ),
+        ] {
+            let document = explicitly_profiled_external_wordpress_assessment_document(profile);
+            let json =
+                render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let audit = &parsed["wordpress_review"];
+            let external = &audit["external_review"];
+            let evaluation = &external["evaluations"][0];
+
+            assert_eq!(audit["schema"], "security.wordpress-review-audit/v5");
+            assert_eq!(
+                external["comparison_policy"],
+                "termivar.wordfence-v3-explicit-interpretation/v1"
+            );
+            assert_eq!(external["comparison_profile"], profile_id);
+            assert_eq!(external["policy_selection"], "explicit_operator");
+            assert_eq!(external["source_semantics_assurance"], "not_established");
+            assert_eq!(external["counts"]["selected_associations"], 1);
+            assert_eq!(external["counts"]["evaluable_associations"], 1);
+            assert_eq!(external["counts"]["unsupported_associations"], 0);
+            assert_eq!(external["counts"]["within_associations"], within);
+            assert_eq!(external["counts"]["outside_associations"], outside);
+            assert_eq!(external["counts"]["indeterminate_associations"], 0);
+            assert_eq!(external["counts"]["selected_ranges"], 2);
+            assert_eq!(external["counts"]["evaluated_ranges"], 2);
+            assert_eq!(external["counts"]["unsupported_ranges"], 0);
+            assert_eq!(external["counts"]["invalid_ranges"], 0);
+            assert_eq!(external["counts"]["not_evaluated_ranges"], 0);
+            assert_eq!(evaluation["version_relation"], relation);
+            assert_eq!(evaluation["version_relation_reason"], reason);
+            assert_eq!(evaluation["applicability"], applicability);
+            assert_eq!(
+                evaluation["version_evidence_resolution"]["semantic_status"],
+                "supported_equivalent"
+            );
+            assert_eq!(
+                evaluation["version_evidence_resolution"]["semantic_reason"],
+                "single_supported_version"
+            );
+            assert_eq!(evaluation["range_evaluations"].as_array().unwrap().len(), 2);
+            assert_eq!(
+                evaluation["execution"]["exploit_execution"],
+                "not_performed"
+            );
+            assert_eq!(
+                evaluation["execution"]["impact_validation"],
+                "not_performed"
+            );
+            assert!(comparison::import_assessment_summary(json.as_bytes()).is_ok());
+
+            for format in [
+                ReportFormat::Html,
+                ReportFormat::Markdown,
+                ReportFormat::Csv,
+            ] {
+                let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+                for expected in [
+                    "security.wordpress-review-audit/v5",
+                    "termivar.wordfence-v3-explicit-interpretation/v1",
+                    profile_id,
+                    "explicit_operator",
+                    "not_established",
+                    relation,
+                    reason,
+                    applicability,
+                    "not_performed",
+                ] {
+                    assert!(rendered.contains(expected), "{format:?} omitted {expected}");
+                }
+                assert!(!rendered.contains("confirmed_vulnerability"));
+                assert!(!rendered.contains("verified_remediation"));
+                assert!(!rendered.contains("Unsupported relevant associations"));
+            }
+        }
+
+        let mut source_conflict = explicitly_profiled_external_wordpress_assessment_document(
+            WordPressComparisonProfile::NumericDottedV1,
+        );
+        let external = source_conflict
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .external_review
+            .as_mut()
+            .unwrap();
+        external.counts.within_associations = Some(0);
+        external.counts.indeterminate_associations = Some(1);
+        external.counts.evaluable_associations = 0;
+        external.counts.unsupported_associations = 1;
+        let evaluation = &mut external.evaluations[0];
+        evaluation.source_patched_versions[0] = "1.1".to_owned();
+        evaluation.version_relation = "indeterminate";
+        evaluation.version_relation_reason = Some("source_patched_version_within_affected_range");
+        evaluation.applicability = "indeterminate";
+        let source_conflict_json =
+            render_assessment_with_limit(&source_conflict, ReportFormat::Json, usize::MAX).unwrap();
+        assert!(source_conflict_json.contains("source_patched_version_within_affected_range"));
+        assert!(comparison::import_assessment_summary(source_conflict_json.as_bytes()).is_ok());
+
+        let mut stale_source_conflict = source_conflict;
+        stale_source_conflict
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .external_review
+            .as_mut()
+            .unwrap()
+            .evaluations[0]
+            .version_relation_reason = Some("containing_range");
+        for format in ReportGenerator::available_formats() {
+            assert_eq!(
+                render_assessment_with_limit(&stale_source_conflict, *format, usize::MAX),
+                Err(ReportError::Serialization)
+            );
+        }
+
+        let mut invalid_documents = Vec::new();
+
+        let mut invalid = explicitly_profiled_external_wordpress_assessment_document(
+            WordPressComparisonProfile::NumericDottedV1,
+        );
+        invalid
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .external_review
+            .as_mut()
+            .unwrap()
+            .source_semantics_assurance = Some("established");
+        invalid_documents.push(invalid);
+
+        let mut invalid = explicitly_profiled_external_wordpress_assessment_document(
+            WordPressComparisonProfile::NumericDottedV1,
+        );
+        invalid
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .external_review
+            .as_mut()
+            .unwrap()
+            .evaluations[0]
+            .affected_ranges[0]
+            .from_version = "9.0".to_owned();
+        invalid_documents.push(invalid);
+
+        let mut invalid = explicitly_profiled_external_wordpress_assessment_document(
+            WordPressComparisonProfile::NumericDottedV1,
+        );
+        let range = &mut invalid
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .external_review
+            .as_mut()
+            .unwrap()
+            .evaluations[0]
+            .range_evaluations
+            .as_mut()
+            .unwrap()[1];
+        range.relation = "not_evaluated";
+        range.reason = "missing_version_evidence";
+        invalid_documents.push(invalid);
+
+        let mut invalid = explicitly_profiled_external_wordpress_assessment_document(
+            WordPressComparisonProfile::NumericDottedV1,
+        );
+        invalid
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .external_review
+            .as_mut()
+            .unwrap()
+            .counts
+            .within_associations = Some(0);
+        invalid_documents.push(invalid);
+
+        let mut invalid = explicitly_profiled_external_wordpress_assessment_document(
+            WordPressComparisonProfile::NumericDottedV1,
+        );
+        invalid
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .external_review
+            .as_mut()
+            .unwrap()
+            .evaluations[0]
+            .range_evaluations
+            .as_mut()
+            .unwrap()[0]
+            .reason = "selected_version_outside_bounds";
+        invalid_documents.push(invalid);
+
+        let mut invalid = explicitly_profiled_external_wordpress_assessment_document(
+            WordPressComparisonProfile::NumericDottedV1,
+        );
+        invalid
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .external_review
+            .as_mut()
+            .unwrap()
+            .evaluations[0]
+            .applicability = "no_version_match_under_selected_policy";
+        invalid_documents.push(invalid);
+
+        for invalid in invalid_documents {
             for format in ReportGenerator::available_formats() {
                 assert_eq!(
                     render_assessment_with_limit(&invalid, *format, usize::MAX),

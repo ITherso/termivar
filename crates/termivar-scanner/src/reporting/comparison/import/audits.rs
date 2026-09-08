@@ -6,7 +6,9 @@ use super::{
     optional_token, required, string, text, token, ComparisonError, ImportedItem, Value,
     MAX_AUDIT_TEXT_BYTES, MAX_IDENTIFIER_BYTES,
 };
-use crate::wordpress_version::{ProfiledVersionKey, WordPressComparisonProfile};
+use crate::wordpress_version::{
+    checked_accumulate_external_interpretation_work, ProfiledVersionKey, WordPressComparisonProfile,
+};
 use serde_json::Map;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
@@ -30,6 +32,8 @@ const MAX_WORDPRESS_RANGES: usize = 16;
 const MAX_WORDPRESS_FIXED_VERSIONS: usize = 16;
 const MAX_WORDPRESS_PREREQUISITES: usize = 8;
 const MAX_WORDPRESS_VERSION_RESOLUTION_WORK: usize = MAX_WORDPRESS_RESULT_VERSION_EVIDENCE * 2;
+const MAX_WORDPRESS_EVALUATION_WORK: usize =
+    MAX_WORDPRESS_ADVISORIES * (MAX_WORDPRESS_RANGES + MAX_WORDPRESS_PREREQUISITES);
 const MAX_WORDPRESS_SAVED_INVENTORY_BYTES: u64 = 1024 * 1024;
 const MAX_WORDPRESS_INVENTORY_INPUTS: usize = 3;
 const MAX_WORDPRESS_INVENTORY_VERSION_BYTES: usize = 64;
@@ -40,6 +44,8 @@ const MAX_WORDFENCE_V3_ASSOCIATIONS: u64 = 200_000;
 const MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD: u64 = 2_048;
 const MAX_WORDFENCE_V3_EVALUATIONS: usize = MAX_WORDPRESS_ADVISORIES;
 const MAX_WORDFENCE_V3_RANGES: usize = 64;
+const MAX_WORDFENCE_V3_SELECTED_RANGES: u64 =
+    (MAX_WORDFENCE_V3_EVALUATIONS * MAX_WORDFENCE_V3_RANGES) as u64;
 const MAX_WORDFENCE_V3_PATCHED_VERSIONS: usize = 64;
 const MAX_WORDFENCE_V3_REFERENCES: usize = 64;
 const MAX_WORDFENCE_V3_RESEARCHERS: usize = 64;
@@ -57,6 +63,7 @@ enum WordPressAuditSchema {
     V2,
     V3,
     V4,
+    V5,
 }
 
 struct ImportedWordPressComponent {
@@ -73,6 +80,13 @@ struct ProfiledRange {
     upper: Option<(ProfiledVersionKey, bool)>,
 }
 
+type ImportedExternalRangeEndpoint<'a> = (&'a str, &'a str, bool);
+type ImportedExternalRange<'a> = (
+    ImportedExternalRangeEndpoint<'a>,
+    ImportedExternalRangeEndpoint<'a>,
+);
+
+#[derive(Clone)]
 struct ProfiledResolution {
     status: &'static str,
     reason: &'static str,
@@ -139,6 +153,7 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         "security.wordpress-review-audit/v2" => WordPressAuditSchema::V2,
         "security.wordpress-review-audit/v3" => WordPressAuditSchema::V3,
         "security.wordpress-review-audit/v4" => WordPressAuditSchema::V4,
+        "security.wordpress-review-audit/v5" => WordPressAuditSchema::V5,
         _ => return Err(ComparisonError::InvalidDocument),
     };
     check(string(fields, "capability_id")? == WORDPRESS_CAPABILITY)?;
@@ -160,7 +175,7 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         ) => {
             catalog(object(value)?)?;
         },
-        ("evaluated", None, WordPressAuditSchema::V4) => {},
+        ("evaluated", None, WordPressAuditSchema::V4 | WordPressAuditSchema::V5) => {},
         _ => return Err(ComparisonError::InvalidDocument),
     }
     check(schema != WordPressAuditSchema::V2 || status == "evaluated")?;
@@ -192,7 +207,7 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
                 _ => return Err(ComparisonError::InvalidDocument),
             }
         },
-        WordPressAuditSchema::V4 => {
+        WordPressAuditSchema::V4 | WordPressAuditSchema::V5 => {
             check(
                 status == "evaluated"
                     && !fields.contains_key("catalog")
@@ -276,7 +291,7 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             (WordPressAuditSchema::V2 | WordPressAuditSchema::V3, true) => {
                 advisory_v2(object(value)?, &imported_components, &profiled_resolutions)?
             },
-            (WordPressAuditSchema::V4, false) => {
+            (WordPressAuditSchema::V4 | WordPressAuditSchema::V5, false) => {
                 return Err(ComparisonError::InvalidDocument);
             },
             _ => return Err(ComparisonError::InvalidDocument),
@@ -289,10 +304,11 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             &imported_components,
         )?;
     }
-    if schema == WordPressAuditSchema::V4 {
+    if matches!(schema, WordPressAuditSchema::V4 | WordPressAuditSchema::V5) {
         external_review(
             object(required(fields, "external_review")?)?,
             &imported_components,
+            schema,
         )?;
         if let Some(value) = fields.get("inventory_import") {
             inventory_import(object(value)?, &imported_components)?;
@@ -336,6 +352,18 @@ fn wordpress_comparison_snapshot(
             (
                 "comparison_policy",
                 external.and_then(|value| value.get("comparison_policy")),
+            ),
+            (
+                "comparison_profile",
+                external.and_then(|value| value.get("comparison_profile")),
+            ),
+            (
+                "policy_selection",
+                external.and_then(|value| value.get("policy_selection")),
+            ),
+            (
+                "source_semantics_assurance",
+                external.and_then(|value| value.get("source_semantics_assurance")),
             ),
         ],
     )?;
@@ -406,7 +434,10 @@ fn wordpress_comparison_snapshot(
     }
 
     let mut advisories = BTreeMap::new();
-    if schema == "security.wordpress-review-audit/v4" {
+    if matches!(
+        schema,
+        "security.wordpress-review-audit/v4" | "security.wordpress-review-audit/v5"
+    ) {
         let external = external.ok_or(ComparisonError::InvalidDocument)?;
         let namespace = string(external, "source_namespace")?;
         let mut notices = BTreeMap::new();
@@ -487,6 +518,8 @@ fn wordpress_comparison_snapshot(
                             "component_evidence",
                             "version_evidence_resolution",
                             "version_relation",
+                            "version_relation_reason",
+                            "range_evaluations",
                             "execution",
                         ],
                         &[],
@@ -796,15 +829,18 @@ fn component(
         check(activation.is_none() || identity_sources.contains("operator_context"))?;
     }
     if schema != WordPressAuditSchema::V1 {
-        let expected_evidence = if profiled || schema == WordPressAuditSchema::V4 {
-            profiled_evidence
-        } else {
-            legacy_component_evidence(&version_values, profiled_evidence)?
-        };
+        let expected_evidence =
+            if profiled || matches!(schema, WordPressAuditSchema::V4 | WordPressAuditSchema::V5) {
+                profiled_evidence
+            } else {
+                legacy_component_evidence(&version_values, profiled_evidence)?
+            };
         check(evidence_class == expected_evidence)?;
     }
-    let inventory_status = if matches!(schema, WordPressAuditSchema::V3 | WordPressAuditSchema::V4)
-    {
+    let inventory_status = if matches!(
+        schema,
+        WordPressAuditSchema::V3 | WordPressAuditSchema::V4 | WordPressAuditSchema::V5
+    ) {
         fields
             .get("inventory_status")
             .map(|_| {
@@ -863,26 +899,65 @@ fn component(
 fn external_review(
     fields: &serde_json::Map<String, Value>,
     components: &BTreeMap<String, ImportedWordPressComponent>,
+    schema: WordPressAuditSchema,
 ) -> Result<(), ComparisonError> {
-    keys(
-        fields,
-        &[
-            "source_namespace",
-            "source_format",
-            "mapping_revision",
-            "comparison_policy",
-            "input",
-            "counts",
-            "notices",
-            "evaluations",
-        ],
-        &[],
-    )?;
+    let profile = match schema {
+        WordPressAuditSchema::V4 => {
+            keys(
+                fields,
+                &[
+                    "source_namespace",
+                    "source_format",
+                    "mapping_revision",
+                    "comparison_policy",
+                    "input",
+                    "counts",
+                    "notices",
+                    "evaluations",
+                ],
+                &[],
+            )?;
+            check(
+                string(fields, "comparison_policy")?
+                    == "wordfence-v3/source-semantics-unresolved/v1",
+            )?;
+            None
+        },
+        WordPressAuditSchema::V5 => {
+            keys(
+                fields,
+                &[
+                    "source_namespace",
+                    "source_format",
+                    "mapping_revision",
+                    "comparison_policy",
+                    "comparison_profile",
+                    "policy_selection",
+                    "source_semantics_assurance",
+                    "input",
+                    "counts",
+                    "notices",
+                    "evaluations",
+                ],
+                &[],
+            )?;
+            check(
+                string(fields, "comparison_policy")?
+                    == "termivar.wordfence-v3-explicit-interpretation/v1"
+                    && string(fields, "policy_selection")? == "explicit_operator"
+                    && string(fields, "source_semantics_assurance")? == "not_established",
+            )?;
+            Some(
+                WordPressComparisonProfile::parse(string(fields, "comparison_profile")?)
+                    .map_err(|_| ComparisonError::InvalidDocument)?,
+            )
+        },
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
     let namespace = string(fields, "source_namespace")?;
     check(namespace == "wordfence-intelligence")?;
     check(string(fields, "source_format")? == "wordfence-v3-production")?;
     check(string(fields, "mapping_revision")? == "termivar-wordfence-v3-production/v1")?;
-    check(string(fields, "comparison_policy")? == "wordfence-v3/source-semantics-unresolved/v1")?;
 
     let input = object(required(fields, "input")?)?;
     keys(input, &["byte_length", "sha256", "semantic_sha256"], &[])?;
@@ -891,18 +966,41 @@ fn external_review(
     check(digest(string(input, "semantic_sha256")?, ""))?;
 
     let counts = object(required(fields, "counts")?)?;
-    keys(
-        counts,
-        &[
-            "parsed_records",
-            "software_associations",
-            "selected_associations",
-            "evaluable_associations",
-            "unsupported_associations",
-            "excluded_associations",
-        ],
-        &[],
-    )?;
+    let base_count_fields = [
+        "parsed_records",
+        "software_associations",
+        "selected_associations",
+        "evaluable_associations",
+        "unsupported_associations",
+        "excluded_associations",
+    ];
+    if profile.is_some() {
+        keys(
+            counts,
+            &[
+                "parsed_records",
+                "software_associations",
+                "selected_associations",
+                "evaluable_associations",
+                "unsupported_associations",
+                "excluded_associations",
+                "within_associations",
+                "outside_associations",
+                "indeterminate_associations",
+                "selected_ranges",
+                "evaluated_ranges",
+                "containing_ranges",
+                "noncontaining_ranges",
+                "unsupported_ranges",
+                "invalid_ranges",
+                "not_evaluated_ranges",
+                "partial_range_coverage_associations",
+            ],
+            &[],
+        )?;
+    } else {
+        keys(counts, &base_count_fields, &[])?;
+    }
     let parsed = number(counts, "parsed_records", MAX_WORDFENCE_V3_RECORDS)?;
     let associations = number(
         counts,
@@ -937,8 +1035,7 @@ fn external_review(
             && evaluable
                 .checked_add(unsupported)
                 .is_some_and(|value| value == selected)
-            && evaluable == 0
-            && unsupported == selected,
+            && (profile.is_some() || (evaluable == 0 && unsupported == selected)),
     )?;
 
     let notices = array(fields, "notices")?;
@@ -978,18 +1075,166 @@ fn external_review(
     )?;
     let mut identities = std::collections::BTreeSet::new();
     let mut referenced_notices = std::collections::BTreeSet::new();
+    let mut imported_counts = ImportedExternalCounts::default();
+    let mut profiled_resolutions = BTreeMap::new();
+    if let Some(profile) = profile {
+        let mut resolution_work = 0_usize;
+        for (identity, component) in components {
+            resolution_work = resolution_work
+                .checked_add(component.versions.len())
+                .ok_or(ComparisonError::InvalidDocument)?;
+            check(resolution_work <= MAX_WORDPRESS_VERSION_RESOLUTION_WORK)?;
+            profiled_resolutions.insert(
+                identity.clone(),
+                resolve_profiled_component(component, profile)?,
+            );
+        }
+    }
+    let mut interpretation_work = 0_usize;
     for value in evaluations {
-        let identity = external_evaluation(
-            object(value)?,
+        let fields = object(value)?;
+        if profile.is_some() {
+            interpretation_work = checked_accumulate_external_interpretation_work(
+                interpretation_work,
+                array(fields, "affected_ranges")?.len(),
+                array(fields, "source_patched_versions")?.len(),
+                MAX_WORDPRESS_EVALUATION_WORK,
+            )
+            .ok_or(ComparisonError::InvalidDocument)?;
+        }
+        let evaluation = external_evaluation(
+            fields,
             namespace,
             components,
             &notices_by_id,
             &mut referenced_notices,
+            profile,
+            &profiled_resolutions,
         )?;
-        check(identities.insert(identity))?;
+        check(identities.insert(evaluation.identity.clone()))?;
+        imported_counts.record(&evaluation)?;
     }
     check(referenced_notices == notices_by_id.keys().cloned().collect())?;
+    if profile.is_some() {
+        check(
+            number(counts, "within_associations", MAX_WORDFENCE_V3_ASSOCIATIONS)?
+                == imported_counts.within
+                && number(
+                    counts,
+                    "outside_associations",
+                    MAX_WORDFENCE_V3_ASSOCIATIONS,
+                )? == imported_counts.outside
+                && number(
+                    counts,
+                    "indeterminate_associations",
+                    MAX_WORDFENCE_V3_ASSOCIATIONS,
+                )? == imported_counts.indeterminate
+                && number(counts, "selected_ranges", MAX_WORDFENCE_V3_SELECTED_RANGES)?
+                    == imported_counts.selected_ranges
+                && number(counts, "evaluated_ranges", MAX_WORDFENCE_V3_SELECTED_RANGES)?
+                    == imported_counts.evaluated_ranges
+                && number(
+                    counts,
+                    "containing_ranges",
+                    MAX_WORDFENCE_V3_SELECTED_RANGES,
+                )? == imported_counts.containing_ranges
+                && number(
+                    counts,
+                    "noncontaining_ranges",
+                    MAX_WORDFENCE_V3_SELECTED_RANGES,
+                )? == imported_counts.noncontaining_ranges
+                && number(
+                    counts,
+                    "unsupported_ranges",
+                    MAX_WORDFENCE_V3_SELECTED_RANGES,
+                )? == imported_counts.unsupported_ranges
+                && number(counts, "invalid_ranges", MAX_WORDFENCE_V3_SELECTED_RANGES)?
+                    == imported_counts.invalid_ranges
+                && number(
+                    counts,
+                    "not_evaluated_ranges",
+                    MAX_WORDFENCE_V3_SELECTED_RANGES,
+                )? == imported_counts.not_evaluated_ranges
+                && number(
+                    counts,
+                    "partial_range_coverage_associations",
+                    MAX_WORDFENCE_V3_ASSOCIATIONS,
+                )? == imported_counts.partial
+                && evaluable == imported_counts.within + imported_counts.outside
+                && unsupported == imported_counts.indeterminate
+                && selected
+                    == imported_counts.within
+                        + imported_counts.outside
+                        + imported_counts.indeterminate
+                && imported_counts.evaluated_ranges
+                    == imported_counts.containing_ranges + imported_counts.noncontaining_ranges
+                && imported_counts.selected_ranges
+                    == imported_counts.evaluated_ranges
+                        + imported_counts.unsupported_ranges
+                        + imported_counts.invalid_ranges
+                        + imported_counts.not_evaluated_ranges
+                && imported_counts.partial <= imported_counts.within,
+        )?;
+    }
     Ok(())
+}
+
+#[derive(Default)]
+struct ImportedExternalCounts {
+    within: u64,
+    outside: u64,
+    indeterminate: u64,
+    selected_ranges: u64,
+    evaluated_ranges: u64,
+    containing_ranges: u64,
+    noncontaining_ranges: u64,
+    unsupported_ranges: u64,
+    invalid_ranges: u64,
+    not_evaluated_ranges: u64,
+    partial: u64,
+}
+
+impl ImportedExternalCounts {
+    fn record(&mut self, evaluation: &ImportedExternalEvaluation) -> Result<(), ComparisonError> {
+        match evaluation.version_relation {
+            "within_supported_range_under_selected_policy" => self.within += 1,
+            "outside_declared_ranges_under_selected_policy" => self.outside += 1,
+            "indeterminate" => self.indeterminate += 1,
+            "source_comparison_semantics_unresolved" => return Ok(()),
+            _ => return Err(ComparisonError::InvalidDocument),
+        }
+        if evaluation.version_relation_reason == Some("containing_range_with_partial_coverage") {
+            self.partial += 1;
+        }
+        self.selected_ranges = self
+            .selected_ranges
+            .checked_add(evaluation.range_relations.len() as u64)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        for relation in &evaluation.range_relations {
+            match *relation {
+                "contains" => {
+                    self.containing_ranges += 1;
+                    self.evaluated_ranges += 1;
+                },
+                "does_not_contain" => {
+                    self.noncontaining_ranges += 1;
+                    self.evaluated_ranges += 1;
+                },
+                "unsupported" => self.unsupported_ranges += 1,
+                "invalid_under_profile" => self.invalid_ranges += 1,
+                "not_evaluated" => self.not_evaluated_ranges += 1,
+                _ => return Err(ComparisonError::InvalidDocument),
+            }
+        }
+        Ok(())
+    }
+}
+
+struct ImportedExternalEvaluation {
+    identity: String,
+    version_relation: &'static str,
+    version_relation_reason: Option<&'static str>,
+    range_relations: Vec<&'static str>,
 }
 
 fn external_source_counts_are_valid(parsed_records: u64, software_associations: u64) -> bool {
@@ -1010,36 +1255,69 @@ fn external_evaluation(
     components: &BTreeMap<String, ImportedWordPressComponent>,
     notices: &std::collections::BTreeMap<String, String>,
     referenced_notices: &mut std::collections::BTreeSet<String>,
-) -> Result<String, ComparisonError> {
-    keys(
-        fields,
-        &[
-            "key",
-            "title",
-            "display_name",
-            "informational",
-            "description",
-            "references",
-            "record_reference",
-            "cwe",
-            "cvss",
-            "cve",
-            "cve_link",
-            "researchers",
-            "source_dates",
-            "affected_ranges",
-            "source_patched",
-            "source_patched_versions",
-            "source_remediation",
-            "notice_ids",
-            "component_evidence",
-            "version_evidence_resolution",
-            "version_relation",
-            "applicability",
-            "execution",
-        ],
-        &[],
-    )?;
+    profile: Option<WordPressComparisonProfile>,
+    profiled_resolutions: &BTreeMap<String, ProfiledResolution>,
+) -> Result<ImportedExternalEvaluation, ComparisonError> {
+    let common_fields = [
+        "key",
+        "title",
+        "display_name",
+        "informational",
+        "description",
+        "references",
+        "record_reference",
+        "cwe",
+        "cvss",
+        "cve",
+        "cve_link",
+        "researchers",
+        "source_dates",
+        "affected_ranges",
+        "source_patched",
+        "source_patched_versions",
+        "source_remediation",
+        "notice_ids",
+        "component_evidence",
+        "version_evidence_resolution",
+        "version_relation",
+        "applicability",
+        "execution",
+    ];
+    if profile.is_some() {
+        keys(
+            fields,
+            &[
+                "key",
+                "title",
+                "display_name",
+                "informational",
+                "description",
+                "references",
+                "record_reference",
+                "cwe",
+                "cvss",
+                "cve",
+                "cve_link",
+                "researchers",
+                "source_dates",
+                "affected_ranges",
+                "range_evaluations",
+                "source_patched",
+                "source_patched_versions",
+                "source_remediation",
+                "notice_ids",
+                "component_evidence",
+                "version_evidence_resolution",
+                "version_relation",
+                "version_relation_reason",
+                "applicability",
+                "execution",
+            ],
+            &[],
+        )?;
+    } else {
+        keys(fields, &common_fields, &[])?;
+    }
     let key = object(required(fields, "key")?)?;
     keys(key, &["source_namespace", "upstream_id", "component"], &[])?;
     check(string(key, "source_namespace")? == namespace)?;
@@ -1091,6 +1369,7 @@ fn external_evaluation(
     let ranges = array(fields, "affected_ranges")?;
     check(ranges.len() <= MAX_WORDFENCE_V3_RANGES)?;
     let mut unique_ranges = std::collections::BTreeSet::new();
+    let mut imported_ranges = Vec::with_capacity(ranges.len());
     for value in ranges {
         let range = object(value)?;
         keys(
@@ -1110,10 +1389,11 @@ fn external_evaluation(
         let from = external_range_endpoint(range, "from")?;
         let to = external_range_endpoint(range, "to")?;
         check(unique_ranges.insert((label, from, to)))?;
+        imported_ranges.push((from, to));
     }
 
     boolean(fields, "source_patched")?;
-    unique_versions(
+    let source_patched_versions = unique_versions(
         fields,
         "source_patched_versions",
         MAX_WORDFENCE_V3_PATCHED_VERSIONS,
@@ -1152,32 +1432,148 @@ fn external_evaluation(
             ],
         )? == imported.evidence_class.as_str(),
     )?;
-    external_version_evidence_resolution(
+    let semantic_resolution = external_version_evidence_resolution(
         object(required(fields, "version_evidence_resolution")?)?,
         imported,
+        profile,
+        profiled_resolutions.get(&component),
     )?;
-    check(
-        string(fields, "version_relation")? == "source_comparison_semantics_unresolved"
-            && string(fields, "applicability")? == "indeterminate_unsupported",
-    )?;
+    let (version_relation, version_relation_reason, range_relations) = if let Some(profile) =
+        profile
+    {
+        let semantic_resolution = semantic_resolution.ok_or(ComparisonError::InvalidDocument)?;
+        let rendered_ranges = array(fields, "range_evaluations")?;
+        check(rendered_ranges.len() == imported_ranges.len())?;
+        let mut range_relations = Vec::with_capacity(rendered_ranges.len());
+        let mut range_reasons = Vec::with_capacity(rendered_ranges.len());
+        for (rendered, source) in rendered_ranges.iter().zip(&imported_ranges) {
+            let rendered = object(rendered)?;
+            keys(rendered, &["relation", "reason"], &[])?;
+            let relation = token(
+                rendered,
+                "relation",
+                &[
+                    "contains",
+                    "does_not_contain",
+                    "not_evaluated",
+                    "unsupported",
+                    "invalid_under_profile",
+                ],
+            )?;
+            let reason = token(
+                rendered,
+                "reason",
+                &[
+                    "selected_version_within_bounds",
+                    "selected_version_outside_bounds",
+                    "missing_version_evidence",
+                    "conflicting_version_evidence",
+                    "unsupported_version_evidence",
+                    "unsupported_lower_bound",
+                    "unsupported_upper_bound",
+                    "unsupported_both_bounds",
+                    "reversed_bounds",
+                    "empty_exclusive_interval",
+                ],
+            )?;
+            let expected =
+                external_profiled_range_result(source.0, source.1, profile, &semantic_resolution)?;
+            check((relation, reason) == expected)?;
+            range_relations.push(expected.0);
+            range_reasons.push(expected.1);
+        }
+        let relation = token(
+            fields,
+            "version_relation",
+            &[
+                "within_supported_range_under_selected_policy",
+                "outside_declared_ranges_under_selected_policy",
+                "indeterminate",
+            ],
+        )?;
+        let reason = token(
+            fields,
+            "version_relation_reason",
+            &[
+                "containing_range",
+                "containing_range_with_partial_coverage",
+                "all_ranges_outside",
+                "missing_version_evidence",
+                "conflicting_version_evidence",
+                "unsupported_version_evidence",
+                "missing_affected_ranges",
+                "unsupported_affected_range",
+                "invalid_affected_range",
+                "source_patched_version_within_affected_range",
+            ],
+        )?;
+        let applicability = token(
+            fields,
+            "applicability",
+            &[
+                "version_match_under_selected_policy",
+                "no_version_match_under_selected_policy",
+                "indeterminate",
+            ],
+        )?;
+        let expected = expected_external_association_result(
+            &semantic_resolution,
+            &range_relations,
+            &range_reasons,
+            external_patched_version_conflicts(
+                &source_patched_versions,
+                &imported_ranges,
+                profile,
+            )?,
+        )?;
+        check((relation, reason, applicability) == expected)?;
+        (expected.0, Some(expected.1), range_relations)
+    } else {
+        check(
+            string(fields, "version_relation")? == "source_comparison_semantics_unresolved"
+                && string(fields, "applicability")? == "indeterminate_unsupported",
+        )?;
+        ("source_comparison_semantics_unresolved", None, Vec::new())
+    };
     let execution = object(required(fields, "execution")?)?;
     keys(execution, &["exploit_execution", "impact_validation"], &[])?;
     check(
         string(execution, "exploit_execution")? == "not_performed"
             && string(execution, "impact_validation")? == "not_performed",
     )?;
-    Ok(format!("{namespace}:{upstream_id}:{component}"))
+    Ok(ImportedExternalEvaluation {
+        identity: format!("{namespace}:{upstream_id}:{component}"),
+        version_relation,
+        version_relation_reason,
+        range_relations,
+    })
 }
 
 fn external_version_evidence_resolution(
     fields: &serde_json::Map<String, Value>,
     component: &ImportedWordPressComponent,
-) -> Result<(), ComparisonError> {
-    keys(
-        fields,
-        &["status", "evidence_row_count", "distinct_spelling_count"],
-        &[],
-    )?;
+    profile: Option<WordPressComparisonProfile>,
+    precomputed: Option<&ProfiledResolution>,
+) -> Result<Option<ProfiledResolution>, ComparisonError> {
+    if profile.is_some() {
+        keys(
+            fields,
+            &[
+                "status",
+                "evidence_row_count",
+                "distinct_spelling_count",
+                "semantic_status",
+                "semantic_reason",
+            ],
+            &[],
+        )?;
+    } else {
+        keys(
+            fields,
+            &["status", "evidence_row_count", "distinct_spelling_count"],
+            &[],
+        )?;
+    }
     let status = token(
         fields,
         "status",
@@ -1215,13 +1611,197 @@ fn external_version_evidence_resolution(
         u64::try_from(component.versions.len()).ok() == Some(evidence_row_count)
             && u64::try_from(actual_distinct).ok() == Some(distinct_spelling_count)
             && status == expected_status,
-    )
+    )?;
+    if profile.is_none() {
+        check(precomputed.is_none())?;
+        return Ok(None);
+    }
+    let resolution = precomputed.ok_or(ComparisonError::InvalidDocument)?;
+    check(
+        token(
+            fields,
+            "semantic_status",
+            &[
+                "missing",
+                "supported_equivalent",
+                "conflicting",
+                "unsupported",
+            ],
+        )? == resolution.status
+            && token(
+                fields,
+                "semantic_reason",
+                &[
+                    "no_version_evidence",
+                    "single_supported_version",
+                    "equivalent_supported_versions",
+                    "conflicting_version_evidence",
+                    "unsupported_version_evidence",
+                ],
+            )? == resolution.reason,
+    )?;
+    Ok(Some(resolution.clone()))
+}
+
+fn external_profiled_range_result(
+    from: (&str, &str, bool),
+    to: (&str, &str, bool),
+    profile: WordPressComparisonProfile,
+    resolution: &ProfiledResolution,
+) -> Result<(&'static str, &'static str), ComparisonError> {
+    let lower = external_profiled_endpoint(from, profile);
+    let upper = external_profiled_endpoint(to, profile);
+    let (lower, upper) = match (lower, upper) {
+        (Err(()), Err(())) => return Ok(("unsupported", "unsupported_both_bounds")),
+        (Err(()), Ok(_)) => return Ok(("unsupported", "unsupported_lower_bound")),
+        (Ok(_), Err(())) => return Ok(("unsupported", "unsupported_upper_bound")),
+        (Ok(lower), Ok(upper)) => (lower, upper),
+    };
+    if let (Some((lower_version, lower_inclusive)), Some((upper_version, upper_inclusive))) =
+        (&lower, &upper)
+    {
+        match profiled_compare(lower_version, upper_version)? {
+            Ordering::Greater => return Ok(("invalid_under_profile", "reversed_bounds")),
+            Ordering::Equal if !(*lower_inclusive && *upper_inclusive) => {
+                return Ok(("invalid_under_profile", "empty_exclusive_interval"));
+            },
+            Ordering::Less | Ordering::Equal => {},
+        }
+    }
+    let Some(version) = resolution.selected.as_ref() else {
+        let reason = match resolution.status {
+            "missing" => "missing_version_evidence",
+            "conflicting" => "conflicting_version_evidence",
+            "unsupported" => "unsupported_version_evidence",
+            _ => return Err(ComparisonError::InvalidDocument),
+        };
+        return Ok(("not_evaluated", reason));
+    };
+    let above_lower = match &lower {
+        None => true,
+        Some((bound, inclusive)) => match profiled_compare(version, bound)? {
+            Ordering::Greater => true,
+            Ordering::Equal => *inclusive,
+            Ordering::Less => false,
+        },
+    };
+    let below_upper = match &upper {
+        None => true,
+        Some((bound, inclusive)) => match profiled_compare(version, bound)? {
+            Ordering::Less => true,
+            Ordering::Equal => *inclusive,
+            Ordering::Greater => false,
+        },
+    };
+    if above_lower && below_upper {
+        Ok(("contains", "selected_version_within_bounds"))
+    } else {
+        Ok(("does_not_contain", "selected_version_outside_bounds"))
+    }
+}
+
+fn external_profiled_endpoint(
+    endpoint: (&str, &str, bool),
+    profile: WordPressComparisonProfile,
+) -> Result<Option<(ProfiledVersionKey, bool)>, ()> {
+    match endpoint {
+        ("any", "*", _) => Ok(None),
+        ("declared", value, inclusive) => ProfiledVersionKey::parse(profile, value)
+            .map(|version| Some((version, inclusive)))
+            .map_err(|_| ()),
+        _ => Err(()),
+    }
+}
+
+fn external_patched_version_conflicts(
+    patched_versions: &[&str],
+    ranges: &[ImportedExternalRange<'_>],
+    profile: WordPressComparisonProfile,
+) -> Result<bool, ComparisonError> {
+    for declared in patched_versions {
+        let Ok(selected) = ProfiledVersionKey::parse(profile, declared) else {
+            continue;
+        };
+        let resolution = ProfiledResolution {
+            status: "supported_equivalent",
+            reason: "single_supported_version",
+            selected: Some(selected),
+        };
+        for (from, to) in ranges {
+            if external_profiled_range_result(*from, *to, profile, &resolution)?.0 == "contains" {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn expected_external_association_result(
+    resolution: &ProfiledResolution,
+    range_relations: &[&str],
+    range_reasons: &[&str],
+    source_patched_version_conflict: bool,
+) -> Result<(&'static str, &'static str, &'static str), ComparisonError> {
+    check(range_relations.len() == range_reasons.len())?;
+    let has_invalid = range_relations.contains(&"invalid_under_profile");
+    let has_unsupported = range_relations.contains(&"unsupported");
+    let has_containing = range_relations.contains(&"contains");
+    let all_outside = !range_relations.is_empty()
+        && range_relations
+            .iter()
+            .all(|relation| *relation == "does_not_contain");
+    if has_invalid {
+        return Ok(("indeterminate", "invalid_affected_range", "indeterminate"));
+    }
+    if source_patched_version_conflict {
+        return Ok((
+            "indeterminate",
+            "source_patched_version_within_affected_range",
+            "indeterminate",
+        ));
+    }
+    match resolution.status {
+        "missing" => Ok(("indeterminate", "missing_version_evidence", "indeterminate")),
+        "conflicting" => Ok((
+            "indeterminate",
+            "conflicting_version_evidence",
+            "indeterminate",
+        )),
+        "unsupported" => Ok((
+            "indeterminate",
+            "unsupported_version_evidence",
+            "indeterminate",
+        )),
+        "supported_equivalent" if range_relations.is_empty() => {
+            Ok(("indeterminate", "missing_affected_ranges", "indeterminate"))
+        },
+        "supported_equivalent" if has_containing => Ok((
+            "within_supported_range_under_selected_policy",
+            if has_unsupported {
+                "containing_range_with_partial_coverage"
+            } else {
+                "containing_range"
+            },
+            "version_match_under_selected_policy",
+        )),
+        "supported_equivalent" if has_unsupported => Ok((
+            "indeterminate",
+            "unsupported_affected_range",
+            "indeterminate",
+        )),
+        "supported_equivalent" if all_outside => Ok((
+            "outside_declared_ranges_under_selected_policy",
+            "all_ranges_outside",
+            "no_version_match_under_selected_policy",
+        )),
+        _ => Err(ComparisonError::InvalidDocument),
+    }
 }
 
 fn external_range_endpoint<'a>(
     fields: &'a serde_json::Map<String, Value>,
     prefix: &str,
-) -> Result<(&'a str, &'a str, bool), ComparisonError> {
+) -> Result<ImportedExternalRangeEndpoint<'a>, ComparisonError> {
     let kind_name = format!("{prefix}_kind");
     let version_name = format!("{prefix}_version");
     let inclusive_name = format!("{prefix}_inclusive");
@@ -1355,19 +1935,21 @@ fn unique_text_array(
     Ok(())
 }
 
-fn unique_versions(
-    fields: &serde_json::Map<String, Value>,
+fn unique_versions<'a>(
+    fields: &'a serde_json::Map<String, Value>,
     name: &str,
     limit: usize,
-) -> Result<(), ComparisonError> {
+) -> Result<Vec<&'a str>, ComparisonError> {
     let values = array(fields, name)?;
     check(values.len() <= limit)?;
     let mut unique = std::collections::BTreeSet::new();
+    let mut validated = Vec::with_capacity(values.len());
     for value in values {
         let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
         check(valid_external_version(value) && unique.insert(value))?;
+        validated.push(value);
     }
-    Ok(())
+    Ok(validated)
 }
 
 fn optional_source_datetime(

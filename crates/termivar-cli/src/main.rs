@@ -33,7 +33,9 @@ mod report_verify;
 mod wordpress_input;
 
 #[cfg(feature = "wordpress-review")]
-use wordpress_input::WordPressAdvisoriesFormat;
+use wordpress_input::{
+    WordPressAdvisoriesFormat, WordPressAdvisoryOptions, WordPressExternalVersionProfile,
+};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{ffi::OsString, path::PathBuf};
@@ -196,7 +198,8 @@ fn scan_rest_review_flags_conflict(
 struct WordPressReviewFlagSelection {
     context: bool,
     advisories: bool,
-    advisories_format: bool,
+    advisories_format: Option<WordPressAdvisoriesFormat>,
+    external_version_profile: bool,
     plugins: bool,
     themes: bool,
     core_version: bool,
@@ -209,11 +212,18 @@ fn scan_wordpress_review_flags_conflict(
     selected: WordPressReviewFlagSelection,
 ) -> Option<&'static str> {
     let saved_inventory_selected = selected.plugins || selected.themes || selected.core_version;
-    if selected.advisories_format && !selected.advisories {
+    if selected.advisories_format.is_some() && !selected.advisories {
         Some("`--wordpress-advisories-format` requires `--wordpress-advisories`")
+    } else if selected.external_version_profile && !selected.advisories {
+        Some("`--wordpress-external-version-profile` requires `--wordpress-advisories`")
+    } else if selected.external_version_profile
+        && selected.advisories_format != Some(WordPressAdvisoriesFormat::WordfenceV3Production)
+    {
+        Some("`--wordpress-external-version-profile` requires format `wordfence-v3-production`")
     } else if (selected.context
         || selected.advisories
-        || selected.advisories_format
+        || selected.advisories_format.is_some()
+        || selected.external_version_profile
         || saved_inventory_selected)
         && !wordpress_review
     {
@@ -429,6 +439,22 @@ struct ScanArgs {
         requires_all = ["profile", "wordpress_review", "wordpress_advisories"]
     )]
     wordpress_advisories_format: Option<WordPressAdvisoriesFormat>,
+    /// Explicitly ask Termivar to interpret a local Wordfence Production
+    /// export's structured version ranges with one existing comparison rule.
+    /// This does not establish the source's own comparison semantics.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PROFILE",
+        requires_all = [
+            "profile",
+            "wordpress_review",
+            "wordpress_advisories",
+            "wordpress_advisories_format"
+        ]
+    )]
+    wordpress_external_version_profile: Option<WordPressExternalVersionProfile>,
     /// Read a bounded saved
     /// `wp plugin list --fields=name,status,version --format=json` inventory.
     /// The source is operator-supplied evidence and is never executed.
@@ -712,6 +738,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         #[cfg(feature = "wordpress-review")]
         wordpress_advisories_format,
         #[cfg(feature = "wordpress-review")]
+        wordpress_external_version_profile,
+        #[cfg(feature = "wordpress-review")]
         wordpress_plugins_json,
         #[cfg(feature = "wordpress-review")]
         wordpress_themes_json,
@@ -784,7 +812,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         WordPressReviewFlagSelection {
             context: wordpress_context.is_some(),
             advisories: wordpress_advisories.is_some(),
-            advisories_format: wordpress_advisories_format.is_some(),
+            advisories_format: wordpress_advisories_format,
+            external_version_profile: wordpress_external_version_profile.is_some(),
             plugins: wordpress_plugins_json.is_some(),
             themes: wordpress_themes_json.is_some(),
             core_version: wordpress_core_version_file.is_some(),
@@ -905,7 +934,10 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_review,
         wordpress_context,
         wordpress_advisories,
-        wordpress_advisories_format,
+        WordPressAdvisoryOptions::new(
+            wordpress_advisories_format,
+            wordpress_external_version_profile,
+        ),
         wordpress_plugins_json,
         wordpress_themes_json,
         wordpress_core_version_file,
@@ -1508,6 +1540,8 @@ mod tests {
             assert!(!args.wordpress_review);
             assert_eq!(args.wordpress_context, None);
             assert_eq!(args.wordpress_advisories, None);
+            assert_eq!(args.wordpress_advisories_format, None);
+            assert_eq!(args.wordpress_external_version_profile, None);
             assert_eq!(args.wordpress_plugins_json, None);
             assert_eq!(args.wordpress_themes_json, None);
             assert_eq!(args.wordpress_core_version_file, None);
@@ -1568,6 +1602,8 @@ mod tests {
             assert!(!args.wordpress_review);
             assert_eq!(args.wordpress_context, None);
             assert_eq!(args.wordpress_advisories, None);
+            assert_eq!(args.wordpress_advisories_format, None);
+            assert_eq!(args.wordpress_external_version_profile, None);
             assert_eq!(args.wordpress_plugins_json, None);
             assert_eq!(args.wordpress_themes_json, None);
             assert_eq!(args.wordpress_core_version_file, None);
@@ -2130,6 +2166,7 @@ mod tests {
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-advisories-format",
+            "--wordpress-external-version-profile",
             "--wordpress-plugins-json",
             "--wordpress-themes-json",
             "--wordpress-core-version-file",
@@ -2184,7 +2221,8 @@ mod tests {
                 WordPressReviewFlagSelection {
                     context: baseline.wordpress_context.is_some(),
                     advisories: baseline.wordpress_advisories.is_some(),
-                    advisories_format: baseline.wordpress_advisories_format.is_some(),
+                    advisories_format: baseline.wordpress_advisories_format,
+                    external_version_profile: baseline.wordpress_external_version_profile.is_some(),
                     plugins: baseline.wordpress_plugins_json.is_some(),
                     themes: baseline.wordpress_themes_json.is_some(),
                     core_version: baseline.wordpress_core_version_file.is_some(),
@@ -2218,6 +2256,7 @@ mod tests {
             review.wordpress_advisories_format,
             Some(WordPressAdvisoriesFormat::WordfenceV3Production)
         );
+        assert_eq!(review.wordpress_external_version_profile, None);
         assert!(review.progress);
         assert_eq!(
             scan_wordpress_review_flags_conflict(
@@ -2226,11 +2265,124 @@ mod tests {
                 WordPressReviewFlagSelection {
                     context: true,
                     advisories: true,
-                    advisories_format: true,
+                    advisories_format: Some(WordPressAdvisoriesFormat::WordfenceV3Production),
                     ..WordPressReviewFlagSelection::default()
                 },
             ),
             None
+        );
+
+        let explicit_external_profile = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-advisories",
+            "wordfence.json",
+            "--wordpress-advisories-format",
+            "wordfence-v3-production",
+            "--wordpress-external-version-profile",
+            "php-release-subset/v1",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let explicit_external_profile = parsed_scan_args(&explicit_external_profile);
+        assert_eq!(
+            explicit_external_profile.wordpress_external_version_profile,
+            Some(WordPressExternalVersionProfile::PhpReleaseSubsetV1)
+        );
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                explicit_external_profile.profile,
+                explicit_external_profile.wordpress_review,
+                WordPressReviewFlagSelection {
+                    advisories: true,
+                    advisories_format: Some(WordPressAdvisoriesFormat::WordfenceV3Production,),
+                    external_version_profile: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            None
+        );
+
+        let native_catalogue_profile = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-advisories",
+            "catalogue.json",
+            "--wordpress-advisories-format",
+            "termivar",
+            "--wordpress-external-version-profile",
+            "numeric-dotted/v1",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let native_catalogue_profile = parsed_scan_args(&native_catalogue_profile);
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                native_catalogue_profile.profile,
+                native_catalogue_profile.wordpress_review,
+                WordPressReviewFlagSelection {
+                    advisories: true,
+                    advisories_format: Some(WordPressAdvisoriesFormat::Termivar),
+                    external_version_profile: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            Some(
+                "`--wordpress-external-version-profile` requires format `wordfence-v3-production`"
+            )
+        );
+        for invalid in [
+            "numeric-dotted",
+            "php-release-subset",
+            "numeric-dotted/v2",
+            "unknown/v1",
+        ] {
+            assert!(Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "--profile",
+                "web-review",
+                "--wordpress-review",
+                "--wordpress-advisories",
+                "wordfence.json",
+                "--wordpress-advisories-format",
+                "wordfence-v3-production",
+                "--wordpress-external-version-profile",
+                invalid,
+                "https://example.test/",
+            ])
+            .is_err());
+        }
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-external-version-profile",
+            "numeric-dotted/v1",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                WordPressReviewFlagSelection {
+                    advisories: true,
+                    external_version_profile: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            Some(
+                "`--wordpress-external-version-profile` requires format `wordfence-v3-production`"
+            )
         );
         assert!(Cli::try_parse_from([
             "termivar",
@@ -2281,6 +2433,7 @@ mod tests {
         assert!(saved_inventory.wordpress_core_version_file.is_some());
         assert!(saved_inventory.wordpress_advisories.is_some());
         assert_eq!(saved_inventory.wordpress_advisories_format, None);
+        assert_eq!(saved_inventory.wordpress_external_version_profile, None);
         assert_eq!(
             scan_wordpress_review_flags_conflict(
                 saved_inventory.profile,
@@ -2324,7 +2477,7 @@ mod tests {
                 Some(CliScanProfile::WebReview),
                 true,
                 WordPressReviewFlagSelection {
-                    advisories_format: true,
+                    advisories_format: Some(WordPressAdvisoriesFormat::Termivar),
                     ..WordPressReviewFlagSelection::default()
                 },
             ),
@@ -2359,6 +2512,7 @@ mod tests {
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-advisories-format",
+            "--wordpress-external-version-profile",
             "--wordpress-plugins-json",
             "--wordpress-themes-json",
             "--wordpress-core-version-file",
@@ -2390,6 +2544,16 @@ mod tests {
             ])
             .is_err());
         }
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-external-version-profile",
+            "numeric-dotted/v1",
+            "https://example.test/",
+        ])
+        .is_err());
     }
 
     #[cfg(feature = "ssrf-oast-review")]

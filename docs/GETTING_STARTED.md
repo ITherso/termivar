@@ -258,6 +258,7 @@ termivar scan <AUTHORIZED_EXACT_ROOT> \
   --wordpress-core-version-file <CORE_VERSION.txt> \
   --wordpress-advisories <WORDFENCE_PRODUCTION.json> \
   --wordpress-advisories-format wordfence-v3-production \
+  --wordpress-external-version-profile php-release-subset/v1 \
   --report-dir <NEW_REPORT_DIRECTORY>
 ```
 
@@ -265,6 +266,12 @@ All local files are optional, but each requires `--wordpress-review`; the saved
 inventory files conflict with `--wordpress-context`. External format selection
 never fetches the feed or searches for an API key, and omitting it keeps the
 native Termivar catalogue contract.
+The optional external version profile is accepted only for an explicitly
+selected local `wordfence-v3-production` file. Choose `numeric-dotted/v1` or
+`php-release-subset/v1` to request that named Termivar interpretation. Omitting
+the selector preserves the unresolved v4 behavior; selecting it produces the
+strict v5 audit and records `explicit_operator` selection with source semantics
+still `not_established`. There is no profile inference or fallback.
 WordPress interpretation reuses the complete root HTML already obtained by the
 assessment and adds no request or active verification. Generator metadata and
 asset paths are hints rather than authenticated installation facts; the context

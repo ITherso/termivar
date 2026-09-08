@@ -2072,3 +2072,464 @@ fn cross_run_wordpress_compare_separates_inventory_and_advisory_changes() {
         "offline Verify and Compare must add no target requests"
     );
 }
+
+#[test]
+fn explicit_wordfence_profiles_produce_nonconstant_v5_results_without_more_requests() {
+    const ROOT: &str = r#"<!doctype html><html><head>
+        <meta name="generator" content="WordPress 2.4.0-beta1">
+        <link rel="stylesheet" href="/wp-content/plugins/synthetic-policy-within/style.css">
+        <link rel="stylesheet" href="/wp-content/themes/synthetic-policy-outside/style.css">
+        </head><body>bounded explicit-policy fixture</body></html>"#;
+    const PLUGINS: &[u8] =
+        br#"[{"name":"synthetic-policy-within","status":"active","version":"1.5"}]"#;
+    const THEMES: &[u8] =
+        br#"[{"name":"synthetic-policy-outside","status":"active","version":"2.1"}]"#;
+    const CORE: &[u8] = b"2.4.0-beta1\n";
+    const EXPECTED_REQUESTS: [&str; 5] = [
+        "GET / HTTP/1.1",
+        "GET / HTTP/1.1",
+        "GET / HTTP/1.1",
+        "HEAD /wp-content/plugins/synthetic-policy-within/style.css HTTP/1.1",
+        "HEAD /wp-content/themes/synthetic-policy-outside/style.css HTTP/1.1",
+    ];
+    const ADVISORY_ID: &str = "00000000-0000-4000-8000-0000000000a5";
+
+    let advisories = serde_json::to_vec_pretty(&serde_json::json!({
+        ADVISORY_ID: {
+            "id": ADVISORY_ID,
+            "title": "[SYNTHETIC] Explicit interpretation acceptance",
+            "software": [
+                {
+                    "type": "plugin",
+                    "name": "[SYNTHETIC] Within-range plugin",
+                    "slug": "synthetic-policy-within",
+                    "affected_versions": {
+                        "[1.0, 2.0]": {
+                            "from_version": "1.0",
+                            "from_inclusive": true,
+                            "to_version": "2.0",
+                            "to_inclusive": true
+                        }
+                    },
+                    "patched": true,
+                    "patched_versions": ["2.1"],
+                    "remediation": "Synthetic source declaration; validate through the normal operator process."
+                },
+                {
+                    "type": "theme",
+                    "name": "[SYNTHETIC] Outside-range theme",
+                    "slug": "synthetic-policy-outside",
+                    "affected_versions": {
+                        "[1.0, 2.0]": {
+                            "from_version": "1.0",
+                            "from_inclusive": true,
+                            "to_version": "2.0",
+                            "to_inclusive": true
+                        }
+                    },
+                    "patched": false,
+                    "patched_versions": [],
+                    "remediation": "Synthetic source declaration; no installed remediation is asserted."
+                },
+                {
+                    "type": "core",
+                    "name": "[SYNTHETIC] Prerelease core",
+                    "slug": "wordpress",
+                    "affected_versions": {
+                        "[2.4.0-beta0, 2.4.0)": {
+                            "from_version": "2.4.0-beta0",
+                            "from_inclusive": true,
+                            "to_version": "2.4.0",
+                            "to_inclusive": false
+                        }
+                    },
+                    "patched": true,
+                    "patched_versions": ["2.4.0"],
+                    "remediation": "Synthetic prerelease boundary; this is not a vendor comparator claim."
+                }
+            ],
+            "informational": false,
+            "description": "Fictional data for process-level explicit-policy acceptance.",
+            "references": ["https://example.invalid/termivar/explicit-policy/a5"],
+            "cwe": null,
+            "cvss": null,
+            "cve": null,
+            "cve_link": null,
+            "researchers": [],
+            "published": null,
+            "updated": null,
+            "copyrights": null
+        }
+    }))
+    .unwrap();
+
+    let directory = tempfile::tempdir().unwrap();
+    let plugins_path = directory.path().join("PRIVATE-POLICY-PLUGINS.json");
+    let themes_path = directory.path().join("PRIVATE-POLICY-THEMES.json");
+    let core_path = directory.path().join("PRIVATE-POLICY-CORE.txt");
+    let advisories_path = directory.path().join("PRIVATE-POLICY-WORDFENCE.json");
+    for (path, bytes) in [
+        (&plugins_path, PLUGINS),
+        (&themes_path, THEMES),
+        (&core_path, CORE),
+        (&advisories_path, advisories.as_slice()),
+    ] {
+        fs::write(path, bytes).unwrap();
+    }
+    let input_snapshots = [
+        (plugins_path.clone(), PLUGINS.to_vec(), sha256(PLUGINS)),
+        (themes_path.clone(), THEMES.to_vec(), sha256(THEMES)),
+        (core_path.clone(), CORE.to_vec(), sha256(CORE)),
+        (
+            advisories_path.clone(),
+            advisories.clone(),
+            sha256(&advisories),
+        ),
+    ];
+    let unresolved_bundle = directory.path().join("unresolved-assessment");
+    let numeric_bundle = directory.path().join("numeric-assessment");
+    let php_bundle = directory.path().join("php-assessment");
+    let server = serve(ROOT);
+
+    let run_scan = |profile: Option<&str>, bundle: &Path| {
+        let mut command = termivar();
+        command
+            .args([
+                "scan",
+                "--profile",
+                "web-review",
+                "--wordpress-review",
+                "--wordpress-plugins-json",
+            ])
+            .arg(&plugins_path)
+            .arg("--wordpress-themes-json")
+            .arg(&themes_path)
+            .arg("--wordpress-core-version-file")
+            .arg(&core_path)
+            .arg("--wordpress-advisories")
+            .arg(&advisories_path)
+            .args(["--wordpress-advisories-format", "wordfence-v3-production"]);
+        if let Some(profile) = profile {
+            command
+                .arg("--wordpress-external-version-profile")
+                .arg(profile);
+        }
+        let output = command
+            .arg("--report-dir")
+            .arg(bundle)
+            .arg(&server.url)
+            .output()
+            .expect("explicit-policy scan must start");
+        assert!(
+            output.status.success(),
+            "scan stdout: {}\nscan stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+        serde_json::from_slice::<serde_json::Value>(
+            &fs::read(bundle.join("assessment.json")).unwrap(),
+        )
+        .unwrap()
+    };
+
+    let unresolved = run_scan(None, &unresolved_bundle);
+    let numeric = run_scan(Some("numeric-dotted/v1"), &numeric_bundle);
+    let php = run_scan(Some("php-release-subset/v1"), &php_bundle);
+
+    let expected_trace = EXPECTED_REQUESTS
+        .into_iter()
+        .cycle()
+        .take(EXPECTED_REQUESTS.len() * 3)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let requests_after_scans = server.requests.lock().unwrap().clone();
+    assert_eq!(requests_after_scans, expected_trace);
+
+    let unresolved_external = &unresolved["wordpress_review"]["external_review"];
+    assert_eq!(
+        unresolved["wordpress_review"]["schema"],
+        "security.wordpress-review-audit/v4"
+    );
+    assert_eq!(
+        unresolved_external["comparison_policy"],
+        "wordfence-v3/source-semantics-unresolved/v1"
+    );
+    for absent in [
+        "comparison_profile",
+        "policy_selection",
+        "source_semantics_assurance",
+    ] {
+        assert!(unresolved_external.get(absent).is_none());
+    }
+    assert_eq!(unresolved_external["counts"]["evaluable_associations"], 0);
+    assert_eq!(unresolved_external["counts"]["unsupported_associations"], 3);
+    assert!(unresolved_external["evaluations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|evaluation| {
+            evaluation["version_relation"] == "source_comparison_semantics_unresolved"
+                && evaluation["applicability"] == "indeterminate_unsupported"
+                && evaluation.get("range_evaluations").is_none()
+                && evaluation.get("version_relation_reason").is_none()
+        }));
+
+    fn evaluation_for<'a>(assessment: &'a serde_json::Value, kind: &str) -> &'a serde_json::Value {
+        assessment["wordpress_review"]["external_review"]["evaluations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|evaluation| evaluation["key"]["component"]["kind"] == kind)
+            .unwrap_or_else(|| panic!("missing {kind} evaluation"))
+    }
+
+    let assert_explicit_metadata = |assessment: &serde_json::Value, profile: &str| {
+        let audit = &assessment["wordpress_review"];
+        let external = &audit["external_review"];
+        assert_eq!(audit["schema"], "security.wordpress-review-audit/v5");
+        assert_eq!(
+            external["comparison_policy"],
+            "termivar.wordfence-v3-explicit-interpretation/v1"
+        );
+        assert_eq!(external["comparison_profile"], profile);
+        assert_eq!(external["policy_selection"], "explicit_operator");
+        assert_eq!(external["source_semantics_assurance"], "not_established");
+        assert_eq!(external["counts"]["selected_associations"], 3);
+        assert_eq!(external["counts"]["selected_ranges"], 3);
+        assert!(external["evaluations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|evaluation| {
+                evaluation["execution"]["exploit_execution"] == "not_performed"
+                    && evaluation["execution"]["impact_validation"] == "not_performed"
+            }));
+    };
+    assert_explicit_metadata(&numeric, "numeric-dotted/v1");
+    assert_explicit_metadata(&php, "php-release-subset/v1");
+
+    let numeric_counts = &numeric["wordpress_review"]["external_review"]["counts"];
+    for (name, expected) in [
+        ("evaluable_associations", 2),
+        ("unsupported_associations", 1),
+        ("within_associations", 1),
+        ("outside_associations", 1),
+        ("indeterminate_associations", 1),
+        ("evaluated_ranges", 2),
+        ("containing_ranges", 1),
+        ("noncontaining_ranges", 1),
+        ("unsupported_ranges", 1),
+        ("invalid_ranges", 0),
+        ("not_evaluated_ranges", 0),
+    ] {
+        assert_eq!(numeric_counts[name], expected, "numeric count {name}");
+    }
+    for (kind, relation, reason, applicability, range_relation) in [
+        (
+            "plugin",
+            "within_supported_range_under_selected_policy",
+            "containing_range",
+            "version_match_under_selected_policy",
+            "contains",
+        ),
+        (
+            "theme",
+            "outside_declared_ranges_under_selected_policy",
+            "all_ranges_outside",
+            "no_version_match_under_selected_policy",
+            "does_not_contain",
+        ),
+        (
+            "core",
+            "indeterminate",
+            "unsupported_version_evidence",
+            "indeterminate",
+            "unsupported",
+        ),
+    ] {
+        let evaluation = evaluation_for(&numeric, kind);
+        assert_eq!(evaluation["version_relation"], relation, "numeric {kind}");
+        assert_eq!(
+            evaluation["version_relation_reason"], reason,
+            "numeric {kind}"
+        );
+        assert_eq!(evaluation["applicability"], applicability, "numeric {kind}");
+        assert_eq!(
+            evaluation["range_evaluations"][0]["relation"], range_relation,
+            "numeric {kind}"
+        );
+    }
+    assert_eq!(
+        evaluation_for(&numeric, "core")["version_evidence_resolution"]["semantic_status"],
+        "unsupported"
+    );
+
+    let php_counts = &php["wordpress_review"]["external_review"]["counts"];
+    for (name, expected) in [
+        ("evaluable_associations", 3),
+        ("unsupported_associations", 0),
+        ("within_associations", 2),
+        ("outside_associations", 1),
+        ("indeterminate_associations", 0),
+        ("evaluated_ranges", 3),
+        ("containing_ranges", 2),
+        ("noncontaining_ranges", 1),
+        ("unsupported_ranges", 0),
+        ("invalid_ranges", 0),
+        ("not_evaluated_ranges", 0),
+    ] {
+        assert_eq!(php_counts[name], expected, "PHP count {name}");
+    }
+    assert_eq!(
+        evaluation_for(&php, "core")["version_relation"],
+        "within_supported_range_under_selected_policy"
+    );
+    assert_eq!(
+        evaluation_for(&php, "core")["version_relation_reason"],
+        "containing_range"
+    );
+    assert_eq!(
+        evaluation_for(&php, "core")["applicability"],
+        "version_match_under_selected_policy"
+    );
+    assert_eq!(
+        evaluation_for(&php, "core")["range_evaluations"][0]["relation"],
+        "contains"
+    );
+    assert_eq!(
+        evaluation_for(&php, "core")["version_evidence_resolution"]["semantic_status"],
+        "supported_equivalent"
+    );
+
+    let bundle_snapshots = [&unresolved_bundle, &numeric_bundle, &php_bundle]
+        .into_iter()
+        .flat_map(|bundle| {
+            ["assessment.html", "assessment.json", "manifest.json"].map(|name| {
+                let path = bundle.join(name);
+                let bytes = fs::read(&path).unwrap();
+                let digest = sha256(&bytes);
+                (path, bytes, digest)
+            })
+        })
+        .collect::<Vec<_>>();
+    for bundle in [&unresolved_bundle, &numeric_bundle, &php_bundle] {
+        let output = termivar()
+            .args(["report", "verify", "--dir"])
+            .arg(bundle)
+            .args(["--format", "json"])
+            .output()
+            .expect("bundle verification must start");
+        assert!(
+            output.status.success(),
+            "verify stdout: {}\nverify stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["status"], "integrity_match");
+    }
+
+    let compare = |before: &Path, after: &Path| {
+        let output = termivar()
+            .args(["report", "compare", "--before"])
+            .arg(before.join("assessment.json"))
+            .arg("--after")
+            .arg(after.join("assessment.json"))
+            .args(["--same-scope", "--format", "json"])
+            .output()
+            .expect("report comparison must start");
+        assert!(
+            output.status.success(),
+            "compare stdout: {}\ncompare stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let self_comparison = compare(&numeric_bundle, &numeric_bundle);
+    assert_eq!(
+        self_comparison["wordpress_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        self_comparison["wordpress_review_comparison"]["advisories"]["paired_unchanged_count"],
+        3
+    );
+    assert!(
+        self_comparison["wordpress_review_comparison"]["advisories"]["paired_changed"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let unresolved_to_numeric = compare(&unresolved_bundle, &numeric_bundle);
+    let methodology = &unresolved_to_numeric["wordpress_review_comparison"]["methodology"];
+    assert_eq!(methodology["status"], "changed");
+    let changed_fields = methodology["changed_fields"].as_array().unwrap();
+    for expected in [
+        "schema",
+        "comparison_policy",
+        "comparison_profile",
+        "policy_selection",
+        "source_semantics_assurance",
+    ] {
+        assert!(
+            changed_fields.iter().any(|field| field == expected),
+            "methodology omitted {expected}"
+        );
+    }
+    assert_eq!(
+        unresolved_to_numeric["wordpress_review_comparison"]["advisories"]["paired_changed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+
+    let numeric_to_php = compare(&numeric_bundle, &php_bundle);
+    assert_eq!(
+        numeric_to_php["wordpress_review_comparison"]["methodology"]["status"],
+        "changed"
+    );
+    assert!(
+        numeric_to_php["wordpress_review_comparison"]["methodology"]["changed_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "comparison_profile")
+    );
+    assert_eq!(
+        numeric_to_php["wordpress_review_comparison"]["advisories"]["paired_unchanged_count"],
+        2
+    );
+    let changed = numeric_to_php["wordpress_review_comparison"]["advisories"]["paired_changed"]
+        .as_array()
+        .unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0]["key"]["component"]["kind"], "core");
+    assert_eq!(
+        changed[0]["changed_dimensions"],
+        serde_json::json!(["applicability", "evaluation_basis"])
+    );
+
+    for (path, expected_bytes, expected_digest) in input_snapshots {
+        let observed = fs::read(path).unwrap();
+        assert_eq!(observed, expected_bytes);
+        assert_eq!(sha256(&observed), expected_digest);
+    }
+    for (path, expected_bytes, expected_digest) in bundle_snapshots {
+        let observed = fs::read(path).unwrap();
+        assert_eq!(observed, expected_bytes);
+        assert_eq!(sha256(&observed), expected_digest);
+    }
+    assert_eq!(
+        server.requests.lock().unwrap().as_slice(),
+        requests_after_scans,
+        "offline Verify and Compare must add no target requests"
+    );
+    eprintln!(
+        "explicit Wordfence policy acceptance: v4=3 unresolved; numeric=1 within/1 outside/1 indeterminate; php=2 within/1 outside/0 indeterminate; target_requests={}",
+        requests_after_scans.len()
+    );
+}

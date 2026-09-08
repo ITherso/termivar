@@ -60,7 +60,7 @@ The fixture deliberately contains:
 The human-readable keys inside `affected_versions` are labels. The four nested
 `from_version`, `from_inclusive`, `to_version`, and `to_inclusive` fields are the
 structured range declarations. Only a whole-value `*` is the documented
-wildcard sentinel.
+wildcard sentinel. `1.*` is not a supported wildcard and must not be expanded.
 
 These are parser-level expectations. Selection and evaluation counts depend on
 the operator-supplied installation inventory. A conforming adapter must retain
@@ -73,9 +73,33 @@ unsupported, and excluded counts without calling omitted data complete.
 The public feed format documents bounds and inclusivity but does not, by itself,
 establish how every version spelling is ordered. In particular, this fixture's
 `1.0` / `1.0.0` range must not be resolved by silently choosing whichever
-existing Termivar profile produces a match. Until the source comparison policy
-is established for the accepted domain, the association should remain
-indeterminate with a source-semantics limitation.
+existing Termivar profile produces a match. Without an explicit selector, the
+association remains indeterminate in the v4 audit with a source-semantics
+limitation.
+
+For development-source acceptance, an operator may explicitly add exactly one
+of these options to a scan that already selects this local Production-format
+file:
+
+```text
+--wordpress-external-version-profile numeric-dotted/v1
+--wordpress-external-version-profile php-release-subset/v1
+```
+
+That opt-in asks Termivar to evaluate the structured intervals under the named
+local rule. It emits `security.wordpress-review-audit/v5` with
+`comparison_policy=termivar.wordfence-v3-explicit-interpretation/v1`,
+`policy_selection=explicit_operator`, and
+`source_semantics_assurance=not_established`. It is not a claim about the
+provider's normative comparator and cannot be selected implicitly or retried
+under the other rule.
+
+Under an explicit profile, a supported containing range can produce a
+qualified positive while separately retaining an unsupported-range limitation.
+An outside result requires every declared range to be conclusively outside.
+Unsupported spellings, missing or conflicting versions, reversed bounds, and
+equal exclusive-empty intervals remain indeterminate; ranges are not swapped,
+dropped, or normalized into a preferred outcome.
 
 The pinned Wordfence CLI implementation fills a missing sequence position with
 a numeric zero, while the pinned PHP implementation underlying Termivar's
@@ -92,4 +116,6 @@ authenticity, freshness, or completeness.
 
 This fixture must remain clearly labelled synthetic in generated examples and
 test output. It must not be presented as live-feed acceptance or a vulnerability
-detection benchmark.
+detection benchmark. No authorized vendor export is supplied here, so
+`real_export_acceptance=NOT_RUN_NO_INPUT` even when synthetic v4/v5 reader,
+Verify, and Compare tests pass.

@@ -1053,6 +1053,88 @@ fn wordfence_external_wordpress_audit_v4() -> Value {
     })
 }
 
+fn wordfence_external_wordpress_audit_v5() -> Value {
+    let mut audit = wordfence_external_wordpress_audit_v4();
+    audit["schema"] = json!("security.wordpress-review-audit/v5");
+    let external = &mut audit["external_review"];
+    external["comparison_policy"] = json!("termivar.wordfence-v3-explicit-interpretation/v1");
+    external["comparison_profile"] = json!("numeric-dotted/v1");
+    external["policy_selection"] = json!("explicit_operator");
+    external["source_semantics_assurance"] = json!("not_established");
+    external["counts"] = json!({
+        "parsed_records":2,
+        "software_associations":3,
+        "selected_associations":1,
+        "evaluable_associations":1,
+        "unsupported_associations":0,
+        "excluded_associations":2,
+        "within_associations":1,
+        "outside_associations":0,
+        "indeterminate_associations":0,
+        "selected_ranges":1,
+        "evaluated_ranges":1,
+        "containing_ranges":1,
+        "noncontaining_ranges":0,
+        "unsupported_ranges":0,
+        "invalid_ranges":0,
+        "not_evaluated_ranges":0,
+        "partial_range_coverage_associations":0
+    });
+    let evaluation = &mut external["evaluations"][0];
+    evaluation["version_evidence_resolution"]["semantic_status"] = json!("supported_equivalent");
+    evaluation["version_evidence_resolution"]["semantic_reason"] =
+        json!("single_supported_version");
+    evaluation["range_evaluations"] = json!([{
+        "relation":"contains",
+        "reason":"selected_version_within_bounds"
+    }]);
+    evaluation["version_relation"] = json!("within_supported_range_under_selected_policy");
+    evaluation["version_relation_reason"] = json!("containing_range");
+    evaluation["applicability"] = json!("version_match_under_selected_policy");
+    audit
+}
+
+fn make_wordfence_v5_indeterminate(
+    audit: &mut Value,
+    relation_reason: &str,
+    range_relation: Option<(&str, &str)>,
+) {
+    let external = &mut audit["external_review"];
+    external["counts"]["evaluable_associations"] = json!(0);
+    external["counts"]["unsupported_associations"] = json!(1);
+    external["counts"]["within_associations"] = json!(0);
+    external["counts"]["indeterminate_associations"] = json!(1);
+    external["counts"]["evaluated_ranges"] = json!(0);
+    external["counts"]["containing_ranges"] = json!(0);
+    external["counts"]["noncontaining_ranges"] = json!(0);
+    external["counts"]["unsupported_ranges"] = json!(0);
+    external["counts"]["invalid_ranges"] = json!(0);
+    external["counts"]["not_evaluated_ranges"] = json!(0);
+    let evaluation = &mut external["evaluations"][0];
+    evaluation["version_relation"] = json!("indeterminate");
+    evaluation["version_relation_reason"] = json!(relation_reason);
+    evaluation["applicability"] = json!("indeterminate");
+    match range_relation {
+        Some((relation, reason)) => {
+            evaluation["range_evaluations"] = json!([{
+                "relation": relation,
+                "reason": reason
+            }]);
+            external["counts"][match relation {
+                "unsupported" => "unsupported_ranges",
+                "invalid_under_profile" => "invalid_ranges",
+                "not_evaluated" => "not_evaluated_ranges",
+                _ => panic!("unsupported indeterminate range relation"),
+            }] = json!(1);
+        },
+        None => {
+            evaluation["affected_ranges"] = json!([]);
+            evaluation["range_evaluations"] = json!([]);
+            external["counts"]["selected_ranges"] = json!(0);
+        },
+    }
+}
+
 fn wordfence_external_wordpress_audit_v4_with_notices(count: usize) -> Value {
     let mut audit = wordfence_external_wordpress_audit_v4();
     let mut notices = Vec::with_capacity(count);
@@ -1410,6 +1492,434 @@ fn wordpress_v4_distinguishes_raw_input_bytes_from_selected_semantics() {
     assert_eq!(wordpress["components"]["paired_unchanged_count"], 1);
     assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 1);
     assert_eq!(wordpress["methodology"]["status"], "unchanged");
+}
+
+#[test]
+fn wordpress_v5_self_compare_and_profile_change_preserve_external_identity() {
+    let numeric = wordpress_document(wordfence_external_wordpress_audit_v5());
+    let self_comparison = compare(&numeric, &numeric);
+    let wordpress = wordpress_comparison(&self_comparison);
+    assert_eq!(wordpress["methodology"]["status"], "unchanged");
+    assert_eq!(wordpress["components"]["paired_unchanged_count"], 1);
+    assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 1);
+    assert!(wordpress["advisories"]["paired_changed"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let mut php = numeric.clone();
+    php["wordpress_review"]["external_review"]["comparison_profile"] =
+        json!("php-release-subset/v1");
+    let comparison = compare(&numeric, &php);
+    let wordpress = wordpress_comparison(&comparison);
+    assert_eq!(wordpress["methodology"]["status"], "changed");
+    assert_eq!(wordpress["components"]["paired_unchanged_count"], 1);
+    assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 1);
+    for side in ["only_in_before", "only_in_after"] {
+        assert!(wordpress["advisories"][side].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn wordpress_v4_to_v5_is_methodology_and_evaluation_change_not_add_remove() {
+    let unresolved = wordpress_document(wordfence_external_wordpress_audit_v4());
+    let evaluated = wordpress_document(wordfence_external_wordpress_audit_v5());
+    let comparison = compare(&unresolved, &evaluated);
+    let wordpress = wordpress_comparison(&comparison);
+
+    assert_eq!(wordpress["methodology"]["status"], "changed");
+    assert_eq!(wordpress["components"]["paired_unchanged_count"], 1);
+    assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 0);
+    assert_eq!(
+        wordpress["advisories"]["paired_changed"][0]["changed_dimensions"],
+        json!(["applicability", "evaluation_basis"])
+    );
+    assert!(wordpress["advisories"]["only_in_before"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(wordpress["advisories"]["only_in_after"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn wordpress_v5_recomputes_profile_resolution_ranges_and_counters() {
+    let valid = wordpress_document(wordfence_external_wordpress_audit_v5());
+    assert_eq!(
+        wordpress_comparison(&compare(&valid, &valid))["advisories"]["paired_unchanged_count"],
+        1
+    );
+
+    for field in [
+        "comparison_profile",
+        "policy_selection",
+        "source_semantics_assurance",
+    ] {
+        let mut missing = valid.clone();
+        missing["wordpress_review"]["external_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        reject(&missing);
+    }
+    for field in ["range_evaluations", "version_relation_reason"] {
+        let mut missing = valid.clone();
+        missing["wordpress_review"]["external_review"]["evaluations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        reject(&missing);
+    }
+    for field in ["semantic_status", "semantic_reason"] {
+        let mut missing = valid.clone();
+        missing["wordpress_review"]["external_review"]["evaluations"][0]
+            ["version_evidence_resolution"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        reject(&missing);
+    }
+
+    for (path, replacement) in [
+        (
+            vec!["external_review", "comparison_policy"],
+            json!("wordfence-v3/source-semantics-unresolved/v1"),
+        ),
+        (
+            vec!["external_review", "comparison_profile"],
+            json!("semver/v1"),
+        ),
+        (
+            vec!["external_review", "policy_selection"],
+            json!("inferred"),
+        ),
+        (
+            vec!["external_review", "source_semantics_assurance"],
+            json!("established"),
+        ),
+        (
+            vec!["external_review", "counts", "within_associations"],
+            json!(0),
+        ),
+        (
+            vec!["external_review", "counts", "evaluated_ranges"],
+            json!(0),
+        ),
+        (
+            vec![
+                "external_review",
+                "counts",
+                "partial_range_coverage_associations",
+            ],
+            json!(1),
+        ),
+        (
+            vec![
+                "external_review",
+                "evaluations",
+                "0",
+                "version_evidence_resolution",
+                "semantic_status",
+            ],
+            json!("conflicting"),
+        ),
+        (
+            vec![
+                "external_review",
+                "evaluations",
+                "0",
+                "version_evidence_resolution",
+                "semantic_reason",
+            ],
+            json!("equivalent_supported_versions"),
+        ),
+        (
+            vec![
+                "external_review",
+                "evaluations",
+                "0",
+                "range_evaluations",
+                "0",
+                "relation",
+            ],
+            json!("does_not_contain"),
+        ),
+        (
+            vec![
+                "external_review",
+                "evaluations",
+                "0",
+                "range_evaluations",
+                "0",
+                "reason",
+            ],
+            json!("selected_version_outside_bounds"),
+        ),
+        (
+            vec![
+                "external_review",
+                "evaluations",
+                "0",
+                "version_relation_reason",
+            ],
+            json!("all_ranges_outside"),
+        ),
+        (
+            vec!["external_review", "evaluations", "0", "applicability"],
+            json!("no_version_match_under_selected_policy"),
+        ),
+    ] {
+        let mut invalid = valid.clone();
+        let mut cursor = &mut invalid["wordpress_review"];
+        for segment in &path[..path.len() - 1] {
+            cursor = if let Ok(index) = segment.parse::<usize>() {
+                &mut cursor[index]
+            } else {
+                &mut cursor[*segment]
+            };
+        }
+        cursor[path[path.len() - 1]] = replacement;
+        reject(&invalid);
+    }
+
+    let mut source_bound_changed_without_evaluation = valid.clone();
+    source_bound_changed_without_evaluation["wordpress_review"]["external_review"]["evaluations"]
+        [0]["affected_ranges"][0]["to_version"] = json!("1.0.1");
+    reject(&source_bound_changed_without_evaluation);
+}
+
+#[test]
+fn wordpress_v5_import_rejects_cartesian_interpretation_work_over_budget() {
+    // Each association requires 16 range visits, 16 patched-version parses,
+    // and 16 * 16 contradiction checks. 342 associations therefore require
+    // 98,496 operations, above the existing 98,304-operation ceiling.
+    const ASSOCIATION_COUNT: usize = 342;
+    const RANGE_COUNT: usize = 16;
+    const PATCHED_VERSION_COUNT: usize = 16;
+
+    let mut audit = wordfence_external_wordpress_audit_v5();
+    let external = &mut audit["external_review"];
+    let base = external["evaluations"][0].clone();
+    let ranges = (0..RANGE_COUNT)
+        .map(|index| {
+            json!({
+                "label":format!("[1.0.0, 1.2.{index}]"),
+                "from_kind":"declared",
+                "from_version":"1.0.0",
+                "from_inclusive":true,
+                "to_kind":"declared",
+                "to_version":format!("1.2.{index}"),
+                "to_inclusive":true
+            })
+        })
+        .collect::<Vec<_>>();
+    let patched_versions = (0..PATCHED_VERSION_COUNT)
+        .map(|index| format!("2.0.{index}"))
+        .collect::<Vec<_>>();
+    let range_evaluations = (0..RANGE_COUNT)
+        .map(|_| {
+            json!({
+                "relation":"contains",
+                "reason":"selected_version_within_bounds"
+            })
+        })
+        .collect::<Vec<_>>();
+    let evaluations = (0..ASSOCIATION_COUNT)
+        .map(|index| {
+            let mut evaluation = base.clone();
+            evaluation["key"]["upstream_id"] =
+                json!(format!("00000000-0000-4000-8000-{index:012x}"));
+            evaluation["affected_ranges"] = json!(ranges);
+            evaluation["source_patched_versions"] = json!(patched_versions);
+            evaluation["range_evaluations"] = json!(range_evaluations);
+            evaluation
+        })
+        .collect::<Vec<_>>();
+    external["evaluations"] = json!(evaluations);
+    external["counts"] = json!({
+        "parsed_records":ASSOCIATION_COUNT,
+        "software_associations":ASSOCIATION_COUNT,
+        "selected_associations":ASSOCIATION_COUNT,
+        "evaluable_associations":ASSOCIATION_COUNT,
+        "unsupported_associations":0,
+        "excluded_associations":0,
+        "within_associations":ASSOCIATION_COUNT,
+        "outside_associations":0,
+        "indeterminate_associations":0,
+        "selected_ranges":ASSOCIATION_COUNT * RANGE_COUNT,
+        "evaluated_ranges":ASSOCIATION_COUNT * RANGE_COUNT,
+        "containing_ranges":ASSOCIATION_COUNT * RANGE_COUNT,
+        "noncontaining_ranges":0,
+        "unsupported_ranges":0,
+        "invalid_ranges":0,
+        "not_evaluated_ranges":0,
+        "partial_range_coverage_associations":0
+    });
+
+    reject(&wordpress_document(audit));
+}
+
+#[test]
+fn wordpress_v5_accepts_recomputed_outside_and_indeterminate_results() {
+    let mut outside = wordfence_external_wordpress_audit_v5();
+    outside["components"][0]["versions"][0]["value"] = json!("2.0.0");
+    let external = &mut outside["external_review"];
+    external["counts"]["within_associations"] = json!(0);
+    external["counts"]["outside_associations"] = json!(1);
+    external["counts"]["containing_ranges"] = json!(0);
+    external["counts"]["noncontaining_ranges"] = json!(1);
+    let evaluation = &mut external["evaluations"][0];
+    evaluation["range_evaluations"][0] = json!({
+        "relation":"does_not_contain",
+        "reason":"selected_version_outside_bounds"
+    });
+    evaluation["version_relation"] = json!("outside_declared_ranges_under_selected_policy");
+    evaluation["version_relation_reason"] = json!("all_ranges_outside");
+    evaluation["applicability"] = json!("no_version_match_under_selected_policy");
+    let outside = wordpress_document(outside);
+    assert_eq!(
+        wordpress_comparison(&compare(&outside, &outside))["advisories"]["paired_unchanged_count"],
+        1
+    );
+
+    let mut unsupported = wordfence_external_wordpress_audit_v5();
+    unsupported["components"][0]["versions"][0]["value"] = json!("2.0-vendor");
+    let external = &mut unsupported["external_review"];
+    external["counts"]["evaluable_associations"] = json!(0);
+    external["counts"]["unsupported_associations"] = json!(1);
+    external["counts"]["within_associations"] = json!(0);
+    external["counts"]["indeterminate_associations"] = json!(1);
+    external["counts"]["evaluated_ranges"] = json!(0);
+    external["counts"]["containing_ranges"] = json!(0);
+    external["counts"]["not_evaluated_ranges"] = json!(1);
+    let evaluation = &mut external["evaluations"][0];
+    evaluation["version_evidence_resolution"]["semantic_status"] = json!("unsupported");
+    evaluation["version_evidence_resolution"]["semantic_reason"] =
+        json!("unsupported_version_evidence");
+    evaluation["range_evaluations"][0] = json!({
+        "relation":"not_evaluated",
+        "reason":"unsupported_version_evidence"
+    });
+    evaluation["version_relation"] = json!("indeterminate");
+    evaluation["version_relation_reason"] = json!("unsupported_version_evidence");
+    evaluation["applicability"] = json!("indeterminate");
+    let unsupported = wordpress_document(unsupported);
+    assert_eq!(
+        wordpress_comparison(&compare(&unsupported, &unsupported))["advisories"]
+            ["paired_unchanged_count"],
+        1
+    );
+}
+
+#[test]
+fn wordpress_v5_imports_typed_missing_conflicting_and_range_boundary_results() {
+    let mut missing = wordfence_external_wordpress_audit_v5();
+    missing["components"][0]["versions"] = json!([]);
+    let resolution =
+        &mut missing["external_review"]["evaluations"][0]["version_evidence_resolution"];
+    *resolution = json!({
+        "status":"missing",
+        "evidence_row_count":0,
+        "distinct_spelling_count":0,
+        "semantic_status":"missing",
+        "semantic_reason":"no_version_evidence"
+    });
+    make_wordfence_v5_indeterminate(
+        &mut missing,
+        "missing_version_evidence",
+        Some(("not_evaluated", "missing_version_evidence")),
+    );
+
+    let mut conflicting = wordfence_external_wordpress_audit_v5();
+    conflicting
+        .as_object_mut()
+        .unwrap()
+        .remove("inventory_import");
+    conflicting["components"][0] = json!({
+        "identity":{"kind":"core","slug":"wordpress"},
+        "evidence_class":"observed_hint",
+        "identity_sources":["generator_metadata","operator_context"],
+        "confidence_classes":["public_declaration","operator_assertion"],
+        "versions":[
+            {"value":"1.0.0","source":"generator_metadata","confidence":"public_declaration"},
+            {"value":"1.1.0","source":"operator_context","confidence":"operator_assertion"}
+        ],
+        "activation":null
+    });
+    conflicting["signal_count"] = json!(1);
+    conflicting["evidence_reference_count"] = json!(1);
+    conflicting["item_projected"] = json!(true);
+    conflicting["external_review"]["evaluations"][0]["key"]["component"] =
+        json!({"kind":"core","slug":"wordpress"});
+    conflicting["external_review"]["evaluations"][0]["component_evidence"] = json!("observed_hint");
+    conflicting["external_review"]["evaluations"][0]["version_evidence_resolution"] = json!({
+        "status":"multiple_distinct_declarations",
+        "evidence_row_count":2,
+        "distinct_spelling_count":2,
+        "semantic_status":"conflicting",
+        "semantic_reason":"conflicting_version_evidence"
+    });
+    make_wordfence_v5_indeterminate(
+        &mut conflicting,
+        "conflicting_version_evidence",
+        Some(("not_evaluated", "conflicting_version_evidence")),
+    );
+
+    let mut unsupported_lower = wordfence_external_wordpress_audit_v5();
+    unsupported_lower["external_review"]["evaluations"][0]["affected_ranges"][0]["from_version"] =
+        json!("vendor");
+    make_wordfence_v5_indeterminate(
+        &mut unsupported_lower,
+        "unsupported_affected_range",
+        Some(("unsupported", "unsupported_lower_bound")),
+    );
+
+    let mut unsupported_upper = wordfence_external_wordpress_audit_v5();
+    unsupported_upper["external_review"]["evaluations"][0]["affected_ranges"][0]["to_version"] =
+        json!("vendor");
+    make_wordfence_v5_indeterminate(
+        &mut unsupported_upper,
+        "unsupported_affected_range",
+        Some(("unsupported", "unsupported_upper_bound")),
+    );
+
+    let mut empty_exclusive = wordfence_external_wordpress_audit_v5();
+    let range = &mut empty_exclusive["external_review"]["evaluations"][0]["affected_ranges"][0];
+    range["from_version"] = json!("1.1.0");
+    range["from_inclusive"] = json!(false);
+    range["to_version"] = json!("1.1.0");
+    range["to_inclusive"] = json!(true);
+    make_wordfence_v5_indeterminate(
+        &mut empty_exclusive,
+        "invalid_affected_range",
+        Some(("invalid_under_profile", "empty_exclusive_interval")),
+    );
+
+    let mut missing_ranges = wordfence_external_wordpress_audit_v5();
+    make_wordfence_v5_indeterminate(&mut missing_ranges, "missing_affected_ranges", None);
+
+    for (label, audit) in [
+        ("missing", missing),
+        ("conflicting", conflicting),
+        ("unsupported lower", unsupported_lower),
+        ("unsupported upper", unsupported_upper),
+        ("empty exclusive", empty_exclusive),
+        ("missing ranges", missing_ranges),
+    ] {
+        let document = wordpress_document(audit);
+        assert!(
+            import::parse(&bytes(&document)).is_ok(),
+            "{label} v5 document was rejected"
+        );
+        assert_eq!(
+            wordpress_comparison(&compare(&document, &document))["advisories"]
+                ["paired_unchanged_count"],
+            1,
+            "{label}"
+        );
+    }
 }
 
 #[test]

@@ -429,12 +429,22 @@ disappearance or an applicability transition is document change, not proof of
 a fix, a new vulnerability, or a change at the installation.
 
 The importer supports the historical
-`security.wordpress-review-audit/v1` through `/v4` contracts and compares only
-the typed meaning available in each version. Exact-input byte digests identify
-provenance bytes, not semantic identity or source truth: bytes can differ while
-the supported semantic projection remains equal. This comparison only reads
-the two saved reports; it does not rerun the scanner, WP-CLI, PHP, an advisory
-lookup, or any network operation.
+`security.wordpress-review-audit/v1` through `/v4` contracts and the additive
+`/v5` contract produced when an operator explicitly selects a Termivar
+interpretation profile for local Wordfence ranges. The `/v5` comparison keeps
+the selected profile, explicit-operator basis, and unestablished source-semantics
+assurance in the methodology facet. A transition from an unresolved `/v4`
+result to a calculated `/v5` result, or between `/v5` profiles, is therefore a
+methodology change—not evidence that an installation or vulnerability changed.
+For wire compatibility, the v5 `unsupported_associations` count is the same
+partition as `indeterminate_associations`; human output shows the precise
+indeterminate label once rather than describing missing, conflicting, or invalid
+cases as unsupported.
+Each version is compared only to the depth of typed meaning it actually carries.
+Exact-input byte digests identify provenance bytes, not semantic identity or
+source truth: bytes can differ while the supported semantic projection remains
+equal. This comparison only reads the two saved reports; it does not rerun the
+scanner, WP-CLI, PHP, an advisory lookup, or any network operation.
 
 Only-in-before does not mean fixed, resolved, verified-remediated, or safe.
 Only-in-after does not establish when an observation first appeared. Unchanged
