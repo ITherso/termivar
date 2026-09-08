@@ -4781,9 +4781,25 @@ fn is_wordfence_vulnerability_reference(value: &str) -> bool {
             && url.as_str() == value
             && url.path().starts_with(PREFIX)
             && url.path().len() > PREFIX.len()
-            && url.query().is_none()
+            && has_supported_wordfence_reference_query(&url)
             && url.fragment().is_none()
     })
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn has_supported_wordfence_reference_query(url: &url::Url) -> bool {
+    const MAX_SOURCE_VALUE_BYTES: usize = 64;
+    // Keep this in lockstep with the strict Production import contract.
+    match url.query() {
+        None => true,
+        Some(query) => query.strip_prefix("source=").is_some_and(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_SOURCE_VALUE_BYTES
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                })
+        }),
+    }
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -7448,8 +7464,7 @@ mod tests {
     #[test]
     fn defiant_notice_renders_the_exact_source_record_link() {
         const ID: &str = "00000000-0000-4000-8000-000000000001";
-        const RECORD: &str =
-            "http://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture";
+        const RECORD: &str = "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test";
         let mut source: serde_json::Value = serde_json::from_slice(include_bytes!(
             "../../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json"
         ))

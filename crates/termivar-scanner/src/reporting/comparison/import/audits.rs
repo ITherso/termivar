@@ -1913,9 +1913,24 @@ fn is_wordfence_vulnerability_reference(value: &str) -> bool {
             && url.as_str() == value
             && url.path().starts_with(PREFIX)
             && url.path().len() > PREFIX.len()
-            && url.query().is_none()
+            && has_supported_wordfence_reference_query(&url)
             && url.fragment().is_none()
     })
+}
+
+fn has_supported_wordfence_reference_query(url: &url::Url) -> bool {
+    const MAX_SOURCE_VALUE_BYTES: usize = 64;
+    // Saved audits retain the importer's exact, deliberately narrow URL form.
+    match url.query() {
+        None => true,
+        Some(query) => query.strip_prefix("source=").is_some_and(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_SOURCE_VALUE_BYTES
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                })
+        }),
+    }
 }
 
 fn unique_text_array(

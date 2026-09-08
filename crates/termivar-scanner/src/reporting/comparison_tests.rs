@@ -2116,10 +2116,12 @@ fn wordpress_v4_defiant_attribution_requires_the_exact_safe_record_link() {
     assert!(group(&compare(&valid, &valid), "unchanged").is_empty());
 
     let mut https_valid = valid.clone();
-    https_valid["wordpress_review"]["external_review"]["evaluations"][0]["references"] =
-        json!(["https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"]);
-    https_valid["wordpress_review"]["external_review"]["evaluations"][0]["record_reference"] =
-        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture");
+    https_valid["wordpress_review"]["external_review"]["evaluations"][0]["references"] = json!([
+        "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test"
+    ]);
+    https_valid["wordpress_review"]["external_review"]["evaluations"][0]["record_reference"] = json!(
+        "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test"
+    );
     assert!(group(&compare(&https_valid, &https_valid), "unchanged").is_empty());
 
     for hostile in [
@@ -2127,6 +2129,10 @@ fn wordpress_v4_defiant_attribution_requires_the_exact_safe_record_link() {
         json!("ftp://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
         json!("https://wordfence.com/threat-intel/vulnerabilities/synthetic-fixture"),
         json!("https://www.wordfence.com/help/synthetic-fixture"),
+        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source="),
+        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test&source=other"),
+        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test&extra=1"),
+        json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api%2Dtest"),
         json!("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture\" onmouseover=\"x"),
     ] {
         let mut invalid = valid.clone();

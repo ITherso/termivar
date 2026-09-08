@@ -1543,9 +1543,25 @@ fn is_official_wordfence_vulnerability_reference(value: &str) -> bool {
             && url.as_str() == value
             && url.path().starts_with(PREFIX)
             && url.path().len() > PREFIX.len()
-            && url.query().is_none()
+            && has_supported_wordfence_reference_query(&url)
             && url.fragment().is_none()
     })
+}
+
+fn has_supported_wordfence_reference_query(url: &Url) -> bool {
+    const MAX_SOURCE_VALUE_BYTES: usize = 64;
+    // Current Production feeds attach one inert source marker to the record URL.
+    // Keep the allowance narrower than general URL query syntax.
+    match url.query() {
+        None => true,
+        Some(query) => query.strip_prefix("source=").is_some_and(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_SOURCE_VALUE_BYTES
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                })
+        }),
+    }
 }
 
 fn validate_string_set(
@@ -2196,6 +2212,7 @@ mod tests {
         for reference in [
             "http://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture",
             "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture",
+            "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test",
         ] {
             let document = document_with_defiant_reference(Some(reference));
             assert!(parse_wordfence_v3_production(document.as_slice()).is_ok());
@@ -2208,6 +2225,14 @@ mod tests {
             Some("https://www.wordfence.com/threat-intel/vulnerabilities/"),
             Some("https://www.wordfence.com:8443/threat-intel/vulnerabilities/synthetic-fixture"),
             Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?q=1"),
+            Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source"),
+            Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source="),
+            Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test&source=other"),
+            Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test&extra=1"),
+            Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?other=api-test"),
+            Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api%2Dtest"),
+            Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api+test"),
+            Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source=api-test#part"),
             Some("https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture#part"),
         ] {
             let document = document_with_defiant_reference(reference);
@@ -2216,6 +2241,23 @@ mod tests {
                 Err(WordfenceV3ProductionError::UnsupportedValue)
             );
         }
+
+        let oversized_source = format!(
+            "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source={}",
+            "a".repeat(65)
+        );
+        let document = document_with_defiant_reference(Some(&oversized_source));
+        assert_eq!(
+            parse_wordfence_v3_production(document.as_slice()),
+            Err(WordfenceV3ProductionError::UnsupportedValue)
+        );
+
+        let maximum_source = format!(
+            "https://www.wordfence.com/threat-intel/vulnerabilities/synthetic-fixture?source={}",
+            "a".repeat(64)
+        );
+        let document = document_with_defiant_reference(Some(&maximum_source));
+        assert!(parse_wordfence_v3_production(document.as_slice()).is_ok());
     }
 
     #[test]
