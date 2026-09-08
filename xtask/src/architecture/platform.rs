@@ -12338,8 +12338,10 @@ mod tests {
                     WordPressComponentEvidenceClass, WordPressComponentKind,
                     WordPressEvidenceConfidence, WordPressEvidenceSource,
                     WordPressExecutionStatus, WordPressExternalApplicability,
-                    WordPressExternalComparisonPolicy, WordPressExternalVersionEvidenceStatus,
-                    WordPressExternalVersionRelation, WordPressHostingOs,
+                    WordPressExternalComparisonPolicy, WordPressExternalRangeReason,
+                    WordPressExternalRangeRelation, WordPressExternalVersionEvidenceStatus,
+                    WordPressExternalVersionRelation, WordPressExternalVersionRelationReason,
+                    WordPressHostingOs,
                     WordPressInventoryCategoryStatus, WordPressInventoryEntryStatus,
                     WordPressInventoryLimitationReason, WordPressLocalInputClass,
                     WordPressMultisiteState, WordPressPatchState, WordPressPrerequisite,
@@ -12451,8 +12453,8 @@ mod tests {
         );
 
         let missing_external_resolution_status = imports.replace(
-            "                    WordPressExternalComparisonPolicy, WordPressExternalVersionEvidenceStatus,\n",
-            "                    WordPressExternalComparisonPolicy,\n",
+            "                    WordPressExternalRangeRelation, WordPressExternalVersionEvidenceStatus,\n",
+            "                    WordPressExternalRangeRelation,\n",
         );
         assert_ne!(missing_external_resolution_status, imports);
         let violations = reporting_source_import_violations(&missing_external_resolution_status)
