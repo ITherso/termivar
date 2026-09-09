@@ -2566,12 +2566,7 @@ fn reserve_one_with_retained_accounting<T>(
         .len()
         .checked_add(1)
         .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?;
-    let planned_capacity = values
-        .capacity()
-        .checked_mul(2)
-        .unwrap_or(usize::MAX)
-        .max(4)
-        .max(required);
+    let planned_capacity = values.capacity().saturating_mul(2).max(4).max(required);
     reserve_exact_capacity_with_retained_accounting(values, planned_capacity, retained)
 }
 
