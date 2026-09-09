@@ -390,6 +390,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             "openapi-review",
             "rest-review",
             "authorization-review",
+            "wordpress-review",
         ]
     );
     let excluded = [
@@ -397,7 +398,6 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "legacy-scanner",
         "proxy-adapter",
         "ssrf-oast-review",
-        "wordpress-review",
     ];
     match case.as_str() {
         "default" | "no-default" => {
@@ -407,6 +407,20 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(compiled("release-bundle"));
             assert!(release_members.iter().all(|feature| compiled(feature)));
             assert!(excluded.iter().all(|feature| !compiled(feature)));
+            assert_eq!(
+                states
+                    .values()
+                    .filter(|state| **state == "compiled")
+                    .count(),
+                8
+            );
+            assert_eq!(
+                states
+                    .values()
+                    .filter(|state| **state == "not_compiled")
+                    .count(),
+                4
+            );
         },
         "rest-only" => {
             assert!(compiled("rest-review"));

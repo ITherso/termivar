@@ -6,10 +6,12 @@ WordPress-specific scanner. It interprets signals from the root HTML response
 that the assessment already obtained, plus explicitly supplied local context
 and advisory data. Enabling it adds no target or provider requests.
 
-This source feature is non-default and is not part of the curated release
-bundle. A binary must be compiled with `wordpress-review` before the flags are
-available. Compile-time inclusion does not enable the review; the operator must
-also select it explicitly:
+This feature remains absent from the ordinary default build. The current
+untagged `0.10.0-alpha.3` development `release-bundle` compiles it as a Preview;
+the published alpha.2 archives predate all WordPress producer and audit support.
+A binary must be compiled with `wordpress-review` before the flags are available.
+Compile-time inclusion does not enable the review; the operator must also select
+it explicitly:
 
 ```bash
 termivar scan https://authorized.example/ \
@@ -513,9 +515,11 @@ both report bundles, and compares them in both directions. The expected
 component-version and advisory range/fix dimensions are literal test oracles.
 The two scans must retain the same request trace, while Verify and Compare add
 no target request. Existing CI executes that test natively on Linux, Windows,
-and macOS. The four-platform curated release check remains a separate negative
-composition guard because WordPress is intentionally excluded from
-`release-bundle`.
+and macOS. The current development four-platform curated release check also
+builds WordPress through `release-bundle`, then exercises its synthetic saved
+input/report path from each extracted native archive. Runtime opt-in remains
+explicit, and the published alpha.2 archives retain their earlier WordPress-free
+composition.
 
 No actual Wordfence vendor export is committed to or relabelled as part of this
 acceptance corpus. Public-schema synthetic cases exercise parser and policy
@@ -566,14 +570,14 @@ provider snapshot will be accepted.
 | Acceptance surface | Status | Evidence boundary |
 | --- | --- | --- |
 | Saved plugin/theme/core inventories | Implemented and tested | Synthetic WP-CLI-shaped files; Termivar does not run WP-CLI |
-| Declared Wordfence V3 Production input | Implemented and tested | Public-schema synthetic data only |
+| Declared Wordfence V3 Production input | Implemented and tested | Public regression data is synthetic; separately authorized private snapshot qualification does not redistribute vendor bytes or prose |
 | Explicit external version interpretation | Implemented in development source | Operator-selected Termivar profile; source semantics remain `not_established` |
 | Reviewed/holdout evaluator outcomes | Implemented and tested | Six fictional records with literal expected denominators |
 | Cross-run semantic Report Compare | Implemented and tested | One benign exact-origin fixture; no remediation causality |
 | Feature-enabled native CLI | Implemented and tested in CI | Linux, Windows, and macOS runners; not a fresh-machine certification |
 | Linux process resource evidence | Measured in exact-head CI | Synthetic inputs and child-process peak RSS; not a heap cap or real-feed benchmark |
-| Curated release bundle | WordPress intentionally unsupported | The packaged capability remains `not_compiled` |
-| Private vendor-snapshot acceptance | Separate evidence boundary | No vendor bytes, account, or API credential are committed; a passing snapshot would not authenticate its source or future feeds |
+| Current development release bundle | Compiled Preview; explicit runtime opt-in | Untagged alpha.3 builds include `wordpress-review`; the default build and published alpha.2 archives do not |
+| Private vendor-snapshot acceptance | Separately qualified task evidence | No vendor bytes, account, or API credential are committed; one accepted snapshot does not authenticate its source or guarantee future feeds |
 | Live API retrieval | Unsupported | The assessment performs no Wordfence network request or key discovery |
 | Exploit and impact validation | Unsupported | Both remain `not_performed` |
 

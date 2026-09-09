@@ -5,7 +5,7 @@ audited; the published prerelease does not acquire later source fixes.
 
 | Choice | Exact identity | Build features |
 | --- | --- | --- |
-| Published prerelease | [v0.10.0-alpha.2](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2), release ID `383577232`, annotated tag object `c2c749c410b274c6719c586087e5d32f222ec8a2`, peeled commit `284a21a83191075615f2086ec935c6f3bf07c2bf` | Existing `release-bundle` |
+| Published prerelease | [v0.10.0-alpha.2](https://github.com/ITherso/termivar/releases/tag/v0.10.0-alpha.2), release ID `383577232`, annotated tag object `c2c749c410b274c6719c586087e5d32f222ec8a2`, peeled commit `284a21a83191075615f2086ec935c6f3bf07c2bf` | Published alpha.2 `release-bundle` (six members; no WordPress support) |
 | Preserved pinned source example (not current `main`) | `0.10.0-alpha.2` at `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` | Default CLI build, or explicit `release-bundle` |
 
 Alpha.2 was published on 2026-09-06 with four native archives and a 478-byte
@@ -16,11 +16,15 @@ archives named with `termivar-main-...` remain temporary candidate evidence,
 not published release downloads.
 
 The CLI's default feature list is empty; its scanner dependency enables
-`scanning` and `reporting`. The existing release bundle additionally compiles
-`artifact-adapter`, `normalization-resilience`, `graphql-review`,
-`openapi-review`, `rest-review`, and `authorization-review`. Compiling these
-features does not opt into their runtime actions. The bundle excludes OAST,
-the legacy runner, the unsupported API listener, and the experimental proxy.
+`scanning` and `reporting`. The current untagged alpha.3 development
+`release-bundle` additionally compiles `artifact-adapter`,
+`normalization-resilience`, `graphql-review`, `openapi-review`, `rest-review`,
+`authorization-review`, and the `wordpress-review` Preview. Compiling these
+features does not opt into their runtime actions: WordPress still requires
+explicit `--profile web-review --wordpress-review`. The development bundle
+excludes OAST, the legacy runner, the unsupported API listener, and the
+experimental proxy. Published alpha.2 archives retain their original six-member
+bundle and contain no WordPress producer or audit support.
 
 The published alpha.2 executable and later development builds can report their
 own compile-time CLI surface states with

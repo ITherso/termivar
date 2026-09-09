@@ -128,7 +128,11 @@ and unchanged groups. Disappearance is not verified remediation. See the
   exact executable, without starting scanner or provider runtime.
 - An opt-in, transport-free WordPress evidence review over the already observed
   root HTML plus strict operator-supplied context and advisory catalogues; see
-  the [WordPress review contract](docs/wordpress-review.md).
+  the [WordPress review contract](docs/wordpress-review.md). The current
+  untagged `0.10.0-alpha.3` development `release-bundle` compiles this Preview,
+  but it still runs only with explicit `--profile web-review` and
+  `--wordpress-review`; the default build and published alpha.2 archives do
+  not include it.
 - Source-level Rust evidence, reasoning, and reporting contracts for an explicit
   library host; see the [architecture](docs/architecture.md).
 

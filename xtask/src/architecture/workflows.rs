@@ -90,6 +90,14 @@ const RELEASE_SMOKE_OPTIONS: &[&str] = &[
     "--openapi-review",
     "--rest-review",
     "--authorization-review-policy",
+    "--wordpress-review",
+    "--wordpress-context",
+    "--wordpress-advisories",
+    "--wordpress-plugins-json",
+    "--wordpress-themes-json",
+    "--wordpress-core-version-file",
+    "--wordpress-advisories-format",
+    "--wordpress-external-version-profile",
 ];
 const RELEASE_TARGETS: &[&str] = &[
     "x86_64-unknown-linux-gnu",
@@ -269,7 +277,7 @@ const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capa
           TERMIVAR_CAPABILITIES_MATRIX_CASE=release-bundle cargo test --locked -p termivar-cli --no-default-features --features release-bundle --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
-          TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const SECURITY_WORKFLOW: &str = ".github/workflows/security.yml";
 const AUDIT_RUNNER: &str = "scripts/ci/run-cargo-audit.sh";
 const DEVELOPMENT_LINE_CHECKOUT: &str = r#"      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1413,6 +1421,13 @@ fn release_candidate_acceptance_workflow_policy_violations(
     violations
 }
 
+fn line_contains_exact_cli_option(line: &str, option: &str) -> bool {
+    line.split(|character: char| {
+        !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    })
+    .any(|token| token == option)
+}
+
 fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
     let Some((_, contents)) = files.iter().find(|(path, _)| path == RELEASE_WORKFLOW) else {
         return vec![format!(
@@ -1529,7 +1544,10 @@ fn release_workflow_policy_violations(files: &[(String, String)]) -> Vec<String>
         }
     }
     for option in RELEASE_SMOKE_OPTIONS {
-        let count = lines.iter().filter(|line| line.contains(option)).count();
+        let count = lines
+            .iter()
+            .filter(|line| line_contains_exact_cli_option(line, option))
+            .count();
         if count != 2 {
             violations.push(format!(
                 "{RELEASE_WORKFLOW}: `{option}` must be checked once by each native release-binary smoke test, found {count} checks"
@@ -3234,6 +3252,29 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("target matrix"))
         );
+    }
+
+    #[test]
+    fn release_smoke_option_matching_does_not_confuse_prefixed_flags() {
+        assert!(line_contains_exact_cli_option(
+            r#""--wordpress-advisories","#,
+            "--wordpress-advisories"
+        ));
+        assert!(!line_contains_exact_cli_option(
+            r#""--wordpress-advisories-format","#,
+            "--wordpress-advisories"
+        ));
+
+        let path = RELEASE_WORKFLOW.to_owned();
+        let valid = reviewed_release_workflow_fixture();
+        let without_shorter_option = valid
+            .replacen("unix smoke --wordpress-advisories\n", "", 1)
+            .replacen("windows smoke --wordpress-advisories\n", "", 1);
+        assert!(without_shorter_option.contains("--wordpress-advisories-format"));
+        let violations = release_workflow_policy_violations(&[(path, without_shorter_option)]);
+        assert!(violations.iter().any(|violation| {
+            violation.contains("`--wordpress-advisories`") && violation.contains("found 0 checks")
+        }));
     }
 
     #[test]

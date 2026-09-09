@@ -1285,6 +1285,7 @@ fn cli_feature_violations(
                 "openapi-review",
                 "rest-review",
                 "authorization-review",
+                "wordpress-review",
             ][..],
         ),
         ("proxy-adapter", &["dep:termivar-proxy"][..]),
@@ -10330,7 +10331,7 @@ mod tests {
     }
 
     #[test]
-    fn wordpress_review_is_non_default_transport_free_and_excluded_from_release_bundle() {
+    fn wordpress_review_is_non_default_transport_free_and_included_in_release_bundle() {
         let mut features = valid_feature_map();
         assert!(feature_violations(&features).is_empty());
         assert!(!raw_feature_closure(&features, "default").contains("wordpress-review"));
@@ -10350,11 +10351,11 @@ mod tests {
             .get("release-bundle")
             .unwrap()
             .iter()
-            .all(|feature| feature != "wordpress-review"));
+            .any(|feature| feature == "wordpress-review"));
         cli_features
             .get_mut("release-bundle")
             .unwrap()
-            .push("wordpress-review".to_owned());
+            .retain(|feature| feature != "wordpress-review");
         assert!(
             cli_feature_violations(&cli_features, &dependencies)
                 .iter()
@@ -13867,6 +13868,7 @@ mod tests {
                     "openapi-review".to_owned(),
                     "rest-review".to_owned(),
                     "authorization-review".to_owned(),
+                    "wordpress-review".to_owned(),
                 ],
             ),
         ]);
@@ -14209,6 +14211,7 @@ mod tests {
                 "openapi-review".to_owned(),
                 "rest-review".to_owned(),
                 "authorization-review".to_owned(),
+                "wordpress-review".to_owned(),
             ]
         );
         for excluded in [
@@ -14216,7 +14219,6 @@ mod tests {
             "api-adapter",
             "proxy-adapter",
             "ssrf-oast-review",
-            "wordpress-review",
         ] {
             assert!(features
                 .get("release-bundle")

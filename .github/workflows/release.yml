@@ -257,7 +257,15 @@ jobs:
             --graphql-review \
             --openapi-review \
             --rest-review \
-            --authorization-review-policy; do
+            --authorization-review-policy \
+            --wordpress-review \
+            --wordpress-context \
+            --wordpress-advisories \
+            --wordpress-plugins-json \
+            --wordpress-themes-json \
+            --wordpress-core-version-file \
+            --wordpress-advisories-format \
+            --wordpress-external-version-profile; do
             grep -Fq -- "$flag" <<<"$scan_help"
           done
           if grep -Eq '^  (legacy-scan|api|proxy)[[:space:]]' <<<"$help_output"; then
@@ -300,7 +308,15 @@ jobs:
             "--graphql-review",
             "--openapi-review",
             "--rest-review",
-            "--authorization-review-policy"
+            "--authorization-review-policy",
+            "--wordpress-review",
+            "--wordpress-context",
+            "--wordpress-advisories",
+            "--wordpress-plugins-json",
+            "--wordpress-themes-json",
+            "--wordpress-core-version-file",
+            "--wordpress-advisories-format",
+            "--wordpress-external-version-profile"
           )) {
             if (-not $scanHelp.Contains($flag)) {
               throw "release scan help is missing an approved option"

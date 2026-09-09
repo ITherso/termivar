@@ -10,6 +10,7 @@ authenticating source, tag, or release provenance.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -57,15 +58,37 @@ RELEASE_MEMBERS = (
     "openapi-review",
     "rest-review",
     "authorization-review",
+    "wordpress-review",
 )
 EXCLUDED_FEATURES = (
     "api-adapter",
     "legacy-scanner",
     "proxy-adapter",
     "ssrf-oast-review",
-    "wordpress-review",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
+WORDPRESS_OPTIONS = (
+    "--wordpress-review",
+    "--wordpress-context",
+    "--wordpress-advisories",
+    "--wordpress-plugins-json",
+    "--wordpress-themes-json",
+    "--wordpress-core-version-file",
+    "--wordpress-advisories-format",
+    "--wordpress-external-version-profile",
+)
+WORDPRESS_PREREQUISITES = (
+    "--profile web-review",
+    "--wordpress-review",
+    "optional --wordpress-context FILE",
+    "optional --wordpress-advisories FILE",
+    "optional --wordpress-advisories-format termivar|wordfence-v3-production",
+    ("optional --wordpress-external-version-profile "
+     "numeric-dotted/v1|php-release-subset/v1 (Wordfence Production only)"),
+    "optional --wordpress-plugins-json FILE",
+    "optional --wordpress-themes-json FILE",
+    "optional --wordpress-core-version-file FILE",
+)
 GROUPS = ("only_in_after", "only_in_before", "changed", "unchanged")
 PROGRESS_PREFIX = b"[progress]"
 PROGRESS_LINE_LIMIT = 512
@@ -294,13 +317,9 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
         require(option in scan_text, f"scan help omits release-bundle option {option}")
     require("--ssrf-oast-review" not in scan_text,
             "scan help unexpectedly exposes ssrf-oast-review")
-    for option in ("--wordpress-review", "--wordpress-context",
-                   "--wordpress-advisories", "--wordpress-advisories-format",
-                   "--wordpress-external-version-profile",
-                   "--wordpress-plugins-json",
-                   "--wordpress-themes-json", "--wordpress-core-version-file"):
-        require(option not in scan_text,
-                f"scan help unexpectedly exposes excluded WordPress option {option}")
+    for option in WORDPRESS_OPTIONS:
+        require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is not None,
+                f"scan help omits bundled WordPress option {option}")
     for command in ("compare", "verify"):
         require(re.search(rf"(?m)^\s+{command}(?:\s|$)", report_text) is not None,
                 f"report help omits {command}")
@@ -358,16 +377,37 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
         surface for surface in surfaces
         if surface.get("key") == "option.wordpress-review"
     ]
-    require(len(wordpress_surfaces) == 1
-            and wordpress_surfaces[0].get("compile_feature") == "wordpress-review"
-            and wordpress_surfaces[0].get("build_state") == "not_compiled",
-            "packaged WordPress surface is not exactly classified as not_compiled")
+    require(len(wordpress_surfaces) == 1,
+            "packaged WordPress surface identity changed")
+    wordpress = wordpress_surfaces[0]
+    require(wordpress.get("compile_feature") == "wordpress-review"
+            and wordpress.get("build_state") == "compiled"
+            and wordpress.get("maturity") == "preview"
+            and wordpress.get("implementation_status") == "implemented"
+            and wordpress.get("group") == "optional"
+            and wordpress.get("kind") == "scan_option"
+            and wordpress.get("alias") is None,
+            "packaged WordPress surface metadata changed")
+    require(tuple(wordpress.get("prerequisites", ())) == WORDPRESS_PREREQUISITES,
+            "packaged WordPress explicit opt-in contract changed")
+    limitation = wordpress.get("limitation")
+    require(isinstance(limitation, str)
+            and "adds no target requests" in limitation
+            and "explicitly select" in limitation
+            and "stays indeterminate" in limitation,
+            "packaged WordPress limitation no longer preserves explicit opt-in semantics")
     return {
         "schema": document["schema"],
         "runtime_execution": document["runtime_execution"],
         "composition_marker": "release-bundle",
         "compiled_members": list(RELEASE_MEMBERS),
         "excluded_features": list(EXCLUDED_FEATURES),
+        "wordpress_preview": {
+            "build_state": "compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "explicit_opt_in",
+        },
         "source_authenticity": "not_established",
     }
 
@@ -421,6 +461,729 @@ def _validate_progress(stderr: bytes, forbidden_values: tuple[bytes, ...]) -> di
         "counts_semantics": "last_observed",
         "eta_or_finding_claims": "absent",
     }
+
+
+WORDPRESS_DOCUMENT = (
+    b'<!doctype html><html><head><meta name="generator" content="WordPress 2.4.0-beta1">'
+    b'<link rel="stylesheet" href="/wp-content/plugins/synthetic-policy-within/style.css">'
+    b'<link rel="stylesheet" href="/wp-content/themes/synthetic-policy-outside/style.css">'
+    b'</head><body>bounded synthetic packaged WordPress Preview fixture</body></html>'
+)
+WORDPRESS_TRACE = (
+    "GET / HTTP/1.1",
+    "GET / HTTP/1.1",
+    "GET / HTTP/1.1",
+    "HEAD /wp-content/plugins/synthetic-policy-within/style.css HTTP/1.1",
+    "HEAD /wp-content/themes/synthetic-policy-outside/style.css HTTP/1.1",
+)
+WORDPRESS_RESOURCE_POLICY = "termivar.wordfence-v3-bounded-capacity/v1"
+WORDPRESS_MAPPING_REVISION = "termivar-wordfence-v3-production/v2"
+WORDPRESS_EXPLICIT_POLICY = "termivar.wordfence-v3-explicit-interpretation/v1"
+WORDPRESS_IDENTITY_POLICY = (
+    "termivar.wordfence-v3-exact-plus-ascii-lowercase-candidate/v1"
+)
+WORDPRESS_NOTICE = {
+    "id": ("wordfence-notice-sha256:"
+           "826c6b2cc3601beebdd82831cb757c64e721434a7e6ea7d5f1511ca041858379"),
+    "message": "Original synthetic fixture notice; not a provider notice.",
+    "party": "termivar_fixture_author",
+    "notice": "Synthetic data created for Termivar package acceptance.",
+    "license": "This fictional fixture may be copied with its label intact.",
+    "license_url": "https://example.invalid/termivar/package-acceptance/terms",
+}
+WORDPRESS_SEMANTIC_SHA256 = (
+    "4694cd26b7f147fc69b9ff9772c71052a5ebb2717b0f2ac8ae592df4dc3a8363"
+)
+WORDPRESS_ACCOUNTED_RETAINED_BYTES = 9_708
+
+
+@contextmanager
+def _wordpress_fixture():
+    """Reuse the repository loopback fixture with fixed WordPress-shaped bytes."""
+    expected_paths = {
+        b"/",
+        b"/wp-content/plugins/synthetic-policy-within/style.css",
+        b"/wp-content/themes/synthetic-policy-outside/style.css",
+    }
+
+    class WordPressHandler(first_use.StaticHandler):
+        def handle(self) -> None:
+            self.request.settimeout(1.0)
+            request = bytearray()
+            try:
+                while (b"\r\n\r\n" not in request
+                       and len(request) < first_use.HEADER_LIMIT):
+                    chunk = self.request.recv(
+                        min(1024, first_use.HEADER_LIMIT - len(request)))
+                    if not chunk:
+                        return
+                    request.extend(chunk)
+                if b"\r\n\r\n" not in request:
+                    self.server.note("invalid")
+                    return
+                first_line = bytes(request).split(b"\r\n", 1)[0]
+                words = first_line.split(b" ")
+                if len(words) != 3 or words[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
+                    self.server.note("invalid")
+                    return
+                method, path = words[:2]
+                with self.server.count_lock:
+                    self.server.request_lines.append(
+                        first_line.decode("ascii", errors="replace"))
+                if method not in (b"GET", b"HEAD"):
+                    code, reason, body, category = (
+                        405, "Method Not Allowed", first_use.METHOD_REFUSED, "unsupported")
+                elif path not in expected_paths:
+                    code, reason, body, category = (
+                        404, "Not Found", first_use.NOT_FOUND, "unknown")
+                else:
+                    code, reason, body, category = (
+                        200, "OK", WORDPRESS_DOCUMENT, "root")
+                self.server.note(category)
+                headers = (
+                    f"HTTP/1.1 {code} {reason}\r\n"
+                    "Content-Type: text/html; charset=utf-8\r\n"
+                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+                ).encode("ascii")
+                self.request.sendall(headers + (b"" if method == b"HEAD" else body))
+            except (OSError, TimeoutError):
+                return
+
+    previous_document = first_use.DOCUMENT
+    first_use.DOCUMENT = WORDPRESS_DOCUMENT
+    fixture = first_use.Fixture()
+    fixture.server.RequestHandlerClass = WordPressHandler
+    fixture.server.request_lines = []
+    try:
+        with fixture:
+            yield fixture
+    finally:
+        first_use.DOCUMENT = previous_document
+
+
+def _write_new_input(path: Path, data: bytes) -> None:
+    with path.open("xb") as output:
+        require(output.write(data) == len(data), "synthetic WordPress input write was incomplete")
+
+
+def _prepare_wordpress_inputs(work: Path, origin: str) -> dict:
+    directory = work / "wordpress-inputs"
+    directory.mkdir(mode=0o700)
+    plugins = [
+        {"name": "synthetic-policy-within", "status": "active", "version": "1.5"},
+        {"name": "synthetic-policy-candidate", "status": "active", "version": "1.5"},
+        {"name": "synthetic-prerelease-plugin", "status": "active",
+         "version": "2.4.0-beta1"},
+        {"name": "synthetic-trailing-zero-plugin", "status": "active", "version": "1.0"},
+        {"name": "synthetic-vendor-label-plugin", "status": "active",
+         "version": "1.0-vendor1"},
+    ]
+    themes = [
+        {"name": "synthetic-policy-outside", "status": "active", "version": "2.1"},
+    ]
+    context = {
+        "schema": "security.wordpress-context/v1",
+        "root": origin,
+        "hosting_os": "linux",
+        "multisite": "disabled",
+        "components": [],
+    }
+
+    def software(kind: str, slug: str, lower: str, upper: str,
+                 *, upper_inclusive: bool = True) -> dict:
+        return {
+            "type": kind,
+            "name": f"[SYNTHETIC] {slug}",
+            "slug": slug,
+            "affected_versions": {
+                f"[{lower}, {upper}{']' if upper_inclusive else ')'}": {
+                    "from_version": lower,
+                    "from_inclusive": True,
+                    "to_version": upper,
+                    "to_inclusive": upper_inclusive,
+                },
+            },
+            "patched": False,
+            "patched_versions": [],
+            "remediation": "Synthetic package-acceptance data; no installed fix is asserted.",
+        }
+
+    source_id = "00000000-0000-4000-8000-0000000000b6"
+    feed = {
+        source_id: {
+            "id": source_id,
+            "title": "[SYNTHETIC] Packaged WordPress Preview acceptance",
+            "software": [
+                software("plugin", "synthetic-policy-within", "1.0", "2.0"),
+                software("theme", "synthetic-policy-outside", "1.0", "2.0"),
+                software("plugin", "synthetic-vendor-label-plugin", "1.0", "2.0"),
+                software("core", "wordpress", "2.4.0-beta0", "2.4.0",
+                         upper_inclusive=False),
+                software("plugin", "SYNTHETIC-POLICY-CANDIDATE", "1.0", "2.0"),
+                software("plugin", "https://example.invalid/plugins/opaque_name",
+                         "1.0", "2.0"),
+            ],
+            "informational": False,
+            "description": "Original fictional data for bounded packaged acceptance.",
+            "references": ["https://example.invalid/termivar/package-acceptance/b6"],
+            "cwe": None,
+            "cvss": None,
+            "cve": None,
+            "cve_link": None,
+            "researchers": [],
+            "published": None,
+            "updated": None,
+            "copyrights": {
+                "message": "Original synthetic fixture notice; not a provider notice.",
+                "termivar_fixture_author": {
+                    "notice": "Synthetic data created for Termivar package acceptance.",
+                    "license": "This fictional fixture may be copied with its label intact.",
+                    "license_url": "https://example.invalid/termivar/package-acceptance/terms",
+                },
+            },
+        },
+    }
+    values = {
+        "plugins": json.dumps(plugins, separators=(",", ":")).encode("ascii") + b"\n",
+        "themes": json.dumps(themes, separators=(",", ":")).encode("ascii") + b"\n",
+        "core": b"2.4.0-beta1\n",
+        "context": json.dumps(context, separators=(",", ":")).encode("ascii") + b"\n",
+        "wordfence": json.dumps(feed, separators=(",", ":"), sort_keys=True).encode("ascii") + b"\n",
+        "malformed": b'{"synthetic-late-record":',
+    }
+    paths = {}
+    snapshots = {}
+    for name, data in values.items():
+        suffix = ".txt" if name == "core" else ".json"
+        path = directory / f"{name}{suffix}"
+        _write_new_input(path, data)
+        paths[name] = path
+        snapshots[name] = {"bytes": len(data), "sha256": first_use.digest_bytes(data)}
+    native_catalog = (Path(__file__).resolve().parents[1]
+                      / "docs/examples/wordpress-review/advisories.profiles.synthetic.json")
+    _regular_non_link(native_catalog, "native WordPress catalogue fixture")
+    paths["native_catalog"] = native_catalog
+    snapshots["native_catalog"] = {
+        "bytes": native_catalog.stat().st_size,
+        "sha256": first_use.digest_file(native_catalog),
+    }
+    return {"paths": paths, "snapshots": snapshots}
+
+
+def _read_assessment(bundle_path: Path) -> tuple[dict, dict, str]:
+    bundle = report_bundle_example.validate_bundle(bundle_path)
+    encoded = report_bundle_example.read_regular_file(
+        bundle_path / "assessment.json", report_bundle_example.REPORT_LIMIT,
+        "packaged WordPress assessment")
+    html = report_bundle_example.read_regular_file(
+        bundle_path / "assessment.html", report_bundle_example.REPORT_LIMIT,
+        "packaged WordPress HTML")
+    try:
+        html_text = html.decode("utf-8")
+    except UnicodeError as error:
+        raise AcceptanceError("packaged WordPress HTML is not UTF-8") from error
+    return _parse_json(encoded, "packaged WordPress assessment"), bundle, html_text
+
+
+def _wordpress_surface_items(assessment: dict) -> int:
+    items = assessment.get("items")
+    require(isinstance(items, list), "assessment items are unavailable")
+    return sum(item.get("category") == "wordpress-surface"
+               for item in items if isinstance(item, dict))
+
+
+def _validate_wordpress_surface_item(assessment: dict) -> None:
+    items = assessment.get("items")
+    require(isinstance(items, list), "assessment items are unavailable")
+    surfaces = [item for item in items if isinstance(item, dict)
+                and item.get("category") == "wordpress-surface"]
+    require(len(surfaces) == 1, "WordPress surface item cardinality changed")
+    item = surfaces[0]
+    require(item.get("capability_id") == "technology.wordpress-surface-observed@1"
+            and item.get("disposition") == "informational"
+            and item.get("claim_basis") == "observation"
+            and item.get("case_reference") is None
+            and item.get("outcome_reference") is None
+            and item.get("verification_stage") is None
+            and item.get("control_evidence_references") == []
+            and item.get("candidate_evidence_references") == [],
+            "WordPress surface item claim or verification boundary changed")
+
+
+def _validate_native_wordpress(assessment: dict) -> dict:
+    audit = assessment.get("wordpress_review")
+    require(isinstance(audit, dict)
+            and audit.get("schema") == "security.wordpress-review-audit/v3"
+            and audit.get("catalog_schema") == "security.wordpress-advisory-catalog/v2"
+            and audit.get("catalog_status") == "evaluated"
+            and audit.get("additional_request_count") == 0
+            and audit.get("item_projected") is True
+            and _wordpress_surface_items(assessment) == 1,
+            "native WordPress packaged assessment contract changed")
+    _validate_wordpress_surface_item(assessment)
+    advisories = audit.get("advisories")
+    require(isinstance(advisories, list), "native WordPress advisories are unavailable")
+    by_id = {row.get("id"): row for row in advisories if isinstance(row, dict)}
+    require(len(by_id) == len(advisories) == 5,
+            "native WordPress advisory cardinality changed")
+    expected = {
+        "SYNTHETIC-BETA-NUMERIC-0001": (
+            "numeric-dotted/v1", "unsupported", "indeterminate_unsupported"),
+        "SYNTHETIC-BETA-PHP-SUBSET-0001": (
+            "php-release-subset/v1", "within_declared_range",
+            "candidate_match_on_declared_facts"),
+        "SYNTHETIC-TRAILING-ZERO-NUMERIC-0001": (
+            "numeric-dotted/v1", "within_declared_range",
+            "candidate_match_on_declared_facts"),
+        "SYNTHETIC-TRAILING-ZERO-PHP-SUBSET-0001": (
+            "php-release-subset/v1", "outside_declared_ranges",
+            "contradicted_by_declared_facts"),
+        "SYNTHETIC-VENDOR-LABEL-UNSUPPORTED-0001": (
+            "php-release-subset/v1", "unsupported", "indeterminate_unsupported"),
+    }
+    for identifier, (profile, relation, applicability) in expected.items():
+        row = by_id.get(identifier)
+        require(isinstance(row, dict)
+                and row.get("comparison_profile") == profile
+                and row.get("version_relation") == relation
+                and row.get("applicability") == applicability
+                and row.get("exploit_execution") == "not_performed"
+                and row.get("impact_validation") == "not_performed",
+                f"native WordPress result changed for {identifier}")
+    return {
+        "audit_schema": audit["schema"],
+        "surface_items": 1,
+        "advisory_count": len(advisories),
+        "expected_results": {
+            "within": 2, "outside": 1, "indeterminate": 2,
+        },
+    }
+
+
+def _external_evaluation(external: dict, slug: str) -> dict:
+    rows = external.get("evaluations")
+    require(isinstance(rows, list), "external WordPress evaluations are unavailable")
+    matches = [row for row in rows if isinstance(row, dict)
+               and row.get("key", {}).get("source_component", {}).get("slug") == slug]
+    require(len(matches) == 1, f"external WordPress evaluation identity changed for {slug}")
+    return matches[0]
+
+
+def _validate_external_wordpress(assessment: dict, html: str,
+                                 input_snapshot: dict, profile: str | None) -> dict:
+    audit = assessment.get("wordpress_review")
+    require(isinstance(audit, dict)
+            and audit.get("schema") == "security.wordpress-review-audit/v6"
+            and audit.get("additional_request_count") == 0
+            and audit.get("item_projected") is True
+            and _wordpress_surface_items(assessment) == 1,
+            "external WordPress packaged assessment contract changed")
+    _validate_wordpress_surface_item(assessment)
+    external = audit.get("external_review")
+    require(isinstance(external, dict)
+            and external.get("source_namespace") == "wordfence-intelligence"
+            and external.get("source_format") == "wordfence-v3-production"
+            and external.get("mapping_revision") == WORDPRESS_MAPPING_REVISION
+            and external.get("identity_mapping_policy") == WORDPRESS_IDENTITY_POLICY
+            and external.get("identity_source_assurance") == "not_established"
+            and external.get("resource_policy") == WORDPRESS_RESOURCE_POLICY,
+            "external WordPress v6 identity or capacity contract changed")
+    source_input = external.get("input")
+    require(isinstance(source_input, dict)
+            and source_input.get("byte_length") == input_snapshot["bytes"]
+            and source_input.get("sha256") == input_snapshot["sha256"]
+            and source_input.get("semantic_sha256") == WORDPRESS_SEMANTIC_SHA256
+            and source_input.get("accounted_retained_bytes")
+            == WORDPRESS_ACCOUNTED_RETAINED_BYTES,
+            "external WordPress input provenance changed")
+    notices = external.get("notices")
+    require(notices == [WORDPRESS_NOTICE],
+            "external WordPress synthetic notice was not retained exactly once")
+    require(all(WORDPRESS_NOTICE[name] in html for name in (
+                "message", "party", "notice", "license", "license_url"))
+            and '<script' not in html.casefold()
+            and (f'rel="noreferrer noopener" href="{WORDPRESS_NOTICE["license_url"]}"'
+                 in html),
+            "external WordPress notice was not safely retained in assessment HTML")
+    limitations = external.get("identity_limitations")
+    require(isinstance(limitations, list) and len(limitations) == 1,
+            "external WordPress identity limitation cardinality changed")
+    limitation = limitations[0]
+    require(isinstance(limitation, dict)
+            and limitation.get("key", {}).get("source_component") == {
+                "kind": "plugin",
+                "slug": "https://example.invalid/plugins/opaque_name",
+            }
+            and limitation.get("identity_resolution") == "canonical_identity_unavailable"
+            and limitation.get("version_relation") == "not_evaluated"
+            and limitation.get("version_relation_reason")
+            == "canonical_identity_unavailable"
+            and limitation.get("applicability") == "indeterminate"
+            and limitation.get("execution") == {
+                "exploit_execution": "not_performed",
+                "impact_validation": "not_performed",
+            }, "external WordPress unresolved identity limitation changed")
+    counts = external.get("counts")
+    require(isinstance(counts, dict), "external WordPress counts are unavailable")
+    common_counts = {
+        "parsed_records": 1,
+        "software_associations": 6,
+        "exact_identity_associations": 4,
+        "candidate_identity_associations": 1,
+        "ambiguous_identity_associations": 0,
+        "unresolved_identity_associations": 1,
+        "projected_identity_limitations": 1,
+        "unprojected_identity_limitations": 0,
+        "selected_associations": 5,
+        "excluded_associations": 1,
+        "mapped_unselected_associations": 0,
+    }
+    if profile is None:
+        expected_counts = {
+            **common_counts,
+            "evaluable_associations": 0,
+            "unsupported_associations": 5,
+        }
+        require(counts == expected_counts,
+                "unresolved external WordPress compact v6 accounting changed")
+        require(external.get("comparison_policy")
+                == "wordfence-v3/source-semantics-unresolved/v1"
+                and "comparison_profile" not in external
+                and "policy_selection" not in external
+                and "source_semantics_assurance" not in external
+                and counts.get("evaluable_associations") == 0
+                and counts.get("unsupported_associations") == 5
+                and all(row.get("version_relation")
+                        == "source_comparison_semantics_unresolved"
+                        for row in external.get("evaluations", [])),
+                "absent external comparator no longer preserves unresolved results")
+        partition = {"within": 0, "outside": 0, "indeterminate": 5}
+    else:
+        require(profile == "numeric-dotted/v1"
+                and external.get("comparison_policy") == WORDPRESS_EXPLICIT_POLICY
+                and external.get("comparison_profile") == profile
+                and external.get("policy_selection") == "explicit_operator"
+                and external.get("source_semantics_assurance") == "not_established",
+                "explicit external WordPress policy metadata changed")
+        expected_counts = {
+            **common_counts,
+            "evaluable_associations": 2,
+            "unsupported_associations": 3,
+            "within_associations": 1,
+            "outside_associations": 1,
+            "indeterminate_associations": 3,
+            "selected_ranges": 5,
+            "evaluated_ranges": 2,
+            "containing_ranges": 1,
+            "noncontaining_ranges": 1,
+            "unsupported_ranges": 1,
+            "invalid_ranges": 0,
+            "not_evaluated_ranges": 2,
+            "partial_range_coverage_associations": 0,
+        }
+        require(counts == expected_counts,
+                "explicit external WordPress result partition changed")
+        expected_rows = {
+            "synthetic-policy-within": (
+                "within_supported_range_under_selected_policy",
+                "version_match_under_selected_policy"),
+            "synthetic-policy-outside": (
+                "outside_declared_ranges_under_selected_policy",
+                "no_version_match_under_selected_policy"),
+            "synthetic-vendor-label-plugin": ("indeterminate", "indeterminate"),
+            "wordpress": ("indeterminate", "indeterminate"),
+            "SYNTHETIC-POLICY-CANDIDATE": (
+                "indeterminate", "indeterminate"),
+        }
+        for slug, (relation, applicability) in expected_rows.items():
+            row = _external_evaluation(external, slug)
+            require(row.get("version_relation") == relation
+                    and row.get("applicability") == applicability
+                    and row.get("execution") == {
+                        "exploit_execution": "not_performed",
+                        "impact_validation": "not_performed",
+                    }, f"explicit external WordPress result changed for {slug}")
+            if slug == "SYNTHETIC-POLICY-CANDIDATE":
+                require(row.get("identity_mapping") == "ascii_case_fold_candidate"
+                        and row.get("version_relation_reason")
+                        == "identity_mapping_candidate",
+                        "candidate identity was incorrectly promoted to a range conclusion")
+        partition = {"within": 1, "outside": 1, "indeterminate": 3}
+    return {
+        "audit_schema": audit["schema"],
+        "surface_items": 1,
+        "mapping_revision": external["mapping_revision"],
+        "resource_policy": external["resource_policy"],
+        "identity_partition": {
+            name: counts[name] for name in (
+                "exact_identity_associations", "candidate_identity_associations",
+                "ambiguous_identity_associations", "unresolved_identity_associations")
+        },
+        "selected_associations": counts["selected_associations"],
+        "result_partition": partition,
+        "comparison_policy": external["comparison_policy"],
+        "comparison_profile": external.get("comparison_profile"),
+        "source_semantics_assurance": external.get("source_semantics_assurance",
+                                                    "not_established_by_source"),
+        "notice_count": len(notices),
+    }
+
+
+def _wordpress_scan_arguments(fixture, bundle: Path, paths: dict,
+                              source: str) -> list[str]:
+    arguments = [
+        "scan", fixture.origin, "--profile", "web-review", "--wordpress-review",
+        "--wordpress-plugins-json", str(paths["plugins"]),
+        "--wordpress-themes-json", str(paths["themes"]),
+        "--wordpress-core-version-file", str(paths["core"]),
+        "--wordpress-advisories",
+        str(paths["native_catalog"] if source == "native" else paths["wordfence"]),
+    ]
+    if source != "native":
+        arguments.extend(["--wordpress-advisories-format", "wordfence-v3-production"])
+    if source == "numeric":
+        arguments.extend([
+            "--wordpress-external-version-profile", "numeric-dotted/v1",
+        ])
+    arguments.extend(["--report-dir", str(bundle)])
+    return arguments
+
+
+def _run_wordpress_scan(runner: CandidateRunner, work: Path, fixture, identifier: str,
+                        arguments: list[str], expected_version: str) -> dict:
+    before_trace = len(fixture.server.request_lines)
+    stdout, _ = runner.run(identifier, arguments, expected_stderr_empty=False)
+    require(stdout == b"", f"{identifier} wrote a report document to stdout")
+    trace = tuple(fixture.server.request_lines[before_trace:])
+    require(trace == WORDPRESS_TRACE,
+            f"{identifier} changed the bounded WordPress fixture request trace")
+    bundle_path = Path(arguments[arguments.index("--report-dir") + 1])
+    assessment, bundle, html = _read_assessment(bundle_path)
+    require(bundle.get("producer") == {"product": "Termivar", "version": expected_version},
+            f"{identifier} bundle producer identity changed")
+    return {
+        "bundle": bundle_path,
+        "assessment": assessment,
+        "html": html,
+        "snapshot": _snapshot_files(bundle_path),
+        "request_trace": trace,
+    }
+
+
+def _run_wordpress_fixture_acceptance(runner: CandidateRunner, work: Path,
+                                      expected_version: str) -> dict:
+    fixture = runner.fixture
+    require(fixture is not None, "WordPress fixture runner is unavailable")
+    require(fixture.server.snapshot() == {
+        "root": 1, "example": 0, "unknown": 0,
+        "unsupported": 0, "invalid": 0,
+    }, "WordPress fixture readiness accounting changed")
+    prepared = _prepare_wordpress_inputs(work, fixture.origin)
+    paths = prepared["paths"]
+    input_snapshots = prepared["snapshots"]
+
+    malformed_bundle = work / "wordpress-malformed-must-not-exist"
+    runner.run("wordpress-malformed-preflight", [
+        "scan", fixture.origin, "--profile", "web-review", "--wordpress-review",
+        "--wordpress-plugins-json", str(paths["plugins"]),
+        "--wordpress-advisories", str(paths["malformed"]),
+        "--wordpress-advisories-format", "wordfence-v3-production",
+        "--wordpress-external-version-profile", "numeric-dotted/v1",
+        "--report-dir", str(malformed_bundle),
+    ], expected_exit=1, expected_stderr_empty=False)
+    require(not malformed_bundle.exists(),
+            "malformed WordPress preflight created a report bundle")
+
+    conflict_bundle = work / "wordpress-conflict-must-not-exist"
+    runner.run("wordpress-input-conflict", [
+        "scan", fixture.origin, "--profile", "web-review", "--wordpress-review",
+        "--wordpress-context", str(paths["context"]),
+        "--wordpress-plugins-json", str(paths["plugins"]),
+        "--report-dir", str(conflict_bundle),
+    ], expected_exit=2, expected_stderr_empty=False)
+    require(not conflict_bundle.exists(),
+            "conflicting WordPress inputs created a report bundle")
+
+    inactive_bundle = work / "wordpress-inactive"
+    inactive = _run_wordpress_scan(
+        runner, work, fixture, "wordpress-inactive", [
+            "scan", fixture.origin, "--profile", "web-review",
+            "--report-dir", str(inactive_bundle),
+        ], expected_version)
+    require("wordpress_review" not in inactive["assessment"]
+            and _wordpress_surface_items(inactive["assessment"]) == 0,
+            "compiled WordPress Preview activated without runtime opt-in")
+
+    native_bundle = work / "wordpress-native"
+    native = _run_wordpress_scan(
+        runner, work, fixture, "wordpress-native",
+        _wordpress_scan_arguments(fixture, native_bundle, paths, "native"),
+        expected_version)
+    native_result = _validate_native_wordpress(native["assessment"])
+
+    unresolved_bundle = work / "wordpress-external-unresolved"
+    unresolved = _run_wordpress_scan(
+        runner, work, fixture, "wordpress-external-unresolved",
+        _wordpress_scan_arguments(fixture, unresolved_bundle, paths, "unresolved"),
+        expected_version)
+    unresolved_result = _validate_external_wordpress(
+        unresolved["assessment"], unresolved["html"],
+        input_snapshots["wordfence"], None)
+
+    numeric_bundle = work / "wordpress-external-numeric"
+    numeric = _run_wordpress_scan(
+        runner, work, fixture, "wordpress-external-numeric",
+        _wordpress_scan_arguments(fixture, numeric_bundle, paths, "numeric"),
+        expected_version)
+    numeric_result = _validate_external_wordpress(
+        numeric["assessment"], numeric["html"],
+        input_snapshots["wordfence"], "numeric-dotted/v1")
+
+    by_id = {record["id"]: record for record in runner.records}
+    for identifier in ("wordpress-malformed-preflight", "wordpress-input-conflict"):
+        require(sum(by_id[identifier]["fixture_requests"].values()) == 0,
+                f"{identifier} contacted the target fixture")
+    for identifier in (
+            "wordpress-inactive", "wordpress-native",
+            "wordpress-external-unresolved", "wordpress-external-numeric"):
+        require(by_id[identifier]["fixture_requests"] == {
+            "example": 0, "invalid": 0, "root": 5,
+            "unknown": 0, "unsupported": 0,
+        }, f"{identifier} request accounting changed")
+
+    for name, snapshot in input_snapshots.items():
+        path = paths[name]
+        require(path.stat().st_size == snapshot["bytes"]
+                and first_use.digest_file(path) == snapshot["sha256"],
+                f"synthetic WordPress input changed: {name}")
+
+    return {
+        "bundles": {
+            "inactive": inactive["bundle"],
+            "native": native["bundle"],
+            "unresolved": unresolved["bundle"],
+            "numeric": numeric["bundle"],
+        },
+        "bundle_snapshots": {
+            "inactive": inactive["snapshot"],
+            "native": native["snapshot"],
+            "unresolved": unresolved["snapshot"],
+            "numeric": numeric["snapshot"],
+        },
+        "item_counts": {
+            name: value["assessment"]["item_count"] for name, value in {
+                "inactive": inactive, "native": native,
+                "unresolved": unresolved, "numeric": numeric,
+            }.items()
+        },
+        "inputs": {"paths": paths, "snapshots": input_snapshots},
+        "public": {
+            "fixture_kind": "original_synthetic_wordpress_shaped_loopback",
+            "request_trace_per_completed_scan": list(WORDPRESS_TRACE),
+            "preflight": {
+                "malformed": "refused_before_request_without_bundle",
+                "conflicting_inputs": "refused_before_request_without_bundle",
+            },
+            "inactive": {
+                "wordpress_audit_present": False,
+                "wordpress_surface_items": 0,
+                "runtime_activation": "not_selected",
+            },
+            "native_catalogue": native_result,
+            "external_absent_profile": unresolved_result,
+            "external_explicit_numeric": numeric_result,
+            "source_authenticity": "not_established",
+            "security_effectiveness_or_remediation": "not_established",
+        },
+    }
+
+
+def _run_wordpress_offline_acceptance(runner: CandidateRunner, state: dict) -> dict:
+    bundles = state["bundles"]
+    verifications = {}
+    for name, bundle_path in bundles.items():
+        stdout, _ = runner.run(f"wordpress-verify-{name}", [
+            "report", "verify", "--dir", str(bundle_path), "--format", "json",
+        ], expected_stderr_empty=True)
+        document = _parse_json(stdout, "packaged WordPress Report Verify output")
+        _validate_verification(document, "integrity_match")
+        require(_snapshot_files(bundle_path) == state["bundle_snapshots"][name],
+                f"Report Verify changed the {name} WordPress bundle")
+        verifications[name] = "integrity_match"
+
+    numeric = bundles["numeric"] / "assessment.json"
+    stdout, _ = runner.run("wordpress-self-compare", [
+        "report", "compare", "--before", str(numeric), "--after", str(numeric),
+        "--same-scope", "--format", "json",
+    ], expected_stderr_empty=True)
+    self_compare = _parse_json(stdout, "packaged WordPress self comparison")
+    self_counts = _group_counts(self_compare, {
+        "only_in_after": 0, "only_in_before": 0, "changed": 0,
+        "unchanged": state["item_counts"]["numeric"],
+    })
+    wordpress_self = self_compare.get("wordpress_review_comparison")
+    require(isinstance(wordpress_self, dict)
+            and wordpress_self.get("status") == "compared"
+            and wordpress_self.get("methodology", {}).get("status") == "unchanged"
+            and not wordpress_self.get("advisories", {}).get("paired_changed")
+            and not wordpress_self.get("advisories", {}).get("only_in_before")
+            and not wordpress_self.get("advisories", {}).get("only_in_after"),
+            "WordPress self comparison changed")
+
+    unresolved = bundles["unresolved"] / "assessment.json"
+    stdout, _ = runner.run("wordpress-methodology-compare", [
+        "report", "compare", "--before", str(unresolved), "--after", str(numeric),
+        "--same-scope", "--format", "json",
+    ], expected_stderr_empty=True)
+    controlled = _parse_json(stdout, "packaged WordPress methodology comparison")
+    controlled_counts = _group_counts(controlled, {
+        "only_in_after": 0, "only_in_before": 0, "changed": 0,
+        "unchanged": state["item_counts"]["numeric"],
+    })
+    wordpress_controlled = controlled.get("wordpress_review_comparison")
+    methodology = (wordpress_controlled.get("methodology", {})
+                   if isinstance(wordpress_controlled, dict) else {})
+    changed_fields = methodology.get("changed_fields")
+    advisories = (wordpress_controlled.get("advisories", {})
+                  if isinstance(wordpress_controlled, dict) else {})
+    require(isinstance(wordpress_controlled, dict)
+            and wordpress_controlled.get("status") == "compared"
+            and methodology.get("status") == "changed"
+            and isinstance(changed_fields, list)
+            and "comparison_policy" in changed_fields
+            and "comparison_profile" in changed_fields
+            and len(advisories.get("paired_changed", [])) == 5
+            and not advisories.get("only_in_before")
+            and not advisories.get("only_in_after"),
+            "controlled WordPress methodology comparison changed")
+
+    for name, bundle_path in bundles.items():
+        require(_snapshot_files(bundle_path) == state["bundle_snapshots"][name],
+                f"offline comparison changed the {name} WordPress bundle")
+    paths = state["inputs"]["paths"]
+    snapshots = state["inputs"]["snapshots"]
+    for name, snapshot in snapshots.items():
+        path = paths[name]
+        require(path.stat().st_size == snapshot["bytes"]
+                and first_use.digest_file(path) == snapshot["sha256"],
+                f"offline commands changed synthetic WordPress input: {name}")
+
+    public = state["public"]
+    public["bundle_verification"] = verifications
+    public["self_comparison"] = {
+        "groups": self_counts,
+        "methodology": "unchanged",
+        "advisory_differences": 0,
+    }
+    public["controlled_comparison"] = {
+        "groups": controlled_counts,
+        "methodology": "changed",
+        "changed_fields_include": ["comparison_policy", "comparison_profile"],
+        "paired_advisory_differences": 5,
+    }
+    public["offline_commands_after_fixture_shutdown"] = True
+    public["inputs_preserved"] = True
+    return public
 
 
 def _run_fixture_acceptance(
@@ -696,6 +1459,13 @@ def run_acceptance(archive: Path, target: str, archive_ref: str, source_sha: str
             result["capabilities"] = _validate_capabilities(runner, expected_version)
             result["application"] = _run_fixture_acceptance(
                 runner, work, expected_version)
+        with _wordpress_fixture() as fixture:
+            runner.fixture = fixture
+            wordpress_state = _run_wordpress_fixture_acceptance(
+                runner, work, expected_version)
+        runner.fixture = None
+        result["application"]["wordpress_preview"] = (
+            _run_wordpress_offline_acceptance(runner, wordpress_state))
         require(first_use.digest_file(binary) == archive_result["member_sha256"],
                 "packaged binary changed during candidate acceptance")
         require(first_use.digest_file(archive) == archive_result["archive_sha256"],

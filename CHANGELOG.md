@@ -9,6 +9,11 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 - Advanced the post-`v0.10.0-alpha.2` development source line to
   `0.10.0-alpha.3` so later source binaries cannot be confused with the
   published alpha.2 prerelease.
+- Included the existing `wordpress-review` Preview in the current development
+  `release-bundle`. The ordinary default feature list remains empty, and a
+  compiled bundle still requires explicit `--profile web-review` and
+  `--wordpress-review` before the review can run. Published alpha.2 archives
+  remain unchanged and contain no WordPress producer or audit support.
 
 ## [0.10.0-alpha.2] - 2026-09-06
 

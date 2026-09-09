@@ -181,7 +181,7 @@ jobs:
           TERMIVAR_CAPABILITIES_MATRIX_CASE=release-bundle cargo test --locked -p termivar-cli --no-default-features --features release-bundle --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
-          TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail

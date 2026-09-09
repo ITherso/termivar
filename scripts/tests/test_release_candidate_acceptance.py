@@ -43,13 +43,13 @@ EXPECTED_RELEASE_MEMBERS = (
     "openapi-review",
     "rest-review",
     "authorization-review",
+    "wordpress-review",
 )
 EXPECTED_EXCLUDED_FEATURES = (
     "api-adapter",
     "legacy-scanner",
     "proxy-adapter",
     "ssrf-oast-review",
-    "wordpress-review",
 )
 EXPECTED_FEATURE_STATES = {
     "api-adapter": "not_compiled",
@@ -63,8 +63,51 @@ EXPECTED_FEATURE_STATES = {
     "release-bundle": "compiled",
     "rest-review": "compiled",
     "ssrf-oast-review": "not_compiled",
-    "wordpress-review": "not_compiled",
+    "wordpress-review": "compiled",
 }
+EXPECTED_WORDPRESS_OPTIONS = (
+    "--wordpress-review",
+    "--wordpress-context",
+    "--wordpress-advisories",
+    "--wordpress-plugins-json",
+    "--wordpress-themes-json",
+    "--wordpress-core-version-file",
+    "--wordpress-advisories-format",
+    "--wordpress-external-version-profile",
+)
+EXPECTED_WORDPRESS_PREREQUISITES = (
+    "--profile web-review",
+    "--wordpress-review",
+    "optional --wordpress-context FILE",
+    "optional --wordpress-advisories FILE",
+    "optional --wordpress-advisories-format termivar|wordfence-v3-production",
+    ("optional --wordpress-external-version-profile "
+     "numeric-dotted/v1|php-release-subset/v1 (Wordfence Production only)"),
+    "optional --wordpress-plugins-json FILE",
+    "optional --wordpress-themes-json FILE",
+    "optional --wordpress-core-version-file FILE",
+)
+EXPECTED_WORDPRESS_NOTICE = {
+    "id": ("wordfence-notice-sha256:"
+           "826c6b2cc3601beebdd82831cb757c64e721434a7e6ea7d5f1511ca041858379"),
+    "message": "Original synthetic fixture notice; not a provider notice.",
+    "party": "termivar_fixture_author",
+    "notice": "Synthetic data created for Termivar package acceptance.",
+    "license": "This fictional fixture may be copied with its label intact.",
+    "license_url": "https://example.invalid/termivar/package-acceptance/terms",
+}
+EXPECTED_WORDPRESS_MAPPING_REVISION = "termivar-wordfence-v3-production/v2"
+EXPECTED_WORDPRESS_RESOURCE_POLICY = "termivar.wordfence-v3-bounded-capacity/v1"
+EXPECTED_WORDPRESS_IDENTITY_POLICY = (
+    "termivar.wordfence-v3-exact-plus-ascii-lowercase-candidate/v1"
+)
+EXPECTED_WORDPRESS_EXPLICIT_POLICY = (
+    "termivar.wordfence-v3-explicit-interpretation/v1"
+)
+EXPECTED_WORDPRESS_SEMANTIC_SHA256 = (
+    "4694cd26b7f147fc69b9ff9772c71052a5ebb2717b0f2ac8ae592df4dc3a8363"
+)
+EXPECTED_WORDPRESS_ACCOUNTED_RETAINED_BYTES = 9_708
 
 
 def digest(data: bytes) -> str:
@@ -86,18 +129,32 @@ def tar_bytes(name: str = "termivar", *, extra: bool = False) -> bytes:
     return output.getvalue()
 
 
-def write_bundle(directory: Path, item_count: int = 2) -> bytes:
+def write_bundle(directory: Path, item_count: int = 2,
+                 assessment: dict | None = None) -> bytes:
     directory.mkdir()
-    html = b"<!doctype html><html><body>bounded release fixture</body></html>"
-    items = [{"fixture": index} for index in range(item_count)]
-    assessment = {
-        "schema": runner.report_bundle_example.ASSESSMENT_SCHEMA,
-        "profile": "web-review",
-        "status": "complete",
-        "subject_count": 1,
-        "item_count": item_count,
-        "items": items,
-    }
+    if assessment is None:
+        items = [{"fixture": index} for index in range(item_count)]
+        assessment = {
+            "schema": runner.report_bundle_example.ASSESSMENT_SCHEMA,
+            "profile": "web-review",
+            "status": "complete",
+            "subject_count": 1,
+            "item_count": item_count,
+            "items": items,
+        }
+    external = assessment.get("wordpress_review", {}).get("external_review")
+    if isinstance(external, dict):
+        notice = EXPECTED_WORDPRESS_NOTICE
+        html = (
+            "<!doctype html><html><body><section><h3>Rights notices</h3>"
+            f"<code>{notice['party']}</code><code>{notice['message']}</code>"
+            f"<code>{notice['notice']}</code><code>{notice['license']}</code>"
+            f"<a rel=\"noreferrer noopener\" href=\"{notice['license_url']}\">"
+            "License terms</a></section></body></html>"
+        ).encode("utf-8")
+    else:
+        html = b"<!doctype html><html><body>bounded release fixture</body></html>"
+    item_count = assessment["item_count"]
     assessment_bytes = json.dumps(assessment, separators=(",", ":")).encode()
     manifest = {
         "schema": runner.report_bundle_example.BUNDLE_SCHEMA,
@@ -177,7 +234,18 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "key": "option.wordpress-review",
             "label": "WordPress evidence review",
             "compile_feature": "wordpress-review",
-            "build_state": "not_compiled",
+            "build_state": "compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_WORDPRESS_PREREQUISITES),
+            "limitation": (
+                "Interprets explicit local declarations, adds no target requests, and "
+                "lets the operator explicitly select a comparison rule. Without that "
+                "selector the external relation stays indeterminate."
+            ),
         },
     ]
     return {
@@ -239,9 +307,13 @@ def fake_help(arguments: list[str]) -> bytes:
         return (b"Termivar\nCommands:\n  scan  bounded scan\n  artifact  local file\n"
                 b"  report  offline reports\n  capabilities  build inventory\n")
     if arguments == ["scan", "--help"]:
-        return (b"Usage: termivar scan [OPTIONS]\n"
-                b"--report-dir --progress --normalization-resilience --graphql-review "
-                b"--openapi-review --rest-review --authorization-review-policy\n")
+        options = (
+            "--report-dir", "--progress", "--normalization-resilience",
+            "--graphql-review", "--openapi-review", "--rest-review",
+            "--authorization-review-policy", *EXPECTED_WORDPRESS_OPTIONS,
+        )
+        return ("Usage: termivar scan [OPTIONS]\n"
+                + "".join(f"  {option}\n" for option in options)).encode()
     if arguments == ["report", "--help"]:
         return b"Commands:\n  compare  compare reports\n  verify  verify bundle\n"
     raise AssertionError(arguments)
@@ -266,17 +338,204 @@ VALID_PROGRESS = (
 )
 
 
+def wordpress_assessment(audit: dict | None = None) -> dict:
+    items = ([] if audit is None else [{
+        "capability_id": "technology.wordpress-surface-observed@1",
+        "category": "wordpress-surface",
+        "disposition": "informational",
+        "claim_basis": "observation",
+        "case_reference": None,
+        "outcome_reference": None,
+        "verification_stage": None,
+        "control_evidence_references": [],
+        "candidate_evidence_references": [],
+    }])
+    document = {
+        "schema": runner.report_bundle_example.ASSESSMENT_SCHEMA,
+        "profile": "web-review",
+        "status": "complete",
+        "subject_count": 1,
+        "item_count": len(items),
+        "items": items,
+    }
+    if audit is not None:
+        document["wordpress_review"] = audit
+    return document
+
+
+def native_wordpress_audit() -> dict:
+    expected = {
+        "SYNTHETIC-BETA-NUMERIC-0001": (
+            "numeric-dotted/v1", "unsupported", "indeterminate_unsupported"),
+        "SYNTHETIC-BETA-PHP-SUBSET-0001": (
+            "php-release-subset/v1", "within_declared_range",
+            "candidate_match_on_declared_facts"),
+        "SYNTHETIC-TRAILING-ZERO-NUMERIC-0001": (
+            "numeric-dotted/v1", "within_declared_range",
+            "candidate_match_on_declared_facts"),
+        "SYNTHETIC-TRAILING-ZERO-PHP-SUBSET-0001": (
+            "php-release-subset/v1", "outside_declared_ranges",
+            "contradicted_by_declared_facts"),
+        "SYNTHETIC-VENDOR-LABEL-UNSUPPORTED-0001": (
+            "php-release-subset/v1", "unsupported", "indeterminate_unsupported"),
+    }
+    return {
+        "schema": "security.wordpress-review-audit/v3",
+        "catalog_schema": "security.wordpress-advisory-catalog/v2",
+        "catalog_status": "evaluated",
+        "additional_request_count": 0,
+        "item_projected": True,
+        "advisories": [
+            {
+                "id": identifier,
+                "comparison_profile": profile,
+                "version_relation": relation,
+                "applicability": applicability,
+                "exploit_execution": "not_performed",
+                "impact_validation": "not_performed",
+            }
+            for identifier, (profile, relation, applicability) in expected.items()
+        ],
+    }
+
+
+def external_wordpress_audit(feed: Path, profile: str | None) -> dict:
+    slugs = (
+        "synthetic-policy-within",
+        "synthetic-policy-outside",
+        "synthetic-vendor-label-plugin",
+        "wordpress",
+        "SYNTHETIC-POLICY-CANDIDATE",
+    )
+    if profile is None:
+        evaluations = [
+            {
+                "key": {"source_component": {"slug": slug}},
+                "version_relation": "source_comparison_semantics_unresolved",
+            }
+            for slug in slugs
+        ]
+        counts = {
+            "evaluable_associations": 0,
+            "unsupported_associations": 5,
+        }
+        policy = {"comparison_policy": "wordfence-v3/source-semantics-unresolved/v1"}
+    else:
+        results = {
+            "synthetic-policy-within": (
+                "within_supported_range_under_selected_policy",
+                "version_match_under_selected_policy"),
+            "synthetic-policy-outside": (
+                "outside_declared_ranges_under_selected_policy",
+                "no_version_match_under_selected_policy"),
+            "synthetic-vendor-label-plugin": ("indeterminate", "indeterminate"),
+            "wordpress": ("indeterminate", "indeterminate"),
+            "SYNTHETIC-POLICY-CANDIDATE": (
+                "indeterminate", "indeterminate"),
+        }
+        evaluations = [
+            {
+                "key": {"source_component": {"slug": slug}},
+                "version_relation": relation,
+                "applicability": applicability,
+                "identity_mapping": ("ascii_case_fold_candidate"
+                                     if slug == "SYNTHETIC-POLICY-CANDIDATE" else "exact"),
+                "version_relation_reason": ("identity_mapping_candidate"
+                                            if slug == "SYNTHETIC-POLICY-CANDIDATE"
+                                            else "fixture_reason"),
+                "execution": {
+                    "exploit_execution": "not_performed",
+                    "impact_validation": "not_performed",
+                },
+            }
+            for slug, (relation, applicability) in results.items()
+        ]
+        counts = {
+            "evaluable_associations": 2,
+            "unsupported_associations": 3,
+            "within_associations": 1,
+            "outside_associations": 1,
+            "indeterminate_associations": 3,
+            "selected_ranges": 5,
+            "evaluated_ranges": 2,
+            "containing_ranges": 1,
+            "noncontaining_ranges": 1,
+            "unsupported_ranges": 1,
+            "invalid_ranges": 0,
+            "not_evaluated_ranges": 2,
+            "partial_range_coverage_associations": 0,
+        }
+        policy = {
+            "comparison_policy": EXPECTED_WORDPRESS_EXPLICIT_POLICY,
+            "comparison_profile": profile,
+            "policy_selection": "explicit_operator",
+            "source_semantics_assurance": "not_established",
+        }
+    counts.update({
+        "parsed_records": 1,
+        "software_associations": 6,
+        "exact_identity_associations": 4,
+        "candidate_identity_associations": 1,
+        "ambiguous_identity_associations": 0,
+        "unresolved_identity_associations": 1,
+        "projected_identity_limitations": 1,
+        "unprojected_identity_limitations": 0,
+        "selected_associations": 5,
+        "excluded_associations": 1,
+        "mapped_unselected_associations": 0,
+    })
+    return {
+        "schema": "security.wordpress-review-audit/v6",
+        "additional_request_count": 0,
+        "item_projected": True,
+        "external_review": {
+            "source_namespace": "wordfence-intelligence",
+            "source_format": "wordfence-v3-production",
+            "mapping_revision": EXPECTED_WORDPRESS_MAPPING_REVISION,
+            "identity_mapping_policy": EXPECTED_WORDPRESS_IDENTITY_POLICY,
+            "identity_source_assurance": "not_established",
+            "resource_policy": EXPECTED_WORDPRESS_RESOURCE_POLICY,
+            "input": {
+                "byte_length": feed.stat().st_size,
+                "sha256": digest(feed.read_bytes()),
+                "semantic_sha256": EXPECTED_WORDPRESS_SEMANTIC_SHA256,
+                "accounted_retained_bytes": EXPECTED_WORDPRESS_ACCOUNTED_RETAINED_BYTES,
+            },
+            "notices": [EXPECTED_WORDPRESS_NOTICE],
+            "counts": counts,
+            "evaluations": evaluations,
+            "identity_limitations": [{
+                "key": {
+                    "source_component": {
+                        "kind": "plugin",
+                        "slug": "https://example.invalid/plugins/opaque_name",
+                    },
+                },
+                "identity_resolution": "canonical_identity_unavailable",
+                "version_relation": "not_evaluated",
+                "version_relation_reason": "canonical_identity_unavailable",
+                "applicability": "indeterminate",
+                "execution": {
+                    "exploit_execution": "not_performed",
+                    "impact_validation": "not_performed",
+                },
+            }],
+            **policy,
+        },
+    }
+
+
 class FakeCommands:
     def __init__(self, root: Path, include_ssrf: bool = False,
                  extra_incomplete_request: bool = False,
                  omit_progress_help: bool = False,
-                 exposed_wordpress_option: str | None = None,
+                 omitted_wordpress_option: str | None = None,
                  progress_stderr: bytes | None = None) -> None:
         self.root = root
         self.include_ssrf = include_ssrf
         self.extra_incomplete_request = extra_incomplete_request
         self.omit_progress_help = omit_progress_help
-        self.exposed_wordpress_option = exposed_wordpress_option
+        self.omitted_wordpress_option = omitted_wordpress_option
         self.progress_stderr = progress_stderr
         self.arguments: list[list[str]] = []
 
@@ -292,9 +551,10 @@ class FakeCommands:
         elif arguments in (["--help"], ["scan", "--help"], ["report", "--help"]):
             stdout = fake_help(arguments)
             if arguments == ["scan", "--help"] and self.omit_progress_help:
-                stdout = stdout.replace(b"--progress ", b"")
-            if arguments == ["scan", "--help"] and self.exposed_wordpress_option:
-                stdout += f"{self.exposed_wordpress_option}\n".encode()
+                stdout = stdout.replace(b"  --progress\n", b"")
+            if arguments == ["scan", "--help"] and self.omitted_wordpress_option:
+                stdout = stdout.replace(
+                    f"  {self.omitted_wordpress_option}\n".encode(), b"")
         elif arguments == ["capabilities"]:
             cap = capabilities(include_ssrf=self.include_ssrf)
             stdout = capabilities_text(cap)
@@ -329,6 +589,29 @@ class FakeCommands:
                     "disposition": "incomplete",
                     "incomplete_reasons": ["assessment_subject_identity_unavailable"],
                 }).encode()
+            elif destination.name == "wordpress-malformed-must-not-exist":
+                exit_code, stderr = 1, b"WordPress advisory input is malformed\n"
+            elif destination.name == "wordpress-conflict-must-not-exist":
+                exit_code, stderr = 2, b"WordPress input options conflict\n"
+            elif destination.name.startswith("wordpress-"):
+                assert fixture is not None and target == fixture.origin
+                fixture.server.counts["root"] += 5
+                fixture.server.request_lines.extend(runner.WORDPRESS_TRACE)
+                if destination.name == "wordpress-inactive":
+                    assessment = wordpress_assessment()
+                elif destination.name == "wordpress-native":
+                    assessment = wordpress_assessment(native_wordpress_audit())
+                elif destination.name in {
+                        "wordpress-external-unresolved", "wordpress-external-numeric"}:
+                    feed = Path(arguments[arguments.index("--wordpress-advisories") + 1])
+                    selected = ("numeric-dotted/v1"
+                                if destination.name.endswith("numeric") else None)
+                    assessment = wordpress_assessment(
+                        external_wordpress_audit(feed, selected))
+                else:
+                    raise AssertionError(arguments)
+                write_bundle(destination, assessment=assessment)
+                stderr = b"Report bundle completed\n"
             else:
                 raise AssertionError(arguments)
         elif arguments[:2] == ["report", "verify"]:
@@ -352,19 +635,44 @@ class FakeCommands:
                     "changed": [{"changed_fields": ["redacted_summary"]}],
                     "unchanged": [{}],
                 }
+            elif before.parent.name.startswith("wordpress-"):
+                item_count = json.loads(before.read_text(encoding="utf-8"))["item_count"]
+                groups = {
+                    "only_in_after": [], "only_in_before": [], "changed": [],
+                    "unchanged": [{} for _ in range(item_count)],
+                }
+                same = before == after
+                wordpress = {
+                    "status": "compared",
+                    "methodology": {
+                        "status": "unchanged" if same else "changed",
+                        "changed_fields": ([] if same else [
+                            "comparison_policy", "comparison_profile",
+                        ]),
+                    },
+                    "advisories": {
+                        "paired_changed": ([] if same else [{} for _ in range(5)]),
+                        "paired_unchanged_count": 6 if same else 1,
+                        "only_in_before": [],
+                        "only_in_after": [],
+                    },
+                }
             else:
                 item_count = json.loads(before.read_text(encoding="utf-8"))["item_count"]
                 groups = {
                     "only_in_after": [], "only_in_before": [], "changed": [],
                     "unchanged": [{} for _ in range(item_count)],
                 }
-            stdout = json.dumps({
+            document = {
                 "schema": runner.COMPARISON_SCHEMA,
                 "scope_assurance": "operator-declared",
                 "before": {"sha256": runner.first_use.digest_file(before)},
                 "after": {"sha256": runner.first_use.digest_file(after)},
                 **groups,
-            }).encode()
+            }
+            if before.parent.name.startswith("wordpress-"):
+                document["wordpress_review_comparison"] = wordpress
+            stdout = json.dumps(document).encode()
         else:
             raise AssertionError(arguments)
         record["exit_code"] = exit_code
@@ -387,8 +695,8 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         document = capabilities()
         rows = document["cli_package_features"]
         self.assertEqual(len(rows), 12)
-        self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 7)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 5)
+        self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 4)
         result = self.validate(document)
         self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
         self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
@@ -408,7 +716,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
 
     def test_compiled_state_drift_fails_for_selected_and_excluded_features(self):
         cases = [
-            ("wordpress-review", "compiled"),
+            ("wordpress-review", "not_compiled"),
             ("api-adapter", "compiled"),
             ("openapi-review", "not_compiled"),
         ]
@@ -435,10 +743,27 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assert_rejected(unknown, "inventory is incomplete")
 
     def test_wordpress_surface_state_text_agreement_and_authenticity_are_pinned(self):
-        compiled_surface = capabilities()
-        next(surface for surface in compiled_surface["surfaces"]
-             if surface["key"] == "option.wordpress-review")["build_state"] = "compiled"
-        self.assert_rejected(compiled_surface, "WordPress surface")
+        excluded_surface = capabilities()
+        next(surface for surface in excluded_surface["surfaces"]
+             if surface["key"] == "option.wordpress-review")["build_state"] = "not_compiled"
+        self.assert_rejected(excluded_surface, "WordPress surface metadata")
+
+        for field, wrong in [
+                ("maturity", "stable"),
+                ("implementation_status", "verified"),
+                ("kind", "command")]:
+            with self.subTest(field=field):
+                changed = capabilities()
+                next(surface for surface in changed["surfaces"]
+                     if surface["key"] == "option.wordpress-review")[field] = wrong
+                self.assert_rejected(changed, "WordPress surface metadata")
+
+        implicit = capabilities()
+        next(surface for surface in implicit["surfaces"]
+             if surface["key"] == "option.wordpress-review")["prerequisites"] = [
+                 "--profile web-review"
+             ]
+        self.assert_rejected(implicit, "explicit opt-in contract")
 
         document = capabilities()
         text = capabilities_text(document).replace(b"WordPress evidence review", b"other")
@@ -533,14 +858,14 @@ class CandidateOrchestrationTests(unittest.TestCase):
         }
 
     def execute(self, *, include_ssrf=False, extra_incomplete_request=False,
-                omit_progress_help=False, exposed_wordpress_option=None,
+                omit_progress_help=False, omitted_wordpress_option=None,
                 progress_stderr=None, path_suffix=""):
         commands = FakeCommands(
             self.root,
             include_ssrf=include_ssrf,
             extra_incomplete_request=extra_incomplete_request,
             omit_progress_help=omit_progress_help,
-            exposed_wordpress_option=exposed_wordpress_option,
+            omitted_wordpress_option=omitted_wordpress_option,
             progress_stderr=progress_stderr,
         )
         with mock.patch.object(runner.platform, "system", return_value="Windows"), \
@@ -595,6 +920,37 @@ class CandidateOrchestrationTests(unittest.TestCase):
             "mismatch_status": "not_verified",
             "mismatch_reason": "payload_digest_mismatch",
         })
+        wordpress = result["application"]["wordpress_preview"]
+        self.assertEqual(wordpress["inactive"], {
+            "wordpress_audit_present": False,
+            "wordpress_surface_items": 0,
+            "runtime_activation": "not_selected",
+        })
+        self.assertEqual(wordpress["native_catalogue"]["expected_results"], {
+            "within": 2, "outside": 1, "indeterminate": 2,
+        })
+        self.assertEqual(wordpress["external_absent_profile"]["result_partition"], {
+            "within": 0, "outside": 0, "indeterminate": 5,
+        })
+        self.assertEqual(wordpress["external_explicit_numeric"]["result_partition"], {
+            "within": 1, "outside": 1, "indeterminate": 3,
+        })
+        self.assertEqual(
+            wordpress["external_explicit_numeric"]["identity_partition"],
+            {
+                "exact_identity_associations": 4,
+                "candidate_identity_associations": 1,
+                "ambiguous_identity_associations": 0,
+                "unresolved_identity_associations": 1,
+            },
+        )
+        self.assertTrue(wordpress["offline_commands_after_fixture_shutdown"])
+        self.assertTrue(wordpress["inputs_preserved"])
+        self.assertEqual(set(wordpress["bundle_verification"].values()),
+                         {"integrity_match"})
+        self.assertEqual(wordpress["self_comparison"]["advisory_differences"], 0)
+        self.assertEqual(
+            wordpress["controlled_comparison"]["paired_advisory_differences"], 5)
         self.assertEqual([path.name for path in self.evidence.iterdir()], [runner.EVIDENCE_NAME])
         stored = json.loads((self.evidence / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
         self.assertEqual(stored, result)
@@ -602,7 +958,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertNotIn(str(self.root), encoded)
         self.assertNotIn("127.0.0.1", encoded)
         self.assertLessEqual(len(runner._encode_evidence(result)), runner.EVIDENCE_LIMIT)
-        self.assertEqual(len(commands.arguments), 15)
+        self.assertEqual(len(commands.arguments), 27)
         self.assertEqual(runner.first_use.digest_file(self.archive),
                          result["archive"]["archive_sha256"])
 
@@ -625,7 +981,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("scan help omits --progress", result["failure"])
 
-    def test_packaged_help_must_not_expose_excluded_wordpress_options(self):
+    def test_packaged_help_must_expose_every_bundled_wordpress_option(self):
         for index, option in enumerate((
             "--wordpress-review",
             "--wordpress-context",
@@ -638,11 +994,11 @@ class CandidateOrchestrationTests(unittest.TestCase):
         )):
             with self.subTest(option=option):
                 result, _ = self.execute(
-                    exposed_wordpress_option=option,
+                    omitted_wordpress_option=option,
                     path_suffix=f"-wordpress-help-{index}",
                 )
                 self.assertEqual(result["status"], "failed")
-                self.assertIn("WordPress option", result["failure"])
+                self.assertIn("omits bundled WordPress option", result["failure"])
 
     def test_packaged_progress_must_have_bounded_complete_lifecycle(self):
         malformed = (

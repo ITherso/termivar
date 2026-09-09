@@ -129,16 +129,19 @@ The CLI's default feature list is empty, while its unconditional scanner
 dependency still provides `scanning` and `reporting`. The `release-bundle`
 composition marker compiles `artifact-adapter`, `normalization-resilience`,
 `graphql-review`, `openapi-review`, `rest-review`, and
-`authorization-review`; it does not activate them. It excludes
+`authorization-review` in the published alpha.2 composition. The current
+untagged alpha.3 development composition also compiles the `wordpress-review`
+Preview. It does not activate any of them: WordPress still requires explicit
+`--profile web-review --wordpress-review`. Current alpha.3 excludes
 `ssrf-oast-review`, `legacy-scanner`, `api-adapter`, and `proxy-adapter`.
-Enabling the six member features individually can therefore produce the same
-member surface states while `release-bundle` remains `not_compiled`.
+Enabling the seven current member features individually can therefore produce
+the same member surface states while `release-bundle` remains `not_compiled`.
 
-These excerpts are from real Windows x86_64 development binaries built in
-separate directories from source implementation commit
+These preserved excerpts are from real Windows x86_64 development binaries
+built in separate directories from source implementation commit
 `5bd1260e1d9f57226046a6a955662c32fcad6464` on 2026-09-06. Both reported
-`0.10.0-alpha.2`, 20 surface records, and
-`runtime_execution: not_performed`:
+`0.10.0-alpha.2`, 20 surface records, the historical six-member bundle
+composition, and `runtime_execution: not_performed`:
 
 ```text
 # cargo build --locked -p termivar-cli
@@ -224,15 +227,26 @@ diagnostic using the same process stderr lock can then also wait behind that OS
 write, so the command cannot promise bounded exit in this host-level failure.
 The writer is never used for scan control or backpressure.
 
-## Opt in to WordPress evidence review from source
+## Opt in to WordPress evidence review in current development builds
 
 The unreleased development source has a non-default `wordpress-review` build
-feature. It is not in the published alpha.2 archives or the curated
-`release-bundle`. Build a separate development executable deliberately:
+feature. The current untagged alpha.3 `release-bundle` compiles the Preview, but
+the ordinary default build and published alpha.2 archives do not. Build the
+current development bundle deliberately:
+
+```bash
+cargo build --locked -p termivar-cli --no-default-features --features release-bundle
+```
+
+For a smaller feature-specific development build, the existing direct feature
+selection remains available:
 
 ```bash
 cargo build --locked -p termivar-cli --no-default-features --features wordpress-review
 ```
+
+Neither build command activates WordPress review. Runtime selection remains
+explicit.
 
 Against an already running, authorized fixture or exact origin, select the
 review explicitly:

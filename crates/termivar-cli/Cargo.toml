@@ -38,6 +38,7 @@ release-bundle = [
     "openapi-review",
     "rest-review",
     "authorization-review",
+    "wordpress-review",
 ]
 
 [dependencies]
