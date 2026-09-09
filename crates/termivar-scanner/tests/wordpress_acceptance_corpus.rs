@@ -657,8 +657,13 @@ fn resource_measurement_case() {
     assert_resource_probe_expectation(expectation, &result);
 }
 
-const RESOURCE_PROBE_SCHEMA: &str = "termivar-wordpress-resource-probe/v1";
+const RESOURCE_PROBE_SCHEMA: &str = "termivar-wordpress-resource-probe/v2";
 const RESOURCE_PROBE_RESULT_LIMIT: usize = 64 * 1024;
+const RESOURCE_PROBE_POLICY_V1: &str = "termivar.wordfence-v3-bounded-capacity/v1";
+const RESOURCE_PROBE_POLICY_V2: &str = "termivar.wordfence-v3-bounded-capacity/v2";
+const RESOURCE_PROBE_POLICY_V3: &str = "termivar.wordfence-v3-bounded-capacity/v3";
+const RESOURCE_PROBE_POLICY_V1_RETAINED_LIMIT: usize = 64 * 1024 * 1024;
+const RESOURCE_PROBE_POLICY_V2_RETAINED_LIMIT: usize = 128 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResourceProbeExpectation {
@@ -686,6 +691,7 @@ struct ResourceProbeResult {
     software_associations: Option<usize>,
     affected_ranges: Option<usize>,
     retained_bytes: Option<usize>,
+    resource_policy: Option<&'static str>,
     selected_associations: Option<usize>,
     evaluable_associations: Option<usize>,
     within_associations: Option<usize>,
@@ -703,6 +709,7 @@ struct ParsedProbeMetadata {
     software_associations: usize,
     affected_ranges: usize,
     retained_bytes: usize,
+    resource_policy: &'static str,
 }
 
 impl ResourceProbeResult {
@@ -719,6 +726,7 @@ impl ResourceProbeResult {
             software_associations: None,
             affected_ranges: None,
             retained_bytes: None,
+            resource_policy: None,
             selected_associations: None,
             evaluable_associations: None,
             within_associations: None,
@@ -748,6 +756,7 @@ impl ResourceProbeResult {
             software_associations: None,
             affected_ranges: None,
             retained_bytes: None,
+            resource_policy: None,
             selected_associations: None,
             evaluable_associations: None,
             within_associations: None,
@@ -777,6 +786,7 @@ impl ResourceProbeResult {
             software_associations: Some(parsed.software_associations),
             affected_ranges: Some(parsed.affected_ranges),
             retained_bytes: Some(parsed.retained_bytes),
+            resource_policy: Some(parsed.resource_policy),
             selected_associations: None,
             evaluable_associations: None,
             within_associations: None,
@@ -796,16 +806,14 @@ fn resource_probe_case(value: &str) -> (&'static str, ResourceProbeExpectation) 
         "sparse-4096" => ("sparse-4096", ResourceProbeExpectation::Completed),
         "sparse-16384" => ("sparse-16384", ResourceProbeExpectation::Completed),
         "sparse-32768" => ("sparse-32768", ResourceProbeExpectation::Completed),
-        "sparse-65536" => (
-            "sparse-65536",
-            ResourceProbeExpectation::RetainedDataTooLarge,
-        ),
+        "sparse-65536" => ("sparse-65536", ResourceProbeExpectation::Completed),
         "sparse-81920" => (
             "sparse-81920",
             ResourceProbeExpectation::RetainedDataTooLarge,
         ),
         "dense-4096" => ("dense-4096", ResourceProbeExpectation::Completed),
         "dense-4097" => ("dense-4097", ResourceProbeExpectation::ResultLimitExceeded),
+        "record-between-limits" => ("record-between-limits", ResourceProbeExpectation::Completed),
         "record-over-limit" => (
             "record-over-limit",
             ResourceProbeExpectation::RecordTooLarge,
@@ -821,6 +829,24 @@ fn resource_probe_case(value: &str) -> (&'static str, ResourceProbeExpectation) 
         "late-malformed" => ("late-malformed", ResourceProbeExpectation::MalformedJson),
         "duplicate-id" => ("duplicate-id", ResourceProbeExpectation::DuplicateKey),
         _ => panic!("resource probe case is not in the closed acceptance set"),
+    }
+}
+
+fn expected_resource_policy(case: &str) -> Option<&'static str> {
+    match case {
+        "sparse-small" | "sparse-4096" | "sparse-16384" | "dense-4096" | "dense-4097" => {
+            Some(RESOURCE_PROBE_POLICY_V1)
+        },
+        "sparse-32768" | "record-between-limits" => Some(RESOURCE_PROBE_POLICY_V2),
+        "sparse-65536" => Some(RESOURCE_PROBE_POLICY_V3),
+        "baseline"
+        | "sparse-81920"
+        | "record-over-limit"
+        | "title-field-limit-plus-one"
+        | "input-limit-plus-one"
+        | "late-malformed"
+        | "duplicate-id" => None,
+        _ => panic!("resource probe case lacks a resource-policy oracle"),
     }
 }
 
@@ -855,6 +881,35 @@ fn execute_resource_probe(case: &'static str) -> ResourceProbeResult {
         input_bytes,
         "resource probe input changed while it was being read"
     );
+    assert_eq!(
+        Some(import.resource_policy()),
+        expected_resource_policy(case),
+        "resource probe policy differs from the literal case oracle"
+    );
+    if case == "sparse-32768" {
+        assert!(
+            import.retained_bytes() > RESOURCE_PROBE_POLICY_V1_RETAINED_LIMIT,
+            "sparse-32768 must exercise V2 retained selection"
+        );
+        assert!(
+            import.retained_bytes() <= RESOURCE_PROBE_POLICY_V2_RETAINED_LIMIT,
+            "sparse-32768 crossed the historical V2 retained-data envelope"
+        );
+    } else if case == "sparse-65536" {
+        assert!(
+            import.retained_bytes() > RESOURCE_PROBE_POLICY_V2_RETAINED_LIMIT,
+            "sparse-65536 must exercise V3 retained selection"
+        );
+        assert!(
+            import.retained_bytes() <= MAX_WORDFENCE_V3_RETAINED_BYTES,
+            "sparse-65536 crossed the V3 retained-data envelope"
+        );
+    } else if expected_resource_policy(case) == Some(RESOURCE_PROBE_POLICY_V1) {
+        assert!(
+            import.retained_bytes() <= RESOURCE_PROBE_POLICY_V1_RETAINED_LIMIT,
+            "historical V1 case crossed its retained-data envelope"
+        );
+    }
     let parsed = ParsedProbeMetadata {
         input_bytes,
         parse_elapsed,
@@ -862,6 +917,7 @@ fn execute_resource_probe(case: &'static str) -> ResourceProbeResult {
         software_associations: import.software_association_count(),
         affected_ranges: import.affected_range_count(),
         retained_bytes: import.retained_bytes(),
+        resource_policy: import.resource_policy(),
     };
     let inputs = WordPressReviewInputs::new(Some(resource_probe_context()), None)
         .with_wordfence_v3_catalog(import)
@@ -934,6 +990,7 @@ fn execute_resource_probe(case: &'static str) -> ResourceProbeResult {
         software_associations: Some(parsed.software_associations),
         affected_ranges: Some(parsed.affected_ranges),
         retained_bytes: Some(parsed.retained_bytes),
+        resource_policy: Some(parsed.resource_policy),
         selected_associations: Some(counts.selected_associations()),
         evaluable_associations: Some(counts.evaluable_associations()),
         within_associations: Some(counts.within_associations()),
@@ -994,6 +1051,11 @@ fn assert_resource_probe_expectation(
     expectation: ResourceProbeExpectation,
     result: &ResourceProbeResult,
 ) {
+    assert_eq!(
+        result.resource_policy,
+        expected_resource_policy(result.case),
+        "published resource policy differs from the literal case oracle"
+    );
     match expectation {
         ResourceProbeExpectation::Baseline => {
             assert_eq!(result.status, "baseline");

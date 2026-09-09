@@ -217,7 +217,8 @@ pub fn check_wordpress_review(data: &[u8]) {
         parse_wordfence_v3_production, parse_wordpress_advisory_catalog, parse_wordpress_context,
         parse_wordpress_saved_inventory, NumericDottedVersion, PhpReleaseSubsetVersion,
         WordPressAdvisoryCatalogSchema, WordPressComparisonProfile,
-        WordPressInventoryCategoryStatus, MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION,
+        WordPressInventoryCategoryStatus, WordfenceV3IdentityMapping,
+        MAX_WORDFENCE_V3_PATCHED_VERSIONS, MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION,
         MAX_WORDFENCE_V3_RECORDS, MAX_WORDFENCE_V3_SOFTWARE_ASSOCIATIONS,
         MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_CONTEXT_COMPONENTS,
         MAX_WORDPRESS_FIXED_VERSIONS_PER_ADVISORY, MAX_WORDPRESS_PATCH_ASSERTIONS_PER_COMPONENT,
@@ -326,16 +327,35 @@ pub fn check_wordpress_review(data: &[u8]) {
             catalog
                 .records()
                 .iter()
-                .map(|record| record.software().len())
+                .map(|record| record.software().len() + record.unresolved_software().len())
                 .sum::<usize>()
+        );
+        let identity_counts = catalog.identity_counts();
+        assert_eq!(
+            identity_counts.exact()
+                + identity_counts.candidate()
+                + identity_counts.ambiguous()
+                + identity_counts.unresolved(),
+            catalog.software_association_count()
         );
         assert_eq!(
             catalog.affected_range_count(),
             catalog
                 .records()
                 .iter()
-                .flat_map(|record| record.software())
-                .map(|association| association.affected_ranges().len())
+                .map(|record| {
+                    record
+                        .software()
+                        .iter()
+                        .map(|association| association.affected_ranges().len())
+                        .chain(
+                            record
+                                .unresolved_software()
+                                .iter()
+                                .map(|association| association.affected_ranges().len()),
+                        )
+                        .sum::<usize>()
+                })
                 .sum::<usize>()
         );
         assert!(catalog
@@ -347,12 +367,30 @@ pub fn check_wordpress_review(data: &[u8]) {
                 assert!(
                     association.affected_ranges().len() <= MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION
                 );
+                assert!(association.patched_versions().len() <= MAX_WORDFENCE_V3_PATCHED_VERSIONS);
+                match association.identity_mapping() {
+                    WordfenceV3IdentityMapping::Exact
+                    | WordfenceV3IdentityMapping::AsciiCaseFoldCandidate => {
+                        assert_eq!(association.identity_collision_raw_count(), None);
+                    },
+                    WordfenceV3IdentityMapping::AsciiCaseFoldAmbiguous => {
+                        assert!(association
+                            .identity_collision_raw_count()
+                            .is_some_and(|n| n >= 2));
+                    },
+                }
                 assert!(catalog
                     .associations_for(association.component())
                     .any(|view| {
                         view.upstream_id() == record.upstream_id()
                             && view.association().key() == association.key()
                     }));
+            }
+            for association in record.unresolved_software() {
+                assert!(
+                    association.affected_ranges().len() <= MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION
+                );
+                assert!(association.patched_versions().len() <= MAX_WORDFENCE_V3_PATCHED_VERSIONS);
             }
         }
     }
@@ -376,12 +414,10 @@ pub fn check_wordpress_review(data: &[u8]) {
             let summary = inventory.summary();
             // Retained component identities and unsupported drop-in rows share
             // the parser's deliberate aggregate context-component budget.
-            assert!(
-                summary
-                    .component_count()
-                    .checked_add(summary.limitations().len())
-                    .is_some_and(|count| count <= MAX_WORDPRESS_CONTEXT_COMPONENTS)
-            );
+            assert!(summary
+                .component_count()
+                .checked_add(summary.limitations().len())
+                .is_some_and(|count| count <= MAX_WORDPRESS_CONTEXT_COMPONENTS));
             assert_eq!(
                 summary.coverage().plugins(),
                 if plugins.is_some() {

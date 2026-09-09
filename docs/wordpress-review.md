@@ -288,9 +288,11 @@ contents, and there is no fallback between the two formats.
 
 By default, Termivar preserves the external source-comparison limitation: it
 selects relevant associations but does not guess how the source intended every
-version spelling to be ordered. That unchanged path emits
-`security.wordpress-review-audit/v4` with
+version spelling to be ordered. Within the historical identity and resource
+envelope, that unchanged path emits `security.wordpress-review-audit/v4` with
 `wordfence-v3/source-semantics-unresolved/v1` and indeterminate relations.
+When the expanded source-identity or resource metadata described below is
+needed, the same unresolved policy is carried by audit v6 instead.
 
 An operator can instead request one reproducible Termivar interpretation for
 the supplied external snapshot:
@@ -313,7 +315,9 @@ never selects a profile from the filename, source URL, component kind, or the
 outcome it would produce, and it never retries unsupported input under the
 other profile.
 
-Explicit selection emits `security.wordpress-review-audit/v5` and records:
+Within the historical identity and resource envelope, explicit selection emits
+`security.wordpress-review-audit/v5`; audit v6 carries the same fields when its
+expanded metadata is needed. Both record:
 
 - `comparison_policy=termivar.wordfence-v3-explicit-interpretation/v1`;
 - the selected `comparison_profile`;
@@ -332,12 +336,73 @@ describes distinct Production and Scanner formats. This scope accepts Production
 format only; it does not infer a format from a filename or fall back to the
 Scanner format.
 
+### External source identities
+
+The provider's component kind and slug are retained as a source identity before
+Termivar attempts to match them to the native canonical component identity.
+This keeps source spelling and case visible instead of rewriting the supplied
+record. Native operator and observed component identities retain their existing
+lowercase canonical rules.
+
+The mapping revision `termivar-wordfence-v3-production/v2` uses the explicit
+policy
+`termivar.wordfence-v3-exact-plus-ascii-lowercase-candidate/v1`. Its four
+outcomes have deliberately different authority:
+
+- `exact` means the source kind and slug already form the same canonical
+  identity without rewriting. Only exact associations can support a decisive
+  version-range result under an explicitly selected comparison profile.
+- `ascii_case_fold_candidate` means ASCII lowercase produces a valid canonical
+  lookup key and only one distinct source spelling maps to that key in the
+  supplied snapshot. It can surface a potentially relevant association, but it
+  remains indeterminate because Termivar has not established that the source
+  considers the spellings equivalent.
+- `ascii_case_fold_ambiguous` means multiple distinct source spellings map to
+  the same candidate key. The collision count and original spelling are
+  retained; Termivar does not select a winner or produce a decisive version
+  relation from that candidate.
+- `unresolved` means no safe canonical candidate exists. The association and
+  its ranges and patched-version declarations remain included in ingestion and
+  resource accounting, but are not silently treated as irrelevant, absent, or
+  unaffected.
+
+Source slugs are bounded to 128 ASCII bytes. Controls and unsupported structural
+forms are rejected; accepted noncanonical spellings remain inert identifiers
+and are never interpreted as a path, URL, or normalization instruction.
+Malformed values and resource violations still fail the import. Case folding is
+a Termivar matching aid, not provider endorsement, package-directory validation,
+installation authentication, or permission to fetch more data. Reports retain
+`identity_source_assurance=not_established` and reconcile exact, candidate,
+ambiguous, and unresolved association counts separately.
+
 The declared source file is read completely within a separate bounded
-external-import policy before runtime startup. The current hard ceilings are
-256 MiB of input, 100,000 records, 200,000 software associations, 512 KiB per
-record, and 64 MiB of conservatively accounted retained index data; narrower
-per-field, range, and output limits also apply. Crossing a bound fails explicitly
-rather than truncating the source. Root UUID keys, record IDs,
+external-import policy before runtime startup. The current largest resource
+policy is `termivar.wordfence-v3-bounded-capacity/v3`. Its finite ceilings are
+256 MiB of raw input, 100,000 records, 200,000 software associations, 768 KiB
+per record, and 160 MiB of conservatively accounted import data. A
+decoded object may contain at most 128 JSON members; one software association
+may contain at most 128 affected ranges and 128 patched-version declarations.
+The generic decoded-string and description ceilings are 4 KiB, while existing
+stricter field-specific ceilings still apply. Source slugs have the separate
+128-byte limit described above. The raw-input, record-count, and association-
+count ceilings are unchanged from the earlier policy.
+
+Inputs that remain within the historical 64 MiB envelope retain resource-policy
+ID `termivar.wordfence-v3-bounded-capacity/v1`. V2 retains its historical
+128 MiB ceiling, while V3 identifies imports that require the additive 160 MiB
+envelope. The selected ID reflects the largest conservatively charged parse,
+identity-resolution, or retained-index phase, so a temporary phase that exceeds
+an older ceiling is not labelled as having fit it. Expanded source field/list
+semantics still require at least V2 even when their byte charge is small.
+These IDs describe Termivar's bounded decoder, not the provider's feed
+completeness or a promise that every simultaneous maximum will fit. The limits
+are joint, use checked accounting, and remain subject to narrower evaluator,
+work, field, and report ceilings. The retained-import charge covers retained
+records, strings, notices, indexes, and bounded parse-time identity structures;
+it is a conservative application accounting policy, not an operating-system
+RSS or heap guarantee.
+Crossing any effective bound fails explicitly rather than
+truncating the source. Root UUID keys, record IDs,
 software associations, structured range bounds, patched-version declarations,
 nullable source dates, references, and rights notices remain source-qualified
 metadata. A patched flag or fixed-version declaration does not prove that the
@@ -389,8 +454,29 @@ exact-input byte length and digest, and retain required notices for material
 they display. V4 preserves its unresolved selected/unsupported accounting. V5
 adds reconciled denominators for selected associations, decisive within/outside
 relations, indeterminate associations, and evaluated/unsupported/invalid/
-not-evaluated ranges, including qualified-positive partial coverage;
-overlapping coverage qualifications are not added together as if they were
+not-evaluated ranges, including qualified-positive partial coverage.
+
+The additive `security.wordpress-review-audit/v6` shape is used when expanded
+source-identity or V2/V3 resource-policy metadata is required. It retains the V4
+or V5 comparison-policy meaning selected by the invocation and adds the actual
+mapping and resource-policy IDs, accounted retained-import bytes, source identity
+and mapping state for selected evaluations, collision metadata where applicable,
+and the reconciled four-way identity totals. V6 also records exact
+`projected_identity_limitations` and `unprojected_identity_limitations` counts.
+At most 64 deterministically ordered `identity_limitations` detail rows are
+expanded for structurally valid source identities that could not be represented
+canonically. Their raw kind/slug, upstream identity, declared ranges/fix
+information, and required attribution remain reviewable. The aggregate
+unresolved count still covers the complete imported snapshot; rows outside the
+detail projection are neither discarded from that accounting nor treated as
+irrelevant or unaffected. Applicability and version comparison remain
+explicitly not evaluated.
+Historical audits v1 through v5
+and their validation rules are unchanged. An unselected external comparator in
+v6 therefore remains unresolved; the newer audit shape is not permission to
+invent a comparison result.
+
+Overlapping coverage qualifications are not added together as if they were
 findings. These values identify the processed bytes and interpretation;
 they do not authenticate the source, prove snapshot completeness, or establish
 a collection timestamp. Source-declared `published` and `updated` values remain
@@ -431,11 +517,12 @@ and macOS. The four-platform curated release check remains a separate negative
 composition guard because WordPress is intentionally excluded from
 `release-bundle`.
 
-No actual Wordfence vendor export was supplied for this acceptance corpus:
-`real_export_acceptance=NOT_RUN_NO_INPUT`. Public-schema synthetic cases can
-exercise explicit-policy evaluation, but they do not establish live-feed
-compatibility, source authenticity, or complete provider coverage. Process
-memory measurements are tracked separately from this source-format claim.
+No actual Wordfence vendor export is committed to or relabelled as part of this
+acceptance corpus. Public-schema synthetic cases exercise parser and policy
+contracts, but by themselves do not establish current full-snapshot
+compatibility, source authenticity, or complete provider coverage. Any
+authorized private real-snapshot acceptance and process measurements are kept
+as separately scoped task evidence without publishing the feed or its prose.
 The repository's small curated WordPress-project example retains its separate
 primary-source factual provenance; it is not relabelled as vendor-feed data.
 
@@ -446,30 +533,35 @@ feature-minimal `wordpress-review` CLI and its ignored resource probe with Rust
 1.88 in release profile and a fresh runner-temporary Cargo target. It runs each
 synthetic case in a fresh child process and records Linux `/usr/bin/time` peak
 resident set size in KiB together with observed elapsed time, input bytes,
-record/association/range counts, relevant-selection counts, retained-index
+record/association/range counts, relevant-selection counts, retained-import
 accounting, and output bytes.
 The bounded artifact contains only
 `wordpress-resource-acceptance.json` and
 `wordpress-resource-acceptance.md`.
 
 The synthetic matrix covers a no-input process baseline, a small input,
-accepted distinct sparse inputs at 4,096, 16,384, and 32,768 records, explicit
-retained-index rejections at 65,536 and 81,920 records, and a
-many-relevant-records case that must report its result-limit outcome. Relevant
-rows occur late in the sparse inputs so a successful prefix parse cannot
-satisfy the oracle. Separate typed cases cover raw input, individual record,
-individual field, malformed-tail, duplicate-identity, and interrupted-read
-boundaries; these cases are not presented as process-memory benchmarks.
+accepted distinct sparse inputs at 4,096, 16,384, 32,768, and 65,536 records,
+an explicit retained-import rejection at 81,920 records, and a many-relevant-
+records case. The 32,768- and 65,536-record cases exercise V2 and V3
+respectively; their expected policies are independent literal oracles rather
+than inferred from probe output. A separate valid single-record case between
+512 KiB and the additive 768 KiB ceiling proves the enlarged per-record
+envelope is accepted rather than testing only its upper rejection. Relevant
+rows occur late in the sparse inputs
+so a successful prefix parse cannot satisfy the oracle. Separate typed cases cover raw input,
+individual record, individual field, collection and object-member limits,
+retained-import limit-plus-one, malformed-tail, duplicate-identity, and
+interrupted-read boundaries; these cases are not presented as process-memory
+benchmarks.
 
 Peak RSS is an operating-system observation for the measured child process,
-not an exact Rust heap measurement or the configured 64 MiB retained-index
+not an exact Rust heap measurement or the configured 160 MiB retained-import
 charge. Independent-process peaks are not subtracted to claim component memory,
 and noisy elapsed timings are evidence from that runner rather than a product
 deadline or performance guarantee. Inputs are generated synthetic data, not a
-Wordfence export. Consequently the measurement does not change
-`real_export_acceptance=NOT_RUN_NO_INPUT`, authenticate a source, or establish
-that every allowed maximum-size combination or future provider snapshot will
-be accepted.
+Wordfence export. Consequently the checked-in measurement does not authenticate
+a source or establish that every allowed maximum-size combination or future
+provider snapshot will be accepted.
 
 | Acceptance surface | Status | Evidence boundary |
 | --- | --- | --- |
@@ -481,7 +573,8 @@ be accepted.
 | Feature-enabled native CLI | Implemented and tested in CI | Linux, Windows, and macOS runners; not a fresh-machine certification |
 | Linux process resource evidence | Measured in exact-head CI | Synthetic inputs and child-process peak RSS; not a heap cap or real-feed benchmark |
 | Curated release bundle | WordPress intentionally unsupported | The packaged capability remains `not_compiled` |
-| Real vendor snapshot and live API | Not tested / unsupported | No supplied export, account, API key, or network retrieval |
+| Private vendor-snapshot acceptance | Separate evidence boundary | No vendor bytes, account, or API credential are committed; a passing snapshot would not authenticate its source or future feeds |
+| Live API retrieval | Unsupported | The assessment performs no Wordfence network request or key discovery |
 | Exploit and impact validation | Unsupported | Both remain `not_performed` |
 
 ## Reading the WordPress report
@@ -532,8 +625,11 @@ the selected reports are comparable; it does not authenticate a site or prove
 that both audits observed the same installation. Within that declared scope,
 components match by kind and canonical slug. Native advisory records match by
 `catalog.id`, upstream advisory ID, and component kind/slug. External records
-match by source namespace, upstream ID, and component kind/slug. Titles, CVEs,
-array order, and other display content do not replace those stable keys.
+from v4/v5 match by source namespace, upstream ID, and exact canonical component
+kind/slug. V6 additionally preserves the raw source kind/slug in association
+identity, so two different source spellings do not collapse merely because
+they derive the same candidate canonical key. Titles, CVEs, array order, and
+other display content do not replace those stable keys.
 
 The section reports component evidence, advisory content, affected ranges,
 source-declared fix/remediation, methodology, provenance, coverage, and
@@ -543,7 +639,7 @@ between them. If one report has no WordPress audit, the result is
 new vulnerability or a resolved condition. The same claim limit applies to an
 advisory disappearance or applicability transition.
 
-Supported `security.wordpress-review-audit/v1` through `/v5` inputs are
+Supported `security.wordpress-review-audit/v1` through `/v6` inputs are
 interpreted to the historical depth each contract actually contains; later
 coverage or provenance fields are not invented for earlier versions. An exact
 input SHA-256 identifies bytes, while semantic comparison uses validated typed
@@ -557,6 +653,17 @@ basis, or source-assurance declaration is reported as a methodology change.
 The same source record and component retain their stable identity across that
 change. A transition between unresolved v4 and evaluated v5 is therefore not
 labelled a newly introduced vulnerability or verified remediation.
+
+For v6, changes to mapping revision, mapping state, collision metadata,
+resource policy, retained-import accounting, or the four-way identity coverage
+are likewise methodology or coverage changes. A candidate becoming ambiguous,
+an unresolved association becoming mappable, or an expanded decoder accepting
+more source rows is not automatically an installed-component change, a newly
+found vulnerability, or remediation. The matching development Compare and
+Verify readers validate v6 strictly without scanning, network access, or
+granting imported data runtime authority. They recompute only document-internal
+mapping, range, and profile consistency from the imported display data so
+contradictory saved claims are rejected.
 
 ## Result and claim limits
 
@@ -590,10 +697,12 @@ normal formats. Offline bundle verification checks supported structure and
 bytes, not advisory truth. Offline Report Compare can show that WordPress
 evidence or conclusions changed, but disappearance is not verified
 remediation. The matching development reader accepts the optional WordPress
-audit. The already-published `v0.10.0-alpha.2` Compare and Verify importers
-predate this additive field and reject WordPress-extended assessment JSON; use
-the matching development reader or a later release for those files. Neither
-offline command starts a scan or adds network requests.
+audit, including v6. Development readers that know only v1 through v5 do not
+silently reinterpret v6; they reject that unsupported audit version. The
+already-published `v0.10.0-alpha.2` Compare and Verify importers predate all
+WordPress audit fields and reject WordPress-extended assessment JSON; use the
+matching development reader or a later release for those files. Neither offline
+command starts a scan or adds network requests.
 
 ## Source and scope notes
 

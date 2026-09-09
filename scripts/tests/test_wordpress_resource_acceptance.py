@@ -25,16 +25,35 @@ LITERAL_CASE_ORACLE = [
     ("sparse-4096", "sparse", 4_096, "completed", None, 1, 1),
     ("sparse-16384", "sparse", 16_384, "completed", None, 1, 1),
     ("sparse-32768", "sparse", 32_768, "completed", None, 1, 1),
-    ("sparse-65536", "sparse", 65_536, "rejected", "retained_data_too_large", None, None),
+    ("sparse-65536", "sparse", 65_536, "completed", None, 1, 1),
     ("sparse-81920", "sparse", 81_920, "rejected", "retained_data_too_large", None, None),
     ("dense-4096", "dense", 4_096, "completed", None, 4_096, 4_096),
     ("dense-4097", "dense", 4_097, "rejected", "result_limit_exceeded", None, None),
+    ("record-between-limits", "record-between-limits", 1, "completed", None, 0, 0),
     ("record-over-limit", "record-limit", 1, "rejected", "record_too_large", None, None),
     ("title-field-limit-plus-one", "field-limit", 1, "rejected", "unsupported_value", None, None),
     ("input-limit-plus-one", "input-limit", 0, "rejected", "input_too_large", None, None),
     ("late-malformed", "late-malformed", 4_096, "rejected", "malformed_json", None, None),
     ("duplicate-id", "duplicate-id", 2, "rejected", "duplicate_key", None, None),
 ]
+
+LITERAL_RESOURCE_POLICY_ORACLE = {
+    "baseline": None,
+    "sparse-small": "termivar.wordfence-v3-bounded-capacity/v1",
+    "sparse-4096": "termivar.wordfence-v3-bounded-capacity/v1",
+    "sparse-16384": "termivar.wordfence-v3-bounded-capacity/v1",
+    "sparse-32768": "termivar.wordfence-v3-bounded-capacity/v2",
+    "sparse-65536": "termivar.wordfence-v3-bounded-capacity/v3",
+    "sparse-81920": None,
+    "dense-4096": "termivar.wordfence-v3-bounded-capacity/v1",
+    "dense-4097": "termivar.wordfence-v3-bounded-capacity/v1",
+    "record-between-limits": "termivar.wordfence-v3-bounded-capacity/v2",
+    "record-over-limit": None,
+    "title-field-limit-plus-one": None,
+    "input-limit-plus-one": None,
+    "late-malformed": None,
+    "duplicate-id": None,
+}
 
 
 def resource_record() -> dict:
@@ -55,18 +74,26 @@ def probe_for(case, input_evidence):
     if case.expected_status != "baseline":
         values["parse_elapsed_ns"] = 10
     if case.expected_status == "completed":
+        expected_associations = 20 if case.identifier == "record-between-limits" else case.records
+        expected_ranges = 2_560 if case.identifier == "record-between-limits" else case.records
+        if case.identifier == "sparse-32768":
+            retained_bytes = acceptance.RESOURCE_POLICY_V1_RETAINED_LIMIT + 1
+        elif case.identifier == "sparse-65536":
+            retained_bytes = acceptance.RESOURCE_POLICY_V2_RETAINED_LIMIT + 1
+        else:
+            retained_bytes = max(1, case.records * 100)
         values.update({
             "evaluation_elapsed_ns": 20,
             "parsed_records": case.records,
-            "software_associations": case.records,
-            "affected_ranges": case.records,
-            "retained_bytes": max(1, case.records * 100),
+            "software_associations": expected_associations,
+            "affected_ranges": expected_ranges,
+            "retained_bytes": retained_bytes,
             "selected_associations": case.expected_selected,
             "evaluable_associations": case.expected_selected,
             "within_associations": case.expected_within,
             "outside_associations": 0,
             "indeterminate_associations": 0,
-            "excluded_associations": case.records - case.expected_selected,
+            "excluded_associations": expected_associations - case.expected_selected,
             "selected_ranges": case.expected_selected,
             "evaluated_ranges": case.expected_selected,
         })
@@ -83,6 +110,7 @@ def probe_for(case, input_evidence):
         "case": case.identifier,
         "status": case.expected_status,
         "error_code": case.expected_error_code,
+        "resource_policy": LITERAL_RESOURCE_POLICY_ORACLE[case.identifier],
         **values,
     }
 
@@ -90,8 +118,11 @@ def probe_for(case, input_evidence):
 def input_for(case) -> dict | None:
     if case.mode == "baseline":
         return None
-    if case.mode == "record-limit":
+    if case.mode == "record-between-limits":
         byte_length = 512 * 1024 + 1
+        distribution = "record-between-512-and-768-kib"
+    elif case.mode == "record-limit":
+        byte_length = 768 * 1024 + 1
         distribution = "record-over-limit"
     elif case.mode == "field-limit":
         byte_length = 1_025
@@ -124,6 +155,7 @@ def case_entry(case) -> dict:
             "status": case.expected_status,
             "error_code": case.expected_error_code,
             "generated_records": case.records,
+            "resource_policy": LITERAL_RESOURCE_POLICY_ORACLE[case.identifier],
             "selected_associations": case.expected_selected,
             "within_associations": case.expected_within,
         },
@@ -209,6 +241,15 @@ class CaseInventoryTests(unittest.TestCase):
         self.assertEqual(observed, LITERAL_CASE_ORACLE)
         self.assertEqual(len({row[0] for row in observed}), len(observed))
         self.assertEqual(
+            acceptance.EXPECTED_RESOURCE_POLICY_BY_CASE,
+            LITERAL_RESOURCE_POLICY_ORACLE,
+        )
+        self.assertEqual(acceptance.RESOURCE_POLICY_V1_RETAINED_LIMIT, 64 * 1024 * 1024)
+        self.assertEqual(acceptance.RESOURCE_POLICY_V2_RETAINED_LIMIT, 128 * 1024 * 1024)
+        self.assertEqual(acceptance.MAX_RETAINED_BYTES, 160 * 1024 * 1024)
+        self.assertLessEqual(max(case.records for case in acceptance.CASE_SPECS),
+                             acceptance.MAX_SOURCE_RECORDS)
+        self.assertEqual(
             observed[4],
             ("sparse-32768", "sparse", 32_768, "completed", None, 1, 1),
         )
@@ -293,7 +334,33 @@ class CaseInventoryTests(unittest.TestCase):
             record_path = root / "record-limit.json"
             record_evidence = acceptance.generate_case_input(record_limit, record_path)
             self.assertEqual(record_evidence["distribution"], "record-over-limit")
-            self.assertGreater(record_path.stat().st_size, 512 * 1024)
+            raw_record_document = record_path.read_bytes()
+            record = next(iter(json.loads(raw_record_document).values()))
+            encoded_record = json.dumps(
+                record, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+            ).encode("ascii")
+            self.assertEqual(len(record["description"]), 768 * 1024)
+            self.assertGreater(len(encoded_record), 768 * 1024)
+            self.assertEqual(record_evidence["bytes"], len(raw_record_document))
+
+            accepted_record = acceptance.CASE_BY_ID["record-between-limits"]
+            accepted_path = root / "record-between-limits.json"
+            accepted_evidence = acceptance.generate_case_input(accepted_record, accepted_path)
+            accepted_document = accepted_path.read_bytes()
+            accepted_value = next(iter(json.loads(accepted_document).values()))
+            accepted_record_bytes = json.dumps(
+                accepted_value, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+            ).encode("ascii")
+            self.assertEqual(
+                accepted_evidence["distribution"], "record-between-512-and-768-kib"
+            )
+            self.assertGreater(len(accepted_record_bytes), 512 * 1024)
+            self.assertLessEqual(len(accepted_record_bytes), 768 * 1024)
+            self.assertEqual(len(accepted_value["software"]), 20)
+            self.assertTrue(
+                all(len(software["affected_versions"]) == 128
+                    for software in accepted_value["software"])
+            )
 
             field_limit = acceptance.CASE_BY_ID["title-field-limit-plus-one"]
             field_path = root / "field-limit.json"
@@ -327,6 +394,9 @@ class ProbeValidationTests(unittest.TestCase):
         wrong_excluded = copy.deepcopy(original)
         wrong_excluded["excluded_associations"] = 0
         mutations.append(wrong_excluded)
+        wrong_policy = copy.deepcopy(original)
+        wrong_policy["resource_policy"] = "termivar.wordfence-v3-bounded-capacity/v2"
+        mutations.append(wrong_policy)
         extra = copy.deepcopy(original)
         extra["path"] = "/private/feed"
         mutations.append(extra)
@@ -341,6 +411,46 @@ class ProbeValidationTests(unittest.TestCase):
         leaked["parsed_records"] = 4_096
         with self.assertRaises(acceptance.AcceptanceError):
             acceptance.validate_probe(leaked, parse_failure, parse_input)
+        leaked_policy = probe_for(parse_failure, parse_input)
+        leaked_policy["resource_policy"] = "termivar.wordfence-v3-bounded-capacity/v1"
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.validate_probe(leaked_policy, parse_failure, parse_input)
+
+        crossed_v1 = copy.deepcopy(original)
+        crossed_v1["retained_bytes"] = acceptance.RESOURCE_POLICY_V1_RETAINED_LIMIT + 1
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.validate_probe(crossed_v1, case, evidence)
+
+        retained_v2_case = acceptance.CASE_BY_ID["sparse-32768"]
+        retained_v2_input = input_for(retained_v2_case)
+        did_not_cross_v1 = probe_for(retained_v2_case, retained_v2_input)
+        did_not_cross_v1["retained_bytes"] = acceptance.RESOURCE_POLICY_V1_RETAINED_LIMIT
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.validate_probe(did_not_cross_v1, retained_v2_case, retained_v2_input)
+
+        crossed_v2 = probe_for(retained_v2_case, retained_v2_input)
+        crossed_v2["retained_bytes"] = acceptance.RESOURCE_POLICY_V2_RETAINED_LIMIT + 1
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.validate_probe(crossed_v2, retained_v2_case, retained_v2_input)
+
+        retained_v3_case = acceptance.CASE_BY_ID["sparse-65536"]
+        retained_v3_input = input_for(retained_v3_case)
+        did_not_cross_v2 = probe_for(retained_v3_case, retained_v3_input)
+        did_not_cross_v2["retained_bytes"] = acceptance.RESOURCE_POLICY_V2_RETAINED_LIMIT
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.validate_probe(did_not_cross_v2, retained_v3_case, retained_v3_input)
+
+        crossed_v3 = probe_for(retained_v3_case, retained_v3_input)
+        crossed_v3["retained_bytes"] = acceptance.MAX_RETAINED_BYTES + 1
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.validate_probe(crossed_v3, retained_v3_case, retained_v3_input)
+
+        dense_failure = acceptance.CASE_BY_ID["dense-4097"]
+        dense_input = input_for(dense_failure)
+        zero_retained = probe_for(dense_failure, dense_input)
+        zero_retained["retained_bytes"] = 0
+        with self.assertRaises(acceptance.AcceptanceError):
+            acceptance.validate_probe(zero_retained, dense_failure, dense_input)
 
     def test_same_length_wrong_case_does_not_satisfy_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

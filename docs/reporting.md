@@ -417,6 +417,17 @@ WordPress correlation is valid only inside the same operator-declared
 `--same-scope` boundary. Components use component kind plus canonical slug as
 their stable key. Native advisory keys add `catalog.id` and the upstream
 advisory ID; external keys instead add the source namespace and upstream ID.
+External audit `/v6` keys use the retained raw source kind and source identifier,
+so case-only source spelling and otherwise non-canonical provider identities are
+not silently collapsed. Structurally valid source associations that cannot be
+represented as canonical Termivar components remain accounted for in the
+unresolved total. Up to the bounded deterministic projection is emitted as
+explicit `canonical_identity_unavailable` / `not_evaluated` advisory
+limitations; those projected rows keep their affected ranges, source-declared
+patch/remediation fields, bibliography, and bound notices visible and
+comparable. The remaining unprojected rows are represented only by reconciled
+coverage counts, without inventing an installed component or applicability
+result.
 Array position, display title, CVE, and report-local ordering are not identity.
 The comparison keeps component evidence, advisory content, affected ranges,
 source-declared fix/remediation information, methodology, provenance, coverage,
@@ -430,7 +441,18 @@ a fix, a new vulnerability, or a change at the installation.
 
 The importer supports the historical
 `security.wordpress-review-audit/v1` through `/v4` contracts and the additive
-`/v5` contract produced when an operator explicitly selects a Termivar
+`/v5` and `/v6` contracts. `/v6` carries the explicit raw-source identity
+mapping and bounded-capacity policy (including the additive 160 MiB V3 import
+envelope while preserving the older V1/V2 ceilings), accounted retained-import
+bytes, reconciled
+mapped/unresolved association partitions, and the non-canonical identity
+limitations described above. The complete unresolved total is retained while
+at most 64 deterministically ordered limitation rows are expanded; the explicit
+projected/unprojected counts prevent that bounded report view from looking like
+complete per-record detail. Historical `/v4` and `/v5` external rows are
+normalized as canonical exact mappings for semantic comparison, so a
+capacity-only `/v5` to `/v6` transition does not falsely report every exact
+advisory identity as changed. The `/v5` contract is produced when an operator explicitly selects a Termivar
 interpretation profile for local Wordfence ranges. The `/v5` comparison keeps
 the selected profile, explicit-operator basis, and unestablished source-semantics
 assurance in the methodology facet. A transition from an unresolved `/v4`

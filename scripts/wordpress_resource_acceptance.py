@@ -35,18 +35,23 @@ if str(SCRIPT_DIRECTORY) not in sys.path:
 import first_use as first_use_support  # noqa: E402
 
 
-SCHEMA = "termivar-wordpress-resource-acceptance/v1"
-PROBE_SCHEMA = "termivar-wordpress-resource-probe/v1"
+SCHEMA = "termivar-wordpress-resource-acceptance/v2"
+PROBE_SCHEMA = "termivar-wordpress-resource-probe/v2"
 RESULT_LIMIT = 64 * 1024
 PROBE_RESULT_LIMIT = 64 * 1024
 CAPTURE_LIMIT = 512 * 1024
 REPORT_LIMIT = 16 * 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 300.0
 MAX_INPUT_BYTES = 256 * 1024 * 1024
-MAX_RETAINED_BYTES = 64 * 1024 * 1024
+MAX_RETAINED_BYTES = 160 * 1024 * 1024
+RESOURCE_POLICY_V1_RETAINED_LIMIT = 64 * 1024 * 1024
+RESOURCE_POLICY_V2_RETAINED_LIMIT = 128 * 1024 * 1024
 MAX_SOURCE_RECORDS = 100_000
 MAX_SELECTED_ASSOCIATIONS = 4_096
 EXPECTED_PROFILE = "numeric-dotted/v1"
+RESOURCE_POLICY_V1 = "termivar.wordfence-v3-bounded-capacity/v1"
+RESOURCE_POLICY_V2 = "termivar.wordfence-v3-bounded-capacity/v2"
+RESOURCE_POLICY_V3 = "termivar.wordfence-v3-bounded-capacity/v3"
 EXPECTED_LOOPBACK_REQUESTS = 5
 IDENTITY_LIMIT = (
     "source ref and hashes identify supplied bytes; they are not signatures or attestations"
@@ -111,7 +116,8 @@ class CaseSpec:
 
 
 # This literal expectation table is deliberately independent of probe output.
-# sparse-65536 and sparse-81920 are pinned outcomes, not dynamically accepted.
+# The literal outcomes are reviewed against the current external resource
+# policy; they are never inferred from whatever the probe happens to return.
 CASE_SPECS = (
     CaseSpec("baseline", "baseline", 0, "baseline", None, None, None,
              "fresh test-process overhead without a feed"),
@@ -122,17 +128,19 @@ CASE_SPECS = (
     CaseSpec("sparse-16384", "sparse", 16_384, "completed", None, 1, 1,
              "larger distinct sparse snapshot"),
     CaseSpec("sparse-32768", "sparse", 32_768, "completed", None, 1, 1,
-             "accepted sparse snapshot near the first effective retained bound"),
-    CaseSpec("sparse-65536", "sparse", 65_536, "rejected", "retained_data_too_large", None, None,
-             "larger distinct snapshot rejected by retained-index accounting"),
+             "accepted sparse snapshot under the V2 retained-data policy"),
+    CaseSpec("sparse-65536", "sparse", 65_536, "completed", None, 1, 1,
+             "larger sparse snapshot accepted under the V3 retained-data policy"),
     CaseSpec("sparse-81920", "sparse", 81_920, "rejected", "retained_data_too_large", None, None,
-             "explicit retained-index rejection without truncation"),
+             "explicit retained-index rejection above 160 MiB without truncation"),
     CaseSpec("dense-4096", "dense", 4_096, "completed", None, 4_096, 4_096,
              "maximum accepted relevant association count"),
     CaseSpec("dense-4097", "dense", 4_097, "rejected", "result_limit_exceeded", None, None,
              "typed result-limit rejection instead of first-N selection"),
+    CaseSpec("record-between-limits", "record-between-limits", 1, "completed", None, 0, 0,
+             "one valid record above the historical 512 KiB ceiling and below 768 KiB"),
     CaseSpec("record-over-limit", "record-limit", 1, "rejected", "record_too_large", None, None,
-             "one record exceeds the literal 512 KiB record ceiling"),
+             "one record exceeds the literal 768 KiB record ceiling"),
     CaseSpec("title-field-limit-plus-one", "field-limit", 1, "rejected", "unsupported_value", None, None,
              "one title exceeds the literal 1,024-byte semantic field ceiling"),
     CaseSpec("input-limit-plus-one", "input-limit", 0, "rejected", "input_too_large", None, None,
@@ -143,6 +151,33 @@ CASE_SPECS = (
              "duplicate root identity rejected"),
 )
 CASE_BY_ID = {case.identifier: case for case in CASE_SPECS}
+
+# This is a separate literal oracle rather than an inference from observed
+# retained bytes. Evaluation-limit rejection happens after a successful import,
+# so dense-4097 still reports the V1 parser policy it actually exercised.
+EXPECTED_RESOURCE_POLICY_BY_CASE = {
+    "baseline": None,
+    "sparse-small": RESOURCE_POLICY_V1,
+    "sparse-4096": RESOURCE_POLICY_V1,
+    "sparse-16384": RESOURCE_POLICY_V1,
+    "sparse-32768": RESOURCE_POLICY_V2,
+    "sparse-65536": RESOURCE_POLICY_V3,
+    "sparse-81920": None,
+    "dense-4096": RESOURCE_POLICY_V1,
+    "dense-4097": RESOURCE_POLICY_V1,
+    "record-between-limits": RESOURCE_POLICY_V2,
+    "record-over-limit": None,
+    "title-field-limit-plus-one": None,
+    "input-limit-plus-one": None,
+    "late-malformed": None,
+    "duplicate-id": None,
+}
+
+
+def expected_resource_policy(case: CaseSpec) -> str | None:
+    require(case.identifier in EXPECTED_RESOURCE_POLICY_BY_CASE,
+            "resource case lacks a resource-policy oracle")
+    return EXPECTED_RESOURCE_POLICY_BY_CASE[case.identifier]
 
 
 def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -303,8 +338,36 @@ def _stream_input_limit(path: Path, limit: int = MAX_INPUT_BYTES) -> dict[str, A
 
 def _stream_single_limit_record(path: Path, mode: str) -> dict[str, Any]:
     record = _record(0, "selected-plugin")
-    if mode == "record-limit":
-        record["description"] = "x" * (512 * 1024)
+    if mode == "record-between-limits":
+        record["references"] = [
+            f"https://example.invalid/{'x' * 1900}/{index}" for index in range(64)
+        ]
+        record["description"] = "d" * 4_096
+        record["researchers"] = ["r" * 500 for _ in range(64)]
+        ranges = {
+            f"[{index}.0.0,{index}.0.1]": {
+                "from_version": f"{index}.0.0",
+                "from_inclusive": True,
+                "to_version": f"{index}.0.1",
+                "to_inclusive": True,
+            }
+            for index in range(128)
+        }
+        software = []
+        for index in range(20):
+            association = dict(record["software"][0])
+            association["name"] = "n" * 1_024
+            association["slug"] = f"limit-probe-{index}"
+            association["affected_versions"] = ranges
+            association["patched_versions"] = [
+                f"{version}.0.2" for version in range(128)
+            ]
+            association["remediation"] = "m" * 2_048
+            software.append(association)
+        record["software"] = software
+        distribution = "record-between-512-and-768-kib"
+    elif mode == "record-limit":
+        record["description"] = "x" * (768 * 1024)
         distribution = "record-over-limit"
     elif mode == "field-limit":
         record["title"] = "x" * 1_025
@@ -329,7 +392,7 @@ def generate_case_input(case: CaseSpec, path: Path, *, input_limit: int = MAX_IN
         return _stream_feed(path, case.records)
     if case.mode == "dense":
         return _stream_feed(path, case.records, dense=True)
-    if case.mode in {"record-limit", "field-limit"}:
+    if case.mode in {"record-between-limits", "record-limit", "field-limit"}:
         return _stream_single_limit_record(path, case.mode)
     if case.mode == "input-limit":
         return _stream_input_limit(path, input_limit)
@@ -477,7 +540,7 @@ def load_bounded_json(path: Path, maximum: int) -> dict[str, Any]:
 
 
 def validate_probe(probe: dict[str, Any], case: CaseSpec, input_evidence: dict[str, Any] | None) -> None:
-    fields = {"schema", "case", "status", "error_code", *PROBE_NUMERIC_FIELDS}
+    fields = {"schema", "case", "status", "error_code", "resource_policy", *PROBE_NUMERIC_FIELDS}
     _exact_fields(probe, fields, "probe")
     require(probe["schema"] == PROBE_SCHEMA, "probe schema differs")
     require(probe["case"] == case.identifier, "probe case differs")
@@ -485,6 +548,22 @@ def validate_probe(probe: dict[str, Any], case: CaseSpec, input_evidence: dict[s
     require(probe["error_code"] == case.expected_error_code, "probe error differs from the literal oracle")
     for field in PROBE_NUMERIC_FIELDS:
         _integer_or_none(probe[field], f"probe.{field}")
+    require(probe["resource_policy"] == expected_resource_policy(case),
+            "probe resource policy differs from the literal oracle")
+    if case.identifier == "sparse-32768":
+        require(probe["retained_bytes"] is not None
+                and RESOURCE_POLICY_V1_RETAINED_LIMIT < probe["retained_bytes"]
+                <= RESOURCE_POLICY_V2_RETAINED_LIMIT,
+                "sparse-32768 did not exercise retained-size-only V2 selection")
+    elif case.identifier == "sparse-65536":
+        require(probe["retained_bytes"] is not None
+                and RESOURCE_POLICY_V2_RETAINED_LIMIT < probe["retained_bytes"]
+                <= MAX_RETAINED_BYTES,
+                "sparse-65536 did not exercise retained-size-only V3 selection")
+    elif probe["resource_policy"] == RESOURCE_POLICY_V1:
+        require(probe["retained_bytes"] is not None
+                and probe["retained_bytes"] <= RESOURCE_POLICY_V1_RETAINED_LIMIT,
+                "historical V1 case crossed its retained-data envelope")
 
     expected_bytes = None if input_evidence is None else input_evidence["bytes"]
     require(probe["input_bytes"] == expected_bytes, "probe input length differs from generated bytes")
@@ -495,10 +574,13 @@ def validate_probe(probe: dict[str, Any], case: CaseSpec, input_evidence: dict[s
 
     require(probe["parse_elapsed_ns"] is not None, "input case lacks parse timing")
     if case.expected_status == "completed":
+        expected_associations = 20 if case.identifier == "record-between-limits" else case.records
+        expected_ranges = 2_560 if case.identifier == "record-between-limits" else case.records
         require(probe["evaluation_elapsed_ns"] is not None, "completed case lacks evaluation timing")
         require(probe["parsed_records"] == case.records, "completed case record count differs")
-        require(probe["software_associations"] == case.records, "completed association count differs")
-        require(probe["affected_ranges"] == case.records, "completed range count differs")
+        require(probe["software_associations"] == expected_associations,
+                "completed association count differs")
+        require(probe["affected_ranges"] == expected_ranges, "completed range count differs")
         require(0 < probe["retained_bytes"] <= MAX_RETAINED_BYTES,
                 "completed retained accounting is outside the configured bound")
         require(probe["selected_associations"] == case.expected_selected,
@@ -510,7 +592,7 @@ def validate_probe(probe: dict[str, Any], case: CaseSpec, input_evidence: dict[s
         require(probe["outside_associations"] == 0, "synthetic accepted cases must not be outside")
         require(probe["indeterminate_associations"] == 0,
                 "synthetic accepted cases must not be indeterminate")
-        require(probe["excluded_associations"] == case.records - case.expected_selected,
+        require(probe["excluded_associations"] == expected_associations - case.expected_selected,
                 "completed excluded association count does not reconcile")
         require(probe["selected_ranges"] == case.expected_selected,
                 "completed selected range count differs")
@@ -520,6 +602,9 @@ def validate_probe(probe: dict[str, Any], case: CaseSpec, input_evidence: dict[s
         require(probe["parsed_records"] == 4_097, "dense limit input was not fully parsed")
         require(probe["software_associations"] == 4_097, "dense limit association count differs")
         require(probe["affected_ranges"] == 4_097, "dense limit range count differs")
+        require(probe["retained_bytes"] is not None
+                and 0 < probe["retained_bytes"] <= MAX_RETAINED_BYTES,
+                "dense result rejection lacks valid retained accounting")
         require(probe["evaluation_elapsed_ns"] is not None, "dense result rejection was not evaluated")
         require(all(probe[field] is None for field in (
             "selected_associations", "evaluable_associations", "within_associations",
@@ -596,6 +681,7 @@ def run_probe_case(case: CaseSpec, probe: Path, directory: Path,
             "status": case.expected_status,
             "error_code": case.expected_error_code,
             "generated_records": case.records,
+            "resource_policy": expected_resource_policy(case),
             "selected_associations": case.expected_selected,
             "within_associations": case.expected_within,
         },
@@ -1007,13 +1093,14 @@ def validate_report(report: dict[str, Any], *, complete: bool) -> None:
                 "case identity or synthetic label differs")
         require(entry["purpose"] == case.purpose, "case purpose differs")
         expected = _exact_fields(entry["expected"], {
-            "status", "error_code", "generated_records", "selected_associations",
+            "status", "error_code", "generated_records", "resource_policy", "selected_associations",
             "within_associations",
         }, f"case.{case.identifier}.expected")
         require(expected == {
             "status": case.expected_status,
             "error_code": case.expected_error_code,
             "generated_records": case.records,
+            "resource_policy": expected_resource_policy(case),
             "selected_associations": case.expected_selected,
             "within_associations": case.expected_within,
         }, "case expected result differs from the literal oracle")
@@ -1031,6 +1118,7 @@ def validate_report(report: dict[str, Any], *, complete: bool) -> None:
                     "case generated record count differs")
             require(input_evidence["distribution"] in {
                 "one-relevant-last", "all-relevant", "record-over-limit",
+                "record-between-512-and-768-kib",
                 "title-field-limit-plus-one", "streamed-padding-limit-plus-one",
             }, "case input distribution is invalid")
         validate_probe(entry["observed"], case, entry["input"])
@@ -1181,8 +1269,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Fresh-child measurements",
         "",
-        "| Case | Expected / observed | Input bytes | Records | Selected | Retained bytes | Parse | Evaluate | Wall | User | System | CPU | Peak RSS |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Case | Expected / observed | Resource policy | Input bytes | Records | Selected | Retained bytes | Parse | Evaluate | Wall | User | System | CPU | Peak RSS |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for entry in report["cases"]:
         observed = entry["observed"]
@@ -1198,7 +1286,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         parse_text = "not reached" if parse is None else f"{parse / 1_000_000:.2f} ms"
         evaluate_text = "not reached" if evaluate is None else f"{evaluate / 1_000_000:.2f} ms"
         lines.append(
-            f"| `{entry['id']}` | {html.escape(relation)} | {input_bytes} | "
+            f"| `{entry['id']}` | {html.escape(relation)} | "
+            f"{html.escape(observed['resource_policy'] or 'not reached')} | {input_bytes} | "
             f"{shown(observed['parsed_records'])} | {shown(observed['selected_associations'])} | "
             f"{shown(observed['retained_bytes'])} | {parse_text} | {evaluate_text} | "
             f"{resources['elapsed_seconds']:.2f} s | "

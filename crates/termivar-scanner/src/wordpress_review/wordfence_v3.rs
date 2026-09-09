@@ -26,13 +26,19 @@ use super::{WordPressComponentIdentity, WordPressComponentKind};
 pub const WORDFENCE_V3_SOURCE_NAMESPACE: &str = "wordfence-intelligence";
 pub const WORDFENCE_V3_PRODUCTION_FORMAT: &str = "wordfence-v3-production";
 pub const WORDFENCE_V3_MAPPING_REVISION: &str = "termivar-wordfence-v3-production/v1";
+pub const WORDFENCE_V3_MAPPING_REVISION_V2: &str = "termivar-wordfence-v3-production/v2";
+pub const WORDFENCE_V3_IDENTITY_MAPPING_POLICY: &str =
+    "termivar.wordfence-v3-exact-plus-ascii-lowercase-candidate/v1";
+pub const WORDFENCE_V3_RESOURCE_POLICY_V1: &str = "termivar.wordfence-v3-bounded-capacity/v1";
+pub const WORDFENCE_V3_RESOURCE_POLICY_V2: &str = "termivar.wordfence-v3-bounded-capacity/v2";
+pub const WORDFENCE_V3_RESOURCE_POLICY_V3: &str = "termivar.wordfence-v3-bounded-capacity/v3";
 pub const MAX_WORDFENCE_V3_PRODUCTION_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_WORDFENCE_V3_RECORDS: usize = 100_000;
 pub const MAX_WORDFENCE_V3_SOFTWARE_ASSOCIATIONS: usize = 200_000;
-pub const MAX_WORDFENCE_V3_RECORD_BYTES: usize = 512 * 1024;
-pub const MAX_WORDFENCE_V3_RETAINED_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION: usize = 64;
-pub const MAX_WORDFENCE_V3_PATCHED_VERSIONS: usize = 64;
+pub const MAX_WORDFENCE_V3_RECORD_BYTES: usize = 768 * 1024;
+pub const MAX_WORDFENCE_V3_RETAINED_BYTES: usize = 160 * 1024 * 1024;
+pub const MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION: usize = 128;
+pub const MAX_WORDFENCE_V3_PATCHED_VERSIONS: usize = 128;
 pub const MAX_WORDFENCE_V3_REFERENCES: usize = 64;
 pub const MAX_WORDFENCE_V3_RESEARCHERS: usize = 64;
 // One message plus at most fifteen attribution entries is the supported
@@ -42,12 +48,12 @@ pub(crate) const MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD: usize = 2_048;
 const MAX_WORDFENCE_V3_JSON_NODES_PER_RECORD: usize = 32_768;
 const MAX_WORDFENCE_V3_ARRAY_ITEMS_PER_RECORD: usize = 4_096;
 // These are external-import decoder limits. A supported affected_versions map
-// may contain 64 range labels and each label may contain 256 UTF-8 bytes; the
+// may contain 128 range labels and each label may contain 256 UTF-8 bytes; the
 // stricter native Termivar catalogue decoder retains its existing limits.
-const MAX_WORDFENCE_V3_OBJECT_MEMBERS_PER_RECORD: usize = 64;
+const MAX_WORDFENCE_V3_OBJECT_MEMBERS_PER_RECORD: usize = 128;
 const MAX_WORDFENCE_V3_JSON_DEPTH: usize = 10;
 const MAX_WORDFENCE_V3_JSON_KEY_BYTES: usize = 256;
-const MAX_WORDFENCE_V3_JSON_STRING_BYTES: usize = 2_048;
+const MAX_WORDFENCE_V3_JSON_STRING_BYTES: usize = 4_096;
 const WORDFENCE_DUPLICATE_KEY_MARKER: &str = "termivar_wordfence_duplicate_key";
 const WORDFENCE_JSON_LIMIT_MARKER: &str = "termivar_wordfence_json_limit";
 // Rust's BTree implementation does not expose node allocation sizes. Charge a
@@ -55,16 +61,22 @@ const WORDFENCE_JSON_LIMIT_MARKER: &str = "termivar_wordfence_json_limit";
 // sizes so the public retained-data budget never treats nodes as free.
 const CONSERVATIVE_BTREE_NODE_BYTES_PER_ENTRY: usize = 64;
 const MAX_WORDFENCE_V3_TITLE_BYTES: usize = 1_024;
-const MAX_WORDFENCE_V3_DESCRIPTION_BYTES: usize = 2_048;
+const MAX_WORDFENCE_V3_DESCRIPTION_BYTES: usize = 4_096;
 const MAX_WORDFENCE_V3_REMEDIATION_BYTES: usize = 2_048;
 const MAX_WORDFENCE_V3_NOTICE_TEXT_BYTES: usize = 2_048;
 const MAX_WORDFENCE_V3_NAME_BYTES: usize = 1_024;
 const MAX_WORDFENCE_V3_REFERENCE_BYTES: usize = 2_048;
 const MAX_WORDFENCE_V3_VERSION_BYTES: usize = 64;
 const MAX_WORDFENCE_V3_RANGE_LABEL_BYTES: usize = 256;
-const MAX_WORDFENCE_V3_RESEARCHER_BYTES: usize = 512;
+pub const MAX_WORDFENCE_V3_RESEARCHER_BYTES: usize = 512;
 const MAX_WORDFENCE_V3_CVE_BYTES: usize = 32;
 const MAX_WORDFENCE_V3_CVSS_VECTOR_BYTES: usize = 256;
+const MAX_WORDFENCE_V3_SOURCE_SLUG_BYTES: usize = 128;
+const MAX_WORDFENCE_V3_RECORD_BYTES_V1: usize = 512 * 1024;
+const MAX_WORDFENCE_V3_RETAINED_BYTES_V1: usize = 64 * 1024 * 1024;
+const MAX_WORDFENCE_V3_RETAINED_BYTES_V2: usize = 128 * 1024 * 1024;
+const MAX_WORDFENCE_V3_DESCRIPTION_BYTES_V1: usize = 2_048;
+const MAX_WORDFENCE_V3_COLLECTION_ITEMS_V1: usize = 64;
 
 type AssociationCoordinate = (usize, usize);
 type ComponentAssociationIndex = BTreeMap<WordPressComponentIdentity, Vec<AssociationCoordinate>>;
@@ -101,6 +113,8 @@ pub struct WordfenceV3ProductionImport {
     retained_bytes: usize,
     software_association_count: usize,
     affected_range_count: usize,
+    identity_counts: WordfenceV3IdentityCounts,
+    resource_policy: &'static str,
     records: Vec<WordfenceV3Record>,
     notices: Vec<WordfenceV3Notice>,
     component_index: ComponentAssociationIndex,
@@ -142,6 +156,25 @@ impl WordfenceV3ProductionImport {
     #[must_use]
     pub const fn affected_range_count(&self) -> usize {
         self.affected_range_count
+    }
+
+    #[must_use]
+    pub const fn identity_counts(&self) -> &WordfenceV3IdentityCounts {
+        &self.identity_counts
+    }
+
+    #[must_use]
+    pub const fn mapping_revision(&self) -> &'static str {
+        if self.identity_counts.requires_source_identity_mapping() {
+            WORDFENCE_V3_MAPPING_REVISION_V2
+        } else {
+            WORDFENCE_V3_MAPPING_REVISION
+        }
+    }
+
+    #[must_use]
+    pub const fn resource_policy(&self) -> &'static str {
+        self.resource_policy
     }
 
     #[must_use]
@@ -191,6 +224,7 @@ pub struct WordfenceV3Record {
     updated: Option<String>,
     notice_ids: Vec<String>,
     software: Vec<WordfenceV3SoftwareAssociation>,
+    unresolved_software: Vec<WordfenceV3UnresolvedSoftwareAssociation>,
 }
 
 impl WordfenceV3Record {
@@ -250,11 +284,88 @@ impl WordfenceV3Record {
     pub fn software(&self) -> &[WordfenceV3SoftwareAssociation] {
         &self.software
     }
+
+    #[must_use]
+    pub fn unresolved_software(&self) -> &[WordfenceV3UnresolvedSoftwareAssociation] {
+        &self.unresolved_software
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum WordfenceV3IdentityMapping {
+    Exact,
+    AsciiCaseFoldCandidate,
+    AsciiCaseFoldAmbiguous,
+}
+
+impl WordfenceV3IdentityMapping {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::AsciiCaseFoldCandidate => "ascii_case_fold_candidate",
+            Self::AsciiCaseFoldAmbiguous => "ascii_case_fold_ambiguous",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct WordfenceV3SourceComponentIdentity {
+    kind: WordPressComponentKind,
+    slug: String,
+}
+
+impl WordfenceV3SourceComponentIdentity {
+    #[must_use]
+    pub const fn kind(&self) -> WordPressComponentKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn slug(&self) -> &str {
+        &self.slug
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WordfenceV3IdentityCounts {
+    exact: usize,
+    candidate: usize,
+    ambiguous: usize,
+    unresolved: usize,
+}
+
+impl WordfenceV3IdentityCounts {
+    #[must_use]
+    pub const fn exact(&self) -> usize {
+        self.exact
+    }
+
+    #[must_use]
+    pub const fn candidate(&self) -> usize {
+        self.candidate
+    }
+
+    #[must_use]
+    pub const fn ambiguous(&self) -> usize {
+        self.ambiguous
+    }
+
+    #[must_use]
+    pub const fn unresolved(&self) -> usize {
+        self.unresolved
+    }
+
+    const fn requires_source_identity_mapping(&self) -> bool {
+        self.candidate != 0 || self.ambiguous != 0 || self.unresolved != 0
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WordfenceV3SoftwareAssociation {
     key: WordfenceV3AssociationKey,
+    identity_mapping: WordfenceV3IdentityMapping,
+    identity_collision_raw_count: Option<usize>,
     display_name: String,
     affected_ranges: Vec<WordfenceV3AffectedRange>,
     patched: bool,
@@ -270,6 +381,18 @@ impl WordfenceV3SoftwareAssociation {
     #[must_use]
     pub const fn component(&self) -> &WordPressComponentIdentity {
         &self.key.component
+    }
+    #[must_use]
+    pub const fn source_component(&self) -> &WordfenceV3SourceComponentIdentity {
+        &self.key.source_component
+    }
+    #[must_use]
+    pub const fn identity_mapping(&self) -> WordfenceV3IdentityMapping {
+        self.identity_mapping
+    }
+    #[must_use]
+    pub const fn identity_collision_raw_count(&self) -> Option<usize> {
+        self.identity_collision_raw_count
     }
     #[must_use]
     pub fn display_name(&self) -> &str {
@@ -293,10 +416,66 @@ impl WordfenceV3SoftwareAssociation {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordfenceV3UnresolvedSoftwareAssociation {
+    upstream_id: String,
+    source_component: WordfenceV3SourceComponentIdentity,
+    source_association_sha256: [u8; 32],
+    display_name: String,
+    affected_ranges: Vec<WordfenceV3AffectedRange>,
+    patched: bool,
+    patched_versions: Vec<String>,
+    remediation: String,
+}
+
+impl WordfenceV3UnresolvedSoftwareAssociation {
+    #[must_use]
+    pub fn upstream_id(&self) -> &str {
+        &self.upstream_id
+    }
+
+    #[must_use]
+    pub const fn source_component(&self) -> &WordfenceV3SourceComponentIdentity {
+        &self.source_component
+    }
+
+    #[must_use]
+    pub const fn source_association_sha256(&self) -> &[u8; 32] {
+        &self.source_association_sha256
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    #[must_use]
+    pub fn affected_ranges(&self) -> &[WordfenceV3AffectedRange] {
+        &self.affected_ranges
+    }
+
+    #[must_use]
+    pub const fn patched(&self) -> bool {
+        self.patched
+    }
+
+    #[must_use]
+    pub fn patched_versions(&self) -> &[String] {
+        &self.patched_versions
+    }
+
+    #[must_use]
+    pub fn remediation(&self) -> &str {
+        &self.remediation
+    }
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct WordfenceV3AssociationKey {
     upstream_id: String,
     component: WordPressComponentIdentity,
+    source_component: WordfenceV3SourceComponentIdentity,
+    source_association_sha256: [u8; 32],
 }
 
 impl WordfenceV3AssociationKey {
@@ -311,6 +490,16 @@ impl WordfenceV3AssociationKey {
     #[must_use]
     pub const fn component(&self) -> &WordPressComponentIdentity {
         &self.component
+    }
+
+    #[must_use]
+    pub const fn source_component(&self) -> &WordfenceV3SourceComponentIdentity {
+        &self.source_component
+    }
+
+    #[must_use]
+    pub const fn source_association_sha256(&self) -> &[u8; 32] {
+        &self.source_association_sha256
     }
 }
 
@@ -520,6 +709,8 @@ fn parse_wordfence_v3_production_with_limits<R: Read>(
     let mut notices = BTreeMap::<String, WordfenceV3Notice>::new();
     let mut software_association_count = 0_usize;
     let mut affected_range_count = 0_usize;
+    let mut requires_resource_policy_v2 = false;
+    let mut requires_semantic_digest_v2 = false;
     let mut delimiter = cursor.next_non_whitespace()?;
     if delimiter != Some(b'}') {
         loop {
@@ -549,6 +740,9 @@ fn parse_wordfence_v3_production_with_limits<R: Read>(
             let record_bytes = cursor.capture_record_object()?;
             let value = decode_bounded_record(&record_bytes)?;
             let (record, record_notices) = decode_record(upstream_id, value)?;
+            requires_resource_policy_v2 |=
+                record_requires_resource_policy_v2(record_bytes.len(), &record);
+            requires_semantic_digest_v2 |= record_requires_semantic_digest_v2(&record);
             for notice in record_notices {
                 let id = notice.id.clone();
                 if let Some(existing) = notices.get(&id) {
@@ -560,8 +754,13 @@ fn parse_wordfence_v3_production_with_limits<R: Read>(
                     notices.insert(id, notice);
                 }
             }
+            let record_associations = record
+                .software
+                .len()
+                .checked_add(record.unresolved_software.len())
+                .ok_or(WordfenceV3ProductionError::StructuralLimitExceeded)?;
             software_association_count = software_association_count
-                .checked_add(record.software.len())
+                .checked_add(record_associations)
                 .ok_or(WordfenceV3ProductionError::StructuralLimitExceeded)?;
             if software_association_count > MAX_WORDFENCE_V3_SOFTWARE_ASSOCIATIONS {
                 return Err(WordfenceV3ProductionError::StructuralLimitExceeded);
@@ -569,9 +768,14 @@ fn parse_wordfence_v3_production_with_limits<R: Read>(
             let ranges = record
                 .software
                 .iter()
-                .try_fold(0_usize, |count, association| {
-                    count.checked_add(association.affected_ranges.len())
-                })
+                .map(WordfenceV3SoftwareAssociation::affected_ranges)
+                .chain(
+                    record
+                        .unresolved_software
+                        .iter()
+                        .map(WordfenceV3UnresolvedSoftwareAssociation::affected_ranges),
+                )
+                .try_fold(0_usize, |count, ranges| count.checked_add(ranges.len()))
                 .ok_or(WordfenceV3ProductionError::StructuralLimitExceeded)?;
             affected_range_count = affected_range_count
                 .checked_add(ranges)
@@ -602,18 +806,20 @@ fn parse_wordfence_v3_production_with_limits<R: Read>(
     // retained-data model does not rely on an optimizer shortening its scope.
     drop(upstream_ids);
 
+    let (identity_counts, identity_resolution_peak) = resolve_identity_mappings(
+        &mut records,
+        retained_during_parse.total(),
+        maximum_retained_bytes,
+    )?;
     records.sort_by(|left, right| left.upstream_id.cmp(&right.upstream_id));
     let mut notice_values = Vec::new();
-    notice_values
-        .try_reserve_exact(notices.len())
-        .map_err(|_| WordfenceV3ProductionError::RetainedDataTooLarge)?;
-    retained_during_parse.add(
-        notice_values
-            .capacity()
-            .checked_mul(size_of::<WordfenceV3Notice>())
-            .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?,
+    reserve_exact_capacity_with_retained_accounting(
+        &mut notice_values,
+        notices.len(),
+        &mut retained_during_parse,
     )?;
     notice_values.extend(notices.into_values());
+    let parse_peak_bytes = retained_during_parse.total().max(identity_resolution_peak);
     // The notice map was consumed above, so its nodes and separately allocated
     // keys are no longer live. Final-form accounting below starts fresh rather
     // than carrying the conservative parse-peak counter forward.
@@ -637,7 +843,21 @@ fn parse_wordfence_v3_production_with_limits<R: Read>(
     if retained_bytes != independently_measured {
         return Err(WordfenceV3ProductionError::RetainedDataTooLarge);
     }
-    let semantic_sha256 = semantic_digest(&records, &notice_values);
+    // The policy records the bounded import envelope the parser actually
+    // needed, not only the size of the returned index. This prevents a
+    // temporary root-key/collision phase that crossed an older ceiling from
+    // being mislabeled as having fit that historical policy.
+    let resource_policy = resource_policy_for_import(
+        requires_resource_policy_v2,
+        parse_peak_bytes,
+        retained_bytes,
+    );
+    let semantic_sha256 = semantic_digest(
+        &records,
+        &notice_values,
+        &identity_counts,
+        requires_semantic_digest_v2,
+    );
     Ok(WordfenceV3ProductionImport {
         byte_length,
         sha256,
@@ -645,10 +865,213 @@ fn parse_wordfence_v3_production_with_limits<R: Read>(
         retained_bytes,
         software_association_count,
         affected_range_count,
+        identity_counts,
+        resource_policy,
         records,
         notices: notice_values,
         component_index,
     })
+}
+
+fn resource_policy_for_import(
+    requires_expanded_record_semantics: bool,
+    parse_peak_bytes: usize,
+    retained_bytes: usize,
+) -> &'static str {
+    let import_envelope_bytes = retained_bytes.max(parse_peak_bytes);
+    if import_envelope_bytes > MAX_WORDFENCE_V3_RETAINED_BYTES_V2 {
+        WORDFENCE_V3_RESOURCE_POLICY_V3
+    } else if requires_expanded_record_semantics
+        || import_envelope_bytes > MAX_WORDFENCE_V3_RETAINED_BYTES_V1
+    {
+        WORDFENCE_V3_RESOURCE_POLICY_V2
+    } else {
+        WORDFENCE_V3_RESOURCE_POLICY_V1
+    }
+}
+
+fn resolve_identity_mappings(
+    records: &mut [WordfenceV3Record],
+    retained_base: usize,
+    maximum_retained: usize,
+) -> Result<(WordfenceV3IdentityCounts, usize), WordfenceV3ProductionError> {
+    // Collision discovery is a bounded parse-time allocation, not part of the
+    // returned index. Keep it flat so a distinct singleton tree allocation is
+    // not hidden behind every candidate key. The owned pair capacity and both
+    // cloned strings are charged before they are allocated.
+    let mut collision_budget = RetainedBudget::with_base(maximum_retained, retained_base)?;
+    let mut spellings = Vec::<(
+        WordPressComponentIdentity,
+        WordfenceV3SourceComponentIdentity,
+    )>::new();
+    // Exact-only keys cannot produce a case-fold collision, so avoid cloning
+    // every source identity in a large ordinary feed. Seed only keys that have
+    // a candidate spelling, then add exact spellings for those same keys.
+    for association in records
+        .iter()
+        .flat_map(|record| &record.software)
+        .filter(|association| {
+            association.identity_mapping == WordfenceV3IdentityMapping::AsciiCaseFoldCandidate
+        })
+    {
+        push_identity_collision_pair(&mut spellings, association, &mut collision_budget)?;
+    }
+    spellings.sort();
+    spellings.dedup();
+    let candidate_spelling_count = spellings.len();
+    for association in records
+        .iter()
+        .flat_map(|record| &record.software)
+        .filter(|association| association.identity_mapping == WordfenceV3IdentityMapping::Exact)
+    {
+        if spellings[..candidate_spelling_count]
+            .binary_search_by(|(component, _)| component.cmp(association.component()))
+            .is_err()
+        {
+            continue;
+        }
+        push_identity_collision_pair(&mut spellings, association, &mut collision_budget)?;
+    }
+    spellings.sort();
+    spellings.dedup();
+
+    let mut counts = WordfenceV3IdentityCounts::default();
+    for record in records.iter_mut() {
+        counts.unresolved = counts
+            .unresolved
+            .checked_add(record.unresolved_software.len())
+            .ok_or(WordfenceV3ProductionError::StructuralLimitExceeded)?;
+        for association in &mut record.software {
+            if association.identity_mapping == WordfenceV3IdentityMapping::AsciiCaseFoldCandidate {
+                let distinct_source_identities =
+                    identity_collision_count(&spellings, association.component());
+                if distinct_source_identities > 1 {
+                    association.identity_mapping =
+                        WordfenceV3IdentityMapping::AsciiCaseFoldAmbiguous;
+                    association.identity_collision_raw_count = Some(distinct_source_identities);
+                }
+            }
+            let count = match association.identity_mapping {
+                WordfenceV3IdentityMapping::Exact => &mut counts.exact,
+                WordfenceV3IdentityMapping::AsciiCaseFoldCandidate => &mut counts.candidate,
+                WordfenceV3IdentityMapping::AsciiCaseFoldAmbiguous => &mut counts.ambiguous,
+            };
+            *count = count
+                .checked_add(1)
+                .ok_or(WordfenceV3ProductionError::StructuralLimitExceeded)?;
+        }
+    }
+    Ok((counts, collision_budget.total()))
+}
+
+fn push_identity_collision_pair(
+    spellings: &mut Vec<(
+        WordPressComponentIdentity,
+        WordfenceV3SourceComponentIdentity,
+    )>,
+    association: &WordfenceV3SoftwareAssociation,
+    retained: &mut RetainedBudget,
+) -> Result<(), WordfenceV3ProductionError> {
+    retained.add(
+        association
+            .component()
+            .slug
+            .capacity()
+            .checked_add(association.source_component().slug.capacity())
+            .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?,
+    )?;
+    reserve_one_with_retained_accounting(spellings, retained)?;
+    spellings.push((
+        association.component().clone(),
+        association.source_component().clone(),
+    ));
+    Ok(())
+}
+
+fn identity_collision_count(
+    spellings: &[(
+        WordPressComponentIdentity,
+        WordfenceV3SourceComponentIdentity,
+    )],
+    component: &WordPressComponentIdentity,
+) -> usize {
+    let start = spellings.partition_point(|(candidate, _)| candidate < component);
+    let end = spellings.partition_point(|(candidate, _)| candidate <= component);
+    end.saturating_sub(start)
+}
+
+fn record_requires_resource_policy_v2(record_bytes: usize, record: &WordfenceV3Record) -> bool {
+    record_bytes > MAX_WORDFENCE_V3_RECORD_BYTES_V1 || record_requires_semantic_digest_v2(record)
+}
+
+fn record_requires_semantic_digest_v2(record: &WordfenceV3Record) -> bool {
+    record.description.len() > MAX_WORDFENCE_V3_DESCRIPTION_BYTES_V1
+        || record_has_source_association_variants(record)
+        || record.researchers.windows(2).any(|pair| pair[0] == pair[1])
+        || record
+            .cwe
+            .as_ref()
+            .is_some_and(|cwe| cwe.description.len() > MAX_WORDFENCE_V3_DESCRIPTION_BYTES_V1)
+        || record
+            .software
+            .iter()
+            .any(mapped_association_requires_resource_policy_v2)
+        || record
+            .unresolved_software
+            .iter()
+            .any(unresolved_association_requires_resource_policy_v2)
+}
+
+fn record_has_source_association_variants(record: &WordfenceV3Record) -> bool {
+    record.software.windows(2).any(|pair| {
+        pair[0].key.upstream_id == pair[1].key.upstream_id
+            && pair[0].source_component() == pair[1].source_component()
+    }) || record.unresolved_software.windows(2).any(|pair| {
+        pair[0].upstream_id == pair[1].upstream_id
+            && pair[0].source_component == pair[1].source_component
+    })
+}
+
+fn mapped_association_requires_resource_policy_v2(
+    association: &WordfenceV3SoftwareAssociation,
+) -> bool {
+    association.affected_ranges.len() > MAX_WORDFENCE_V3_COLLECTION_ITEMS_V1
+        || association.patched_versions.len() > MAX_WORDFENCE_V3_COLLECTION_ITEMS_V1
+        || source_versions_require_expanded_semantics(
+            &association.affected_ranges,
+            &association.patched_versions,
+        )
+}
+
+fn unresolved_association_requires_resource_policy_v2(
+    association: &WordfenceV3UnresolvedSoftwareAssociation,
+) -> bool {
+    association.affected_ranges.len() > MAX_WORDFENCE_V3_COLLECTION_ITEMS_V1
+        || association.patched_versions.len() > MAX_WORDFENCE_V3_COLLECTION_ITEMS_V1
+        || source_versions_require_expanded_semantics(
+            &association.affected_ranges,
+            &association.patched_versions,
+        )
+}
+
+fn source_versions_require_expanded_semantics(
+    ranges: &[WordfenceV3AffectedRange],
+    patched_versions: &[String],
+) -> bool {
+    ranges.iter().any(|range| {
+        [&range.from.value, &range.to.value]
+            .into_iter()
+            .any(|endpoint| match endpoint {
+                WordfenceV3RangeValue::Any => false,
+                WordfenceV3RangeValue::Declared(value) => source_version_requires_v2(value),
+            })
+    }) || patched_versions
+        .iter()
+        .any(|version| source_version_requires_v2(version))
+}
+
+fn source_version_requires_v2(value: &str) -> bool {
+    !value.is_ascii() || value.chars().any(char::is_whitespace)
 }
 
 fn build_component_index(
@@ -1129,7 +1552,7 @@ fn decode_record(
         MAX_WORDFENCE_V3_REFERENCE_BYTES,
         validate_http_reference,
     )?;
-    validate_string_set(
+    validate_string_sequence(
         &wire.researchers,
         MAX_WORDFENCE_V3_RESEARCHERS,
         MAX_WORDFENCE_V3_RESEARCHER_BYTES,
@@ -1170,13 +1593,38 @@ fn decode_record(
         })
         .transpose()?;
 
-    let mut software = wire
+    let mut software = Vec::new();
+    let mut unresolved_software = Vec::new();
+    for decoded in wire
         .software
         .into_iter()
         .map(|software| decode_software(&map_id, software))
-        .collect::<Result<Vec<_>, _>>()?;
+    {
+        match decoded? {
+            DecodedSoftwareAssociation::Mapped(association) => software.push(association),
+            DecodedSoftwareAssociation::Unresolved(association) => {
+                unresolved_software.push(association);
+            },
+        }
+    }
     software.sort_by(|left, right| left.key.cmp(&right.key));
     if software.windows(2).any(|pair| pair[0].key == pair[1].key) {
+        return Err(WordfenceV3ProductionError::ConflictingIdentity);
+    }
+    unresolved_software.sort_by(|left, right| {
+        left.source_component
+            .cmp(&right.source_component)
+            .then_with(|| left.upstream_id.cmp(&right.upstream_id))
+            .then_with(|| {
+                left.source_association_sha256
+                    .cmp(&right.source_association_sha256)
+            })
+    });
+    if unresolved_software.windows(2).any(|pair| {
+        pair[0].upstream_id == pair[1].upstream_id
+            && pair[0].source_component == pair[1].source_component
+            && pair[0].source_association_sha256 == pair[1].source_association_sha256
+    }) {
         return Err(WordfenceV3ProductionError::ConflictingIdentity);
     }
 
@@ -1215,15 +1663,21 @@ fn decode_record(
             updated,
             notice_ids,
             software,
+            unresolved_software,
         },
         notices,
     ))
 }
 
+enum DecodedSoftwareAssociation {
+    Mapped(WordfenceV3SoftwareAssociation),
+    Unresolved(WordfenceV3UnresolvedSoftwareAssociation),
+}
+
 fn decode_software(
     upstream_id: &str,
     wire: SoftwareWire,
-) -> Result<WordfenceV3SoftwareAssociation, WordfenceV3ProductionError> {
+) -> Result<DecodedSoftwareAssociation, WordfenceV3ProductionError> {
     let kind = match wire.kind.as_str() {
         "core" => WordPressComponentKind::Core,
         "plugin" => WordPressComponentKind::Plugin,
@@ -1231,8 +1685,23 @@ fn decode_software(
         _ => return Err(WordfenceV3ProductionError::UnsupportedValue),
     };
     validate_text(&wire.name, MAX_WORDFENCE_V3_NAME_BYTES, false)?;
-    let component = WordPressComponentIdentity::new(kind, wire.slug)
-        .map_err(|_| WordfenceV3ProductionError::UnsupportedValue)?;
+    validate_source_slug(&wire.slug)?;
+    let source_component = WordfenceV3SourceComponentIdentity {
+        kind,
+        slug: wire.slug,
+    };
+    let mapped = WordPressComponentIdentity::new(kind, source_component.slug.clone())
+        .map(|component| (component, WordfenceV3IdentityMapping::Exact))
+        .or_else(|_| {
+            let folded = source_component.slug.to_ascii_lowercase();
+            WordPressComponentIdentity::new(kind, folded).map(|component| {
+                (
+                    component,
+                    WordfenceV3IdentityMapping::AsciiCaseFoldCandidate,
+                )
+            })
+        })
+        .ok();
     if wire.affected_versions.len() > MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION
         || wire.patched_versions.len() > MAX_WORDFENCE_V3_PATCHED_VERSIONS
     {
@@ -1253,16 +1722,42 @@ fn decode_software(
         return Err(WordfenceV3ProductionError::ConflictingIdentity);
     }
     validate_text(&wire.remediation, MAX_WORDFENCE_V3_REMEDIATION_BYTES, true)?;
-    Ok(WordfenceV3SoftwareAssociation {
-        key: WordfenceV3AssociationKey {
-            upstream_id: upstream_id.to_owned(),
-            component,
-        },
-        display_name: wire.name,
-        affected_ranges,
-        patched: wire.patched,
-        patched_versions,
-        remediation: wire.remediation,
+    let source_association_sha256 = source_association_digest(
+        &source_component,
+        &wire.name,
+        &affected_ranges,
+        wire.patched,
+        &patched_versions,
+        &wire.remediation,
+    );
+    let upstream_id = upstream_id.to_owned();
+    Ok(if let Some((component, identity_mapping)) = mapped {
+        DecodedSoftwareAssociation::Mapped(WordfenceV3SoftwareAssociation {
+            key: WordfenceV3AssociationKey {
+                upstream_id,
+                component,
+                source_component,
+                source_association_sha256,
+            },
+            identity_mapping,
+            identity_collision_raw_count: None,
+            display_name: wire.name,
+            affected_ranges,
+            patched: wire.patched,
+            patched_versions,
+            remediation: wire.remediation,
+        })
+    } else {
+        DecodedSoftwareAssociation::Unresolved(WordfenceV3UnresolvedSoftwareAssociation {
+            upstream_id,
+            source_component,
+            source_association_sha256,
+            display_name: wire.name,
+            affected_ranges,
+            patched: wire.patched,
+            patched_versions,
+            remediation: wire.remediation,
+        })
     })
 }
 
@@ -1480,10 +1975,9 @@ fn validate_version(value: &str, allow_wildcard: bool) -> Result<(), WordfenceV3
     if value.is_empty()
         || value.len() > MAX_WORDFENCE_V3_VERSION_BYTES
         || (!allow_wildcard && value == "*")
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
-        || !value.is_ascii()
+        || value.chars().any(char::is_control)
+        || value.chars().next().is_some_and(char::is_whitespace)
+        || value.chars().next_back().is_some_and(char::is_whitespace)
     {
         return Err(WordfenceV3ProductionError::UnsupportedValue);
     }
@@ -1497,6 +1991,22 @@ fn validate_identifier(value: &str, maximum: usize) -> Result<(), WordfenceV3Pro
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(WordfenceV3ProductionError::UnsupportedValue);
+    }
+    Ok(())
+}
+
+fn validate_source_slug(value: &str) -> Result<(), WordfenceV3ProductionError> {
+    // The provider field is retained as an opaque, inert source identifier.
+    // Printable punctuation is not interpreted as a path or URL and will fail
+    // canonical matching below; controls, non-ASCII text and oversize values
+    // remain structural rejections.
+    if value.is_empty()
+        || value.len() > MAX_WORDFENCE_V3_SOURCE_SLUG_BYTES
+        || !value.is_ascii()
+        || value.bytes().any(|byte| byte.is_ascii_control())
+        || !value.bytes().any(|byte| byte.is_ascii_alphanumeric())
     {
         return Err(WordfenceV3ProductionError::UnsupportedValue);
     }
@@ -1586,6 +2096,24 @@ fn validate_string_set(
     Ok(())
 }
 
+fn validate_string_sequence(
+    values: &[String],
+    maximum_count: usize,
+    maximum_bytes: usize,
+    validate: impl Fn(&str) -> Result<(), WordfenceV3ProductionError>,
+) -> Result<(), WordfenceV3ProductionError> {
+    if values.len() > maximum_count {
+        return Err(WordfenceV3ProductionError::StructuralLimitExceeded);
+    }
+    for value in values {
+        if value.len() > maximum_bytes {
+            return Err(WordfenceV3ProductionError::UnsupportedValue);
+        }
+        validate(value)?;
+    }
+    Ok(())
+}
+
 fn notice_id(message: &str, party: &str, notice: &str, license: &str, url: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"termivar.wordfence-v3.notice/v1\0");
@@ -1596,16 +2124,57 @@ fn notice_id(message: &str, party: &str, notice: &str, license: &str, url: &str)
     format!("wordfence-notice-sha256:{digest:x}")
 }
 
-fn semantic_digest(records: &[WordfenceV3Record], notices: &[WordfenceV3Notice]) -> [u8; 32] {
+fn semantic_digest(
+    records: &[WordfenceV3Record],
+    notices: &[WordfenceV3Notice],
+    identity_counts: &WordfenceV3IdentityCounts,
+    requires_expanded_semantics: bool,
+) -> [u8; 32] {
+    if !identity_counts.requires_source_identity_mapping() && !requires_expanded_semantics {
+        return semantic_digest_v1(records, notices);
+    }
+
+    let mut digest = Sha256::new();
+    digest.update(b"termivar.wordfence-v3-production.semantic/v2\0");
+    frame(&mut digest, WORDFENCE_V3_SOURCE_NAMESPACE.as_bytes());
+    let mapping_revision = if identity_counts.requires_source_identity_mapping() {
+        WORDFENCE_V3_MAPPING_REVISION_V2
+    } else {
+        WORDFENCE_V3_MAPPING_REVISION
+    };
+    frame(&mut digest, mapping_revision.as_bytes());
+    frame(&mut digest, WORDFENCE_V3_IDENTITY_MAPPING_POLICY.as_bytes());
+    for value in [
+        identity_counts.exact,
+        identity_counts.candidate,
+        identity_counts.ambiguous,
+        identity_counts.unresolved,
+    ] {
+        frame_usize(&mut digest, value);
+    }
+    frame_usize(&mut digest, records.len());
+    for record in records {
+        hash_record_v2(&mut digest, record);
+    }
+    hash_notices(&mut digest, notices);
+    digest.finalize().into()
+}
+
+fn semantic_digest_v1(records: &[WordfenceV3Record], notices: &[WordfenceV3Notice]) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"termivar.wordfence-v3-production.semantic/v1\0");
     frame(&mut digest, WORDFENCE_V3_SOURCE_NAMESPACE.as_bytes());
     frame(&mut digest, WORDFENCE_V3_MAPPING_REVISION.as_bytes());
     frame_usize(&mut digest, records.len());
     for record in records {
-        hash_record(&mut digest, record);
+        hash_record_v1(&mut digest, record);
     }
-    frame_usize(&mut digest, notices.len());
+    hash_notices(&mut digest, notices);
+    digest.finalize().into()
+}
+
+fn hash_notices(digest: &mut Sha256, notices: &[WordfenceV3Notice]) {
+    frame_usize(digest, notices.len());
     for notice in notices {
         for value in [
             notice.id.as_str(),
@@ -1615,13 +2184,51 @@ fn semantic_digest(records: &[WordfenceV3Record], notices: &[WordfenceV3Notice])
             notice.license.as_str(),
             notice.license_url.as_str(),
         ] {
-            frame(&mut digest, value.as_bytes());
+            frame(digest, value.as_bytes());
         }
     }
-    digest.finalize().into()
 }
 
-fn hash_record(digest: &mut Sha256, record: &WordfenceV3Record) {
+fn hash_record_v1(digest: &mut Sha256, record: &WordfenceV3Record) {
+    hash_record_common(digest, record);
+    frame_usize(digest, record.software.len());
+    for association in &record.software {
+        hash_association_common(digest, association);
+    }
+}
+
+fn hash_record_v2(digest: &mut Sha256, record: &WordfenceV3Record) {
+    hash_record_common(digest, record);
+    frame_usize(digest, record.software.len());
+    for association in &record.software {
+        digest.update([association.source_component().kind() as u8]);
+        frame(digest, association.source_component().slug().as_bytes());
+        frame(digest, association.identity_mapping().as_str().as_bytes());
+        match association.identity_collision_raw_count() {
+            Some(count) => {
+                digest.update([1]);
+                frame_usize(digest, count);
+            },
+            None => digest.update([0]),
+        }
+        hash_association_common(digest, association);
+    }
+    frame_usize(digest, record.unresolved_software.len());
+    for association in &record.unresolved_software {
+        digest.update([association.source_component.kind as u8]);
+        frame(digest, association.source_component.slug.as_bytes());
+        frame(digest, association.display_name.as_bytes());
+        hash_association_values(
+            digest,
+            &association.affected_ranges,
+            association.patched,
+            &association.patched_versions,
+            &association.remediation,
+        );
+    }
+}
+
+fn hash_record_common(digest: &mut Sha256, record: &WordfenceV3Record) {
     frame(digest, record.upstream_id.as_bytes());
     frame(digest, record.title.as_bytes());
     digest.update([u8::from(record.informational)]);
@@ -1651,23 +2258,62 @@ fn hash_record(digest: &mut Sha256, record: &WordfenceV3Record) {
     hash_optional_string(digest, record.published.as_deref());
     hash_optional_string(digest, record.updated.as_deref());
     hash_strings(digest, &record.notice_ids);
-    frame_usize(digest, record.software.len());
-    for association in &record.software {
-        digest.update([association.component().kind() as u8]);
-        frame(digest, association.component().slug().as_bytes());
-        frame(digest, association.display_name.as_bytes());
-        frame_usize(digest, association.affected_ranges.len());
-        for range in &association.affected_ranges {
-            frame(digest, range.label.as_bytes());
-            frame(digest, range.from.value.declared().as_bytes());
-            digest.update([u8::from(range.from.inclusive)]);
-            frame(digest, range.to.value.declared().as_bytes());
-            digest.update([u8::from(range.to.inclusive)]);
-        }
-        digest.update([u8::from(association.patched)]);
-        hash_strings(digest, &association.patched_versions);
-        frame(digest, association.remediation.as_bytes());
+}
+
+fn hash_association_common(digest: &mut Sha256, association: &WordfenceV3SoftwareAssociation) {
+    digest.update([association.component().kind() as u8]);
+    frame(digest, association.component().slug().as_bytes());
+    frame(digest, association.display_name.as_bytes());
+    hash_association_values(
+        digest,
+        &association.affected_ranges,
+        association.patched,
+        &association.patched_versions,
+        &association.remediation,
+    );
+}
+
+fn source_association_digest(
+    source_component: &WordfenceV3SourceComponentIdentity,
+    display_name: &str,
+    affected_ranges: &[WordfenceV3AffectedRange],
+    patched: bool,
+    patched_versions: &[String],
+    remediation: &str,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"termivar.wordfence-v3.source-association/v1\0");
+    digest.update([source_component.kind as u8]);
+    frame(&mut digest, source_component.slug.as_bytes());
+    frame(&mut digest, display_name.as_bytes());
+    hash_association_values(
+        &mut digest,
+        affected_ranges,
+        patched,
+        patched_versions,
+        remediation,
+    );
+    digest.finalize().into()
+}
+
+fn hash_association_values(
+    digest: &mut Sha256,
+    affected_ranges: &[WordfenceV3AffectedRange],
+    patched: bool,
+    patched_versions: &[String],
+    remediation: &str,
+) {
+    frame_usize(digest, affected_ranges.len());
+    for range in affected_ranges {
+        frame(digest, range.label.as_bytes());
+        frame(digest, range.from.value.declared().as_bytes());
+        digest.update([u8::from(range.from.inclusive)]);
+        frame(digest, range.to.value.declared().as_bytes());
+        digest.update([u8::from(range.to.inclusive)]);
     }
+    digest.update([u8::from(patched)]);
+    hash_strings(digest, patched_versions);
+    frame(digest, remediation.as_bytes());
 }
 
 fn hash_strings(digest: &mut Sha256, values: &[String]) {
@@ -1816,6 +2462,41 @@ fn record_dynamic_bytes(record: &WordfenceV3Record) -> Result<usize, WordfenceV3
     for association in &record.software {
         retained.add(association.key.upstream_id.capacity())?;
         retained.add(association.key.component.slug.capacity())?;
+        retained.add(association.key.source_component.slug.capacity())?;
+        retained.add(association.display_name.capacity())?;
+        retained.add(association.remediation.capacity())?;
+        account_string_vec(
+            &mut retained,
+            &association.patched_versions,
+            association.patched_versions.capacity(),
+        )?;
+        retained.add(
+            association
+                .affected_ranges
+                .capacity()
+                .checked_mul(size_of::<WordfenceV3AffectedRange>())
+                .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?,
+        )?;
+        for range in &association.affected_ranges {
+            retained.add(range.label.capacity())?;
+            if let WordfenceV3RangeValue::Declared(value) = &range.from.value {
+                retained.add(value.capacity())?;
+            }
+            if let WordfenceV3RangeValue::Declared(value) = &range.to.value {
+                retained.add(value.capacity())?;
+            }
+        }
+    }
+    retained.add(
+        record
+            .unresolved_software
+            .capacity()
+            .checked_mul(size_of::<WordfenceV3UnresolvedSoftwareAssociation>())
+            .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?,
+    )?;
+    for association in &record.unresolved_software {
+        retained.add(association.upstream_id.capacity())?;
+        retained.add(association.source_component.slug.capacity())?;
         retained.add(association.display_name.capacity())?;
         retained.add(association.remediation.capacity())?;
         account_string_vec(
@@ -1878,15 +2559,50 @@ fn reserve_one_with_retained_accounting<T>(
     values: &mut Vec<T>,
     retained: &mut RetainedBudget,
 ) -> Result<(), WordfenceV3ProductionError> {
+    if values.len() < values.capacity() {
+        return Ok(());
+    }
+    let required = values
+        .len()
+        .checked_add(1)
+        .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?;
+    let planned_capacity = values
+        .capacity()
+        .checked_mul(2)
+        .unwrap_or(usize::MAX)
+        .max(4)
+        .max(required);
+    reserve_exact_capacity_with_retained_accounting(values, planned_capacity, retained)
+}
+
+fn reserve_exact_capacity_with_retained_accounting<T>(
+    values: &mut Vec<T>,
+    requested_capacity: usize,
+    retained: &mut RetainedBudget,
+) -> Result<(), WordfenceV3ProductionError> {
     let previous_capacity = values.capacity();
+    if requested_capacity <= previous_capacity {
+        return Ok(());
+    }
+    let planned_delta = requested_capacity
+        .checked_sub(previous_capacity)
+        .and_then(|capacity| capacity.checked_mul(size_of::<T>()))
+        .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?;
+    // Charge the requested allocation before making it. This prevents an
+    // attacker-controlled growth boundary from allocating first and only then
+    // discovering that the retained-data ceiling was crossed.
+    retained.add(planned_delta)?;
     values
-        .try_reserve(1)
+        .try_reserve_exact(
+            requested_capacity
+                .checked_sub(values.len())
+                .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?,
+        )
         .map_err(|_| WordfenceV3ProductionError::RetainedDataTooLarge)?;
+    let unplanned_capacity = values.capacity().saturating_sub(requested_capacity);
     retained.add(
-        values
-            .capacity()
-            .checked_sub(previous_capacity)
-            .and_then(|capacity| capacity.checked_mul(size_of::<T>()))
+        unplanned_capacity
+            .checked_mul(size_of::<T>())
             .ok_or(WordfenceV3ProductionError::RetainedDataTooLarge)?,
     )
 }
@@ -1959,6 +2675,13 @@ mod tests {
         0x2d, 0x82, 0x9d, 0x28, 0xc0, 0x68, 0x10, 0x11, 0x20, 0xa9, 0x10, 0x4c, 0x33, 0x49, 0x90,
         0x1d, 0xb7,
     ];
+    // Independently calculated from the documented v1 framing contract. This
+    // is intentionally not produced by the parser or digest helper under test.
+    const FIXTURE_SEMANTIC_SHA256: [u8; 32] = [
+        0xc7, 0xaf, 0xf0, 0x23, 0x31, 0xe8, 0x54, 0x6f, 0x14, 0x37, 0xa8, 0xd9, 0x59, 0x40, 0xdd,
+        0x80, 0x32, 0x17, 0x49, 0x08, 0x04, 0x5f, 0xed, 0x98, 0x7d, 0x09, 0x0a, 0x96, 0xfb, 0x53,
+        0x5e, 0xca,
+    ];
 
     #[test]
     fn synthetic_production_fixture_is_streamed_into_the_reviewed_typed_contract() {
@@ -1971,6 +2694,13 @@ mod tests {
         assert_eq!(import.notices().len(), 1);
         assert!(import.retained_bytes() < MAX_WORDFENCE_V3_RETAINED_BYTES);
         assert_ne!(import.sha256(), import.semantic_sha256());
+        assert_eq!(import.semantic_sha256(), &FIXTURE_SEMANTIC_SHA256);
+        assert_eq!(import.mapping_revision(), WORDFENCE_V3_MAPPING_REVISION);
+        assert_eq!(import.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V1);
+        assert_eq!(import.identity_counts().exact(), 3);
+        assert_eq!(import.identity_counts().candidate(), 0);
+        assert_eq!(import.identity_counts().ambiguous(), 0);
+        assert_eq!(import.identity_counts().unresolved(), 0);
 
         let plugin = WordPressComponentIdentity::new(
             WordPressComponentKind::Plugin,
@@ -1993,6 +2723,14 @@ mod tests {
             plugin_matches[0].association().key().source_namespace(),
             WORDFENCE_V3_SOURCE_NAMESPACE
         );
+        assert_eq!(
+            plugin_matches[0].association().source_component().slug(),
+            "termivar-fixture-component"
+        );
+        assert_eq!(
+            plugin_matches[0].association().identity_mapping(),
+            WordfenceV3IdentityMapping::Exact
+        );
 
         let notice = &import.notices()[0];
         assert!(notice.id().starts_with("wordfence-notice-sha256:"));
@@ -2000,6 +2738,245 @@ mod tests {
         assert!(notice.id()["wordfence-notice-sha256:".len()..]
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+    }
+
+    #[test]
+    fn source_identity_is_preserved_and_casefolding_is_only_a_qualified_candidate() {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        document[FIRST_ID]["software"][0]["slug"] =
+            Value::String("Termivar-Fixture-Component".to_owned());
+        let encoded = serde_json::to_vec(&document).unwrap();
+        let import = parse_wordfence_v3_production(encoded.as_slice()).unwrap();
+        assert_eq!(import.mapping_revision(), WORDFENCE_V3_MAPPING_REVISION_V2);
+        assert_eq!(import.identity_counts().exact(), 2);
+        assert_eq!(import.identity_counts().candidate(), 1);
+        assert_eq!(import.identity_counts().ambiguous(), 0);
+        assert_eq!(import.identity_counts().unresolved(), 0);
+
+        let component = WordPressComponentIdentity::new(
+            WordPressComponentKind::Plugin,
+            "termivar-fixture-component",
+        )
+        .unwrap();
+        let association = import
+            .associations_for(&component)
+            .next()
+            .unwrap()
+            .association();
+        assert_eq!(
+            association.source_component().slug(),
+            "Termivar-Fixture-Component"
+        );
+        assert_eq!(
+            association.identity_mapping(),
+            WordfenceV3IdentityMapping::AsciiCaseFoldCandidate
+        );
+        assert_eq!(association.identity_collision_raw_count(), None);
+    }
+
+    #[test]
+    fn casefold_collisions_are_ambiguous_without_corrupting_exact_or_cross_kind_identity() {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        let original = document[FIRST_ID]["software"][0].clone();
+        document[FIRST_ID]["software"][0]["slug"] =
+            Value::String("Termivar-Fixture-Component".to_owned());
+        let mut second = original;
+        second["slug"] = Value::String("TERMIVAR-FIXTURE-COMPONENT".to_owned());
+        document[FIRST_ID]["software"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        let encoded = serde_json::to_vec(&document).unwrap();
+        let import = parse_wordfence_v3_production(encoded.as_slice()).unwrap();
+        assert_eq!(import.identity_counts().exact(), 2);
+        assert_eq!(import.identity_counts().candidate(), 0);
+        assert_eq!(import.identity_counts().ambiguous(), 2);
+        assert_eq!(import.identity_counts().unresolved(), 0);
+
+        let plugin = WordPressComponentIdentity::new(
+            WordPressComponentKind::Plugin,
+            "termivar-fixture-component",
+        )
+        .unwrap();
+        let plugin_associations = import.associations_for(&plugin).collect::<Vec<_>>();
+        assert_eq!(plugin_associations.len(), 2);
+        assert!(plugin_associations.iter().all(|view| {
+            view.association().identity_mapping()
+                == WordfenceV3IdentityMapping::AsciiCaseFoldAmbiguous
+                && view.association().identity_collision_raw_count() == Some(2)
+        }));
+
+        let theme = WordPressComponentIdentity::new(
+            WordPressComponentKind::Theme,
+            "termivar-fixture-component",
+        )
+        .unwrap();
+        assert_eq!(
+            import
+                .associations_for(&theme)
+                .next()
+                .unwrap()
+                .association()
+                .identity_mapping(),
+            WordfenceV3IdentityMapping::Exact
+        );
+    }
+
+    #[test]
+    fn exact_spelling_remains_exact_while_a_case_variant_is_ambiguous() {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        let mut case_variant = document[FIRST_ID]["software"][0].clone();
+        case_variant["slug"] = Value::String("Termivar-Fixture-Component".to_owned());
+        document[FIRST_ID]["software"]
+            .as_array_mut()
+            .unwrap()
+            .push(case_variant);
+        let encoded = serde_json::to_vec(&document).unwrap();
+        let import = parse_wordfence_v3_production(encoded.as_slice()).unwrap();
+        assert_eq!(import.identity_counts().exact(), 3);
+        assert_eq!(import.identity_counts().candidate(), 0);
+        assert_eq!(import.identity_counts().ambiguous(), 1);
+        let component = WordPressComponentIdentity::new(
+            WordPressComponentKind::Plugin,
+            "termivar-fixture-component",
+        )
+        .unwrap();
+        let associations = import.associations_for(&component).collect::<Vec<_>>();
+        assert_eq!(associations.len(), 2);
+        assert_eq!(
+            associations
+                .iter()
+                .filter(|view| view.association().identity_mapping()
+                    == WordfenceV3IdentityMapping::Exact)
+                .count(),
+            1
+        );
+        let ambiguous = associations
+            .iter()
+            .find(|view| {
+                view.association().identity_mapping()
+                    == WordfenceV3IdentityMapping::AsciiCaseFoldAmbiguous
+            })
+            .unwrap();
+        assert_eq!(
+            ambiguous.association().identity_collision_raw_count(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn duplicate_source_association_inside_one_record_fails_closed() {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        let duplicate = document[FIRST_ID]["software"][0].clone();
+        document[FIRST_ID]["software"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        let encoded = serde_json::to_vec(&document).unwrap();
+        assert_eq!(
+            parse_wordfence_v3_production(encoded.as_slice()),
+            Err(WordfenceV3ProductionError::ConflictingIdentity)
+        );
+    }
+
+    #[test]
+    fn distinct_source_association_variants_are_preserved_and_order_independent() {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        let mut variant = document[FIRST_ID]["software"][0].clone();
+        variant["name"] = Value::String("Synthetic alternate source declaration".to_owned());
+        document[FIRST_ID]["software"]
+            .as_array_mut()
+            .unwrap()
+            .push(variant);
+        let encoded = serde_json::to_vec(&document).unwrap();
+        let original = parse_wordfence_v3_production(encoded.as_slice()).unwrap();
+
+        assert_eq!(original.software_association_count(), 4);
+        assert_eq!(
+            original.mapping_revision(),
+            "termivar-wordfence-v3-production/v1"
+        );
+        assert_eq!(
+            original.resource_policy(),
+            "termivar.wordfence-v3-bounded-capacity/v2"
+        );
+        let record = original
+            .records()
+            .iter()
+            .find(|record| record.upstream_id() == FIRST_ID)
+            .unwrap();
+        let variants = record
+            .software()
+            .iter()
+            .filter(|association| {
+                association.source_component().kind() == WordPressComponentKind::Plugin
+                    && association.source_component().slug() == "termivar-fixture-component"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(variants.len(), 2);
+        assert_ne!(
+            variants[0].key().source_association_sha256(),
+            variants[1].key().source_association_sha256()
+        );
+
+        document[FIRST_ID]["software"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let reordered_bytes = serde_json::to_vec_pretty(&document).unwrap();
+        let reordered = parse_wordfence_v3_production(reordered_bytes.as_slice()).unwrap();
+        assert_ne!(original.sha256(), reordered.sha256());
+        assert_eq!(original.semantic_sha256(), reordered.semantic_sha256());
+        assert_eq!(original.records(), reordered.records());
+    }
+
+    #[test]
+    fn safe_opaque_but_unmappable_source_identity_is_retained_and_not_indexed() {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        document[FIRST_ID]["software"][0]["slug"] =
+            Value::String("https://Example.invalid/plugin_name".to_owned());
+        let encoded = serde_json::to_vec(&document).unwrap();
+        let import = parse_wordfence_v3_production(encoded.as_slice()).unwrap();
+        assert_eq!(import.software_association_count(), 3);
+        assert_eq!(import.identity_counts().exact(), 2);
+        assert_eq!(import.identity_counts().candidate(), 0);
+        assert_eq!(import.identity_counts().ambiguous(), 0);
+        assert_eq!(import.identity_counts().unresolved(), 1);
+        let record = import
+            .records()
+            .iter()
+            .find(|record| record.upstream_id() == FIRST_ID)
+            .unwrap();
+        assert_eq!(record.software().len(), 1);
+        assert_eq!(record.unresolved_software().len(), 1);
+        assert_eq!(
+            record.unresolved_software()[0].source_component().slug(),
+            "https://Example.invalid/plugin_name"
+        );
+        let canonical = WordPressComponentIdentity::new(
+            WordPressComponentKind::Plugin,
+            "termivar-fixture-component",
+        )
+        .unwrap();
+        assert_eq!(import.associations_for(&canonical).count(), 0);
+    }
+
+    #[test]
+    fn source_identity_controls_non_ascii_and_oversize_values_fail_closed() {
+        for source_slug in [
+            "bad\nslug".to_owned(),
+            "mötley-plugin".to_owned(),
+            "...".to_owned(),
+            "x".repeat(MAX_WORDFENCE_V3_SOURCE_SLUG_BYTES + 1),
+        ] {
+            let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+            document[FIRST_ID]["software"][0]["slug"] = Value::String(source_slug);
+            let encoded = serde_json::to_vec(&document).unwrap();
+            assert_eq!(
+                parse_wordfence_v3_production(encoded.as_slice()),
+                Err(WordfenceV3ProductionError::UnsupportedValue)
+            );
+        }
     }
 
     #[test]
@@ -2018,6 +2995,84 @@ mod tests {
         assert_ne!(original.sha256(), reordered.sha256());
         assert_eq!(original.semantic_sha256(), reordered.semantic_sha256());
         assert_eq!(original.records(), reordered.records());
+    }
+
+    #[test]
+    fn semantic_digest_does_not_change_when_layout_alone_selects_the_larger_resource_envelope() {
+        let value: Value = serde_json::from_slice(FIXTURE).unwrap();
+        let record = serde_json::to_string(&value[FIRST_ID]).unwrap();
+        let compact_document = format!("{{{FIRST_ID:?}:{record}}}");
+        let compact = parse_wordfence_v3_production(compact_document.as_bytes()).unwrap();
+        assert_eq!(compact.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V1);
+
+        let padding_bytes = (MAX_WORDFENCE_V3_RECORD_BYTES_V1 + 1)
+            .checked_sub(record.len())
+            .expect("fixture record remains below the historical envelope");
+        let padded_record = record.replacen('{', &format!("{{{}", " ".repeat(padding_bytes)), 1);
+        assert_eq!(padded_record.len(), MAX_WORDFENCE_V3_RECORD_BYTES_V1 + 1);
+        let padded_document = format!("{{{FIRST_ID:?}:{padded_record}}}");
+        let padded = parse_wordfence_v3_production(padded_document.as_bytes()).unwrap();
+
+        assert_eq!(padded.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V2);
+        assert_ne!(compact.sha256(), padded.sha256());
+        assert_eq!(compact.records(), padded.records());
+        assert_eq!(compact.semantic_sha256(), padded.semantic_sha256());
+    }
+
+    #[test]
+    fn resource_policy_records_the_largest_import_phase_without_rewriting_old_envelopes() {
+        assert_eq!(
+            resource_policy_for_import(false, MAX_WORDFENCE_V3_RETAINED_BYTES_V1, 1),
+            WORDFENCE_V3_RESOURCE_POLICY_V1
+        );
+        assert_eq!(
+            resource_policy_for_import(false, MAX_WORDFENCE_V3_RETAINED_BYTES_V1 + 1, 1,),
+            WORDFENCE_V3_RESOURCE_POLICY_V2
+        );
+        assert_eq!(
+            resource_policy_for_import(true, 1, 1),
+            WORDFENCE_V3_RESOURCE_POLICY_V2
+        );
+        assert_eq!(
+            resource_policy_for_import(
+                false,
+                MAX_WORDFENCE_V3_RETAINED_BYTES_V2,
+                MAX_WORDFENCE_V3_RETAINED_BYTES_V1,
+            ),
+            WORDFENCE_V3_RESOURCE_POLICY_V2
+        );
+        assert_eq!(
+            resource_policy_for_import(false, MAX_WORDFENCE_V3_RETAINED_BYTES_V2 + 1, 1,),
+            WORDFENCE_V3_RESOURCE_POLICY_V3
+        );
+        assert_eq!(
+            resource_policy_for_import(false, 1, MAX_WORDFENCE_V3_RETAINED_BYTES_V2 + 1,),
+            WORDFENCE_V3_RESOURCE_POLICY_V3
+        );
+    }
+
+    #[test]
+    fn vector_growth_is_rejected_before_crossing_the_retained_budget() {
+        let mut refused = Vec::<u64>::new();
+        let mut no_capacity_budget = RetainedBudget::with_base(0, 0).unwrap();
+        assert_eq!(
+            reserve_one_with_retained_accounting(&mut refused, &mut no_capacity_budget),
+            Err(WordfenceV3ProductionError::RetainedDataTooLarge)
+        );
+        assert_eq!(refused.capacity(), 0);
+
+        let initial_bytes = 4 * size_of::<u64>();
+        let mut bounded = Vec::<u64>::new();
+        let mut fixed_budget = RetainedBudget::with_base(initial_bytes, 0).unwrap();
+        reserve_one_with_retained_accounting(&mut bounded, &mut fixed_budget).unwrap();
+        let initial_capacity = bounded.capacity();
+        assert_eq!(initial_capacity, 4);
+        bounded.resize(initial_capacity, 0);
+        assert_eq!(
+            reserve_one_with_retained_accounting(&mut bounded, &mut fixed_budget),
+            Err(WordfenceV3ProductionError::RetainedDataTooLarge)
+        );
+        assert_eq!(bounded.capacity(), initial_capacity);
     }
 
     #[test]
@@ -2179,6 +3234,63 @@ mod tests {
                 .value(),
             WordfenceV3RangeValue::Declared(value) if value == "1.*"
         ));
+
+        let opaque_version = "44.0 (17-08-2023)";
+        let opaque_unicode_version = "0.1.2 β";
+        let plugin = WordPressComponentIdentity::new(
+            WordPressComponentKind::Plugin,
+            "termivar-fixture-component",
+        )
+        .unwrap();
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        document[FIRST_ID]["software"][0]["affected_versions"]["[1.0.0, 1.2.3]"]["to_version"] =
+            Value::String(opaque_unicode_version.to_owned());
+        document[FIRST_ID]["software"][0]["patched_versions"] =
+            Value::Array(vec![Value::String(opaque_version.to_owned())]);
+        let encoded = serde_json::to_vec(&document).unwrap();
+        let import = parse_wordfence_v3_production(encoded.as_slice()).unwrap();
+        assert_eq!(import.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V2);
+        let association = import
+            .associations_for(&plugin)
+            .next()
+            .unwrap()
+            .association();
+        let changed_range = association
+            .affected_ranges()
+            .iter()
+            .find(|range| range.label() == "[1.0.0, 1.2.3]")
+            .expect("changed source range remains present");
+        assert!(matches!(
+            changed_range.to().value(),
+            WordfenceV3RangeValue::Declared(value) if value == opaque_unicode_version
+        ));
+        assert_eq!(association.patched_versions(), [opaque_version]);
+
+        for invalid in [" leading", "trailing ", "embedded\tcontrol"] {
+            let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+            document[FIRST_ID]["software"][0]["patched_versions"] =
+                Value::Array(vec![Value::String(invalid.to_owned())]);
+            let encoded = serde_json::to_vec(&document).unwrap();
+            assert_eq!(
+                parse_wordfence_v3_production(encoded.as_slice()),
+                Err(WordfenceV3ProductionError::UnsupportedValue)
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_researcher_attribution_is_preserved_without_becoming_an_identity_conflict() {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        document[FIRST_ID]["researchers"] = serde_json::json!(["Researcher", "Researcher"]);
+        let encoded = serde_json::to_vec(&document).unwrap();
+        let import = parse_wordfence_v3_production(encoded.as_slice()).unwrap();
+        let record = import
+            .records()
+            .iter()
+            .find(|record| record.upstream_id() == FIRST_ID)
+            .unwrap();
+        assert_eq!(record.researchers(), ["Researcher", "Researcher"]);
+        assert_eq!(import.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V2);
     }
 
     #[test]
@@ -2314,20 +3426,37 @@ mod tests {
 
     #[test]
     fn external_record_limits_admit_the_documented_range_and_label_boundaries() {
-        let sixty_four_ranges = document_with_range_labels(
+        let maximum_ranges = document_with_range_labels(
             (0..MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION).map(|index| format!("range-{index:02}")),
         );
-        let import = parse_wordfence_v3_production(sixty_four_ranges.as_slice()).unwrap();
+        let import = parse_wordfence_v3_production(maximum_ranges.as_slice()).unwrap();
         assert_eq!(
             import.records()[0].software()[0].affected_ranges().len(),
             MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION
         );
+        assert_eq!(import.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V2);
 
-        let sixty_five_ranges = document_with_range_labels(
+        let excessive_ranges = document_with_range_labels(
             (0..=MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION).map(|index| format!("range-{index:02}")),
         );
         assert_eq!(
-            parse_wordfence_v3_production(sixty_five_ranges.as_slice()),
+            parse_wordfence_v3_production(excessive_ranges.as_slice()),
+            Err(WordfenceV3ProductionError::StructuralLimitExceeded)
+        );
+
+        let seventy_eight = document_with_range_and_patch_counts(78, 78);
+        let import = parse_wordfence_v3_production(seventy_eight.as_slice()).unwrap();
+        let association = &import.records()[0].software()[0];
+        assert_eq!(association.affected_ranges().len(), 78);
+        assert_eq!(association.patched_versions().len(), 78);
+
+        let maximum_patches =
+            document_with_range_and_patch_counts(1, MAX_WORDFENCE_V3_PATCHED_VERSIONS);
+        assert!(parse_wordfence_v3_production(maximum_patches.as_slice()).is_ok());
+        let excessive_patches =
+            document_with_range_and_patch_counts(1, MAX_WORDFENCE_V3_PATCHED_VERSIONS + 1);
+        assert_eq!(
+            parse_wordfence_v3_production(excessive_patches.as_slice()),
             Err(WordfenceV3ProductionError::StructuralLimitExceeded)
         );
 
@@ -2341,6 +3470,42 @@ mod tests {
             parse_wordfence_v3_production(oversized_label.as_slice()),
             Err(WordfenceV3ProductionError::StructuralLimitExceeded)
         );
+    }
+
+    #[test]
+    fn expanded_description_and_record_limits_have_finite_new_boundaries() {
+        let fixture = String::from_utf8(FIXTURE.to_vec()).unwrap();
+        let original_description =
+            "Fictional prose created only to exercise bounded Production-format ingestion. It is not a vulnerability claim.";
+        let formerly_excessive = fixture.replacen(
+            original_description,
+            &"d".repeat(MAX_WORDFENCE_V3_DESCRIPTION_BYTES_V1 + 1),
+            1,
+        );
+        let import = parse_wordfence_v3_production(formerly_excessive.as_bytes()).unwrap();
+        assert_eq!(import.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V2);
+
+        let maximum_description = fixture.replacen(
+            original_description,
+            &"d".repeat(MAX_WORDFENCE_V3_DESCRIPTION_BYTES),
+            1,
+        );
+        assert!(parse_wordfence_v3_production(maximum_description.as_bytes()).is_ok());
+        let excessive_description = fixture.replacen(
+            original_description,
+            &"d".repeat(MAX_WORDFENCE_V3_DESCRIPTION_BYTES + 1),
+            1,
+        );
+        assert_eq!(
+            parse_wordfence_v3_production(excessive_description.as_bytes()),
+            Err(WordfenceV3ProductionError::StructuralLimitExceeded)
+        );
+
+        let expanded_record = document_between_record_limits();
+        assert!(expanded_record.len() > MAX_WORDFENCE_V3_RECORD_BYTES_V1);
+        assert!(expanded_record.len() <= MAX_WORDFENCE_V3_RECORD_BYTES);
+        let import = parse_wordfence_v3_production(expanded_record.as_slice()).unwrap();
+        assert_eq!(import.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V2);
     }
 
     #[test]
@@ -2410,6 +3575,40 @@ mod tests {
             .map(|label| (label, template.clone()))
             .collect::<serde_json::Map<_, _>>();
         document[FIRST_ID]["software"][0]["affected_versions"] = Value::Object(ranges);
+        serde_json::to_vec(&document).unwrap()
+    }
+
+    fn document_with_range_and_patch_counts(range_count: usize, patch_count: usize) -> Vec<u8> {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        let template =
+            document[FIRST_ID]["software"][0]["affected_versions"]["[1.0.0, 1.2.3]"].clone();
+        document[FIRST_ID]["software"][0]["affected_versions"] = Value::Object(
+            (0..range_count)
+                .map(|index| (format!("range-{index:03}"), template.clone()))
+                .collect(),
+        );
+        document[FIRST_ID]["software"][0]["patched_versions"] = Value::Array(
+            (0..patch_count)
+                .map(|index| Value::String(format!("1.0.{index}")))
+                .collect(),
+        );
+        serde_json::to_vec(&document).unwrap()
+    }
+
+    fn document_between_record_limits() -> Vec<u8> {
+        let mut document: Value = serde_json::from_slice(FIXTURE).unwrap();
+        document.as_object_mut().unwrap().remove(SECOND_ID);
+        let mut template = document[FIRST_ID]["software"][0].clone();
+        template["name"] = Value::String("n".repeat(128));
+        template["remediation"] = Value::String("r".repeat(600));
+        let software = (0..600)
+            .map(|index| {
+                let mut association = template.clone();
+                association["slug"] = Value::String(format!("termivar-capacity-{index:04}"));
+                association
+            })
+            .collect();
+        document[FIRST_ID]["software"] = Value::Array(software);
         serde_json::to_vec(&document).unwrap()
     }
 

@@ -736,6 +736,7 @@ impl ComparisonVisitor<'_> {
                     "super::Value",
                     "super::MAX_AUDIT_TEXT_BYTES",
                     "super::MAX_IDENTIFIER_BYTES",
+                    "super::MAX_LEGACY_AUDIT_TEXT_BYTES",
                     "super::super::ImportedWordPressAudit",
                     "super::super::WordPressAdvisoryKey",
                     "super::super::WordPressComponentKey",

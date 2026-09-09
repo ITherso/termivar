@@ -4,7 +4,7 @@ use super::super::{ImportedWordPressAudit, WordPressAdvisoryKey, WordPressCompon
 use super::{
     array, boolean, check, digest, keys, number, object, optional_boolean, optional_text,
     optional_token, required, string, text, token, ComparisonError, ImportedItem, Value,
-    MAX_AUDIT_TEXT_BYTES, MAX_IDENTIFIER_BYTES,
+    MAX_IDENTIFIER_BYTES, MAX_LEGACY_AUDIT_TEXT_BYTES,
 };
 use crate::wordpress_version::{
     checked_accumulate_external_interpretation_work, ProfiledVersionKey, WordPressComparisonProfile,
@@ -38,15 +38,17 @@ const MAX_WORDPRESS_SAVED_INVENTORY_BYTES: u64 = 1024 * 1024;
 const MAX_WORDPRESS_INVENTORY_INPUTS: usize = 3;
 const MAX_WORDPRESS_INVENTORY_VERSION_BYTES: usize = 64;
 const MAX_WORDPRESS_INVENTORY_LABEL_BYTES: usize = 64;
+const MAX_WORDPRESS_COMPONENT_SLUG_BYTES: usize = 64;
 const MAX_WORDFENCE_V3_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_WORDFENCE_V3_RECORDS: u64 = 100_000;
 const MAX_WORDFENCE_V3_ASSOCIATIONS: u64 = 200_000;
 const MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD: u64 = 2_048;
 const MAX_WORDFENCE_V3_EVALUATIONS: usize = MAX_WORDPRESS_ADVISORIES;
-const MAX_WORDFENCE_V3_RANGES: usize = 64;
-const MAX_WORDFENCE_V3_SELECTED_RANGES: u64 =
-    (MAX_WORDFENCE_V3_EVALUATIONS * MAX_WORDFENCE_V3_RANGES) as u64;
-const MAX_WORDFENCE_V3_PATCHED_VERSIONS: usize = 64;
+const MAX_WORDFENCE_V3_IDENTITY_LIMITATION_PROJECTIONS: u64 = 64;
+const MAX_WORDFENCE_V3_RANGES_V1: usize = 64;
+const MAX_WORDFENCE_V3_RANGES_V2: usize = 128;
+const MAX_WORDFENCE_V3_PATCHED_VERSIONS_V1: usize = 64;
+const MAX_WORDFENCE_V3_PATCHED_VERSIONS_V2: usize = 128;
 const MAX_WORDFENCE_V3_REFERENCES: usize = 64;
 const MAX_WORDFENCE_V3_RESEARCHERS: usize = 64;
 const MAX_WORDFENCE_V3_NOTICES: usize = MAX_WORDPRESS_ADVISORIES;
@@ -56,6 +58,19 @@ const MAX_WORDFENCE_V3_TITLE_BYTES: usize = 1_024;
 const MAX_WORDFENCE_V3_NAME_BYTES: usize = 1_024;
 const MAX_WORDFENCE_V3_RESEARCHER_BYTES: usize = 512;
 const MAX_WORDFENCE_V3_CVE_BYTES: usize = 32;
+const MAX_WORDFENCE_V3_SOURCE_SLUG_BYTES: usize = 128;
+const MAX_WORDFENCE_V3_RETAINED_BYTES_V1: u64 = 64 * 1024 * 1024;
+const MAX_WORDFENCE_V3_RETAINED_BYTES_V2: u64 = 128 * 1024 * 1024;
+const MAX_WORDFENCE_V3_RETAINED_BYTES_V3: u64 = 160 * 1024 * 1024;
+const MAX_WORDFENCE_V3_DESCRIPTION_BYTES_V1: usize = 2_048;
+const MAX_WORDFENCE_V3_DESCRIPTION_BYTES_V2: usize = 4_096;
+const WORDFENCE_V3_MAPPING_REVISION_V1: &str = "termivar-wordfence-v3-production/v1";
+const WORDFENCE_V3_MAPPING_REVISION_V2: &str = "termivar-wordfence-v3-production/v2";
+const WORDFENCE_V3_IDENTITY_MAPPING_POLICY: &str =
+    "termivar.wordfence-v3-exact-plus-ascii-lowercase-candidate/v1";
+const WORDFENCE_V3_RESOURCE_POLICY_V1: &str = "termivar.wordfence-v3-bounded-capacity/v1";
+const WORDFENCE_V3_RESOURCE_POLICY_V2: &str = "termivar.wordfence-v3-bounded-capacity/v2";
+const WORDFENCE_V3_RESOURCE_POLICY_V3: &str = "termivar.wordfence-v3-bounded-capacity/v3";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum WordPressAuditSchema {
@@ -64,6 +79,76 @@ enum WordPressAuditSchema {
     V3,
     V4,
     V5,
+    V6,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExternalIdentityMapping {
+    Exact,
+    AsciiCaseFoldCandidate,
+    AsciiCaseFoldAmbiguous,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExternalResourcePolicy {
+    V1,
+    V2,
+    V3,
+}
+
+impl ExternalResourcePolicy {
+    const fn ranges(self) -> usize {
+        match self {
+            Self::V1 => MAX_WORDFENCE_V3_RANGES_V1,
+            Self::V2 | Self::V3 => MAX_WORDFENCE_V3_RANGES_V2,
+        }
+    }
+
+    const fn patched_versions(self) -> usize {
+        match self {
+            Self::V1 => MAX_WORDFENCE_V3_PATCHED_VERSIONS_V1,
+            Self::V2 | Self::V3 => MAX_WORDFENCE_V3_PATCHED_VERSIONS_V2,
+        }
+    }
+
+    const fn retained_bytes(self) -> u64 {
+        match self {
+            Self::V1 => MAX_WORDFENCE_V3_RETAINED_BYTES_V1,
+            Self::V2 => MAX_WORDFENCE_V3_RETAINED_BYTES_V2,
+            Self::V3 => MAX_WORDFENCE_V3_RETAINED_BYTES_V3,
+        }
+    }
+
+    const fn description_bytes(self) -> usize {
+        match self {
+            Self::V1 => MAX_WORDFENCE_V3_DESCRIPTION_BYTES_V1,
+            Self::V2 | Self::V3 => MAX_WORDFENCE_V3_DESCRIPTION_BYTES_V2,
+        }
+    }
+
+    const fn expanded(self) -> bool {
+        !matches!(self, Self::V1)
+    }
+}
+
+fn v6_identity_contract_is_valid(
+    mapping_revision: &str,
+    resource_policy: ExternalResourcePolicy,
+    identity_counts: [u64; 4],
+    associations: u64,
+) -> bool {
+    let partition_matches = identity_counts
+        .into_iter()
+        .try_fold(0_u64, |total, count| total.checked_add(count))
+        == Some(associations);
+    let mapping_matches = match mapping_revision {
+        WORDFENCE_V3_MAPPING_REVISION_V1 => identity_counts == [associations, 0, 0, 0],
+        WORDFENCE_V3_MAPPING_REVISION_V2 => identity_counts[1..].iter().any(|count| *count > 0),
+        _ => false,
+    };
+    let v6_is_required =
+        mapping_revision == WORDFENCE_V3_MAPPING_REVISION_V2 || resource_policy.expanded();
+    partition_matches && mapping_matches && v6_is_required
 }
 
 struct ImportedWordPressComponent {
@@ -91,6 +176,19 @@ struct ProfiledResolution {
     status: &'static str,
     reason: &'static str,
     selected: Option<ProfiledVersionKey>,
+}
+
+#[derive(Clone, Copy)]
+struct ExternalEvaluationContract {
+    schema: WordPressAuditSchema,
+    resource_policy: ExternalResourcePolicy,
+    profile: Option<WordPressComparisonProfile>,
+}
+
+#[derive(Default)]
+struct ImportedIdentityGroup {
+    source_spellings: std::collections::BTreeSet<String>,
+    mappings: Vec<(ExternalIdentityMapping, Option<u64>)>,
 }
 
 struct ImportedPrerequisite<'a> {
@@ -154,6 +252,7 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         "security.wordpress-review-audit/v3" => WordPressAuditSchema::V3,
         "security.wordpress-review-audit/v4" => WordPressAuditSchema::V4,
         "security.wordpress-review-audit/v5" => WordPressAuditSchema::V5,
+        "security.wordpress-review-audit/v6" => WordPressAuditSchema::V6,
         _ => return Err(ComparisonError::InvalidDocument),
     };
     check(string(fields, "capability_id")? == WORDPRESS_CAPABILITY)?;
@@ -175,7 +274,11 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
         ) => {
             catalog(object(value)?)?;
         },
-        ("evaluated", None, WordPressAuditSchema::V4 | WordPressAuditSchema::V5) => {},
+        (
+            "evaluated",
+            None,
+            WordPressAuditSchema::V4 | WordPressAuditSchema::V5 | WordPressAuditSchema::V6,
+        ) => {},
         _ => return Err(ComparisonError::InvalidDocument),
     }
     check(schema != WordPressAuditSchema::V2 || status == "evaluated")?;
@@ -207,7 +310,7 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
                 _ => return Err(ComparisonError::InvalidDocument),
             }
         },
-        WordPressAuditSchema::V4 | WordPressAuditSchema::V5 => {
+        WordPressAuditSchema::V4 | WordPressAuditSchema::V5 | WordPressAuditSchema::V6 => {
             check(
                 status == "evaluated"
                     && !fields.contains_key("catalog")
@@ -291,7 +394,10 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             (WordPressAuditSchema::V2 | WordPressAuditSchema::V3, true) => {
                 advisory_v2(object(value)?, &imported_components, &profiled_resolutions)?
             },
-            (WordPressAuditSchema::V4 | WordPressAuditSchema::V5, false) => {
+            (
+                WordPressAuditSchema::V4 | WordPressAuditSchema::V5 | WordPressAuditSchema::V6,
+                false,
+            ) => {
                 return Err(ComparisonError::InvalidDocument);
             },
             _ => return Err(ComparisonError::InvalidDocument),
@@ -304,7 +410,10 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             &imported_components,
         )?;
     }
-    if matches!(schema, WordPressAuditSchema::V4 | WordPressAuditSchema::V5) {
+    if matches!(
+        schema,
+        WordPressAuditSchema::V4 | WordPressAuditSchema::V5 | WordPressAuditSchema::V6
+    ) {
         external_review(
             object(required(fields, "external_review")?)?,
             &imported_components,
@@ -348,6 +457,18 @@ fn wordpress_comparison_snapshot(
             (
                 "mapping_revision",
                 external.and_then(|value| value.get("mapping_revision")),
+            ),
+            (
+                "identity_mapping_policy",
+                external.and_then(|value| value.get("identity_mapping_policy")),
+            ),
+            (
+                "identity_source_assurance",
+                external.and_then(|value| value.get("identity_source_assurance")),
+            ),
+            (
+                "resource_policy",
+                external.and_then(|value| value.get("resource_policy")),
             ),
             (
                 "comparison_policy",
@@ -436,10 +557,18 @@ fn wordpress_comparison_snapshot(
     let mut advisories = BTreeMap::new();
     if matches!(
         schema,
-        "security.wordpress-review-audit/v4" | "security.wordpress-review-audit/v5"
+        "security.wordpress-review-audit/v4"
+            | "security.wordpress-review-audit/v5"
+            | "security.wordpress-review-audit/v6"
     ) {
         let external = external.ok_or(ComparisonError::InvalidDocument)?;
         let namespace = string(external, "source_namespace")?;
+        let allow_source_variants = schema == "security.wordpress-review-audit/v6"
+            && matches!(
+                string(external, "resource_policy")?,
+                WORDFENCE_V3_RESOURCE_POLICY_V2 | WORDFENCE_V3_RESOURCE_POLICY_V3
+            );
+        let mut source_variants = BTreeMap::new();
         let mut notices = BTreeMap::new();
         for notice in array(external, "notices")? {
             let notice = object(notice)?;
@@ -451,7 +580,11 @@ fn wordpress_comparison_snapshot(
         for evaluation in array(external, "evaluations")? {
             let evaluation = object(evaluation)?;
             let wire_key = object(required(evaluation, "key")?)?;
-            let component = comparison_component_key(object(required(wire_key, "component")?)?)?;
+            let component = if schema == "security.wordpress-review-audit/v6" {
+                comparison_component_key(object(required(wire_key, "source_component")?)?)?
+            } else {
+                comparison_component_key(object(required(wire_key, "component")?)?)?
+            };
             let key = WordPressAdvisoryKey {
                 source_kind: "external".to_owned(),
                 source_namespace: namespace.to_owned(),
@@ -478,6 +611,10 @@ fn wordpress_comparison_snapshot(
                 &[("notices", Some(&Value::Object(bound_notices)))],
             )?;
             let content = dimensions(&[
+                (
+                    "identity_mapping",
+                    external_identity_mapping_projection(evaluation, wire_key, schema)?,
+                ),
                 (
                     "advisory_content",
                     selected_object(
@@ -535,10 +672,99 @@ fn wordpress_comparison_snapshot(
                 ),
                 ("attribution", attribution),
             ]);
-            if advisories.insert(key, content).is_some() {
+            if schema == "security.wordpress-review-audit/v6" {
+                collect_wordpress_advisory_projection(
+                    &mut source_variants,
+                    key,
+                    string(wire_key, "source_association_fingerprint")?,
+                    content,
+                )?;
+            } else if advisories.insert(key, content).is_some() {
                 return Err(ComparisonError::AmbiguousIdentity);
             }
         }
+        if schema == "security.wordpress-review-audit/v6" {
+            for limitation in array(external, "identity_limitations")? {
+                let limitation = object(limitation)?;
+                let wire_key = object(required(limitation, "key")?)?;
+                let component =
+                    comparison_component_key(object(required(wire_key, "source_component")?)?)?;
+                let key = WordPressAdvisoryKey {
+                    source_kind: "external".to_owned(),
+                    source_namespace: namespace.to_owned(),
+                    upstream_id: string(wire_key, "upstream_id")?.to_owned(),
+                    component,
+                };
+                let mut bound_notices = Map::new();
+                for notice_id in array(limitation, "notice_ids")? {
+                    let notice_id = notice_id.as_str().ok_or(ComparisonError::InvalidDocument)?;
+                    let notice = notices
+                        .get(notice_id)
+                        .ok_or(ComparisonError::InvalidDocument)?;
+                    bound_notices.insert(notice_id.to_owned(), notice.clone());
+                }
+                let attribution = selected_object(
+                    limitation,
+                    &["references", "record_reference", "notice_ids"],
+                    &[("notices", Some(&Value::Object(bound_notices)))],
+                )?;
+                let content = dimensions(&[
+                    (
+                        "identity_mapping",
+                        selected_object(limitation, &["identity_resolution"], &[])?,
+                    ),
+                    (
+                        "advisory_content",
+                        selected_object(limitation, &["title", "display_name"], &[])?,
+                    ),
+                    (
+                        "affected_ranges",
+                        selected_object(limitation, &["affected_ranges"], &[])?,
+                    ),
+                    (
+                        "source_fix_information",
+                        selected_object(
+                            limitation,
+                            &[
+                                "source_patched",
+                                "source_patched_versions",
+                                "source_remediation",
+                            ],
+                            &[],
+                        )?,
+                    ),
+                    (
+                        "evaluation_basis",
+                        selected_object(
+                            limitation,
+                            &[
+                                "range_evaluations",
+                                "version_relation",
+                                "version_relation_reason",
+                                "execution",
+                            ],
+                            &[],
+                        )?,
+                    ),
+                    (
+                        "applicability",
+                        selected_object(limitation, &["applicability"], &[])?,
+                    ),
+                    ("attribution", attribution),
+                ]);
+                collect_wordpress_advisory_projection(
+                    &mut source_variants,
+                    key,
+                    string(wire_key, "source_association_fingerprint")?,
+                    content,
+                )?;
+            }
+        }
+        finalize_wordpress_advisory_projections(
+            &mut advisories,
+            source_variants,
+            allow_source_variants,
+        )?;
     } else {
         let namespace = fields
             .get("catalog")
@@ -612,6 +838,83 @@ fn wordpress_comparison_snapshot(
         components,
         advisories,
     })
+}
+
+fn external_identity_mapping_projection(
+    evaluation: &Map<String, Value>,
+    wire_key: &Map<String, Value>,
+    schema: &str,
+) -> Result<Value, ComparisonError> {
+    if schema == "security.wordpress-review-audit/v6" {
+        return selected_object(
+            evaluation,
+            &["identity_mapping", "identity_collision_raw_count"],
+            &[("canonical_component", wire_key.get("component"))],
+        );
+    }
+    let mut projection = Map::new();
+    projection.insert(
+        "identity_mapping".to_owned(),
+        Value::String("exact".to_owned()),
+    );
+    projection.insert(
+        "canonical_component".to_owned(),
+        canonical_value(required(wire_key, "component")?)?,
+    );
+    Ok(Value::Object(projection))
+}
+
+fn collect_wordpress_advisory_projection(
+    source_variants: &mut BTreeMap<WordPressAdvisoryKey, BTreeMap<String, BTreeMap<String, Value>>>,
+    key: WordPressAdvisoryKey,
+    source_association_fingerprint: &str,
+    content: BTreeMap<String, Value>,
+) -> Result<(), ComparisonError> {
+    if source_variants
+        .entry(key)
+        .or_default()
+        .insert(source_association_fingerprint.to_owned(), content)
+        .is_some()
+    {
+        return Err(ComparisonError::AmbiguousIdentity);
+    }
+    Ok(())
+}
+
+fn finalize_wordpress_advisory_projections(
+    advisories: &mut BTreeMap<WordPressAdvisoryKey, BTreeMap<String, Value>>,
+    source_variants: BTreeMap<WordPressAdvisoryKey, BTreeMap<String, BTreeMap<String, Value>>>,
+    allow_source_variants: bool,
+) -> Result<(), ComparisonError> {
+    for (key, variants) in source_variants {
+        let content = if variants.len() == 1 {
+            variants
+                .into_values()
+                .next()
+                .ok_or(ComparisonError::InvalidDocument)?
+        } else {
+            check(allow_source_variants)?;
+            let mut grouped = BTreeMap::new();
+            grouped.insert(
+                "source_association_variants".to_owned(),
+                Value::Array(
+                    variants
+                        .into_values()
+                        .map(wordpress_advisory_content_value)
+                        .collect(),
+                ),
+            );
+            grouped
+        };
+        if advisories.insert(key, content).is_some() {
+            return Err(ComparisonError::AmbiguousIdentity);
+        }
+    }
+    Ok(())
+}
+
+fn wordpress_advisory_content_value(content: BTreeMap<String, Value>) -> Value {
+    Value::Object(content.into_iter().collect())
 }
 
 fn comparison_component_key(
@@ -829,17 +1132,23 @@ fn component(
         check(activation.is_none() || identity_sources.contains("operator_context"))?;
     }
     if schema != WordPressAuditSchema::V1 {
-        let expected_evidence =
-            if profiled || matches!(schema, WordPressAuditSchema::V4 | WordPressAuditSchema::V5) {
-                profiled_evidence
-            } else {
-                legacy_component_evidence(&version_values, profiled_evidence)?
-            };
+        let expected_evidence = if profiled
+            || matches!(
+                schema,
+                WordPressAuditSchema::V4 | WordPressAuditSchema::V5 | WordPressAuditSchema::V6
+            ) {
+            profiled_evidence
+        } else {
+            legacy_component_evidence(&version_values, profiled_evidence)?
+        };
         check(evidence_class == expected_evidence)?;
     }
     let inventory_status = if matches!(
         schema,
-        WordPressAuditSchema::V3 | WordPressAuditSchema::V4 | WordPressAuditSchema::V5
+        WordPressAuditSchema::V3
+            | WordPressAuditSchema::V4
+            | WordPressAuditSchema::V5
+            | WordPressAuditSchema::V6
     ) {
         fields
             .get("inventory_status")
@@ -901,7 +1210,7 @@ fn external_review(
     components: &BTreeMap<String, ImportedWordPressComponent>,
     schema: WordPressAuditSchema,
 ) -> Result<(), ComparisonError> {
-    let profile = match schema {
+    let (profile, mapping_revision, resource_policy) = match schema {
         WordPressAuditSchema::V4 => {
             keys(
                 fields,
@@ -921,7 +1230,11 @@ fn external_review(
                 string(fields, "comparison_policy")?
                     == "wordfence-v3/source-semantics-unresolved/v1",
             )?;
-            None
+            (
+                None,
+                WORDFENCE_V3_MAPPING_REVISION_V1,
+                ExternalResourcePolicy::V1,
+            )
         },
         WordPressAuditSchema::V5 => {
             keys(
@@ -947,20 +1260,120 @@ fn external_review(
                     && string(fields, "policy_selection")? == "explicit_operator"
                     && string(fields, "source_semantics_assurance")? == "not_established",
             )?;
-            Some(
-                WordPressComparisonProfile::parse(string(fields, "comparison_profile")?)
-                    .map_err(|_| ComparisonError::InvalidDocument)?,
+            (
+                Some(
+                    WordPressComparisonProfile::parse(string(fields, "comparison_profile")?)
+                        .map_err(|_| ComparisonError::InvalidDocument)?,
+                ),
+                WORDFENCE_V3_MAPPING_REVISION_V1,
+                ExternalResourcePolicy::V1,
             )
+        },
+        WordPressAuditSchema::V6 => {
+            let profile = match string(fields, "comparison_policy")? {
+                "wordfence-v3/source-semantics-unresolved/v1" => {
+                    keys(
+                        fields,
+                        &[
+                            "source_namespace",
+                            "source_format",
+                            "mapping_revision",
+                            "identity_mapping_policy",
+                            "identity_source_assurance",
+                            "resource_policy",
+                            "comparison_policy",
+                            "input",
+                            "counts",
+                            "notices",
+                            "evaluations",
+                            "identity_limitations",
+                        ],
+                        &[],
+                    )?;
+                    None
+                },
+                "termivar.wordfence-v3-explicit-interpretation/v1" => {
+                    keys(
+                        fields,
+                        &[
+                            "source_namespace",
+                            "source_format",
+                            "mapping_revision",
+                            "identity_mapping_policy",
+                            "identity_source_assurance",
+                            "resource_policy",
+                            "comparison_policy",
+                            "comparison_profile",
+                            "policy_selection",
+                            "source_semantics_assurance",
+                            "input",
+                            "counts",
+                            "notices",
+                            "evaluations",
+                            "identity_limitations",
+                        ],
+                        &[],
+                    )?;
+                    check(
+                        string(fields, "policy_selection")? == "explicit_operator"
+                            && string(fields, "source_semantics_assurance")? == "not_established",
+                    )?;
+                    Some(
+                        WordPressComparisonProfile::parse(string(fields, "comparison_profile")?)
+                            .map_err(|_| ComparisonError::InvalidDocument)?,
+                    )
+                },
+                _ => return Err(ComparisonError::InvalidDocument),
+            };
+            let mapping_revision = token(
+                fields,
+                "mapping_revision",
+                &[
+                    WORDFENCE_V3_MAPPING_REVISION_V1,
+                    WORDFENCE_V3_MAPPING_REVISION_V2,
+                ],
+            )?;
+            check(
+                string(fields, "identity_mapping_policy")? == WORDFENCE_V3_IDENTITY_MAPPING_POLICY
+                    && string(fields, "identity_source_assurance")? == "not_established",
+            )?;
+            let resource_policy = match string(fields, "resource_policy")? {
+                WORDFENCE_V3_RESOURCE_POLICY_V1 => ExternalResourcePolicy::V1,
+                WORDFENCE_V3_RESOURCE_POLICY_V2 => ExternalResourcePolicy::V2,
+                WORDFENCE_V3_RESOURCE_POLICY_V3 => ExternalResourcePolicy::V3,
+                _ => return Err(ComparisonError::InvalidDocument),
+            };
+            (profile, mapping_revision, resource_policy)
         },
         _ => return Err(ComparisonError::InvalidDocument),
     };
     let namespace = string(fields, "source_namespace")?;
     check(namespace == "wordfence-intelligence")?;
     check(string(fields, "source_format")? == "wordfence-v3-production")?;
-    check(string(fields, "mapping_revision")? == "termivar-wordfence-v3-production/v1")?;
+    check(string(fields, "mapping_revision")? == mapping_revision)?;
 
     let input = object(required(fields, "input")?)?;
-    keys(input, &["byte_length", "sha256", "semantic_sha256"], &[])?;
+    if schema == WordPressAuditSchema::V6 {
+        keys(
+            input,
+            &[
+                "byte_length",
+                "sha256",
+                "semantic_sha256",
+                "accounted_retained_bytes",
+            ],
+            &[],
+        )?;
+        check(
+            number(
+                input,
+                "accounted_retained_bytes",
+                resource_policy.retained_bytes(),
+            )? > 0,
+        )?;
+    } else {
+        keys(input, &["byte_length", "sha256", "semantic_sha256"], &[])?;
+    }
     check(number(input, "byte_length", MAX_WORDFENCE_V3_INPUT_BYTES)? > 0)?;
     check(digest(string(input, "sha256")?, ""))?;
     check(digest(string(input, "semantic_sha256")?, ""))?;
@@ -974,7 +1387,38 @@ fn external_review(
         "unsupported_associations",
         "excluded_associations",
     ];
-    if profile.is_some() {
+    if profile.is_some() && schema == WordPressAuditSchema::V6 {
+        keys(
+            counts,
+            &[
+                "parsed_records",
+                "software_associations",
+                "exact_identity_associations",
+                "candidate_identity_associations",
+                "ambiguous_identity_associations",
+                "unresolved_identity_associations",
+                "projected_identity_limitations",
+                "unprojected_identity_limitations",
+                "selected_associations",
+                "evaluable_associations",
+                "unsupported_associations",
+                "excluded_associations",
+                "mapped_unselected_associations",
+                "within_associations",
+                "outside_associations",
+                "indeterminate_associations",
+                "selected_ranges",
+                "evaluated_ranges",
+                "containing_ranges",
+                "noncontaining_ranges",
+                "unsupported_ranges",
+                "invalid_ranges",
+                "not_evaluated_ranges",
+                "partial_range_coverage_associations",
+            ],
+            &[],
+        )?;
+    } else if profile.is_some() {
         keys(
             counts,
             &[
@@ -995,6 +1439,26 @@ fn external_review(
                 "invalid_ranges",
                 "not_evaluated_ranges",
                 "partial_range_coverage_associations",
+            ],
+            &[],
+        )?;
+    } else if schema == WordPressAuditSchema::V6 {
+        keys(
+            counts,
+            &[
+                "parsed_records",
+                "software_associations",
+                "exact_identity_associations",
+                "candidate_identity_associations",
+                "ambiguous_identity_associations",
+                "unresolved_identity_associations",
+                "projected_identity_limitations",
+                "unprojected_identity_limitations",
+                "selected_associations",
+                "evaluable_associations",
+                "unsupported_associations",
+                "excluded_associations",
+                "mapped_unselected_associations",
             ],
             &[],
         )?;
@@ -1027,6 +1491,68 @@ fn external_review(
         "excluded_associations",
         MAX_WORDFENCE_V3_ASSOCIATIONS,
     )?;
+    let mapped_unselected = if schema == WordPressAuditSchema::V6 {
+        Some(number(
+            counts,
+            "mapped_unselected_associations",
+            MAX_WORDFENCE_V3_ASSOCIATIONS,
+        )?)
+    } else {
+        None
+    };
+    let identity_counts = if schema == WordPressAuditSchema::V6 {
+        let values = [
+            number(
+                counts,
+                "exact_identity_associations",
+                MAX_WORDFENCE_V3_ASSOCIATIONS,
+            )?,
+            number(
+                counts,
+                "candidate_identity_associations",
+                MAX_WORDFENCE_V3_ASSOCIATIONS,
+            )?,
+            number(
+                counts,
+                "ambiguous_identity_associations",
+                MAX_WORDFENCE_V3_ASSOCIATIONS,
+            )?,
+            number(
+                counts,
+                "unresolved_identity_associations",
+                MAX_WORDFENCE_V3_ASSOCIATIONS,
+            )?,
+        ];
+        check(v6_identity_contract_is_valid(
+            mapping_revision,
+            resource_policy,
+            values,
+            associations,
+        ))?;
+        values
+    } else {
+        [associations, 0, 0, 0]
+    };
+    let identity_limitation_projection = if schema == WordPressAuditSchema::V6 {
+        let projected = number(
+            counts,
+            "projected_identity_limitations",
+            MAX_WORDFENCE_V3_IDENTITY_LIMITATION_PROJECTIONS,
+        )?;
+        let unprojected = number(
+            counts,
+            "unprojected_identity_limitations",
+            MAX_WORDFENCE_V3_ASSOCIATIONS,
+        )?;
+        check(
+            projected
+                .checked_add(unprojected)
+                .is_some_and(|value| value == identity_counts[3]),
+        )?;
+        Some(projected)
+    } else {
+        None
+    };
     check(
         external_source_counts_are_valid(parsed, associations)
             && selected
@@ -1035,6 +1561,11 @@ fn external_review(
             && evaluable
                 .checked_add(unsupported)
                 .is_some_and(|value| value == selected)
+            && mapped_unselected.is_none_or(|mapped| {
+                mapped
+                    .checked_add(identity_counts[3])
+                    .is_some_and(|value| value == excluded)
+            })
             && (profile.is_some() || (evaluable == 0 && unsupported == selected)),
     )?;
 
@@ -1050,7 +1581,11 @@ fn external_review(
         )?;
         let id = text(notice, "id", MAX_IDENTIFIER_BYTES)?;
         check(prefixed_digest(id, "wordfence-notice-sha256:"))?;
-        let message = external_text(string(notice, "message")?, MAX_AUDIT_TEXT_BYTES, true)?;
+        let message = external_text(
+            string(notice, "message")?,
+            MAX_LEGACY_AUDIT_TEXT_BYTES,
+            true,
+        )?;
         let party = text(notice, "party", MAX_IDENTIFIER_BYTES)?;
         check(valid_external_identifier(party, MAX_IDENTIFIER_BYTES))?;
         check(
@@ -1058,9 +1593,14 @@ fn external_review(
                 .insert(id.to_owned(), party.to_owned())
                 .is_none(),
         )?;
-        let notice_text = external_text(string(notice, "notice")?, MAX_AUDIT_TEXT_BYTES, true)?;
-        let license = external_text(string(notice, "license")?, MAX_AUDIT_TEXT_BYTES, true)?;
-        let license_url = text(notice, "license_url", MAX_AUDIT_TEXT_BYTES)?;
+        let notice_text =
+            external_text(string(notice, "notice")?, MAX_LEGACY_AUDIT_TEXT_BYTES, true)?;
+        let license = external_text(
+            string(notice, "license")?,
+            MAX_LEGACY_AUDIT_TEXT_BYTES,
+            true,
+        )?;
+        let license_url = text(notice, "license_url", MAX_LEGACY_AUDIT_TEXT_BYTES)?;
         inert_url(license_url)?;
         check(
             wordfence_notice_id(message, party, notice_text, license, license_url).as_deref()
@@ -1076,6 +1616,8 @@ fn external_review(
     let mut identities = std::collections::BTreeSet::new();
     let mut referenced_notices = std::collections::BTreeSet::new();
     let mut imported_counts = ImportedExternalCounts::default();
+    let mut selected_identity_counts = [0_u64; 3];
+    let mut selected_identity_groups = BTreeMap::<String, ImportedIdentityGroup>::new();
     let mut profiled_resolutions = BTreeMap::new();
     if let Some(profile) = profile {
         let mut resolution_work = 0_usize;
@@ -1094,13 +1636,22 @@ fn external_review(
     for value in evaluations {
         let fields = object(value)?;
         if profile.is_some() {
-            interpretation_work = checked_accumulate_external_interpretation_work(
-                interpretation_work,
-                array(fields, "affected_ranges")?.len(),
-                array(fields, "source_patched_versions")?.len(),
-                MAX_WORDPRESS_EVALUATION_WORK,
-            )
-            .ok_or(ComparisonError::InvalidDocument)?;
+            let exact_identity = schema != WordPressAuditSchema::V6
+                || string(fields, "identity_mapping")? == "exact";
+            interpretation_work = if exact_identity {
+                checked_accumulate_external_interpretation_work(
+                    interpretation_work,
+                    array(fields, "affected_ranges")?.len(),
+                    array(fields, "source_patched_versions")?.len(),
+                    MAX_WORDPRESS_EVALUATION_WORK,
+                )
+                .ok_or(ComparisonError::InvalidDocument)?
+            } else {
+                interpretation_work
+                    .checked_add(array(fields, "affected_ranges")?.len())
+                    .filter(|work| *work <= MAX_WORDPRESS_EVALUATION_WORK)
+                    .ok_or(ComparisonError::InvalidDocument)?
+            };
         }
         let evaluation = external_evaluation(
             fields,
@@ -1108,14 +1659,91 @@ fn external_review(
             components,
             &notices_by_id,
             &mut referenced_notices,
-            profile,
             &profiled_resolutions,
+            ExternalEvaluationContract {
+                schema,
+                resource_policy,
+                profile,
+            },
         )?;
         check(identities.insert(evaluation.identity.clone()))?;
+        let identity_count_index = match evaluation.identity_mapping {
+            ExternalIdentityMapping::Exact => 0,
+            ExternalIdentityMapping::AsciiCaseFoldCandidate => 1,
+            ExternalIdentityMapping::AsciiCaseFoldAmbiguous => 2,
+        };
+        selected_identity_counts[identity_count_index] = selected_identity_counts
+            [identity_count_index]
+            .checked_add(1)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        let identity_group = selected_identity_groups
+            .entry(evaluation.canonical_identity.clone())
+            .or_default();
+        identity_group
+            .source_spellings
+            .insert(evaluation.source_identity.clone());
+        identity_group.mappings.push((
+            evaluation.identity_mapping,
+            evaluation.identity_collision_raw_count,
+        ));
         imported_counts.record(&evaluation)?;
     }
+    let identity_limitations: &[Value] = if schema == WordPressAuditSchema::V6 {
+        array(fields, "identity_limitations")?.as_slice()
+    } else {
+        &[]
+    };
+    check(
+        identity_limitations.len() <= MAX_WORDFENCE_V3_IDENTITY_LIMITATION_PROJECTIONS as usize
+            && u64::try_from(identity_limitations.len()).ok()
+                == identity_limitation_projection.or(Some(0)),
+    )?;
+    for value in identity_limitations {
+        let identity = external_identity_limitation(
+            object(value)?,
+            namespace,
+            &notices_by_id,
+            &mut referenced_notices,
+            resource_policy,
+        )?;
+        check(identities.insert(identity))?;
+    }
     check(referenced_notices == notices_by_id.keys().cloned().collect())?;
+    check(
+        selected_identity_counts
+            .iter()
+            .zip(&identity_counts[..3])
+            .all(|(selected, total)| selected <= total)
+            && selected_identity_counts
+                .into_iter()
+                .try_fold(0_u64, |total, count| total.checked_add(count))
+                == Some(selected),
+    )?;
+    for group in selected_identity_groups.values() {
+        let distinct = u64::try_from(group.source_spellings.len())
+            .map_err(|_| ComparisonError::InvalidDocument)?;
+        check(
+            group
+                .mappings
+                .iter()
+                .all(|(mapping, collision_count)| match mapping {
+                    ExternalIdentityMapping::Exact => collision_count.is_none(),
+                    ExternalIdentityMapping::AsciiCaseFoldCandidate => {
+                        distinct == 1 && collision_count.is_none()
+                    },
+                    ExternalIdentityMapping::AsciiCaseFoldAmbiguous => {
+                        distinct >= 2 && *collision_count == Some(distinct)
+                    },
+                }),
+        )?;
+    }
     if profile.is_some() {
+        let maximum_selected_ranges = u64::try_from(
+            MAX_WORDFENCE_V3_EVALUATIONS
+                .checked_mul(resource_policy.ranges())
+                .ok_or(ComparisonError::InvalidDocument)?,
+        )
+        .map_err(|_| ComparisonError::InvalidDocument)?;
         check(
             number(counts, "within_associations", MAX_WORDFENCE_V3_ASSOCIATIONS)?
                 == imported_counts.within
@@ -1129,32 +1757,20 @@ fn external_review(
                     "indeterminate_associations",
                     MAX_WORDFENCE_V3_ASSOCIATIONS,
                 )? == imported_counts.indeterminate
-                && number(counts, "selected_ranges", MAX_WORDFENCE_V3_SELECTED_RANGES)?
+                && number(counts, "selected_ranges", maximum_selected_ranges)?
                     == imported_counts.selected_ranges
-                && number(counts, "evaluated_ranges", MAX_WORDFENCE_V3_SELECTED_RANGES)?
+                && number(counts, "evaluated_ranges", maximum_selected_ranges)?
                     == imported_counts.evaluated_ranges
-                && number(
-                    counts,
-                    "containing_ranges",
-                    MAX_WORDFENCE_V3_SELECTED_RANGES,
-                )? == imported_counts.containing_ranges
-                && number(
-                    counts,
-                    "noncontaining_ranges",
-                    MAX_WORDFENCE_V3_SELECTED_RANGES,
-                )? == imported_counts.noncontaining_ranges
-                && number(
-                    counts,
-                    "unsupported_ranges",
-                    MAX_WORDFENCE_V3_SELECTED_RANGES,
-                )? == imported_counts.unsupported_ranges
-                && number(counts, "invalid_ranges", MAX_WORDFENCE_V3_SELECTED_RANGES)?
+                && number(counts, "containing_ranges", maximum_selected_ranges)?
+                    == imported_counts.containing_ranges
+                && number(counts, "noncontaining_ranges", maximum_selected_ranges)?
+                    == imported_counts.noncontaining_ranges
+                && number(counts, "unsupported_ranges", maximum_selected_ranges)?
+                    == imported_counts.unsupported_ranges
+                && number(counts, "invalid_ranges", maximum_selected_ranges)?
                     == imported_counts.invalid_ranges
-                && number(
-                    counts,
-                    "not_evaluated_ranges",
-                    MAX_WORDFENCE_V3_SELECTED_RANGES,
-                )? == imported_counts.not_evaluated_ranges
+                && number(counts, "not_evaluated_ranges", maximum_selected_ranges)?
+                    == imported_counts.not_evaluated_ranges
                 && number(
                     counts,
                     "partial_range_coverage_associations",
@@ -1232,9 +1848,170 @@ impl ImportedExternalCounts {
 
 struct ImportedExternalEvaluation {
     identity: String,
+    canonical_identity: String,
+    source_identity: String,
+    identity_mapping: ExternalIdentityMapping,
+    identity_collision_raw_count: Option<u64>,
     version_relation: &'static str,
     version_relation_reason: Option<&'static str>,
     range_relations: Vec<&'static str>,
+}
+
+fn external_identity_limitation(
+    fields: &serde_json::Map<String, Value>,
+    namespace: &str,
+    notices: &BTreeMap<String, String>,
+    referenced_notices: &mut std::collections::BTreeSet<String>,
+    resource_policy: ExternalResourcePolicy,
+) -> Result<String, ComparisonError> {
+    keys(
+        fields,
+        &[
+            "key",
+            "identity_resolution",
+            "title",
+            "display_name",
+            "references",
+            "record_reference",
+            "affected_ranges",
+            "range_evaluations",
+            "source_patched",
+            "source_patched_versions",
+            "source_remediation",
+            "notice_ids",
+            "version_relation",
+            "version_relation_reason",
+            "applicability",
+            "execution",
+        ],
+        &[],
+    )?;
+    let key = object(required(fields, "key")?)?;
+    keys(
+        key,
+        &[
+            "source_namespace",
+            "upstream_id",
+            "source_component",
+            "source_association_fingerprint",
+        ],
+        &[],
+    )?;
+    check(string(key, "source_namespace")? == namespace)?;
+    let upstream_id = text(key, "upstream_id", MAX_IDENTIFIER_BYTES)?;
+    check(valid_uuid(upstream_id))?;
+    let source_component =
+        external_raw_source_identity(object(required(key, "source_component")?)?)?;
+    let source_association_fingerprint = text(
+        key,
+        "source_association_fingerprint",
+        "wordfence-source-association-sha256:".len() + 64,
+    )?;
+    check(prefixed_digest(
+        source_association_fingerprint,
+        "wordfence-source-association-sha256:",
+    ))?;
+    check(!raw_source_identity_can_map(&source_component))?;
+    check(string(fields, "identity_resolution")? == "canonical_identity_unavailable")?;
+    external_text(
+        text(fields, "title", MAX_WORDFENCE_V3_TITLE_BYTES)?,
+        MAX_WORDFENCE_V3_TITLE_BYTES,
+        false,
+    )?;
+    let display_name = external_text(
+        text(fields, "display_name", MAX_WORDFENCE_V3_NAME_BYTES)?,
+        MAX_WORDFENCE_V3_NAME_BYTES,
+        false,
+    )?;
+    let references = unique_urls(fields, "references", MAX_WORDFENCE_V3_REFERENCES)?;
+    let record_reference = optional_text(fields, "record_reference", MAX_LEGACY_AUDIT_TEXT_BYTES)?;
+    check(record_reference == external_record_reference(&references))?;
+
+    let ranges = array(fields, "affected_ranges")?;
+    let range_evaluations = array(fields, "range_evaluations")?;
+    check(ranges.len() <= resource_policy.ranges() && ranges.len() == range_evaluations.len())?;
+    let mut unique_ranges = std::collections::BTreeSet::new();
+    for (range, evaluated) in ranges.iter().zip(range_evaluations) {
+        let range = object(range)?;
+        keys(
+            range,
+            &[
+                "label",
+                "from_kind",
+                "from_version",
+                "from_inclusive",
+                "to_kind",
+                "to_version",
+                "to_inclusive",
+            ],
+            &[],
+        )?;
+        let label = external_text(text(range, "label", 256)?, 256, false)?;
+        let expanded_source_values = resource_policy.expanded();
+        external_range_endpoint(range, "from", expanded_source_values)?;
+        external_range_endpoint(range, "to", expanded_source_values)?;
+        check(unique_ranges.insert(label))?;
+        let evaluated = object(evaluated)?;
+        keys(evaluated, &["relation", "reason"], &[])?;
+        check(
+            string(evaluated, "relation")? == "not_evaluated"
+                && string(evaluated, "reason")? == "canonical_identity_unavailable",
+        )?;
+    }
+
+    let source_patched = boolean(fields, "source_patched")?;
+    let source_patched_versions = unique_versions(
+        fields,
+        "source_patched_versions",
+        resource_policy.patched_versions(),
+        resource_policy.expanded(),
+    )?;
+    let source_remediation = external_text(
+        string(fields, "source_remediation")?,
+        MAX_LEGACY_AUDIT_TEXT_BYTES,
+        true,
+    )?;
+    check(
+        wordfence_source_association_fingerprint(
+            &source_component,
+            display_name,
+            ranges,
+            source_patched,
+            &source_patched_versions,
+            source_remediation,
+        )? == source_association_fingerprint,
+    )?;
+    let notice_ids = array(fields, "notice_ids")?;
+    check(notice_ids.len() <= MAX_WORDFENCE_V3_NOTICE_PARTIES)?;
+    let mut local_notices = std::collections::BTreeSet::new();
+    for value in notice_ids {
+        let id = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        check(notices.contains_key(id) && local_notices.insert(id))?;
+        referenced_notices.insert(id.to_owned());
+    }
+    let has_defiant_notice = notice_ids.iter().any(|value| {
+        value
+            .as_str()
+            .and_then(|id| notices.get(id))
+            .is_some_and(|party| party == "defiant")
+    });
+    check(
+        !has_defiant_notice || record_reference.is_some_and(is_wordfence_vulnerability_reference),
+    )?;
+    check(
+        string(fields, "version_relation")? == "not_evaluated"
+            && string(fields, "version_relation_reason")? == "canonical_identity_unavailable"
+            && string(fields, "applicability")? == "indeterminate",
+    )?;
+    let execution = object(required(fields, "execution")?)?;
+    keys(execution, &["exploit_execution", "impact_validation"], &[])?;
+    check(
+        string(execution, "exploit_execution")? == "not_performed"
+            && string(execution, "impact_validation")? == "not_performed",
+    )?;
+    Ok(format!(
+        "{namespace}:{upstream_id}:{source_component}:{source_association_fingerprint}"
+    ))
 }
 
 fn external_source_counts_are_valid(parsed_records: u64, software_associations: u64) -> bool {
@@ -1249,15 +2026,127 @@ fn external_source_counts_are_valid(parsed_records: u64, software_associations: 
     }
 }
 
+fn external_identity_mapping(
+    key: &serde_json::Map<String, Value>,
+    evaluation: &serde_json::Map<String, Value>,
+    canonical_identity: &str,
+    source_identity: bool,
+) -> Result<(String, ExternalIdentityMapping, Option<u64>), ComparisonError> {
+    if !source_identity {
+        return Ok((
+            canonical_identity.to_owned(),
+            ExternalIdentityMapping::Exact,
+            None,
+        ));
+    }
+
+    let source = object(required(key, "source_component")?)?;
+    keys(source, &["kind", "slug"], &[])?;
+    let source_kind = token(source, "kind", &["core", "plugin", "theme"])?;
+    let source_slug = text(source, "slug", MAX_WORDFENCE_V3_SOURCE_SLUG_BYTES)?;
+    check(valid_mapped_source_slug(source_slug))?;
+    let canonical = canonical_identity
+        .split_once(':')
+        .ok_or(ComparisonError::InvalidDocument)?;
+    let exact = (source_kind, source_slug) == canonical;
+    let case_fold = source_kind == canonical.0
+        && source_slug != canonical.1
+        && source_slug.eq_ignore_ascii_case(canonical.1);
+    let (mapping, collision_count) = match token(
+        evaluation,
+        "identity_mapping",
+        &[
+            "exact",
+            "ascii_case_fold_candidate",
+            "ascii_case_fold_ambiguous",
+        ],
+    )? {
+        "exact" => {
+            check(exact && !evaluation.contains_key("identity_collision_raw_count"))?;
+            (ExternalIdentityMapping::Exact, None)
+        },
+        "ascii_case_fold_candidate" => {
+            check(case_fold && !evaluation.contains_key("identity_collision_raw_count"))?;
+            (ExternalIdentityMapping::AsciiCaseFoldCandidate, None)
+        },
+        "ascii_case_fold_ambiguous" => {
+            let count = number(
+                evaluation,
+                "identity_collision_raw_count",
+                MAX_WORDFENCE_V3_ASSOCIATIONS,
+            )?;
+            check(case_fold && count >= 2)?;
+            (ExternalIdentityMapping::AsciiCaseFoldAmbiguous, Some(count))
+        },
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
+    Ok((
+        format!("{source_kind}:{source_slug}"),
+        mapping,
+        collision_count,
+    ))
+}
+
+fn external_raw_source_identity(
+    fields: &serde_json::Map<String, Value>,
+) -> Result<String, ComparisonError> {
+    keys(fields, &["kind", "slug"], &[])?;
+    let kind = token(fields, "kind", &["core", "plugin", "theme"])?;
+    let slug = text(fields, "slug", MAX_WORDFENCE_V3_SOURCE_SLUG_BYTES)?;
+    check(valid_raw_source_slug(slug))?;
+    Ok(format!("{kind}:{slug}"))
+}
+
+fn valid_mapped_source_slug(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > MAX_WORDFENCE_V3_SOURCE_SLUG_BYTES
+        || !value.is_ascii()
+        || value.starts_with('-')
+        || value.ends_with('-')
+        || value.contains("--")
+    {
+        return false;
+    }
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn valid_raw_source_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDFENCE_V3_SOURCE_SLUG_BYTES
+        && value.is_ascii()
+        && !value.bytes().any(|byte| byte.is_ascii_control())
+        && value.bytes().any(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn raw_source_identity_can_map(value: &str) -> bool {
+    let Some((kind, slug)) = value.split_once(':') else {
+        return false;
+    };
+    valid_mapped_source_slug(slug)
+        && slug.len() <= MAX_WORDPRESS_COMPONENT_SLUG_BYTES
+        && match kind {
+            "core" => slug.eq_ignore_ascii_case("wordpress"),
+            "plugin" | "theme" => !slug.eq_ignore_ascii_case("wordpress"),
+            _ => false,
+        }
+}
+
 fn external_evaluation(
     fields: &serde_json::Map<String, Value>,
     namespace: &str,
     components: &BTreeMap<String, ImportedWordPressComponent>,
     notices: &std::collections::BTreeMap<String, String>,
     referenced_notices: &mut std::collections::BTreeSet<String>,
-    profile: Option<WordPressComparisonProfile>,
     profiled_resolutions: &BTreeMap<String, ProfiledResolution>,
+    contract: ExternalEvaluationContract,
 ) -> Result<ImportedExternalEvaluation, ComparisonError> {
+    let ExternalEvaluationContract {
+        schema,
+        resource_policy,
+        profile,
+    } = contract;
     let common_fields = [
         "key",
         "title",
@@ -1283,7 +2172,40 @@ fn external_evaluation(
         "applicability",
         "execution",
     ];
-    if profile.is_some() {
+    if profile.is_some() && schema == WordPressAuditSchema::V6 {
+        keys(
+            fields,
+            &[
+                "key",
+                "identity_mapping",
+                "title",
+                "display_name",
+                "informational",
+                "description",
+                "references",
+                "record_reference",
+                "cwe",
+                "cvss",
+                "cve",
+                "cve_link",
+                "researchers",
+                "source_dates",
+                "affected_ranges",
+                "range_evaluations",
+                "source_patched",
+                "source_patched_versions",
+                "source_remediation",
+                "notice_ids",
+                "component_evidence",
+                "version_evidence_resolution",
+                "version_relation",
+                "version_relation_reason",
+                "applicability",
+                "execution",
+            ],
+            &["identity_collision_raw_count"],
+        )?;
+    } else if profile.is_some() {
         keys(
             fields,
             &[
@@ -1315,15 +2237,76 @@ fn external_evaluation(
             ],
             &[],
         )?;
+    } else if schema == WordPressAuditSchema::V6 {
+        keys(
+            fields,
+            &[
+                "key",
+                "identity_mapping",
+                "title",
+                "display_name",
+                "informational",
+                "description",
+                "references",
+                "record_reference",
+                "cwe",
+                "cvss",
+                "cve",
+                "cve_link",
+                "researchers",
+                "source_dates",
+                "affected_ranges",
+                "source_patched",
+                "source_patched_versions",
+                "source_remediation",
+                "notice_ids",
+                "component_evidence",
+                "version_evidence_resolution",
+                "version_relation",
+                "applicability",
+                "execution",
+            ],
+            &["identity_collision_raw_count"],
+        )?;
     } else {
         keys(fields, &common_fields, &[])?;
     }
     let key = object(required(fields, "key")?)?;
-    keys(key, &["source_namespace", "upstream_id", "component"], &[])?;
+    if schema == WordPressAuditSchema::V6 {
+        keys(
+            key,
+            &[
+                "source_namespace",
+                "upstream_id",
+                "component",
+                "source_component",
+                "source_association_fingerprint",
+            ],
+            &[],
+        )?;
+    } else {
+        keys(key, &["source_namespace", "upstream_id", "component"], &[])?;
+    }
     check(string(key, "source_namespace")? == namespace)?;
     let upstream_id = text(key, "upstream_id", MAX_IDENTIFIER_BYTES)?;
     check(valid_uuid(upstream_id))?;
     let component = component_identity(object(required(key, "component")?)?)?;
+    let (source_component, identity_mapping, identity_collision_raw_count) =
+        external_identity_mapping(key, fields, &component, schema == WordPressAuditSchema::V6)?;
+    let source_association_fingerprint = if schema == WordPressAuditSchema::V6 {
+        let fingerprint = text(
+            key,
+            "source_association_fingerprint",
+            "wordfence-source-association-sha256:".len() + 64,
+        )?;
+        check(prefixed_digest(
+            fingerprint,
+            "wordfence-source-association-sha256:",
+        ))?;
+        Some(fingerprint)
+    } else {
+        None
+    };
     let imported = components
         .get(&component)
         .ok_or(ComparisonError::InvalidDocument)?;
@@ -1333,33 +2316,41 @@ fn external_evaluation(
         MAX_WORDFENCE_V3_TITLE_BYTES,
         false,
     )?;
-    external_text(
+    let display_name = external_text(
         text(fields, "display_name", MAX_WORDFENCE_V3_NAME_BYTES)?,
         MAX_WORDFENCE_V3_NAME_BYTES,
         false,
     )?;
     boolean(fields, "informational")?;
-    external_text(string(fields, "description")?, MAX_AUDIT_TEXT_BYTES, true)?;
+    external_text(
+        string(fields, "description")?,
+        resource_policy.description_bytes(),
+        true,
+    )?;
     let references = unique_urls(fields, "references", MAX_WORDFENCE_V3_REFERENCES)?;
-    let record_reference = optional_text(fields, "record_reference", MAX_AUDIT_TEXT_BYTES)?;
+    let record_reference = optional_text(fields, "record_reference", MAX_LEGACY_AUDIT_TEXT_BYTES)?;
     let expected_record_reference = external_record_reference(&references);
     check(record_reference == expected_record_reference)?;
-    optional_cwe(required(fields, "cwe")?)?;
+    optional_cwe(
+        required(fields, "cwe")?,
+        resource_policy.description_bytes(),
+    )?;
     optional_cvss(required(fields, "cvss")?)?;
     let cve = optional_text(fields, "cve", MAX_WORDFENCE_V3_CVE_BYTES)?;
     if let Some(cve) = cve {
         check(valid_wordfence_cve(cve))?;
     }
-    let cve_link = optional_text(fields, "cve_link", MAX_AUDIT_TEXT_BYTES)?;
+    let cve_link = optional_text(fields, "cve_link", MAX_LEGACY_AUDIT_TEXT_BYTES)?;
     if let Some(link) = cve_link {
         check(cve.is_some())?;
         inert_url(link)?;
     }
-    unique_text_array(
+    text_array(
         fields,
         "researchers",
         MAX_WORDFENCE_V3_RESEARCHERS,
         MAX_WORDFENCE_V3_RESEARCHER_BYTES,
+        !resource_policy.expanded(),
     )?;
     let source_dates = object(required(fields, "source_dates")?)?;
     keys(source_dates, &["published", "updated"], &[])?;
@@ -1367,7 +2358,7 @@ fn external_evaluation(
     optional_source_datetime(source_dates, "updated")?;
 
     let ranges = array(fields, "affected_ranges")?;
-    check(ranges.len() <= MAX_WORDFENCE_V3_RANGES)?;
+    check(ranges.len() <= resource_policy.ranges())?;
     let mut unique_ranges = std::collections::BTreeSet::new();
     let mut imported_ranges = Vec::with_capacity(ranges.len());
     for value in ranges {
@@ -1386,23 +2377,37 @@ fn external_evaluation(
             &[],
         )?;
         let label = external_text(text(range, "label", 256)?, 256, false)?;
-        let from = external_range_endpoint(range, "from")?;
-        let to = external_range_endpoint(range, "to")?;
-        check(unique_ranges.insert((label, from, to)))?;
+        let source_version = resource_policy.expanded();
+        let from = external_range_endpoint(range, "from", source_version)?;
+        let to = external_range_endpoint(range, "to", source_version)?;
+        check(unique_ranges.insert(label))?;
         imported_ranges.push((from, to));
     }
 
-    boolean(fields, "source_patched")?;
+    let source_patched = boolean(fields, "source_patched")?;
     let source_patched_versions = unique_versions(
         fields,
         "source_patched_versions",
-        MAX_WORDFENCE_V3_PATCHED_VERSIONS,
+        resource_policy.patched_versions(),
+        resource_policy.expanded(),
     )?;
-    external_text(
+    let source_remediation = external_text(
         string(fields, "source_remediation")?,
-        MAX_AUDIT_TEXT_BYTES,
+        MAX_LEGACY_AUDIT_TEXT_BYTES,
         true,
     )?;
+    if let Some(fingerprint) = source_association_fingerprint {
+        check(
+            wordfence_source_association_fingerprint(
+                &source_component,
+                display_name,
+                ranges,
+                source_patched,
+                &source_patched_versions,
+                source_remediation,
+            )? == fingerprint,
+        )?;
+    }
     let evaluation_notice_ids = array(fields, "notice_ids")?;
     check(evaluation_notice_ids.len() <= MAX_WORDFENCE_V3_NOTICE_PARTIES)?;
     let mut local_notices = std::collections::BTreeSet::new();
@@ -1432,20 +2437,25 @@ fn external_evaluation(
             ],
         )? == imported.evidence_class.as_str(),
     )?;
+    let semantic_profile = profile.filter(|_| identity_mapping == ExternalIdentityMapping::Exact);
     let semantic_resolution = external_version_evidence_resolution(
         object(required(fields, "version_evidence_resolution")?)?,
         imported,
-        profile,
-        profiled_resolutions.get(&component),
+        semantic_profile,
+        semantic_profile.and_then(|_| profiled_resolutions.get(&component)),
     )?;
     let (version_relation, version_relation_reason, range_relations) = if let Some(profile) =
         profile
     {
-        let semantic_resolution = semantic_resolution.ok_or(ComparisonError::InvalidDocument)?;
         let rendered_ranges = array(fields, "range_evaluations")?;
         check(rendered_ranges.len() == imported_ranges.len())?;
         let mut range_relations = Vec::with_capacity(rendered_ranges.len());
         let mut range_reasons = Vec::with_capacity(rendered_ranges.len());
+        let identity_limit_reason = match identity_mapping {
+            ExternalIdentityMapping::Exact => None,
+            ExternalIdentityMapping::AsciiCaseFoldCandidate => Some("identity_mapping_candidate"),
+            ExternalIdentityMapping::AsciiCaseFoldAmbiguous => Some("identity_mapping_ambiguous"),
+        };
         for (rendered, source) in rendered_ranges.iter().zip(&imported_ranges) {
             let rendered = object(rendered)?;
             keys(rendered, &["relation", "reason"], &[])?;
@@ -1474,10 +2484,22 @@ fn external_evaluation(
                     "unsupported_both_bounds",
                     "reversed_bounds",
                     "empty_exclusive_interval",
+                    "identity_mapping_candidate",
+                    "identity_mapping_ambiguous",
                 ],
             )?;
-            let expected =
-                external_profiled_range_result(source.0, source.1, profile, &semantic_resolution)?;
+            let expected = if let Some(reason) = identity_limit_reason {
+                ("not_evaluated", reason)
+            } else {
+                external_profiled_range_result(
+                    source.0,
+                    source.1,
+                    profile,
+                    semantic_resolution
+                        .as_ref()
+                        .ok_or(ComparisonError::InvalidDocument)?,
+                )?
+            };
             check((relation, reason) == expected)?;
             range_relations.push(expected.0);
             range_reasons.push(expected.1);
@@ -1505,6 +2527,8 @@ fn external_evaluation(
                 "unsupported_affected_range",
                 "invalid_affected_range",
                 "source_patched_version_within_affected_range",
+                "identity_mapping_candidate",
+                "identity_mapping_ambiguous",
             ],
         )?;
         let applicability = token(
@@ -1516,16 +2540,22 @@ fn external_evaluation(
                 "indeterminate",
             ],
         )?;
-        let expected = expected_external_association_result(
-            &semantic_resolution,
-            &range_relations,
-            &range_reasons,
-            external_patched_version_conflicts(
-                &source_patched_versions,
-                &imported_ranges,
-                profile,
-            )?,
-        )?;
+        let expected = if let Some(reason) = identity_limit_reason {
+            ("indeterminate", reason, "indeterminate")
+        } else {
+            expected_external_association_result(
+                semantic_resolution
+                    .as_ref()
+                    .ok_or(ComparisonError::InvalidDocument)?,
+                &range_relations,
+                &range_reasons,
+                external_patched_version_conflicts(
+                    &source_patched_versions,
+                    &imported_ranges,
+                    profile,
+                )?,
+            )?
+        };
         check((relation, reason, applicability) == expected)?;
         (expected.0, Some(expected.1), range_relations)
     } else {
@@ -1542,7 +2572,14 @@ fn external_evaluation(
             && string(execution, "impact_validation")? == "not_performed",
     )?;
     Ok(ImportedExternalEvaluation {
-        identity: format!("{namespace}:{upstream_id}:{component}"),
+        identity: format!(
+            "{namespace}:{upstream_id}:{source_component}:{}",
+            source_association_fingerprint.unwrap_or("")
+        ),
+        canonical_identity: component,
+        source_identity: source_component,
+        identity_mapping,
+        identity_collision_raw_count,
         version_relation,
         version_relation_reason,
         range_relations,
@@ -1801,6 +2838,7 @@ fn expected_external_association_result(
 fn external_range_endpoint<'a>(
     fields: &'a serde_json::Map<String, Value>,
     prefix: &str,
+    source_version: bool,
 ) -> Result<ImportedExternalRangeEndpoint<'a>, ComparisonError> {
     let kind_name = format!("{prefix}_kind");
     let version_name = format!("{prefix}_version");
@@ -1820,12 +2858,17 @@ fn external_range_endpoint<'a>(
     check(matches!(kind, "any" | "declared"))?;
     check(
         (kind == "any" && version == "*")
-            || (kind == "declared" && version != "*" && valid_external_version(version)),
+            || (kind == "declared"
+                && if source_version {
+                    valid_external_source_version(version)
+                } else {
+                    valid_external_version(version)
+                }),
     )?;
     Ok((kind, version, inclusive))
 }
 
-fn optional_cwe(value: &Value) -> Result<(), ComparisonError> {
+fn optional_cwe(value: &Value, description_limit: usize) -> Result<(), ComparisonError> {
     if value.is_null() {
         return Ok(());
     }
@@ -1837,7 +2880,7 @@ fn optional_cwe(value: &Value) -> Result<(), ComparisonError> {
         MAX_WORDFENCE_V3_NAME_BYTES,
         false,
     )?;
-    external_text(string(fields, "description")?, MAX_AUDIT_TEXT_BYTES, true)?;
+    external_text(string(fields, "description")?, description_limit, true)?;
     Ok(())
 }
 
@@ -1933,11 +2976,12 @@ fn has_supported_wordfence_reference_query(url: &url::Url) -> bool {
     }
 }
 
-fn unique_text_array(
+fn text_array(
     fields: &serde_json::Map<String, Value>,
     name: &str,
     limit: usize,
     text_limit: usize,
+    require_unique: bool,
 ) -> Result<(), ComparisonError> {
     let values = array(fields, name)?;
     check(values.len() <= limit)?;
@@ -1945,7 +2989,7 @@ fn unique_text_array(
     for value in values {
         let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
         external_text(value, text_limit, false)?;
-        check(unique.insert(value))?;
+        check(!require_unique || unique.insert(value))?;
     }
     Ok(())
 }
@@ -1954,6 +2998,7 @@ fn unique_versions<'a>(
     fields: &'a serde_json::Map<String, Value>,
     name: &str,
     limit: usize,
+    source_version: bool,
 ) -> Result<Vec<&'a str>, ComparisonError> {
     let values = array(fields, name)?;
     check(values.len() <= limit)?;
@@ -1961,7 +3006,13 @@ fn unique_versions<'a>(
     let mut validated = Vec::with_capacity(values.len());
     for value in values {
         let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
-        check(valid_external_version(value) && unique.insert(value))?;
+        check(
+            (if source_version {
+                valid_external_source_version(value)
+            } else {
+                valid_external_version(value)
+            }) && unique.insert(value),
+        )?;
         validated.push(value);
     }
     Ok(validated)
@@ -2000,7 +3051,7 @@ fn source_datetime(value: &str) -> Result<(), ComparisonError> {
 }
 
 fn inert_url(value: &str) -> Result<(), ComparisonError> {
-    bounded_text(value, MAX_AUDIT_TEXT_BYTES)?;
+    bounded_text(value, MAX_LEGACY_AUDIT_TEXT_BYTES)?;
     let url = url::Url::parse(value).map_err(|_| ComparisonError::InvalidDocument)?;
     check(
         matches!(url.scheme(), "http" | "https")
@@ -2078,6 +3129,85 @@ fn valid_external_version(value: &str) -> bool {
         && !value
             .chars()
             .any(|character| character.is_control() || character.is_whitespace())
+}
+
+fn valid_external_source_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_INVENTORY_VERSION_BYTES
+        && value != "*"
+        && !value.chars().any(char::is_control)
+        && !value.chars().next().is_some_and(char::is_whitespace)
+        && !value.chars().next_back().is_some_and(char::is_whitespace)
+}
+
+fn wordfence_source_association_fingerprint(
+    source_component: &str,
+    display_name: &str,
+    affected_ranges: &[Value],
+    source_patched: bool,
+    source_patched_versions: &[&str],
+    source_remediation: &str,
+) -> Result<String, ComparisonError> {
+    let (kind, slug) = source_component
+        .split_once(':')
+        .ok_or(ComparisonError::InvalidDocument)?;
+    let kind = match kind {
+        "core" => 0_u8,
+        "plugin" => 1_u8,
+        "theme" => 2_u8,
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"termivar.wordfence-v3.source-association/v1\0");
+    hasher.update([kind]);
+    hash_wordfence_frame(&mut hasher, slug)?;
+    hash_wordfence_frame(&mut hasher, display_name)?;
+    let mut sorted_ranges = affected_ranges.iter().collect::<Vec<_>>();
+    sorted_ranges.sort_by(|left, right| {
+        let left = left.as_object().and_then(|fields| fields.get("label"));
+        let right = right.as_object().and_then(|fields| fields.get("label"));
+        left.and_then(Value::as_str)
+            .cmp(&right.and_then(Value::as_str))
+    });
+    hash_wordfence_count(&mut hasher, sorted_ranges.len())?;
+    for range in sorted_ranges {
+        let range = object(range)?;
+        hash_wordfence_frame(&mut hasher, string(range, "label")?)?;
+        hash_wordfence_frame(&mut hasher, string(range, "from_version")?)?;
+        hasher.update([u8::from(boolean(range, "from_inclusive")?)]);
+        hash_wordfence_frame(&mut hasher, string(range, "to_version")?)?;
+        hasher.update([u8::from(boolean(range, "to_inclusive")?)]);
+    }
+    hasher.update([u8::from(source_patched)]);
+    let mut sorted_patched_versions = source_patched_versions.to_vec();
+    sorted_patched_versions.sort_unstable();
+    hash_wordfence_count(&mut hasher, sorted_patched_versions.len())?;
+    for version in sorted_patched_versions {
+        hash_wordfence_frame(&mut hasher, version)?;
+    }
+    hash_wordfence_frame(&mut hasher, source_remediation)?;
+    let digest = hasher.finalize();
+    Ok(format!("wordfence-source-association-sha256:{digest:x}"))
+}
+
+fn hash_wordfence_frame(hasher: &mut Sha256, value: &str) -> Result<(), ComparisonError> {
+    hasher.update(
+        u64::try_from(value.len())
+            .map_err(|_| ComparisonError::InvalidDocument)?
+            .to_be_bytes(),
+    );
+    hasher.update(value.as_bytes());
+    Ok(())
+}
+
+fn hash_wordfence_count(hasher: &mut Sha256, count: usize) -> Result<(), ComparisonError> {
+    hasher.update(
+        u64::try_from(count)
+            .map_err(|_| ComparisonError::InvalidDocument)?
+            .to_be_bytes(),
+    );
+    Ok(())
 }
 
 fn valid_cvss_score(value: &str) -> bool {
@@ -2306,8 +3436,8 @@ fn advisory_v1(fields: &serde_json::Map<String, Value>) -> Result<String, Compar
         check(valid_cve(cve))?;
     }
     bounded_text(text(fields, "summary", 1_024)?, 1_024)?;
-    if let Some(remediation) = optional_text(fields, "remediation", MAX_AUDIT_TEXT_BYTES)? {
-        bounded_text(remediation, MAX_AUDIT_TEXT_BYTES)?;
+    if let Some(remediation) = optional_text(fields, "remediation", MAX_LEGACY_AUDIT_TEXT_BYTES)? {
+        bounded_text(remediation, MAX_LEGACY_AUDIT_TEXT_BYTES)?;
     }
 
     let ranges = array(fields, "affected_ranges")?;
@@ -2416,8 +3546,8 @@ fn advisory_v2(
         check(valid_cve(cve))?;
     }
     bounded_text(text(fields, "summary", 1_024)?, 1_024)?;
-    if let Some(remediation) = optional_text(fields, "remediation", MAX_AUDIT_TEXT_BYTES)? {
-        bounded_text(remediation, MAX_AUDIT_TEXT_BYTES)?;
+    if let Some(remediation) = optional_text(fields, "remediation", MAX_LEGACY_AUDIT_TEXT_BYTES)? {
+        bounded_text(remediation, MAX_LEGACY_AUDIT_TEXT_BYTES)?;
     }
 
     let profile = WordPressComparisonProfile::parse(string(fields, "comparison_profile")?)
@@ -2564,7 +3694,7 @@ fn advisory_source(fields: &serde_json::Map<String, Value>) -> Result<(), Compar
         &["reference", "revision", "retrieved_on", "usage_basis"],
         &[],
     )?;
-    let reference = text(fields, "reference", MAX_AUDIT_TEXT_BYTES)?;
+    let reference = text(fields, "reference", MAX_LEGACY_AUDIT_TEXT_BYTES)?;
     let url = url::Url::parse(reference).map_err(|_| ComparisonError::InvalidDocument)?;
     check(
         url.scheme() == "https"
@@ -3215,11 +4345,143 @@ fn authorization(
 mod tests {
     use super::*;
 
+    fn source_identity_fields(slug: &str, mapping: &str, collision: Option<u64>) -> (Value, Value) {
+        let key = serde_json::json!({
+            "source_component": { "kind": "plugin", "slug": slug }
+        });
+        let mut evaluation = serde_json::Map::new();
+        evaluation.insert(
+            "identity_mapping".to_owned(),
+            Value::String(mapping.to_owned()),
+        );
+        if let Some(collision) = collision {
+            evaluation.insert(
+                "identity_collision_raw_count".to_owned(),
+                Value::Number(collision.into()),
+            );
+        }
+        (key, Value::Object(evaluation))
+    }
+
     #[test]
     fn unsupported_audit_inventory_name_fails_closed() {
         assert_eq!(
             validate("future_audit", &serde_json::json!({}), &BTreeMap::new()),
             Err(ComparisonError::InvalidDocument),
         );
+    }
+
+    #[test]
+    fn v6_source_identity_mapping_requires_exactly_supported_relationships() {
+        let (key, evaluation) =
+            source_identity_fields("Termivar-Fixture", "ascii_case_fold_candidate", None);
+        assert_eq!(
+            external_identity_mapping(
+                key.as_object().unwrap(),
+                evaluation.as_object().unwrap(),
+                "plugin:termivar-fixture",
+                true,
+            ),
+            Ok((
+                "plugin:Termivar-Fixture".to_owned(),
+                ExternalIdentityMapping::AsciiCaseFoldCandidate,
+                None,
+            )),
+        );
+
+        let (key, evaluation) =
+            source_identity_fields("TERMIVAR-FIXTURE", "ascii_case_fold_ambiguous", Some(2));
+        assert_eq!(
+            external_identity_mapping(
+                key.as_object().unwrap(),
+                evaluation.as_object().unwrap(),
+                "plugin:termivar-fixture",
+                true,
+            ),
+            Ok((
+                "plugin:TERMIVAR-FIXTURE".to_owned(),
+                ExternalIdentityMapping::AsciiCaseFoldAmbiguous,
+                Some(2),
+            )),
+        );
+
+        for (slug, mapping, collision) in [
+            ("Termivar-Fixture", "exact", None),
+            ("Termivar-Fixture", "ascii_case_fold_candidate", Some(2)),
+            ("Termivar-Fixture", "ascii_case_fold_ambiguous", Some(1)),
+            ("different", "ascii_case_fold_candidate", None),
+        ] {
+            let (key, evaluation) = source_identity_fields(slug, mapping, collision);
+            assert_eq!(
+                external_identity_mapping(
+                    key.as_object().unwrap(),
+                    evaluation.as_object().unwrap(),
+                    "plugin:termivar-fixture",
+                    true,
+                ),
+                Err(ComparisonError::InvalidDocument),
+            );
+        }
+    }
+
+    #[test]
+    fn v6_schema_requires_real_mapping_or_resource_expansion() {
+        assert_eq!(
+            ExternalResourcePolicy::V1.retained_bytes(),
+            64 * 1024 * 1024
+        );
+        assert_eq!(
+            ExternalResourcePolicy::V2.retained_bytes(),
+            128 * 1024 * 1024
+        );
+        assert_eq!(
+            ExternalResourcePolicy::V3.retained_bytes(),
+            160 * 1024 * 1024
+        );
+        assert!(!ExternalResourcePolicy::V1.expanded());
+        assert!(ExternalResourcePolicy::V2.expanded());
+        assert!(ExternalResourcePolicy::V3.expanded());
+        assert!(v6_identity_contract_is_valid(
+            WORDFENCE_V3_MAPPING_REVISION_V1,
+            ExternalResourcePolicy::V2,
+            [3, 0, 0, 0],
+            3,
+        ));
+        assert!(v6_identity_contract_is_valid(
+            WORDFENCE_V3_MAPPING_REVISION_V1,
+            ExternalResourcePolicy::V3,
+            [3, 0, 0, 0],
+            3,
+        ));
+        assert!(v6_identity_contract_is_valid(
+            WORDFENCE_V3_MAPPING_REVISION_V2,
+            ExternalResourcePolicy::V1,
+            [1, 1, 1, 1],
+            4,
+        ));
+        assert!(!v6_identity_contract_is_valid(
+            WORDFENCE_V3_MAPPING_REVISION_V1,
+            ExternalResourcePolicy::V1,
+            [3, 0, 0, 0],
+            3,
+        ));
+        assert!(!v6_identity_contract_is_valid(
+            WORDFENCE_V3_MAPPING_REVISION_V1,
+            ExternalResourcePolicy::V2,
+            [2, 1, 0, 0],
+            3,
+        ));
+        assert!(!v6_identity_contract_is_valid(
+            WORDFENCE_V3_MAPPING_REVISION_V1,
+            ExternalResourcePolicy::V3,
+            [2, 1, 0, 0],
+            3,
+        ));
+        assert!(!v6_identity_contract_is_valid(
+            WORDFENCE_V3_MAPPING_REVISION_V2,
+            ExternalResourcePolicy::V1,
+            [4, 0, 0, 0],
+            4,
+        ));
     }
 }

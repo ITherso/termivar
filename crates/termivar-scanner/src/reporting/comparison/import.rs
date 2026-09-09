@@ -22,15 +22,16 @@ pub(super) const MAX_ITEMS: usize = 4_096;
 pub(super) const MAX_DISPLAY_BYTES: usize = 1_024;
 pub(super) const MAX_IDENTIFIER_BYTES: usize = 128;
 pub(super) const MAX_REFERENCES: usize = 256;
-pub(super) const MAX_AUDIT_TEXT_BYTES: usize = 2_048;
+pub(super) const MAX_AUDIT_TEXT_BYTES: usize = 4_096;
+pub(super) const MAX_LEGACY_AUDIT_TEXT_BYTES: usize = 2_048;
 const MAX_SUBJECTS: u64 = 1_024;
 // Deepest current wire value: root/wordpress_review/advisories/advisory/
 // affected_ranges/range/endpoint/field (root=0).
 const MAX_JSON_DEPTH: usize = 7;
-// The largest current object is the 25-field WordPress v5 external evaluation;
-// allow no unbounded object collection while exact inventories reject unknown
-// fields.
-const MAX_OBJECT_FIELDS: usize = 25;
+// WordPress v6 adds bounded source-identity metadata to the former 25-field
+// external evaluation. Exact per-schema inventories still reject unknown
+// fields after this generic allocation guard.
+const MAX_OBJECT_FIELDS: usize = 32;
 
 pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     if bytes.len() > MAX_COMPARISON_INPUT_BYTES {

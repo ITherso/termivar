@@ -33,14 +33,19 @@ pub use inventory::{
 pub use wordfence_v3::{
     parse_wordfence_v3_production, WordfenceV3AffectedRange, WordfenceV3AssociationKey,
     WordfenceV3AssociationView, WordfenceV3Catalog, WordfenceV3Cvss, WordfenceV3CvssRating,
-    WordfenceV3Cwe, WordfenceV3Notice, WordfenceV3ProductionError, WordfenceV3ProductionImport,
-    WordfenceV3RangeEndpoint, WordfenceV3RangeValue, WordfenceV3Record,
-    WordfenceV3SoftwareAssociation, MAX_WORDFENCE_V3_NOTICE_PARTIES,
-    MAX_WORDFENCE_V3_PATCHED_VERSIONS, MAX_WORDFENCE_V3_PRODUCTION_BYTES,
-    MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION, MAX_WORDFENCE_V3_RECORDS,
-    MAX_WORDFENCE_V3_RECORD_BYTES, MAX_WORDFENCE_V3_REFERENCES, MAX_WORDFENCE_V3_RESEARCHERS,
+    WordfenceV3Cwe, WordfenceV3IdentityCounts, WordfenceV3IdentityMapping, WordfenceV3Notice,
+    WordfenceV3ProductionError, WordfenceV3ProductionImport, WordfenceV3RangeEndpoint,
+    WordfenceV3RangeValue, WordfenceV3Record, WordfenceV3SoftwareAssociation,
+    WordfenceV3SourceComponentIdentity, WordfenceV3UnresolvedSoftwareAssociation,
+    MAX_WORDFENCE_V3_NOTICE_PARTIES, MAX_WORDFENCE_V3_PATCHED_VERSIONS,
+    MAX_WORDFENCE_V3_PRODUCTION_BYTES, MAX_WORDFENCE_V3_RANGES_PER_ASSOCIATION,
+    MAX_WORDFENCE_V3_RECORDS, MAX_WORDFENCE_V3_RECORD_BYTES, MAX_WORDFENCE_V3_REFERENCES,
+    MAX_WORDFENCE_V3_RESEARCHERS, MAX_WORDFENCE_V3_RESEARCHER_BYTES,
     MAX_WORDFENCE_V3_RETAINED_BYTES, MAX_WORDFENCE_V3_SOFTWARE_ASSOCIATIONS,
-    WORDFENCE_V3_MAPPING_REVISION, WORDFENCE_V3_PRODUCTION_FORMAT, WORDFENCE_V3_SOURCE_NAMESPACE,
+    WORDFENCE_V3_IDENTITY_MAPPING_POLICY, WORDFENCE_V3_MAPPING_REVISION,
+    WORDFENCE_V3_MAPPING_REVISION_V2, WORDFENCE_V3_PRODUCTION_FORMAT,
+    WORDFENCE_V3_RESOURCE_POLICY_V1, WORDFENCE_V3_RESOURCE_POLICY_V2,
+    WORDFENCE_V3_RESOURCE_POLICY_V3, WORDFENCE_V3_SOURCE_NAMESPACE,
 };
 
 use crate::wordpress_version::{
@@ -88,6 +93,13 @@ pub(crate) const MAX_WORDPRESS_VERSION_RESOLUTION_WORK: usize =
 // Bound the copied external result model independently of the parser's retained
 // index. The renderer's exact encoded-byte limit remains authoritative.
 const MAX_WORDPRESS_EXTERNAL_RESULT_BYTES: usize = 16 * 1_024 * 1_024;
+/// Maximum unresolved source-identity rows copied into one rendered audit.
+///
+/// The complete unresolved count and semantic input digest still cover the
+/// full imported snapshot. This only bounds the human-readable detail
+/// projection so a complete external catalogue is not reproduced as a report.
+pub const MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS: usize = 64;
+const MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTION_BYTES: usize = 1_024 * 1_024;
 
 const MAX_CONTEXT_JSON_NODES: usize = 16_384;
 const MAX_CATALOG_JSON_NODES: usize = 262_144;
@@ -958,6 +970,8 @@ pub enum WordPressExternalVersionRelationReason {
     UnsupportedAffectedRange,
     InvalidAffectedRange,
     SourcePatchedVersionWithinAffectedRange,
+    IdentityMappingCandidate,
+    IdentityMappingAmbiguous,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -989,6 +1003,8 @@ pub enum WordPressExternalRangeReason {
     UnsupportedBothBounds,
     ReversedBounds,
     EmptyExclusiveInterval,
+    IdentityMappingCandidate,
+    IdentityMappingAmbiguous,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1055,12 +1071,19 @@ impl WordPressExternalVersionEvidenceResolution {
     }
 }
 
-/// Stable identity of one upstream advisory/software association.
+/// In-snapshot key for one upstream advisory/software source declaration.
+///
+/// The source-association digest disambiguates content-distinct declarations
+/// under one advisory/component pair. It is not a stable cross-report product
+/// identity or source authentication; semantic comparison correlates the
+/// enclosing advisory and raw component identity separately.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct WordPressExternalAssociationKey {
     source_namespace: String,
     upstream_id: String,
     component: WordPressComponentIdentity,
+    source_component: WordfenceV3SourceComponentIdentity,
+    source_association_sha256: [u8; 32],
 }
 
 impl WordPressExternalAssociationKey {
@@ -1078,16 +1101,33 @@ impl WordPressExternalAssociationKey {
     pub const fn component(&self) -> &WordPressComponentIdentity {
         &self.component
     }
+
+    #[must_use]
+    pub const fn source_component(&self) -> &WordfenceV3SourceComponentIdentity {
+        &self.source_component
+    }
+
+    #[must_use]
+    pub const fn source_association_sha256(&self) -> &[u8; 32] {
+        &self.source_association_sha256
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WordPressExternalReviewCounts {
     parsed_records: usize,
     software_associations: usize,
+    exact_identity_associations: usize,
+    candidate_identity_associations: usize,
+    ambiguous_identity_associations: usize,
+    unresolved_identity_associations: usize,
+    projected_identity_limitations: usize,
+    unprojected_identity_limitations: usize,
     selected_associations: usize,
     evaluable_associations: usize,
     unsupported_associations: usize,
     excluded_associations: usize,
+    mapped_unselected_associations: usize,
     within_associations: usize,
     outside_associations: usize,
     indeterminate_associations: usize,
@@ -1113,6 +1153,36 @@ impl WordPressExternalReviewCounts {
     }
 
     #[must_use]
+    pub const fn exact_identity_associations(&self) -> usize {
+        self.exact_identity_associations
+    }
+
+    #[must_use]
+    pub const fn candidate_identity_associations(&self) -> usize {
+        self.candidate_identity_associations
+    }
+
+    #[must_use]
+    pub const fn ambiguous_identity_associations(&self) -> usize {
+        self.ambiguous_identity_associations
+    }
+
+    #[must_use]
+    pub const fn unresolved_identity_associations(&self) -> usize {
+        self.unresolved_identity_associations
+    }
+
+    #[must_use]
+    pub const fn projected_identity_limitations(&self) -> usize {
+        self.projected_identity_limitations
+    }
+
+    #[must_use]
+    pub const fn unprojected_identity_limitations(&self) -> usize {
+        self.unprojected_identity_limitations
+    }
+
+    #[must_use]
     pub const fn selected_associations(&self) -> usize {
         self.selected_associations
     }
@@ -1130,6 +1200,11 @@ impl WordPressExternalReviewCounts {
     #[must_use]
     pub const fn excluded_associations(&self) -> usize {
         self.excluded_associations
+    }
+
+    #[must_use]
+    pub const fn mapped_unselected_associations(&self) -> usize {
+        self.mapped_unselected_associations
     }
 
     #[must_use]
@@ -1194,6 +1269,8 @@ impl WordPressExternalReviewCounts {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WordPressExternalAdvisoryEvaluation {
     key: WordPressExternalAssociationKey,
+    identity_mapping: WordfenceV3IdentityMapping,
+    identity_collision_raw_count: Option<usize>,
     title: String,
     informational: bool,
     description: String,
@@ -1220,10 +1297,94 @@ pub struct WordPressExternalAdvisoryEvaluation {
     applicability: WordPressExternalApplicability,
 }
 
+/// One structurally valid source association whose provider identity cannot be
+/// represented by Termivar's canonical component identity. These rows remain
+/// inert source limitations: they are preserved for review and comparison but
+/// are never evaluated for applicability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordPressExternalIdentityLimitation {
+    upstream_id: String,
+    source_component: WordfenceV3SourceComponentIdentity,
+    source_association_sha256: [u8; 32],
+    title: String,
+    display_name: String,
+    references: Vec<String>,
+    affected_ranges: Vec<WordfenceV3AffectedRange>,
+    source_patched: bool,
+    source_patched_versions: Vec<String>,
+    source_remediation: String,
+    notice_ids: Vec<String>,
+}
+
+impl WordPressExternalIdentityLimitation {
+    #[must_use]
+    pub fn upstream_id(&self) -> &str {
+        &self.upstream_id
+    }
+
+    #[must_use]
+    pub const fn source_component(&self) -> &WordfenceV3SourceComponentIdentity {
+        &self.source_component
+    }
+
+    #[must_use]
+    pub const fn source_association_sha256(&self) -> &[u8; 32] {
+        &self.source_association_sha256
+    }
+
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    #[must_use]
+    pub fn references(&self) -> &[String] {
+        &self.references
+    }
+
+    #[must_use]
+    pub fn affected_ranges(&self) -> &[WordfenceV3AffectedRange] {
+        &self.affected_ranges
+    }
+
+    #[must_use]
+    pub const fn source_patched(&self) -> bool {
+        self.source_patched
+    }
+
+    #[must_use]
+    pub fn source_patched_versions(&self) -> &[String] {
+        &self.source_patched_versions
+    }
+
+    #[must_use]
+    pub fn source_remediation(&self) -> &str {
+        &self.source_remediation
+    }
+
+    #[must_use]
+    pub fn notice_ids(&self) -> &[String] {
+        &self.notice_ids
+    }
+}
+
 impl WordPressExternalAdvisoryEvaluation {
     #[must_use]
     pub const fn key(&self) -> &WordPressExternalAssociationKey {
         &self.key
+    }
+    #[must_use]
+    pub const fn identity_mapping(&self) -> WordfenceV3IdentityMapping {
+        self.identity_mapping
+    }
+    #[must_use]
+    pub const fn identity_collision_raw_count(&self) -> Option<usize> {
+        self.identity_collision_raw_count
     }
     #[must_use]
     pub fn title(&self) -> &str {
@@ -1337,11 +1498,15 @@ pub struct WordPressExternalReview {
     sha256: [u8; 32],
     semantic_sha256: [u8; 32],
     retained_bytes: usize,
+    mapping_revision: &'static str,
+    resource_policy: &'static str,
+    identity_counts: WordfenceV3IdentityCounts,
     comparison_policy: WordPressExternalComparisonPolicy,
     comparison_profile: Option<WordPressComparisonProfile>,
     counts: WordPressExternalReviewCounts,
     notices: Vec<WordfenceV3Notice>,
     evaluations: Vec<WordPressExternalAdvisoryEvaluation>,
+    identity_limitations: Vec<WordPressExternalIdentityLimitation>,
 }
 
 impl WordPressExternalReview {
@@ -1355,7 +1520,28 @@ impl WordPressExternalReview {
     }
     #[must_use]
     pub const fn mapping_revision(&self) -> &'static str {
-        WORDFENCE_V3_MAPPING_REVISION
+        self.mapping_revision
+    }
+    #[must_use]
+    pub const fn identity_mapping_policy(&self) -> &'static str {
+        WORDFENCE_V3_IDENTITY_MAPPING_POLICY
+    }
+    #[must_use]
+    pub const fn identity_source_assurance(&self) -> &'static str {
+        "not_established"
+    }
+    #[must_use]
+    pub const fn resource_policy(&self) -> &'static str {
+        self.resource_policy
+    }
+    #[must_use]
+    pub const fn identity_counts(&self) -> &WordfenceV3IdentityCounts {
+        &self.identity_counts
+    }
+    #[must_use]
+    pub fn requires_audit_v6(&self) -> bool {
+        self.mapping_revision == WORDFENCE_V3_MAPPING_REVISION_V2
+            || self.resource_policy != WORDFENCE_V3_RESOURCE_POLICY_V1
     }
     #[must_use]
     pub const fn byte_length(&self) -> u64 {
@@ -1392,6 +1578,11 @@ impl WordPressExternalReview {
     #[must_use]
     pub fn evaluations(&self) -> &[WordPressExternalAdvisoryEvaluation] {
         &self.evaluations
+    }
+
+    #[must_use]
+    pub fn identity_limitations(&self) -> &[WordPressExternalIdentityLimitation] {
+        &self.identity_limitations
     }
 }
 
@@ -1970,6 +2161,7 @@ fn evaluate_wordfence_v3_review(
     let mut evaluation_work = 0_usize;
     let mut resolution_work = 0_usize;
     let mut projected_result_bytes = 0_usize;
+    let mut identity_limitations = Vec::new();
     for (component, assessment) in &assessments {
         let mut profiled_resolution = None;
         for view in catalog.associations_for(component) {
@@ -1984,7 +2176,9 @@ fn evaluate_wordfence_v3_review(
             if projected_result_bytes > MAX_WORDPRESS_EXTERNAL_RESULT_BYTES {
                 return Err(WordPressReviewError::ResultLimitExceeded);
             }
-            if selected_profile.is_some() {
+            let exact_identity =
+                association.identity_mapping() == WordfenceV3IdentityMapping::Exact;
+            if selected_profile.is_some() && exact_identity {
                 evaluation_work = checked_accumulate_external_interpretation_work(
                     evaluation_work,
                     association.affected_ranges().len(),
@@ -2004,6 +2198,8 @@ fn evaluate_wordfence_v3_review(
                 source_namespace: WORDFENCE_V3_SOURCE_NAMESPACE.to_owned(),
                 upstream_id: record.upstream_id().to_owned(),
                 component: association.component().clone(),
+                source_component: association.source_component().clone(),
+                source_association_sha256: *association.key().source_association_sha256(),
             };
             if !keys.insert(key.clone()) {
                 return Err(WordPressReviewError::InvalidExternalCatalog);
@@ -2012,26 +2208,27 @@ fn evaluate_wordfence_v3_review(
             if selected_notice_ids.len() > MAX_WORDPRESS_ADVISORY_RECORDS {
                 return Err(WordPressReviewError::ResultLimitExceeded);
             }
-            let profile_evaluation = if let Some(profile) = selected_profile {
-                if profiled_resolution.is_none() {
-                    resolution_work = resolution_work
-                        .checked_add(assessment.versions().len())
-                        .ok_or(WordPressReviewError::EvaluationLimitExceeded)?;
-                    if resolution_work > MAX_WORDPRESS_VERSION_RESOLUTION_WORK {
-                        return Err(WordPressReviewError::EvaluationLimitExceeded);
+            let profile_evaluation =
+                if let Some(profile) = selected_profile.filter(|_| exact_identity) {
+                    if profiled_resolution.is_none() {
+                        resolution_work = resolution_work
+                            .checked_add(assessment.versions().len())
+                            .ok_or(WordPressReviewError::EvaluationLimitExceeded)?;
+                        if resolution_work > MAX_WORDPRESS_VERSION_RESOLUTION_WORK {
+                            return Err(WordPressReviewError::EvaluationLimitExceeded);
+                        }
+                        profiled_resolution = Some(resolve_profiled_versions(assessment, profile));
                     }
-                    profiled_resolution = Some(resolve_profiled_versions(assessment, profile));
-                }
-                Some(evaluate_wordfence_profiled_association(
-                    profiled_resolution
-                        .as_ref()
-                        .ok_or(WordPressReviewError::InvalidExternalCatalog)?,
-                    association,
-                    profile,
-                )?)
-            } else {
-                None
-            };
+                    Some(evaluate_wordfence_profiled_association(
+                        profiled_resolution
+                            .as_ref()
+                            .ok_or(WordPressReviewError::InvalidExternalCatalog)?,
+                        association,
+                        profile,
+                    )?)
+                } else {
+                    None
+                };
             let version_evidence_resolution = profile_evaluation.as_ref().map_or_else(
                 || external_version_evidence_resolution(assessment, None),
                 |evaluation| {
@@ -2041,8 +2238,46 @@ fn evaluate_wordfence_v3_review(
                     )
                 },
             )?;
+            let identity_limited_reason = match association.identity_mapping() {
+                WordfenceV3IdentityMapping::Exact => None,
+                WordfenceV3IdentityMapping::AsciiCaseFoldCandidate => {
+                    Some(WordPressExternalVersionRelationReason::IdentityMappingCandidate)
+                },
+                WordfenceV3IdentityMapping::AsciiCaseFoldAmbiguous => {
+                    Some(WordPressExternalVersionRelationReason::IdentityMappingAmbiguous)
+                },
+            };
+            let identity_limited_range_reason = match association.identity_mapping() {
+                WordfenceV3IdentityMapping::Exact => None,
+                WordfenceV3IdentityMapping::AsciiCaseFoldCandidate => {
+                    Some(WordPressExternalRangeReason::IdentityMappingCandidate)
+                },
+                WordfenceV3IdentityMapping::AsciiCaseFoldAmbiguous => {
+                    Some(WordPressExternalRangeReason::IdentityMappingAmbiguous)
+                },
+            };
+            let range_evaluations = if selected_profile.is_none() {
+                None
+            } else if let Some(evaluation) = &profile_evaluation {
+                Some(evaluation.ranges.clone())
+            } else {
+                let reason = identity_limited_range_reason
+                    .ok_or(WordPressReviewError::InvalidExternalCatalog)?;
+                Some(
+                    association
+                        .affected_ranges()
+                        .iter()
+                        .map(|_| WordPressExternalRangeEvaluation {
+                            relation: WordPressExternalRangeRelation::NotEvaluated,
+                            reason,
+                        })
+                        .collect(),
+                )
+            };
             selected.push(WordPressExternalAdvisoryEvaluation {
                 key,
+                identity_mapping: association.identity_mapping(),
+                identity_collision_raw_count: association.identity_collision_raw_count(),
                 title: record.title().to_owned(),
                 informational: record.informational(),
                 description: record.description().to_owned(),
@@ -2057,9 +2292,7 @@ fn evaluate_wordfence_v3_review(
                 notice_ids: record.notice_ids().to_vec(),
                 display_name: association.display_name().to_owned(),
                 affected_ranges: association.affected_ranges().to_vec(),
-                range_evaluations: profile_evaluation
-                    .as_ref()
-                    .map(|evaluation| evaluation.ranges.clone()),
+                range_evaluations,
                 source_patched: association.patched(),
                 source_patched_versions: association.patched_versions().to_vec(),
                 source_remediation: association.remediation().to_owned(),
@@ -2070,18 +2303,33 @@ fn evaluate_wordfence_v3_review(
                 } else {
                     WordPressExternalComparisonPolicy::WordfenceV3SourceSemanticsUnresolvedV1
                 },
-                version_relation: profile_evaluation.as_ref().map_or(
-                    WordPressExternalVersionRelation::SourceComparisonSemanticsUnresolved,
-                    |evaluation| evaluation.relation,
-                ),
-                version_relation_reason: profile_evaluation.as_ref().map_or(
-                    WordPressExternalVersionRelationReason::SourceComparisonSemanticsUnresolved,
-                    |evaluation| evaluation.reason,
-                ),
-                applicability: profile_evaluation.as_ref().map_or(
-                    WordPressExternalApplicability::IndeterminateUnsupported,
-                    |evaluation| evaluation.applicability,
-                ),
+                version_relation: if selected_profile.is_none() {
+                    WordPressExternalVersionRelation::SourceComparisonSemanticsUnresolved
+                } else {
+                    profile_evaluation.as_ref().map_or(
+                        WordPressExternalVersionRelation::Indeterminate,
+                        |evaluation| evaluation.relation,
+                    )
+                },
+                version_relation_reason: if selected_profile.is_none() {
+                    WordPressExternalVersionRelationReason::SourceComparisonSemanticsUnresolved
+                } else {
+                    profile_evaluation.as_ref().map_or_else(
+                        || {
+                            identity_limited_reason
+                                .ok_or(WordPressReviewError::InvalidExternalCatalog)
+                        },
+                        |evaluation| Ok(evaluation.reason),
+                    )?
+                },
+                applicability: if selected_profile.is_none() {
+                    WordPressExternalApplicability::IndeterminateUnsupported
+                } else {
+                    profile_evaluation.as_ref().map_or(
+                        WordPressExternalApplicability::Indeterminate,
+                        |evaluation| evaluation.applicability,
+                    )
+                },
             });
         }
     }
@@ -2092,7 +2340,6 @@ fn evaluate_wordfence_v3_review(
         .iter()
         .map(|notice| (notice.id(), notice))
         .collect::<BTreeMap<_, _>>();
-    let mut notices = Vec::with_capacity(selected_notice_ids.len());
     for id in &selected_notice_ids {
         let notice = notices_by_id
             .get(id.as_str())
@@ -2104,12 +2351,88 @@ fn evaluate_wordfence_v3_review(
         if projected_result_bytes > MAX_WORDPRESS_EXTERNAL_RESULT_BYTES {
             return Err(WordPressReviewError::ResultLimitExceeded);
         }
+    }
+
+    let mut identity_projection_bytes = 0_usize;
+    'identity_projection: for record in catalog.records() {
+        for association in record.unresolved_software() {
+            if identity_limitations.len() == MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS
+            {
+                break 'identity_projection;
+            }
+            let row_bytes = wordfence_v3_unresolved_projection_bytes(record, association)?;
+            let mut new_notice_bytes = 0_usize;
+            let mut new_notice_count = 0_usize;
+            for id in record.notice_ids() {
+                if !selected_notice_ids.contains(id) {
+                    let notice = notices_by_id
+                        .get(id.as_str())
+                        .copied()
+                        .ok_or(WordPressReviewError::InvalidExternalCatalog)?;
+                    new_notice_bytes = new_notice_bytes
+                        .checked_add(wordfence_v3_notice_projection_bytes(notice)?)
+                        .ok_or(WordPressReviewError::ResultLimitExceeded)?;
+                    new_notice_count = new_notice_count
+                        .checked_add(1)
+                        .ok_or(WordPressReviewError::ResultLimitExceeded)?;
+                }
+            }
+            let next_identity_bytes = identity_projection_bytes
+                .checked_add(row_bytes)
+                .and_then(|bytes| bytes.checked_add(new_notice_bytes));
+            let next_result_bytes = projected_result_bytes
+                .checked_add(row_bytes)
+                .and_then(|bytes| bytes.checked_add(new_notice_bytes));
+            let next_notice_count = selected_notice_ids.len().checked_add(new_notice_count);
+            if next_identity_bytes.is_none_or(|bytes| {
+                bytes > MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTION_BYTES
+            }) || next_result_bytes
+                .is_none_or(|bytes| bytes > MAX_WORDPRESS_EXTERNAL_RESULT_BYTES)
+                || next_notice_count.is_none_or(|count| count > MAX_WORDPRESS_ADVISORY_RECORDS)
+            {
+                break 'identity_projection;
+            }
+            identity_projection_bytes =
+                next_identity_bytes.ok_or(WordPressReviewError::ResultLimitExceeded)?;
+            projected_result_bytes =
+                next_result_bytes.ok_or(WordPressReviewError::ResultLimitExceeded)?;
+            selected_notice_ids.extend(record.notice_ids().iter().cloned());
+            identity_limitations.push(WordPressExternalIdentityLimitation {
+                upstream_id: record.upstream_id().to_owned(),
+                source_component: association.source_component().clone(),
+                source_association_sha256: *association.source_association_sha256(),
+                title: record.title().to_owned(),
+                display_name: association.display_name().to_owned(),
+                references: record.references().to_vec(),
+                affected_ranges: association.affected_ranges().to_vec(),
+                source_patched: association.patched(),
+                source_patched_versions: association.patched_versions().to_vec(),
+                source_remediation: association.remediation().to_owned(),
+                notice_ids: record.notice_ids().to_vec(),
+            });
+        }
+    }
+    let mut notices = Vec::with_capacity(selected_notice_ids.len());
+    for id in &selected_notice_ids {
+        let notice = notices_by_id
+            .get(id.as_str())
+            .copied()
+            .ok_or(WordPressReviewError::InvalidExternalCatalog)?;
         notices.push(notice.clone());
     }
     let selected_associations = selected.len();
     let software_associations = catalog.software_association_count();
+    let projected_identity_limitations = identity_limitations.len();
+    let unprojected_identity_limitations = catalog
+        .identity_counts()
+        .unresolved()
+        .checked_sub(projected_identity_limitations)
+        .ok_or(WordPressReviewError::InvalidExternalCatalog)?;
     let excluded_associations = software_associations
         .checked_sub(selected_associations)
+        .ok_or(WordPressReviewError::InvalidExternalCatalog)?;
+    let mapped_unselected_associations = excluded_associations
+        .checked_sub(catalog.identity_counts().unresolved())
         .ok_or(WordPressReviewError::InvalidExternalCatalog)?;
     let within_associations = selected
         .iter()
@@ -2181,6 +2504,9 @@ fn evaluate_wordfence_v3_review(
         sha256: *catalog.sha256(),
         semantic_sha256: *catalog.semantic_sha256(),
         retained_bytes: catalog.retained_bytes(),
+        mapping_revision: catalog.mapping_revision(),
+        resource_policy: catalog.resource_policy(),
+        identity_counts: catalog.identity_counts().clone(),
         comparison_policy: if selected_profile.is_some() {
             WordPressExternalComparisonPolicy::TermivarWordfenceV3ExplicitInterpretationV1
         } else {
@@ -2190,10 +2516,17 @@ fn evaluate_wordfence_v3_review(
         counts: WordPressExternalReviewCounts {
             parsed_records: catalog.record_count(),
             software_associations,
+            exact_identity_associations: catalog.identity_counts().exact(),
+            candidate_identity_associations: catalog.identity_counts().candidate(),
+            ambiguous_identity_associations: catalog.identity_counts().ambiguous(),
+            unresolved_identity_associations: catalog.identity_counts().unresolved(),
+            projected_identity_limitations,
+            unprojected_identity_limitations,
             selected_associations,
             evaluable_associations,
             unsupported_associations,
             excluded_associations,
+            mapped_unselected_associations,
             within_associations,
             outside_associations,
             indeterminate_associations,
@@ -2208,6 +2541,7 @@ fn evaluate_wordfence_v3_review(
         },
         notices,
         evaluations: selected,
+        identity_limitations,
     })
 }
 
@@ -2531,6 +2865,7 @@ fn wordfence_v3_projection_bytes(
         record.cve_link().unwrap_or_default(),
         record.published().unwrap_or_default(),
         record.updated().unwrap_or_default(),
+        association.source_component().slug(),
         association.display_name(),
         association.remediation(),
     ] {
@@ -2557,6 +2892,45 @@ fn wordfence_v3_projection_bytes(
     if let Some(cvss) = record.cvss() {
         total = total
             .checked_add(cvss.vector().len() + cvss.score().len() + 32)
+            .ok_or(WordPressReviewError::ResultLimitExceeded)?;
+    }
+    for range in association.affected_ranges() {
+        total = total
+            .checked_add(
+                range.label().len()
+                    + range.from().value().declared().len()
+                    + range.to().value().declared().len()
+                    + 64,
+            )
+            .ok_or(WordPressReviewError::ResultLimitExceeded)?;
+    }
+    Ok(total)
+}
+
+fn wordfence_v3_unresolved_projection_bytes(
+    record: &WordfenceV3Record,
+    association: &WordfenceV3UnresolvedSoftwareAssociation,
+) -> Result<usize, WordPressReviewError> {
+    let mut total = 256_usize;
+    for value in [
+        record.upstream_id(),
+        record.title(),
+        association.source_component().slug(),
+        association.display_name(),
+        association.remediation(),
+    ] {
+        total = total
+            .checked_add(value.len())
+            .ok_or(WordPressReviewError::ResultLimitExceeded)?;
+    }
+    for value in record
+        .references()
+        .iter()
+        .chain(record.notice_ids())
+        .chain(association.patched_versions())
+    {
+        total = total
+            .checked_add(value.len() + 16)
             .ok_or(WordPressReviewError::ResultLimitExceeded)?;
     }
     for range in association.affected_ranges() {
@@ -4917,12 +5291,19 @@ mod tests {
         assert!(result.advisories().is_empty());
         assert_eq!(external.counts().parsed_records(), 2);
         assert_eq!(external.counts().software_associations(), 3);
+        assert_eq!(external.counts().exact_identity_associations(), 3);
+        assert_eq!(external.counts().candidate_identity_associations(), 0);
+        assert_eq!(external.counts().ambiguous_identity_associations(), 0);
+        assert_eq!(external.counts().unresolved_identity_associations(), 0);
         assert_eq!(external.counts().selected_associations(), 1);
         assert_eq!(external.counts().evaluable_associations(), 0);
         assert_eq!(external.counts().unsupported_associations(), 1);
         assert_eq!(external.counts().excluded_associations(), 2);
         assert_eq!(external.evaluations().len(), 1);
         assert_eq!(external.notices().len(), 1);
+        assert_eq!(external.mapping_revision(), WORDFENCE_V3_MAPPING_REVISION);
+        assert_eq!(external.resource_policy(), WORDFENCE_V3_RESOURCE_POLICY_V1);
+        assert!(!external.requires_audit_v6());
         let evaluation = &external.evaluations()[0];
         assert_eq!(
             evaluation.key().source_namespace(),
@@ -4935,6 +5316,14 @@ mod tests {
         assert_eq!(
             evaluation.key().component().slug(),
             "termivar-fixture-component"
+        );
+        assert_eq!(
+            evaluation.key().source_component().slug(),
+            "termivar-fixture-component"
+        );
+        assert_eq!(
+            evaluation.identity_mapping(),
+            WordfenceV3IdentityMapping::Exact
         );
         assert_eq!(
             evaluation.version_relation(),
@@ -5144,6 +5533,166 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_source_identity_detail_is_bounded_without_losing_total_accounting() {
+        let total = MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS + 1;
+        let mut records = serde_json::Map::new();
+        for index in 0..total {
+            let id = format!("00000000-0000-4000-8000-{index:012x}");
+            records.insert(
+                id.clone(),
+                serde_json::json!({
+                    "id": id,
+                    "title": "[SYNTHETIC] Unresolved identity projection fixture",
+                    "software": [{
+                        "type": "plugin",
+                        "name": "[SYNTHETIC] Unresolved component",
+                        "slug": format!("vendor/plugin-{index}.php"),
+                        "affected_versions": {
+                            "[1.0, 2.0]": {
+                                "from_version": "1.0",
+                                "from_inclusive": true,
+                                "to_version": "2.0",
+                                "to_inclusive": true
+                            }
+                        },
+                        "patched": false,
+                        "patched_versions": [],
+                        "remediation": "Synthetic fixture guidance"
+                    }],
+                    "informational": false,
+                    "description": "Synthetic bounded projection fixture",
+                    "references": ["https://example.invalid/termivar/unresolved"],
+                    "cwe": null,
+                    "cvss": null,
+                    "cve": null,
+                    "cve_link": null,
+                    "researchers": [],
+                    "published": null,
+                    "updated": null,
+                    "copyrights": null
+                }),
+            );
+        }
+        let document = serde_json::to_vec(&serde_json::Value::Object(records)).unwrap();
+        let import = parse_wordfence_v3_production(document.as_slice()).unwrap();
+        let inputs = WordPressReviewInputs::new(None, None)
+            .with_wordfence_v3_catalog(import)
+            .unwrap();
+        let result = evaluate_wordpress_review(&[], &inputs).unwrap();
+        let external = result.external_review().unwrap();
+
+        assert_eq!(external.counts().software_associations(), total);
+        assert_eq!(external.counts().unresolved_identity_associations(), total);
+        assert_eq!(
+            external.counts().projected_identity_limitations(),
+            MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS
+        );
+        assert_eq!(external.counts().unprojected_identity_limitations(), 1);
+        assert_eq!(
+            external.identity_limitations().len(),
+            MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS
+        );
+        assert_eq!(external.counts().selected_associations(), 0);
+        assert_eq!(external.counts().mapped_unselected_associations(), 0);
+        assert_eq!(external.counts().excluded_associations(), total);
+    }
+
+    #[test]
+    fn large_unresolved_source_rows_stop_at_detail_byte_budget_instead_of_failing_review() {
+        const TOTAL: usize = 8;
+        let mut records = serde_json::Map::new();
+        for index in 0..TOTAL {
+            let id = format!("00000000-0000-4000-8000-{index:012x}");
+            let references = (0..64)
+                .map(|reference| {
+                    format!(
+                        "https://example.invalid/{}/{index}/{reference}",
+                        "x".repeat(1_900)
+                    )
+                })
+                .collect::<Vec<_>>();
+            let researchers = (0..64)
+                .map(|researcher| format!("{}-{researcher}", "r".repeat(480)))
+                .collect::<Vec<_>>();
+            let mut affected_versions = serde_json::Map::new();
+            for range in 0..128 {
+                affected_versions.insert(
+                    format!("[{range}.0.0,{range}.0.1]"),
+                    serde_json::json!({
+                        "from_version": format!("{range}.0.0"),
+                        "from_inclusive": true,
+                        "to_version": format!("{range}.0.1"),
+                        "to_inclusive": true
+                    }),
+                );
+            }
+            let mut copyrights = serde_json::Map::new();
+            copyrights.insert("message".to_owned(), serde_json::json!("m".repeat(2_048)));
+            for party in 0..15 {
+                copyrights.insert(
+                    format!("fixture-{index}-{party}"),
+                    serde_json::json!({
+                        "notice": "n".repeat(2_048),
+                        "license": "l".repeat(2_048),
+                        "license_url": format!("https://example.invalid/license/{index}/{party}")
+                    }),
+                );
+            }
+            records.insert(
+                id.clone(),
+                serde_json::json!({
+                    "id": id,
+                    "title": "t".repeat(1_024),
+                    "software": [{
+                        "type": "plugin",
+                        "name": "n".repeat(1_024),
+                        "slug": format!("vendor/plugin-{index}.php"),
+                        "affected_versions": serde_json::Value::Object(affected_versions),
+                        "patched": true,
+                        "patched_versions": (0..128)
+                            .map(|version| format!("{version}.0.2"))
+                            .collect::<Vec<_>>(),
+                        "remediation": "m".repeat(2_048)
+                    }],
+                    "informational": false,
+                    "description": "d".repeat(4_096),
+                    "references": references,
+                    "cwe": null,
+                    "cvss": null,
+                    "cve": null,
+                    "cve_link": null,
+                    "researchers": researchers,
+                    "published": null,
+                    "updated": null,
+                    "copyrights": serde_json::Value::Object(copyrights)
+                }),
+            );
+        }
+        let document = serde_json::to_vec(&serde_json::Value::Object(records)).unwrap();
+        let import = parse_wordfence_v3_production(document.as_slice()).unwrap();
+        let inputs = WordPressReviewInputs::new(None, None)
+            .with_wordfence_v3_catalog(import)
+            .unwrap();
+        let result = evaluate_wordpress_review(&[], &inputs).unwrap();
+        let external = result.external_review().unwrap();
+
+        assert_eq!(external.counts().unresolved_identity_associations(), TOTAL);
+        assert!(external.counts().projected_identity_limitations() > 0);
+        assert!(external.counts().projected_identity_limitations() < TOTAL);
+        assert_eq!(
+            external
+                .counts()
+                .projected_identity_limitations()
+                .checked_add(external.counts().unprojected_identity_limitations()),
+            Some(TOTAL)
+        );
+        assert_eq!(
+            external.identity_limitations().len(),
+            external.counts().projected_identity_limitations()
+        );
+    }
+
+    #[test]
     fn explicit_external_profile_produces_nonconstant_range_relations() {
         let document = include_str!(
             "../../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json"
@@ -5212,6 +5761,66 @@ mod tests {
             php.evaluations()[0].applicability(),
             WordPressExternalApplicability::NoVersionMatchUnderSelectedPolicy
         );
+    }
+
+    #[test]
+    fn source_identity_candidate_is_selected_as_a_limitation_never_as_a_range_conclusion() {
+        let document = include_str!(
+            "../../../docs/examples/wordpress-review/wordfence-v3/production.synthetic.json"
+        )
+        .replacen(
+            r#""slug": "termivar-fixture-component""#,
+            r#""slug": "Termivar-Fixture-Component""#,
+            1,
+        );
+        let context = r#"{
+          "schema":"security.wordpress-context/v1",
+          "root":"https://example.test/",
+          "components":[
+            {"kind":"plugin","slug":"termivar-fixture-component","version":"9.9"}
+          ]
+        }"#;
+        let result = external_review_for(
+            context,
+            &document,
+            WordPressComparisonProfile::NumericDottedV1,
+        );
+        let external = result.external_review().unwrap();
+        assert!(external.requires_audit_v6());
+        assert_eq!(external.counts().exact_identity_associations(), 2);
+        assert_eq!(external.counts().candidate_identity_associations(), 1);
+        assert_eq!(external.counts().ambiguous_identity_associations(), 0);
+        assert_eq!(external.counts().unresolved_identity_associations(), 0);
+        assert_eq!(external.counts().selected_associations(), 1);
+        assert_eq!(external.counts().within_associations(), 0);
+        assert_eq!(external.counts().outside_associations(), 0);
+        assert_eq!(external.counts().indeterminate_associations(), 1);
+        assert_eq!(external.counts().not_evaluated_ranges(), 2);
+        let evaluation = &external.evaluations()[0];
+        assert_eq!(
+            evaluation.identity_mapping(),
+            WordfenceV3IdentityMapping::AsciiCaseFoldCandidate
+        );
+        assert_eq!(
+            evaluation.key().source_component().slug(),
+            "Termivar-Fixture-Component"
+        );
+        assert_eq!(
+            evaluation.version_relation(),
+            WordPressExternalVersionRelation::Indeterminate
+        );
+        assert_eq!(
+            evaluation.version_relation_reason(),
+            WordPressExternalVersionRelationReason::IdentityMappingCandidate
+        );
+        assert_eq!(
+            evaluation.applicability(),
+            WordPressExternalApplicability::Indeterminate
+        );
+        assert!(evaluation.range_evaluations().unwrap().iter().all(|range| {
+            range.relation() == WordPressExternalRangeRelation::NotEvaluated
+                && range.reason() == WordPressExternalRangeReason::IdentityMappingCandidate
+        }));
     }
 
     #[test]
