@@ -37,3 +37,14 @@ RUN printf '%s\n' \
  && a2enconf termivar-request-audit \
  && sed -ri 's#(CustomLog[[:space:]]+\$\{APACHE_LOG_DIR\}/access\.log)[[:space:]]+combined#\1 termivar_bounded#' /etc/apache2/sites-available/000-default.conf \
  && grep -Fq 'CustomLog ${APACHE_LOG_DIR}/access.log termivar_bounded' /etc/apache2/sites-available/000-default.conf
+
+# The pinned base prepares the fresh volume for this identity. Port 8080 avoids
+# relying on a privileged-port capability.
+RUN sed -ri 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf \
+ && sed -ri 's#<VirtualHost \*:80>#<VirtualHost *:8080>#' /etc/apache2/sites-available/000-default.conf \
+ && grep -Fxq 'Listen 8080' /etc/apache2/ports.conf \
+ && grep -Fq '<VirtualHost *:8080>' /etc/apache2/sites-available/000-default.conf \
+ && ! grep -Eq '^Listen[[:space:]]+80$' /etc/apache2/ports.conf \
+ && ! grep -Fq '<VirtualHost *:80>' /etc/apache2/sites-available/000-default.conf
+
+USER www-data

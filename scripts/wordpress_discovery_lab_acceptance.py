@@ -14,17 +14,22 @@ import argparse
 import contextlib
 import dataclasses
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
 import platform
 import re
 import secrets
+import select
 import shutil
 import socket
+import socketserver
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from typing import Any, Iterable, Sequence
@@ -65,6 +70,14 @@ GROUND_TRUTH_PATH = (
 )
 MAX_COMMAND_OUTPUT = 2 * 1024 * 1024
 MAX_EVIDENCE_OUTPUT = 256 * 1024
+PRIVATE_DIRECTORY_MODE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+WORDPRESS_CONTAINER_PORT = 8080
+MAX_RELAY_CONNECTION_BYTES = 64 * 1024 * 1024
+MAX_RELAY_CONCURRENT_CONNECTIONS = 16
+MAX_RELAY_TOTAL_CONNECTIONS = 256
+MAX_RELAY_TOTAL_BYTES = 256 * 1024 * 1024
+RELAY_IDLE_TIMEOUT_SECONDS = 30
+RELAY_STOP_POLL_SECONDS = 0.25
 COMMAND_TIMEOUT_SECONDS = 180
 STARTUP_TIMEOUT_SECONDS = 120
 REQUEST_RE = re.compile(
@@ -174,6 +187,10 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
         require(not path.is_symlink(), "lab fixture must not contain links")
     dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
     require(f"FROM {WORDPRESS_IMAGE}" in dockerfile, "WordPress base image is not pinned")
+    require(dockerfile.rstrip().endswith("USER www-data"),
+            "lab runtime must select the non-root www-data identity")
+    require("Listen 8080" in dockerfile and "<VirtualHost *:8080>" in dockerfile,
+            "lab runtime must use its unprivileged container port")
     require("http://" not in dockerfile and "https://" not in dockerfile,
             "lab build must not fetch network content")
     require("ADD " not in dockerfile, "lab build must use only checked-in COPY sources")
@@ -305,6 +322,230 @@ def _safe_name(prefix: str, run_id: str) -> str:
     return value
 
 
+def _internal_container_address(
+    network_name: str,
+    network_document: Any,
+    container_networks: Any,
+) -> str:
+    require(isinstance(network_document, dict), "internal network identity is malformed")
+    network_id = network_document.get("Id")
+    require(network_document.get("Name") == network_name
+            and network_document.get("Internal") is True
+            and isinstance(network_id, str)
+            and re.fullmatch(r"[0-9a-f]{64}", network_id) is not None,
+            "lab network is not the exact internal network")
+    ipam = network_document.get("IPAM")
+    require(isinstance(ipam, dict), "internal network address plan is malformed")
+    configurations = ipam.get("Config")
+    require(isinstance(configurations, list) and 1 <= len(configurations) <= 4,
+            "internal network address plan is unavailable")
+    subnets: list[ipaddress.IPv4Network] = []
+    for configuration in configurations:
+        require(isinstance(configuration, dict), "internal network subnet is malformed")
+        raw_subnet = configuration.get("Subnet")
+        if not isinstance(raw_subnet, str):
+            continue
+        try:
+            subnet = ipaddress.ip_network(raw_subnet, strict=True)
+        except ValueError as error:
+            raise AcceptanceError("internal network subnet is malformed") from error
+        if isinstance(subnet, ipaddress.IPv4Network):
+            require(subnet.is_private and not subnet.is_loopback and not subnet.is_link_local,
+                    "internal network subnet is outside the private lab boundary")
+            subnets.append(subnet)
+    require(subnets, "internal network has no supported private IPv4 subnet")
+
+    require(isinstance(container_networks, dict)
+            and set(container_networks) == {network_name},
+            "WordPress fixture must remain attached only to its internal network")
+    attachment = container_networks[network_name]
+    require(isinstance(attachment, dict)
+            and attachment.get("NetworkID") == network_id,
+            "WordPress internal network attachment is malformed")
+    raw_address = attachment.get("IPAddress")
+    require(isinstance(raw_address, str), "WordPress internal address is unavailable")
+    try:
+        address = ipaddress.ip_address(raw_address)
+    except ValueError as error:
+        raise AcceptanceError("WordPress internal address is malformed") from error
+    require(isinstance(address, ipaddress.IPv4Address)
+            and address.is_private and not address.is_reserved
+            and not address.is_unspecified and not address.is_multicast
+            and not address.is_loopback and not address.is_link_local
+            and any(address in subnet for subnet in subnets),
+            "WordPress internal address is outside the private lab boundary")
+    return str(address)
+
+
+class _LoopbackRelayHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        relay = self.server
+        transferred = 0
+        self.request.settimeout(RELAY_IDLE_TIMEOUT_SECONDS)
+        try:
+            upstream = socket.create_connection(
+                relay.upstream_address, timeout=RELAY_IDLE_TIMEOUT_SECONDS
+            )
+        except OSError:
+            relay.record_transport_failure()
+            return
+        with upstream:
+            upstream.settimeout(RELAY_IDLE_TIMEOUT_SECONDS)
+            destinations = {self.request: upstream, upstream: self.request}
+            last_activity = time.monotonic()
+            while destinations:
+                if relay.stop_event.is_set():
+                    return
+                try:
+                    readable, _, _ = select.select(
+                        tuple(destinations), (), (), RELAY_STOP_POLL_SECONDS
+                    )
+                except (OSError, ValueError):
+                    return
+                if not readable:
+                    if time.monotonic() - last_activity >= RELAY_IDLE_TIMEOUT_SECONDS:
+                        return
+                    continue
+                for source in readable:
+                    destination = destinations[source]
+                    try:
+                        payload = source.recv(64 * 1024)
+                    except OSError:
+                        return
+                    if not payload:
+                        try:
+                            destination.shutdown(socket.SHUT_WR)
+                        except OSError:
+                            pass
+                        del destinations[source]
+                        continue
+                    last_activity = time.monotonic()
+                    transferred += len(payload)
+                    if (transferred > MAX_RELAY_CONNECTION_BYTES
+                            or not relay.record_transfer(len(payload))):
+                        relay.record_limit_failure()
+                        return
+                    try:
+                        destination.sendall(payload)
+                    except OSError:
+                        return
+
+
+class _LoopbackRelayServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = False
+    daemon_threads = False
+    block_on_close = True
+    request_queue_size = MAX_RELAY_CONCURRENT_CONNECTIONS
+
+    def __init__(self, upstream_address: tuple[str, int]):
+        self.upstream_address = upstream_address
+        self._limit_failures = 0
+        self._transport_failures = 0
+        self._total_connections = 0
+        self._total_bytes = 0
+        self._failure_lock = threading.Lock()
+        self._connection_slots = threading.BoundedSemaphore(MAX_RELAY_CONCURRENT_CONNECTIONS)
+        self.stop_event = threading.Event()
+        super().__init__(("127.0.0.1", 0), _LoopbackRelayHandler)
+
+    def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        if not self._connection_slots.acquire(blocking=False):
+            self.record_limit_failure()
+            request.close()
+            return
+        with self._failure_lock:
+            if self._total_connections >= MAX_RELAY_TOTAL_CONNECTIONS:
+                self._limit_failures += 1
+                self._connection_slots.release()
+                request.close()
+                return
+            self._total_connections += 1
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(
+        self, request: socket.socket, client_address: tuple[str, int]
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_slots.release()
+
+    def record_limit_failure(self) -> None:
+        with self._failure_lock:
+            self._limit_failures += 1
+
+    def record_transport_failure(self) -> None:
+        with self._failure_lock:
+            self._transport_failures += 1
+
+    def record_transfer(self, byte_length: int) -> bool:
+        with self._failure_lock:
+            if self._total_bytes + byte_length > MAX_RELAY_TOTAL_BYTES:
+                return False
+            self._total_bytes += byte_length
+            return True
+
+    def limit_failures(self) -> int:
+        with self._failure_lock:
+            return self._limit_failures
+
+    def transport_failures(self) -> int:
+        with self._failure_lock:
+            return self._transport_failures
+
+    def acknowledge_startup(self) -> None:
+        with self._failure_lock:
+            self._transport_failures = 0
+
+    def handle_error(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        self.record_transport_failure()
+        request.close()
+
+
+class LoopbackTcpRelay:
+    def __init__(self, upstream_host: str, upstream_port: int):
+        self._server = _LoopbackRelayServer((upstream_host, upstream_port))
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            name="termivar-wordpress-loopback-relay",
+            daemon=True,
+        )
+        self._started = False
+        self._stopped = False
+
+    def start(self) -> int:
+        require(not self._started and not self._stopped, "loopback relay cannot be restarted")
+        self._thread.start()
+        self._started = True
+        return int(self._server.server_address[1])
+
+    def acknowledge_startup(self) -> None:
+        require(self._started and not self._stopped,
+                "loopback relay startup cannot be acknowledged in this state")
+        self._server.acknowledge_startup()
+
+    def assert_healthy(self) -> None:
+        require(self._server.limit_failures() == 0,
+                "loopback relay exceeded a connection or byte bound")
+        require(self._server.transport_failures() == 0,
+                "loopback relay encountered an upstream transport failure")
+
+    def stop(self) -> None:
+        if not self._stopped:
+            self._server.stop_event.set()
+            if self._started:
+                self._server.shutdown()
+            self._server.server_close()
+            if self._started:
+                self._thread.join(timeout=RELAY_IDLE_TIMEOUT_SECONDS)
+            self._stopped = True
+        require(not self._thread.is_alive(), "loopback relay did not stop within its bound")
+
+
 class DockerWordPressLab:
     def __init__(self, runner: ProcessRunner, work: Path):
         self.runner = runner
@@ -321,6 +562,7 @@ class DockerWordPressLab:
         self.admin_password = secrets.token_urlsafe(32)
         self.wordpress_env = self.work / "wordpress.env"
         self.origin: str | None = None
+        self.loopback_relay: LoopbackTcpRelay | None = None
         self._created: set[str] = set()
         self._wp_cli_containers: set[str] = set()
         self.image_ids: dict[str, str] = {}
@@ -329,6 +571,10 @@ class DockerWordPressLab:
         return self.runner.run(["docker", *arguments], label=label, **kwargs)
 
     def start(self) -> None:
+        require(
+            platform.system() == "Linux",
+            "the internal-bridge WordPress lab requires a native Linux Docker engine",
+        )
         require(shutil.which("docker") is not None, "Docker CLI is unavailable")
         info = self.docker("info", "--format", "{{.Architecture}}", label="Docker readiness")
         require(info.stdout.decode("utf-8", "strict").strip() == "x86_64",
@@ -400,19 +646,41 @@ class DockerWordPressLab:
             "--label", common_label, "--network", self.network,
             "--env-file", str(wordpress_env),
             "--mount", f"type=volume,source={self.wordpress_volume},target=/var/www/html",
-            "--publish", "127.0.0.1::80", self.derived_image,
-            label="WordPress container start",
+            self.derived_image, label="WordPress container start",
         )
         self._created.add("wordpress")
-        port_output = self.docker(
-            "port", self.wordpress, "80/tcp", label="loopback port inspection"
+        runtime_uid = self.docker(
+            "exec", self.wordpress, "id", "-u", label="WordPress runtime user inspection"
         ).stdout.decode("utf-8", "strict").strip()
-        match = re.fullmatch(r"127\.0\.0\.1:([0-9]{1,5})", port_output)
-        require(match is not None, "WordPress was not published only on IPv4 loopback")
-        port = int(match.group(1))
-        require(1 <= port <= 65535, "Docker supplied an invalid loopback port")
+        runtime_gid = self.docker(
+            "exec", self.wordpress, "id", "-g", label="WordPress runtime group inspection"
+        ).stdout.decode("utf-8", "strict").strip()
+        require((runtime_uid, runtime_gid) == ("33", "33"),
+                "WordPress fixture did not run as the bounded www-data identity")
+        self._wait_for_wordpress_process()
+        network_document = parse_json(
+            self.docker(
+                "network", "inspect", "--format", "{{json .}}", self.network,
+                label="internal lab network inspection",
+            ).stdout,
+            "internal lab network identity",
+        )
+        container_networks = parse_json(
+            self.docker(
+                "inspect", "--format", "{{json .NetworkSettings.Networks}}",
+                self.wordpress, label="WordPress internal address inspection",
+            ).stdout,
+            "WordPress internal network identity",
+        )
+        address = _internal_container_address(
+            self.network, network_document, container_networks
+        )
+        self.loopback_relay = LoopbackTcpRelay(address, WORDPRESS_CONTAINER_PORT)
+        port = self.loopback_relay.start()
+        require(1 <= port <= 65535, "loopback relay supplied an invalid port")
         self.origin = f"http://127.0.0.1:{port}/"
-        self._wait_for_wordpress_files(port)
+        self._wait_for_loopback_relay(port)
+        self.loopback_relay.acknowledge_startup()
         self._install_wordpress()
         database_env.unlink()
 
@@ -428,7 +696,7 @@ class DockerWordPressLab:
             time.sleep(1)
         raise AcceptanceError("database did not become healthy within the bounded startup time")
 
-    def _wait_for_wordpress_files(self, port: int) -> None:
+    def _wait_for_wordpress_process(self) -> None:
         deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             files = self.docker(
@@ -437,13 +705,40 @@ class DockerWordPressLab:
                 label="WordPress file readiness", expected=(0, 1),
             )
             if files.returncode == 0:
-                try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=1):
-                        return
-                except OSError:
-                    pass
+                response = self.docker(
+                    "exec", self.wordpress, "php", "-r",
+                    f"$s=@fsockopen('127.0.0.1',{WORDPRESS_CONTAINER_PORT},$e,$m,1);"
+                    "if(!$s){exit(1);}fwrite($s,\"GET / HTTP/1.0\\r\\n"
+                    "Host: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\");"
+                    "$line=fgets($s);fclose($s);"
+                    "exit(is_string($line)&&strncmp($line,'HTTP/',5)===0?0:1);",
+                    label="WordPress internal HTTP readiness", expected=(0, 1),
+                )
+                if response.returncode == 0:
+                    return
             time.sleep(1)
         raise AcceptanceError("WordPress did not become ready within the bounded startup time")
+
+    @staticmethod
+    def _wait_for_loopback_relay(port: int) -> None:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1) as probe:
+                    probe.sendall(
+                        b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                    )
+                    response = probe.recv(16)
+                    if response.startswith(b"HTTP/"):
+                        return
+            except OSError:
+                pass
+            time.sleep(0.1)
+        raise AcceptanceError("loopback relay did not become ready within its bound")
+
+    def assert_relay_healthy(self) -> None:
+        require(self.loopback_relay is not None, "loopback relay is unavailable")
+        self.loopback_relay.assert_healthy()
 
     def wp(self, *arguments: str, label: str, input_bytes: bytes | None = None) -> CommandResult:
         name = _safe_name("wp-cli", uuid.uuid4().hex[:12])
@@ -597,6 +892,13 @@ class DockerWordPressLab:
 
     def shutdown(self) -> None:
         failures: list[str] = []
+        if self.loopback_relay is not None:
+            try:
+                self.loopback_relay.stop()
+            except (AcceptanceError, OSError):
+                failures.append("loopback_relay")
+            else:
+                self.loopback_relay = None
         for name in sorted(self._wp_cli_containers):
             result = self.docker("rm", "--force", name,
                                  label="abandoned WP-CLI cleanup", expected=(0, 1))
@@ -662,6 +964,8 @@ class DockerWordPressLab:
             )
             if self.wordpress_env.exists():
                 residual_names.append("private_wordpress_environment_file")
+            if self.loopback_relay is not None:
+                residual_names.append("loopback_relay")
             raise AcceptanceError(
                 "task-owned Docker cleanup failed for "
                 + ", ".join(sorted(set(failures)))
@@ -1189,7 +1493,6 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
 
     with tempfile.TemporaryDirectory(prefix="termivar-wordpress-discovery-") as temporary:
         work = Path(temporary)
-        os.chmod(work, 0o700)
         lab = DockerWordPressLab(runner, work)
         shutdown = False
         try:
@@ -1202,7 +1505,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             require(lab.origin is not None, "lab origin is unavailable")
 
             bundles = work / "bundles"
-            bundles.mkdir(mode=0o700)
+            bundles.mkdir(mode=PRIVATE_DIRECTORY_MODE)
             scenarios: dict[str, dict[str, Any]] = {}
 
             def run_case(
@@ -1213,10 +1516,15 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             ) -> list[tuple[str, str, int, tuple[str, ...]]]:
                 before = lab.request_log()
                 bundle = bundles / name
-                document, identity, _, _, process_metrics = _run_scan(
-                    runner, binary, lab.origin or "", bundle,
-                    wordpress_review=review, discovery=discovery, label=name,
-                )
+                try:
+                    document, identity, _, _, process_metrics = _run_scan(
+                        runner, binary, lab.origin or "", bundle,
+                        wordpress_review=review, discovery=discovery, label=name,
+                    )
+                except Exception:
+                    lab.assert_relay_healthy()
+                    raise
+                lab.assert_relay_healthy()
                 trace = lab.trace(before)
                 schema = None
                 quality = None
@@ -1284,6 +1592,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 "network_elapsed_is_not_parser_benchmark": True,
             }
 
+            lab.assert_relay_healthy()
             lab.shutdown()
             shutdown = True
             result["scenarios"] = scenarios
@@ -1373,7 +1682,7 @@ def write_evidence(output_dir: Path, evidence: dict[str, Any]) -> None:
     parent = output_dir.parent
     require(parent.is_dir() and not parent.is_symlink(), "output parent must be an existing directory")
     require(output_dir.name not in {"", ".", ".."}, "output directory has an invalid final name")
-    output_dir.mkdir(mode=0o700, exist_ok=False)
+    output_dir.mkdir(mode=PRIVATE_DIRECTORY_MODE, exist_ok=False)
     json_bytes = (json.dumps(evidence, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
     markdown_bytes = render_markdown(evidence).encode("utf-8")
     require(len(json_bytes) <= MAX_EVIDENCE_OUTPUT, "JSON evidence exceeds its bound")

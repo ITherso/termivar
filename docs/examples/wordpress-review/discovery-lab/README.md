@@ -5,9 +5,9 @@ a vulnerable WordPress image. It gives CI an independently declared ground
 truth for the explicitly selected `--wordpress-discovery` path.
 
 The controller is
-[`scripts/wordpress_discovery_lab_acceptance.py`](../../../../scripts/wordpress_discovery_lab_acceptance.py).
+[`scripts/wordpress_discovery_lab_acceptance.py`](https://github.com/ITherso/termivar/blob/main/scripts/wordpress_discovery_lab_acceptance.py).
 It uses the task-owned files under
-[`scripts/fixtures/wordpress-discovery-lab`](../../../../scripts/fixtures/wordpress-discovery-lab)
+[`scripts/fixtures/wordpress-discovery-lab`](https://github.com/ITherso/termivar/tree/main/scripts/fixtures/wordpress-discovery-lab)
 and checks the declarations in [`ground-truth.json`](ground-truth.json) against
 WP-CLI from inside the disposable lab before Termivar runs. Termivar itself
 never invokes WP-CLI and receives neither these declarations nor any lab
@@ -15,10 +15,13 @@ credential.
 
 ## Pinned stack
 
-The Linux x86-64 CI job uses architecture-specific manifest digests. The
-source tags and OCI index digests below were resolved through the Docker
-Registry V2 API on 2026-09-10; the controller never resolves a moving tag at
-runtime.
+The real lab requires a native Linux x86-64 Docker Engine because its bounded
+host relay connects directly to the container's private internal-bridge address.
+Docker Desktop hosts are rejected before Docker access rather than receiving a
+misleading timeout; static controller tests still run on other hosts. The CI job
+uses architecture-specific manifest digests. The source tags and OCI index
+digests below were resolved through the Docker Registry V2 API on 2026-09-10;
+the controller never resolves a moving tag at runtime.
 
 | Role | Source tag | OCI index | Pinned Linux/amd64 manifest |
 | --- | --- | --- | --- |
@@ -28,13 +31,16 @@ runtime.
 
 The controller pulls those three images first. It then builds the tiny derived
 fixture with `--network=none`, creates a Docker `--internal` bridge, gives the
-database no host port, and publishes WordPress only on a random
-`127.0.0.1` port. WordPress cron and automatic update traffic are disabled and
-the application is configured to block external HTTP. No host network,
-privileged container, Docker-socket mount, production volume, or public target
-is used. Task-owned containers, volumes, the bridge, and the derived fixture
-image are removed after the run; pulled upstream layers may remain in the
-runner's ordinary Docker cache.
+database no host port, and attaches WordPress only to that internal bridge. A
+bounded test-only TCP relay binds a random `127.0.0.1` port on the host and
+forwards raw bytes to Apache inside that bridge; the container itself publishes
+no port. The WordPress container runs as `www-data` and Apache listens on
+unprivileged container port 8080. WordPress cron and automatic update traffic
+are disabled and the application is configured to block external HTTP. No host
+network, privileged container, Docker-socket mount, production volume, or public
+target is used. Task-owned containers, volumes, the bridge, relay, and derived
+fixture image are removed after the run; pulled upstream layers may remain in
+the runner's ordinary Docker cache.
 
 The derived image contains only original GPL-2.0-or-later test code:
 

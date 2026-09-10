@@ -2,10 +2,14 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +22,19 @@ SPEC.loader.exec_module(runner)
 
 
 class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
+    def test_real_lab_rejects_non_linux_host_before_docker_access(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            with mock.patch.object(runner.platform, "system", return_value="Windows"):
+                with mock.patch.object(runner.shutil, "which") as which:
+                    with self.assertRaisesRegex(
+                        runner.AcceptanceError, "native Linux Docker engine"
+                    ):
+                        lab.start()
+                    which.assert_not_called()
+
     def test_fixture_inventory_and_digest_pins_are_closed(self):
         result = runner.validate_fixture()
         self.assertEqual(result["file_count"], 12)
@@ -69,10 +86,16 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
         self.assertIn('"--internal"', source)
-        self.assertIn('"--publish", "127.0.0.1::80"', source)
+        self.assertNotIn('"--publish"', source)
+        self.assertIn('super().__init__(("127.0.0.1", 0)', source)
         self.assertIn('"build", "--network=none", "--pull=false"', source)
         self.assertIn('"--env-file", str(self.wordpress_env)', source)
         self.assertEqual(source.count('"run", "--pull=never"'), 3)
+        self.assertNotIn('"--user", "0:0"', source)
+        dockerfile = (runner.FIXTURE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("Listen 8080", dockerfile)
+        self.assertIn("<VirtualHost *:8080>", dockerfile)
+        self.assertTrue(dockerfile.rstrip().endswith("USER www-data"))
         for forbidden_import in (
             "import urllib",
             "from urllib",
@@ -82,6 +105,162 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             self.assertNotIn(forbidden_import, source)
         for forbidden_executable in ('"curl"', '"wget"'):
             self.assertNotIn(forbidden_executable, source)
+
+    def test_loopback_relay_forwards_only_to_its_fixed_upstream(self):
+        class ResponseHandler(socketserver.BaseRequestHandler):
+            def handle(self):
+                request = self.request.recv(4096)
+                self.server.requests.append(request)
+                self.request.sendall(
+                    b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                )
+
+        upstream = socketserver.TCPServer(("127.0.0.1", 0), ResponseHandler)
+        upstream.requests = []
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        relay = runner.LoopbackTcpRelay("127.0.0.1", upstream.server_address[1])
+        relay_port = relay.start()
+        try:
+            with socket.create_connection(("127.0.0.1", relay_port), timeout=2) as client:
+                client.sendall(b"GET /fixed HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+                response = bytearray()
+                while payload := client.recv(4096):
+                    response.extend(payload)
+            self.assertIn(b"200 OK", response)
+            self.assertIn(b"GET /fixed HTTP/1.0", upstream.requests[0])
+        finally:
+            relay.stop()
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=2)
+        self.assertFalse(upstream_thread.is_alive())
+
+    def test_loopback_relay_stop_closes_an_active_handler(self):
+        connected = threading.Event()
+        release = threading.Event()
+
+        class HoldingHandler(socketserver.BaseRequestHandler):
+            def handle(self):
+                connected.set()
+                self.request.recv(1)
+                release.wait(timeout=2)
+
+        class ThreadedUpstream(socketserver.ThreadingTCPServer):
+            daemon_threads = True
+
+        upstream = ThreadedUpstream(("127.0.0.1", 0), HoldingHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        relay = runner.LoopbackTcpRelay("127.0.0.1", upstream.server_address[1])
+        relay_port = relay.start()
+        client = socket.create_connection(("127.0.0.1", relay_port), timeout=2)
+        client.sendall(b"x")
+        self.assertTrue(connected.wait(timeout=2))
+        started = runner.time.monotonic()
+        relay.stop()
+        self.assertLess(runner.time.monotonic() - started, 2)
+        client.close()
+        release.set()
+        upstream.shutdown()
+        upstream.server_close()
+        upstream_thread.join(timeout=2)
+        self.assertFalse(upstream_thread.is_alive())
+
+    def test_loopback_relay_can_close_before_start(self):
+        relay = runner.LoopbackTcpRelay("127.0.0.1", 1)
+        relay.stop()
+
+    def test_loopback_relay_reports_post_startup_upstream_failure(self):
+        relay = runner.LoopbackTcpRelay("127.0.0.1", 0)
+        relay_port = relay.start()
+        relay.acknowledge_startup()
+        with socket.create_connection(("127.0.0.1", relay_port), timeout=2) as client:
+            self.assertEqual(client.recv(1), b"")
+        deadline = runner.time.monotonic() + 2
+        while (relay._server.transport_failures() == 0
+               and runner.time.monotonic() < deadline):
+            runner.time.sleep(0.01)
+        with self.assertRaisesRegex(runner.AcceptanceError, "transport failure"):
+            relay.assert_healthy()
+        relay.stop()
+
+    def test_loopback_relay_reports_byte_limit_plus_one_and_still_stops(self):
+        received = threading.Event()
+
+        class DrainHandler(socketserver.BaseRequestHandler):
+            def handle(self):
+                received.set()
+                while self.request.recv(4096):
+                    pass
+
+        upstream = socketserver.TCPServer(("127.0.0.1", 0), DrainHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        old_limit = runner.MAX_RELAY_CONNECTION_BYTES
+        runner.MAX_RELAY_CONNECTION_BYTES = 8
+        relay = runner.LoopbackTcpRelay("127.0.0.1", upstream.server_address[1])
+        relay_port = relay.start()
+        relay.acknowledge_startup()
+        try:
+            with socket.create_connection(("127.0.0.1", relay_port), timeout=2) as client:
+                client.sendall(b"123456789")
+                client.shutdown(socket.SHUT_WR)
+                while client.recv(4096):
+                    pass
+            self.assertTrue(received.wait(timeout=2))
+            deadline = runner.time.monotonic() + 2
+            while (relay._server.limit_failures() == 0
+                   and runner.time.monotonic() < deadline):
+                runner.time.sleep(0.01)
+            with self.assertRaisesRegex(runner.AcceptanceError, "connection or byte bound"):
+                relay.assert_healthy()
+        finally:
+            relay.stop()
+            runner.MAX_RELAY_CONNECTION_BYTES = old_limit
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=2)
+        self.assertFalse(upstream_thread.is_alive())
+
+    def test_internal_container_address_rejects_network_or_address_drift(self):
+        network_name = "termivar-wp-net-0123456789ab"
+        network_id = "a" * 64
+        network = {
+            "Name": network_name,
+            "Id": network_id,
+            "Internal": True,
+            "IPAM": {"Config": [{"Subnet": "172.30.0.0/16"}]},
+        }
+        attachments = {
+            network_name: {"NetworkID": network_id, "IPAddress": "172.30.0.7"}
+        }
+        self.assertEqual(
+            runner._internal_container_address(network_name, network, attachments),
+            "172.30.0.7",
+        )
+        mutations = []
+        not_internal = copy.deepcopy(network)
+        not_internal["Internal"] = False
+        mutations.append((not_internal, attachments))
+        public_subnet = copy.deepcopy(network)
+        public_subnet["IPAM"]["Config"][0]["Subnet"] = "8.8.8.0/24"
+        mutations.append((public_subnet, attachments))
+        wrong_identity = copy.deepcopy(attachments)
+        wrong_identity[network_name]["NetworkID"] = "b" * 64
+        mutations.append((network, wrong_identity))
+        public_address = copy.deepcopy(attachments)
+        public_address[network_name]["IPAddress"] = "8.8.8.8"
+        mutations.append((network, public_address))
+        extra_network = copy.deepcopy(attachments)
+        extra_network["foreign"] = {"NetworkID": "c" * 64, "IPAddress": "172.31.0.2"}
+        mutations.append((network, extra_network))
+        for network_case, attachment_case in mutations:
+            with self.subTest(network=network_case, attachments=attachment_case):
+                with self.assertRaises(runner.AcceptanceError):
+                    runner._internal_container_address(
+                        network_name, network_case, attachment_case
+                    )
 
     def test_plain_permalink_oracle_tracks_current_core_index_form(self):
         self.assertEqual(
