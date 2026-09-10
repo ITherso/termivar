@@ -73,6 +73,8 @@ MAX_EVIDENCE_OUTPUT = 256 * 1024
 MAX_REPORT_PAYLOAD_BYTES = 16 * 1024 * 1024
 PRIVATE_DIRECTORY_MODE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
 WORDPRESS_CONTAINER_PORT = 8080
+WP_CLI_CONFIG_PATH = "/var/www/html/.termivar-wp-cli.yml"
+WP_CLI_REWRITE_CONFIG = b"apache_modules:\n  - mod_rewrite\n"
 MAX_RELAY_CONNECTION_BYTES = 64 * 1024 * 1024
 MAX_RELAY_CONCURRENT_CONNECTIONS = 16
 MAX_RELAY_TOTAL_CONNECTIONS = 256
@@ -823,8 +825,23 @@ class DockerWordPressLab:
         self.origin = f"http://127.0.0.1:{port}/"
         self._wait_for_loopback_relay(port)
         self.loopback_relay.acknowledge_startup()
+        self._install_wp_cli_rewrite_config()
         self._install_wordpress()
         database_env.unlink()
+
+    def _install_wp_cli_rewrite_config(self) -> None:
+        """Install the task-owned config needed for real hard rewrite flushes."""
+        self.docker(
+            "exec", "--interactive", self.wordpress, "sh", "-eu", "-c",
+            f"umask 077; cat > {WP_CLI_CONFIG_PATH}; "
+            f"test -f {WP_CLI_CONFIG_PATH}; "
+            f"! test -L {WP_CLI_CONFIG_PATH}; "
+            f"test \"$(wc -l < {WP_CLI_CONFIG_PATH})\" -eq 2; "
+            f"test \"$(sed -n '1p' {WP_CLI_CONFIG_PATH})\" = 'apache_modules:'; "
+            f"test \"$(sed -n '2p' {WP_CLI_CONFIG_PATH})\" = '  - mod_rewrite'",
+            label="WP-CLI rewrite configuration",
+            input_bytes=WP_CLI_REWRITE_CONFIG,
+        )
 
     def _wait_for_database(self) -> None:
         deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
@@ -894,6 +911,7 @@ class DockerWordPressLab:
                 "--env-file", str(self.wordpress_env),
                 "--user", "33:33", "--env", "HOME=/tmp",
                 "--env", "WP_CLI_DISABLE_AUTO_CHECK_UPDATE=1",
+                "--env", f"WP_CLI_CONFIG_PATH={WP_CLI_CONFIG_PATH}",
                 "--workdir", "/var/www/html", WORDPRESS_CLI_IMAGE, "wp", *arguments,
                 label=label, input_bytes=input_bytes,
             )
@@ -962,6 +980,37 @@ class DockerWordPressLab:
                 label=f"{permalink} permalink selection")
         self.wp(f"--path={path}", "rewrite", "flush", "--hard",
                 label=f"{permalink} permalink flush")
+        if permalink == "pretty":
+            self._assert_pretty_rewrite_file(path)
+
+    def _assert_pretty_rewrite_file(self, wordpress_path: str) -> None:
+        expected = {
+            "/var/www/html": (
+                "/var/www/html/.htaccess", "RewriteBase /",
+                "RewriteRule . /index.php [L]",
+            ),
+            "/var/www/html/blog": (
+                "/var/www/html/blog/.htaccess", "RewriteBase /blog/",
+                "RewriteRule . /blog/index.php [L]",
+            ),
+            "/var/www/html/cms": (
+                "/var/www/html/.htaccess", "RewriteBase /",
+                "RewriteRule . /index.php [L]",
+            ),
+        }
+        require(wordpress_path in expected, "unknown pretty-permalink fixture path")
+        rewrite_path, rewrite_base, final_rule = expected[wordpress_path]
+        self.docker(
+            "exec", self.wordpress, "sh", "-eu", "-c",
+            f"test -f {rewrite_path}; ! test -L {rewrite_path}; "
+            f"test -s {rewrite_path}; "
+            f"test \"$(wc -c < {rewrite_path})\" -le 16384; "
+            f"grep -Fxq '# BEGIN WordPress' {rewrite_path}; "
+            f"grep -Fxq '{rewrite_base}' {rewrite_path}; "
+            f"grep -Fxq '{final_rule}' {rewrite_path}; "
+            f"grep -Fxq '# END WordPress' {rewrite_path}",
+            label=f"{wordpress_path} pretty rewrite ground truth",
+        )
 
     def _application_url(self, path: str) -> str:
         require(self.origin is not None and self.origin.endswith("/"),
@@ -976,6 +1025,7 @@ class DockerWordPressLab:
             "exec", self.wordpress, "sh", "-eu", "-c",
             "mkdir /var/www/html/blog; "
             "find /var/www/html -mindepth 1 -maxdepth 1 ! -name blog "
+            f"! -name {Path(WP_CLI_CONFIG_PATH).name} "
             "-exec cp -a '{}' /var/www/html/blog/ ';'; "
             "cp -a /usr/src/termivar-sibling/shop /var/www/html/shop; "
             "rm -f /var/www/html/.htaccess",
@@ -1290,6 +1340,131 @@ def _validate_wordpress_execution_boundary(html_bytes: bytes) -> None:
         )
 
 
+def _validate_discovery_source_shape(source: dict[str, Any]) -> None:
+    """Validate the closed v2 source-row keys without requiring omitted metadata."""
+    kind = source.get("kind")
+    metadata_key = {
+        "rest_index": "namespaces",
+        "theme_stylesheet": "theme",
+        "plugin_readme": "plugin",
+    }.get(kind)
+    required_keys = {
+        "kind", "association", "resource_reference", "parent_depth", "outcome",
+        "request_attempted", "response_bytes", "evidence_reference_count",
+        "evidence_references",
+    }
+    if kind != "rest_index":
+        required_keys.add("component")
+    allowed_keys = required_keys | {"role_reference"}
+    if metadata_key is not None:
+        allowed_keys.add(metadata_key)
+    metadata_present = metadata_key in source if metadata_key is not None else False
+    metadata = source.get(metadata_key) if metadata_present else None
+    metadata_shape_valid = False
+    if metadata_key is not None and metadata_present == (source.get("outcome") == "observed"):
+        if not metadata_present:
+            metadata_shape_valid = True
+        elif kind == "rest_index":
+            metadata_shape_valid = (
+                isinstance(metadata, list)
+                and bool(metadata)
+                and all(isinstance(value, str) and value for value in metadata)
+            )
+        else:
+            metadata_fields = {
+                "theme_stylesheet": {
+                    "name", "version", "template", "requires_wordpress",
+                    "requires_php", "tested_up_to",
+                },
+                "plugin_readme": {
+                    "name", "stable_tag", "requires_wordpress", "requires_php",
+                    "tested_up_to",
+                },
+            }[kind]
+            metadata_shape_valid = (
+                isinstance(metadata, dict)
+                and set(metadata).issubset(metadata_fields)
+                and isinstance(metadata.get("name"), str)
+                and bool(metadata["name"])
+            )
+    component = source.get("component")
+    expected_component_kind = {
+        "theme_stylesheet": "theme",
+        "plugin_readme": "plugin",
+    }.get(kind)
+    component_shape_valid = (
+        "component" not in source
+        if kind == "rest_index"
+        else isinstance(component, dict)
+        and set(component) == {"kind", "slug"}
+        and component.get("kind") == expected_component_kind
+        and isinstance(component.get("slug"), str)
+        and bool(component["slug"])
+    )
+    association = source.get("association")
+    role_reference_present = "role_reference" in source
+    role_reference = source.get("role_reference")
+    ordinary_associations = {
+        "structured_advertisement", "operator_qualified_advertisement",
+        "observed_conventional", "explicit_operator", "same_theme_base_parent",
+    }
+    role_shape_valid = (
+        association == "invalid_advertisement"
+        and kind == "rest_index"
+        and source.get("outcome") == "invalid_advertisement"
+        and not role_reference_present
+    ) or (
+        association in ordinary_associations
+        and role_reference_present
+        and isinstance(role_reference, str)
+        and OPAQUE_REFERENCE_RE.fullmatch(role_reference) is not None
+    )
+    require(
+        metadata_key is not None
+        and required_keys.issubset(source)
+        and set(source).issubset(allowed_keys)
+        and metadata_shape_valid
+        and component_shape_valid
+        and role_shape_valid,
+        "discovery source row has an unexpected shape",
+    )
+
+
+def _bounded_discovery_source_outcomes(document: dict[str, Any]) -> str:
+    """Return only closed source kind/outcome tokens for private-safe diagnostics."""
+    discovery = document.get("wordpress_discovery")
+    if not isinstance(discovery, dict):
+        return "unavailable"
+    sources = discovery.get("sources")
+    if not isinstance(sources, list):
+        return "unavailable"
+    valid_kinds = {"rest_index", "theme_stylesheet", "plugin_readme"}
+    valid_outcomes = {
+        "observed", "no_metadata", "not_found", "unauthorized", "rate_limited",
+        "redirect_observed", "unsupported_content", "invalid_advertisement",
+        "malformed", "truncated", "request_failed", "budget_exhausted",
+        "cancelled", "deadline_exceeded", "not_selected_by_limit",
+        "not_attempted_after_throttle",
+    }
+    entries = []
+    for source in sources[:12]:
+        if not isinstance(source, dict):
+            entries.append("invalid:invalid")
+            continue
+        kind = source.get("kind")
+        outcome = source.get("outcome")
+        safe_kind = kind if isinstance(kind, str) and kind in valid_kinds else "invalid"
+        safe_outcome = (
+            outcome
+            if isinstance(outcome, str) and outcome in valid_outcomes
+            else "invalid"
+        )
+        entries.append(f"{safe_kind}:{safe_outcome}")
+    if len(sources) > 12:
+        entries.append("truncated")
+    return ",".join(entries) if entries else "empty"
+
+
 def _validate_discovery_document(
     document: dict[str, Any],
     *,
@@ -1338,23 +1513,7 @@ def _validate_discovery_document(
             "discovery audit omits its source rows")
     for source in sources:
         require(isinstance(source, dict), "discovery source row is not an object")
-        kind = source.get("kind")
-        metadata_key = {
-            "rest_index": "namespaces",
-            "theme_stylesheet": "theme",
-            "plugin_readme": "plugin",
-        }.get(kind)
-        required_keys = {
-            "kind", "association", "resource_reference", "role_reference",
-            "parent_depth", "outcome", "request_attempted", "response_bytes",
-            "evidence_reference_count", "evidence_references",
-        }
-        if metadata_key is not None:
-            required_keys.add(metadata_key)
-        if kind != "rest_index":
-            required_keys.add("component")
-        require(metadata_key is not None and set(source) == required_keys,
-                "discovery source row has an unexpected shape")
+        _validate_discovery_source_shape(source)
     layout = discovery.get("layout")
     expected_layout_keys = {
         "application_reference", "roles", "skipped_foreign_origin_count",
@@ -2468,11 +2627,17 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                     _validate_wordpress_execution_boundary(
                         (bundle / "assessment.html").read_bytes()
                     )
-                    schema = _validate_discovery_document(
-                        document,
-                        generator_visible=not name.startswith("suppressed-"),
-                        oracle=discovery_oracle,
-                    )
+                    try:
+                        schema = _validate_discovery_document(
+                            document,
+                            generator_visible=not name.startswith("suppressed-"),
+                            oracle=discovery_oracle,
+                        )
+                    except AcceptanceError as error:
+                        outcomes = _bounded_discovery_source_outcomes(document)
+                        raise AcceptanceError(
+                            f"{name}: {error}; source_outcomes={outcomes}"
+                        ) from error
                     if discovery_oracle is None or discovery_oracle.full_component_set:
                         quality = _discovery_quality_metrics(
                             document, generator_visible=not name.startswith("suppressed-")

@@ -1057,6 +1057,89 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                         lab.start()
                     which.assert_not_called()
 
+    def test_wp_cli_rewrite_config_is_exact_and_used_by_nonroot_cli(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            calls = []
+
+            def fake_docker(*arguments, **kwargs):
+                calls.append((arguments, kwargs))
+                return runner.CommandResult(b"ok", b"", 0)
+
+            lab.docker = fake_docker
+            lab._install_wp_cli_rewrite_config()
+            config_arguments, config_kwargs = calls.pop(0)
+            self.assertEqual(config_arguments[:4], (
+                "exec", "--interactive", lab.wordpress, "sh"
+            ))
+            self.assertEqual(
+                config_kwargs["input_bytes"],
+                b"apache_modules:\n  - mod_rewrite\n",
+            )
+            self.assertIn(runner.WP_CLI_CONFIG_PATH, config_arguments[-1])
+
+            lab.wp("rewrite", "flush", "--hard", label="synthetic hard flush")
+            run_arguments = calls[0][0]
+            self.assertIn("--volumes-from", run_arguments)
+            self.assertIn("33:33", run_arguments)
+            self.assertIn(
+                f"WP_CLI_CONFIG_PATH={runner.WP_CLI_CONFIG_PATH}",
+                run_arguments,
+            )
+            self.assertNotIn("--mount", run_arguments)
+
+    def test_pretty_rewrite_ground_truth_uses_each_effective_home(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            commands = []
+
+            def fake_docker(*arguments, **_kwargs):
+                commands.append(arguments[-1])
+                return runner.CommandResult(b"", b"", 0)
+
+            lab.docker = fake_docker
+            for path in (
+                "/var/www/html", "/var/www/html/blog", "/var/www/html/cms"
+            ):
+                lab._assert_pretty_rewrite_file(path)
+            self.assertIn("RewriteBase /", commands[0])
+            self.assertIn("RewriteRule . /index.php [L]", commands[0])
+            self.assertIn("RewriteBase /blog/", commands[1])
+            self.assertIn("RewriteRule . /blog/index.php [L]", commands[1])
+            self.assertIn("/var/www/html/.htaccess", commands[2])
+            self.assertIn("RewriteRule . /index.php [L]", commands[2])
+            with self.assertRaisesRegex(
+                runner.AcceptanceError, "unknown pretty-permalink fixture path"
+            ):
+                lab._assert_pretty_rewrite_file("/var/www/html/other")
+
+    def test_blog_copy_excludes_the_wp_cli_control_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            lab.origin = "http://127.0.0.1:8080/"
+            docker_calls = []
+            lab.docker = lambda *arguments, **_kwargs: (
+                docker_calls.append(arguments)
+                or runner.CommandResult(b"", b"", 0)
+            )
+            lab.wp = lambda *_arguments, **_kwargs: runner.CommandResult(b"", b"", 0)
+            lab.configure_at = lambda *_arguments, **_kwargs: None
+
+            self.assertEqual(
+                lab.prepare_blog_application(), "http://127.0.0.1:8080/blog/"
+            )
+            copy_command = docker_calls[0][-1]
+            self.assertIn(
+                f"! -name {Path(runner.WP_CLI_CONFIG_PATH).name}",
+                copy_command,
+            )
+
     def test_fixture_inventory_and_digest_pins_are_closed(self):
         result = runner.validate_fixture()
         self.assertEqual(result["file_count"], 14)
@@ -1425,6 +1508,172 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             runner._validate_discovery_document(
                 unexpected_source_field, generator_visible=True, oracle=oracle
             )
+
+    def test_discovery_source_shape_accepts_closed_sparse_metadata_rows(self):
+        common = {
+            "association": "invalid_advertisement",
+            "resource_reference": "sha256:" + "4" * 64,
+            "parent_depth": 0,
+            "outcome": "invalid_advertisement",
+            "request_attempted": False,
+            "response_bytes": 0,
+            "evidence_reference_count": 0,
+            "evidence_references": [],
+        }
+        rest = {"kind": "rest_index", **common}
+        runner._validate_discovery_source_shape(rest)
+
+        runner._validate_discovery_source_shape({
+            "kind": "rest_index",
+            "association": "structured_advertisement",
+            "resource_reference": "sha256:" + "7" * 64,
+            "role_reference": REST_REFERENCE,
+            "parent_depth": 0,
+            "outcome": "no_metadata",
+            "request_attempted": True,
+            "response_bytes": 16,
+            "evidence_reference_count": 1,
+            "evidence_references": ["evidence-0001"],
+        })
+
+        for kind, component in (
+            ("theme_stylesheet", {"kind": "theme", "slug": "termivar-child"}),
+            ("plugin_readme", {"kind": "plugin", "slug": "termivar-plugin"}),
+        ):
+            with self.subTest(kind=kind):
+                runner._validate_discovery_source_shape({
+                    "kind": kind,
+                    "association": "observed_conventional",
+                    "resource_reference": "sha256:" + "5" * 64,
+                    "role_reference": "sha256:" + "6" * 64,
+                    "component": component,
+                    "parent_depth": 0,
+                    "outcome": "no_metadata",
+                    "request_attempted": True,
+                    "response_bytes": 16,
+                    "evidence_reference_count": 1,
+                    "evidence_references": ["evidence-0001"],
+                })
+
+        observed = copy.deepcopy(self.discovery_document()["wordpress_discovery"]["sources"])
+        for source in observed:
+            runner._validate_discovery_source_shape(source)
+
+    def test_discovery_source_diagnostics_are_bounded_and_value_safe(self):
+        sources = [
+            {"kind": "rest_index", "outcome": "not_found"},
+            {"kind": ["private-value"], "outcome": {"secret": True}},
+        ]
+        sources.extend(
+            {"kind": "private-value", "outcome": "secret-value"}
+            for _ in range(11)
+        )
+        summary = runner._bounded_discovery_source_outcomes({
+            "wordpress_discovery": {"sources": sources}
+        })
+        self.assertTrue(summary.startswith("rest_index:not_found,invalid:invalid"))
+        self.assertTrue(summary.endswith(",truncated"))
+        self.assertNotIn("private-value", summary)
+        self.assertNotIn("secret-value", summary)
+        self.assertEqual(
+            runner._bounded_discovery_source_outcomes({
+                "wordpress_discovery": ["not-an-object"]
+            }),
+            "unavailable",
+        )
+
+    def test_sparse_source_shape_cannot_satisfy_the_real_cms_oracle(self):
+        document = copy.deepcopy(self.discovery_document())
+        source = document["wordpress_discovery"]["sources"][1]
+        source["outcome"] = "no_metadata"
+        source.pop("theme")
+
+        runner._validate_discovery_source_shape(source)
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "source outcome, evidence, or byte accounting differs",
+        ):
+            runner._validate_discovery_document(
+                document,
+                generator_visible=True,
+            )
+
+    def test_discovery_source_shape_rejects_missing_cross_kind_and_extra_fields(self):
+        sources = self.discovery_document()["wordpress_discovery"]["sources"]
+        cases = []
+
+        unknown_kind = copy.deepcopy(sources[0])
+        unknown_kind["kind"] = "unknown"
+        cases.append(unknown_kind)
+
+        missing_required = copy.deepcopy(sources[1])
+        missing_required.pop("component")
+        cases.append(missing_required)
+
+        rest_component = copy.deepcopy(sources[0])
+        rest_component["component"] = {"kind": "core", "slug": "wordpress"}
+        cases.append(rest_component)
+
+        theme_plugin_metadata = copy.deepcopy(sources[1])
+        theme_plugin_metadata["plugin"] = {"name": "wrong metadata class"}
+        cases.append(theme_plugin_metadata)
+
+        plugin_namespaces = copy.deepcopy(sources[3])
+        plugin_namespaces["namespaces"] = ["wp/v2"]
+        cases.append(plugin_namespaces)
+
+        invalid_metadata_type = copy.deepcopy(sources[0])
+        invalid_metadata_type["namespaces"] = {"wp/v2": True}
+        cases.append(invalid_metadata_type)
+
+        missing_observed_metadata = copy.deepcopy(sources[1])
+        missing_observed_metadata.pop("theme")
+        cases.append(missing_observed_metadata)
+
+        empty_observed_metadata = copy.deepcopy(sources[1])
+        empty_observed_metadata["theme"] = {}
+        cases.append(empty_observed_metadata)
+
+        empty_observed_namespaces = copy.deepcopy(sources[0])
+        empty_observed_namespaces["namespaces"] = []
+        cases.append(empty_observed_namespaces)
+
+        unexpected_inner_metadata = copy.deepcopy(sources[1])
+        unexpected_inner_metadata["theme"]["unexpected"] = "value"
+        cases.append(unexpected_inner_metadata)
+
+        metadata_on_non_observed = copy.deepcopy(sources[1])
+        metadata_on_non_observed["outcome"] = "no_metadata"
+        cases.append(metadata_on_non_observed)
+
+        missing_role_binding = copy.deepcopy(sources[1])
+        missing_role_binding.pop("role_reference")
+        cases.append(missing_role_binding)
+
+        role_on_invalid_advertisement = {
+            "kind": "rest_index",
+            "association": "invalid_advertisement",
+            "resource_reference": "sha256:" + "4" * 64,
+            "role_reference": REST_REFERENCE,
+            "parent_depth": 0,
+            "outcome": "invalid_advertisement",
+            "request_attempted": False,
+            "response_bytes": 0,
+            "evidence_reference_count": 0,
+            "evidence_references": [],
+        }
+        cases.append(role_on_invalid_advertisement)
+
+        unexpected = copy.deepcopy(sources[0])
+        unexpected["unexpected"] = True
+        cases.append(unexpected)
+
+        for index, source in enumerate(cases):
+            with self.subTest(index=index):
+                with self.assertRaisesRegex(
+                    runner.AcceptanceError, "source row has an unexpected shape"
+                ):
+                    runner._validate_discovery_source_shape(source)
 
     def test_exact_four_request_delta_preserves_base_and_extra_order(self):
         review = [("GET", "/", 200, ()), ("HEAD", "/", 200, ())]
