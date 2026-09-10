@@ -398,6 +398,7 @@ class ProcessRunner:
                 completed = subprocess.run(
                     [
                         "/usr/bin/time",
+                        "--quiet",
                         "-f",
                         "maximum_resident_set_kib=%M",
                         "-o",

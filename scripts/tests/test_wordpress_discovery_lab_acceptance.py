@@ -1094,6 +1094,21 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         else:
             self.assertEqual(result.peak_memory["status"], "not_measured")
 
+    def test_process_runner_measures_an_expected_nonzero_exit_without_status_noise(self):
+        result = runner.ProcessRunner().run(
+            [sys.executable, "-c", "raise SystemExit(7)"],
+            expected=7,
+            label="expected nonzero process metric self-test",
+            measure_peak_memory=True,
+        )
+        self.assertEqual(result.returncode, 7)
+        if runner.platform.system() == "Linux" and Path("/usr/bin/time").is_file():
+            self.assertEqual(result.peak_memory["status"], "measured")
+            self.assertEqual(result.peak_memory["unit"], "KiB")
+            self.assertGreater(result.peak_memory["value"], 0)
+        else:
+            self.assertEqual(result.peak_memory["status"], "not_measured")
+
     def test_source_contains_no_broad_or_privileged_docker_operation(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         for forbidden in (
