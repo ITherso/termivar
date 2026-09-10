@@ -91,7 +91,10 @@ The exact origin root retains `authorized-root@1`. Eligible discovered
 exact-origin subjects can enter this completed-report path through opaque,
 deterministic `discovered-resource@1` identities; renderers receive only the
 existing references and digests, never query values or readable path material.
-A non-root starting target remains typed incompleteness.
+A non-root starting target remains typed incompleteness unless the explicitly
+selected WordPress metadata-discovery path binds it to a validated application
+reference. The projected item keeps the stable origin-root subject; deployment
+scope is carried by the versioned WordPress discovery audit.
 
 ## CLI assessment output
 

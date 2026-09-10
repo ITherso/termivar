@@ -208,7 +208,8 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         serde_json::json!([
             "--profile web-review",
             "--wordpress-review",
-            "--wordpress-discovery"
+            "--wordpress-discovery",
+            "optional --wordpress-layout FILE"
         ])
     );
     let discovery_limit = wordpress_discovery["limitation"]

@@ -1,0 +1,2 @@
+/* Test-only sibling application asset. */
+body { --termivar-sibling-decoy: 1; }

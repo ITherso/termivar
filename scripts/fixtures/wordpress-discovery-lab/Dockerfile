@@ -9,6 +9,7 @@ COPY themes/termivar-child/ /usr/src/wordpress/wp-content/themes/termivar-child/
 COPY plugins/termivar-metadata-lab/ /usr/src/wordpress/wp-content/plugins/termivar-metadata-lab/
 COPY plugins/termivar-hidden-lab/ /usr/src/wordpress/wp-content/plugins/termivar-hidden-lab/
 COPY plugins/termivar-generator-control/ /usr/src/wordpress/wp-content/plugins/termivar-generator-control/
+COPY sibling-shop/ /usr/src/termivar-sibling/shop/
 
 # The base entrypoint copies this test-owned content into the fresh WordPress
 # volume. Building the fixture needs no network after the pinned base is pulled.
@@ -17,12 +18,14 @@ RUN find /usr/src/wordpress/wp-content/themes/termivar-parent \
          /usr/src/wordpress/wp-content/plugins/termivar-metadata-lab \
          /usr/src/wordpress/wp-content/plugins/termivar-hidden-lab \
          /usr/src/wordpress/wp-content/plugins/termivar-generator-control \
+         /usr/src/termivar-sibling/shop \
          -type d -exec chmod 0755 '{}' + \
  && find /usr/src/wordpress/wp-content/themes/termivar-parent \
          /usr/src/wordpress/wp-content/themes/termivar-child \
          /usr/src/wordpress/wp-content/plugins/termivar-metadata-lab \
          /usr/src/wordpress/wp-content/plugins/termivar-hidden-lab \
          /usr/src/wordpress/wp-content/plugins/termivar-generator-control \
+         /usr/src/termivar-sibling/shop \
          -type f -exec chmod 0644 '{}' +
 
 # Replace the default access-log format with a bounded presence-only audit for

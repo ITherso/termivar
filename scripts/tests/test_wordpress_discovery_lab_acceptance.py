@@ -26,13 +26,23 @@ BASE_FINGERPRINT = "sha256:" + "1" * 64
 DISCOVERY_FINGERPRINT = "sha256:" + "2" * 64
 BASE_CAPABILITY = "technology.wordpress-surface-observed@1"
 DISCOVERY_CAPABILITY = "technology.wordpress-metadata-source-response-observed@1"
+APPLICATION_REFERENCE = "sha256:" + "a" * 64
+REST_REFERENCE = "sha256:" + "b" * 64
+THEME_REFERENCE = "sha256:" + "c" * 64
+PLUGIN_REFERENCE = "sha256:" + "d" * 64
 DISCOVERY_METHOD = {
-    "schema": "security.wordpress-discovery-audit/v1",
+    "schema": "security.wordpress-discovery-audit/v2",
     "capability_id": "technology.wordpress-metadata-discovery@1",
-    "policy_id": "termivar.wordpress-metadata-discovery/v1",
+    "policy_id": "termivar.wordpress-deployment-aware-metadata-discovery/v1",
     "selected": True,
     "method": "get",
     "credential_mode": "anonymous",
+    "layout_roles": [
+        {"role": "core", "basis": "none"},
+        {"role": "themes", "basis": "none"},
+        {"role": "plugins", "basis": "none"},
+        {"role": "rest_index", "basis": "structured_advertisement"},
+    ],
 }
 BEFORE_METHOD = {"schema": "security.wordpress-review-audit/v1"}
 AFTER_METHOD = {
@@ -68,12 +78,28 @@ AFTER_COVERAGE = {
             "request_attempted": True,
             "response_bytes": 16,
             "evidence_reference_count": 1,
+            "association": "structured_advertisement",
+            "resource_reference": "sha256:" + "e" * 64,
+            "role_reference": REST_REFERENCE,
         }],
+        "layout_roles": [
+            {"role": "core", "status": "unresolved", "candidate_count": 0},
+            {"role": "themes", "status": "unresolved", "candidate_count": 0},
+            {"role": "plugins", "status": "unresolved", "candidate_count": 0},
+            {"role": "rest_index", "status": "exact", "candidate_count": 1},
+        ],
+        "skipped_foreign_origin_count": 0,
+        "skipped_sibling_application_count": 0,
+        "conflicting_association_count": 0,
     },
 }
-DISCOVERY_CONTENT = {
-    "rest_indexes": [{"kind": "rest_index", "namespaces": ["wp/v2"]}],
-}
+DISCOVERY_CONTENT = {"rest_indexes": [{
+    "kind": "rest_index",
+    "namespaces": ["wp/v2"],
+    "association": "structured_advertisement",
+    "resource_reference": "sha256:" + "e" * 64,
+    "role_reference": REST_REFERENCE,
+}]}
 
 
 def synthetic_assessment_item(fingerprint, capability_id, title):
@@ -242,7 +268,7 @@ def wordpress_comparison(*, discovery, controlled):
         }
 
     empty_entities = {
-        "paired_unchanged_count": 1,
+        "paired_unchanged_count": 0 if controlled else 1,
         "paired_changed": [],
         "only_in_before": [],
         "only_in_after": [],
@@ -267,7 +293,7 @@ def wordpress_comparison(*, discovery, controlled):
             "termivar-wordpress-review-comparison/v2"
             if discovery else "termivar-wordpress-review-comparison/v1"
         ),
-        "status": "compared",
+        "status": "not_compared" if controlled else "compared",
         "scope_assurance": "operator-declared",
         "coverage": facet(
             "changed" if controlled else "not_established",
@@ -291,6 +317,8 @@ def wordpress_comparison(*, discovery, controlled):
         },
         "interpretation_limits": [],
     }
+    if controlled:
+        comparison["reason"] = "application_scope_unknown"
     if discovery:
         comparison["discovery_source_content"] = (
             facet("not_comparable", ["audit_presence"], None, DISCOVERY_CONTENT)
@@ -433,6 +461,20 @@ def expected_offline_arguments(scenarios):
         binary, "report", "compare", "--before", str(before / "assessment.json"),
         "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
     ]
+    if {"custom-no-layout-discovery", "custom-layout-discovery"} <= scenarios.keys():
+        before = Path(scenarios["custom-no-layout-discovery"]["_bundle"])
+        after = Path(scenarios["custom-layout-discovery"]["_bundle"])
+        expected["offline custom layout comparison"] = [
+            binary, "report", "compare", "--before", str(before / "assessment.json"),
+            "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
+        ]
+    if {"blog-pretty-discovery", "custom-layout-discovery"} <= scenarios.keys():
+        before = Path(scenarios["blog-pretty-discovery"]["_bundle"])
+        after = Path(scenarios["custom-layout-discovery"]["_bundle"])
+        expected["offline application-scope mismatch comparison"] = [
+            binary, "report", "compare", "--before", str(before / "assessment.json"),
+            "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
+        ]
     return expected
 
 
@@ -508,9 +550,9 @@ def offline_fixture(root, *, discovery_capability=DISCOVERY_CAPABILITY):
             "advisories": [],
         },
         "wordpress_discovery": {
-            "schema": "security.wordpress-discovery-audit/v1",
+            "schema": "security.wordpress-discovery-audit/v2",
             "capability_id": "technology.wordpress-metadata-discovery@1",
-            "policy_id": "termivar.wordpress-metadata-discovery/v1",
+            "policy_id": "termivar.wordpress-deployment-aware-metadata-discovery/v1",
             "selected": True,
             "method": "get",
             "credential_mode": "anonymous",
@@ -523,8 +565,28 @@ def offline_fixture(root, *, discovery_capability=DISCOVERY_CAPABILITY):
             "committed_response_count": 1,
             "response_bytes": 16,
             "source_count": 1,
+            "layout": {
+                "application_reference": APPLICATION_REFERENCE,
+                "roles": [
+                    {"role": "core", "status": "unresolved", "basis": "none",
+                     "candidate_count": 0},
+                    {"role": "themes", "status": "unresolved", "basis": "none",
+                     "candidate_count": 0},
+                    {"role": "plugins", "status": "unresolved", "basis": "none",
+                     "candidate_count": 0},
+                    {"role": "rest_index", "status": "exact",
+                     "basis": "structured_advertisement", "reference": REST_REFERENCE,
+                     "candidate_count": 1},
+                ],
+                "skipped_foreign_origin_count": 0,
+                "skipped_sibling_application_count": 0,
+                "conflicting_association_count": 0,
+            },
             "sources": [{
                 "kind": "rest_index",
+                "association": "structured_advertisement",
+                "resource_reference": "sha256:" + "e" * 64,
+                "role_reference": REST_REFERENCE,
                 "parent_depth": 0,
                 "outcome": "observed",
                 "request_attempted": True,
@@ -600,7 +662,262 @@ def offline_fixture(root, *, discovery_capability=DISCOVERY_CAPABILITY):
     return scenarios, responses, (before_raw, after_raw)
 
 
+def layout_offline_fixture(root):
+    scenarios, responses, originals = offline_fixture(root)
+    items = [
+        synthetic_assessment_item(
+            BASE_FINGERPRINT, BASE_CAPABILITY, "WordPress surface hints observed"
+        ),
+        synthetic_discovery_item(),
+    ]
+
+    def audit(application_reference, declared):
+        return {
+            "wordpress_review": {
+                "schema": "security.wordpress-review-audit/v7",
+                "review_basis_schema": "security.wordpress-review-audit/v1",
+            },
+            "wordpress_discovery": {
+                "schema": "security.wordpress-discovery-audit/v2",
+                "layout": {
+                    "application_reference": application_reference,
+                    "declaration": declared,
+                },
+            },
+        }
+
+    raw_by_name = {}
+    for name, application_reference, declared in (
+        ("custom-no-layout-discovery", APPLICATION_REFERENCE, None),
+        ("custom-layout-discovery", APPLICATION_REFERENCE, {"sha256": "f" * 64}),
+        ("blog-pretty-discovery", "sha256:" + "9" * 64, None),
+    ):
+        bundle, raw = write_synthetic_bundle(
+            root, name, copy.deepcopy(items),
+            optional_audits=audit(application_reference, declared),
+        )
+        scenarios[name] = {
+            "bundle": runner._report_identity(bundle),
+            "_bundle": str(bundle),
+            "layout_application_reference": application_reference,
+        }
+        raw_by_name[name] = raw
+        responses[f"offline verification {name}"] = {
+            "schema": "termivar-report-verification/v1",
+            "status": "integrity_match",
+        }
+        responses[f"offline self comparison {name}"] = self_comparison(raw, items)
+
+    def unchanged_groups():
+        rows = []
+        for item in items:
+            projection = projection_from_item(item)
+            rows.append(comparison_item(
+                item["fingerprint"], item["capability_id"], before=projection,
+                after=copy.deepcopy(projection), changed_fields=[],
+            ))
+        return {
+            "only_in_after": [], "only_in_before": [], "changed": [],
+            "unchanged": rows,
+        }
+
+    custom = comparison_document(
+        raw_by_name["custom-no-layout-discovery"], 2,
+        raw_by_name["custom-layout-discovery"], 2,
+        groups=unchanged_groups(),
+    )
+    custom_wordpress = wordpress_comparison(discovery=True, controlled=False)
+    for facet_name in ("methodology", "coverage"):
+        facet = custom_wordpress[facet_name]
+        facet.update({
+            "status": "changed",
+            "before": {"layout": "unresolved"},
+            "after": {"layout": "operator_declaration"},
+            "changed_fields": ["layout"],
+        })
+    custom["wordpress_review_comparison"] = custom_wordpress
+    responses["offline custom layout comparison"] = custom
+
+    mismatch = comparison_document(
+        raw_by_name["blog-pretty-discovery"], 2,
+        raw_by_name["custom-layout-discovery"], 2,
+        groups=unchanged_groups(),
+    )
+    mismatch_wordpress = wordpress_comparison(discovery=True, controlled=False)
+    mismatch_wordpress.update({
+        "status": "not_compared",
+        "reason": "application_scope_mismatch",
+    })
+    mismatch_wordpress["components"] = {
+        "paired_unchanged_count": 0, "paired_changed": [],
+        "only_in_before": [], "only_in_after": [],
+    }
+    mismatch_wordpress["advisories"] = copy.deepcopy(
+        mismatch_wordpress["components"]
+    )
+    mismatch["wordpress_review_comparison"] = mismatch_wordpress
+    responses["offline application-scope mismatch comparison"] = mismatch
+    return scenarios, responses, originals
+
+
 class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
+    def test_nonroot_trace_baseline_is_ordinary_typed_incomplete_web_review(self):
+        process = mock.Mock()
+        diagnostic = {
+            "schema_version": "web-assessment/v2",
+            "disposition": "incomplete",
+            "incomplete_reasons": ["synthetic non-root subject"],
+            "assessment": {
+                "report": {
+                    "assessment_items": {"projection_status": "unavailable"}
+                }
+            },
+        }
+        process.run.return_value = runner.CommandResult(
+            json.dumps(diagnostic, separators=(",", ":")).encode("utf-8"),
+            b"progress\n",
+            1,
+            0.125,
+            {"status": "not_measured", "reason": "synthetic"},
+        )
+
+        measured = runner._run_nonroot_trace_baseline(
+            process,
+            Path("synthetic-termivar"),
+            "http://127.0.0.1:8080/blog/",
+            label="synthetic non-root baseline",
+        )
+
+        process.run.assert_called_once_with(
+            [
+                Path("synthetic-termivar"),
+                "scan",
+                "http://127.0.0.1:8080/blog/",
+                "--profile",
+                "web-review",
+                "--format",
+                "json",
+                "--progress",
+            ],
+            expected=1,
+            label="synthetic non-root baseline",
+            timeout=300,
+            measure_peak_memory=True,
+        )
+        self.assertEqual(measured["exit_code"], 1)
+        self.assertTrue(measured["typed_incomplete"])
+        self.assertEqual(measured["diagnostic_schema"], "web-assessment/v2")
+        self.assertEqual(measured["incomplete_reason_count"], 1)
+        self.assertEqual(measured["elapsed_milliseconds"], 125.0)
+
+    def test_nonroot_trace_baseline_rejects_other_exit_one_diagnostics(self):
+        valid = {
+            "schema_version": "web-assessment/v2",
+            "disposition": "incomplete",
+            "incomplete_reasons": ["synthetic non-root subject"],
+            "assessment": {
+                "report": {
+                    "assessment_items": {"projection_status": "unavailable"}
+                }
+            },
+        }
+        malformed = [
+            {**valid, "schema_version": "web-assessment/v1"},
+            {**valid, "disposition": "failed"},
+            {**valid, "incomplete_reasons": []},
+            {**valid, "incomplete_reasons": "synthetic"},
+            {**valid, "assessment": {}},
+            {
+                **valid,
+                "assessment": {
+                    "report": {
+                        "assessment_items": {
+                            "projection_status": "available",
+                            "items": [],
+                        }
+                    }
+                },
+            },
+        ]
+        for diagnostic in malformed:
+            with self.subTest(diagnostic=diagnostic):
+                process = mock.Mock()
+                process.run.return_value = runner.CommandResult(
+                    json.dumps(diagnostic, separators=(",", ":")).encode("utf-8"),
+                    b"progress\n",
+                    1,
+                )
+                with self.assertRaises(runner.AcceptanceError):
+                    runner._run_nonroot_trace_baseline(
+                        process,
+                        Path("synthetic-termivar"),
+                        "http://127.0.0.1:8080/blog/",
+                        label="synthetic non-root baseline",
+                    )
+
+        process = mock.Mock()
+        process.run.return_value = runner.CommandResult(
+            json.dumps(valid, separators=(",", ":")).encode("utf-8"),
+            b"progress\n",
+            0,
+        )
+        with self.assertRaisesRegex(runner.AcceptanceError, "typed incompleteness"):
+            runner._run_nonroot_trace_baseline(
+                process,
+                Path("synthetic-termivar"),
+                "http://127.0.0.1:8080/blog/",
+                label="synthetic non-root baseline",
+            )
+
+    def test_run_scan_passes_layout_only_with_explicit_discovery(self):
+        class ScanProcessRunner:
+            def __init__(self, expected, bundle):
+                self.expected = expected
+                self.bundle = bundle
+                self.calls = []
+
+            def run(self, arguments, *, label, **kwargs):
+                argv = [str(argument) for argument in arguments]
+                self.calls.append((label, argv, kwargs))
+                if argv != self.expected:
+                    raise AssertionError(f"unexpected synthetic scan arguments: {argv!r}")
+                write_synthetic_bundle(
+                    self.bundle.parent, self.bundle.name,
+                    [synthetic_assessment_item(
+                        BASE_FINGERPRINT, BASE_CAPABILITY,
+                        "Synthetic layout-aware observation",
+                    )],
+                )
+                return runner.CommandResult(
+                    b"", b"synthetic progress\n", 0, 0.125,
+                    {"status": "not_measured", "reason": "synthetic"},
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            layout = root / "layout.json"
+            layout_bytes = b'{"schema":"security.wordpress-layout/v1"}\n'
+            layout.write_bytes(layout_bytes)
+            binary = Path("synthetic-termivar")
+            target = "http://127.0.0.1:8080/blog/"
+            expected = [
+                str(binary), "scan", target, "--profile", "web-review", "--progress",
+                "--report-dir", str(bundle), "--wordpress-review",
+                "--wordpress-discovery", "--wordpress-layout", str(layout),
+            ]
+            fake = ScanProcessRunner(expected, bundle)
+            document, _, stdout, stderr, metrics = runner._run_scan(
+                fake, binary, target, bundle, wordpress_review=True,
+                discovery=True, layout_path=layout, label="synthetic layout scan",
+            )
+            self.assertEqual(document["status"], "complete")
+            self.assertEqual(stdout, b"")
+            self.assertEqual(stderr, b"synthetic progress\n")
+            self.assertEqual(metrics["elapsed_milliseconds"], 125.0)
+            self.assertEqual(layout.read_bytes(), layout_bytes)
+            self.assertEqual(len(fake.calls), 1)
+
     def test_real_lab_rejects_non_linux_host_before_docker_access(self):
         with tempfile.TemporaryDirectory() as temporary:
             lab = runner.DockerWordPressLab(
@@ -616,7 +933,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
 
     def test_fixture_inventory_and_digest_pins_are_closed(self):
         result = runner.validate_fixture()
-        self.assertEqual(result["file_count"], 12)
+        self.assertEqual(result["file_count"], 14)
         self.assertRegex(result["fixture_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(result["ground_truth_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(set(result["image_references"]), set(runner.IMAGE_REFERENCES))
@@ -868,6 +1185,106 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         self.assertNotIn("/?rest_route=/", runner.EXPECTED_DISCOVERY_PATHS["plain"])
         self.assertEqual(runner.EXPECTED_DISCOVERY_PATHS["pretty"][0], "/wp-json/")
 
+    def test_layout_request_oracles_are_literal_and_keep_sibling_separate(self):
+        self.assertEqual(
+            runner._framed_reference(
+                "wordpress-selected-application", "http://127.0.0.1:8080/blog/"
+            ),
+            "sha256:ac4295a28e5a25143dde1e7b215669b8182253e67a75eaae5cd126f0369fb715",
+        )
+        self.assertEqual(runner.EXPECTED_DISCOVERY_PATHS["blog-pretty"], (
+            "/blog/wp-json/",
+            "/blog/wp-content/themes/termivar-child/style.css",
+            "/blog/wp-content/themes/termivar-parent/style.css",
+            "/blog/wp-content/plugins/termivar-metadata-lab/readme.txt",
+        ))
+        self.assertEqual(runner.EXPECTED_DISCOVERY_PATHS["blog-plain"][0],
+                         "/blog/index.php?rest_route=/")
+        self.assertEqual(runner.EXPECTED_DISCOVERY_PATHS["cms"][1],
+                         "/cms/wp-content/themes/termivar-child/style.css")
+        self.assertEqual(runner.EXPECTED_DISCOVERY_PATHS["custom"][1:], (
+            "/site-content/themes/termivar-child/style.css",
+            "/site-content/themes/termivar-parent/style.css",
+            "/modules/termivar-metadata-lab/readme.txt",
+        ))
+        self.assertNotIn(
+            "/shop/wp-content/themes/termivar-child/style.css",
+            runner.EXPECTED_DISCOVERY_PATHS["blog-pretty"],
+        )
+
+    def test_deployment_audit_oracle_binds_application_roles_and_resources(self):
+        document = self.discovery_document()
+        application = "http://127.0.0.1:8080/blog/"
+        oracle = runner.DiscoveryOracle(
+            application_url=application,
+            request_paths=runner.EXPECTED_DISCOVERY_PATHS["blog-pretty"],
+            core_base_url=application,
+            themes_base_url=application + "wp-content/themes/",
+            plugins_base_url=application + "wp-content/plugins/",
+            rest_base_url=application,
+            skipped_sibling_application_count=1,
+        )
+        layout = document["wordpress_discovery"]["layout"]
+        layout["application_reference"] = runner._framed_reference(
+            "wordpress-selected-application", application
+        )
+        for role, base, basis in (
+            ("core", oracle.core_base_url, "conventional_asset"),
+            ("themes", oracle.themes_base_url, "conventional_asset"),
+            ("plugins", oracle.plugins_base_url, "conventional_asset"),
+            ("rest_index", oracle.rest_base_url, "structured_advertisement"),
+        ):
+            row = next(item for item in layout["roles"] if item["role"] == role)
+            row.update({
+                "status": "exact", "basis": basis,
+                "reference": runner._framed_reference("wordpress-discovery-role", base),
+                "candidate_count": 1,
+            })
+        layout["skipped_sibling_application_count"] = 1
+        origin = "http://127.0.0.1:8080"
+        for source, path, base in zip(
+            document["wordpress_discovery"]["sources"],
+            oracle.request_paths,
+            (oracle.rest_base_url, oracle.themes_base_url,
+             oracle.themes_base_url, oracle.plugins_base_url),
+            strict=True,
+        ):
+            source["resource_reference"] = runner._framed_reference(
+                "wordpress-discovery-resource", origin + path
+            )
+            source["role_reference"] = runner._framed_reference(
+                "wordpress-discovery-role", base
+            )
+        self.assertEqual(
+            runner._validate_discovery_document(
+                document, generator_visible=True, oracle=oracle
+            ),
+            "security.wordpress-discovery-audit/v2",
+        )
+
+        mismatched = copy.deepcopy(document)
+        mismatched["wordpress_discovery"]["sources"][1]["resource_reference"] = (
+            "sha256:" + "f" * 64
+        )
+        with self.assertRaisesRegex(runner.AcceptanceError, "opaque reference differs"):
+            runner._validate_discovery_document(
+                mismatched, generator_visible=True, oracle=oracle
+            )
+
+        unexpected_audit_field = copy.deepcopy(document)
+        unexpected_audit_field["wordpress_discovery"]["unexpected"] = True
+        with self.assertRaisesRegex(runner.AcceptanceError, "unexpected top-level shape"):
+            runner._validate_discovery_document(
+                unexpected_audit_field, generator_visible=True, oracle=oracle
+            )
+
+        unexpected_source_field = copy.deepcopy(document)
+        unexpected_source_field["wordpress_discovery"]["sources"][0]["unexpected"] = True
+        with self.assertRaisesRegex(runner.AcceptanceError, "source row has an unexpected shape"):
+            runner._validate_discovery_document(
+                unexpected_source_field, generator_visible=True, oracle=oracle
+            )
+
     def test_exact_four_request_delta_preserves_base_and_extra_order(self):
         review = [("GET", "/", 200, ()), ("HEAD", "/", 200, ())]
         expected = [
@@ -983,9 +1400,9 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 ],
             },
             "wordpress_discovery": {
-                "schema": "security.wordpress-discovery-audit/v1",
+                "schema": "security.wordpress-discovery-audit/v2",
                 "capability_id": "technology.wordpress-metadata-discovery@1",
-                "policy_id": "termivar.wordpress-metadata-discovery/v1",
+                "policy_id": "termivar.wordpress-deployment-aware-metadata-discovery/v1",
                 "selected": True,
                 "method": "get",
                 "credential_mode": "anonymous",
@@ -998,9 +1415,32 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 "committed_response_count": 4,
                 "response_bytes": 1024,
                 "source_count": 4,
+                "layout": {
+                    "application_reference": APPLICATION_REFERENCE,
+                    "roles": [
+                        {"role": "core", "status": "exact",
+                         "basis": "conventional_asset", "reference": REST_REFERENCE,
+                         "candidate_count": 1},
+                        {"role": "themes", "status": "exact",
+                         "basis": "conventional_asset", "reference": THEME_REFERENCE,
+                         "candidate_count": 1},
+                        {"role": "plugins", "status": "exact",
+                         "basis": "conventional_asset", "reference": PLUGIN_REFERENCE,
+                         "candidate_count": 1},
+                        {"role": "rest_index", "status": "exact",
+                         "basis": "structured_advertisement", "reference": REST_REFERENCE,
+                         "candidate_count": 1},
+                    ],
+                    "skipped_foreign_origin_count": 0,
+                    "skipped_sibling_application_count": 0,
+                    "conflicting_association_count": 0,
+                },
                 "sources": [
                     {
                         "kind": "rest_index",
+                        "association": "structured_advertisement",
+                        "resource_reference": "sha256:" + "4" * 64,
+                        "role_reference": REST_REFERENCE,
                         "parent_depth": 0,
                         "outcome": "observed",
                         "request_attempted": True,
@@ -1011,6 +1451,9 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     },
                     {
                         "kind": "theme_stylesheet",
+                        "association": "observed_conventional",
+                        "resource_reference": "sha256:" + "5" * 64,
+                        "role_reference": THEME_REFERENCE,
                         "component": {"kind": "theme", "slug": "termivar-child"},
                         "parent_depth": 0,
                         "outcome": "observed",
@@ -1026,6 +1469,9 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     },
                     {
                         "kind": "theme_stylesheet",
+                        "association": "same_theme_base_parent",
+                        "resource_reference": "sha256:" + "6" * 64,
+                        "role_reference": THEME_REFERENCE,
                         "component": {"kind": "theme", "slug": "termivar-parent"},
                         "parent_depth": 1,
                         "outcome": "observed",
@@ -1040,6 +1486,9 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     },
                     {
                         "kind": "plugin_readme",
+                        "association": "observed_conventional",
+                        "resource_reference": "sha256:" + "7" * 64,
+                        "role_reference": PLUGIN_REFERENCE,
                         "component": {"kind": "plugin", "slug": "termivar-metadata-lab"},
                         "parent_depth": 0,
                         "outcome": "observed",
@@ -1143,7 +1592,8 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 },
             })
             self.assertEqual(result["review_only_to_discovery"], {
-                "status": "compared",
+                "status": "not_compared",
+                "reason": "application_scope_unknown",
                 "methodology": "changed",
                 "coverage": "changed",
                 "item_counts": {
@@ -1174,6 +1624,76 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                  / "assessment.json").read_bytes(),
                 original_bytes[1],
             )
+
+    def test_offline_acceptance_exercises_layout_and_application_scope_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scenarios, responses, _ = layout_offline_fixture(Path(temporary))
+            fake = offline_process_runner(responses, scenarios)
+            result = runner._run_offline_acceptance(
+                fake, Path("synthetic-termivar"), scenarios
+            )
+
+            self.assertEqual(result["custom_no_layout_to_declared_layout"], {
+                "status": "compared",
+                "methodology": "changed",
+                "coverage": "changed",
+                "item_counts": {
+                    "only_in_after": 0, "only_in_before": 0,
+                    "changed": 0, "unchanged": 2,
+                },
+            })
+            self.assertEqual(result["application_scope_mismatch"], {
+                "status": "not_compared",
+                "reason": "application_scope_mismatch",
+                "item_counts": {
+                    "only_in_after": 0, "only_in_before": 0,
+                    "changed": 0, "unchanged": 2,
+                },
+            })
+            self.assertEqual(
+                [label for label, _ in fake.calls[-2:]],
+                [
+                    "offline custom layout comparison",
+                    "offline application-scope mismatch comparison",
+                ],
+            )
+
+    def test_offline_layout_acceptance_rejects_false_scope_and_methodology(self):
+        def same_application_identity(scenarios, _responses):
+            scenarios["blog-pretty-discovery"]["layout_application_reference"] = (
+                APPLICATION_REFERENCE
+            )
+
+        def paired_mismatch_entities(_scenarios, responses):
+            comparison = responses["offline application-scope mismatch comparison"]
+            comparison["wordpress_review_comparison"]["components"][
+                "paired_unchanged_count"
+            ] = 1
+
+        def unchanged_custom_methodology(_scenarios, responses):
+            facet = responses["offline custom layout comparison"][
+                "wordpress_review_comparison"
+            ]["methodology"]
+            facet.update({
+                "status": "unchanged", "after": copy.deepcopy(facet["before"]),
+                "changed_fields": [],
+            })
+
+        mutations = (
+            (same_application_identity, "different applications unexpectedly share"),
+            (paired_mismatch_entities, "unexpectedly paired WordPress components"),
+            (unchanged_custom_methodology, "methodology is not changed"),
+        )
+        for mutate, message in mutations:
+            with self.subTest(mutation=mutate.__name__):
+                with tempfile.TemporaryDirectory() as temporary:
+                    scenarios, responses, _ = layout_offline_fixture(Path(temporary))
+                    mutate(scenarios, responses)
+                    with self.assertRaisesRegex(runner.AcceptanceError, message):
+                        runner._run_offline_acceptance(
+                            offline_process_runner(responses, scenarios),
+                            Path("synthetic-termivar"), scenarios,
+                        )
 
     def test_offline_acceptance_rejects_self_partition_mutations(self):
         def empty_self(responses):
@@ -1380,7 +1900,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         document = self.discovery_document()
         self.assertEqual(
             runner._validate_discovery_document(document, generator_visible=True),
-            "security.wordpress-discovery-audit/v1",
+            "security.wordpress-discovery-audit/v2",
         )
         promoted = copy.deepcopy(document)
         promoted["wordpress_review"]["components"][3]["versions"] = [{"value": "9.9.9"}]

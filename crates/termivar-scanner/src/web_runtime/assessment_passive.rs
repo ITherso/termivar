@@ -98,6 +98,13 @@ const REFERRER_DECLARED_COUNT: &str = "referrer_policy_declared_count";
 const PERMISSIONS_STATE: &str = "permissions_policy_state";
 const PERMISSIONS_DIRECTIVE_COUNT: &str = "permissions_policy_directive_count";
 const PERMISSIONS_MEMBER_COUNT: &str = "permissions_policy_member_count";
+
+type StableSubjectBinding = (EntityId, StableAssessmentSubjectId, Vec<String>);
+
+struct AssessmentProjectionSubjectBindings {
+    root: Option<EntityId>,
+    passive: Vec<StableSubjectBinding>,
+}
 const PERMISSIONS_EMPTY: &str = "permissions_policy_empty_allowlist_count";
 const PERMISSIONS_WILDCARD: &str = "permissions_policy_wildcard_member_count";
 const PERMISSIONS_SELF: &str = "permissions_policy_self_member_count";
@@ -1139,10 +1146,15 @@ pub(crate) fn project_assessment_items(
     }
     let exact_origin = authorized_root.url().origin().ascii_serialization();
     let scope = StableAssessmentScopeId::from_exact_origin(&exact_origin)?;
-    // `authorized-root@1` remains reserved for the exact origin root. Eligible
-    // discovered resources receive a separate opaque, versioned identity that
-    // is derived only from their already-canonical structural subject.
-    let root_subject = if authorized_root.url().path() == "/" {
+    #[cfg(feature = "wordpress-review")]
+    let project_selected_application =
+        authorized_root.url().path() == "/" || reviews.wordpress.is_some();
+    #[cfg(not(feature = "wordpress-review"))]
+    let project_selected_application = authorized_root.url().path() == "/";
+    // `authorized-root@1` remains the stable item-subject identity for the
+    // explicitly selected resource under this exact-origin assessment. The
+    // WordPress audit carries its path-bound application reference separately.
+    let root_subject = if project_selected_application {
         Some(
             EntityId::new(format!("endpoint:{}", authorized_root.url()))
                 .map_err(|_| PassiveAssessmentItemProjectionError::InvalidAuthorizedRoot)?,
@@ -1197,9 +1209,11 @@ pub(crate) fn project_assessment_items(
         ledger,
         reviews,
         knowledge,
-        root_subject,
         scope,
-        stable_subjects,
+        AssessmentProjectionSubjectBindings {
+            root: root_subject,
+            passive: stable_subjects,
+        },
         authorized_root.url().scheme() == "https",
     )
 }
@@ -1241,9 +1255,11 @@ fn project_passive_assessment_items_for_root(
             wordpress: None,
         },
         knowledge,
-        root_subject,
         scope,
-        stable_subjects,
+        AssessmentProjectionSubjectBindings {
+            root: root_subject,
+            passive: stable_subjects,
+        },
         https,
     )
 }
@@ -1252,11 +1268,14 @@ fn project_assessment_items_for_subjects(
     ledger: &CommittedAssessmentPassiveLedger,
     reviews: AssessmentReviewProjectionSources<'_>,
     knowledge: &KnowledgeBase,
-    root_subject: Option<EntityId>,
     scope: StableAssessmentScopeId,
-    stable_subjects: Vec<(EntityId, StableAssessmentSubjectId, Vec<String>)>,
+    subjects: AssessmentProjectionSubjectBindings,
     https: bool,
 ) -> Result<PassiveAssessmentItemProjection, PassiveAssessmentItemProjectionError> {
+    let AssessmentProjectionSubjectBindings {
+        root: root_subject,
+        passive: stable_subjects,
+    } = subjects;
     #[cfg(feature = "graphql-review")]
     let graphql_scope = scope.clone();
     let mut context = AssessmentProjectionContext::new(knowledge, scope);

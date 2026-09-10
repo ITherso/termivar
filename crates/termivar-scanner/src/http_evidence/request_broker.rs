@@ -20,6 +20,8 @@ use reqwest::header::CONTENT_TYPE;
 
 #[cfg(feature = "graphql-review")]
 use crate::graphql_review::MAX_GRAPHQL_REQUEST_JSON_BYTES;
+#[cfg(feature = "wordpress-review")]
+use crate::wordpress_review::valid_slug;
 
 use crate::{
     runtime_budget::{RequestAccountingBroker, RequestAccountingLease, TransportDispatchOutcome},
@@ -31,6 +33,276 @@ use super::{elapsed_ms, CollectedHttpResponse, HttpEvidenceError, HttpEvidencePo
 
 #[cfg(feature = "graphql-review")]
 const GRAPHQL_RESPONSE_ACCEPT: &str = "application/graphql-response+json, application/json";
+
+/// Closed policy revision understood by the broker-owned WordPress metadata
+/// admission descriptor.
+#[cfg(feature = "wordpress-review")]
+pub(crate) const WORDPRESS_METADATA_DISCOVERY_POLICY_ID: &str =
+    "termivar.wordpress-deployment-aware-metadata-discovery/v1";
+
+/// Metadata resource shapes that the WordPress discovery transport may fetch.
+#[cfg(feature = "wordpress-review")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WordPressMetadataResourceKind {
+    RestIndex,
+    ThemeStylesheet { slug: String },
+    PluginReadme { slug: String },
+}
+
+/// Evidence/declaration basis that admitted a metadata resource.
+#[cfg(feature = "wordpress-review")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WordPressMetadataRequestSource {
+    StructuredAdvertisement,
+    OperatorQualifiedAdvertisement,
+    ObservedConventional,
+    ExplicitOperator,
+    SameThemeBaseParent,
+}
+
+/// Broker-owned proof that one URL is the exact metadata resource admitted
+/// for one selected application and one resolved role base.
+///
+/// Fields stay private so callers cannot pass an arbitrary same-origin URL to
+/// the WordPress transport seam. Construction validates the complete binding,
+/// and dispatch repeats that validation before request accounting.
+#[cfg(feature = "wordpress-review")]
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct WordPressMetadataRequestDescriptor {
+    policy_id: &'static str,
+    application_url: url::Url,
+    role_base_url: url::Url,
+    target: url::Url,
+    resource_kind: WordPressMetadataResourceKind,
+    source: WordPressMetadataRequestSource,
+    source_evidence_count: usize,
+}
+
+#[cfg(feature = "wordpress-review")]
+impl WordPressMetadataRequestDescriptor {
+    #[cfg(test)]
+    pub(crate) fn new(
+        policy_id: &'static str,
+        application_url: &url::Url,
+        role_base_url: &url::Url,
+        target: &url::Url,
+        resource_kind: WordPressMetadataResourceKind,
+        source: WordPressMetadataRequestSource,
+    ) -> Result<Self, HttpEvidenceError> {
+        Self::from_source_evidence(
+            policy_id,
+            application_url,
+            role_base_url,
+            target,
+            resource_kind,
+            source,
+            1,
+        )
+    }
+
+    pub(crate) fn from_source_evidence(
+        policy_id: &'static str,
+        application_url: &url::Url,
+        role_base_url: &url::Url,
+        target: &url::Url,
+        resource_kind: WordPressMetadataResourceKind,
+        source: WordPressMetadataRequestSource,
+        source_evidence_count: usize,
+    ) -> Result<Self, HttpEvidenceError> {
+        let descriptor = Self {
+            policy_id,
+            application_url: application_url.clone(),
+            role_base_url: role_base_url.clone(),
+            target: target.clone(),
+            resource_kind,
+            source,
+            source_evidence_count,
+        };
+        descriptor.validate()?;
+        Ok(descriptor)
+    }
+
+    fn validate(&self) -> Result<(), HttpEvidenceError> {
+        let admitted = self.policy_id == WORDPRESS_METADATA_DISCOVERY_POLICY_ID
+            && self.source_evidence_count > 0
+            && wordpress_metadata_directory_is_safe(&self.application_url)
+            && wordpress_metadata_directory_is_safe(&self.role_base_url)
+            && wordpress_metadata_resource_is_safe(&self.target)
+            && self.application_url.origin() == self.role_base_url.origin()
+            && self.application_url.origin() == self.target.origin()
+            && match (&self.resource_kind, self.source) {
+                (
+                    WordPressMetadataResourceKind::RestIndex,
+                    WordPressMetadataRequestSource::StructuredAdvertisement,
+                ) => {
+                    self.role_base_url == self.application_url
+                        && wordpress_rest_index_is_exact(&self.role_base_url, &self.target)
+                },
+                (
+                    WordPressMetadataResourceKind::RestIndex,
+                    WordPressMetadataRequestSource::OperatorQualifiedAdvertisement,
+                ) => wordpress_rest_index_is_exact(&self.role_base_url, &self.target),
+                (
+                    WordPressMetadataResourceKind::ThemeStylesheet { slug },
+                    WordPressMetadataRequestSource::ObservedConventional,
+                ) => {
+                    wordpress_role_is_within_application(&self.application_url, &self.role_base_url)
+                        && wordpress_conventional_role_is_exact(&self.role_base_url, "themes")
+                        && wordpress_component_resource_is_exact(
+                            &self.role_base_url,
+                            slug,
+                            "style.css",
+                            &self.target,
+                        )
+                },
+                (
+                    WordPressMetadataResourceKind::PluginReadme { slug },
+                    WordPressMetadataRequestSource::ObservedConventional,
+                ) => {
+                    wordpress_role_is_within_application(&self.application_url, &self.role_base_url)
+                        && wordpress_conventional_role_is_exact(&self.role_base_url, "plugins")
+                        && wordpress_component_resource_is_exact(
+                            &self.role_base_url,
+                            slug,
+                            "readme.txt",
+                            &self.target,
+                        )
+                },
+                (
+                    WordPressMetadataResourceKind::ThemeStylesheet { slug },
+                    WordPressMetadataRequestSource::ExplicitOperator,
+                ) => {
+                    self.role_base_url.path() != "/"
+                        && wordpress_component_resource_is_exact(
+                            &self.role_base_url,
+                            slug,
+                            "style.css",
+                            &self.target,
+                        )
+                },
+                (
+                    WordPressMetadataResourceKind::PluginReadme { slug },
+                    WordPressMetadataRequestSource::ExplicitOperator,
+                ) => {
+                    self.role_base_url.path() != "/"
+                        && wordpress_component_resource_is_exact(
+                            &self.role_base_url,
+                            slug,
+                            "readme.txt",
+                            &self.target,
+                        )
+                },
+                (
+                    WordPressMetadataResourceKind::ThemeStylesheet { slug },
+                    WordPressMetadataRequestSource::SameThemeBaseParent,
+                ) => {
+                    self.role_base_url.path() != "/"
+                        && wordpress_component_resource_is_exact(
+                            &self.role_base_url,
+                            slug,
+                            "style.css",
+                            &self.target,
+                        )
+                },
+                _ => false,
+            };
+        if admitted {
+            Ok(())
+        } else {
+            Err(HttpEvidenceError::InvalidWordPressMetadataRequest)
+        }
+    }
+
+    fn target(&self) -> &url::Url {
+        &self.target
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_metadata_directory_is_safe(url: &url::Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.has_host()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path().starts_with('/')
+        && url.path().ends_with('/')
+        && wordpress_metadata_path_is_safe(url.path())
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_metadata_resource_is_safe(url: &url::Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.has_host()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+        && url.path().starts_with('/')
+        && wordpress_metadata_path_is_safe(url.path())
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_metadata_path_is_safe(path: &str) -> bool {
+    let segments = path.split('/').collect::<Vec<_>>();
+    !path.contains('\\')
+        && !segments.iter().skip(1).enumerate().any(|(index, segment)| {
+            (segment.is_empty() && index + 2 < segments.len())
+                || matches!(*segment, "." | "..")
+                || ["%2e", "%2f", "%5c", "%25"]
+                    .iter()
+                    .any(|encoded| segment.to_ascii_lowercase().contains(encoded))
+        })
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_role_is_within_application(
+    application_url: &url::Url,
+    role_base_url: &url::Url,
+) -> bool {
+    role_base_url.path().starts_with(application_url.path())
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_conventional_role_is_exact(role_base_url: &url::Url, collection: &str) -> bool {
+    role_base_url
+        .path()
+        .strip_suffix('/')
+        .is_some_and(|path| path.ends_with(&format!("/wp-content/{collection}")))
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_component_resource_is_exact(
+    role_base_url: &url::Url,
+    slug: &str,
+    filename: &str,
+    target: &url::Url,
+) -> bool {
+    valid_slug(slug)
+        && target.query().is_none()
+        && role_base_url
+            .join(&format!("{slug}/{filename}"))
+            .ok()
+            .is_some_and(|expected| expected == *target)
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_rest_index_is_exact(role_base_url: &url::Url, target: &url::Url) -> bool {
+    let pretty = role_base_url
+        .join("wp-json/")
+        .ok()
+        .is_some_and(|expected| expected == *target && target.query().is_none());
+    let plain_path = target.path() == role_base_url.path()
+        || role_base_url
+            .join("index.php")
+            .ok()
+            .is_some_and(|expected| expected.path() == target.path());
+    pretty
+        || (plain_path
+            && target
+                .query()
+                .is_some_and(super::wordpress_rest_route_query_is_admitted))
+}
 
 /// Internal transport failure that preserves host budget denial separately
 /// from HTTP policy and network failures.
@@ -194,8 +466,10 @@ impl HttpRequestBroker {
         stage: DecisionExecutionStage,
         origin: Option<DecisionActionOrigin>,
         limits: DecisionExecutionLimits,
-        target: &url::Url,
+        descriptor: &WordPressMetadataRequestDescriptor,
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        descriptor.validate()?;
+        let target = descriptor.target();
         self.validate_target(target)?;
         let request = self.build_anonymous_wordpress_get_request(target)?;
         self.collect_built_request(
@@ -532,13 +806,23 @@ mod tests {
     #[cfg(feature = "wordpress-review")]
     #[test]
     fn wordpress_discovery_request_has_one_closed_anonymous_protocol_shape() {
-        let target = url::Url::parse("https://example.test/wp-json/").unwrap();
+        let application = url::Url::parse("https://example.test/blog/").unwrap();
+        let target = url::Url::parse("https://example.test/blog/wp-json/").unwrap();
+        let descriptor = WordPressMetadataRequestDescriptor::new(
+            WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+            &application,
+            &application,
+            &target,
+            WordPressMetadataResourceKind::RestIndex,
+            WordPressMetadataRequestSource::StructuredAdvertisement,
+        )
+        .unwrap();
         let broker = HttpRequestBroker::new_unmetered(
             HttpEvidencePolicy::for_origin(target.clone()).unwrap(),
         )
         .unwrap();
         let request = broker
-            .build_anonymous_wordpress_get_request(&target)
+            .build_anonymous_wordpress_get_request(descriptor.target())
             .unwrap();
 
         assert_eq!(request.method(), Method::GET);
@@ -554,6 +838,228 @@ mod tests {
             .get(reqwest::header::PROXY_AUTHORIZATION)
             .is_none());
         assert!(request.body().is_none());
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_metadata_descriptor_admits_only_exact_role_resources() {
+        let application = url::Url::parse("https://example.test/blog/").unwrap();
+        let theme_base = url::Url::parse("https://example.test/blog/wp-content/themes/").unwrap();
+        let plugin_base = url::Url::parse("https://example.test/modules/").unwrap();
+        let core_base = url::Url::parse("https://example.test/cms/").unwrap();
+
+        for descriptor in [
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &application,
+                &application.join("wp-json/").unwrap(),
+                WordPressMetadataResourceKind::RestIndex,
+                WordPressMetadataRequestSource::StructuredAdvertisement,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &core_base,
+                &core_base.join("index.php?rest_route=%2F").unwrap(),
+                WordPressMetadataResourceKind::RestIndex,
+                WordPressMetadataRequestSource::OperatorQualifiedAdvertisement,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &theme_base,
+                &theme_base.join("child-theme/style.css").unwrap(),
+                WordPressMetadataResourceKind::ThemeStylesheet {
+                    slug: "child-theme".to_owned(),
+                },
+                WordPressMetadataRequestSource::ObservedConventional,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &theme_base,
+                &theme_base.join("parent-theme/style.css").unwrap(),
+                WordPressMetadataResourceKind::ThemeStylesheet {
+                    slug: "parent-theme".to_owned(),
+                },
+                WordPressMetadataRequestSource::SameThemeBaseParent,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &plugin_base,
+                &plugin_base.join("selected-plugin/readme.txt").unwrap(),
+                WordPressMetadataResourceKind::PluginReadme {
+                    slug: "selected-plugin".to_owned(),
+                },
+                WordPressMetadataRequestSource::ExplicitOperator,
+            ),
+        ] {
+            descriptor.unwrap();
+        }
+
+        let invalid_cases = [
+            WordPressMetadataRequestDescriptor::new(
+                "termivar.wordpress-metadata-discovery/v1",
+                &application,
+                &application,
+                &application.join("wp-json/").unwrap(),
+                WordPressMetadataResourceKind::RestIndex,
+                WordPressMetadataRequestSource::StructuredAdvertisement,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &core_base,
+                &core_base.join("wp-json/").unwrap(),
+                WordPressMetadataResourceKind::RestIndex,
+                WordPressMetadataRequestSource::StructuredAdvertisement,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &url::Url::parse("https://example.test/shop/wp-content/themes/").unwrap(),
+                &url::Url::parse("https://example.test/shop/wp-content/themes/sibling/style.css")
+                    .unwrap(),
+                WordPressMetadataResourceKind::ThemeStylesheet {
+                    slug: "sibling".to_owned(),
+                },
+                WordPressMetadataRequestSource::ObservedConventional,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &url::Url::parse("https://example.test/blog/arbitrary/themes/").unwrap(),
+                &url::Url::parse("https://example.test/blog/arbitrary/themes/sibling/style.css")
+                    .unwrap(),
+                WordPressMetadataResourceKind::ThemeStylesheet {
+                    slug: "sibling".to_owned(),
+                },
+                WordPressMetadataRequestSource::ObservedConventional,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &url::Url::parse("https://example.test/").unwrap(),
+                &url::Url::parse("https://example.test/selected-plugin/readme.txt").unwrap(),
+                WordPressMetadataResourceKind::PluginReadme {
+                    slug: "selected-plugin".to_owned(),
+                },
+                WordPressMetadataRequestSource::ExplicitOperator,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &theme_base,
+                &theme_base.join("child-theme/readme.txt").unwrap(),
+                WordPressMetadataResourceKind::ThemeStylesheet {
+                    slug: "child-theme".to_owned(),
+                },
+                WordPressMetadataRequestSource::ObservedConventional,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &plugin_base,
+                &url::Url::parse("https://other.test/modules/selected-plugin/readme.txt").unwrap(),
+                WordPressMetadataResourceKind::PluginReadme {
+                    slug: "selected-plugin".to_owned(),
+                },
+                WordPressMetadataRequestSource::ExplicitOperator,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &plugin_base,
+                &plugin_base
+                    .join("selected-plugin/readme.txt?token=inert")
+                    .unwrap(),
+                WordPressMetadataResourceKind::PluginReadme {
+                    slug: "selected-plugin".to_owned(),
+                },
+                WordPressMetadataRequestSource::ExplicitOperator,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &plugin_base,
+                &plugin_base.join("selected-plugin/readme.txt").unwrap(),
+                WordPressMetadataResourceKind::PluginReadme {
+                    slug: "../selected-plugin".to_owned(),
+                },
+                WordPressMetadataRequestSource::ExplicitOperator,
+            ),
+            WordPressMetadataRequestDescriptor::new(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &application,
+                &application.join("private/data").unwrap(),
+                WordPressMetadataResourceKind::RestIndex,
+                WordPressMetadataRequestSource::StructuredAdvertisement,
+            ),
+            WordPressMetadataRequestDescriptor::from_source_evidence(
+                WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+                &application,
+                &theme_base,
+                &theme_base.join("child-theme/style.css").unwrap(),
+                WordPressMetadataResourceKind::ThemeStylesheet {
+                    slug: "child-theme".to_owned(),
+                },
+                WordPressMetadataRequestSource::ObservedConventional,
+                0,
+            ),
+        ];
+        assert!(invalid_cases.into_iter().all(|result| matches!(
+            result,
+            Err(HttpEvidenceError::InvalidWordPressMetadataRequest)
+        )));
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[tokio::test]
+    async fn forged_wordpress_descriptor_is_denied_before_request_accounting() {
+        let application = url::Url::parse("http://127.0.0.1:1/blog/").unwrap();
+        let role_base = url::Url::parse("http://127.0.0.1:1/blog/wp-content/plugins/").unwrap();
+        let target = role_base.join("selected-plugin/readme.txt").unwrap();
+        let mut descriptor = WordPressMetadataRequestDescriptor::new(
+            WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+            &application,
+            &role_base,
+            &target,
+            WordPressMetadataResourceKind::PluginReadme {
+                slug: "selected-plugin".to_owned(),
+            },
+            WordPressMetadataRequestSource::ObservedConventional,
+        )
+        .unwrap();
+        descriptor.target = application.join("private/same-origin-data").unwrap();
+
+        let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+        let broker = HttpRequestBroker::new_metered(
+            HttpEvidencePolicy::for_origin(application).unwrap(),
+            accounting.clone(),
+        )
+        .unwrap();
+        let result = broker
+            .collect_anonymous_wordpress_get_for_runtime(
+                "wordpress.metadata-discovery",
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+                DecisionExecutionLimits::new(),
+                &descriptor,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(HttpRequestBrokerError::Http(
+                HttpEvidenceError::InvalidWordPressMetadataRequest
+            ))
+        ));
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+        assert_eq!(accounting.snapshot().response_bytes(), 0);
+        assert!(accounting.dispatch_audit().is_empty());
     }
 
     #[cfg(feature = "graphql-review")]

@@ -197,6 +197,7 @@ fn scan_rest_review_flags_conflict(
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct WordPressReviewFlagSelection {
     discovery: bool,
+    layout: bool,
     context: bool,
     advisories: bool,
     advisories_format: Option<WordPressAdvisoriesFormat>,
@@ -213,7 +214,9 @@ fn scan_wordpress_review_flags_conflict(
     selected: WordPressReviewFlagSelection,
 ) -> Option<&'static str> {
     let saved_inventory_selected = selected.plugins || selected.themes || selected.core_version;
-    if selected.advisories_format.is_some() && !selected.advisories {
+    if selected.layout && !selected.discovery {
+        Some("`--wordpress-layout` requires `--wordpress-discovery`")
+    } else if selected.advisories_format.is_some() && !selected.advisories {
         Some("`--wordpress-advisories-format` requires `--wordpress-advisories`")
     } else if selected.external_version_profile && !selected.advisories {
         Some("`--wordpress-external-version-profile` requires `--wordpress-advisories`")
@@ -223,6 +226,7 @@ fn scan_wordpress_review_flags_conflict(
         Some("`--wordpress-external-version-profile` requires format `wordfence-v3-production`")
     } else if (selected.discovery
         || selected.context
+        || selected.layout
         || selected.advisories
         || selected.advisories_format.is_some()
         || selected.external_version_profile
@@ -240,12 +244,32 @@ fn scan_wordpress_review_flags_conflict(
 }
 
 #[cfg(feature = "wordpress-review")]
-fn wordpress_review_target_conflict(wordpress_review: bool, target: &Url) -> Option<&'static str> {
-    if wordpress_review && !is_exact_origin_root(target) {
-        Some("WordPress evidence review requires an exact origin root target")
+fn wordpress_review_target_conflict(
+    wordpress_review: bool,
+    wordpress_discovery: bool,
+    target: &Url,
+) -> Option<&'static str> {
+    if wordpress_review && !is_wordpress_application_target(target) {
+        Some(
+            "WordPress evidence review requires an exact root or trailing-slash application target",
+        )
+    } else if wordpress_review && target.path() != "/" && !wordpress_discovery {
+        Some("a non-root WordPress application target requires explicit `--wordpress-discovery`")
     } else {
         None
     }
+}
+
+#[cfg(feature = "wordpress-review")]
+fn is_wordpress_application_target(target: &Url) -> bool {
+    matches!(target.scheme(), "http" | "https")
+        && target.username().is_empty()
+        && target.password().is_none()
+        && target.host().is_some()
+        && target.path().starts_with('/')
+        && target.path().ends_with('/')
+        && target.query().is_none()
+        && target.fragment().is_none()
 }
 
 #[cfg(feature = "ssrf-oast-review")]
@@ -351,7 +375,7 @@ struct Cli {
 #[derive(Args)]
 struct ScanArgs {
     /// Authorized HTTP(S) target origin. Only scan targets you own or may test.
-    target: Url,
+    target: ScanTarget,
     /// Output format. `text` (default) is the human-readable report; `json` is
     /// the versioned machine-readable document with full diagnostics.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -413,6 +437,16 @@ struct ScanArgs {
     #[cfg(feature = "wordpress-review")]
     #[arg(long, requires_all = ["profile", "wordpress_review"])]
     wordpress_discovery: bool,
+    /// Read one bounded `security.wordpress-layout/v1` operator declaration.
+    /// The declaration can associate observed same-origin assets with custom
+    /// role roots, but grants no network authority on its own.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["profile", "wordpress_review", "wordpress_discovery"]
+    )]
+    wordpress_layout: Option<PathBuf>,
     /// Read one bounded `security.wordpress-context/v1` operator declaration.
     /// The path itself is not retained in the assessment.
     #[cfg(feature = "wordpress-review")]
@@ -672,6 +706,95 @@ struct ScanArgs {
     authz_peer_stdin: bool,
 }
 
+#[derive(Clone, Debug)]
+struct ScanTarget {
+    url: Url,
+    #[cfg(feature = "wordpress-review")]
+    raw: String,
+}
+
+impl std::str::FromStr for ScanTarget {
+    type Err = url::ParseError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Ok(Self {
+            url: Url::parse(raw)?,
+            #[cfg(feature = "wordpress-review")]
+            raw: raw.to_owned(),
+        })
+    }
+}
+
+impl ScanTarget {
+    #[cfg(test)]
+    fn as_str(&self) -> &str {
+        self.url.as_str()
+    }
+
+    fn into_url(self) -> Url {
+        self.url
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    fn wordpress_application_is_unambiguous(&self) -> bool {
+        if !is_wordpress_application_target(&self.url) || self.url.as_str() != self.raw {
+            return false;
+        }
+        let Some(raw_path) = raw_http_directory_path(&self.raw) else {
+            return false;
+        };
+        let lowercase = raw_path.to_ascii_lowercase();
+        !["%2e", "%2f", "%5c", "%25"]
+            .iter()
+            .any(|encoded| lowercase.contains(encoded))
+            && !raw_path.split('/').enumerate().any(|(index, segment)| {
+                matches!(segment, "." | "..")
+                    || (segment.is_empty()
+                        && index != 0
+                        && index + 1 != raw_path.split('/').count())
+            })
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+fn raw_http_directory_path(value: &str) -> Option<&str> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.chars().any(|character| {
+            character == '\\' || character.is_control() || character.is_whitespace()
+        })
+    {
+        return None;
+    }
+    let scheme_bytes = if value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+    {
+        7
+    } else if value
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+        8
+    } else {
+        return None;
+    };
+    let authority_and_path = value.get(scheme_bytes..)?;
+    let path_offset = authority_and_path.find('/')?;
+    let authority = &authority_and_path[..path_offset];
+    let path = &authority_and_path[path_offset..];
+    if authority.is_empty()
+        || authority
+            .chars()
+            .any(|character| matches!(character, '@' | '?' | '#'))
+        || !path.starts_with('/')
+        || !path.ends_with('/')
+    {
+        return None;
+    }
+    Some(path)
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Describe CLI surfaces compiled into this executable; nothing is executed.
@@ -741,6 +864,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_review,
         #[cfg(feature = "wordpress-review")]
         wordpress_discovery,
+        #[cfg(feature = "wordpress-review")]
+        wordpress_layout,
         #[cfg(feature = "wordpress-review")]
         wordpress_context,
         #[cfg(feature = "wordpress-review")]
@@ -821,6 +946,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_review,
         WordPressReviewFlagSelection {
             discovery: wordpress_discovery,
+            layout: wordpress_layout.is_some(),
             context: wordpress_context.is_some(),
             advisories: wordpress_advisories.is_some(),
             advisories_format: wordpress_advisories_format,
@@ -867,9 +993,20 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .exit();
     }
     #[cfg(feature = "wordpress-review")]
-    if let Some(message) = wordpress_review_target_conflict(wordpress_review, &target) {
+    if let Some(message) =
+        wordpress_review_target_conflict(wordpress_review, wordpress_discovery, &target.url)
+    {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
     }
+    #[cfg(feature = "wordpress-review")]
+    if wordpress_review && !target.wordpress_application_is_unambiguous() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "WordPress application target must use an unambiguous raw trailing-slash path",
+        )
+        .into());
+    }
+    let target = target.into_url();
     #[cfg(feature = "authorization-review")]
     let root_authorization_selected = auth_env.is_some() || auth_file.is_some() || auth_stdin;
     #[cfg(feature = "authorization-review")]
@@ -952,7 +1089,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_plugins_json,
         wordpress_themes_json,
         wordpress_core_version_file,
-    )?;
+    )?
+    .map(|input| input.with_discovery_layout_path(wordpress_layout));
     #[cfg(feature = "authorization-review")]
     if resource_authorization_input.is_some()
         && !authorization_context_transport_is_allowed(&target)
@@ -2179,6 +2317,7 @@ mod tests {
         for flag in [
             "--wordpress-review",
             "--wordpress-discovery",
+            "--wordpress-layout",
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-advisories-format",
@@ -2194,6 +2333,17 @@ mod tests {
             "termivar",
             "scan",
             "--wordpress-review",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-layout",
+            "PRIVATE-WORDPRESS-LAYOUT",
             "https://example.test/",
         ])
         .is_err());
@@ -2256,6 +2406,7 @@ mod tests {
                 baseline.wordpress_review,
                 WordPressReviewFlagSelection {
                     discovery: baseline.wordpress_discovery,
+                    layout: baseline.wordpress_layout.is_some(),
                     context: baseline.wordpress_context.is_some(),
                     advisories: baseline.wordpress_advisories.is_some(),
                     advisories_format: baseline.wordpress_advisories_format,
@@ -2292,6 +2443,64 @@ mod tests {
             ),
             None
         );
+
+        let declared_layout = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-layout",
+            "layout.json",
+            "https://example.test/blog/",
+        ])
+        .unwrap();
+        let declared_layout = parsed_scan_args(&declared_layout);
+        assert!(declared_layout.wordpress_layout.is_some());
+        assert!(declared_layout.wordpress_discovery);
+        assert!(declared_layout
+            .target
+            .wordpress_application_is_unambiguous());
+        assert_eq!(
+            declared_layout.target.as_str(),
+            "https://example.test/blog/"
+        );
+
+        for target in [
+            "https://example.test/blog",
+            "https://example.test/blog/../shop/",
+            "https://example.test/blog/%252e%252e/",
+            "https://example.test/blog//nested/",
+            r"https://example.test/blog\nested/",
+            r"https://example.test\blog/",
+            " https://example.test/blog/",
+            "https://example.test/blog/ ",
+            "https://example.test\u{0009}/blog/",
+            "http:///127.0.0.1:1/",
+            "https:example.test/blog/",
+            "https:/example.test/blog/",
+            "https://@example.test/blog/",
+            "https://%65xample.test/blog/",
+            "https://EXAMPLE.test/blog/",
+            "https://bücher.example/blog/",
+            "http://2130706433/blog/",
+            "http://127.1/blog/",
+            "http://example.test:80/blog/",
+        ] {
+            if let Ok(parsed) = target.parse::<ScanTarget>() {
+                assert!(
+                    !parsed.wordpress_application_is_unambiguous(),
+                    "unexpectedly admitted {target:?}"
+                );
+            }
+        }
+
+        let authority_backslash = r"https://example.test\blog/"
+            .parse::<ScanTarget>()
+            .expect("the URL parser treats an authority backslash as a path separator");
+        assert_eq!(authority_backslash.as_str(), "https://example.test/blog/");
+        assert!(!authority_backslash.wordpress_application_is_unambiguous());
 
         let baseline_discovery = Cli::try_parse_from([
             "termivar",
@@ -2571,12 +2780,37 @@ mod tests {
         assert_eq!(
             wordpress_review_target_conflict(
                 true,
+                false,
                 &Url::parse("https://example.test/subpath").unwrap(),
             ),
-            Some("WordPress evidence review requires an exact origin root target")
+            Some(
+                "WordPress evidence review requires an exact root or trailing-slash application target"
+            )
         );
         assert_eq!(
-            wordpress_review_target_conflict(true, &Url::parse("https://example.test/").unwrap(),),
+            wordpress_review_target_conflict(
+                true,
+                false,
+                &Url::parse("https://example.test/").unwrap(),
+            ),
+            None
+        );
+        assert_eq!(
+            wordpress_review_target_conflict(
+                true,
+                false,
+                &Url::parse("https://example.test/blog/").unwrap(),
+            ),
+            Some(
+                "a non-root WordPress application target requires explicit `--wordpress-discovery`"
+            )
+        );
+        assert_eq!(
+            wordpress_review_target_conflict(
+                true,
+                true,
+                &Url::parse("https://example.test/blog/").unwrap(),
+            ),
             None
         );
     }
@@ -2595,6 +2829,7 @@ mod tests {
         for flag in [
             "--wordpress-review",
             "--wordpress-discovery",
+            "--wordpress-layout",
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-advisories-format",
@@ -2615,6 +2850,7 @@ mod tests {
         ])
         .is_err());
         for flag in [
+            "--wordpress-layout",
             "--wordpress-plugins-json",
             "--wordpress-themes-json",
             "--wordpress-core-version-file",

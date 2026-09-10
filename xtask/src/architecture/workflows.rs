@@ -92,6 +92,7 @@ const RELEASE_SMOKE_OPTIONS: &[&str] = &[
     "--authorization-review-policy",
     "--wordpress-review",
     "--wordpress-discovery",
+    "--wordpress-layout",
     "--wordpress-context",
     "--wordpress-advisories",
     "--wordpress-plugins-json",
@@ -3712,6 +3713,15 @@ mod tests {
                 .any(|violation| {
                     violation.contains("--wordpress-discovery")
                         && violation.contains("found 1 checks")
+                })
+        );
+
+        let missing_layout = valid.replacen("unix smoke --wordpress-layout\n", "", 1);
+        assert!(
+            release_workflow_policy_violations(&[(path.clone(), missing_layout)])
+                .iter()
+                .any(|violation| {
+                    violation.contains("--wordpress-layout") && violation.contains("found 1 checks")
                 })
         );
 

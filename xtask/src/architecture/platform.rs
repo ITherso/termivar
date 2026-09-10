@@ -4819,7 +4819,43 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("committed_response_count", "u8"),
             ("response_bytes", "u64"),
             ("source_count", "usize"),
+            ("layout", "WordPressDiscoveryLayoutDocument"),
             ("sources", "Vec<WordPressDiscoverySourceDocument>"),
+        ],
+    ),
+    (
+        "WordPressDiscoveryLayoutDocument",
+        &[],
+        &[
+            ("application_reference", "String"),
+            (
+                "declaration",
+                "Option<WordPressDiscoveryLayoutDeclarationDocument>",
+            ),
+            ("roles", "Vec<WordPressDiscoveryLayoutRoleDocument>"),
+            ("skipped_foreign_origin_count", "u16"),
+            ("skipped_sibling_application_count", "u16"),
+            ("conflicting_association_count", "u16"),
+        ],
+    ),
+    (
+        "WordPressDiscoveryLayoutDeclarationDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("byte_length", "u64"),
+            ("sha256", "String"),
+        ],
+    ),
+    (
+        "WordPressDiscoveryLayoutRoleDocument",
+        &[],
+        &[
+            ("role", "&'static str"),
+            ("status", "&'static str"),
+            ("basis", "&'static str"),
+            ("reference", "Option<String>"),
+            ("candidate_count", "u16"),
         ],
     ),
     (
@@ -4827,6 +4863,9 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
         &[],
         &[
             ("kind", "&'static str"),
+            ("association", "&'static str"),
+            ("resource_reference", "String"),
+            ("role_reference", "Option<String>"),
             ("component", "Option<WordPressComponentIdentityDocument>"),
             ("parent_depth", "u8"),
             ("outcome", "&'static str"),
@@ -5453,6 +5492,9 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentRestAuditDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
+                | "WordPressDiscoveryLayoutDocument"
+                | "WordPressDiscoveryLayoutDeclarationDocument"
+                | "WordPressDiscoveryLayoutRoleDocument"
                 | "WordPressDiscoverySourceDocument"
                 | "WordPressThemeDiscoveryDocument"
                 | "WordPressPluginDiscoveryDocument"
@@ -5528,6 +5570,9 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
+                | "WordPressDiscoveryLayoutDocument"
+                | "WordPressDiscoveryLayoutDeclarationDocument"
+                | "WordPressDiscoveryLayoutRoleDocument"
                 | "WordPressDiscoverySourceDocument"
                 | "WordPressThemeDiscoveryDocument"
                 | "WordPressPluginDiscoveryDocument"
@@ -5634,7 +5679,14 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                                     | "external_review"
                             ))
                         || (name == "WordPressDiscoverySourceDocument"
-                            && matches!(field_name.as_str(), "component" | "theme" | "plugin"))
+                            && matches!(
+                                field_name.as_str(),
+                                "role_reference" | "component" | "theme" | "plugin"
+                            ))
+                        || (name == "WordPressDiscoveryLayoutDocument"
+                            && field_name == "declaration")
+                        || (name == "WordPressDiscoveryLayoutRoleDocument"
+                            && field_name == "reference")
                         || (matches!(
                             name.as_str(),
                             "WordPressThemeDiscoveryDocument" | "WordPressPluginDiscoveryDocument"
@@ -8066,8 +8118,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 251_981;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x0856_4345_48c3_de21_a89a_c0dc_fd62_9f9b;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 263_048;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xfa91_6a7d_7782_ec5c_ff9b_1a4f_6ace_897f;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -8747,6 +8799,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "valid_inventory_version",
     "valid_wordfence_raw_source_identity",
     "valid_wordfence_source_identity",
+    "valid_wordpress_discovery_reference",
     "valid_lowercase_sha256",
     "valid_lowercase_uuid",
     "valid_prefixed_lowercase_sha256",
@@ -8827,6 +8880,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "application_reference",
+    "association",
     "attempted_request_count",
     "by_ref",
     "candidate_count",
@@ -8835,20 +8890,33 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "completed_response_count",
     "component_kind",
     "component_slug",
+    "conflicting_association_count",
     "cloned",
     "discovery",
+    "declaration",
+    "exact_role",
+    "exact_role_reference",
     "first",
     "flat_map",
+    "is_exact_role_bound_component",
+    "is_exact_theme_role_bound",
+    "layout",
     "namespaces",
     "omitted_candidate_count",
     "parent_depth",
     "plugin",
     "request_attempted",
+    "resource_reference",
+    "role",
+    "role_reference",
+    "roles",
     "requires_php",
     "requires_wordpress",
     "response_bytes",
     "seed_count",
     "selected",
+    "skipped_foreign_origin_count",
+    "skipped_sibling_application_count",
     "sources",
     "stable_tag",
     "sum",
@@ -13168,12 +13236,45 @@ mod tests {
                 committed_response_count: u8,
                 response_bytes: u64,
                 source_count: usize,
+                layout: WordPressDiscoveryLayoutDocument,
                 sources: Vec<WordPressDiscoverySourceDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressDiscoveryLayoutDocument {
+                application_reference: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                declaration: Option<WordPressDiscoveryLayoutDeclarationDocument>,
+                roles: Vec<WordPressDiscoveryLayoutRoleDocument>,
+                skipped_foreign_origin_count: u16,
+                skipped_sibling_application_count: u16,
+                conflicting_association_count: u16,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressDiscoveryLayoutDeclarationDocument {
+                schema: &'static str,
+                byte_length: u64,
+                sha256: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressDiscoveryLayoutRoleDocument {
+                role: &'static str,
+                status: &'static str,
+                basis: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                reference: Option<String>,
+                candidate_count: u16,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
             struct WordPressDiscoverySourceDocument {
                 kind: &'static str,
+                association: &'static str,
+                resource_reference: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                role_reference: Option<String>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 component: Option<WordPressComponentIdentityDocument>,
                 parent_depth: u8,

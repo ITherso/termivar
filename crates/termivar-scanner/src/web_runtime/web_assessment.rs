@@ -64,9 +64,9 @@ use super::ssrf_oast_runtime::{
 };
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_runtime::{
-    extract_wordpress_discovery_seeds, extract_wordpress_signals, CommittedWordPressReview,
-    WebAssessmentWordPressAudit, WordPressDiscoverySeedSelection, WordPressDiscoveryStop,
-    WordPressReviewBinding, WordPressSignalCollector,
+    extract_wordpress_entry_observation, CommittedWordPressReview, WebAssessmentWordPressAudit,
+    WordPressDiscoveryContext, WordPressDiscoveryStop, WordPressReviewBinding,
+    WordPressSignalCollector,
 };
 use super::{
     assessment_api_visibility::{
@@ -1676,11 +1676,19 @@ pub enum WebAssessmentRuntimeError {
     #[error("REST review requires OpenAPI review in the same assessment")]
     RestReviewRequiresOpenApiReview,
     #[cfg(feature = "wordpress-review")]
-    #[error("WordPress evidence review requires an exact origin root target")]
+    #[error(
+        "WordPress evidence review requires an exact root or trailing-slash application target"
+    )]
     WordPressReviewRequiresOriginRoot,
+    #[cfg(feature = "wordpress-review")]
+    #[error("a non-root WordPress application target requires explicit metadata discovery")]
+    WordPressNonRootRequiresDiscovery,
     #[cfg(feature = "wordpress-review")]
     #[error("WordPress metadata discovery requires WordPress review in the same assessment")]
     WordPressDiscoveryRequiresReview,
+    #[cfg(feature = "wordpress-review")]
+    #[error("WordPress layout declarations require metadata discovery in the same assessment")]
+    WordPressLayoutRequiresDiscovery,
     #[cfg(feature = "wordpress-review")]
     #[error("WordPress context root does not match the exact assessment target")]
     WordPressContextRootMismatch,
@@ -1749,8 +1757,16 @@ impl fmt::Debug for WebAssessmentRuntimeError {
                 formatter.write_str("WebAssessmentRuntimeError::WordPressReviewRequiresOriginRoot")
             },
             #[cfg(feature = "wordpress-review")]
+            Self::WordPressNonRootRequiresDiscovery => {
+                formatter.write_str("WebAssessmentRuntimeError::WordPressNonRootRequiresDiscovery")
+            },
+            #[cfg(feature = "wordpress-review")]
             Self::WordPressDiscoveryRequiresReview => {
                 formatter.write_str("WebAssessmentRuntimeError::WordPressDiscoveryRequiresReview")
+            },
+            #[cfg(feature = "wordpress-review")]
+            Self::WordPressLayoutRequiresDiscovery => {
+                formatter.write_str("WebAssessmentRuntimeError::WordPressLayoutRequiresDiscovery")
             },
             #[cfg(feature = "wordpress-review")]
             Self::WordPressContextRootMismatch => {
@@ -1775,6 +1791,36 @@ impl fmt::Debug for WebAssessmentRuntimeError {
                 .finish(),
         }
     }
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_application_target_is_valid(target: &Url) -> bool {
+    if !matches!(target.scheme(), "http" | "https")
+        || !target.has_host()
+        || !target.username().is_empty()
+        || target.password().is_some()
+        || target.query().is_some()
+        || target.fragment().is_some()
+        || !target.path().starts_with('/')
+        || !target.path().ends_with('/')
+        || target.path().contains('\\')
+    {
+        return false;
+    }
+    let lowercase = target.path().to_ascii_lowercase();
+    !["%2e", "%2f", "%5c", "%25"]
+        .iter()
+        .any(|encoded| lowercase.contains(encoded))
+        && !target
+            .path()
+            .split('/')
+            .enumerate()
+            .any(|(index, segment)| {
+                matches!(segment, "." | "..")
+                    || (segment.is_empty()
+                        && index != 0
+                        && index + 1 != target.path().split('/').count())
+            })
 }
 
 impl WebAssessmentRuntimeError {
@@ -1981,14 +2027,22 @@ impl WebAssessmentRuntimeBuilder {
             return Err(WebAssessmentRuntimeError::WordPressDiscoveryRequiresReview);
         }
         #[cfg(feature = "wordpress-review")]
-        if self.wordpress_review.is_some()
-            && (!self.target.username().is_empty()
-                || self.target.password().is_some()
-                || self.target.path() != "/"
-                || self.target.query().is_some()
-                || self.target.fragment().is_some())
+        if self
+            .wordpress_review
+            .as_ref()
+            .is_some_and(|inputs| inputs.discovery_layout().is_some())
+            && !self.wordpress_discovery
         {
+            return Err(WebAssessmentRuntimeError::WordPressLayoutRequiresDiscovery);
+        }
+        #[cfg(feature = "wordpress-review")]
+        if self.wordpress_review.is_some() && !wordpress_application_target_is_valid(&self.target) {
             return Err(WebAssessmentRuntimeError::WordPressReviewRequiresOriginRoot);
+        }
+        #[cfg(feature = "wordpress-review")]
+        if self.wordpress_review.is_some() && self.target.path() != "/" && !self.wordpress_discovery
+        {
+            return Err(WebAssessmentRuntimeError::WordPressNonRootRequiresDiscovery);
         }
         #[cfg(feature = "authorization-review")]
         if self.root_authorization_context.is_some() && self.resource_authorization_review.is_some()
@@ -2021,9 +2075,18 @@ impl WebAssessmentRuntimeBuilder {
             return Err(WebAssessmentRuntimeError::WordPressContextRootMismatch);
         }
         #[cfg(feature = "wordpress-review")]
-        let wordpress_review = self
+        if self
             .wordpress_review
-            .map(|inputs| WordPressReviewBinding::new(inputs, self.wordpress_discovery));
+            .as_ref()
+            .and_then(WordPressReviewInputs::discovery_layout)
+            .is_some_and(|layout| layout.application_url() != &root.url)
+        {
+            return Err(WebAssessmentRuntimeError::WordPressContextRootMismatch);
+        }
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_review = self.wordpress_review.map(|inputs| {
+            WordPressReviewBinding::new(inputs, self.wordpress_discovery, root.url.clone())
+        });
         #[cfg(feature = "authorization-review")]
         if self
             .resource_authorization_review
@@ -2623,8 +2686,11 @@ impl WebAssessmentRuntime {
                 #[cfg(feature = "wordpress-review")]
                 let subject_observer = if subject.url == self.root.url && subject.depth == 0 {
                     if let Some(review) = self.wordpress_review.as_ref() {
-                        subject_observer
-                            .with_wordpress_signals(review.collector(), review.discovery_enabled())
+                        subject_observer.with_wordpress_signals(
+                            review.collector(),
+                            review.discovery_enabled(),
+                            review.discovery_context(),
+                        )
                     } else {
                         subject_observer
                     }
@@ -4696,6 +4762,8 @@ pub(crate) struct AssessmentDiscoveryObserver {
     wordpress_signals: Option<WordPressSignalCollector>,
     #[cfg(feature = "wordpress-review")]
     wordpress_discovery_enabled: bool,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_discovery_context: Option<WordPressDiscoveryContext>,
 }
 
 impl AssessmentDiscoveryObserver {
@@ -4720,6 +4788,8 @@ impl AssessmentDiscoveryObserver {
             wordpress_signals: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_discovery_enabled: false,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_discovery_context: None,
         }
     }
 
@@ -4728,9 +4798,11 @@ impl AssessmentDiscoveryObserver {
         mut self,
         collector: WordPressSignalCollector,
         discovery_enabled: bool,
+        discovery_context: WordPressDiscoveryContext,
     ) -> Self {
         self.wordpress_signals = Some(collector);
         self.wordpress_discovery_enabled = discovery_enabled;
+        self.wordpress_discovery_context = Some(discovery_context);
         self
     }
 
@@ -5080,21 +5152,14 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
         };
         let parsed = parse_document(observation.requested_url(), html, self.limits);
         #[cfg(feature = "wordpress-review")]
-        let wordpress_signals = self
-            .wordpress_signals
-            .as_ref()
-            .map(|_| extract_wordpress_signals(observation.requested_url(), html));
-        #[cfg(feature = "wordpress-review")]
-        let wordpress_discovery_seeds = self.wordpress_signals.as_ref().map(|_| {
-            if self.wordpress_discovery_enabled {
-                extract_wordpress_discovery_seeds(
-                    observation.requested_url(),
-                    html,
-                    observation.wordpress_rest_index_advertisement(),
-                )
-            } else {
-                WordPressDiscoverySeedSelection::default()
-            }
+        let wordpress_observation = self.wordpress_discovery_context.as_ref().map(|context| {
+            extract_wordpress_entry_observation(
+                context,
+                observation.requested_url(),
+                html,
+                observation.wordpress_rest_index_advertisement(),
+                self.wordpress_discovery_enabled,
+            )
         });
         if self.stopped() {
             return Ok(evidence);
@@ -5107,12 +5172,14 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
             evidence.retain(|item| item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE);
         } else {
             #[cfg(feature = "wordpress-review")]
-            if let (Some(collector), Some(signals), Some(discovery_seeds)) = (
-                self.wordpress_signals.as_ref(),
-                wordpress_signals,
-                wordpress_discovery_seeds,
-            ) {
-                collector.record(signals, discovery_seeds, wordpress_evidence);
+            if let (Some(collector), Some(wordpress_observation)) =
+                (self.wordpress_signals.as_ref(), wordpress_observation)
+            {
+                collector.record(
+                    wordpress_observation.signals,
+                    wordpress_observation.discovery,
+                    wordpress_evidence,
+                );
             }
         }
         Ok(evidence)

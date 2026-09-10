@@ -19,6 +19,7 @@ use thiserror::Error;
 use url::Url;
 
 mod inventory;
+mod layout;
 mod wordfence_v3;
 
 pub(crate) use wordfence_v3::MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD;
@@ -29,6 +30,10 @@ pub use inventory::{
     WordPressInventoryLimitationReason, WordPressLocalInputClass, WordPressLocalInputProvenance,
     WordPressSavedInventory, WordPressSavedInventoryCoverage, WordPressSavedInventorySummary,
     MAX_WORDPRESS_SAVED_INVENTORY_BYTES,
+};
+pub use layout::{
+    parse_wordpress_discovery_layout, WordPressDiscoveryLayout,
+    MAX_WORDPRESS_DISCOVERY_LAYOUT_BYTES, WORDPRESS_DISCOVERY_LAYOUT_SCHEMA,
 };
 pub use wordfence_v3::{
     parse_wordfence_v3_production, WordfenceV3AffectedRange, WordfenceV3AssociationKey,
@@ -592,6 +597,7 @@ pub struct WordPressReviewInputs {
     external_version_profile: Option<WordPressComparisonProfile>,
     inventory_summary: Option<WordPressSavedInventorySummary>,
     local_input_provenance: Vec<WordPressLocalInputProvenance>,
+    discovery_layout: Option<WordPressDiscoveryLayout>,
 }
 
 impl WordPressReviewInputs {
@@ -607,6 +613,7 @@ impl WordPressReviewInputs {
             external_version_profile: None,
             inventory_summary: None,
             local_input_provenance: Vec::new(),
+            discovery_layout: None,
         }
     }
 
@@ -631,6 +638,7 @@ impl WordPressReviewInputs {
             external_version_profile: None,
             inventory_summary: Some(inventory_summary),
             local_input_provenance,
+            discovery_layout: None,
         })
     }
 
@@ -671,6 +679,22 @@ impl WordPressReviewInputs {
         Ok(self)
     }
 
+    /// Attaches one validated, non-authoritative deployment declaration.
+    ///
+    /// The declaration is inert data. Runtime discovery still requires its
+    /// separate explicit opt-in and an eligible observed asset before a
+    /// component metadata request can be derived.
+    pub fn with_discovery_layout(
+        mut self,
+        layout: WordPressDiscoveryLayout,
+    ) -> Result<Self, WordPressReviewError> {
+        if self.discovery_layout.is_some() {
+            return Err(WordPressReviewError::InvalidDiscoveryLayout);
+        }
+        self.discovery_layout = Some(layout);
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn context(&self) -> Option<&WordPressContext> {
         self.context.as_ref()
@@ -699,6 +723,11 @@ impl WordPressReviewInputs {
     #[must_use]
     pub fn local_input_provenance(&self) -> &[WordPressLocalInputProvenance] {
         &self.local_input_provenance
+    }
+
+    #[must_use]
+    pub const fn discovery_layout(&self) -> Option<&WordPressDiscoveryLayout> {
+        self.discovery_layout.as_ref()
     }
 }
 
@@ -1719,6 +1748,8 @@ pub enum WordPressReviewError {
     ContextTooLarge,
     #[error("WordPress advisory catalog exceeds its byte limit")]
     CatalogTooLarge,
+    #[error("WordPress discovery layout exceeds its byte limit")]
+    DiscoveryLayoutTooLarge,
     #[error("saved WordPress inventory exceeds its aggregate byte limit")]
     InventoryTooLarge,
     #[error("WordPress input is empty")]
@@ -1735,6 +1766,8 @@ pub enum WordPressReviewError {
     InvalidContext,
     #[error("saved WordPress inventory is invalid")]
     InvalidInventory,
+    #[error("WordPress discovery layout is invalid")]
+    InvalidDiscoveryLayout,
     #[error("saved WordPress inventory exceeds its component limit")]
     InventoryComponentLimitExceeded,
     #[error("saved WordPress inventory provenance does not match its supplied inputs")]

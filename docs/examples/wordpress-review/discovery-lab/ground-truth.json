@@ -64,6 +64,32 @@
     "pretty_root_path": "/wp-json/",
     "plain_root_path": "/index.php?rest_route=/"
   },
+  "layouts": {
+    "selected_blog": {
+      "application_path": "/blog/",
+      "core_base_path": "/blog/",
+      "themes_base_path": "/blog/wp-content/themes/",
+      "plugins_base_path": "/blog/wp-content/plugins/",
+      "pretty_rest_path": "/blog/wp-json/",
+      "plain_rest_path": "/blog/index.php?rest_route=/",
+      "sibling_decoy_path": "/shop/wp-content/themes/termivar-child/assets/decoy.css",
+      "sibling_style_version": "88.8.8"
+    },
+    "root_home_cms_core": {
+      "application_path": "/",
+      "core_base_path": "/cms/",
+      "themes_base_path": "/cms/wp-content/themes/",
+      "plugins_base_path": "/cms/wp-content/plugins/",
+      "rest_path": "/wp-json/"
+    },
+    "declared_custom_content": {
+      "application_path": "/",
+      "core_base_path": "/cms/",
+      "themes_base_path": "/site-content/themes/",
+      "plugins_base_path": "/modules/",
+      "rest_path": "/wp-json/"
+    }
+  },
   "claim_limits": {
     "generator_absence": "unknown_not_negative",
     "namespace_suffix": "protocol_version_not_component_version",

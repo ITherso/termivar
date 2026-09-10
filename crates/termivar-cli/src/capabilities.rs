@@ -602,6 +602,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "--profile web-review",
                 "--wordpress-review",
                 "--wordpress-discovery",
+                "optional --wordpress-layout FILE",
             ],
             "Explicitly performs at most 12 anonymous same-origin metadata GET requests through the existing assessment broker. It is never enabled by --wordpress-review alone; discovered metadata is unauthenticated evidence, plugin Stable tag is not treated as an installed version, and no exploit or impact validation is performed.",
             "docs/wordpress-review.md",
@@ -1083,7 +1084,8 @@ mod tests {
             [
                 "--profile web-review",
                 "--wordpress-review",
-                "--wordpress-discovery"
+                "--wordpress-discovery",
+                "optional --wordpress-layout FILE"
             ]
         );
         assert!(matches!(wordpress_discovery.group, SurfaceGroup::Optional));

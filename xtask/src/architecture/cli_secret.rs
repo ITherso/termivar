@@ -79,6 +79,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "wordpress_context",
     "wordpress_discovery",
     "wordpress_external_version_profile",
+    "wordpress_layout",
     "wordpress_plugins_json",
     "wordpress_review",
     "wordpress_themes_json",
@@ -668,7 +669,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         .collect::<BTreeSet<_>>();
     let observed_field_names = fields.keys().cloned().collect::<BTreeSet<_>>();
     let ordinary_types_are_exact = [
-        ("target", "Url", None),
+        ("target", "ScanTarget", None),
         ("format", "OutputFormat", None),
         ("explain", "bool", None),
         ("profile", "Option", Some("CliScanProfile")),
@@ -683,6 +684,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("rest_review", "bool", None),
         ("wordpress_review", "bool", None),
         ("wordpress_discovery", "bool", None),
+        ("wordpress_layout", "Option", Some("PathBuf")),
         ("wordpress_context", "Option", Some("PathBuf")),
         ("wordpress_advisories", "Option", Some("PathBuf")),
         (
@@ -894,6 +896,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             "wordpress_discovery",
             ("bool", None),
             "long,requires_all=[\"profile\",\"wordpress_review\"]",
+        ),
+        (
+            "wordpress_layout",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\",\"wordpress_discovery\"]",
         ),
         (
             "wordpress_context",

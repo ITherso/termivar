@@ -44,9 +44,9 @@ the runner's ordinary Docker cache.
 
 The derived image contains only original GPL-2.0-or-later test code:
 
-- child theme `termivar-child` at `1.4.0`, with one task-owned
-  `/wp-includes/images/blank.gif` reference that supplies a deterministic
-  identity-only core signal even when the generator is suppressed;
+- child theme `termivar-child` at `1.4.0`, with one task-owned `includes_url()`
+  image reference that follows the configured core base and supplies a
+  deterministic identity-only core signal even when the generator is suppressed;
 - parent theme `termivar-parent` at `3.2.1`, referenced only by the child's
   `Template` header;
 - active plugin `termivar-metadata-lab` at `2.3.4`, whose readme deliberately
@@ -59,22 +59,51 @@ namespace version, not a plugin release version.
 
 ## Acceptance scenarios
 
-The real-CMS job runs an ordinary web review, the old transport-free WordPress
-review, and explicit discovery. It repeats the old/new pair with the generator
-suppressed and with plain permalinks. The pinned current WordPress core advertises
-the plain REST root as `/index.php?rest_route=/`; the older handbook illustration
-without `index.php` is not substituted for the current-core oracle.
+The real-CMS job preserves the original seven root-layout scans: an ordinary web
+review, the transport-free WordPress review, and explicit discovery, followed by
+the review/discovery pair with the generator suppressed and with plain
+permalinks. The pinned current WordPress core advertises the plain REST root as
+`/index.php?rest_route=/`; the older handbook illustration without `index.php`
+is not substituted for the current-core oracle.
 
-For each configuration the old review and discovery traces are compared. The
-allowed delta is exactly four anonymous same-origin GETs: the advertised REST
-index, child stylesheet, depth-one parent stylesheet, and active plugin readme.
-No REST route, plugin PHP entrypoint, inactive plugin, foreign origin, or
-additional parent is accepted as an attributable request.
+The same disposable installation is then moved through three controller-verified
+deployment layouts without changing the image set or giving Termivar server
+access:
+
+- a complete application at `/blog/`, exercised with pretty and plain REST
+  advertisements;
+- a site whose public home is `/` while WordPress core and conventional content
+  are under `/cms/`;
+- that root-home deployment with themes moved to `/site-content/themes/` and
+  plugins moved separately to `/modules/`. This last case is first scanned with
+  no declaration, then with a strict `security.wordpress-layout/v1` declaration
+  containing role roots only.
+
+During the `/blog/` cases, the selected page also contains a task-owned
+`/shop/wp-content/themes/termivar-child/` decoy with the same slug and a distinct
+`88.8.8` stylesheet declaration. The controller requires it to remain a sibling
+association: Termivar must not derive or fetch that sibling stylesheet as
+WordPress metadata for `/blog/`.
+
+For every fully resolved configuration the review and discovery traces are
+compared. The allowed delta is exactly four anonymous same-origin GETs at the
+literal independently declared bases: the advertised REST index, child
+stylesheet, depth-one parent stylesheet, and active plugin readme. With the
+custom deployment but no layout declaration, only the advertised REST index is
+eligible; the declaration then enables exactly the three observed component
+metadata requests. No REST route, plugin PHP entrypoint, inactive plugin,
+foreign/sibling stylesheet, or additional parent is accepted as an attributable
+request.
 
 After the lab is fully stopped, the same development executable verifies every
-bundle, self-compares each report, and compares review-only with discovery. The
-CI artifact retains only a bounded JSON/Markdown summary with request paths,
-hashes, counts, and safe ground truth; it does not retain credentials or full
+bundle and self-compares every report. It also compares review-only with
+discovery, custom no-layout with declared-layout results, and the known-different
+`/blog/` and `/` applications. The custom comparison must expose methodology and
+coverage changes without calling them remediation; the cross-application
+WordPress entity comparison must be `not_compared` with
+`application_scope_mismatch`. The CI artifact retains only a bounded
+JSON/Markdown summary with request paths, opaque references, hashes, counts, and
+safe ground truth; it does not retain credentials, declaration paths, or full
 assessment documents.
 
 The summary reports observable component-identity recall with an explicit

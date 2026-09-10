@@ -2,9 +2,9 @@
 
 The optional `wordpress-review` feature adds bounded WordPress-specific
 interpretation to the existing `web-review` assessment. It does not start a
-WordPress-specific scanner. It interprets signals from the root HTML response
-that the assessment already obtained, plus explicitly supplied local context
-and advisory data. Selecting `--wordpress-review` alone adds no target or
+WordPress-specific scanner. It interprets signals from the selected application
+entry response that the assessment already obtained, plus explicitly supplied
+local context and advisory data. Selecting `--wordpress-review` alone adds no target or
 provider requests. The separate `--wordpress-discovery` switch described below
 explicitly authorizes a small bounded set of additional anonymous metadata
 GETs through the same assessment broker.
@@ -37,8 +37,8 @@ and limit violations are rejected.
 
 ## What can be observed
 
-V1 recognizes only supported structured data in the already captured root
-HTML:
+V1 recognizes only supported structured data in the already captured selected
+application entry HTML:
 
 - WordPress generator metadata in the expected `meta` element and attributes;
 - canonical same-origin asset-path hints for WordPress core, plugin, and theme
@@ -84,9 +84,28 @@ operator-authorized fixture. Termivar does not start WordPress. The discovery
 option requires the explicit review and `web-review` profile; merely compiling
 the feature or selecting `--wordpress-review` does not enable network work.
 
+The selected application may be an unambiguous directory URL. A conventional
+WordPress application under `/blog/` needs no layout declaration:
+
+```bash
+termivar scan https://authorized.example/blog/ \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-discovery \
+  --report-dir assessment-wordpress-blog
+```
+
+The final slash is significant. Termivar does not turn `/blog` into `/blog/`,
+follow a redirect to guess the application, or fetch the origin root as a
+layout probe. The original target spelling must also contain no surrounding
+whitespace, control characters, backslashes, encoded traversal, or encoded
+separators; parser normalization is not allowed to silently change the selected
+application. The selected application is one directory for this invocation; it
+is not every WordPress installation sharing the origin.
+
 When selected, discovery freezes candidates from structured links in the
-committed root response and sends only anonymous, bodyless GETs through the
-existing exact-origin broker. It does not inherit Authorization, Cookie, or
+committed selected-entry response and sends only anonymous, bodyless GETs
+through the existing exact-origin broker. It does not inherit Authorization, Cookie, or
 proxy credentials, and the discovery-only client does not use ambient proxy
 configuration. Redirects and retries remain disabled. The WordPress
 narrowing policy admits at most 12 wire attempts: one advertised REST index,
@@ -99,22 +118,31 @@ completed, parsed, committed source are reported separately. As with the
 parent broker, a delivered transport chunk can cross a retained-byte threshold
 before cancellation; the ceilings are not described as a perfect wire cutoff.
 
-Candidates are evidence-derived, not a wordlist:
+Candidates are evidence-derived, not a wordlist. Conventional component paths
+retain the observed prefix before the exact `wp-content` segment:
 
 - a `Link` header or HTML link whose exact relation is
   `https://api.w.org/` can nominate the same-origin REST root;
 - a structured same-origin asset under
-  `wp-content/themes/<slug>/...` can nominate only that theme's root
+  `<prefix>/wp-content/themes/<slug>/...` can nominate only that theme's root
   `style.css`;
 - a structured same-origin asset under
-  `wp-content/plugins/<slug>/...` can nominate only that plugin's root
+  `<prefix>/wp-content/plugins/<slug>/...` can nominate only that plugin's root
   `readme.txt`;
 - a valid child-theme `Template` header can nominate one same-root parent
   stylesheet at depth one.
 
+For example, an eligible resource under
+`/cms/wp-content/themes/example/assets/site.css` nominates only
+`/cms/wp-content/themes/example/style.css`; it does not nominate the root
+`/wp-content/` path. A `/blog/` selection does not absorb a conventional
+`/shop/wp-content/` candidate. Multiple incompatible conventional prefixes are
+reported as ambiguous instead of choosing the first, shortest, or most common
+one.
+
 The REST query form is closed: the current WordPress source emits
-`/index.php?rest_route=/` when pretty permalinks are disabled. The historical
-handbook illustration `/?rest_route=/` remains useful context, but the current
+`<application>/index.php?rest_route=/` when pretty permalinks are disabled. The
+historical handbook illustration `/?rest_route=/` remains useful context, but the current
 core form is exercised by the pinned real-CMS lab. Extra or duplicate query
 parameters, other routes, userinfo, fragments, encoded separators/traversal,
 foreign origins, and a different loopback port are rejected. Termivar fetches
@@ -130,9 +158,11 @@ A theme stylesheet is interpreted from its bounded initial header section.
 The identity remains the validated source path. `Version` is the served
 artifact's declaration; `Template` is a parent-directory declaration; and
 `Requires at least`, `Tested up to`, and `Requires PHP` are compatibility
-statements, not installed core/PHP versions. A served file can be copied,
-cached, or stale, so even a valid declaration is source-qualified observation,
-not authenticated installation or patch state.
+statements, not installed core/PHP versions. A child `Template` declaration may
+nominate one parent stylesheet under the same selected theme collection base;
+it never falls back to root `/wp-content/themes/` or searches another observed
+root. A served file can be copied, cached, or stale, so even a valid declaration
+is source-qualified observation, not authenticated installation or patch state.
 
 A plugin readme contributes its display header, requirements, and Stable tag.
 The Stable tag identifies a distribution/repository release pointer. It is
@@ -141,10 +171,15 @@ spelling is a supported version. Termivar does not fetch plugin PHP entrypoints
 or inspect server source to fill that gap. `trunk` and unsupported tags remain
 nonversion hints.
 
-The additive top-level `security.wordpress-discovery-audit/v1` records the
-selection policy, anonymous GET method, seed/candidate/attempt/completion/commit
-counts, accounted response bytes, outcomes, typed metadata, and evidence
-reference counts. A discovery-influenced review uses the additive strict
+The current additive top-level `security.wordpress-discovery-audit/v2` records
+the deployment-aware policy, an opaque selected-application reference, each
+role's exact/ambiguous/unresolved state and evidence basis, bounded skipped or
+conflicting association counts, anonymous GET method,
+seed/candidate/attempt/completion/commit counts, accounted response bytes,
+outcomes, typed metadata, and evidence reference counts. Location references
+are framed hashes for stable comparison and are not authentication or a promise
+of anonymity. Historical discovery audit v1 remains readable with its original
+root-only meaning. A discovery-influenced review uses the additive strict
 `security.wordpress-review-audit/v7` wrapper. Its required
 `review_basis_schema` preserves which v1–v6 evaluation contract supplied the
 review facts, while `additional_request_count` records the actual discovery
@@ -168,6 +203,56 @@ The disposable real-WordPress acceptance design, independent WP-CLI ground
 truth, exact four-request delta, pinned image identities, and licensing notes
 are in the
 [`discovery-lab` example](examples/wordpress-review/discovery-lab/README.md).
+
+### Explicit same-origin layout declaration
+
+Truly custom component roots can be selected with one strict local declaration.
+The declaration supplies role bases, not component names or arbitrary request
+URLs:
+
+```json
+{
+  "schema": "security.wordpress-layout/v1",
+  "application_url": "https://authorized.example/blog/",
+  "core_base_url": "https://authorized.example/cms/",
+  "themes_base_url": "https://authorized.example/site-content/themes/",
+  "plugins_base_url": "https://authorized.example/modules/"
+}
+```
+
+```bash
+termivar scan https://authorized.example/blog/ \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-discovery \
+  --wordpress-layout wordpress-layout.json \
+  --report-dir assessment-wordpress-custom-layout
+```
+
+`--wordpress-layout` requires the explicit review, discovery, and `web-review`
+profile. The file is at most 16 KiB, is read once through the hardened local
+regular-file boundary before scanner construction, and is never reopened by
+the runtime. Its `application_url` must exactly match the selected canonical
+application. Every supplied base must be a same-effective-origin directory URL
+with a final slash and no credentials, query, or fragment. Theme and plugin
+bases cannot be the origin root or overlap ambiguously. Unknown/duplicate
+fields, percent-encoded path octets, malformed directory paths, alternate ports,
+links, and special files fail preflight. Rejecting encoded octets keeps role
+overlap and opaque location identity byte-unambiguous in this strict V1 input.
+
+The declaration is an operator assertion of association, not authenticated
+server configuration and not additional network authority. A declared theme or
+plugin base still requires an eligible asset observed in the selected entry
+response before Termivar derives that component's `style.css` or `readme.txt`.
+An empty page therefore creates no wordlist or directory enumeration, and a
+declared core base creates no config, PHP-source, or version request. Roles not
+declared may use only an unambiguous coherent conventional observation.
+
+Reports retain only the declaration schema, exact byte length, SHA-256, and
+opaque location identities—not its local path or raw URLs. The digest identifies
+the bytes read but does not authenticate the operator declaration or establish
+a simultaneous filesystem snapshot. Parent directories and a quiescent input
+remain caller trust boundaries.
 
 ## Operator context
 
@@ -742,6 +827,15 @@ identity, so two different source spellings do not collapse merely because
 they derive the same candidate canonical key. Titles, CVEs, array order, and
 other display content do not replace those stable keys.
 
+Discovery audit v2 also binds WordPress-specific comparison to the opaque
+selected-application identity. Matching identities allow semantic facets to be
+compared. Known different identities produce `not_compared` with an
+application-scope mismatch; a historical audit without that identity produces
+an unknown-scope result. `--same-scope` cannot force inventories from known
+different applications to pair. A changed role base or collection policy within
+one selected application is a methodology/source/coverage change, not a newly
+installed component or verified remediation.
+
 The section reports component evidence, advisory content, affected ranges,
 source-declared fix/remediation, methodology, provenance, coverage, and
 applicability changes as separate dimensions. It does not assign causality
@@ -828,6 +922,10 @@ PHP implementation reference for the comparison profiles was additionally
 reviewed on 2026-09-07. The public-metadata discovery references were reviewed
 on 2026-09-10:
 
+- WordPress installation in a subdirectory and separate site/core addresses:
+  <https://developer.wordpress.org/advanced-administration/server/wordpress-in-directory/>
+- WordPress content-directory configuration boundaries:
+  <https://developer.wordpress.org/advanced-administration/wordpress/wp-config/>
 - WordPress generator function reference:
   <https://developer.wordpress.org/reference/functions/get_the_generator/>
 - WordPress REST API discovery relation:

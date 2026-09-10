@@ -138,7 +138,63 @@ EXPECTED_DISCOVERY_PATHS = {
         "/wp-content/themes/termivar-parent/style.css",
         "/wp-content/plugins/termivar-metadata-lab/readme.txt",
     ),
+    "blog-pretty": (
+        "/blog/wp-json/",
+        "/blog/wp-content/themes/termivar-child/style.css",
+        "/blog/wp-content/themes/termivar-parent/style.css",
+        "/blog/wp-content/plugins/termivar-metadata-lab/readme.txt",
+    ),
+    "blog-plain": (
+        "/blog/index.php?rest_route=/",
+        "/blog/wp-content/themes/termivar-child/style.css",
+        "/blog/wp-content/themes/termivar-parent/style.css",
+        "/blog/wp-content/plugins/termivar-metadata-lab/readme.txt",
+    ),
+    "cms": (
+        "/wp-json/",
+        "/cms/wp-content/themes/termivar-child/style.css",
+        "/cms/wp-content/themes/termivar-parent/style.css",
+        "/cms/wp-content/plugins/termivar-metadata-lab/readme.txt",
+    ),
+    "custom": (
+        "/wp-json/",
+        "/site-content/themes/termivar-child/style.css",
+        "/site-content/themes/termivar-parent/style.css",
+        "/modules/termivar-metadata-lab/readme.txt",
+    ),
+    "custom-no-layout": ("/wp-json/",),
 }
+LAYOUT_ROLES = ("core", "themes", "plugins", "rest_index")
+OPAQUE_REFERENCE_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+@dataclasses.dataclass(frozen=True)
+class DiscoveryOracle:
+    application_url: str
+    request_paths: tuple[str, ...]
+    core_base_url: str
+    themes_base_url: str | None
+    plugins_base_url: str | None
+    rest_base_url: str
+    declaration_bytes: bytes | None = None
+    skipped_sibling_application_count: int = 0
+
+    @property
+    def full_component_set(self) -> bool:
+        return self.themes_base_url is not None and self.plugins_base_url is not None
+
+    @property
+    def attempted_request_count(self) -> int:
+        return len(self.request_paths)
+
+
+def _framed_reference(domain: str, value: str) -> str:
+    """Independent literal oracle for the documented opaque URL framing."""
+    digest = hashlib.sha256()
+    for part in (domain.encode("ascii"), value.encode("ascii")):
+        digest.update(len(part).to_bytes(8, "big"))
+        digest.update(part)
+    return "sha256:" + digest.hexdigest()
 
 
 class AcceptanceError(RuntimeError):
@@ -204,6 +260,8 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
         "plugins/termivar-hidden-lab/termivar-hidden-lab.php",
         "plugins/termivar-hidden-lab/readme.txt",
         "plugins/termivar-generator-control/termivar-generator-control.php",
+        "sibling-shop/wp-content/themes/termivar-child/assets/decoy.css",
+        "sibling-shop/wp-content/themes/termivar-child/style.css",
     }
     actual = {
         path.relative_to(root).as_posix()
@@ -224,9 +282,19 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
     require("ADD " not in dockerfile, "lab build must use only checked-in COPY sources")
     child_template = (root / "themes/termivar-child/index.php").read_text(encoding="utf-8")
     require(
-        '<img src="/wp-includes/images/blank.gif"' in child_template,
-        "lab root must retain its deterministic identity-only core asset reference",
+        "includes_url( 'images/blank.gif' )" in child_template,
+        "lab theme must retain its deployment-aware identity-only core asset reference",
     )
+    require(
+        'href="/shop/wp-content/themes/termivar-child/assets/decoy.css"'
+        in child_template,
+        "lab child theme must retain its selected-/blog sibling decoy",
+    )
+    sibling_style = (
+        root / "sibling-shop/wp-content/themes/termivar-child/style.css"
+    ).read_text(encoding="utf-8")
+    require("Version: 88.8.8" in sibling_style,
+            "lab sibling theme version oracle changed")
     require(GROUND_TRUTH_PATH.is_file() and not GROUND_TRUTH_PATH.is_symlink(),
             "lab ground-truth declaration is unavailable")
     truth = parse_json(GROUND_TRUTH_PATH.read_bytes(), "lab ground truth")
@@ -250,6 +318,36 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
             "pretty REST path oracle changed")
     require(truth["rest"]["plain_root_path"] == EXPECTED_DISCOVERY_PATHS["plain"][0],
             "plain REST path oracle changed")
+    layouts = truth.get("layouts")
+    require(isinstance(layouts, dict), "lab layout ground truth is unavailable")
+    require(layouts == {
+        "selected_blog": {
+            "application_path": "/blog/",
+            "core_base_path": "/blog/",
+            "themes_base_path": "/blog/wp-content/themes/",
+            "plugins_base_path": "/blog/wp-content/plugins/",
+            "pretty_rest_path": "/blog/wp-json/",
+            "plain_rest_path": "/blog/index.php?rest_route=/",
+            "sibling_decoy_path": (
+                "/shop/wp-content/themes/termivar-child/assets/decoy.css"
+            ),
+            "sibling_style_version": "88.8.8",
+        },
+        "root_home_cms_core": {
+            "application_path": "/",
+            "core_base_path": "/cms/",
+            "themes_base_path": "/cms/wp-content/themes/",
+            "plugins_base_path": "/cms/wp-content/plugins/",
+            "rest_path": "/wp-json/",
+        },
+        "declared_custom_content": {
+            "application_path": "/",
+            "core_base_path": "/cms/",
+            "themes_base_path": "/site-content/themes/",
+            "plugins_base_path": "/modules/",
+            "rest_path": "/wp-json/",
+        },
+    }, "lab layout ground truth changed")
     return {
         "fixture_sha256": tree_sha256(root),
         "ground_truth_sha256": sha256_file(GROUND_TRUTH_PATH),
@@ -847,28 +945,126 @@ class DockerWordPressLab:
         self.wp("rewrite", "flush", "--hard", label="pretty permalink flush")
 
     def configure(self, *, permalink: str, generator_visible: bool) -> None:
+        self.configure_at(
+            "/var/www/html", permalink=permalink, generator_visible=generator_visible
+        )
+
+    def configure_at(
+        self, path: str, *, permalink: str, generator_visible: bool
+    ) -> None:
         require(permalink in {"pretty", "plain"}, "unknown permalink scenario")
         plugin_command = "deactivate" if generator_visible else "activate"
-        self.wp("plugin", plugin_command, "termivar-generator-control",
+        self.wp(f"--path={path}", "plugin", plugin_command, "termivar-generator-control",
                 label="generator visibility configuration")
         structure = "/%postname%/" if permalink == "pretty" else ""
-        self.wp("option", "update", "permalink_structure", structure,
+        self.wp(f"--path={path}", "option", "update", "permalink_structure", structure,
                 label=f"{permalink} permalink selection")
-        self.wp("rewrite", "flush", "--hard", label=f"{permalink} permalink flush")
+        self.wp(f"--path={path}", "rewrite", "flush", "--hard",
+                label=f"{permalink} permalink flush")
 
-    def ground_truth(self) -> dict[str, Any]:
-        core = self.wp("core", "version", label="core ground truth").stdout.decode().strip()
-        stylesheet = self.wp("option", "get", "stylesheet",
+    def _application_url(self, path: str) -> str:
+        require(self.origin is not None and self.origin.endswith("/"),
+                "WordPress origin is unavailable")
+        require(path.startswith("/") and path.endswith("/"),
+                "application path must be an absolute directory")
+        return self.origin.rstrip("/") + path
+
+    def prepare_blog_application(self) -> str:
+        """Copy the installed CMS below /blog and add one static sibling decoy."""
+        self.docker(
+            "exec", self.wordpress, "sh", "-eu", "-c",
+            "mkdir /var/www/html/blog; "
+            "find /var/www/html -mindepth 1 -maxdepth 1 ! -name blog "
+            "-exec cp -a '{}' /var/www/html/blog/ ';'; "
+            "cp -a /usr/src/termivar-sibling/shop /var/www/html/shop; "
+            "rm -f /var/www/html/.htaccess",
+            label="selected blog application preparation",
+        )
+        application = self._application_url("/blog/")
+        self.wp("--path=/var/www/html/blog", "option", "update", "siteurl",
+                application.rstrip("/"), label="blog site URL selection")
+        self.wp("--path=/var/www/html/blog", "option", "update", "home",
+                application.rstrip("/"), label="blog home URL selection")
+        self.configure_at(
+            "/var/www/html/blog", permalink="pretty", generator_visible=True
+        )
+        return application
+
+    def prepare_root_home_with_cms_core(self) -> str:
+        """Serve the site at / while executing the installed core below /cms/."""
+        self.docker(
+            "exec", self.wordpress, "sh", "-eu", "-c",
+            "mkdir /var/www/html/cms; "
+            "find /var/www/html/blog -mindepth 1 -maxdepth 1 "
+            "-exec cp -a '{}' /var/www/html/cms/ ';'; "
+            "printf '%s\\n' '<?php' \"define( 'WP_USE_THEMES', true );\" "
+            "\"require __DIR__ . '/cms/wp-blog-header.php';\" "
+            "> /var/www/html/index.php",
+            label="root-home CMS core preparation",
+        )
+        application = self._application_url("/")
+        site = self._application_url("/cms/").rstrip("/")
+        self.wp("--path=/var/www/html/cms", "option", "update", "siteurl", site,
+                label="CMS core site URL selection")
+        self.wp("--path=/var/www/html/cms", "option", "update", "home",
+                application.rstrip("/"), label="root home URL selection")
+        self.configure_at(
+            "/var/www/html/cms", permalink="pretty", generator_visible=True
+        )
+        return application
+
+    def prepare_custom_content_roots(self) -> bytes:
+        """Move themes and plugins to declared same-origin role directories."""
+        require(self.origin is not None, "WordPress origin is unavailable")
+        content_url = self._application_url("/site-content/").rstrip("/")
+        plugin_url = self._application_url("/modules/").rstrip("/")
+        for name, value in (
+            ("WP_CONTENT_DIR", "/var/www/html/site-content"),
+            ("WP_CONTENT_URL", content_url),
+            ("WP_PLUGIN_DIR", "/var/www/html/modules"),
+            ("WP_PLUGIN_URL", plugin_url),
+        ):
+            self.wp(
+                "--path=/var/www/html/cms", "config", "set", name, value,
+                "--type=constant", label=f"custom {name} selection",
+            )
+        self.docker(
+            "exec", self.wordpress, "sh", "-eu", "-c",
+            "mv /var/www/html/cms/wp-content /var/www/html/site-content; "
+            "mv /var/www/html/site-content/plugins /var/www/html/modules",
+            label="custom content directory move",
+        )
+        self.configure_at(
+            "/var/www/html/cms", permalink="pretty", generator_visible=True
+        )
+        declaration = {
+            "schema": "security.wordpress-layout/v1",
+            "application_url": self._application_url("/"),
+            "core_base_url": self._application_url("/cms/"),
+            "themes_base_url": self._application_url("/site-content/themes/"),
+            "plugins_base_url": self._application_url("/modules/"),
+        }
+        return (json.dumps(declaration, separators=(",", ":"), sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+
+    def ground_truth(self, path: str = "/var/www/html") -> dict[str, Any]:
+        path_argument = f"--path={path}"
+        core = self.wp(path_argument, "core", "version",
+                       label="core ground truth").stdout.decode().strip()
+        stylesheet = self.wp(path_argument, "option", "get", "stylesheet",
                              label="stylesheet ground truth").stdout.decode().strip()
-        template = self.wp("option", "get", "template",
+        template = self.wp(path_argument, "option", "get", "template",
                            label="template ground truth").stdout.decode().strip()
         themes = parse_json(
-            self.wp("theme", "list", "--format=json", "--fields=name,status,version",
+            self.wp(path_argument, "theme", "list", "--format=json",
+                    "--fields=name,status,version",
                     label="theme ground truth").stdout,
             "WP-CLI theme ground truth",
         )
         plugins = parse_json(
-            self.wp("plugin", "list", "--format=json", "--fields=name,status,version",
+            self.wp(path_argument, "plugin", "list", "--format=json",
+                    "--fields=name,status,version",
                     label="plugin ground truth").stdout,
             "WP-CLI plugin ground truth",
         )
@@ -899,6 +1095,37 @@ class DockerWordPressLab:
             },
             "plugin_readme_stable_tag": "9.9.9",
         }
+
+    def deployment_ground_truth(
+        self, path: str, *, expected_home: str, expected_site: str
+    ) -> dict[str, str]:
+        path_argument = f"--path={path}"
+        home = self.wp(
+            path_argument, "option", "get", "home", label="home URL ground truth"
+        ).stdout.decode("utf-8", "strict").strip()
+        site = self.wp(
+            path_argument, "option", "get", "siteurl", label="site URL ground truth"
+        ).stdout.decode("utf-8", "strict").strip()
+        require(home == expected_home.rstrip("/")
+                and site == expected_site.rstrip("/"),
+                "deployment ground truth differs from the configured application/core URLs")
+        return {"home": home, "siteurl": site}
+
+    def custom_root_ground_truth(self) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for name in ("WP_CONTENT_DIR", "WP_CONTENT_URL", "WP_PLUGIN_DIR", "WP_PLUGIN_URL"):
+            values[name] = self.wp(
+                "--path=/var/www/html/cms", "config", "get", name, "--type=constant",
+                label=f"custom {name} ground truth",
+            ).stdout.decode("utf-8", "strict").strip()
+        require(values["WP_CONTENT_DIR"] == "/var/www/html/site-content"
+                and values["WP_PLUGIN_DIR"] == "/var/www/html/modules"
+                and values["WP_CONTENT_URL"]
+                == self._application_url("/site-content/").rstrip("/")
+                and values["WP_PLUGIN_URL"]
+                == self._application_url("/modules/").rstrip("/"),
+                "custom directory ground truth differs from the declared layout")
+        return values
 
     def request_log(self) -> list[tuple[str, str, int, tuple[str, ...]]]:
         result = self.docker("logs", self.wordpress, label="WordPress request log")
@@ -1062,35 +1289,156 @@ def _validate_wordpress_execution_boundary(html_bytes: bytes) -> None:
         )
 
 
-def _validate_discovery_document(document: dict[str, Any], *, generator_visible: bool) -> str:
+def _validate_discovery_document(
+    document: dict[str, Any],
+    *,
+    generator_visible: bool,
+    oracle: DiscoveryOracle | None = None,
+) -> str:
     audit = document.get("wordpress_review")
     discovery = document.get("wordpress_discovery")
     require(isinstance(audit, dict), "discovery report omits the WordPress review audit")
     require(isinstance(discovery, dict), "discovery report omits the separate wire audit")
+    require(set(discovery) == {
+                "schema", "capability_id", "policy_id", "selected", "method",
+                "credential_mode", "seed_count", "candidate_count",
+                "candidate_limit_reached", "omitted_candidate_count",
+                "attempted_request_count", "completed_response_count",
+                "committed_response_count", "response_bytes", "source_count",
+                "layout", "sources",
+            }, "discovery report has an unexpected top-level shape")
     require(audit.get("schema") == "security.wordpress-review-audit/v7"
             and audit.get("review_basis_schema") == "security.wordpress-review-audit/v1"
             and audit.get("additional_request_count")
             == discovery.get("attempted_request_count"),
             "discovery-influenced review schema or request accounting changed")
     schema = discovery.get("schema")
-    require(schema == "security.wordpress-discovery-audit/v1",
+    require(schema == "security.wordpress-discovery-audit/v2",
             "discovery report has an unexpected wire-audit identity")
-    require(discovery.get("policy_id") == "termivar.wordpress-metadata-discovery/v1"
+    require(discovery.get("policy_id")
+            == "termivar.wordpress-deployment-aware-metadata-discovery/v1"
             and discovery.get("selected") is True
             and discovery.get("method") == "get"
             and discovery.get("credential_mode") == "anonymous",
             "discovery report changed its closed authority policy")
-    require(discovery.get("seed_count") == 3
-            and discovery.get("candidate_count") == 4
+    expected_count = oracle.attempted_request_count if oracle is not None else 4
+    expected_seed_count = 3 if expected_count == 4 else expected_count
+    require(discovery.get("seed_count") == expected_seed_count
+            and discovery.get("candidate_count") == expected_count
             and discovery.get("candidate_limit_reached") is False
             and discovery.get("omitted_candidate_count") == 0
-            and discovery.get("attempted_request_count") == 4
-            and discovery.get("completed_response_count") == 4
-            and discovery.get("committed_response_count") == 4
-            and discovery.get("source_count") == 4,
-            "real-CMS discovery did not reconcile its four expected sources")
+            and discovery.get("attempted_request_count") == expected_count
+            and discovery.get("completed_response_count") == expected_count
+            and discovery.get("committed_response_count") == expected_count
+            and discovery.get("source_count") == expected_count,
+            "real-CMS discovery did not reconcile its expected sources")
     sources = discovery.get("sources")
-    require(isinstance(sources, list), "discovery audit omits its source rows")
+    require(isinstance(sources, list) and len(sources) == expected_count,
+            "discovery audit omits its source rows")
+    for source in sources:
+        require(isinstance(source, dict), "discovery source row is not an object")
+        kind = source.get("kind")
+        metadata_key = {
+            "rest_index": "namespaces",
+            "theme_stylesheet": "theme",
+            "plugin_readme": "plugin",
+        }.get(kind)
+        required_keys = {
+            "kind", "association", "resource_reference", "role_reference",
+            "parent_depth", "outcome", "request_attempted", "response_bytes",
+            "evidence_reference_count", "evidence_references",
+        }
+        if metadata_key is not None:
+            required_keys.add(metadata_key)
+        if kind != "rest_index":
+            required_keys.add("component")
+        require(metadata_key is not None and set(source) == required_keys,
+                "discovery source row has an unexpected shape")
+    layout = discovery.get("layout")
+    expected_layout_keys = {
+        "application_reference", "roles", "skipped_foreign_origin_count",
+        "skipped_sibling_application_count", "conflicting_association_count",
+    }
+    if isinstance(layout, dict) and "declaration" in layout:
+        expected_layout_keys.add("declaration")
+    require(isinstance(layout, dict) and set(layout) == expected_layout_keys,
+            "discovery layout has an unexpected shape")
+    application_reference = layout.get("application_reference")
+    require(isinstance(application_reference, str)
+            and OPAQUE_REFERENCE_RE.fullmatch(application_reference) is not None,
+            "discovery layout has an invalid application reference")
+    roles = layout.get("roles")
+    require(isinstance(roles, list) and len(roles) == len(LAYOUT_ROLES)
+            and [role.get("role") for role in roles if isinstance(role, dict)]
+            == list(LAYOUT_ROLES),
+            "discovery layout roles changed order or shape")
+    role_map = {role["role"]: role for role in roles}
+    for role_name, role in role_map.items():
+        require(set(role) in (
+                    {"role", "status", "basis", "candidate_count"},
+                    {"role", "status", "basis", "reference", "candidate_count"},
+                )
+                and role.get("status") in {"exact", "ambiguous", "unresolved"}
+                and role.get("basis") in {
+                    "conventional_asset", "structured_advertisement",
+                    "operator_declaration", "none",
+                }
+                and isinstance(role.get("candidate_count"), int)
+                and not isinstance(role.get("candidate_count"), bool),
+                f"discovery layout role {role_name} is malformed")
+        reference = role.get("reference")
+        require(reference is None or (
+                    isinstance(reference, str)
+                    and OPAQUE_REFERENCE_RE.fullmatch(reference) is not None
+                ), f"discovery layout role {role_name} has an invalid reference")
+
+    if oracle is not None:
+        require(application_reference == _framed_reference(
+                    "wordpress-selected-application", oracle.application_url
+                ), "discovery layout application reference differs from the selected entry")
+        declared = oracle.declaration_bytes is not None
+        declaration = layout.get("declaration")
+        if declared:
+            require(declaration == {
+                        "schema": "security.wordpress-layout/v1",
+                        "byte_length": len(oracle.declaration_bytes or b""),
+                        "sha256": hashlib.sha256(oracle.declaration_bytes or b"").hexdigest(),
+                    }, "discovery layout declaration identity differs from exact input bytes")
+        else:
+            require(declaration is None, "conventional discovery unexpectedly reports a declaration")
+        expected_role_urls = {
+            "core": oracle.core_base_url,
+            "themes": oracle.themes_base_url,
+            "plugins": oracle.plugins_base_url,
+            "rest_index": oracle.rest_base_url,
+        }
+        for role_name, base_url in expected_role_urls.items():
+            role = role_map[role_name]
+            if base_url is None:
+                require(role == {
+                            "role": role_name, "status": "unresolved", "basis": "none",
+                            "candidate_count": 0,
+                        }, f"discovery unexpectedly resolved undeclared {role_name} layout")
+                continue
+            basis = (
+                "structured_advertisement" if role_name == "rest_index"
+                else "operator_declaration" if declared
+                else "conventional_asset"
+            )
+            require(role == {
+                        "role": role_name,
+                        "status": "exact",
+                        "basis": basis,
+                        "reference": _framed_reference(
+                            "wordpress-discovery-role", base_url
+                        ),
+                        "candidate_count": 1,
+                    }, f"discovery {role_name} layout differs from the literal oracle")
+        require(layout.get("skipped_foreign_origin_count") == 0
+                and layout.get("skipped_sibling_application_count")
+                == oracle.skipped_sibling_application_count
+                and layout.get("conflicting_association_count") == 0,
+                "discovery layout exclusion accounting differs from the oracle")
     discovery_items = [
         item for item in document.get("items", [])
         if isinstance(item, dict)
@@ -1120,13 +1468,25 @@ def _validate_discovery_document(document: dict[str, Any], *, generator_visible:
         for source in sources
         if isinstance(source, dict)
     ]
-    require(source_keys == [
-        ("rest_index", None, 0),
-        ("theme_stylesheet", {"kind": "theme", "slug": "termivar-child"}, 0),
-        ("theme_stylesheet", {"kind": "theme", "slug": "termivar-parent"}, 1),
-        ("plugin_readme", {"kind": "plugin", "slug": "termivar-metadata-lab"}, 0),
-    ], "discovery source order or identity differs from the closed oracle")
+    expected_source_keys = [("rest_index", None, 0)]
+    if expected_count == 4:
+        expected_source_keys.extend([
+            ("theme_stylesheet", {"kind": "theme", "slug": "termivar-child"}, 0),
+            ("theme_stylesheet", {"kind": "theme", "slug": "termivar-parent"}, 1),
+            ("plugin_readme", {"kind": "plugin", "slug": "termivar-metadata-lab"}, 0),
+        ])
+    require(source_keys == expected_source_keys,
+            "discovery source order or identity differs from the closed oracle")
     require(all(source.get("outcome") == "observed"
+                and source.get("association") in {
+                    "structured_advertisement", "operator_qualified_advertisement",
+                    "observed_conventional", "explicit_operator",
+                    "same_theme_base_parent",
+                }
+                and isinstance(source.get("resource_reference"), str)
+                and OPAQUE_REFERENCE_RE.fullmatch(source["resource_reference"]) is not None
+                and isinstance(source.get("role_reference"), str)
+                and OPAQUE_REFERENCE_RE.fullmatch(source["role_reference"]) is not None
                 and source.get("request_attempted") is True
                 and source.get("evidence_reference_count") == 1
                 and isinstance(source.get("evidence_references"), list)
@@ -1143,22 +1503,57 @@ def _validate_discovery_document(document: dict[str, Any], *, generator_visible:
     require(source_references == item.get("evidence_references")
             and len(set(source_references)) == len(source_references),
             "discovery source-to-evidence linkage differs")
+    if oracle is not None:
+        origin = oracle.application_url.split("/", 3)[:3]
+        origin = "/".join(origin)
+        source_roles = ["rest_index"] + (["themes", "themes", "plugins"]
+                                          if expected_count == 4 else [])
+        source_associations = ["structured_advertisement"] + (
+            [
+                "explicit_operator" if oracle.declaration_bytes is not None
+                else "observed_conventional",
+                "same_theme_base_parent",
+                "explicit_operator" if oracle.declaration_bytes is not None
+                else "observed_conventional",
+            ] if expected_count == 4 else []
+        )
+        for source, path, role_name, association in zip(
+            sources, oracle.request_paths, source_roles, source_associations, strict=True
+        ):
+            base_url = {
+                "rest_index": oracle.rest_base_url,
+                "themes": oracle.themes_base_url,
+                "plugins": oracle.plugins_base_url,
+            }[role_name]
+            require(base_url is not None, "source oracle omitted its role base")
+            require(source.get("association") == association
+                    and source.get("resource_reference") == _framed_reference(
+                        "wordpress-discovery-resource", origin + path
+                    )
+                    and source.get("role_reference") == _framed_reference(
+                        "wordpress-discovery-role", base_url
+                    ), "discovery source association or opaque reference differs")
     strings = set(_all_strings({"review": audit, "discovery": discovery}))
-    for expected in (
-        "termivar-child", "1.4.0", "termivar-parent", "3.2.1",
-        "termivar-metadata-lab", "9.9.9", "wp/v2", "termivar-lab/v1",
-    ):
+    expected_strings = ["wp/v2", "termivar-lab/v1"]
+    if expected_count == 4:
+        expected_strings.extend([
+            "termivar-child", "1.4.0", "termivar-parent", "3.2.1",
+            "termivar-metadata-lab", "9.9.9",
+        ])
+    for expected in expected_strings:
         require(expected in strings, f"discovery audit omits expected typed value {expected}")
     # The inactive fixture has no public reference and must remain absent rather
     # than being guessed from the filesystem or WP-CLI ground truth.
     require("termivar-hidden-lab" not in strings,
             "discovery guessed an inactive plugin with no public reference")
+    require("88.8.8" not in strings,
+            "discovery imported the selected-/blog sibling theme declaration")
     components = audit.get("components")
     require(isinstance(components, list), "discovery audit omits typed components")
-    for slug, version in (
+    for slug, version in (() if expected_count != 4 else (
         ("termivar-child", "1.4.0"),
         ("termivar-parent", "3.2.1"),
-    ):
+    )):
         theme_rows = [
             row for row in components
             if isinstance(row, dict)
@@ -1179,7 +1574,8 @@ def _validate_discovery_document(document: dict[str, Any], *, generator_visible:
         if isinstance(row, dict)
         and row.get("identity") == {"kind": "plugin", "slug": "termivar-metadata-lab"}
     ]
-    require(len(plugin_rows) == 1, "metadata plugin identity is missing or duplicated")
+    require(len(plugin_rows) == (1 if expected_count == 4 else 0),
+            "metadata plugin identity coverage differs from the layout oracle")
     plugin_versions = {
         item.get("value") for item in plugin_rows[0].get("versions", [])
         if isinstance(item, dict)
@@ -1191,9 +1587,10 @@ def _validate_discovery_document(document: dict[str, Any], *, generator_visible:
         if isinstance(row, dict)
         and row.get("component") == {"kind": "plugin", "slug": "termivar-metadata-lab"}
     ]
-    require(len(discovery_plugin_rows) == 1
-            and discovery_plugin_rows[0].get("plugin", {}).get("stable_tag") == "9.9.9",
-            "plugin Stable tag was not retained as separate discovery metadata")
+    require((expected_count != 4 and not discovery_plugin_rows)
+            or (len(discovery_plugin_rows) == 1
+                and discovery_plugin_rows[0].get("plugin", {}).get("stable_tag") == "9.9.9"),
+            "plugin Stable tag coverage differs from the layout oracle")
     core_rows = [
         row for row in components
         if isinstance(row, dict)
@@ -1340,7 +1737,7 @@ def _discovery_quality_metrics(
 def _assert_request_delta(
     review_trace: list[tuple[str, str, int, tuple[str, ...]]],
     discovery_trace: list[tuple[str, str, int, tuple[str, ...]]],
-    permalink: str,
+    oracle_name: str,
 ) -> None:
     matched_review = 0
     extra: list[tuple[str, str, int, tuple[str, ...]]] = []
@@ -1351,9 +1748,9 @@ def _assert_request_delta(
             extra.append(request)
     require(matched_review == len(review_trace),
             "discovery changed, removed, or reordered an existing request")
-    expected = [("GET", path, 200, ()) for path in EXPECTED_DISCOVERY_PATHS[permalink]]
+    expected = [("GET", path, 200, ()) for path in EXPECTED_DISCOVERY_PATHS[oracle_name]]
     require(extra == expected,
-            f"{permalink} discovery request delta differs from the ordered four-request oracle")
+            f"{oracle_name} discovery request delta differs from the ordered four-request oracle")
 
 
 def _run_scan(
@@ -1364,6 +1761,7 @@ def _run_scan(
     *,
     wordpress_review: bool,
     discovery: bool,
+    layout_path: Path | None = None,
     label: str,
 ) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes, dict[str, Any]]:
     arguments: list[str | os.PathLike[str]] = [
@@ -1373,6 +1771,8 @@ def _run_scan(
         arguments.append("--wordpress-review")
     if discovery:
         arguments.append("--wordpress-discovery")
+    if layout_path is not None:
+        arguments.extend(["--wordpress-layout", layout_path])
     result = runner.run(
         arguments,
         label=label,
@@ -1383,7 +1783,14 @@ def _run_scan(
     require(b"Authorization" not in result.stderr and b"Cookie" not in result.stderr,
             f"{label} diagnostic exposed a forbidden credential-header name")
     identity = _report_identity(bundle)
-    document = parse_json((bundle / "assessment.json").read_bytes(), f"{label} assessment")
+    assessment_bytes = (bundle / "assessment.json").read_bytes()
+    if layout_path is not None:
+        private_path = os.fsencode(layout_path)
+        require(private_path not in result.stdout and private_path not in result.stderr
+                and all(private_path not in (bundle / name).read_bytes()
+                        for name in ("assessment.html", "assessment.json", "manifest.json")),
+                f"{label} exposed its private layout input path")
+    document = parse_json(assessment_bytes, f"{label} assessment")
     require(document.get("schema") == "venom-rendered-assessment/v1",
             f"{label} assessment schema changed")
     require(document.get("status") == "complete", f"{label} assessment is incomplete")
@@ -1397,6 +1804,67 @@ def _run_scan(
             "peak_memory": result.peak_memory,
         },
     )
+
+
+def _run_nonroot_trace_baseline(
+    runner: ProcessRunner,
+    binary: Path,
+    origin: str,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    result = runner.run(
+        [
+            binary,
+            "scan",
+            origin,
+            "--profile",
+            "web-review",
+            "--format",
+            "json",
+            "--progress",
+        ],
+        expected=1,
+        label=label,
+        timeout=300,
+        measure_peak_memory=True,
+    )
+    require(result.returncode == 1, f"{label} did not retain typed incompleteness")
+    diagnostic = parse_json(result.stdout, f"{label} incomplete diagnostic")
+    require(isinstance(diagnostic, dict), f"{label} diagnostic root is not an object")
+    require(
+        diagnostic.get("schema_version") == "web-assessment/v2"
+        and diagnostic.get("disposition") == "incomplete",
+        f"{label} returned the wrong diagnostic contract",
+    )
+    reasons = diagnostic.get("incomplete_reasons")
+    require(
+        isinstance(reasons, list) and bool(reasons),
+        f"{label} incomplete diagnostic has no reasons",
+    )
+    assessment = diagnostic.get("assessment")
+    report = assessment.get("report") if isinstance(assessment, dict) else None
+    projection = (
+        report.get("assessment_items") if isinstance(report, dict) else None
+    )
+    require(
+        isinstance(projection, dict)
+        and projection.get("projection_status") == "unavailable"
+        and "items" not in projection,
+        f"{label} published a partial assessment-item projection",
+    )
+    require(
+        b"Authorization" not in result.stderr and b"Cookie" not in result.stderr,
+        f"{label} diagnostic exposed a forbidden credential-header name",
+    )
+    return {
+        "exit_code": result.returncode,
+        "typed_incomplete": True,
+        "diagnostic_schema": diagnostic["schema_version"],
+        "incomplete_reason_count": len(reasons),
+        "elapsed_milliseconds": round(result.elapsed_seconds * 1000, 3),
+        "peak_memory": result.peak_memory,
+    }
 
 
 def _read_assessment_inventory(path: Path, label: str) -> AssessmentInventory:
@@ -1627,6 +2095,17 @@ def _require_changed_wordpress_facet(document: dict[str, Any], name: str) -> Non
             f"offline WordPress comparison {name} has inconsistent changed fields")
 
 
+def _require_empty_wordpress_entities(document: dict[str, Any], label: str) -> None:
+    for name in ("components", "advisories"):
+        entities = document.get(name)
+        require(isinstance(entities, dict)
+                and entities.get("paired_unchanged_count") == 0
+                and entities.get("paired_changed") == []
+                and entities.get("only_in_before") == []
+                and entities.get("only_in_after") == [],
+                f"{label} unexpectedly paired WordPress {name}")
+
+
 def _run_offline_acceptance(
     runner: ProcessRunner, binary: Path, scenarios: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
@@ -1709,8 +2188,10 @@ def _run_offline_acceptance(
     require(isinstance(wordpress, dict),
             "offline comparison omitted WordPress collection-policy change")
     require(wordpress.get("schema") == "termivar-wordpress-review-comparison/v2"
-            and wordpress.get("status") == "compared",
-            "offline comparison did not separate discovery methodology and coverage changes")
+            and wordpress.get("status") == "not_compared"
+            and wordpress.get("reason") == "application_scope_unknown",
+            "offline comparison treated omitted legacy application scope as comparable")
+    _require_empty_wordpress_entities(wordpress, "offline collection-policy comparison")
     _require_changed_wordpress_facet(wordpress, "methodology")
     _require_changed_wordpress_facet(wordpress, "coverage")
     require(counts["only_in_before"] == 0
@@ -1723,10 +2204,99 @@ def _run_offline_acceptance(
             "offline comparison omitted the one-sided discovery observation")
     results["review_only_to_discovery"] = {
         "status": wordpress["status"],
+        "reason": wordpress["reason"],
         "methodology": wordpress["methodology"]["status"],
         "coverage": wordpress["coverage"]["status"],
         "item_counts": counts,
     }
+
+    custom_names = {"custom-no-layout-discovery", "custom-layout-discovery"}
+    if custom_names <= scenarios.keys():
+        before = Path(scenarios["custom-no-layout-discovery"]["_bundle"])
+        after = Path(scenarios["custom-layout-discovery"]["_bundle"])
+        compared = runner.run(
+            [
+                binary, "report", "compare", "--before", before / "assessment.json",
+                "--after", after / "assessment.json", "--same-scope", "--format", "json",
+            ],
+            label="offline custom layout comparison",
+        )
+        comparison = parse_json(compared.stdout, "offline custom layout comparison")
+        before_document = _read_assessment_inventory(
+            before / "assessment.json", "offline custom layout before assessment"
+        )
+        after_document = _read_assessment_inventory(
+            after / "assessment.json", "offline custom layout after assessment"
+        )
+        counts, _ = _validate_comparison_partition(
+            comparison, before_document, after_document,
+            "offline custom layout comparison",
+        )
+        wordpress = comparison.get("wordpress_review_comparison")
+        require(isinstance(wordpress, dict)
+                and wordpress.get("schema") == "termivar-wordpress-review-comparison/v2"
+                and wordpress.get("status") == "compared"
+                and wordpress.get("reason") is None,
+                "offline custom layout comparison did not retain one application scope")
+        _require_changed_wordpress_facet(wordpress, "methodology")
+        _require_changed_wordpress_facet(wordpress, "coverage")
+        require(
+            scenarios["custom-no-layout-discovery"].get("layout_application_reference")
+            == scenarios["custom-layout-discovery"].get("layout_application_reference")
+            and isinstance(
+                scenarios["custom-layout-discovery"].get("layout_application_reference"), str
+            ),
+            "custom layout scenarios did not retain one application identity",
+        )
+        results["custom_no_layout_to_declared_layout"] = {
+            "status": wordpress["status"],
+            "methodology": wordpress["methodology"]["status"],
+            "coverage": wordpress["coverage"]["status"],
+            "item_counts": counts,
+        }
+
+    mismatch_names = {"blog-pretty-discovery", "custom-layout-discovery"}
+    if mismatch_names <= scenarios.keys():
+        before = Path(scenarios["blog-pretty-discovery"]["_bundle"])
+        after = Path(scenarios["custom-layout-discovery"]["_bundle"])
+        compared = runner.run(
+            [
+                binary, "report", "compare", "--before", before / "assessment.json",
+                "--after", after / "assessment.json", "--same-scope", "--format", "json",
+            ],
+            label="offline application-scope mismatch comparison",
+        )
+        comparison = parse_json(
+            compared.stdout, "offline application-scope mismatch comparison"
+        )
+        before_document = _read_assessment_inventory(
+            before / "assessment.json", "offline application-scope mismatch before"
+        )
+        after_document = _read_assessment_inventory(
+            after / "assessment.json", "offline application-scope mismatch after"
+        )
+        counts, _ = _validate_comparison_partition(
+            comparison, before_document, after_document,
+            "offline application-scope mismatch comparison",
+        )
+        wordpress = comparison.get("wordpress_review_comparison")
+        require(isinstance(wordpress, dict)
+                and wordpress.get("status") == "not_compared"
+                and wordpress.get("reason") == "application_scope_mismatch",
+                "offline comparison paired known different WordPress applications")
+        _require_empty_wordpress_entities(
+            wordpress, "offline application-scope mismatch comparison"
+        )
+        require(
+            scenarios["blog-pretty-discovery"].get("layout_application_reference")
+            != scenarios["custom-layout-discovery"].get("layout_application_reference"),
+            "different applications unexpectedly share one opaque identity",
+        )
+        results["application_scope_mismatch"] = {
+            "status": wordpress["status"],
+            "reason": wordpress["reason"],
+            "item_counts": counts,
+        }
     for name, scenario in scenarios.items():
         require_bundle_unchanged(name, scenario)
     return results
@@ -1755,7 +2325,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
     version = runner.run([binary, "--version"], label="binary version").stdout.decode().strip()
     require(version == f"termivar {expected_version}", "binary version differs from expectation")
     scan_help = runner.run([binary, "scan", "--help"], label="scan help").stdout.decode()
-    require("--wordpress-review" in scan_help and "--wordpress-discovery" in scan_help,
+    require("--wordpress-review" in scan_help
+            and "--wordpress-discovery" in scan_help
+            and "--wordpress-layout" in scan_help,
             "feature-enabled scan help omits WordPress discovery")
     capabilities = parse_json(
         runner.run([binary, "capabilities", "--format", "json"],
@@ -1765,7 +2337,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
     surfaces = capabilities.get("surfaces", [])
     discovery_surfaces = [row for row in surfaces if row.get("key") == "option.wordpress-discovery"]
     require(len(discovery_surfaces) == 1
-            and discovery_surfaces[0].get("build_state") == "compiled",
+            and discovery_surfaces[0].get("build_state") == "compiled"
+            and "optional --wordpress-layout FILE"
+            in discovery_surfaces[0].get("required_inputs", []),
             "capabilities do not report compiled WordPress discovery")
 
     result: dict[str, Any] = {
@@ -1782,6 +2356,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
         "images": {},
         "ground_truth": {},
         "scenarios": {},
+        "trace_only_baselines": {},
         "offline": {},
         "claim_limits": {
             "metadata_authenticity": "not_established",
@@ -1810,18 +2385,47 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             bundles.mkdir(mode=PRIVATE_DIRECTORY_MODE)
             scenarios: dict[str, dict[str, Any]] = {}
 
+            def absolute(path: str) -> str:
+                return (lab.origin or "").rstrip("/") + path
+
+            def oracle(
+                application_path: str,
+                path_key: str,
+                *,
+                core_path: str,
+                themes_path: str | None,
+                plugins_path: str | None,
+                rest_path: str,
+                declaration_bytes: bytes | None = None,
+                skipped_sibling: int = 0,
+            ) -> DiscoveryOracle:
+                return DiscoveryOracle(
+                    application_url=absolute(application_path),
+                    request_paths=EXPECTED_DISCOVERY_PATHS[path_key],
+                    core_base_url=absolute(core_path),
+                    themes_base_url=(absolute(themes_path) if themes_path else None),
+                    plugins_base_url=(absolute(plugins_path) if plugins_path else None),
+                    rest_base_url=absolute(rest_path),
+                    declaration_bytes=declaration_bytes,
+                    skipped_sibling_application_count=skipped_sibling,
+                )
+
             def run_case(
                 name: str,
                 *,
                 review: bool,
                 discovery: bool,
+                target: str | None = None,
+                discovery_oracle: DiscoveryOracle | None = None,
+                layout_path: Path | None = None,
             ) -> list[tuple[str, str, int, tuple[str, ...]]]:
                 before = lab.request_log()
                 bundle = bundles / name
                 try:
                     document, identity, _, _, process_metrics = _run_scan(
-                        runner, binary, lab.origin or "", bundle,
-                        wordpress_review=review, discovery=discovery, label=name,
+                        runner, binary, target or lab.origin or "", bundle,
+                        wordpress_review=review, discovery=discovery,
+                        layout_path=layout_path, label=name,
                     )
                 except Exception:
                     lab.assert_relay_healthy()
@@ -1836,11 +2440,14 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                         (bundle / "assessment.html").read_bytes()
                     )
                     schema = _validate_discovery_document(
-                        document, generator_visible=not name.startswith("suppressed-")
+                        document,
+                        generator_visible=not name.startswith("suppressed-"),
+                        oracle=discovery_oracle,
                     )
-                    quality = _discovery_quality_metrics(
-                        document, generator_visible=not name.startswith("suppressed-")
-                    )
+                    if discovery_oracle is None or discovery_oracle.full_component_set:
+                        quality = _discovery_quality_metrics(
+                            document, generator_visible=not name.startswith("suppressed-")
+                        )
                     discovery_response_bytes = document["wordpress_discovery"]["response_bytes"]
                 scenarios[name] = {
                     "wordpress_review": review,
@@ -1848,6 +2455,33 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                     "request_count": len(trace),
                     "request_trace": _trace_json(trace),
                     "wordpress_audit_schema": schema,
+                    "layout_application_reference": (
+                        document.get("wordpress_discovery", {})
+                        .get("layout", {})
+                        .get("application_reference")
+                    ),
+                    "layout": (
+                        document.get("wordpress_discovery", {}).get("layout")
+                        if discovery else None
+                    ),
+                    "source_associations": ([
+                        {
+                            "kind": source.get("kind"),
+                            "component": source.get("component"),
+                            "parent_depth": source.get("parent_depth"),
+                            "association": source.get("association"),
+                            "resource_reference": source.get("resource_reference"),
+                            "role_reference": source.get("role_reference"),
+                        }
+                        for source in document.get("wordpress_discovery", {}).get(
+                            "sources", []
+                        )
+                        if isinstance(source, dict)
+                    ] if discovery else []),
+                    "expected_metadata_paths": (
+                        list(discovery_oracle.request_paths)
+                        if discovery_oracle is not None else []
+                    ),
                     "quality": quality,
                     "discovery_response_bytes": discovery_response_bytes,
                     "process_metrics": process_metrics,
@@ -1856,10 +2490,39 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 }
                 return trace
 
+            def run_nonroot_trace_baseline(
+                name: str, target: str
+            ) -> list[tuple[str, str, int, tuple[str, ...]]]:
+                before = lab.request_log()
+                process_metrics = _run_nonroot_trace_baseline(
+                    runner,
+                    binary,
+                    target,
+                    label=name,
+                )
+                lab.assert_relay_healthy()
+                trace = lab.trace(before)
+                result["trace_only_baselines"][name] = {
+                    "wordpress_review": False,
+                    "wordpress_discovery": False,
+                    "request_count": len(trace),
+                    "request_trace": _trace_json(trace),
+                    "process_metrics": process_metrics,
+                    "no_completed_bundle_expected": True,
+                }
+                return trace
+
             lab.configure(permalink="pretty", generator_visible=True)
+            root_pretty_oracle = oracle(
+                "/", "pretty", core_path="/", themes_path="/wp-content/themes/",
+                plugins_path="/wp-content/plugins/", rest_path="/",
+            )
             baseline_trace = run_case("ordinary-web-review", review=False, discovery=False)
             pretty_review = run_case("pretty-review-only", review=True, discovery=False)
-            pretty_discovery = run_case("pretty-discovery", review=True, discovery=True)
+            pretty_discovery = run_case(
+                "pretty-discovery", review=True, discovery=True,
+                discovery_oracle=root_pretty_oracle,
+            )
             require(baseline_trace == pretty_review,
                     "review-only changed or reordered the ordinary web-review request trace")
             _assert_request_delta(pretty_review, pretty_discovery, "pretty")
@@ -1869,7 +2532,10 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
 
             lab.configure(permalink="pretty", generator_visible=False)
             suppressed_review = run_case("suppressed-review-only", review=True, discovery=False)
-            suppressed_discovery = run_case("suppressed-discovery", review=True, discovery=True)
+            suppressed_discovery = run_case(
+                "suppressed-discovery", review=True, discovery=True,
+                discovery_oracle=root_pretty_oracle,
+            )
             _assert_request_delta(suppressed_review, suppressed_discovery, "pretty")
             scenarios["suppressed-discovery"]["additional_requests_vs_review_only"] = (
                 len(suppressed_discovery) - len(suppressed_review)
@@ -1877,11 +2543,150 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
 
             lab.configure(permalink="plain", generator_visible=True)
             plain_review = run_case("plain-review-only", review=True, discovery=False)
-            plain_discovery = run_case("plain-discovery", review=True, discovery=True)
+            root_plain_oracle = dataclasses.replace(
+                root_pretty_oracle, request_paths=EXPECTED_DISCOVERY_PATHS["plain"]
+            )
+            plain_discovery = run_case(
+                "plain-discovery", review=True, discovery=True,
+                discovery_oracle=root_plain_oracle,
+            )
             _assert_request_delta(plain_review, plain_discovery, "plain")
             scenarios["plain-discovery"]["additional_requests_vs_review_only"] = (
                 len(plain_discovery) - len(plain_review)
             )
+
+            blog_target = lab.prepare_blog_application()
+            result["ground_truth"]["blog"] = {
+                "inventory": lab.ground_truth("/var/www/html/blog"),
+                "deployment": lab.deployment_ground_truth(
+                    "/var/www/html/blog", expected_home=blog_target,
+                    expected_site=blog_target,
+                ),
+            }
+            blog_pretty_oracle = oracle(
+                "/blog/", "blog-pretty", core_path="/blog/",
+                themes_path="/blog/wp-content/themes/",
+                plugins_path="/blog/wp-content/plugins/", rest_path="/blog/",
+                skipped_sibling=1,
+            )
+            blog_pretty_baseline = run_nonroot_trace_baseline(
+                "blog-pretty-ordinary-web-review", blog_target,
+            )
+            blog_pretty_discovery = run_case(
+                "blog-pretty-discovery", review=True, discovery=True,
+                target=blog_target, discovery_oracle=blog_pretty_oracle,
+            )
+            _assert_request_delta(
+                blog_pretty_baseline, blog_pretty_discovery, "blog-pretty"
+            )
+            require(not any(
+                        target.endswith("/shop/wp-content/themes/termivar-child/style.css")
+                        for _, target, _, _ in blog_pretty_discovery
+                    ), "selected /blog discovery requested the sibling theme stylesheet")
+            scenarios["blog-pretty-discovery"][
+                "additional_requests_vs_ordinary_web_review"
+            ] = (
+                len(blog_pretty_discovery) - len(blog_pretty_baseline)
+            )
+
+            lab.configure_at(
+                "/var/www/html/blog", permalink="plain", generator_visible=True
+            )
+            blog_plain_oracle = dataclasses.replace(
+                blog_pretty_oracle, request_paths=EXPECTED_DISCOVERY_PATHS["blog-plain"]
+            )
+            blog_plain_baseline = run_nonroot_trace_baseline(
+                "blog-plain-ordinary-web-review", blog_target,
+            )
+            blog_plain_discovery = run_case(
+                "blog-plain-discovery", review=True, discovery=True,
+                target=blog_target, discovery_oracle=blog_plain_oracle,
+            )
+            _assert_request_delta(blog_plain_baseline, blog_plain_discovery, "blog-plain")
+            scenarios["blog-plain-discovery"][
+                "additional_requests_vs_ordinary_web_review"
+            ] = (
+                len(blog_plain_discovery) - len(blog_plain_baseline)
+            )
+
+            cms_target = lab.prepare_root_home_with_cms_core()
+            result["ground_truth"]["cms"] = {
+                "inventory": lab.ground_truth("/var/www/html/cms"),
+                "deployment": lab.deployment_ground_truth(
+                    "/var/www/html/cms", expected_home=cms_target,
+                    expected_site=absolute("/cms/"),
+                ),
+            }
+            cms_oracle = oracle(
+                "/", "cms", core_path="/cms/",
+                themes_path="/cms/wp-content/themes/",
+                plugins_path="/cms/wp-content/plugins/", rest_path="/",
+            )
+            cms_review = run_case(
+                "cms-review-only", review=True, discovery=False, target=cms_target
+            )
+            cms_discovery = run_case(
+                "cms-discovery", review=True, discovery=True, target=cms_target,
+                discovery_oracle=cms_oracle,
+            )
+            _assert_request_delta(cms_review, cms_discovery, "cms")
+            scenarios["cms-discovery"]["additional_requests_vs_review_only"] = (
+                len(cms_discovery) - len(cms_review)
+            )
+
+            declaration_bytes = lab.prepare_custom_content_roots()
+            layout_path = work / "wordpress-layout.json"
+            layout_path.write_bytes(declaration_bytes)
+            os.chmod(layout_path, 0o600)
+            layout_input_identity = {
+                "byte_length": len(declaration_bytes),
+                "sha256": hashlib.sha256(declaration_bytes).hexdigest(),
+            }
+            result["ground_truth"]["custom"] = {
+                "inventory": lab.ground_truth("/var/www/html/cms"),
+                "deployment": lab.deployment_ground_truth(
+                    "/var/www/html/cms", expected_home=cms_target,
+                    expected_site=absolute("/cms/"),
+                ),
+                "declared_roots": lab.custom_root_ground_truth(),
+            }
+            custom_review = run_case(
+                "custom-review-only", review=True, discovery=False, target=cms_target
+            )
+            custom_no_layout_oracle = oracle(
+                "/", "custom-no-layout", core_path="/cms/", themes_path=None,
+                plugins_path=None, rest_path="/",
+            )
+            custom_no_layout = run_case(
+                "custom-no-layout-discovery", review=True, discovery=True,
+                target=cms_target, discovery_oracle=custom_no_layout_oracle,
+            )
+            _assert_request_delta(custom_review, custom_no_layout, "custom-no-layout")
+            custom_layout_oracle = oracle(
+                "/", "custom", core_path="/cms/",
+                themes_path="/site-content/themes/", plugins_path="/modules/",
+                rest_path="/", declaration_bytes=declaration_bytes,
+            )
+            custom_layout = run_case(
+                "custom-layout-discovery", review=True, discovery=True,
+                target=cms_target, discovery_oracle=custom_layout_oracle,
+                layout_path=layout_path,
+            )
+            _assert_request_delta(custom_review, custom_layout, "custom")
+            scenarios["custom-no-layout-discovery"][
+                "additional_requests_vs_review_only"
+            ] = len(custom_no_layout) - len(custom_review)
+            scenarios["custom-layout-discovery"]["additional_requests_vs_review_only"] = (
+                len(custom_layout) - len(custom_review)
+            )
+            require(
+                layout_path.read_bytes() == declaration_bytes,
+                "Termivar modified the operator layout declaration",
+            )
+            scenarios["custom-layout-discovery"]["layout_input"] = {
+                **layout_input_identity,
+                "unchanged_after_scan": True,
+            }
 
             measured = [
                 scenario["process_metrics"]["peak_memory"].get("status") == "measured"
@@ -1920,6 +2725,8 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
         "termivar_received_credentials": False,
         "termivar_sent_forbidden_credential_headers": False,
         "termivar_received_inventory": False,
+        "termivar_received_custom_component_wordlist": False,
+        "custom_layout_input_contained_role_roots_only": True,
         "lab_network_internal": True,
         "target_origin_loopback_only": True,
         "public_network_after_image_pull": False,
@@ -1958,20 +2765,32 @@ def render_markdown(evidence: dict[str, Any]) -> str:
             )
         lines.extend([
             "",
-            "The old review-only trace matched ordinary web-review. Each enabled discovery "
-            "case added exactly one REST index, one child stylesheet, one bounded parent "
-            "stylesheet, and one plugin readme GET. All were same-origin and loopback.",
+            "The original review-only trace matched ordinary web-review. Each fully "
+            "resolved discovery case added exactly one REST index, one child stylesheet, "
+            "one bounded parent stylesheet, and one plugin readme GET at its selected "
+            "layout. The undeclared custom-root case added only its advertised REST GET. "
+            "All metadata requests were same-origin and loopback.",
             "",
             "WP-CLI was used only inside the disposable lab for independent ground truth. "
             "Termivar received no credentials or inventory. The Stable tag remained a "
             "distribution hint, not an installed plugin version. No exploit or impact "
             "validation was performed.",
             "",
-            "Every discovery scenario independently matched 4/4 observable component "
+            "Every fully resolved discovery scenario independently matched 4/4 observable component "
             "identities with zero false identity matches. Theme stylesheet versions "
             "matched 2/2; generator-version denominators are scenario-specific. The "
             "hidden inactive plugin and Stable-tag-as-installed-version cases are "
             "reported as expected abstentions, not successful discoveries.",
+            "",
+            "The selected `/blog/` application did not derive its sibling `/shop/` "
+            "stylesheet. Declaring the moved theme/plugin roots changed methodology and "
+            "coverage for the same root application; comparing `/blog/` with `/` kept "
+            "WordPress entities unpaired because their application references differ.",
+            "",
+            "The two non-root ordinary web-review baselines retained their documented "
+            "typed-incomplete result and were used only to compare request traces; they "
+            "did not produce completed bundles. Non-root completed WordPress reports "
+            "required explicit metadata discovery and its scoped application reference.",
             "",
             "Elapsed time includes controlled loopback network work and is not a parser "
             "benchmark. GNU time peak values are per fresh Termivar process high-water "

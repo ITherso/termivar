@@ -206,7 +206,7 @@ fn non_local_inventory_path_is_rejected_before_output_reservation_or_runtime() {
 }
 
 #[test]
-fn non_root_target_is_rejected_before_runtime_dispatch() {
+fn ambiguous_non_root_target_is_rejected_before_runtime_dispatch() {
     let server = serve("fixture");
     let target = format!("{}nested", server.url);
     let directory = tempfile::tempdir().unwrap();
@@ -224,7 +224,34 @@ fn non_root_target_is_rejected_before_runtime_dispatch() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("exact origin root target"));
+    assert!(stderr.contains("exact root or trailing-slash application target"));
+    assert!(!stderr.contains("PRIVATE-MISSING-WORDPRESS-CONTEXT"));
+    assert!(!stderr.contains("bounded regular local file"));
+    assert!(!stderr.contains("[ALPHA]"));
+    assert_eq!(server.connections.load(Ordering::SeqCst), 0);
+    assert!(server.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn trailing_slash_non_root_review_requires_discovery_before_input_acquisition() {
+    let server = serve("fixture");
+    let target = format!("{}nested/", server.url);
+    let directory = tempfile::tempdir().unwrap();
+    let missing_context = directory
+        .path()
+        .join("PRIVATE-MISSING-WORDPRESS-CONTEXT.json");
+    let output = termivar()
+        .args(["scan", "--profile", "web-review", "--wordpress-review"])
+        .arg("--wordpress-context")
+        .arg(&missing_context)
+        .arg(&target)
+        .output()
+        .expect("termivar process must start");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("requires explicit `--wordpress-discovery`"));
     assert!(!stderr.contains("PRIVATE-MISSING-WORDPRESS-CONTEXT"));
     assert!(!stderr.contains("bounded regular local file"));
     assert!(!stderr.contains("[ALPHA]"));

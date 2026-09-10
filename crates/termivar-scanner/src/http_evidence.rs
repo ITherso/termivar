@@ -59,6 +59,11 @@ pub use policy::{
 };
 pub use probe::{HttpProbe, HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider};
 pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
+#[cfg(feature = "wordpress-review")]
+pub(crate) use request_broker::{
+    WordPressMetadataRequestDescriptor, WordPressMetadataRequestSource,
+    WordPressMetadataResourceKind, WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+};
 #[cfg(feature = "authorization-review")]
 pub(crate) use response::AuthorizationResponseDefense;
 pub(crate) use response::CollectedHttpResponse;
@@ -174,6 +179,12 @@ pub enum HttpEvidenceError {
     #[error("GraphQL review request body exceeds its compiled byte limit")]
     GraphqlReviewRequestBodyLimit,
 
+    /// A WordPress metadata request did not match the selected application's
+    /// closed role/resource admission descriptor.
+    #[cfg(feature = "wordpress-review")]
+    #[error("WordPress metadata request violated its closed admission contract")]
+    InvalidWordPressMetadataRequest,
+
     /// A request header could alter destination or message framing.
     #[error("HTTP request header {name} is forbidden by evidence policy")]
     ForbiddenRequestHeader { name: String },
@@ -242,6 +253,10 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
         },
         #[cfg(feature = "graphql-review")]
         HttpEvidenceError::GraphqlReviewRequestBodyLimit => {
+            DecisionExecutionFailureKind::BlockedByPolicy
+        },
+        #[cfg(feature = "wordpress-review")]
+        HttpEvidenceError::InvalidWordPressMetadataRequest => {
             DecisionExecutionFailureKind::BlockedByPolicy
         },
         HttpEvidenceError::EmbeddedCredentials
@@ -1442,10 +1457,10 @@ pub(crate) fn fuzz_wordpress_rest_index_advertisement(
         assert!(candidate.username().is_empty());
         assert!(candidate.password().is_none());
         assert!(candidate.fragment().is_none());
-        if candidate.path() == "/wp-json/" {
+        if candidate.path().ends_with("/wp-json/") {
             assert!(candidate.query().is_none());
         } else {
-            assert!(matches!(candidate.path(), "/" | "/index.php"));
+            assert!(candidate.path().ends_with('/') || candidate.path().ends_with("/index.php"));
             assert!(candidate
                 .query()
                 .is_some_and(wordpress_rest_route_query_is_admitted));
@@ -1505,7 +1520,6 @@ fn split_http_link_parameters(value: &str) -> Option<Vec<&str>> {
 
 #[cfg(feature = "wordpress-review")]
 fn admitted_wordpress_rest_index(document_url: &Url, reference: &str) -> Option<Url> {
-    let reference = reference.trim();
     if !wordpress_reference_path_is_safe(reference) {
         return None;
     }
@@ -1518,10 +1532,11 @@ fn admitted_wordpress_rest_index(document_url: &Url, reference: &str) -> Option<
     {
         return None;
     }
-    if candidate.path() == "/wp-json/" && candidate.query().is_none() {
+    let path_segments = candidate.path_segments()?.collect::<Vec<_>>();
+    if candidate.query().is_none() && matches!(path_segments.as_slice(), [.., "wp-json", ""]) {
         return Some(candidate);
     }
-    if !matches!(candidate.path(), "/" | "/index.php") {
+    if !candidate.path().ends_with('/') && !candidate.path().ends_with("/index.php") {
         return None;
     }
     let raw_query = candidate.query()?;
@@ -1539,9 +1554,12 @@ pub(crate) fn wordpress_rest_route_query_is_admitted(raw_query: &str) -> bool {
 #[cfg(feature = "wordpress-review")]
 pub(crate) fn wordpress_reference_path_is_safe(reference: &str) -> bool {
     if reference.is_empty()
-        || reference
-            .bytes()
-            .any(|byte| byte == b'\\' || byte.is_ascii_control())
+        || !reference.is_ascii()
+        || reference.trim() != reference
+        || reference.chars().any(|character| {
+            character == '\\' || character.is_control() || character.is_whitespace()
+        })
+        || !wordpress_reference_authority_is_unambiguous(reference)
     {
         return false;
     }
@@ -1561,6 +1579,42 @@ pub(crate) fn wordpress_reference_path_is_safe(reference: &str) -> bool {
     !["%2e", "%2f", "%5c", "%25"]
         .iter()
         .any(|encoded| lowercase.contains(encoded))
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_reference_authority_is_unambiguous(reference: &str) -> bool {
+    if let Some(authority_and_path) = reference.strip_prefix("http://") {
+        return raw_reference_authority_has_path(Some(authority_and_path))
+            && Url::parse(reference).is_ok_and(|parsed| parsed.as_str() == reference);
+    }
+    if let Some(authority_and_path) = reference.strip_prefix("https://") {
+        return raw_reference_authority_has_path(Some(authority_and_path))
+            && Url::parse(reference).is_ok_and(|parsed| parsed.as_str() == reference);
+    }
+    if reference.starts_with("//") {
+        return raw_reference_authority_has_path(reference.get(2..))
+            && Url::parse("https://reference.invalid/")
+                .ok()
+                .and_then(|base| base.join(reference).ok())
+                .is_some_and(|parsed| parsed.as_str().strip_prefix("https:") == Some(reference));
+    }
+    let first_delimiter = reference.find(['/', '?', '#']).unwrap_or(reference.len());
+    !reference[..first_delimiter].contains(':')
+}
+
+#[cfg(feature = "wordpress-review")]
+fn raw_reference_authority_has_path(authority_and_path: Option<&str>) -> bool {
+    let Some(authority_and_path) = authority_and_path else {
+        return false;
+    };
+    let Some(path_offset) = authority_and_path.find('/') else {
+        return false;
+    };
+    let authority = &authority_and_path[..path_offset];
+    !authority.is_empty()
+        && !authority
+            .chars()
+            .any(|character| matches!(character, '@' | '?' | '#'))
 }
 
 fn response_cookie_names(headers: &HeaderMap) -> BTreeSet<String> {
@@ -3676,12 +3730,54 @@ mod tests {
             "</wp-json/>; rel=\"https://api.w.org/\"; title=\"bad\\value\"",
             "</x/%2e%2e/wp-json/>; rel=\"https://api.w.org/\"",
             "</x/%252e%252e/wp-json/>; rel=\"https://api.w.org/\"",
+            "<https:///example.test/wp-json/>; rel=\"https://api.w.org/\"",
+            "<https:/example.test/wp-json/>; rel=\"https://api.w.org/\"",
+            "<https:example.test/wp-json/>; rel=\"https://api.w.org/\"",
+            "<https://@example.test/wp-json/>; rel=\"https://api.w.org/\"",
+            "<//@example.test/wp-json/>; rel=\"https://api.w.org/\"",
         ] {
             let mut headers = HeaderMap::new();
             headers.insert("link", HeaderValue::from_str(value).unwrap());
             assert_eq!(
                 project_wordpress_rest_index_advertisement(&document, &headers),
                 WordPressRestIndexAdvertisement::InvalidOrAmbiguous
+            );
+        }
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_reference_syntax_rejects_url_parser_repairs() {
+        for reference in [
+            "/blog/wp-json/",
+            "wp-content/themes/child/style.css",
+            "?rest_route=/",
+            "https://example.test/blog/wp-json/",
+            "//example.test/blog/wp-json/",
+        ] {
+            assert!(wordpress_reference_path_is_safe(reference), "{reference:?}");
+        }
+        for reference in [
+            " https://example.test/blog/wp-json/",
+            "https:///example.test/blog/wp-json/",
+            "https:/example.test/blog/wp-json/",
+            "https:example.test/blog/wp-json/",
+            "https://@example.test/blog/wp-json/",
+            "//@example.test/blog/wp-json/",
+            "https://%65xample.test/blog/wp-json/",
+            "https://EXAMPLE.test/blog/wp-json/",
+            "https://bücher.example/blog/wp-json/",
+            "http://2130706433/blog/wp-json/",
+            "http://127.1/blog/wp-json/",
+            "http://example.test:80/blog/wp-json/",
+            "//%65xample.test/blog/wp-json/",
+            "//EXAMPLE.test/blog/wp-json/",
+            "//2130706433/blog/wp-json/",
+            "javascript:alert(1)",
+        ] {
+            assert!(
+                !wordpress_reference_path_is_safe(reference),
+                "unexpectedly admitted {reference:?}"
             );
         }
     }

@@ -56,8 +56,8 @@ use crate::web_runtime::{
 };
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::{
-    parse_wordpress_advisory_catalog, parse_wordpress_context, WordPressApplicability,
-    WordPressCatalogStatus, WordPressReviewInputs,
+    parse_wordpress_advisory_catalog, parse_wordpress_context, parse_wordpress_discovery_layout,
+    WordPressApplicability, WordPressCatalogStatus, WordPressReviewInputs,
 };
 #[cfg(any(feature = "authorization-review", feature = "rest-review"))]
 use crate::DecisionActionOrigin;
@@ -352,6 +352,31 @@ fn wordpress_discovery_requires_wordpress_review_at_build_time() {
 }
 
 #[cfg(feature = "wordpress-review")]
+#[test]
+fn non_root_wordpress_review_requires_discovery_at_build_time() {
+    let non_root_review =
+        WebAssessmentRuntime::builder(Url::parse("https://example.test/blog/").unwrap())
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .build();
+    assert!(matches!(
+        non_root_review,
+        Err(WebAssessmentRuntimeError::WordPressNonRootRequiresDiscovery)
+    ));
+
+    let root_review = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .build();
+    assert!(root_review.is_ok());
+
+    let non_root_discovery =
+        WebAssessmentRuntime::builder(Url::parse("https://example.test/blog/").unwrap())
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .with_wordpress_discovery()
+            .build();
+    assert!(non_root_discovery.is_ok());
+}
+
+#[cfg(feature = "wordpress-review")]
 #[tokio::test]
 async fn wordpress_discovery_uses_shared_accounting_and_retains_typed_metadata() {
     let server = serve(|request| {
@@ -429,7 +454,7 @@ async fn wordpress_discovery_uses_shared_accounting_and_retains_typed_metadata()
     let discovery = wordpress.discovery().unwrap();
     assert_eq!(
         discovery.policy_id(),
-        "termivar.wordpress-metadata-discovery/v1"
+        "termivar.wordpress-deployment-aware-metadata-discovery/v1"
     );
     assert_eq!(discovery.seed_count(), 3);
     assert_eq!(discovery.candidate_count(), 4);
@@ -529,6 +554,255 @@ async fn wordpress_discovery_uses_shared_accounting_and_retains_typed_metadata()
             && !request.headers.contains_key("cookie")
             && !request.headers.contains_key("proxy-authorization")
     }));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_preserves_selected_blog_paths_and_parent_theme_base() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/blog/" => FixtureResponse::html(
+                r#"<html><head>
+                    <meta name="generator" content="WordPress 6.9.4">
+                    <script src="/blog/wp-content/themes/aaa-parent/assets/site.js"></script>
+                    <script src="/blog/wp-content/themes/zzz-child/assets/site.js"></script>
+                    <script src="/blog/wp-content/plugins/cache-tool/assets/app.js"></script>
+                    </head></html>"#,
+            )
+            .with_header("Link", "</blog/wp-json/>; rel=\"https://api.w.org/\""),
+            "/blog/wp-json/" => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"namespaces":["wp/v2"]}"#.to_vec(),
+            ),
+            "/blog/wp-content/themes/zzz-child/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Child Theme\nVersion: 1.5\nTemplate: aaa-parent */".to_vec(),
+            ),
+            "/blog/wp-content/themes/aaa-parent/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Parent Theme\nVersion: 2.0 */".to_vec(),
+            ),
+            "/blog/wp-content/plugins/cache-tool/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Cache Tool ===\nStable tag: 9.9.9\n".to_vec(),
+            ),
+            _ => FixtureResponse::html(Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/blog/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let wordpress = report.wordpress_review_audit().unwrap();
+    let discovery = wordpress.discovery().unwrap();
+    assert_eq!(discovery.attempted_request_count(), 4);
+    assert_eq!(discovery.layout().skipped_sibling_application_count(), 0);
+    assert!(wordpress
+        .result()
+        .components()
+        .iter()
+        .any(|component| component.identity().slug() == "zzz-child"));
+    let parent = discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("aaa-parent"))
+        .unwrap();
+    assert_eq!(parent.parent_depth(), 0);
+    assert_eq!(parent.association().as_str(), "observed_conventional");
+
+    let requests = server.requests().await;
+    let wordpress_metadata = requests
+        .iter()
+        .filter(|request| {
+            request.target.contains("wp-json")
+                || request.target.ends_with("style.css")
+                || request.target.ends_with("readme.txt")
+        })
+        .map(|request| request.target.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        wordpress_metadata,
+        vec![
+            "/blog/wp-json/",
+            "/blog/wp-content/themes/aaa-parent/style.css",
+            "/blog/wp-content/themes/zzz-child/style.css",
+            "/blog/wp-content/plugins/cache-tool/readme.txt",
+        ]
+    );
+    assert!(requests
+        .iter()
+        .all(|request| !request.target.starts_with("/wp-content/")));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn independently_observed_parent_is_promoted_within_the_theme_quota() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<html><head>
+                    <link rel="stylesheet" href="/wp-content/themes/aaa-child/assets/site.css">
+                    <link rel="stylesheet" href="/wp-content/themes/bbb-other/assets/site.css">
+                    <link rel="stylesheet" href="/wp-content/themes/ccc-other/assets/site.css">
+                    <link rel="stylesheet" href="/wp-content/themes/zzz-parent/assets/site.css">
+                    </head></html>"#,
+            ),
+            "/wp-content/themes/aaa-child/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Child Theme\nVersion: 1.5\nTemplate: zzz-parent */".to_vec(),
+            ),
+            "/wp-content/themes/zzz-parent/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Parent Theme\nVersion: 2.0 */".to_vec(),
+            ),
+            path if path.ends_with("/style.css") => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Other Theme\nVersion: 1.0 */".to_vec(),
+            ),
+            _ => FixtureResponse::html(Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let discovery = report
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap();
+    assert_eq!(discovery.attempted_request_count(), 3);
+    let parent = discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("zzz-parent"))
+        .unwrap();
+    assert!(parent.request_attempted());
+    assert_eq!(parent.parent_depth(), 0);
+    assert_eq!(parent.association().as_str(), "observed_conventional");
+    assert_eq!(parent.outcome(), WordPressDiscoverySourceOutcome::Observed);
+    let ccc = discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("ccc-other"))
+        .unwrap();
+    assert!(!ccc.request_attempted());
+    assert_eq!(
+        ccc.outcome(),
+        WordPressDiscoverySourceOutcome::NotSelectedByLimit
+    );
+
+    let metadata_gets = server
+        .requests()
+        .await
+        .into_iter()
+        .filter(|request| request.method == "GET" && request.target.ends_with("style.css"))
+        .map(|request| request.target)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        metadata_gets,
+        vec![
+            "/wp-content/themes/aaa-child/style.css",
+            "/wp-content/themes/zzz-parent/style.css",
+            "/wp-content/themes/bbb-other/style.css",
+        ]
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_uses_declared_custom_roots_only_after_observation() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/blog/" => FixtureResponse::html(
+                r#"<html><head>
+                    <meta name="generator" content="WordPress 6.9.4">
+                    <script src="/site-content/themes/custom-theme/assets/site.js"></script>
+                    <script src="/modules/custom-plugin/assets/app.js"></script>
+                    </head></html>"#,
+            )
+            .with_header("Link", "</cms/wp-json/>; rel=\"https://api.w.org/\""),
+            "/cms/wp-json/" => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"namespaces":["wp/v2"]}"#.to_vec(),
+            ),
+            "/site-content/themes/custom-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Custom Theme\nVersion: 1.5 */".to_vec(),
+            ),
+            "/modules/custom-plugin/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Custom Plugin ===\nStable tag: 9.9.9\n".to_vec(),
+            ),
+            _ => FixtureResponse::html(Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let document = format!(
+        r#"{{"schema":"security.wordpress-layout/v1","application_url":"{}","core_base_url":"{}","themes_base_url":"{}","plugins_base_url":"{}"}}"#,
+        server.url("/blog/"),
+        server.url("/cms/"),
+        server.url("/site-content/themes/"),
+        server.url("/modules/"),
+    );
+    let layout = parse_wordpress_discovery_layout(document.as_bytes()).unwrap();
+    let inputs = WordPressReviewInputs::new(None, None)
+        .with_discovery_layout(layout)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/blog/"))
+        .with_wordpress_review(inputs)
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let discovery = report
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap();
+    assert_eq!(discovery.attempted_request_count(), 3);
+    assert!(discovery.layout().declaration().is_some());
+
+    let requests = server.requests().await;
+    let expected = [
+        "/cms/wp-json/",
+        "/site-content/themes/custom-theme/style.css",
+        "/modules/custom-plugin/readme.txt",
+    ];
+    for path in expected {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.target == path)
+                .count(),
+            1,
+            "expected one metadata request to {path}"
+        );
+    }
+    assert!(requests
+        .iter()
+        .all(|request| !request.target.starts_with("/wp-content/")));
 }
 
 #[cfg(feature = "wordpress-review")]

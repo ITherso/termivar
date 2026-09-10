@@ -292,7 +292,9 @@ and assigns eligible discovered exact-origin subjects a deterministic opaque
 `discovered-resource@1` identity. Its digest preimage uses only the stable
 scope, method, canonical resource structure, and sorted unique query names;
 query values and readable path material are never public identity metadata. A
-non-root starting target remains typed incompleteness.
+non-root starting target remains typed incompleteness unless explicit WordPress
+metadata discovery supplies the versioned, validated application reference.
+The assessment item still uses the stable origin-root identity.
 
 Defense enforcement remains off unless `--enforce-defense` is supplied with
 `web-review`. Observation and shadow planning are always non-authoritative;

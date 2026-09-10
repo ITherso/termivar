@@ -9,9 +9,10 @@ use std::{fmt, fs::File, io::Read, path::PathBuf};
 use sha2::{Digest, Sha256};
 use termivar_scanner::wordpress_review::{
     parse_wordfence_v3_production, parse_wordpress_advisory_catalog, parse_wordpress_context,
-    parse_wordpress_saved_inventory, WordPressComparisonProfile, WordPressLocalInputClass,
-    WordPressLocalInputProvenance, WordPressReviewInputs, WordfenceV3ProductionError,
-    MAX_WORDFENCE_V3_PRODUCTION_BYTES, MAX_WORDPRESS_SAVED_INVENTORY_BYTES,
+    parse_wordpress_discovery_layout, parse_wordpress_saved_inventory, WordPressComparisonProfile,
+    WordPressLocalInputClass, WordPressLocalInputProvenance, WordPressReviewInputs,
+    WordfenceV3ProductionError, MAX_WORDFENCE_V3_PRODUCTION_BYTES,
+    MAX_WORDPRESS_DISCOVERY_LAYOUT_BYTES, MAX_WORDPRESS_SAVED_INVENTORY_BYTES,
     MAX_WORDPRESS_VERSION_BYTES,
 };
 use url::Url;
@@ -84,6 +85,7 @@ pub(crate) struct WordPressReviewInput {
     plugins_json: Option<PathBuf>,
     themes_json: Option<PathBuf>,
     core_version_file: Option<PathBuf>,
+    layout: Option<PathBuf>,
 }
 
 impl fmt::Debug for WordPressReviewInput {
@@ -114,6 +116,7 @@ impl fmt::Debug for WordPressReviewInput {
                 "core_version_file",
                 &self.core_version_file.as_ref().map(|_| "<redacted>"),
             )
+            .field("layout", &self.layout.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }
@@ -171,7 +174,13 @@ impl WordPressReviewInput {
             plugins_json,
             themes_json,
             core_version_file,
+            layout: None,
         }))
+    }
+
+    pub(crate) fn with_discovery_layout_path(mut self, layout: Option<PathBuf>) -> Self {
+        self.layout = layout;
+        self
     }
 
     /// Opens and parses each selected document exactly once before any
@@ -186,7 +195,20 @@ impl WordPressReviewInput {
             plugins_json,
             themes_json,
             core_version_file,
+            layout,
         } = self;
+        let layout = layout
+            .map(|path| {
+                let bytes = read_bounded_regular_file(path, MAX_WORDPRESS_DISCOVERY_LAYOUT_BYTES)
+                    .map_err(WordPressInputError::LayoutSource)?;
+                let layout = parse_wordpress_discovery_layout(&bytes)
+                    .map_err(|_| WordPressInputError::InvalidLayout)?;
+                if layout.application_url() != target {
+                    return Err(WordPressInputError::LayoutApplicationMismatch);
+                }
+                Ok(layout)
+            })
+            .transpose()?;
         let context = context
             .map(|path| {
                 let bytes = read_bounded_regular_file(path, MAX_WORDPRESS_CONTEXT_BYTES)
@@ -267,10 +289,17 @@ impl WordPressReviewInput {
         } else {
             inputs
         };
-        if let Some(profile) = external_version_profile {
+        let inputs = if let Some(profile) = external_version_profile {
             inputs
                 .with_external_version_profile(profile)
                 .map_err(|_| WordPressInputError::InvalidAdvisories)
+        } else {
+            Ok(inputs)
+        }?;
+        if let Some(layout) = layout {
+            inputs
+                .with_discovery_layout(layout)
+                .map_err(|_| WordPressInputError::InvalidLayout)
         } else {
             Ok(inputs)
         }
@@ -290,11 +319,14 @@ pub(crate) enum WordPressInputError {
     PluginsSource(WordPressFileError),
     ThemesSource(WordPressFileError),
     CoreVersionSource(WordPressFileError),
+    LayoutSource(WordPressFileError),
     InventoryTooLarge,
     InvalidContext,
     ContextRootMismatch,
     InvalidAdvisories,
     InvalidSavedInventory,
+    InvalidLayout,
+    LayoutApplicationMismatch,
 }
 
 impl fmt::Display for WordPressInputError {
@@ -328,6 +360,7 @@ impl fmt::Display for WordPressInputError {
             Self::CoreVersionSource(_) => {
                 "WordPress core version must be a bounded regular local file"
             },
+            Self::LayoutSource(_) => "WordPress layout must be a bounded regular local file",
             Self::InventoryTooLarge => "saved WordPress inventory exceeds its aggregate byte limit",
             Self::InvalidContext => "WordPress context document is invalid",
             Self::ContextRootMismatch => {
@@ -335,6 +368,10 @@ impl fmt::Display for WordPressInputError {
             },
             Self::InvalidAdvisories => "WordPress advisory catalogue is invalid",
             Self::InvalidSavedInventory => "saved WordPress inventory is invalid",
+            Self::InvalidLayout => "WordPress discovery layout is invalid",
+            Self::LayoutApplicationMismatch => {
+                "WordPress layout application must match the exact assessment target"
+            },
         })
     }
 }
@@ -520,6 +557,7 @@ mod tests {
         assert_eq!(MAX_WORDFENCE_V3_PRODUCTION_BYTES, 256 * 1024 * 1024);
         assert_eq!(MAX_WORDPRESS_INVENTORY_BYTES, 1024 * 1024);
         assert_eq!(MAX_WORDPRESS_CORE_VERSION_FILE_BYTES, 66);
+        assert_eq!(MAX_WORDPRESS_DISCOVERY_LAYOUT_BYTES, 16 * 1024);
     }
 
     #[test]
@@ -678,6 +716,59 @@ mod tests {
     }
 
     #[test]
+    fn discovery_layout_is_read_once_bound_to_the_target_and_path_redacted() {
+        let directory = tempfile::tempdir().unwrap();
+        let layout_path = directory.path().join("PRIVATE-layout.json");
+        let bytes = br#"{
+          "schema":"security.wordpress-layout/v1",
+          "application_url":"https://example.test/blog/",
+          "core_base_url":"https://example.test/cms/",
+          "themes_base_url":"https://example.test/site-content/themes/",
+          "plugins_base_url":"https://example.test/modules/"
+        }"#;
+        std::fs::write(&layout_path, bytes).unwrap();
+        let selected = WordPressReviewInput::select(
+            true,
+            None,
+            None,
+            WordPressAdvisoryOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap()
+        .with_discovery_layout_path(Some(layout_path.clone()));
+        let debug = format!("{selected:?}");
+        assert!(!debug.contains("PRIVATE-layout"));
+
+        let inputs = selected
+            .load(&Url::parse("https://example.test/blog/").unwrap())
+            .unwrap();
+        let layout = inputs.discovery_layout().unwrap();
+        assert_eq!(layout.application_url().path(), "/blog/");
+        assert_eq!(layout.core_base_url().unwrap().path(), "/cms/");
+        assert_eq!(std::fs::read(&layout_path).unwrap(), bytes);
+
+        let mismatch = WordPressReviewInput::select(
+            true,
+            None,
+            None,
+            WordPressAdvisoryOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap()
+        .with_discovery_layout_path(Some(layout_path.clone()))
+        .load(&Url::parse("https://example.test/").unwrap())
+        .unwrap_err();
+        assert_eq!(mismatch, WordPressInputError::LayoutApplicationMismatch);
+        assert_eq!(std::fs::read(&layout_path).unwrap(), bytes);
+    }
+
+    #[test]
     fn bounded_reader_accepts_the_limit_and_rejects_one_more_byte() {
         let directory = tempfile::tempdir().unwrap();
         let exact = directory.path().join("exact.json");
@@ -831,11 +922,14 @@ mod tests {
             WordPressInputError::PluginsSource(WordPressFileError::Unavailable),
             WordPressInputError::ThemesSource(WordPressFileError::ReadFailed),
             WordPressInputError::CoreVersionSource(WordPressFileError::NotRegular),
+            WordPressInputError::LayoutSource(WordPressFileError::Unavailable),
             WordPressInputError::InventoryTooLarge,
             WordPressInputError::InvalidContext,
             WordPressInputError::ContextRootMismatch,
             WordPressInputError::InvalidAdvisories,
             WordPressInputError::InvalidSavedInventory,
+            WordPressInputError::InvalidLayout,
+            WordPressInputError::LayoutApplicationMismatch,
         ] {
             let rendered = error.to_string();
             assert!(!rendered.contains("PRIVATE"));

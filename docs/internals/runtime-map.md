@@ -375,8 +375,10 @@ The stable item-identity authority preserves `authorized-root@1` for the exact
 origin root and registers eligible discovered exact-origin subjects with an
 opaque `discovered-resource@1` digest over canonical structure. The identity
 contains no query values or readable path material and grants no request
-authority. Unsafe subjects and non-root starting targets remain typed
-incompleteness and cannot be composed as completed assessment reports.
+authority. Unsafe subjects and ordinary non-root starting targets remain typed
+incompleteness. The explicit WordPress metadata-discovery path is the bounded
+exception: its versioned audit carries a validated application reference while
+the projected item retains the stable origin-root identity.
 
 On the no-profile compatibility path, text summary, `--explain`, and
 `--format json` are renderings of the same typed runtime report. The JSON contract keeps its historical

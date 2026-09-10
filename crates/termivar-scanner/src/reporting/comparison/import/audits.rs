@@ -22,9 +22,15 @@ pub(super) const WORDPRESS_CAPABILITY: &str = "technology.wordpress-surface-obse
 const OPENAPI_CAPABILITY: &str = "api.openapi-contract-observed@1";
 const AUTHORIZATION_CAPABILITY: &str = "authorization.resource-cross-principal-equivalence@1";
 const MAX_WORDPRESS_SIGNALS: u64 = 256;
-const WORDPRESS_DISCOVERY_AUDIT_SCHEMA: &str = "security.wordpress-discovery-audit/v1";
+const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V1: &str = "security.wordpress-discovery-audit/v1";
+const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2: &str = "security.wordpress-discovery-audit/v2";
 const WORDPRESS_DISCOVERY_CAPABILITY: &str = "technology.wordpress-metadata-discovery@1";
-const WORDPRESS_DISCOVERY_POLICY: &str = "termivar.wordpress-metadata-discovery/v1";
+const WORDPRESS_DISCOVERY_POLICY_V1: &str = "termivar.wordpress-metadata-discovery/v1";
+const WORDPRESS_DISCOVERY_POLICY_V2: &str =
+    "termivar.wordpress-deployment-aware-metadata-discovery/v1";
+const WORDPRESS_LAYOUT_SCHEMA: &str = "security.wordpress-layout/v1";
+const MAX_WORDPRESS_LAYOUT_BYTES: u64 = 16 * 1024;
+const WORDPRESS_DISCOVERY_REFERENCE_BYTES: usize = "sha256:".len() + 64;
 const MAX_WORDPRESS_DISCOVERY_SOURCES: usize = 32;
 const MAX_WORDPRESS_DISCOVERY_REQUESTS: u64 = 12;
 const MAX_WORDPRESS_DISCOVERY_REST_REQUESTS: u64 = 1;
@@ -244,31 +250,46 @@ pub(super) fn validate_wordpress_discovery(
     items: &BTreeMap<String, ImportedItem>,
 ) -> Result<(), ComparisonError> {
     let fields = object(value)?;
-    keys(
-        fields,
-        &[
-            "schema",
-            "capability_id",
-            "policy_id",
-            "selected",
-            "method",
-            "credential_mode",
-            "seed_count",
-            "candidate_count",
-            "candidate_limit_reached",
-            "omitted_candidate_count",
-            "attempted_request_count",
-            "completed_response_count",
-            "committed_response_count",
-            "response_bytes",
-            "source_count",
-            "sources",
-        ],
-        &[],
-    )?;
-    check(string(fields, "schema")? == WORDPRESS_DISCOVERY_AUDIT_SCHEMA)?;
+    let schema = string(fields, "schema")?;
+    let deployment_aware = match schema {
+        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V1 => false,
+        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2 => true,
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
+    let required_fields = [
+        "schema",
+        "capability_id",
+        "policy_id",
+        "selected",
+        "method",
+        "credential_mode",
+        "seed_count",
+        "candidate_count",
+        "candidate_limit_reached",
+        "omitted_candidate_count",
+        "attempted_request_count",
+        "completed_response_count",
+        "committed_response_count",
+        "response_bytes",
+        "source_count",
+        "sources",
+    ];
+    if deployment_aware {
+        let mut required = required_fields.to_vec();
+        required.push("layout");
+        keys(fields, &required, &[])?;
+    } else {
+        keys(fields, &required_fields, &[])?;
+    }
     check(string(fields, "capability_id")? == WORDPRESS_DISCOVERY_CAPABILITY)?;
-    check(string(fields, "policy_id")? == WORDPRESS_DISCOVERY_POLICY)?;
+    check(
+        string(fields, "policy_id")?
+            == if deployment_aware {
+                WORDPRESS_DISCOVERY_POLICY_V2
+            } else {
+                WORDPRESS_DISCOVERY_POLICY_V1
+            },
+    )?;
     check(boolean(fields, "selected")?)?;
     check(string(fields, "method")? == "get")?;
     check(string(fields, "credential_mode")? == "anonymous")?;
@@ -330,6 +351,11 @@ pub(super) fn validate_wordpress_discovery(
         MAX_WORDPRESS_DISCOVERY_OMITTED_CANDIDATES,
     )?;
     let sources = array(fields, "sources")?;
+    let layout = fields
+        .get("layout")
+        .map(validate_wordpress_discovery_layout)
+        .transpose()?;
+    check(deployment_aware == layout.is_some())?;
     check(
         seed_count <= MAX_WORDPRESS_DISCOVERY_SOURCES as u64
             && seed_count <= candidate_count
@@ -358,7 +384,7 @@ pub(super) fn validate_wordpress_discovery(
         let source = object(source)?;
         let kind = string(source, "kind")?;
         let (bytes, references, request_attempted, references_by_source, identity) =
-            validate_wordpress_discovery_source(source)?;
+            validate_wordpress_discovery_source(source, layout.as_ref())?;
         source_bytes = source_bytes
             .checked_add(bytes)
             .ok_or(ComparisonError::InvalidDocument)?;
@@ -406,12 +432,147 @@ fn wordpress_discovery_request_class_counts_valid(rest: u64, themes: u64, plugin
         && plugins <= MAX_WORDPRESS_DISCOVERY_PLUGIN_REQUESTS
 }
 
+struct ValidatedDiscoveryLayout {
+    application_reference: String,
+    exact_role_references: BTreeMap<String, String>,
+    exact_role_bases: BTreeMap<String, String>,
+    declaration: Option<Value>,
+    roles: Vec<Value>,
+    skipped_foreign_origin_count: u64,
+    skipped_sibling_application_count: u64,
+    conflicting_association_count: u64,
+}
+
+fn validate_wordpress_discovery_layout(
+    value: &Value,
+) -> Result<ValidatedDiscoveryLayout, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "application_reference",
+            "roles",
+            "skipped_foreign_origin_count",
+            "skipped_sibling_application_count",
+            "conflicting_association_count",
+        ],
+        &["declaration"],
+    )?;
+    let application_reference = string(fields, "application_reference")?;
+    check(digest(application_reference, "sha256:"))?;
+    let layout_count_limit = u64::from(u16::MAX);
+    let skipped_foreign_origin_count =
+        number(fields, "skipped_foreign_origin_count", layout_count_limit)?;
+    let skipped_sibling_application_count = number(
+        fields,
+        "skipped_sibling_application_count",
+        layout_count_limit,
+    )?;
+    let conflicting_association_count =
+        number(fields, "conflicting_association_count", layout_count_limit)?;
+    let declaration = fields.get("declaration").cloned();
+    if let Some(declaration) = declaration.as_ref() {
+        let declaration = object(declaration)?;
+        keys(declaration, &["schema", "byte_length", "sha256"], &[])?;
+        check(string(declaration, "schema")? == WORDPRESS_LAYOUT_SCHEMA)?;
+        let bytes = number(declaration, "byte_length", MAX_WORDPRESS_LAYOUT_BYTES)?;
+        check(bytes > 0 && digest(string(declaration, "sha256")?, ""))?;
+    }
+    let roles = array(fields, "roles")?;
+    let expected_roles = ["core", "themes", "plugins", "rest_index"];
+    check(roles.len() == expected_roles.len())?;
+    let mut exact_role_references = BTreeMap::new();
+    let mut exact_role_bases = BTreeMap::new();
+    let mut projected_roles = Vec::with_capacity(expected_roles.len());
+    for (value, expected_role) in roles.iter().zip(expected_roles) {
+        let role = object(value)?;
+        keys(
+            role,
+            &["role", "status", "basis", "candidate_count"],
+            &["reference"],
+        )?;
+        check(string(role, "role")? == expected_role)?;
+        let status = token(role, "status", &["exact", "ambiguous", "unresolved"])?;
+        let basis = token(
+            role,
+            "basis",
+            &[
+                "conventional_asset",
+                "structured_advertisement",
+                "operator_declaration",
+                "none",
+            ],
+        )?;
+        let candidate_count = number(role, "candidate_count", layout_count_limit)?;
+        let reference = role
+            .get("reference")
+            .map(|_| text(role, "reference", WORDPRESS_DISCOVERY_REFERENCE_BYTES))
+            .transpose()?;
+        check(match expected_role {
+            "rest_index" => matches!(
+                basis,
+                "structured_advertisement" | "operator_declaration" | "none"
+            ),
+            "core" | "themes" | "plugins" => {
+                matches!(
+                    basis,
+                    "conventional_asset" | "operator_declaration" | "none"
+                )
+            },
+            _ => false,
+        })?;
+        match status {
+            "exact" => {
+                let reference = reference.ok_or(ComparisonError::InvalidDocument)?;
+                check(
+                    candidate_count > 0
+                        && basis != "none"
+                        && digest(reference, "sha256:")
+                        && exact_role_references
+                            .insert(expected_role.to_owned(), reference.to_owned())
+                            .is_none()
+                        && exact_role_bases
+                            .insert(expected_role.to_owned(), basis.to_owned())
+                            .is_none(),
+                )?;
+            },
+            "ambiguous" => check(reference.is_none() && candidate_count >= 2 && basis != "none")?,
+            "unresolved" => check(reference.is_none() && candidate_count == 0 && basis == "none")?,
+            _ => return Err(ComparisonError::InvalidDocument),
+        }
+        projected_roles.push(value.clone());
+    }
+    check(
+        declaration.is_some()
+            == projected_roles.iter().any(|role| {
+                role.as_object()
+                    .and_then(|fields| fields.get("basis"))
+                    .and_then(Value::as_str)
+                    == Some("operator_declaration")
+            }),
+    )?;
+    Ok(ValidatedDiscoveryLayout {
+        application_reference: application_reference.to_owned(),
+        exact_role_references,
+        exact_role_bases,
+        declaration,
+        roles: projected_roles,
+        skipped_foreign_origin_count,
+        skipped_sibling_application_count,
+        conflicting_association_count,
+    })
+}
+
 pub(super) fn attach_wordpress_discovery(
     wordpress: &mut ImportedWordPressAudit,
     discovery: &Value,
 ) -> Result<(), ComparisonError> {
     let fields = object(discovery)?;
-    validate_wordpress_discovery_review_links(wordpress, fields)?;
+    let layout = fields
+        .get("layout")
+        .map(validate_wordpress_discovery_layout)
+        .transpose()?;
+    validate_wordpress_discovery_review_links(wordpress, fields, layout.as_ref())?;
     let attempted_request_count = number(
         fields,
         "attempted_request_count",
@@ -424,7 +585,7 @@ pub(super) fn attach_wordpress_discovery(
             MAX_WORDPRESS_DISCOVERY_REQUESTS,
         )? == attempted_request_count,
     )?;
-    let methodology = selected_object(
+    let mut methodology = selected_object(
         fields,
         &[
             "schema",
@@ -436,7 +597,7 @@ pub(super) fn attach_wordpress_discovery(
         ],
         &[],
     )?;
-    let coverage = selected_object(
+    let mut coverage = selected_object(
         fields,
         &[
             "seed_count",
@@ -451,6 +612,40 @@ pub(super) fn attach_wordpress_discovery(
         ],
         &[],
     )?;
+    if let Some(layout) = &layout {
+        let methodology_roles = layout
+            .roles
+            .iter()
+            .map(|role| selected_object(object(role)?, &["role", "basis"], &[]))
+            .collect::<Result<Vec<_>, ComparisonError>>()?;
+        object_mut(&mut methodology)?.insert(
+            "layout_roles".to_owned(),
+            canonical_value(&Value::Array(methodology_roles))?,
+        );
+
+        let coverage_roles = layout
+            .roles
+            .iter()
+            .map(|role| selected_object(object(role)?, &["role", "status", "candidate_count"], &[]))
+            .collect::<Result<Vec<_>, ComparisonError>>()?;
+        let coverage_fields = object_mut(&mut coverage)?;
+        coverage_fields.insert(
+            "layout_roles".to_owned(),
+            canonical_value(&Value::Array(coverage_roles))?,
+        );
+        coverage_fields.insert(
+            "skipped_foreign_origin_count".to_owned(),
+            Value::from(layout.skipped_foreign_origin_count),
+        );
+        coverage_fields.insert(
+            "skipped_sibling_application_count".to_owned(),
+            Value::from(layout.skipped_sibling_application_count),
+        );
+        coverage_fields.insert(
+            "conflicting_association_count".to_owned(),
+            Value::from(layout.conflicting_association_count),
+        );
+    }
     let mut source_outcomes = Vec::new();
     let mut component_metadata = BTreeMap::<WordPressComponentKey, Vec<Value>>::new();
     let mut rest_source_content = Vec::new();
@@ -466,13 +661,23 @@ pub(super) fn attach_wordpress_discovery(
                 "response_bytes",
                 "evidence_reference_count",
             ],
-            &[("component", source.get("component"))],
+            &[
+                ("component", source.get("component")),
+                ("association", source.get("association")),
+                ("resource_reference", source.get("resource_reference")),
+                ("role_reference", source.get("role_reference")),
+            ],
         )?);
         if string(source, "kind")? == "rest_index" {
             let mut content = selected_object(
                 source,
                 &["kind"],
-                &[("namespaces", source.get("namespaces"))],
+                &[
+                    ("namespaces", source.get("namespaces")),
+                    ("association", source.get("association")),
+                    ("resource_reference", source.get("resource_reference")),
+                    ("role_reference", source.get("role_reference")),
+                ],
             )?;
             if let Some(Value::Array(namespaces)) = content.get_mut("namespaces") {
                 namespaces.sort_by_key(Value::to_string);
@@ -484,6 +689,9 @@ pub(super) fn attach_wordpress_discovery(
                 source,
                 &["kind", "parent_depth"],
                 &[
+                    ("association", source.get("association")),
+                    ("resource_reference", source.get("resource_reference")),
+                    ("role_reference", source.get("role_reference")),
                     ("theme", source.get("theme")),
                     ("plugin", source.get("plugin")),
                 ],
@@ -500,7 +708,6 @@ pub(super) fn attach_wordpress_discovery(
         }
     }
     source_outcomes.sort_by_key(Value::to_string);
-    let mut coverage = coverage;
     object_mut(&mut coverage)?.insert("source_outcomes".to_owned(), Value::Array(source_outcomes));
     for (key, mut metadata) in component_metadata {
         metadata.sort_by_key(Value::to_string);
@@ -515,6 +722,21 @@ pub(super) fn attach_wordpress_discovery(
         "rest_indexes".to_owned(),
         Value::Array(rest_source_content),
     )]));
+    if let Some(layout) = layout {
+        wordpress.application_reference = Some(layout.application_reference.clone());
+        let mut layout_provenance = Map::new();
+        layout_provenance.insert(
+            "application_reference".to_owned(),
+            Value::String(layout.application_reference),
+        );
+        if let Some(declaration) = layout.declaration {
+            layout_provenance.insert("declaration".to_owned(), canonical_value(&declaration)?);
+        }
+        object_mut(&mut wordpress.provenance)?.insert(
+            "wordpress_layout".to_owned(),
+            Value::Object(layout_provenance),
+        );
+    }
     object_mut(&mut wordpress.methodology)?.insert("wordpress_discovery".to_owned(), methodology);
     object_mut(&mut wordpress.coverage)?.insert("wordpress_discovery".to_owned(), coverage);
     wordpress.discovery_source_content = Some(discovery_source_content);
@@ -524,8 +746,10 @@ pub(super) fn attach_wordpress_discovery(
 fn validate_wordpress_discovery_review_links(
     wordpress: &ImportedWordPressAudit,
     discovery: &Map<String, Value>,
+    layout: Option<&ValidatedDiscoveryLayout>,
 ) -> Result<(), ComparisonError> {
     let mut discovered = BTreeMap::new();
+    let mut required_discovered = BTreeMap::new();
     for source in array(discovery, "sources")? {
         let source = object(source)?;
         let kind = string(source, "kind")?;
@@ -560,7 +784,26 @@ fn validate_wordpress_discovery_review_links(
         };
         let component = comparison_component_key(object(required(source, "component")?)?)?;
         check(component.kind == "theme" && string(source, "outcome")? == "observed")?;
-        check(discovered.insert(component, version).is_none())?;
+        if let Some(layout) = layout {
+            let role_reference = optional_text(
+                source,
+                "role_reference",
+                WORDPRESS_DISCOVERY_REFERENCE_BYTES,
+            )?;
+            if role_reference.is_none_or(|reference| {
+                layout
+                    .exact_role_references
+                    .get("themes")
+                    .map(String::as_str)
+                    != Some(reference)
+            }) {
+                continue;
+            }
+        }
+        check(discovered.insert(component.clone(), version).is_none())?;
+        if layout.is_some() && parent_depth == 0 {
+            check(required_discovered.insert(component, version).is_none())?;
+        }
     }
 
     let mut reviewed = BTreeMap::new();
@@ -586,25 +829,43 @@ fn validate_wordpress_discovery_review_links(
             )?;
         }
     }
-    check(discovered == reviewed)
+    if layout.is_some() {
+        check(
+            required_discovered
+                .iter()
+                .all(|(component, version)| reviewed.get(component) == Some(version))
+                && reviewed
+                    .iter()
+                    .all(|(component, version)| discovered.get(component) == Some(version)),
+        )
+    } else {
+        check(discovered == reviewed)
+    }
 }
 
 fn validate_wordpress_discovery_source(
     fields: &Map<String, Value>,
+    layout: Option<&ValidatedDiscoveryLayout>,
 ) -> Result<(u64, u64, bool, Vec<String>, String), ComparisonError> {
-    keys(
-        fields,
-        &[
-            "kind",
-            "parent_depth",
-            "outcome",
-            "request_attempted",
-            "response_bytes",
-            "evidence_reference_count",
-            "evidence_references",
-        ],
-        &["component", "namespaces", "theme", "plugin"],
-    )?;
+    const REQUIRED_V1: [&str; 7] = [
+        "kind",
+        "parent_depth",
+        "outcome",
+        "request_attempted",
+        "response_bytes",
+        "evidence_reference_count",
+        "evidence_references",
+    ];
+    const OPTIONAL_V1: [&str; 4] = ["component", "namespaces", "theme", "plugin"];
+    if layout.is_some() {
+        let mut required = REQUIRED_V1.to_vec();
+        required.extend(["association", "resource_reference"]);
+        let mut optional = OPTIONAL_V1.to_vec();
+        optional.push("role_reference");
+        keys(fields, &required, &optional)?;
+    } else {
+        keys(fields, &REQUIRED_V1, &OPTIONAL_V1)?;
+    }
     let kind = token(
         fields,
         "kind",
@@ -701,6 +962,7 @@ fn validate_wordpress_discovery_source(
         },
         "theme_stylesheet" => {
             component.is_some_and(|value| string(value, "kind") == Ok("theme"))
+                && parent_depth <= 1
                 && namespaces.is_none()
                 && plugin.is_none()
         },
@@ -735,6 +997,95 @@ fn validate_wordpress_discovery_source(
         outcome,
         "invalid_advertisement" | "not_selected_by_limit" | "not_attempted_after_throttle"
     );
+    let deployment_identity = if let Some(layout) = layout {
+        let association = token(
+            fields,
+            "association",
+            &[
+                "structured_advertisement",
+                "operator_qualified_advertisement",
+                "observed_conventional",
+                "explicit_operator",
+                "same_theme_base_parent",
+                "invalid_advertisement",
+            ],
+        )?;
+        let resource_reference = text(
+            fields,
+            "resource_reference",
+            WORDPRESS_DISCOVERY_REFERENCE_BYTES,
+        )?;
+        check(digest(resource_reference, "sha256:"))?;
+        let role_reference = fields
+            .get("role_reference")
+            .map(|_| {
+                text(
+                    fields,
+                    "role_reference",
+                    WORDPRESS_DISCOVERY_REFERENCE_BYTES,
+                )
+            })
+            .transpose()?;
+        check(role_reference.is_none_or(|reference| digest(reference, "sha256:")))?;
+        let role = match kind {
+            "rest_index" => "rest_index",
+            "theme_stylesheet" => "themes",
+            "plugin_readme" => "plugins",
+            _ => return Err(ComparisonError::InvalidDocument),
+        };
+        let exact_role_bound = role_reference.is_some_and(|reference| {
+            layout.exact_role_references.get(role).map(String::as_str) == Some(reference)
+        });
+        let binding_required = request_attempted
+            || completed_response
+            || theme.is_some()
+            || plugin.is_some()
+            || namespaces.is_some_and(|values| !values.is_empty());
+        let association_valid = match association {
+            "structured_advertisement" => {
+                role == "rest_index"
+                    && role_reference.is_some()
+                    && layout.exact_role_bases.get(role).map(String::as_str)
+                        == Some("structured_advertisement")
+            },
+            "operator_qualified_advertisement" => {
+                role == "rest_index"
+                    && role_reference.is_some()
+                    && layout.exact_role_bases.get(role).map(String::as_str)
+                        == Some("operator_declaration")
+            },
+            "observed_conventional" => {
+                matches!(role, "themes" | "plugins")
+                    && parent_depth == 0
+                    && role_reference.is_some()
+                    && layout.exact_role_bases.get(role).map(String::as_str)
+                        == Some("conventional_asset")
+            },
+            "explicit_operator" => {
+                matches!(role, "themes" | "plugins")
+                    && parent_depth == 0
+                    && role_reference.is_some()
+                    && layout.exact_role_bases.get(role).map(String::as_str)
+                        == Some("operator_declaration")
+            },
+            "same_theme_base_parent" => {
+                role == "themes" && parent_depth == 1 && role_reference.is_some()
+            },
+            "invalid_advertisement" => {
+                role == "rest_index"
+                    && outcome == "invalid_advertisement"
+                    && role_reference.is_none()
+            },
+            _ => return Err(ComparisonError::InvalidDocument),
+        };
+        check(
+            association_valid
+                && ((!binding_required && role_reference.is_none()) || exact_role_bound),
+        )?;
+        Some(resource_reference.to_owned())
+    } else {
+        None
+    };
     check(
         source_shape_valid
             && evidence_references == u64::from(completed_response)
@@ -747,17 +1098,22 @@ fn validate_wordpress_discovery_source(
                 metadata_absent
             }),
     )?;
-    let component_identity = if let Some(value) = component {
-        format!("{}:{}", string(value, "kind")?, string(value, "slug")?)
+    let identity = if let Some(identity) = deployment_identity {
+        identity
     } else {
-        "none".to_owned()
+        let component_identity = if let Some(value) = component {
+            format!("{}:{}", string(value, "kind")?, string(value, "slug")?)
+        } else {
+            "none".to_owned()
+        };
+        format!("{kind}:{component_identity}:{parent_depth}")
     };
     Ok((
         response_bytes,
         evidence_references,
         request_attempted,
         unique_references.into_iter().collect(),
-        format!("{kind}:{component_identity}:{parent_depth}"),
+        identity,
     ))
 }
 
@@ -1447,6 +1803,7 @@ fn wordpress_comparison_snapshot(
     }
 
     Ok(ImportedWordPressAudit {
+        application_reference: None,
         coverage,
         inventory_coverage_recorded: inventory.is_some(),
         methodology,
@@ -4985,6 +5342,278 @@ fn authorization(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opaque_reference(byte: char) -> String {
+        format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    fn deployment_layout() -> Value {
+        serde_json::json!({
+            "application_reference": opaque_reference('a'),
+            "declaration": {
+                "schema": WORDPRESS_LAYOUT_SCHEMA,
+                "byte_length": 123,
+                "sha256": "b".repeat(64),
+            },
+            "roles": [
+                {
+                    "role": "core",
+                    "status": "exact",
+                    "basis": "operator_declaration",
+                    "reference": opaque_reference('c'),
+                    "candidate_count": 1,
+                },
+                {
+                    "role": "themes",
+                    "status": "ambiguous",
+                    "basis": "conventional_asset",
+                    "candidate_count": 2,
+                },
+                {
+                    "role": "plugins",
+                    "status": "unresolved",
+                    "basis": "none",
+                    "candidate_count": 0,
+                },
+                {
+                    "role": "rest_index",
+                    "status": "exact",
+                    "basis": "structured_advertisement",
+                    "reference": opaque_reference('d'),
+                    "candidate_count": 1,
+                },
+            ],
+            "skipped_foreign_origin_count": 2,
+            "skipped_sibling_application_count": 3,
+            "conflicting_association_count": 4,
+        })
+    }
+
+    fn deployment_rest_source() -> Value {
+        serde_json::json!({
+            "kind": "rest_index",
+            "association": "structured_advertisement",
+            "resource_reference": opaque_reference('e'),
+            "role_reference": opaque_reference('d'),
+            "parent_depth": 0,
+            "outcome": "observed",
+            "request_attempted": true,
+            "response_bytes": 321,
+            "evidence_reference_count": 1,
+            "evidence_references": ["evidence-0001"],
+            "namespaces": ["wp/v2"],
+        })
+    }
+
+    #[test]
+    fn deployment_layout_and_source_require_exact_role_binding() {
+        let layout = validate_wordpress_discovery_layout(&deployment_layout()).unwrap();
+        let source = deployment_rest_source();
+        let validated =
+            validate_wordpress_discovery_source(source.as_object().unwrap(), Some(&layout))
+                .unwrap();
+        assert_eq!(validated.0, 321);
+        assert_eq!(validated.1, 1);
+        assert!(validated.2);
+        assert_eq!(validated.4, opaque_reference('e'));
+
+        for invalid in [
+            {
+                let mut value = source.clone();
+                value.as_object_mut().unwrap().remove("association");
+                value
+            },
+            {
+                let mut value = source.clone();
+                value["role_reference"] = Value::String(opaque_reference('f'));
+                value
+            },
+            {
+                let mut value = source.clone();
+                value["resource_reference"] = Value::String(format!("sha256:{}", "A".repeat(64)));
+                value
+            },
+            {
+                let mut value = source.clone();
+                value["association"] = Value::String("operator_qualified_advertisement".to_owned());
+                value
+            },
+            {
+                let mut value = source.clone();
+                value["parent_depth"] = Value::from(1);
+                value
+            },
+        ] {
+            assert_eq!(
+                validate_wordpress_discovery_source(invalid.as_object().unwrap(), Some(&layout)),
+                Err(ComparisonError::InvalidDocument),
+            );
+        }
+
+        let invalid_advertisement = serde_json::json!({
+            "kind": "rest_index",
+            "association": "invalid_advertisement",
+            "resource_reference": opaque_reference('f'),
+            "parent_depth": 0,
+            "outcome": "invalid_advertisement",
+            "request_attempted": false,
+            "response_bytes": 0,
+            "evidence_reference_count": 0,
+            "evidence_references": [],
+        });
+        assert!(validate_wordpress_discovery_source(
+            invalid_advertisement.as_object().unwrap(),
+            Some(&layout),
+        )
+        .is_ok());
+        let mut falsely_bound_invalid_advertisement = invalid_advertisement;
+        falsely_bound_invalid_advertisement["role_reference"] =
+            Value::String(opaque_reference('d'));
+        assert_eq!(
+            validate_wordpress_discovery_source(
+                falsely_bound_invalid_advertisement.as_object().unwrap(),
+                Some(&layout),
+            ),
+            Err(ComparisonError::InvalidDocument),
+        );
+    }
+
+    #[test]
+    fn deployment_layout_rejects_unreachable_basis_and_declaration_shapes() {
+        for invalid in [
+            {
+                let mut value = deployment_layout();
+                value["roles"][0]["basis"] = Value::String("structured_advertisement".to_owned());
+                value
+            },
+            {
+                let mut value = deployment_layout();
+                value["roles"][3]["basis"] = Value::String("conventional_asset".to_owned());
+                value
+            },
+            {
+                let mut value = deployment_layout();
+                value.as_object_mut().unwrap().remove("declaration");
+                value
+            },
+            {
+                let mut value = deployment_layout();
+                value["roles"][0]["basis"] = Value::String("conventional_asset".to_owned());
+                value
+            },
+        ] {
+            assert!(matches!(
+                validate_wordpress_discovery_layout(&invalid),
+                Err(ComparisonError::InvalidDocument),
+            ));
+        }
+    }
+
+    #[test]
+    fn deployment_layout_counters_match_the_producer_u16_domain() {
+        let mut above_old_reader_limit = deployment_layout();
+        above_old_reader_limit["skipped_foreign_origin_count"] = Value::from(4_097);
+        above_old_reader_limit["roles"][0]["candidate_count"] = Value::from(u16::MAX);
+        assert!(validate_wordpress_discovery_layout(&above_old_reader_limit).is_ok());
+
+        for field in [
+            "skipped_foreign_origin_count",
+            "skipped_sibling_application_count",
+            "conflicting_association_count",
+        ] {
+            let mut over_limit = deployment_layout();
+            over_limit[field] = Value::from(u64::from(u16::MAX) + 1);
+            assert!(matches!(
+                validate_wordpress_discovery_layout(&over_limit),
+                Err(ComparisonError::InvalidDocument),
+            ));
+        }
+
+        let mut candidate_over_limit = deployment_layout();
+        candidate_over_limit["roles"][0]["candidate_count"] = Value::from(u64::from(u16::MAX) + 1);
+        assert!(matches!(
+            validate_wordpress_discovery_layout(&candidate_over_limit),
+            Err(ComparisonError::InvalidDocument),
+        ));
+    }
+
+    #[test]
+    fn discovery_v1_source_shape_remains_exact_and_independent_of_v2_fields() {
+        let legacy = serde_json::json!({
+            "kind": "rest_index",
+            "parent_depth": 0,
+            "outcome": "not_found",
+            "request_attempted": true,
+            "response_bytes": 12,
+            "evidence_reference_count": 1,
+            "evidence_references": ["evidence-0001"],
+        });
+        assert_eq!(
+            validate_wordpress_discovery_source(legacy.as_object().unwrap(), None)
+                .unwrap()
+                .4,
+            "rest_index:none:0",
+        );
+
+        let mut v2_field_in_v1 = legacy;
+        v2_field_in_v1["resource_reference"] = Value::String(opaque_reference('e'));
+        assert_eq!(
+            validate_wordpress_discovery_source(v2_field_in_v1.as_object().unwrap(), None),
+            Err(ComparisonError::InvalidDocument),
+        );
+    }
+
+    #[test]
+    fn deployment_projection_separates_scope_methodology_coverage_and_provenance() {
+        let mut wordpress = ImportedWordPressAudit {
+            application_reference: None,
+            coverage: serde_json::json!({ "additional_request_count": 1 }),
+            inventory_coverage_recorded: false,
+            methodology: serde_json::json!({}),
+            provenance: serde_json::json!({}),
+            discovery_source_content: None,
+            components: BTreeMap::new(),
+            advisories: BTreeMap::new(),
+        };
+        let discovery = serde_json::json!({
+            "schema": WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2,
+            "capability_id": WORDPRESS_DISCOVERY_CAPABILITY,
+            "policy_id": WORDPRESS_DISCOVERY_POLICY_V2,
+            "selected": true,
+            "method": "get",
+            "credential_mode": "anonymous",
+            "seed_count": 1,
+            "candidate_count": 1,
+            "candidate_limit_reached": false,
+            "omitted_candidate_count": 0,
+            "attempted_request_count": 1,
+            "completed_response_count": 1,
+            "committed_response_count": 1,
+            "response_bytes": 321,
+            "source_count": 1,
+            "layout": deployment_layout(),
+            "sources": [deployment_rest_source()],
+        });
+
+        attach_wordpress_discovery(&mut wordpress, &discovery).unwrap();
+        assert_eq!(
+            wordpress.application_reference.as_deref(),
+            Some(opaque_reference('a').as_str()),
+        );
+        assert!(wordpress.methodology["wordpress_discovery"]["layout_roles"].is_array());
+        assert_eq!(
+            wordpress.coverage["wordpress_discovery"]["skipped_sibling_application_count"],
+            3,
+        );
+        assert_eq!(
+            wordpress.provenance["wordpress_layout"]["declaration"]["byte_length"],
+            123,
+        );
+        let rest = &wordpress.discovery_source_content.as_ref().unwrap()["rest_indexes"][0];
+        assert_eq!(rest["association"], "structured_advertisement");
+        assert_eq!(rest["resource_reference"], opaque_reference('e'));
+        assert_eq!(rest["role_reference"], opaque_reference('d'));
+    }
 
     #[test]
     fn wordpress_discovery_request_class_count_contract_is_exact() {

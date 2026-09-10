@@ -266,6 +266,8 @@ pub(super) struct WordPressAdvisoryKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedWordPressAudit {
+    /// Opaque deployment-aware application identity; absent from legacy audits.
+    pub(super) application_reference: Option<String>,
     pub(super) coverage: Value,
     pub(super) inventory_coverage_recorded: bool,
     pub(super) methodology: Value,
@@ -415,16 +417,7 @@ fn compare_wordpress_reviews(
     if before.is_none() && after.is_none() {
         return None;
     }
-    let status = if before.is_some() && after.is_some() {
-        "compared"
-    } else {
-        "not_compared"
-    };
-    let reason = match (before, after) {
-        (None, Some(_)) => Some("before_audit_missing"),
-        (Some(_), None) => Some("after_audit_missing"),
-        _ => None,
-    };
+    let (status, reason, compare_entities) = wordpress_comparison_scope(before, after);
     let coverage = facet(
         before.map(|audit| &audit.coverage),
         after.map(|audit| &audit.coverage),
@@ -469,17 +462,18 @@ fn compare_wordpress_reviews(
     } else {
         None
     };
-    let (components, advisories) = if let (Some(before), Some(after)) = (before, after) {
-        (
-            compare_wordpress_entities(&before.components, &after.components),
-            compare_wordpress_entities(&before.advisories, &after.advisories),
-        )
-    } else {
-        (
-            WordPressEntityChanges::default(),
-            WordPressEntityChanges::default(),
-        )
-    };
+    let (components, advisories) =
+        if let (true, Some(before), Some(after)) = (compare_entities, before, after) {
+            (
+                compare_wordpress_entities(&before.components, &after.components),
+                compare_wordpress_entities(&before.advisories, &after.advisories),
+            )
+        } else {
+            (
+                WordPressEntityChanges::default(),
+                WordPressEntityChanges::default(),
+            )
+        };
     Some(WordPressReviewComparison {
         schema: if discovery_source_content.is_some() {
             WORDPRESS_COMPARISON_SCHEMA_V2
@@ -504,6 +498,29 @@ fn compare_wordpress_reviews(
             "Public metadata content is compared separately from collection outcomes; neither dimension authenticates installation state.",
         ],
     })
+}
+
+fn wordpress_comparison_scope(
+    before: Option<&ImportedWordPressAudit>,
+    after: Option<&ImportedWordPressAudit>,
+) -> (&'static str, Option<&'static str>, bool) {
+    let (Some(before), Some(after)) = (before, after) else {
+        return if before.is_some() {
+            ("not_compared", Some("after_audit_missing"), false)
+        } else {
+            ("not_compared", Some("before_audit_missing"), false)
+        };
+    };
+
+    match (
+        before.application_reference.as_deref(),
+        after.application_reference.as_deref(),
+    ) {
+        (Some(before), Some(after)) if before == after => ("compared", None, true),
+        (Some(_), Some(_)) => ("not_compared", Some("application_scope_mismatch"), false),
+        (None, None) => ("compared", None, true),
+        _ => ("not_compared", Some("application_scope_unknown"), false),
+    }
 }
 
 fn paired_status(before: Option<&Value>, after: Option<&Value>) -> &'static str {

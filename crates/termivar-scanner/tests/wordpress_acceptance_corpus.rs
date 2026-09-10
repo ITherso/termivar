@@ -1122,6 +1122,7 @@ const fn review_error_code(error: WordPressReviewError) -> &'static str {
     match error {
         WordPressReviewError::ContextTooLarge => "context_too_large",
         WordPressReviewError::CatalogTooLarge => "catalog_too_large",
+        WordPressReviewError::DiscoveryLayoutTooLarge => "discovery_layout_too_large",
         WordPressReviewError::InventoryTooLarge => "inventory_too_large",
         WordPressReviewError::EmptyInput => "empty_input",
         WordPressReviewError::DuplicateKey => "duplicate_key",
@@ -1130,6 +1131,7 @@ const fn review_error_code(error: WordPressReviewError) -> &'static str {
         WordPressReviewError::UnsupportedSchema => "unsupported_schema",
         WordPressReviewError::InvalidContext => "invalid_context",
         WordPressReviewError::InvalidInventory => "invalid_inventory",
+        WordPressReviewError::InvalidDiscoveryLayout => "invalid_discovery_layout",
         WordPressReviewError::InventoryComponentLimitExceeded => {
             "inventory_component_limit_exceeded"
         },
