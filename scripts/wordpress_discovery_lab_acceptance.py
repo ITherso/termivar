@@ -1737,7 +1737,7 @@ def _validate_discovery_document(
     require(len(plugin_rows) == (1 if expected_count == 4 else 0),
             "metadata plugin identity coverage differs from the layout oracle")
     plugin_versions = {
-        item.get("value") for item in plugin_rows[0].get("versions", [])
+        item.get("value") for row in plugin_rows for item in row.get("versions", [])
         if isinstance(item, dict)
     }
     require("9.9.9" not in plugin_versions,

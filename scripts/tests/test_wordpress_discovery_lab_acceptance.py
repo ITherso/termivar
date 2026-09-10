@@ -1509,6 +1509,91 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 unexpected_source_field, generator_visible=True, oracle=oracle
             )
 
+    def test_sparse_custom_layout_oracle_accepts_no_plugin_component(self):
+        document = self.discovery_document()
+        application = "http://127.0.0.1:8080/"
+        core = application + "cms/"
+        oracle = runner.DiscoveryOracle(
+            application_url=application,
+            request_paths=runner.EXPECTED_DISCOVERY_PATHS["custom-no-layout"],
+            core_base_url=core,
+            themes_base_url=None,
+            plugins_base_url=None,
+            rest_base_url=application,
+        )
+        review = document["wordpress_review"]
+        review["additional_request_count"] = 1
+        review["components"] = review["components"][:1]
+        discovery = document["wordpress_discovery"]
+        for field in (
+            "seed_count",
+            "candidate_count",
+            "attempted_request_count",
+            "completed_response_count",
+            "committed_response_count",
+            "source_count",
+        ):
+            discovery[field] = 1
+        discovery["response_bytes"] = 256
+        discovery["sources"] = discovery["sources"][:1]
+        discovery["layout"] = {
+            "application_reference": runner._framed_reference(
+                "wordpress-selected-application", application
+            ),
+            "roles": [
+                {
+                    "role": "core",
+                    "status": "exact",
+                    "basis": "conventional_asset",
+                    "reference": runner._framed_reference(
+                        "wordpress-discovery-role", core
+                    ),
+                    "candidate_count": 1,
+                },
+                {
+                    "role": "themes",
+                    "status": "unresolved",
+                    "basis": "none",
+                    "candidate_count": 0,
+                },
+                {
+                    "role": "plugins",
+                    "status": "unresolved",
+                    "basis": "none",
+                    "candidate_count": 0,
+                },
+                {
+                    "role": "rest_index",
+                    "status": "exact",
+                    "basis": "structured_advertisement",
+                    "reference": runner._framed_reference(
+                        "wordpress-discovery-role", application
+                    ),
+                    "candidate_count": 1,
+                },
+            ],
+            "skipped_foreign_origin_count": 0,
+            "skipped_sibling_application_count": 0,
+            "conflicting_association_count": 0,
+        }
+        source = discovery["sources"][0]
+        source["resource_reference"] = runner._framed_reference(
+            "wordpress-discovery-resource", application.rstrip("/") + "/wp-json/"
+        )
+        source["role_reference"] = runner._framed_reference(
+            "wordpress-discovery-role", application
+        )
+        item = document["items"][0]
+        item["evidence_count"] = 1
+        item["evidence_references"] = ["evidence-0001"]
+
+        self.assertEqual(
+            runner._validate_discovery_document(
+                document, generator_visible=True, oracle=oracle
+            ),
+            "security.wordpress-discovery-audit/v2",
+        )
+
     def test_discovery_source_shape_accepts_closed_sparse_metadata_rows(self):
         common = {
             "association": "invalid_advertisement",
