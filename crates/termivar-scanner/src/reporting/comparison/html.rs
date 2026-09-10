@@ -153,6 +153,12 @@ fn wordpress_review(
         write_html_text(output, value)?;
         output.push_str("</span></div>")?;
     }
+    if let Some(facet) = &comparison.discovery_source_content {
+        output
+            .push_str("<div><strong>Discovery source content</strong><br><span class=\"hash\">")?;
+        write_html_text(output, &facet.status)?;
+        output.push_str("</span></div>")?;
+    }
     output.push_str("</div>")?;
     if let Some(reason) = comparison.reason {
         output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
@@ -165,6 +171,9 @@ fn wordpress_review(
         ("Provenance", &comparison.provenance),
     ] {
         wordpress_facet(output, label, facet)?;
+    }
+    if let Some(facet) = &comparison.discovery_source_content {
+        wordpress_facet(output, "Discovery source content", facet)?;
     }
     wordpress_entities(output, "Components", &comparison.components)?;
     wordpress_entities(output, "Advisories", &comparison.advisories)?;

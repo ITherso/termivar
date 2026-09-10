@@ -18,5 +18,8 @@ corpus/native_oast_provider/*
 !corpus/json_parser/
 corpus/json_parser/*
 !corpus/json_parser/*.json
+!corpus/wordpress_discovery/
+corpus/wordpress_discovery/*
+!corpus/wordpress_discovery/*.seed
 coverage/
 target/

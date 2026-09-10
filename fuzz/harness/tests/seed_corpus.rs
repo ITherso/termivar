@@ -133,6 +133,31 @@ fn committed_wordpress_inputs_satisfy_bounded_profile_aware_parser_oracles() {
     }
 }
 
+#[cfg(fuzzing)]
+#[test]
+fn committed_wordpress_discovery_seeds_replay_the_production_entrypoint() {
+    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("corpus")
+        .join("wordpress_discovery");
+    let mut seeds = fs::read_dir(&corpus)
+        .expect("committed WordPress discovery corpus must exist")
+        .map(|entry| entry.expect("discovery seed entry must be readable").path())
+        .collect::<Vec<_>>();
+    seeds.sort();
+
+    assert_eq!(seeds.len(), 17, "owned discovery seed inventory drifted");
+    for seed in seeds {
+        let data = fs::read(&seed).expect("discovery seed must be readable");
+        assert!(
+            data.len() <= termivar_fuzz_harness::MAX_WORDPRESS_DISCOVERY_FUZZ_INPUT_BYTES,
+            "discovery seed exceeds the harness input bound: {}",
+            seed.display()
+        );
+        termivar_fuzz_harness::check_wordpress_discovery(&data);
+    }
+}
+
 #[test]
 fn saved_inventory_seeds_have_independent_expected_outcomes() {
     use termivar_scanner::wordpress_review::{

@@ -77,6 +77,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "wordpress_advisories_format",
     "wordpress_core_version_file",
     "wordpress_context",
+    "wordpress_discovery",
     "wordpress_external_version_profile",
     "wordpress_plugins_json",
     "wordpress_review",
@@ -681,6 +682,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("openapi_review", "bool", None),
         ("rest_review", "bool", None),
         ("wordpress_review", "bool", None),
+        ("wordpress_discovery", "bool", None),
         ("wordpress_context", "Option", Some("PathBuf")),
         ("wordpress_advisories", "Option", Some("PathBuf")),
         (
@@ -887,6 +889,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             "wordpress_review",
             ("bool", None),
             "long,requires=\"profile\"",
+        ),
+        (
+            "wordpress_discovery",
+            ("bool", None),
+            "long,requires_all=[\"profile\",\"wordpress_review\"]",
         ),
         (
             "wordpress_context",
@@ -2301,6 +2308,16 @@ mod tests {
                 "    #[cfg(feature = \"wordpress-review\")]\n    #[arg(long, requires = \"profile\")]\n    wordpress_review: bool,",
                 "    #[arg(long, requires = \"profile\")]\n    wordpress_review: bool,",
                 "private wordpress-review feature gate",
+            ),
+            (
+                "    #[cfg(feature = \"wordpress-review\")]\n    #[arg(long, requires_all = [\"profile\", \"wordpress_review\"])]\n    wordpress_discovery: bool,",
+                "    #[arg(long, requires_all = [\"profile\", \"wordpress_review\"])]\n    wordpress_discovery: bool,",
+                "private wordpress-review feature gate",
+            ),
+            (
+                "    wordpress_discovery: bool,",
+                "    wordpress_discovery: String,",
+                "field inventory and types must remain exact",
             ),
             (
                 "requires_all = [\"profile\", \"wordpress_review\"]",

@@ -259,6 +259,7 @@ jobs:
             --rest-review \
             --authorization-review-policy \
             --wordpress-review \
+            --wordpress-discovery \
             --wordpress-context \
             --wordpress-advisories \
             --wordpress-plugins-json \
@@ -310,6 +311,7 @@ jobs:
             "--rest-review",
             "--authorization-review-policy",
             "--wordpress-review",
+            "--wordpress-discovery",
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-plugins-json",

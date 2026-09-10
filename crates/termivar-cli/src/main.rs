@@ -196,6 +196,7 @@ fn scan_rest_review_flags_conflict(
 #[cfg(feature = "wordpress-review")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct WordPressReviewFlagSelection {
+    discovery: bool,
     context: bool,
     advisories: bool,
     advisories_format: Option<WordPressAdvisoriesFormat>,
@@ -220,7 +221,8 @@ fn scan_wordpress_review_flags_conflict(
         && selected.advisories_format != Some(WordPressAdvisoriesFormat::WordfenceV3Production)
     {
         Some("`--wordpress-external-version-profile` requires format `wordfence-v3-production`")
-    } else if (selected.context
+    } else if (selected.discovery
+        || selected.context
         || selected.advisories
         || selected.advisories_format.is_some()
         || selected.external_version_profile
@@ -405,6 +407,12 @@ struct ScanArgs {
     #[cfg(feature = "wordpress-review")]
     #[arg(long, requires = "profile")]
     wordpress_review: bool,
+    /// Explicitly perform at most 12 anonymous same-origin GETs for public
+    /// WordPress metadata through the existing assessment broker. This option
+    /// is never enabled by the evidence-only WordPress review.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(long, requires_all = ["profile", "wordpress_review"])]
+    wordpress_discovery: bool,
     /// Read one bounded `security.wordpress-context/v1` operator declaration.
     /// The path itself is not retained in the assessment.
     #[cfg(feature = "wordpress-review")]
@@ -732,6 +740,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
         #[cfg(feature = "wordpress-review")]
+        wordpress_discovery,
+        #[cfg(feature = "wordpress-review")]
         wordpress_context,
         #[cfg(feature = "wordpress-review")]
         wordpress_advisories,
@@ -810,6 +820,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         profile,
         wordpress_review,
         WordPressReviewFlagSelection {
+            discovery: wordpress_discovery,
             context: wordpress_context.is_some(),
             advisories: wordpress_advisories.is_some(),
             advisories_format: wordpress_advisories_format,
@@ -1026,6 +1037,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 ssrf_oast_review,
                 #[cfg(feature = "wordpress-review")]
                 wordpress_review,
+                #[cfg(feature = "wordpress-review")]
+                wordpress_discovery: wordpress_discovery.into(),
             },
         )
         .await
@@ -1538,6 +1551,7 @@ mod tests {
         #[cfg(feature = "wordpress-review")]
         {
             assert!(!args.wordpress_review);
+            assert!(!args.wordpress_discovery);
             assert_eq!(args.wordpress_context, None);
             assert_eq!(args.wordpress_advisories, None);
             assert_eq!(args.wordpress_advisories_format, None);
@@ -1600,6 +1614,7 @@ mod tests {
         #[cfg(feature = "wordpress-review")]
         {
             assert!(!args.wordpress_review);
+            assert!(!args.wordpress_discovery);
             assert_eq!(args.wordpress_context, None);
             assert_eq!(args.wordpress_advisories, None);
             assert_eq!(args.wordpress_advisories_format, None);
@@ -2163,6 +2178,7 @@ mod tests {
             .to_string();
         for flag in [
             "--wordpress-review",
+            "--wordpress-discovery",
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-advisories-format",
@@ -2181,6 +2197,26 @@ mod tests {
             "https://example.test/",
         ])
         .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-discovery",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                false,
+                WordPressReviewFlagSelection {
+                    discovery: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            Some("WordPress inputs require explicit `--wordpress-review`")
+        );
         for flag in [
             "--wordpress-context",
             "--wordpress-advisories",
@@ -2219,6 +2255,7 @@ mod tests {
                 baseline.profile,
                 baseline.wordpress_review,
                 WordPressReviewFlagSelection {
+                    discovery: baseline.wordpress_discovery,
                     context: baseline.wordpress_context.is_some(),
                     advisories: baseline.wordpress_advisories.is_some(),
                     advisories_format: baseline.wordpress_advisories_format,
@@ -2226,6 +2263,54 @@ mod tests {
                     plugins: baseline.wordpress_plugins_json.is_some(),
                     themes: baseline.wordpress_themes_json.is_some(),
                     core_version: baseline.wordpress_core_version_file.is_some(),
+                },
+            ),
+            Some("`--wordpress-review` requires `--profile web-review`")
+        );
+
+        let discovery = Cli::try_parse_from([
+            "termivar",
+            "decision-scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let discovery = parsed_scan_args(&discovery);
+        assert!(discovery.wordpress_review);
+        assert!(discovery.wordpress_discovery);
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                discovery.profile,
+                discovery.wordpress_review,
+                WordPressReviewFlagSelection {
+                    discovery: discovery.wordpress_discovery,
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            None
+        );
+
+        let baseline_discovery = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        let baseline_discovery = parsed_scan_args(&baseline_discovery);
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                baseline_discovery.profile,
+                baseline_discovery.wordpress_review,
+                WordPressReviewFlagSelection {
+                    discovery: baseline_discovery.wordpress_discovery,
+                    ..WordPressReviewFlagSelection::default()
                 },
             ),
             Some("`--wordpress-review` requires `--profile web-review`")
@@ -2509,6 +2594,7 @@ mod tests {
             .to_string();
         for flag in [
             "--wordpress-review",
+            "--wordpress-discovery",
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-advisories-format",

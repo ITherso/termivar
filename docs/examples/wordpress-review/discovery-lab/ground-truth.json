@@ -1,0 +1,73 @@
+{
+  "schema": "termivar-test.wordpress-discovery-ground-truth/v1",
+  "source_kind": "task-owned-disposable-wordpress-lab",
+  "images": {
+    "wordpress": {
+      "release": "7.1",
+      "tag": "wordpress:7.1-php8.3-apache",
+      "index_digest": "sha256:5a93c470ae8220fddf71f6ebe3bc94e615ddc2ae4d9810f795b830fb11c41a17",
+      "reference": "wordpress@sha256:49801e46d08eb27ea68ed62e205bb35b1bb2dc962251bf2292a7d374f9637cee"
+    },
+    "wordpress_cli": {
+      "release": "2.12.0",
+      "tag": "wordpress:cli-2.12.0-php8.3",
+      "index_digest": "sha256:2b5e9d4d3e51909dca1aaa4732e9f5e5bf0377c2114dbd8ff39f060bff202586",
+      "reference": "wordpress@sha256:51ff6b7643d9b4c29d74d83b2c3fe12e706812e7add075f189535f498dd5201d"
+    },
+    "mariadb": {
+      "release": "11.8.9",
+      "tag": "mariadb:11.8.9",
+      "index_digest": "sha256:2d2f4095530294735a857cfe22bb101e19b0849b416911c796ec4aa81b164a62",
+      "reference": "mariadb@sha256:a75328dabed542a3b704efe54086071cb3f99e6a640cc8a18d7273bc4de2e5e7"
+    }
+  },
+  "components": [
+    {
+      "kind": "core",
+      "slug": "wordpress",
+      "version": "7.1",
+      "state": "installed"
+    },
+    {
+      "kind": "theme",
+      "slug": "termivar-child",
+      "version": "1.4.0",
+      "state": "active",
+      "template": "termivar-parent"
+    },
+    {
+      "kind": "theme",
+      "slug": "termivar-parent",
+      "version": "3.2.1",
+      "state": "parent"
+    },
+    {
+      "kind": "plugin",
+      "slug": "termivar-metadata-lab",
+      "version": "2.3.4",
+      "state": "active",
+      "readme_stable_tag": "9.9.9"
+    },
+    {
+      "kind": "plugin",
+      "slug": "termivar-hidden-lab",
+      "version": "4.5.6",
+      "state": "inactive",
+      "public_root_reference": false
+    }
+  ],
+  "rest": {
+    "required_namespaces": [
+      "wp/v2",
+      "termivar-lab/v1"
+    ],
+    "pretty_root_path": "/wp-json/",
+    "plain_root_path": "/index.php?rest_route=/"
+  },
+  "claim_limits": {
+    "generator_absence": "unknown_not_negative",
+    "namespace_suffix": "protocol_version_not_component_version",
+    "readme_stable_tag": "distribution_release_hint_not_installed_version",
+    "inactive_plugin": "intentionally_unobservable_from_root"
+  }
+}

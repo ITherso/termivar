@@ -172,6 +172,25 @@ pub use semantic::{
 };
 pub use ssrf_oast_review::{check_ssrf_oast_review, MAX_SSRF_OAST_FUZZ_INPUT_BYTES};
 
+/// Maximum byte buffer retained by the WordPress discovery fuzz target.
+pub const MAX_WORDPRESS_DISCOVERY_FUZZ_INPUT_BYTES: usize = 512 * 1024;
+
+/// Exercises the exact production candidate-admission and metadata-parser
+/// entrypoint when Cargo Fuzz supplies its standard `cfg(fuzzing)` setting.
+#[cfg(fuzzing)]
+pub fn check_wordpress_discovery(data: &[u8]) {
+    if data.len() <= MAX_WORDPRESS_DISCOVERY_FUZZ_INPUT_BYTES {
+        termivar_scanner::web_runtime::check_wordpress_discovery_fuzz_input(data);
+    }
+}
+
+/// Keeps ordinary harness builds available; owned-seed replay enables
+/// `cfg(fuzzing)` and therefore never uses this compile-only fallback.
+#[cfg(not(fuzzing))]
+pub fn check_wordpress_discovery(data: &[u8]) {
+    assert!(data.len() <= MAX_WORDPRESS_DISCOVERY_FUZZ_INPUT_BYTES);
+}
+
 /// Maximum byte buffer accepted by the OpenAPI contract-catalog harness.
 pub const MAX_OPENAPI_FUZZ_INPUT_BYTES: usize =
     termivar_scanner::openapi_review::MAX_OPENAPI_DOCUMENT_BYTES;

@@ -548,12 +548,34 @@ enum AssessmentItemsReport {
     },
 }
 
-/// Runs an explicitly selected profile and builds the additive output entirely
-/// in memory.
-///
-/// [`ProfileScanOutput`] deliberately avoids coupling this module to the
-/// CLI-local argument enums. The absence-of-`--profile` compatibility path
-/// must never call this function.
+/// Closed CLI-to-runtime selection for the opt-in discovery child.
+#[cfg(feature = "wordpress-review")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum WordPressDiscoverySelection {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+#[cfg(feature = "wordpress-review")]
+impl WordPressDiscoverySelection {
+    const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+impl From<bool> for WordPressDiscoverySelection {
+    fn from(selected: bool) -> Self {
+        if selected {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
+/// Runtime selections passed through the single profile composition boundary.
 #[derive(Default)]
 pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) progress: bool,
@@ -569,8 +591,16 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "wordpress-review")]
     pub(crate) wordpress_review: Option<WordPressReviewInputs>,
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) wordpress_discovery: WordPressDiscoverySelection,
 }
 
+/// Runs an explicitly selected profile and builds the additive output entirely
+/// in memory.
+///
+/// [`ProfileScanOutput`] deliberately avoids coupling this module to the
+/// CLI-local argument enums. The absence-of-`--profile` compatibility path
+/// must never call this function.
 pub(crate) async fn run_profile_scan(
     target: Url,
     profile: ScanProfileV1,
@@ -590,6 +620,8 @@ pub(crate) async fn run_profile_scan(
         ssrf_oast_review,
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
+        #[cfg(feature = "wordpress-review")]
+        wordpress_discovery,
     } = runtime_options;
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
@@ -653,6 +685,14 @@ pub(crate) async fn run_profile_scan(
                 )
                 .into());
             }
+            #[cfg(feature = "wordpress-review")]
+            if wordpress_discovery.is_enabled() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WordPress metadata discovery requires the web-review profile",
+                )
+                .into());
+            }
             if !output.baseline_compatible() || root_authorization_context.is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -682,6 +722,8 @@ pub(crate) async fn run_profile_scan(
                     ssrf_oast_review,
                     #[cfg(feature = "wordpress-review")]
                     wordpress_review,
+                    #[cfg(feature = "wordpress-review")]
+                    wordpress_discovery,
                 },
             )
             .await
@@ -737,6 +779,8 @@ struct WebReviewRunOptions {
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewInputs>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_discovery: WordPressDiscoverySelection,
 }
 
 async fn run_web_review(
@@ -759,6 +803,8 @@ async fn run_web_review(
         ssrf_oast_review,
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
+        #[cfg(feature = "wordpress-review")]
+        wordpress_discovery,
     } = options;
     if rest_review && !openapi_review {
         return Err(std::io::Error::new(
@@ -844,6 +890,10 @@ async fn run_web_review(
     #[cfg(feature = "wordpress-review")]
     if let Some(inputs) = wordpress_review {
         builder = builder.with_wordpress_review(inputs);
+    }
+    #[cfg(feature = "wordpress-review")]
+    if wordpress_discovery.is_enabled() {
+        builder = builder.with_wordpress_discovery();
     }
     let mut runtime = builder.build()?;
     let mut progress = if progress_requested {
@@ -2107,6 +2157,29 @@ lifetime_ms = 5000
         assert_eq!(
             error.to_string(),
             "WordPress evidence review requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[tokio::test]
+    async fn baseline_rejects_wordpress_discovery_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                wordpress_discovery: WordPressDiscoverySelection::Enabled,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("WordPress metadata discovery is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "WordPress metadata discovery requires the web-review profile"
         );
     }
 

@@ -75,6 +75,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     SSRF_OAST_RUNTIME_SOURCE,
     WORDPRESS_RUNTIME_SOURCE,
+    WORDPRESS_DISCOVERY_RUNTIME_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
     NATIVE_REVIEW_EXECUTION_SOURCE,
     "crates/termivar-scanner/src/web_runtime/authority.rs",
@@ -115,6 +116,8 @@ const SSRF_OAST_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/ssrf_oast_runtime.rs";
 const WORDPRESS_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/wordpress_runtime.rs";
+const WORDPRESS_DISCOVERY_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/wordpress_discovery.rs";
 const NATIVE_OAST_PROVIDER_ADAPTER_SOURCE: &str =
     "crates/termivar-scanner/src/native_oast_provider.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
@@ -923,6 +926,10 @@ fn web_assessment_contract_violations(
     ));
     violations.extend(inspect_web_assessment_models(&assessment)?);
     violations.extend(inspect_web_assessment_facade(&facade)?);
+    violations.extend(inspect_wordpress_discovery_fuzz_seams(
+        &facade,
+        &http_evidence,
+    )?);
     violations.extend(inspect_assessment_api_visibility_facade(&facade)?);
     violations.extend(inspect_assessment_item_facade(&facade)?);
     violations.extend(inspect_assessment_item_projection(&assessment_item)?);
@@ -1471,6 +1478,8 @@ impl<'ast> Visit<'ast> for DefenseActionBoundaryVisitor {
 
 fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Vec<String> {
     let mut violations = Vec::new();
+    let normalized_broker = broker.replace("\r\n", "\n");
+    let broker = normalized_broker.as_str();
     if !http_evidence.contains("complete_response_observer_seal::Sealed")
         || !http_evidence
             .contains("impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}")
@@ -1487,9 +1496,28 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             "assessment HTTP policy must clear every raw captured response header".to_owned(),
         );
     }
-    if broker.matches(".redirect(RedirectPolicy::none())").count() != 1 {
+    if broker.matches("Client::builder()").count() != 2
+        || broker.matches(".redirect(RedirectPolicy::none())").count() != 2
+        || broker.matches(".retry(reqwest::retry::never())").count() != 2
+    {
         violations.push(
-            "the sole production request broker must configure exactly one redirect-disabled client"
+            "the sole production request broker must configure exactly its ordinary and anonymous WordPress redirect-disabled, retry-free clients"
+                .to_owned(),
+        );
+    }
+    if broker.matches("anonymous_no_proxy_client: Client").count() != 1
+        || broker
+            .matches("let anonymous_no_proxy_client = Client::builder()")
+            .count()
+            != 1
+        || broker.matches(".no_proxy()").count() != 1
+        || broker.matches("&self.anonymous_no_proxy_client").count() != 1
+        || !broker.contains(
+            "self.anonymous_no_proxy_client\n            .request(Method::GET, target.clone())",
+        )
+    {
+        violations.push(
+            "the shared broker's WordPress metadata client must remain the exact anonymous GET-only no-proxy pool without caller credentials"
                 .to_owned(),
         );
     }
@@ -6567,6 +6595,7 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             "stage",
             "status",
             "subject",
+            "wordpress_rest_index_advertisement",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -6580,7 +6609,13 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
         });
         let every_field_type_is_exact = item.fields.iter().all(|field| {
             field.ident.as_ref().is_some_and(|ident| {
-                assessment_observation_type_matches(&ident_name(ident), &field.ty)
+                let name = ident_name(ident);
+                assessment_observation_type_matches(&name, &field.ty)
+                    && if name == "wordpress_rest_index_advertisement" {
+                        attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
+                    } else {
+                        field.attrs.is_empty()
+                    }
             })
         });
         let forbidden_owned_field = item.fields.iter().any(|field| {
@@ -6632,6 +6667,11 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             matches!(method.vis, syn::Visibility::Restricted(_))
                 && method.sig.inputs.len() == 1
                 && matches!(method.sig.inputs.first(), Some(syn::FnArg::Receiver(_)))
+                && (if name == "wordpress_rest_index_advertisement" {
+                    attributes_are_exact_cfg_feature(&method.attrs, "wordpress-review")
+                } else {
+                    method.attrs.is_empty()
+                })
                 && match &method.sig.output {
                     syn::ReturnType::Type(_, output) => {
                         assessment_observation_type_matches(&name, output)
@@ -6737,6 +6777,101 @@ fn attrs_reference_any_ident(attributes: &[syn::Attribute], needles: &[&str]) ->
     })
 }
 
+fn inspect_wordpress_discovery_fuzz_seams(
+    facade: &str,
+    http_evidence: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let facade_syntax = syn::parse_file(facade)?;
+    let facade_functions = facade_syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(item) if item.sig.ident == "check_wordpress_discovery_fuzz_input" => {
+                Some(item)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let http_evidence_syntax = syn::parse_file(http_evidence)?;
+    let parser_functions = http_evidence_syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(item) if item.sig.ident == "fuzz_wordpress_rest_index_advertisement" => {
+                Some(item)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut violations = Vec::new();
+    let facade_is_exact = match facade_functions.as_slice() {
+        [function] => {
+            matches!(function.vis, syn::Visibility::Public(_))
+                && attributes_are_exact_wordpress_fuzz_facade(&function.attrs)
+        },
+        _ => false,
+    };
+    if !facade_is_exact {
+        violations.push(
+            "WordPress discovery fuzz facade must remain exactly public only under cfg(all(fuzzing, feature = \"wordpress-review\")) and doc(hidden)"
+                .to_owned(),
+        );
+    }
+    let parser_is_exact = match parser_functions.as_slice() {
+        [function] => {
+            is_pub_crate_visibility(&function.vis)
+                && attributes_are_exact_wordpress_fuzz_helper(&function.attrs)
+        },
+        _ => false,
+    };
+    if !parser_is_exact {
+        violations.push(
+            "WordPress discovery fuzz parser helper must remain exactly pub(crate) only under cfg(all(fuzzing, feature = \"wordpress-review\"))"
+                .to_owned(),
+        );
+    }
+    Ok(violations)
+}
+
+fn attributes_are_exact_wordpress_fuzz_facade(attributes: &[syn::Attribute]) -> bool {
+    let cfg_count = attributes
+        .iter()
+        .filter(|attribute| attribute_is_exact_wordpress_fuzz_cfg(attribute))
+        .count();
+    let hidden_count = attributes
+        .iter()
+        .filter(|attribute| attribute_is_exact_doc_hidden(attribute))
+        .count();
+    cfg_count == 1
+        && hidden_count == 1
+        && attributes.iter().all(|attribute| {
+            attribute_is_exact_wordpress_fuzz_cfg(attribute)
+                || attribute_is_exact_doc_hidden(attribute)
+                || (attribute.path().is_ident("doc")
+                    && matches!(&attribute.meta, syn::Meta::NameValue(_)))
+        })
+}
+
+fn attributes_are_exact_wordpress_fuzz_helper(attributes: &[syn::Attribute]) -> bool {
+    attributes.len() == 1 && attribute_is_exact_wordpress_fuzz_cfg(&attributes[0])
+}
+
+fn attribute_is_exact_wordpress_fuzz_cfg(attribute: &syn::Attribute) -> bool {
+    attribute.path().is_ident("cfg")
+        && attribute.meta.require_list().is_ok_and(|list| {
+            normalized_token_text(&list.tokens) == "all(fuzzing,feature=\"wordpress-review\")"
+        })
+}
+
+fn attribute_is_exact_doc_hidden(attribute: &syn::Attribute) -> bool {
+    attribute.path().is_ident("doc")
+        && attribute
+            .meta
+            .require_list()
+            .is_ok_and(|list| normalized_token_text(&list.tokens) == "hidden")
+}
+
 fn attributes_are_exact_cfg_feature(attributes: &[syn::Attribute], expected: &str) -> bool {
     attributes.len() == 1 && attribute_is_exact_cfg_feature(&attributes[0], expected)
 }
@@ -6838,6 +6973,9 @@ fn assessment_observation_type_matches(name: &str, item_type: &syn::Type) -> boo
         "passive_response_projection" => is_borrowed_ident(item_type, "PassiveResponseProjection"),
         "review_response_projection" => {
             is_exact_borrowed_path(item_type, &["review_response", "ReviewResponseProjection"])
+        },
+        "wordpress_rest_index_advertisement" => {
+            is_exact_borrowed_ident(item_type, "WordPressRestIndexAdvertisement")
         },
         _ => false,
     }
@@ -8377,7 +8515,8 @@ impl OwnershipVisitor<'_> {
             return;
         }
         if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
-            || self.source == WORDPRESS_RUNTIME_SOURCE)
+            || self.source == WORDPRESS_RUNTIME_SOURCE
+            || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE)
             && segments.iter().any(|segment| {
                 matches!(
                     normalize_identifier(segment),
@@ -8516,7 +8655,8 @@ impl OwnershipVisitor<'_> {
             if let TokenTree::Ident(identifier) = token {
                 let identifier = normalize_identifier(&ident_name(identifier)).to_owned();
                 if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
-                    || self.source == WORDPRESS_RUNTIME_SOURCE)
+                    || self.source == WORDPRESS_RUNTIME_SOURCE
+                    || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE)
                     && matches!(
                         identifier.as_str(),
                         "HttpRequestBroker" | "RequestAccountingBroker" | "RuntimeBudget"
@@ -8708,6 +8848,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
+                    "wordpress_discovery"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "resource_authorization_runtime"
                 )
                 | ("crates/termivar-scanner/src/web_runtime.rs", "scan_profile")
@@ -8773,7 +8917,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
         {
             attributes_are_exact_cfg_feature(&item.attrs, "ssrf-oast-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
-            && module == "wordpress_runtime"
+            && matches!(module.as_str(), "wordpress_runtime" | "wordpress_discovery")
         {
             attributes_are_exact_cfg_feature(&item.attrs, "wordpress-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime/web_assessment.rs"
@@ -9836,9 +9980,11 @@ mod tests {
 
     #[test]
     fn wordpress_runtime_is_a_transport_free_bounded_consumer() {
-        assert!(BOUNDED_RUNTIME_SOURCES.contains(&WORDPRESS_RUNTIME_SOURCE));
-        assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&WORDPRESS_RUNTIME_SOURCE));
-        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&WORDPRESS_RUNTIME_SOURCE));
+        for source_name in [WORDPRESS_RUNTIME_SOURCE, WORDPRESS_DISCOVERY_RUNTIME_SOURCE] {
+            assert!(BOUNDED_RUNTIME_SOURCES.contains(&source_name));
+            assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&source_name));
+            assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&source_name));
+        }
 
         for source in [
             "use reqwest::Client; fn escape() { let _ = Client::new(); }",
@@ -9847,13 +9993,15 @@ mod tests {
             "use crate::RuntimeBudget;",
             "fn escape() { policy!(RuntimeBudget::new()); }",
         ] {
-            let violations = inspect_bounded_source(WORDPRESS_RUNTIME_SOURCE, source)
-                .unwrap()
-                .join("\n");
-            assert!(
-                !violations.is_empty(),
-                "WordPress runtime authority escape unexpectedly passed: {source}"
-            );
+            for source_name in [WORDPRESS_RUNTIME_SOURCE, WORDPRESS_DISCOVERY_RUNTIME_SOURCE] {
+                let violations = inspect_bounded_source(source_name, source)
+                    .unwrap()
+                    .join("\n");
+                assert!(
+                    !violations.is_empty(),
+                    "WordPress runtime authority escape unexpectedly passed: {source_name}: {source}"
+                );
+            }
         }
     }
 
@@ -10718,6 +10866,10 @@ mod tests {
             (
                 "crates/termivar-scanner/src/web_runtime.rs",
                 "#[cfg(feature = \"wordpress-review\")] mod wordpress_runtime;",
+            ),
+            (
+                "crates/termivar-scanner/src/web_runtime.rs",
+                "#[cfg(feature = \"wordpress-review\")] mod wordpress_discovery;",
             ),
             (
                 "crates/termivar-scanner/src/web_runtime.rs",
@@ -12931,6 +13083,59 @@ mod tests {
     }
 
     #[test]
+    fn wordpress_discovery_fuzz_seams_are_exactly_cfg_and_visibility_gated() {
+        let facade = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs")
+            .replace("\r\n", "\n");
+        let http_evidence = include_str!("../../../crates/termivar-scanner/src/http_evidence.rs")
+            .replace("\r\n", "\n");
+        assert!(
+            inspect_wordpress_discovery_fuzz_seams(&facade, &http_evidence)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(inspect_wordpress_discovery_fuzz_seams(
+            &facade.replace('\n', "\r\n"),
+            &http_evidence.replace('\n', "\r\n")
+        )
+        .unwrap()
+        .is_empty());
+
+        let facade_prefix = "#[cfg(all(fuzzing, feature = \"wordpress-review\"))]\n#[doc(hidden)]\npub fn check_wordpress_discovery_fuzz_input";
+        for replacement in [
+            "#[cfg(fuzzing)]\n#[doc(hidden)]\npub fn check_wordpress_discovery_fuzz_input",
+            "#[cfg(feature = \"wordpress-review\")]\n#[doc(hidden)]\npub fn check_wordpress_discovery_fuzz_input",
+            "#[cfg(any(fuzzing, feature = \"wordpress-review\"))]\n#[doc(hidden)]\npub fn check_wordpress_discovery_fuzz_input",
+            "#[doc(hidden)]\npub fn check_wordpress_discovery_fuzz_input",
+            "#[cfg(all(fuzzing, feature = \"wordpress-review\"))]\npub fn check_wordpress_discovery_fuzz_input",
+            "#[cfg(all(fuzzing, feature = \"wordpress-review\"))]\n#[doc(hidden)]\npub(crate) fn check_wordpress_discovery_fuzz_input",
+        ] {
+            let mutated = facade.replacen(facade_prefix, replacement, 1);
+            assert_ne!(mutated, facade, "mutation must alter the fuzz facade");
+            let violations =
+                inspect_wordpress_discovery_fuzz_seams(&mutated, &http_evidence)
+                    .unwrap()
+                    .join("\n");
+            assert!(violations.contains("fuzz facade"), "{violations}");
+        }
+
+        let helper_prefix = "#[cfg(all(fuzzing, feature = \"wordpress-review\"))]\npub(crate) fn fuzz_wordpress_rest_index_advertisement";
+        for replacement in [
+            "#[cfg(fuzzing)]\npub(crate) fn fuzz_wordpress_rest_index_advertisement",
+            "#[cfg(feature = \"wordpress-review\")]\npub(crate) fn fuzz_wordpress_rest_index_advertisement",
+            "#[cfg(any(fuzzing, feature = \"wordpress-review\"))]\npub(crate) fn fuzz_wordpress_rest_index_advertisement",
+            "pub(crate) fn fuzz_wordpress_rest_index_advertisement",
+            "#[cfg(all(fuzzing, feature = \"wordpress-review\"))]\npub fn fuzz_wordpress_rest_index_advertisement",
+        ] {
+            let mutated = http_evidence.replacen(helper_prefix, replacement, 1);
+            assert_ne!(mutated, http_evidence, "mutation must alter the fuzz helper");
+            let violations = inspect_wordpress_discovery_fuzz_seams(&facade, &mutated)
+                .unwrap()
+                .join("\n");
+            assert!(violations.contains("fuzz parser helper"), "{violations}");
+        }
+    }
+
+    #[test]
     fn sealed_observer_and_eof_header_redirect_markers_are_mutation_locked() {
         let seam = include_str!("../../../crates/termivar-scanner/src/http_evidence.rs");
         assert!(inspect_complete_observer_seam(seam).unwrap().is_empty());
@@ -13037,6 +13242,14 @@ mod tests {
                 "review_response_projection: &'a review_response::ReviewResponseProjection",
                 "review_response_projection: &'a foreign::ReviewResponseProjection",
             ),
+            seam.replace(
+                "wordpress_rest_index_advertisement: &'a WordPressRestIndexAdvertisement",
+                "wordpress_rest_index_advertisement: &'a foreign::WordPressRestIndexAdvertisement",
+            ),
+            seam.replace(
+                "    #[cfg(feature = \"wordpress-review\")]\n    wordpress_rest_index_advertisement: &'a WordPressRestIndexAdvertisement,",
+                "    wordpress_rest_index_advertisement: &'a WordPressRestIndexAdvertisement,",
+            ),
         ] {
             let violations = inspect_complete_observer_seam(&mutated).unwrap().join("\n");
             assert!(
@@ -13044,6 +13257,30 @@ mod tests {
                 "new observation field type drift unexpectedly passed: {violations}"
             );
         }
+
+        for source in [
+            "mod wordpress_discovery;",
+            "#[cfg(feature = \"scanning\")] mod wordpress_discovery;",
+            "#[cfg(feature = \"wordpress-review\")] pub mod wordpress_discovery;",
+            "#[cfg(any(feature = \"wordpress-review\", feature = \"scanning\"))] mod wordpress_discovery;",
+        ] {
+            let violations =
+                inspect_bounded_source("crates/termivar-scanner/src/web_runtime.rs", source)
+                    .unwrap()
+                    .join("\n");
+            assert!(
+                violations.contains("unregistered external submodule"),
+                "WordPress discovery feature boundary unexpectedly passed: {source}: {violations}"
+            );
+        }
+        let ungated_wordpress_accessor = seam.replace(
+            "    #[cfg(feature = \"wordpress-review\")]\n    pub(crate) const fn wordpress_rest_index_advertisement(",
+            "    pub(crate) const fn wordpress_rest_index_advertisement(",
+        );
+        let violations = inspect_complete_observer_seam(&ungated_wordpress_accessor)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("accessor allowlist"), "{violations}");
         let manual_clone = format!(
             "{seam}\nimpl<'a> Clone for CompleteHttpResponseObservation<'a> {{ fn clone(&self) -> Self {{ unreachable!() }} }}"
         );
@@ -13076,9 +13313,23 @@ mod tests {
                 "observed response-stream EOF",
             ),
             (
-                http,
+                http.clone(),
                 broker.replace(".redirect(RedirectPolicy::none())", ""),
                 "redirect-disabled",
+            ),
+            (
+                http.clone(),
+                broker.replace(".no_proxy()", ""),
+                "anonymous GET-only no-proxy",
+            ),
+            (
+                http,
+                broker.replacen(
+                    "let client = Client::builder()",
+                    "let client = Client::builder()\n            .no_proxy()",
+                    1,
+                ),
+                "anonymous GET-only no-proxy",
             ),
         ] {
             let violations =

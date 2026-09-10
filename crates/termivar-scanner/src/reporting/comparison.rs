@@ -24,7 +24,10 @@ mod tests;
 /// Versioned display-only comparison document schema.
 pub const COMPARISON_DOCUMENT_SCHEMA: &str = "termivar-report-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
-pub(super) const WORDPRESS_COMPARISON_SCHEMA: &str = "termivar-wordpress-review-comparison/v1";
+pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
+pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
+const WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY: &str =
+    "technology.wordpress-metadata-source-response-observed@1";
 /// Each input is bounded by the existing renderer's byte ceiling.
 pub const MAX_COMPARISON_INPUT_BYTES: usize = super::MAX_RENDERED_REPORT_BYTES;
 
@@ -197,9 +200,11 @@ pub(super) struct WordPressReviewComparison {
     pub(super) coverage: WordPressFacetComparison,
     pub(super) methodology: WordPressFacetComparison,
     pub(super) provenance: WordPressFacetComparison,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) discovery_source_content: Option<WordPressFacetComparison>,
     pub(super) components: WordPressEntityChanges<WordPressComponentKey>,
     pub(super) advisories: WordPressEntityChanges<WordPressAdvisoryKey>,
-    pub(super) interpretation_limits: [&'static str; 5],
+    pub(super) interpretation_limits: [&'static str; 6],
 }
 
 #[derive(Debug, Serialize)]
@@ -265,6 +270,7 @@ pub(super) struct ImportedWordPressAudit {
     pub(super) inventory_coverage_recorded: bool,
     pub(super) methodology: Value,
     pub(super) provenance: Value,
+    pub(super) discovery_source_content: Option<Value>,
     pub(super) components: BTreeMap<WordPressComponentKey, BTreeMap<String, Value>>,
     pub(super) advisories: BTreeMap<WordPressAdvisoryKey, BTreeMap<String, Value>>,
 }
@@ -332,6 +338,7 @@ struct ImportedDocument {
 struct ImportedItem {
     capability_id: String,
     projection: ItemProjection,
+    observation_evidence_references: BTreeSet<String>,
 }
 
 fn compare_documents(
@@ -446,6 +453,22 @@ fn compare_wordpress_reviews(
         provenance_status,
         "Digests identify supplied bytes; they do not authenticate a source or prove collection completeness.",
     );
+    let discovery_source_content = if before
+        .is_some_and(|audit| audit.discovery_source_content.is_some())
+        || after.is_some_and(|audit| audit.discovery_source_content.is_some())
+    {
+        Some(facet(
+            before.and_then(|audit| audit.discovery_source_content.as_ref()),
+            after.and_then(|audit| audit.discovery_source_content.as_ref()),
+            paired_status(
+                before.and_then(|audit| audit.discovery_source_content.as_ref()),
+                after.and_then(|audit| audit.discovery_source_content.as_ref()),
+            ),
+            "REST namespace declarations and other non-component metadata are source content; changes do not by themselves establish changed security coverage.",
+        ))
+    } else {
+        None
+    };
     let (components, advisories) = if let (Some(before), Some(after)) = (before, after) {
         (
             compare_wordpress_entities(&before.components, &after.components),
@@ -458,13 +481,18 @@ fn compare_wordpress_reviews(
         )
     };
     Some(WordPressReviewComparison {
-        schema: WORDPRESS_COMPARISON_SCHEMA,
+        schema: if discovery_source_content.is_some() {
+            WORDPRESS_COMPARISON_SCHEMA_V2
+        } else {
+            WORDPRESS_COMPARISON_SCHEMA_V1
+        },
         status,
         reason,
         scope_assurance: "operator-declared",
         coverage,
         methodology,
         provenance,
+        discovery_source_content,
         components,
         advisories,
         interpretation_limits: [
@@ -473,6 +501,7 @@ fn compare_wordpress_reviews(
             "Simultaneous inventory, source, methodology, and applicability changes are listed without assigning cause.",
             "Applicability remains an imported declared-data result, not proof of exploitability or safety.",
             "A missing audit or reduced declaration changes coverage; it does not mean all WordPress issues disappeared.",
+            "Public metadata content is compared separately from collection outcomes; neither dimension authenticates installation state.",
         ],
     })
 }
@@ -784,6 +813,21 @@ fn write_wordpress_comparison_markdown(
         ("Provenance", &comparison.provenance),
     ] {
         output.push_fmt(format_args!("### {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    if let Some(facet) = &comparison.discovery_source_content {
+        output.push_str("### Discovery source content\n\n- Status: ")?;
         write_markdown_code_span(output, &facet.status)?;
         if !facet.changed_fields.is_empty() {
             output.push_str("\n- Changed fields: ")?;

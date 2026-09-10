@@ -64,6 +64,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "openapi_review",
             "rest_review",
             "wordpress_review",
+            "wordpress_discovery",
         ],
     )?;
     for (key, expected) in [
@@ -91,19 +92,38 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     }
     let mut optional_audits = BTreeMap::new();
     let mut wordpress_review = None;
+    let mut wordpress_discovery = None;
     for name in [
         "authorization_review",
         "openapi_review",
         "rest_review",
         "wordpress_review",
+        "wordpress_discovery",
     ] {
         if let Some(value) = root.get(name) {
-            let imported = audits::validate(name, value, &items)?;
-            if name == "wordpress_review" {
-                wordpress_review = imported;
+            if name == "wordpress_discovery" {
+                audits::validate_wordpress_discovery(value, &items)?;
+                wordpress_discovery = Some(value);
+            } else {
+                let imported = audits::validate(name, value, &items)?;
+                if name == "wordpress_review" {
+                    wordpress_review = imported;
+                }
             }
             optional_audits.insert(name.to_owned(), value.clone());
         }
+    }
+    let review_uses_discovery = root
+        .get("wordpress_review")
+        .map(object)
+        .transpose()?
+        .is_some_and(|review| string(review, "schema") == Ok("security.wordpress-review-audit/v7"));
+    check(review_uses_discovery == wordpress_discovery.is_some())?;
+    if let Some(discovery) = wordpress_discovery {
+        let wordpress = wordpress_review
+            .as_mut()
+            .ok_or(ComparisonError::InvalidDocument)?;
+        audits::attach_wordpress_discovery(wordpress, discovery)?;
     }
     // The existing renderer explicitly requires a REST audit for REST items.
     if items
@@ -118,6 +138,12 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     {
         check(optional_audits.contains_key("wordpress_review"))?;
     }
+    check(
+        !items
+            .values()
+            .any(|item| item.capability_id == super::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY)
+            || optional_audits.contains_key("wordpress_discovery"),
+    )?;
     Ok(ImportedDocument {
         metadata: SourceMetadata {
             sha256: format!("{:x}", Sha256::digest(bytes)),
@@ -250,6 +276,11 @@ fn item(value: &Value, subject_count: u64) -> Result<(String, ImportedItem), Com
     let subject = reference(string(fields, "subject_reference")?, "subject")?;
     check(u64::from(subject) < subject_count)?;
     let evidence = evidence(fields)?;
+    let observation_evidence_references = array(fields, "evidence_references")?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
     let claim_basis = token(
         fields,
         "claim_basis",
@@ -318,6 +349,7 @@ fn item(value: &Value, subject_count: u64) -> Result<(String, ImportedItem), Com
                 },
                 evidence,
             },
+            observation_evidence_references,
         },
     ))
 }

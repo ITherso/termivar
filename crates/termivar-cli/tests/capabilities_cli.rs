@@ -150,6 +150,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.wordpress-review"),
         states["wordpress-review"]
     );
+    assert_eq!(
+        surface_state(&document, "option.wordpress-discovery"),
+        states["wordpress-review"]
+    );
     let wordpress = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -186,6 +190,40 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         assert!(
             wordpress_limit.contains(required),
             "missing WordPress limitation `{required}`"
+        );
+    }
+    let wordpress_discovery = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.wordpress-discovery")
+        .expect("WordPress discovery surface");
+    assert_eq!(
+        wordpress_discovery["documentation"],
+        "docs/wordpress-review.md"
+    );
+    assert_eq!(wordpress_discovery["compile_feature"], "wordpress-review");
+    assert_eq!(
+        wordpress_discovery["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--wordpress-review",
+            "--wordpress-discovery"
+        ])
+    );
+    let discovery_limit = wordpress_discovery["limitation"]
+        .as_str()
+        .expect("WordPress discovery limitation");
+    for required in [
+        "at most 12",
+        "anonymous same-origin metadata GET requests",
+        "never enabled by --wordpress-review alone",
+        "Stable tag is not treated as an installed version",
+        "no exploit or impact validation",
+    ] {
+        assert!(
+            discovery_limit.contains(required),
+            "missing WordPress discovery limitation `{required}`"
         );
     }
     assert_eq!(
@@ -281,6 +319,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         ),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
         ("option.wordpress-review", "--wordpress-review"),
+        ("option.wordpress-discovery", "--wordpress-discovery"),
     ] {
         assert_eq!(
             surface_state(&document, key) == "compiled",

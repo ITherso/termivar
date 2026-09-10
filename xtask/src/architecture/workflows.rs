@@ -91,6 +91,7 @@ const RELEASE_SMOKE_OPTIONS: &[&str] = &[
     "--rest-review",
     "--authorization-review-policy",
     "--wordpress-review",
+    "--wordpress-discovery",
     "--wordpress-context",
     "--wordpress-advisories",
     "--wordpress-plugins-json",
@@ -201,6 +202,38 @@ const RELEASE_ACCEPTANCE_EVIDENCE: &str = r#"      - name: Upload bounded releas
           if-no-files-found: error
           retention-days: 30"#;
 const TESTS_WORKFLOW: &str = ".github/workflows/tests.yml";
+const FUZZ_WORKFLOW: &str = ".github/workflows/fuzz.yml";
+const WORDPRESS_DISCOVERY_FUZZ_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/wordpress_discovery.rs";
+const WORDPRESS_DISCOVERY_FUZZ_PRODUCT_JOB_PREFIX: &str = r#"  product-target-contract:
+    name: Termivar-owned seed replay and compile
+    if: github.event_name == 'pull_request'"#;
+const WORDPRESS_DISCOVERY_FUZZ_REPLAY_STEP: &str = r#"      - name: Replay committed semantic corpus
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_STRIP: "none"
+          RUSTFLAGS: "--cfg fuzzing"
+        run: cargo test --manifest-path fuzz/harness/Cargo.toml --locked"#;
+const WORDPRESS_DISCOVERY_FUZZ_NO_FEATURE_STEP: &str = r#"      - name: Check fuzz cfg without WordPress
+        env:
+          RUSTFLAGS: "--cfg fuzzing"
+        run: cargo check --locked -p termivar-scanner --no-default-features --features scanning"#;
+const WORDPRESS_DISCOVERY_FUZZ_COMPILE_STEP: &str = r#"      - name: Compile Termivar-owned targets
+        working-directory: fuzz
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_STRIP: "none"
+        shell: bash
+        run: |
+          for target in json_parser html_form_controls expression_semantics declarative_policy_wire decision_loop_authority oast_correlation native_oast_provider native_oast_adapter ssrf_oast_review wordpress_discovery; do
+            cargo fuzz build "$target"
+          done"#;
+const WORDPRESS_DISCOVERY_FUZZ_CAMPAIGN_JOB_PREFIX: &str = r#"  fuzz:
+    name: ${{ matrix.target }}
+    if: github.event_name != 'pull_request'"#;
+const WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY: &str = r#"          - target: wordpress_discovery
+            max_len: 524288
+            input_timeout: 5"#;
 const FIRST_USE_TEMP_PREFIX: &str = "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}";
 const REPORT_BUNDLE_SMOKE_GATE: &str = r#"      - name: Exercise single-run report bundle CLI
         run: cargo test --locked -p termivar-cli --test report_bundle_cli"#;
@@ -212,6 +245,8 @@ const PROGRESS_SMOKE_GATE: &str = r#"      - name: Exercise opt-in live progress
         run: cargo test --locked -p termivar-cli --test progress_cli"#;
 const WORDPRESS_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in WordPress review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_review_cli -- --nocapture"#;
+const WORDPRESS_DISCOVERY_SMOKE_GATE: &str = r#"      - name: Exercise opt-in WordPress discovery CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture"#;
 const WORDPRESS_RESOURCE_ACCEPTANCE_JOB: &str = r#"  wordpress-resource-acceptance:
     name: WordPress Resource Acceptance
     runs-on: ubuntu-latest
@@ -267,6 +302,67 @@ const WORDPRESS_RESOURCE_ACCEPTANCE_JOB: &str = r#"  wordpress-resource-acceptan
           path: |
             ${{ runner.temp }}/termivar-wordpress-resource-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-resource-acceptance.json
             ${{ runner.temp }}/termivar-wordpress-resource-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-resource-acceptance.md
+          if-no-files-found: error
+          retention-days: 30"#;
+const WORDPRESS_DISCOVERY_LAB_JOB: &str = r#"  wordpress-discovery-lab:
+    name: WordPress Discovery Lab
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Test pinned WordPress discovery lab contracts
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s scripts/tests -p test_wordpress_discovery_lab_acceptance.py
+          python scripts/wordpress_discovery_lab_acceptance.py --validate-only
+      - name: Inspect approved container runtime
+        run: |
+          set -euo pipefail
+          docker version
+          test "$(docker info --format '{{.Architecture}}')" = x86_64
+      - name: Build feature-minimal WordPress discovery CLI
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-discovery-target-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test ! -e "$CARGO_TARGET_DIR"
+          cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review
+      - name: Accept discovery against pinned disposable WordPress
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-discovery-target-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/termivar-wordpress-discovery-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$evidence_dir"
+          test -x "$CARGO_TARGET_DIR/release/termivar"
+          python scripts/wordpress_discovery_lab_acceptance.py \
+            --binary "$CARGO_TARGET_DIR/release/termivar" \
+            --output-dir "$evidence_dir" \
+            --source-ref "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --expect-version 0.10.0-alpha.3
+      - name: Upload bounded real-WordPress acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wordpress-discovery-lab-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/termivar-wordpress-discovery-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-discovery-lab-acceptance.json
+            ${{ runner.temp }}/termivar-wordpress-discovery-evidence-${{ github.run_id }}-${{ github.run_attempt }}/wordpress-discovery-lab-acceptance.md
           if-no-files-found: error
           retention-days: 30"#;
 const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capabilities matrix
@@ -558,9 +654,12 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(capabilities_workflow_policy_violations(&files));
     violations.extend(progress_workflow_policy_violations(&files));
     violations.extend(wordpress_review_workflow_policy_violations(&files));
+    violations.extend(wordpress_discovery_workflow_policy_violations(&files));
     violations.extend(wordpress_resource_acceptance_workflow_policy_violations(
         &files,
     ));
+    violations.extend(wordpress_discovery_lab_workflow_policy_violations(&files));
+    violations.extend(wordpress_discovery_fuzz_workflow_policy_violations(&files));
     violations.extend(release_acceptance_test_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
     violations.extend(coverage_workflow_policy_violations(
@@ -710,6 +809,27 @@ fn wordpress_review_workflow_policy_violations(files: &[(String, String)]) -> Ve
     }
 }
 
+fn wordpress_discovery_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed WordPress-discovery runtime-smoke workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    if job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise opt-in WordPress discovery CLI",
+        WORDPRESS_DISCOVERY_SMOKE_GATE,
+    ) {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{TESTS_WORKFLOW}: three-platform runtime smoke must compile and run the exact feature-minimal WordPress-discovery CLI integration test"
+        )]
+    }
+}
+
 fn wordpress_resource_acceptance_workflow_policy_violations(
     files: &[(String, String)],
 ) -> Vec<String> {
@@ -727,6 +847,120 @@ fn wordpress_resource_acceptance_workflow_policy_violations(
             "{TESTS_WORKFLOW}: WordPress resource acceptance must match the exact Linux-only, Rust 1.88, feature-minimal, isolated-target, unsuppressed measurement and bounded-evidence contract"
         )]
     }
+}
+
+fn wordpress_discovery_lab_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed WordPress discovery-lab workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let jobs = named_job_blocks(&normalized, "wordpress-discovery-lab");
+    if jobs.as_slice() == [WORDPRESS_DISCOVERY_LAB_JOB] {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{TESTS_WORKFLOW}: WordPress discovery lab must match the exact pinned-image, loopback-only, Rust 1.88, feature-minimal, unsuppressed real-CMS acceptance and bounded-evidence contract"
+        )]
+    }
+}
+
+fn wordpress_discovery_fuzz_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == FUZZ_WORKFLOW) else {
+        return vec![format!(
+            "{FUZZ_WORKFLOW}: reviewed WordPress discovery fuzz workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let mut violations = Vec::new();
+
+    let source_trigger_count = release_push_paths(&normalized).map_or(0, |paths| {
+        paths
+            .iter()
+            .filter(|path| {
+                path.strip_prefix('"')
+                    .and_then(|path| path.strip_suffix('"'))
+                    == Some(WORDPRESS_DISCOVERY_FUZZ_SOURCE)
+            })
+            .count()
+    });
+    if source_trigger_count != 1 {
+        violations.push(format!(
+            "{FUZZ_WORKFLOW}: push paths must trigger exactly once for `{WORDPRESS_DISCOVERY_FUZZ_SOURCE}`"
+        ));
+    }
+
+    let product_jobs = named_job_blocks(&normalized, "product-target-contract");
+    let product_job = match product_jobs.as_slice() {
+        [job] if job.starts_with(WORDPRESS_DISCOVERY_FUZZ_PRODUCT_JOB_PREFIX) => Some(job),
+        _ => {
+            violations.push(format!(
+                "{FUZZ_WORKFLOW}: WordPress discovery fuzz seed/compile job must retain its exact protected status name and pull-request condition"
+            ));
+            None
+        },
+    };
+    if product_job.is_none_or(|job| {
+        !job_has_exact_step(
+            &format!("jobs:\n{job}"),
+            "product-target-contract",
+            "Replay committed semantic corpus",
+            WORDPRESS_DISCOVERY_FUZZ_REPLAY_STEP,
+        )
+    }) {
+        violations.push(format!(
+            "{FUZZ_WORKFLOW}: WordPress discovery owned-seed replay must run unsuppressed with exact `RUSTFLAGS=--cfg fuzzing`"
+        ));
+    }
+    if product_job.is_none_or(|job| {
+        !job_has_exact_step(
+            &format!("jobs:\n{job}"),
+            "product-target-contract",
+            "Check fuzz cfg without WordPress",
+            WORDPRESS_DISCOVERY_FUZZ_NO_FEATURE_STEP,
+        )
+    }) {
+        violations.push(format!(
+            "{FUZZ_WORKFLOW}: fuzz cfg must compile without WordPress through the exact no-default-features scanning boundary"
+        ));
+    }
+    if product_job.is_none_or(|job| {
+        !job_has_exact_step(
+            &format!("jobs:\n{job}"),
+            "product-target-contract",
+            "Compile Termivar-owned targets",
+            WORDPRESS_DISCOVERY_FUZZ_COMPILE_STEP,
+        )
+    }) {
+        violations.push(format!(
+            "{FUZZ_WORKFLOW}: Termivar-owned target compilation must include the exact WordPress discovery fuzz target"
+        ));
+    }
+
+    let campaign_jobs = named_job_blocks(&normalized, "fuzz");
+    let campaign_job = match campaign_jobs.as_slice() {
+        [job] if job.starts_with(WORDPRESS_DISCOVERY_FUZZ_CAMPAIGN_JOB_PREFIX) => Some(job),
+        _ => {
+            violations.push(format!(
+                "{FUZZ_WORKFLOW}: WordPress discovery fuzz campaign must retain its exact matrix status name and non-pull-request condition"
+            ));
+            None
+        },
+    };
+    if campaign_job.is_none_or(|job| {
+        job.matches(WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY).count() != 1
+            || normalized
+                .matches(WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY)
+                .count()
+                != 1
+    }) {
+        violations.push(format!(
+            "{FUZZ_WORKFLOW}: fuzz matrix must include exactly one bounded WordPress discovery campaign"
+        ));
+    }
+
+    violations
 }
 
 fn release_acceptance_test_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
@@ -2307,6 +2541,47 @@ mod tests {
     }
 
     #[test]
+    fn repository_wordpress_discovery_smoke_is_feature_minimal_and_exact_on_all_platforms() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations = wordpress_discovery_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                fixture,
+            )]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn wordpress_discovery_smoke_rejects_omission_widening_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(WORDPRESS_DISCOVERY_SMOKE_GATE, "", 1),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_SMOKE_GATE,
+                "      - name: Exercise opt-in WordPress discovery CLI\n        run: cargo test --locked -p termivar-cli --all-features --test wordpress_discovery_cli -- --nocapture",
+                1,
+            ),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_SMOKE_GATE,
+                &format!("{WORDPRESS_DISCOVERY_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations = wordpress_discovery_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                mutation,
+            )]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("WordPress-discovery"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
     fn repository_wordpress_resource_acceptance_is_exact() {
         let contents = include_str!("../../../.github/workflows/tests.yml");
         for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
@@ -2401,6 +2676,190 @@ mod tests {
             assert!(
                 violations[0].contains("WordPress resource acceptance"),
                 "{from}: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_wordpress_discovery_lab_is_exact() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations = wordpress_discovery_lab_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                fixture,
+            )]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn wordpress_discovery_lab_rejects_scope_and_evidence_mutations() {
+        let violations = wordpress_discovery_lab_workflow_policy_violations(&[]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert!(valid.contains(WORDPRESS_DISCOVERY_LAB_JOB));
+        for (from, to) in [
+            (
+                "python scripts/wordpress_discovery_lab_acceptance.py --validate-only",
+                "python scripts/wordpress_discovery_lab_acceptance.py --help",
+            ),
+            ("          docker version", "          docker --version"),
+            (
+                "          test \"$(docker info --format '{{.Architecture}}')\" = x86_64",
+                "          true",
+            ),
+            (
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review",
+                "cargo +1.88.0 build --release --locked -p termivar-cli --all-features",
+            ),
+            (
+                "      - name: Accept discovery against pinned disposable WordPress\n        env:",
+                "      - name: Accept discovery against pinned disposable WordPress\n        continue-on-error: true\n        env:",
+            ),
+            ("          if-no-files-found: error", "          if-no-files-found: warn"),
+        ] {
+            let mutated_job = WORDPRESS_DISCOVERY_LAB_JOB.replacen(from, to, 1);
+            assert_ne!(
+                mutated_job, WORDPRESS_DISCOVERY_LAB_JOB,
+                "mutation must alter the reviewed job: {from}"
+            );
+            let mutation = valid.replacen(WORDPRESS_DISCOVERY_LAB_JOB, &mutated_job, 1);
+            let violations = wordpress_discovery_lab_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                mutation,
+            )]);
+            assert_eq!(violations.len(), 1, "{from}: {violations:?}");
+            assert!(
+                violations[0].contains("WordPress discovery lab"),
+                "{from}: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_wordpress_discovery_fuzz_contract_is_exact() {
+        let contents = include_str!("../../../.github/workflows/fuzz.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations = wordpress_discovery_fuzz_workflow_policy_violations(&[(
+                FUZZ_WORKFLOW.to_owned(),
+                fixture,
+            )]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn wordpress_discovery_fuzz_rejects_trigger_job_cfg_and_matrix_drift() {
+        let violations = wordpress_discovery_fuzz_workflow_policy_violations(&[]);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+
+        let valid = include_str!("../../../.github/workflows/fuzz.yml").replace("\r\n", "\n");
+        let mut mutations = vec![
+            valid.replacen(
+                &format!("      - \"{WORDPRESS_DISCOVERY_FUZZ_SOURCE}\""),
+                "      - \"crates/termivar-scanner/src/web_runtime/wordpress_runtime.rs\"",
+                1,
+            ),
+            valid.replacen(
+                "    name: Termivar-owned seed replay and compile",
+                "    name: Termivar-owned compile",
+                1,
+            ),
+            valid.replacen(
+                "    if: github.event_name == 'pull_request'",
+                "    if: github.event_name != 'pull_request'",
+                1,
+            ),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_FUZZ_REPLAY_STEP,
+                &WORDPRESS_DISCOVERY_FUZZ_REPLAY_STEP.replacen(
+                    "          RUSTFLAGS: \"--cfg fuzzing\"\n",
+                    "",
+                    1,
+                ),
+                1,
+            ),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_FUZZ_NO_FEATURE_STEP,
+                &WORDPRESS_DISCOVERY_FUZZ_NO_FEATURE_STEP.replacen(
+                    "--no-default-features --features scanning",
+                    "--no-default-features --features wordpress-review",
+                    1,
+                ),
+                1,
+            ),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_FUZZ_NO_FEATURE_STEP,
+                &WORDPRESS_DISCOVERY_FUZZ_NO_FEATURE_STEP.replacen(" --no-default-features", "", 1),
+                1,
+            ),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_FUZZ_COMPILE_STEP,
+                &WORDPRESS_DISCOVERY_FUZZ_COMPILE_STEP.replacen(
+                    " ssrf_oast_review wordpress_discovery;",
+                    " ssrf_oast_review;",
+                    1,
+                ),
+                1,
+            ),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY,
+                &WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY.replacen(
+                    "wordpress_discovery",
+                    "wordpress_metadata",
+                    1,
+                ),
+                1,
+            ),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY,
+                &WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY.replacen("524288", "1048576", 1),
+                1,
+            ),
+            valid.replacen(
+                "    name: ${{ matrix.target }}",
+                "    name: Fuzz ${{ matrix.target }}",
+                1,
+            ),
+            valid.replacen(
+                "    if: github.event_name != 'pull_request'",
+                "    if: github.event_name == 'schedule'",
+                1,
+            ),
+            valid.replacen(
+                WORDPRESS_DISCOVERY_FUZZ_REPLAY_STEP,
+                &format!("{WORDPRESS_DISCOVERY_FUZZ_REPLAY_STEP}\n        continue-on-error: true"),
+                1,
+            ),
+        ];
+        mutations.push(valid.replacen(
+            &format!("      - \"{WORDPRESS_DISCOVERY_FUZZ_SOURCE}\""),
+            &format!(
+                "      - \"{WORDPRESS_DISCOVERY_FUZZ_SOURCE}\"\n      - \"{WORDPRESS_DISCOVERY_FUZZ_SOURCE}\""
+            ),
+            1,
+        ));
+        mutations.push(valid.replacen(
+            WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY,
+            &format!(
+                "{WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY}\n{WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY}"
+            ),
+            1,
+        ));
+
+        for mutation in mutations {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations = wordpress_discovery_fuzz_workflow_policy_violations(&[(
+                FUZZ_WORKFLOW.to_owned(),
+                mutation,
+            )]);
+            assert!(!violations.is_empty(), "mutation unexpectedly passed");
+            assert!(
+                violations
+                    .iter()
+                    .any(|violation| violation.contains("fuzz")),
+                "{violations:?}"
             );
         }
     }
@@ -3244,6 +3703,16 @@ mod tests {
             release_workflow_policy_violations(&[(path.clone(), missing_smoke)])
                 .iter()
                 .any(|violation| violation.contains("--graphql-review"))
+        );
+
+        let missing_discovery = valid.replacen("unix smoke --wordpress-discovery\n", "", 1);
+        assert!(
+            release_workflow_policy_violations(&[(path.clone(), missing_discovery)])
+                .iter()
+                .any(|violation| {
+                    violation.contains("--wordpress-discovery")
+                        && violation.contains("found 1 checks")
+                })
         );
 
         let missing_target = valid.replacen("target: aarch64-apple-darwin\n", "", 1);

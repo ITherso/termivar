@@ -4,7 +4,10 @@ The optional `wordpress-review` feature adds bounded WordPress-specific
 interpretation to the existing `web-review` assessment. It does not start a
 WordPress-specific scanner. It interprets signals from the root HTML response
 that the assessment already obtained, plus explicitly supplied local context
-and advisory data. Enabling it adds no target or provider requests.
+and advisory data. Selecting `--wordpress-review` alone adds no target or
+provider requests. The separate `--wordpress-discovery` switch described below
+explicitly authorizes a small bounded set of additional anonymous metadata
+GETs through the same assessment broker.
 
 This feature remains absent from the ordinary default build. The current
 untagged `0.10.0-alpha.3` development `release-bundle` compiles it as a Preview;
@@ -61,6 +64,110 @@ contradiction separate. Repetition is not treated as independent evidence, and
 no declaration wins merely because it was seen last. V1 retains its numeric
 conflict rules; V2 decides semantic equivalence or conflict separately under
 each record's explicit comparison profile.
+
+## Explicit public-metadata discovery
+
+Current development builds compiled with `wordpress-review` expose a separate
+Preview option:
+
+```bash
+termivar scan http://127.0.0.1:8088/ \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-discovery \
+  --progress \
+  --report-dir assessment-wordpress-discovery
+```
+
+The numeric loopback address is illustrative and assumes an already running,
+operator-authorized fixture. Termivar does not start WordPress. The discovery
+option requires the explicit review and `web-review` profile; merely compiling
+the feature or selecting `--wordpress-review` does not enable network work.
+
+When selected, discovery freezes candidates from structured links in the
+committed root response and sends only anonymous, bodyless GETs through the
+existing exact-origin broker. It does not inherit Authorization, Cookie, or
+proxy credentials, and the discovery-only client does not use ambient proxy
+configuration. Redirects and retries remain disabled. The WordPress
+narrowing policy admits at most 12 wire attempts: one advertised REST index,
+three theme stylesheets including at most one parent edge, and eight plugin
+readmes. It is sequential, retains at most 32 candidates, records when a later
+parent-theme declaration could not fit that cap, and has fixed
+per-response and aggregate byte ceilings underneath the existing assessment
+request, response, deadline, and cancellation limits. An attempt and a
+completed, parsed, committed source are reported separately. As with the
+parent broker, a delivered transport chunk can cross a retained-byte threshold
+before cancellation; the ceilings are not described as a perfect wire cutoff.
+
+Candidates are evidence-derived, not a wordlist:
+
+- a `Link` header or HTML link whose exact relation is
+  `https://api.w.org/` can nominate the same-origin REST root;
+- a structured same-origin asset under
+  `wp-content/themes/<slug>/...` can nominate only that theme's root
+  `style.css`;
+- a structured same-origin asset under
+  `wp-content/plugins/<slug>/...` can nominate only that plugin's root
+  `readme.txt`;
+- a valid child-theme `Template` header can nominate one same-root parent
+  stylesheet at depth one.
+
+The REST query form is closed: the current WordPress source emits
+`/index.php?rest_route=/` when pretty permalinks are disabled. The historical
+handbook illustration `/?rest_route=/` remains useful context, but the current
+core form is exercised by the pinned real-CMS lab. Extra or duplicate query
+parameters, other routes, userinfo, fragments, encoded separators/traversal,
+foreign origins, and a different loopback port are rejected. Termivar fetches
+the REST index only; it does not traverse users, posts, settings, authentication
+links, registered routes, or an API namespace.
+
+The REST index retains only a bounded list of namespaces. `wp/v2` means core
+REST endpoint support, not WordPress 2.x. A namespace such as
+`termivar-lab/v1` is a protocol namespace and is neither a reliable plugin
+directory identity nor an installed plugin version.
+
+A theme stylesheet is interpreted from its bounded initial header section.
+The identity remains the validated source path. `Version` is the served
+artifact's declaration; `Template` is a parent-directory declaration; and
+`Requires at least`, `Tested up to`, and `Requires PHP` are compatibility
+statements, not installed core/PHP versions. A served file can be copied,
+cached, or stale, so even a valid declaration is source-qualified observation,
+not authenticated installation or patch state.
+
+A plugin readme contributes its display header, requirements, and Stable tag.
+The Stable tag identifies a distribution/repository release pointer. It is
+never inserted into the installed-version evidence collection, even if its
+spelling is a supported version. Termivar does not fetch plugin PHP entrypoints
+or inspect server source to fill that gap. `trunk` and unsupported tags remain
+nonversion hints.
+
+The additive top-level `security.wordpress-discovery-audit/v1` records the
+selection policy, anonymous GET method, seed/candidate/attempt/completion/commit
+counts, accounted response bytes, outcomes, typed metadata, and evidence
+reference counts. A discovery-influenced review uses the additive strict
+`security.wordpress-review-audit/v7` wrapper. Its required
+`review_basis_schema` preserves which v1–v6 evaluation contract supplied the
+review facts, while `additional_request_count` records the actual discovery
+attempt count. With discovery absent, historical v1–v6 output stays unchanged
+and retains `additional_request_count=0`. Current Compare/Verify readers accept
+the coordinated v7 review and top-level discovery audit without compiling the
+producer feature. Compare applies the recorded review basis to component and
+advisory semantics while treating collection policy and request coverage as
+separate dimensions. A review-only versus discovery comparison is therefore
+not a newly introduced vulnerability or remediation.
+
+No eligible source, a 404, unsupported content, throttling, truncation, or a
+budget/deadline stop remains visible as limited collection. It is never a
+secure/clean result. Generator absence after an operator or plugin suppresses
+it likewise remains unknown. Discovery can supply a source-qualified theme
+version to the existing advisory evaluator, but a range match still does not
+establish authenticated installation, exploitability, impact, or remediation.
+`exploit_execution` and `impact_validation` remain `not_performed`.
+
+The disposable real-WordPress acceptance design, independent WP-CLI ground
+truth, exact four-request delta, pinned image identities, and licensing notes
+are in the
+[`discovery-lab` example](examples/wordpress-review/discovery-lab/README.md).
 
 ## Operator context
 
@@ -643,7 +750,7 @@ between them. If one report has no WordPress audit, the result is
 new vulnerability or a resolved condition. The same claim limit applies to an
 advisory disappearance or applicability transition.
 
-Supported `security.wordpress-review-audit/v1` through `/v6` inputs are
+Supported `security.wordpress-review-audit/v1` through `/v7` inputs are
 interpreted to the historical depth each contract actually contains; later
 coverage or provenance fields are not invented for earlier versions. An exact
 input SHA-256 identifies bytes, while semantic comparison uses validated typed
@@ -668,6 +775,12 @@ Verify readers validate v6 strictly without scanning, network access, or
 granting imported data runtime authority. They recompute only document-internal
 mapping, range, and profile consistency from the imported display data so
 contradictory saved claims are rejected.
+
+For v7, the required v1–v6 review basis continues to control those same
+component and advisory checks. The wrapper adds the selected discovery policy,
+candidate/source coverage, and exact attempt accounting as methodology and
+coverage facts. An older binary that predates v7 cannot be assumed to read a
+v7 document even though the underlying basis is historical.
 
 ## Result and claim limits
 
@@ -712,10 +825,21 @@ command starts a scan or adds network requests.
 
 The existing development references were reviewed on 2026-09-06. The pinned
 PHP implementation reference for the comparison profiles was additionally
-reviewed on 2026-09-07:
+reviewed on 2026-09-07. The public-metadata discovery references were reviewed
+on 2026-09-10:
 
 - WordPress generator function reference:
   <https://developer.wordpress.org/reference/functions/get_the_generator/>
+- WordPress REST API discovery relation:
+  <https://developer.wordpress.org/rest-api/using-the-rest-api/discovery/>
+- Current `get_rest_url()` implementation, including the no-pretty-permalink
+  `index.php` form:
+  <https://developer.wordpress.org/reference/functions/get_rest_url/>
+- Theme main stylesheet and bounded file-header behavior:
+  <https://developer.wordpress.org/themes/core-concepts/main-stylesheet/>
+  and <https://developer.wordpress.org/reference/functions/get_file_data/>
+- Plugin readme and Stable tag semantics:
+  <https://developer.wordpress.org/plugins/wordpress-org/how-your-readme-txt-works/>
 - WP-CLI plugin inventory fields and states:
   <https://developer.wordpress.org/cli/commands/plugin/list/>
 - WP-CLI theme inventory fields and states:

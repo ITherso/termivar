@@ -277,7 +277,18 @@ that receipt in `unverified_evidence()` and does not synthesize an outcome.
 
 `HttpEvidencePolicy::max_body_bytes` remains a per-response retention ceiling. `RuntimeBudget::max_response_bytes` is the session-wide threshold for response-body bytes delivered to broker collection. Metered collectors share one response-read gate and recheck the remaining allowance before every read. Every complete received chunk is charged before its bounded prefix is exposed to the executor. The one serialized chunk that reveals a crossing can make usage exceed the threshold; retention stays capped, no collector starts another body read, and the same turn terminates with a typed `ResponseBytes` limit. Evidence already committed by that turn remains in bootstrap or `unverified_evidence`, before verification or Experience updates. Bytes also remain charged when a later read fails, times out, or is cancelled. Content-Length, headers, framing, and unread bytes after collection stops are excluded.
 
-All built-in HTTP executors installed by `StandardWebDecisionRuntime` share one broker, one redirect-disabled and implicit-retry-disabled client, and one accounting authority. Bootstrap, planned, adaptive, retry, and active-verification dispatches therefore compete for the same atomic envelope. Redirect responses consume the request that produced them but are not followed. Semantic retries re-enter the broker and acquire a fresh lease. Low-level callers that construct and run an arbitrary `DecisionActionExecutor` outside this standard runtime remain responsible for their own transport policy and accounting.
+All built-in HTTP executors installed by `StandardWebDecisionRuntime` and the
+explicit WordPress metadata-discovery child share one broker and one accounting
+authority. The broker owns two fixed redirect-disabled, retry-disabled clients:
+the established general client and a narrower no-proxy client used only for the
+closed anonymous WordPress metadata GET shape. Bootstrap, planned, adaptive,
+retry, active-verification, and opted-in metadata dispatches therefore compete
+for the same atomic envelope. Redirect responses consume the request that
+produced them but are not followed. Semantic retries re-enter the broker and
+acquire a fresh lease; WordPress metadata discovery never retries. Low-level
+callers that construct and run an arbitrary `DecisionActionExecutor` outside
+this standard runtime remain responsible for their own transport policy and
+accounting.
 
 No-progress accounting ignores raw evidence IDs, timing changes, retry case IDs, and experience inserts. A completed execution turn resets the counter only when it inserts or updates a hypothesis, escalates passive verification to an active probe, or reaches a terminal Success/FalsePositive/ConfirmedNegative result. A knowledge-only Success therefore still records objective progress even though it transitions no hypothesis. When the configured count is reached, the next command is not dispatched.
 

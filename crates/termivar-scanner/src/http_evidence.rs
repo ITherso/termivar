@@ -16,7 +16,7 @@
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-#[cfg(test)]
+#[cfg(any(test, all(fuzzing, feature = "wordpress-review")))]
 use reqwest::header::HeaderValue;
 use reqwest::{header::HeaderMap, header::HeaderName, StatusCode, Url};
 use sha2::{Digest, Sha256};
@@ -79,6 +79,20 @@ const MAX_HTTP_QUERY_PAYLOAD_PARAMETER_BYTES: usize = 64;
 const MAX_ASSESSMENT_DEFENSE_HEADER_OCCURRENCES: usize = 8;
 const MAX_ASSESSMENT_DEFENSE_HEADER_VALUE_BYTES: usize = 1024;
 const MAX_ASSESSMENT_DEFENSE_COOKIE_NAME_BYTES: usize = 256;
+#[cfg(feature = "wordpress-review")]
+const MAX_WORDPRESS_LINK_HEADER_OCCURRENCES: usize = 4;
+#[cfg(feature = "wordpress-review")]
+const MAX_WORDPRESS_LINK_HEADER_BYTES: usize = 4 * 1024;
+
+/// Bounded projection of an advertised WordPress REST index. Raw `Link`
+/// values never cross the HTTP evidence boundary.
+#[cfg(feature = "wordpress-review")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WordPressRestIndexAdvertisement {
+    Missing,
+    Candidate(Url),
+    InvalidOrAmbiguous,
+}
 
 /// Configuration and execution failures for HTTP evidence collection.
 #[derive(Debug, Error)]
@@ -912,6 +926,9 @@ impl HttpEvidenceExecutor {
             let passive_response_projection = project_passive_response(&response.headers);
             let review_response_projection =
                 review_response::project_review_response(probe, &response.headers);
+            #[cfg(feature = "wordpress-review")]
+            let wordpress_rest_index_advertisement =
+                project_wordpress_rest_index_advertisement(probe.url(), &response.headers);
             let evidence_id = |predicate: termivar_core::PredicateDescriptor| {
                 let predicate = predicate.into_knowledge();
                 evidence
@@ -952,6 +969,8 @@ impl HttpEvidenceExecutor {
                 ),
                 passive_response_projection: &passive_response_projection,
                 review_response_projection: &review_response_projection,
+                #[cfg(feature = "wordpress-review")]
+                wordpress_rest_index_advertisement: &wordpress_rest_index_advertisement,
             };
             evidence.extend(observer.observe(observation)?);
         }
@@ -1098,6 +1117,8 @@ pub(crate) struct CompleteHttpResponseObservation<'a> {
     response_body_digest_evidence_id: Option<&'a termivar_core::EvidenceId>,
     passive_response_projection: &'a PassiveResponseProjection,
     review_response_projection: &'a review_response::ReviewResponseProjection,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_rest_index_advertisement: &'a WordPressRestIndexAdvertisement,
 }
 
 impl CompleteHttpResponseObservation<'_> {
@@ -1206,6 +1227,13 @@ impl CompleteHttpResponseObservation<'_> {
     ) -> &review_response::ReviewResponseProjection {
         self.review_response_projection
     }
+
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) const fn wordpress_rest_index_advertisement(
+        &self,
+    ) -> &WordPressRestIndexAdvertisement {
+        self.wordpress_rest_index_advertisement
+    }
 }
 
 #[cfg(test)]
@@ -1240,6 +1268,9 @@ pub(crate) struct CompleteHttpResponseObservationTestInput<'a> {
 pub(crate) fn complete_http_response_observation_for_test<'a>(
     input: CompleteHttpResponseObservationTestInput<'a>,
 ) -> CompleteHttpResponseObservation<'a> {
+    #[cfg(feature = "wordpress-review")]
+    static MISSING_WORDPRESS_REST_INDEX: WordPressRestIndexAdvertisement =
+        WordPressRestIndexAdvertisement::Missing;
     CompleteHttpResponseObservation {
         case_id: input.case_id,
         action_id: input.action_id,
@@ -1267,6 +1298,8 @@ pub(crate) fn complete_http_response_observation_for_test<'a>(
         review_response_projection: input
             .review_response_projection
             .unwrap_or(&EMPTY_REVIEW_RESPONSE_PROJECTION),
+        #[cfg(feature = "wordpress-review")]
+        wordpress_rest_index_advertisement: &MISSING_WORDPRESS_REST_INDEX,
     }
 }
 
@@ -1300,6 +1333,234 @@ fn joined_header(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_owned)
         .collect();
     (!values.is_empty()).then(|| values.join(", "))
+}
+
+#[cfg(feature = "wordpress-review")]
+fn project_wordpress_rest_index_advertisement(
+    document_url: &Url,
+    headers: &HeaderMap,
+) -> WordPressRestIndexAdvertisement {
+    let values = headers.get_all("link").iter().collect::<Vec<_>>();
+    if values.is_empty() {
+        return WordPressRestIndexAdvertisement::Missing;
+    }
+    if values.len() > MAX_WORDPRESS_LINK_HEADER_OCCURRENCES {
+        return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+    }
+    let mut total = 0_usize;
+    let mut selected: Option<Url> = None;
+    for value in values {
+        let Ok(value) = value.to_str() else {
+            return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+        };
+        total = match total.checked_add(value.len()) {
+            Some(total) if total <= MAX_WORDPRESS_LINK_HEADER_BYTES => total,
+            _ => return WordPressRestIndexAdvertisement::InvalidOrAmbiguous,
+        };
+        let Some(parts) = split_http_link_value(value) else {
+            return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+        };
+        for part in parts {
+            let part = part.trim();
+            let Some(rest) = part.strip_prefix('<') else {
+                continue;
+            };
+            let Some(target_end) = rest.find('>') else {
+                return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+            };
+            let Some(target) = rest.get(..target_end).filter(|target| !target.is_empty()) else {
+                return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+            };
+            let Some(parameters) = rest.get(target_end.saturating_add(1)..) else {
+                return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+            };
+            let mut is_wordpress_relation = false;
+            let mut saw_relation_parameter = false;
+            let Some(parameters) = split_http_link_parameters(parameters) else {
+                return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+            };
+            for parameter in parameters
+                .into_iter()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+            {
+                let Some((name, raw_value)) = parameter.split_once('=') else {
+                    continue;
+                };
+                if !name.trim().eq_ignore_ascii_case("rel") {
+                    continue;
+                }
+                if saw_relation_parameter {
+                    return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+                }
+                saw_relation_parameter = true;
+                let raw_value = raw_value.trim();
+                let relation = raw_value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+                    .unwrap_or(raw_value);
+                is_wordpress_relation = relation
+                    .split_ascii_whitespace()
+                    .any(|item| item == "https://api.w.org/");
+            }
+            if !is_wordpress_relation {
+                continue;
+            }
+            let Some(candidate) = admitted_wordpress_rest_index(document_url, target) else {
+                return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+            };
+            if selected
+                .as_ref()
+                .is_some_and(|existing| existing != &candidate)
+            {
+                return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+            }
+            selected = Some(candidate);
+        }
+    }
+    selected.map_or(
+        WordPressRestIndexAdvertisement::Missing,
+        WordPressRestIndexAdvertisement::Candidate,
+    )
+}
+
+#[cfg(all(fuzzing, feature = "wordpress-review"))]
+pub(crate) fn fuzz_wordpress_rest_index_advertisement(
+    document_url: &Url,
+    value: &[u8],
+) -> WordPressRestIndexAdvertisement {
+    let mut headers = HeaderMap::new();
+    let Ok(value) = HeaderValue::from_bytes(value) else {
+        return WordPressRestIndexAdvertisement::InvalidOrAmbiguous;
+    };
+    headers.insert("link", value);
+    let first = project_wordpress_rest_index_advertisement(document_url, &headers);
+    let repeated = project_wordpress_rest_index_advertisement(document_url, &headers);
+    assert_eq!(first, repeated, "Link projection must be deterministic");
+    if let WordPressRestIndexAdvertisement::Candidate(candidate) = &first {
+        assert_eq!(candidate.origin(), document_url.origin());
+        assert!(candidate.username().is_empty());
+        assert!(candidate.password().is_none());
+        assert!(candidate.fragment().is_none());
+        if candidate.path() == "/wp-json/" {
+            assert!(candidate.query().is_none());
+        } else {
+            assert!(matches!(candidate.path(), "/" | "/index.php"));
+            assert!(candidate
+                .query()
+                .is_some_and(wordpress_rest_route_query_is_admitted));
+        }
+    }
+    first
+}
+
+#[cfg(feature = "wordpress-review")]
+fn split_http_link_value(value: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0_usize;
+    let mut quoted = false;
+    let mut angled = false;
+    for (index, byte) in value.bytes().enumerate() {
+        match byte {
+            b'"' if !angled => quoted = !quoted,
+            b'<' if !quoted && !angled => angled = true,
+            b'>' if !quoted && angled => angled = false,
+            b',' if !quoted && !angled => {
+                parts.push(&value[start..index]);
+                start = index.saturating_add(1);
+            },
+            b'\\' | 0..=31 | 127 => return None,
+            _ => {},
+        }
+    }
+    if quoted || angled {
+        return None;
+    }
+    parts.push(&value[start..]);
+    Some(parts)
+}
+
+#[cfg(feature = "wordpress-review")]
+fn split_http_link_parameters(value: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0_usize;
+    let mut quoted = false;
+    for (index, byte) in value.bytes().enumerate() {
+        match byte {
+            b'"' => quoted = !quoted,
+            b';' if !quoted => {
+                parts.push(&value[start..index]);
+                start = index.saturating_add(1);
+            },
+            b'\\' | 0..=31 | 127 => return None,
+            _ => {},
+        }
+    }
+    if quoted {
+        return None;
+    }
+    parts.push(&value[start..]);
+    Some(parts)
+}
+
+#[cfg(feature = "wordpress-review")]
+fn admitted_wordpress_rest_index(document_url: &Url, reference: &str) -> Option<Url> {
+    let reference = reference.trim();
+    if !wordpress_reference_path_is_safe(reference) {
+        return None;
+    }
+    let candidate = document_url.join(reference).ok()?;
+    if !matches!(candidate.scheme(), "http" | "https")
+        || !candidate.username().is_empty()
+        || candidate.password().is_some()
+        || candidate.fragment().is_some()
+        || candidate.origin() != document_url.origin()
+    {
+        return None;
+    }
+    if candidate.path() == "/wp-json/" && candidate.query().is_none() {
+        return Some(candidate);
+    }
+    if !matches!(candidate.path(), "/" | "/index.php") {
+        return None;
+    }
+    let raw_query = candidate.query()?;
+    wordpress_rest_route_query_is_admitted(raw_query).then_some(candidate)
+}
+
+/// Admits only the exact documented root route spelling and one deliberately
+/// supported percent-encoded slash. Decoding the key first would incorrectly
+/// turn alternate raw spellings into request authority.
+#[cfg(feature = "wordpress-review")]
+pub(crate) fn wordpress_rest_route_query_is_admitted(raw_query: &str) -> bool {
+    matches!(raw_query, "rest_route=/" | "rest_route=%2F")
+}
+
+#[cfg(feature = "wordpress-review")]
+pub(crate) fn wordpress_reference_path_is_safe(reference: &str) -> bool {
+    if reference.is_empty()
+        || reference
+            .bytes()
+            .any(|byte| byte == b'\\' || byte.is_ascii_control())
+    {
+        return false;
+    }
+    let without_fragment = reference
+        .split_once('#')
+        .map_or(reference, |(path, _)| path);
+    let raw_path = without_fragment
+        .split_once('?')
+        .map_or(without_fragment, |(path, _)| path);
+    if raw_path
+        .split('/')
+        .any(|segment| matches!(segment, "." | ".."))
+    {
+        return false;
+    }
+    let lowercase = raw_path.to_ascii_lowercase();
+    !["%2e", "%2f", "%5c", "%25"]
+        .iter()
+        .any(|encoded| lowercase.contains(encoded))
 }
 
 fn response_cookie_names(headers: &HeaderMap) -> BTreeSet<String> {
@@ -3361,6 +3622,91 @@ mod tests {
         assert_eq!(
             response_cookie_names(&headers),
             BTreeSet::from(["XSRF-TOKEN".to_owned(), "laravel_session".to_owned()])
+        );
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_rest_link_projection_accepts_only_closed_same_origin_candidates() {
+        let document = Url::parse("https://example.test/").unwrap();
+        for query in ["rest_route=/", "rest_route=%2F"] {
+            let mut headers = HeaderMap::new();
+            let value = format!("</index.php?{query}>; rel=\"https://api.w.org/\"");
+            headers.insert("link", HeaderValue::from_str(&value).unwrap());
+            assert_eq!(
+                project_wordpress_rest_index_advertisement(&document, &headers),
+                WordPressRestIndexAdvertisement::Candidate(
+                    Url::parse(&format!("https://example.test/index.php?{query}")).unwrap()
+                )
+            );
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "link",
+            HeaderValue::from_static("</wp-json/>; rel=\"https://api.w.org/\""),
+        );
+        headers.append(
+            "link",
+            HeaderValue::from_static(
+                "<https://foreign.invalid/wp-json/>; rel=\"https://api.w.org/\"",
+            ),
+        );
+        assert_eq!(
+            project_wordpress_rest_index_advertisement(&document, &headers),
+            WordPressRestIndexAdvertisement::InvalidOrAmbiguous
+        );
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_rest_link_projection_rejects_ambiguous_or_unsafe_values() {
+        let document = Url::parse("https://example.test/").unwrap();
+        for value in [
+            "<>; rel=\"https://api.w.org/\"",
+            "</wp-json/>; rel=\"https://api.w.org/\", </index.php?rest_route=/>; rel=\"https://api.w.org/\"",
+            "</index.php?rest_route=/&token=secret>; rel=\"https://api.w.org/\"",
+            "</index.php?rest_route=/;token=secret>; rel=\"https://api.w.org/\"",
+            "</index.php?rest_route=%2f>; rel=\"https://api.w.org/\"",
+            "</index.php?%72est_route=%2F>; rel=\"https://api.w.org/\"",
+            "</index.php?rest%5Froute=%2F>; rel=\"https://api.w.org/\"",
+            "</index.php?rest_route=%252F>; rel=\"https://api.w.org/\"",
+            "</index.php?rest_route=%2F&rest_route=%2F>; rel=\"https://api.w.org/\"",
+            "</index.php?REST_ROUTE=%2F>; rel=\"https://api.w.org/\"",
+            "</wp-json/>; rel=\"https://api.w.org/\"; title=\"bad\\value\"",
+            "</x/%2e%2e/wp-json/>; rel=\"https://api.w.org/\"",
+            "</x/%252e%252e/wp-json/>; rel=\"https://api.w.org/\"",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("link", HeaderValue::from_str(value).unwrap());
+            assert_eq!(
+                project_wordpress_rest_index_advertisement(&document, &headers),
+                WordPressRestIndexAdvertisement::InvalidOrAmbiguous
+            );
+        }
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_rest_link_parameters_do_not_split_inside_quoted_strings() {
+        let document = Url::parse("https://example.test/").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "link",
+            HeaderValue::from_static("</wp-json/>; title=\"x; rel=https://api.w.org/; y\""),
+        );
+        assert_eq!(
+            project_wordpress_rest_index_advertisement(&document, &headers),
+            WordPressRestIndexAdvertisement::Missing
+        );
+
+        headers.insert(
+            "link",
+            HeaderValue::from_static("</wp-json/>; title=\"unterminated; rel=https://api.w.org/"),
+        );
+        assert_eq!(
+            project_wordpress_rest_index_advertisement(&document, &headers),
+            WordPressRestIndexAdvertisement::InvalidOrAmbiguous
         );
     }
 

@@ -109,3 +109,10 @@ path = "fuzz_targets/ssrf_oast_review.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wordpress_discovery"
+path = "fuzz_targets/wordpress_discovery.rs"
+test = false
+doc = false
+bench = false

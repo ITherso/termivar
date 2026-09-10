@@ -72,6 +72,8 @@ mod web_assessment;
 mod web_review_decision;
 mod web_review_execution;
 #[cfg(feature = "wordpress-review")]
+mod wordpress_discovery;
+#[cfg(feature = "wordpress-review")]
 mod wordpress_runtime;
 
 use assessment_defense::AssessmentDefenseController;
@@ -173,7 +175,40 @@ pub use web_assessment::{
     HARD_MAX_WEB_ASSESSMENT_WALL_TIME, WEB_ASSESSMENT_CONCURRENCY,
 };
 #[cfg(feature = "wordpress-review")]
-pub use wordpress_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID};
+pub use wordpress_runtime::{
+    WebAssessmentWordPressAudit, WebAssessmentWordPressDiscoveryAudit,
+    WordPressDiscoverySourceAudit, WordPressDiscoverySourceKind, WordPressDiscoverySourceOutcome,
+    WordPressPluginDiscoveryMetadata, WordPressThemeDiscoveryMetadata,
+    WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID, WORDPRESS_REVIEW_CAPABILITY_ID,
+};
+
+/// Fuzz-only friend seam for the exact WordPress discovery parsers and
+/// candidate-admission rules. This symbol does not exist in normal builds.
+#[cfg(all(fuzzing, feature = "wordpress-review"))]
+#[doc(hidden)]
+pub fn check_wordpress_discovery_fuzz_input(data: &[u8]) {
+    const MAX_FUZZ_INPUT_BYTES: usize = 512 * 1024;
+    if data.len() > MAX_FUZZ_INPUT_BYTES {
+        return;
+    }
+    let (scenario, payload) = data
+        .split_first()
+        .map_or((0, data), |(tag, rest)| (*tag, rest));
+    wordpress_discovery::fuzz_check_wordpress_discovery_parser(scenario, payload);
+    let origin =
+        Url::parse("https://wordpress-fuzz.invalid/").expect("fixed fuzz origin must remain valid");
+    let header_payload = if scenario % 8 == 1 {
+        payload
+            .strip_suffix(b"\n")
+            .map(|value| value.strip_suffix(b"\r").unwrap_or(value))
+            .unwrap_or(payload)
+    } else {
+        payload
+    };
+    let rest =
+        crate::http_evidence::fuzz_wordpress_rest_index_advertisement(&origin, header_payload);
+    wordpress_runtime::fuzz_check_discovery_candidate_admission(payload, &rest);
+}
 
 const DEFAULT_BUSINESS_VALUE_PERCENT: u8 = 80;
 const DEFAULT_PLANNING_BUDGET: u64 = 100;

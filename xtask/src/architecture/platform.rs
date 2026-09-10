@@ -2245,7 +2245,7 @@ fn resource_authorization_review_source_contract_violations(
         ".request(Method::GET,target.clone())",
         ".header(ACCEPT,\"application/json\")",
         ".header(AUTHORIZATION,authorization)",
-        "self.collect_built_request(action_id,stage,origin,limits,request)",
+        "self.collect_built_request(&self.client,action_id,stage,origin,limits,request)",
         ],
         "shared authorization broker seam must remain exact bodyless JSON GET with only the role credential",
     );
@@ -4768,6 +4768,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "wordpress_review",
                 "Option<AssessmentWordPressAuditDocument>",
             ),
+            (
+                "wordpress_discovery",
+                "Option<AssessmentWordPressDiscoveryAuditDocument>",
+            ),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
         ],
     ),
@@ -4776,6 +4780,7 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
         &[],
         &[
             ("schema", "&'static str"),
+            ("review_basis_schema", "Option<&'static str>"),
             ("capability_id", "&'static str"),
             ("catalog_status", "&'static str"),
             ("catalog_schema", "Option<&'static str>"),
@@ -4793,6 +4798,68 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("advisory_count", "usize"),
             ("components", "Vec<WordPressComponentDocument>"),
             ("advisories", "Vec<WordPressAdvisoryDocument>"),
+        ],
+    ),
+    (
+        "AssessmentWordPressDiscoveryAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("policy_id", "&'static str"),
+            ("selected", "bool"),
+            ("method", "&'static str"),
+            ("credential_mode", "&'static str"),
+            ("seed_count", "u8"),
+            ("candidate_count", "u8"),
+            ("candidate_limit_reached", "bool"),
+            ("omitted_candidate_count", "u64"),
+            ("attempted_request_count", "u8"),
+            ("completed_response_count", "u8"),
+            ("committed_response_count", "u8"),
+            ("response_bytes", "u64"),
+            ("source_count", "usize"),
+            ("sources", "Vec<WordPressDiscoverySourceDocument>"),
+        ],
+    ),
+    (
+        "WordPressDiscoverySourceDocument",
+        &[],
+        &[
+            ("kind", "&'static str"),
+            ("component", "Option<WordPressComponentIdentityDocument>"),
+            ("parent_depth", "u8"),
+            ("outcome", "&'static str"),
+            ("request_attempted", "bool"),
+            ("response_bytes", "u64"),
+            ("evidence_reference_count", "usize"),
+            ("evidence_references", "Vec<String>"),
+            ("namespaces", "Vec<String>"),
+            ("theme", "Option<WordPressThemeDiscoveryDocument>"),
+            ("plugin", "Option<WordPressPluginDiscoveryDocument>"),
+        ],
+    ),
+    (
+        "WordPressThemeDiscoveryDocument",
+        &[],
+        &[
+            ("name", "Option<String>"),
+            ("version", "Option<String>"),
+            ("template", "Option<String>"),
+            ("requires_wordpress", "Option<String>"),
+            ("requires_php", "Option<String>"),
+            ("tested_up_to", "Option<String>"),
+        ],
+    ),
+    (
+        "WordPressPluginDiscoveryDocument",
+        &[],
+        &[
+            ("name", "Option<String>"),
+            ("stable_tag", "Option<String>"),
+            ("requires_wordpress", "Option<String>"),
+            ("requires_php", "Option<String>"),
+            ("tested_up_to", "Option<String>"),
         ],
     ),
     (
@@ -5336,6 +5403,14 @@ fn reporting_serde_skip_option_is_none(attribute: &Attribute) -> bool {
         })
 }
 
+fn reporting_serde_skip_vec_is_empty(attribute: &Attribute) -> bool {
+    attribute.path().is_ident("serde")
+        && attribute.meta.require_list().is_ok_and(|list| {
+            squash_ascii_whitespace(&list.tokens.to_string())
+                == "skip_serializing_if=\"Vec::is_empty\""
+        })
+}
+
 fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature: &str) -> bool {
     let expected = match feature {
         "authorization-review" => "feature=\"authorization-review\"",
@@ -5377,6 +5452,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentOpenApiAuditDocument"
                 | "AssessmentRestAuditDocument"
                 | "AssessmentWordPressAuditDocument"
+                | "AssessmentWordPressDiscoveryAuditDocument"
+                | "WordPressDiscoverySourceDocument"
+                | "WordPressThemeDiscoveryDocument"
+                | "WordPressPluginDiscoveryDocument"
                 | "WordPressCatalogDocument"
                 | "WordPressComponentIdentityDocument"
                 | "WordPressComponentDocument"
@@ -5448,6 +5527,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                     "all(feature=\"scanning\",feature=\"rest-review\")"
                 },
                 "AssessmentWordPressAuditDocument"
+                | "AssessmentWordPressDiscoveryAuditDocument"
+                | "WordPressDiscoverySourceDocument"
+                | "WordPressThemeDiscoveryDocument"
+                | "WordPressPluginDiscoveryDocument"
                 | "WordPressCatalogDocument"
                 | "WordPressComponentIdentityDocument"
                 | "WordPressComponentDocument"
@@ -5529,7 +5612,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         reporting_audit_field_attributes_are_exact(&field.attrs, "openapi-review")
                     } else if name == "AssessmentDocument" && field_name == "rest_review" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "rest-review")
-                    } else if name == "AssessmentDocument" && field_name == "wordpress_review" {
+                    } else if name == "AssessmentDocument"
+                        && matches!(
+                            field_name.as_str(),
+                            "wordpress_review" | "wordpress_discovery"
+                        )
+                    {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "wordpress-review")
                     } else if (name == "AssessmentRestAuditDocument"
                         && matches!(
@@ -5539,11 +5627,18 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         || (name == "AssessmentWordPressAuditDocument"
                             && matches!(
                                 field_name.as_str(),
-                                "catalog_schema"
+                                "review_basis_schema"
+                                    | "catalog_schema"
                                     | "catalog"
                                     | "inventory_import"
                                     | "external_review"
                             ))
+                        || (name == "WordPressDiscoverySourceDocument"
+                            && matches!(field_name.as_str(), "component" | "theme" | "plugin"))
+                        || (matches!(
+                            name.as_str(),
+                            "WordPressThemeDiscoveryDocument" | "WordPressPluginDiscoveryDocument"
+                        ))
                         || (name == "WordPressComponentDocument"
                             && field_name == "inventory_status")
                         || (name == "WordPressInventoryLimitationDocument"
@@ -5609,6 +5704,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                     {
                         field.attrs.len() == 1
                             && reporting_serde_skip_option_is_none(&field.attrs[0])
+                    } else if name == "WordPressDiscoverySourceDocument"
+                        && field_name == "namespaces"
+                    {
+                        field.attrs.len() == 1 && reporting_serde_skip_vec_is_empty(&field.attrs[0])
                     } else {
                         field.attrs.is_empty()
                     };
@@ -7967,8 +8066,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 224_117;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xba5e_b229_0c44_9741_22f9_8a92_230e_3624;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 251_981;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x0856_4345_48c3_de21_a89a_c0dc_fd62_9f9b;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -8076,6 +8175,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
+    "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::WebAssessmentWordPressAudit",
     "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
@@ -8141,6 +8241,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "AssessmentWordPressAuditDocument::from_audit",
     "AssessmentRestAuditDocument::from_audit",
     "AssessmentOpenApiAuditDocument::from_audit",
@@ -8200,6 +8301,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressEvidenceSource::GeneratorMetadata",
     "WordPressEvidenceSource::OperatorContext",
     "WordPressEvidenceSource::SameOriginAssetPath",
+    "WordPressEvidenceSource::ThemeStylesheetDeclaration",
     "WordPressExecutionStatus::NotPerformed",
     "WordPressExternalApplicability::IndeterminateUnsupported",
     "WordPressExternalApplicability::Indeterminate",
@@ -8289,6 +8391,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressPresentationInline::Code",
     "WordPressPresentationInline::Count",
     "WordPressPresentationInline::Literal",
+    "WordPressPluginDiscoveryDocument::is_valid",
+    "WordPressThemeDiscoveryDocument::is_valid",
     "WordPressVersionRelation::OutsideDeclaredRanges",
     "WordPressVersionRelation::Unknown",
     "WordPressVersionRelation::Unsupported",
@@ -8424,6 +8528,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::WebAssessmentAuthorizationAudit",
     "crate::web_runtime::WebAssessmentOpenApiAudit",
     "crate::web_runtime::WebAssessmentRestAudit",
+    "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::WebAssessmentWordPressAudit",
     "crate::authorization_review::AuthorizationReviewOutcome",
@@ -8496,6 +8601,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::WordPressVersionRelation",
     "crate::wordpress_review::WordPressVersionResolution",
     "crate::wordpress_review::WordPressVersionResolutionReason",
+    "crate::wordpress_review::valid_slug",
     "crate::wordpress_review::WordfenceV3AffectedRange",
     "crate::wordpress_review::WordfenceV3CvssRating",
     "crate::wordpress_review::WordfenceV3IdentityMapping",
@@ -8558,6 +8664,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentOpenApiAuditDocument::from_audit",
     "AssessmentRestAuditDocument::from_audit",
     "AssessmentAuthorizationAuditDocument::from_audit",
+    "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "Err",
     "Ok",
     "RawJsonWriter::new",
@@ -8643,6 +8750,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "valid_lowercase_sha256",
     "valid_lowercase_uuid",
     "valid_prefixed_lowercase_sha256",
+    "valid_wordpress_discovery_namespace",
+    "valid_wordpress_discovery_text",
     "write_assessment_csv_row",
     "write_csv_cell",
     "write_csv_row",
@@ -8658,6 +8767,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "write_visible_codepoint",
     "write_wordpress_advisory",
     "write_wordpress_component",
+    "write_wordpress_discovery_presentation",
     "write_wordpress_endpoint",
     "write_wordpress_evaluation_group",
     "write_wordpress_external_evaluation",
@@ -8676,6 +8786,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_component_identity",
     "wordpress_component_kind",
     "wordpress_confidence",
+    "wordpress_discovery_matches_review",
     "wordpress_evidence_class",
     "wordpress_evidence_source",
     "wordpress_execution",
@@ -8708,12 +8819,43 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_version_relation",
     "wordpress_version_resolution",
     "wordpress_version_resolution_reason",
+    "wordpress_discovery_versions_match",
+    "crate::wordpress_review::valid_slug",
     "crate::wordpress_version::ProfiledVersionKey::parse",
     "crate::wordpress_version::checked_accumulate_external_interpretation_work",
     "url::Url::parse",
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "attempted_request_count",
+    "by_ref",
+    "candidate_count",
+    "candidate_limit_reached",
+    "committed_response_count",
+    "completed_response_count",
+    "component_kind",
+    "component_slug",
+    "cloned",
+    "discovery",
+    "first",
+    "flat_map",
+    "namespaces",
+    "omitted_candidate_count",
+    "parent_depth",
+    "plugin",
+    "request_attempted",
+    "requires_php",
+    "requires_wordpress",
+    "response_bytes",
+    "seed_count",
+    "selected",
+    "sources",
+    "stable_tag",
+    "sum",
+    "take",
+    "template",
+    "tested_up_to",
+    "theme",
     "accounting",
     "accounted_retained_limit",
     "action_id",
@@ -9124,7 +9266,8 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
             && paths.iter().all(|path| {
                 matches!(
                     path.as_str(),
-                    "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID"
+                    "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID"
+                        | "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID"
                         | "crate::web_runtime::WebAssessmentWordPressAudit"
                         | "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS"
                         | "crate::wordpress_review::MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS"
@@ -9286,7 +9429,8 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     .to_owned(),
             );
         }
-        let exact_redaction_attribute = reporting_serde_skip_option_is_none(attribute);
+        let exact_redaction_attribute = reporting_serde_skip_option_is_none(attribute)
+            || reporting_serde_skip_vec_is_empty(attribute);
         if !ALLOWED_REPORTING_ATTRIBUTES.contains(&attribute_name.as_str())
             && !matches!(attribute_name.as_str(), "cfg" | "cfg_attr")
             && !exact_redaction_attribute
@@ -10523,6 +10667,20 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("cookie-free")));
 
+        let wrong_authorized_client = broker.replace(
+            "self.collect_built_request(&self.client, action_id, stage, origin, limits, request)",
+            "self.collect_built_request(&self.anonymous_no_proxy_client, action_id, stage, origin, limits, request)",
+        );
+        assert_ne!(wrong_authorized_client, broker);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &wrong_authorized_client,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("bodyless JSON GET")));
+
         let request_body = broker.replacen(
             ".header(AUTHORIZATION, authorization)",
             ".header(AUTHORIZATION, authorization).body(\"forbidden\")",
@@ -10537,10 +10695,9 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("bodyless")));
 
-        let redirecting = broker.replacen(
+        let redirecting = broker.replace(
             ".redirect(RedirectPolicy::none())",
             ".redirect(RedirectPolicy::limited(1))",
-            1,
         );
         assert!(resource_authorization_review_source_contract_violations(
             ResourceAuthorizationSources {
@@ -12502,7 +12659,11 @@ mod tests {
             };
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             use crate::{
-                web_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID},
+                web_runtime::{
+                    WebAssessmentWordPressAudit,
+                    WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
+                    WORDPRESS_REVIEW_CAPABILITY_ID,
+                },
                 wordpress_review::{
                     WordPressActivationState, WordPressAdvisoryCatalogSchema,
                     WordPressApplicability, WordPressCatalogStatus, WordPressComparisonProfile,
@@ -12595,6 +12756,20 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains("imports must be exactly"),
+            "{violations}"
+        );
+
+        let missing_discovery_capability = imports.replace(
+            "                    WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,\n",
+            "",
+        );
+        assert_ne!(missing_discovery_capability, imports);
+        let violations = reporting_source_import_violations(&missing_discovery_capability)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("imports must be exactly")
+                && violations.contains("WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID"),
             "{violations}"
         );
 
@@ -12945,12 +13120,17 @@ mod tests {
                 #[cfg(feature = "wordpress-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_review: Option<AssessmentWordPressAuditDocument>,
+                #[cfg(feature = "wordpress-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                wordpress_discovery: Option<AssessmentWordPressDiscoveryAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
             struct AssessmentWordPressAuditDocument {
                 schema: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                review_basis_schema: Option<&'static str>,
                 capability_id: &'static str,
                 catalog_status: &'static str,
                 #[serde(skip_serializing_if = "Option::is_none")]
@@ -12969,6 +13149,75 @@ mod tests {
                 advisory_count: usize,
                 components: Vec<WordPressComponentDocument>,
                 advisories: Vec<WordPressAdvisoryDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct AssessmentWordPressDiscoveryAuditDocument {
+                schema: &'static str,
+                capability_id: &'static str,
+                policy_id: &'static str,
+                selected: bool,
+                method: &'static str,
+                credential_mode: &'static str,
+                seed_count: u8,
+                candidate_count: u8,
+                candidate_limit_reached: bool,
+                omitted_candidate_count: u64,
+                attempted_request_count: u8,
+                completed_response_count: u8,
+                committed_response_count: u8,
+                response_bytes: u64,
+                source_count: usize,
+                sources: Vec<WordPressDiscoverySourceDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressDiscoverySourceDocument {
+                kind: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                component: Option<WordPressComponentIdentityDocument>,
+                parent_depth: u8,
+                outcome: &'static str,
+                request_attempted: bool,
+                response_bytes: u64,
+                evidence_reference_count: usize,
+                evidence_references: Vec<String>,
+                #[serde(skip_serializing_if = "Vec::is_empty")]
+                namespaces: Vec<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                theme: Option<WordPressThemeDiscoveryDocument>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                plugin: Option<WordPressPluginDiscoveryDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressThemeDiscoveryDocument {
+                #[serde(skip_serializing_if = "Option::is_none")]
+                name: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                version: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                template: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                requires_wordpress: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                requires_php: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                tested_up_to: Option<String>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressPluginDiscoveryDocument {
+                #[serde(skip_serializing_if = "Option::is_none")]
+                name: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                stable_tag: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                requires_wordpress: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                requires_php: Option<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                tested_up_to: Option<String>,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
@@ -13501,6 +13750,50 @@ mod tests {
         assert!(
             violations.contains("AssessmentDocument")
                 && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let public_wordpress_discovery = source.replace(
+            "                wordpress_discovery: Option<AssessmentWordPressDiscoveryAuditDocument>,",
+            "                pub wordpress_discovery: Option<AssessmentWordPressDiscoveryAuditDocument>,",
+        );
+        assert_ne!(public_wordpress_discovery, source);
+        let violations = reporting_document_contract_violations(&public_wordpress_discovery)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let serialized_empty_discovery_namespaces = source.replace(
+            "                #[serde(skip_serializing_if = \"Vec::is_empty\")]\n                namespaces: Vec<String>,",
+            "                namespaces: Vec<String>,",
+        );
+        assert_ne!(serialized_empty_discovery_namespaces, source);
+        let violations =
+            reporting_document_contract_violations(&serialized_empty_discovery_namespaces)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("WordPressDiscoverySourceDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let ungated_wordpress_discovery_document = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentWordPressDiscoveryAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentWordPressDiscoveryAuditDocument",
+        );
+        assert_ne!(ungated_wordpress_discovery_document, source);
+        let violations =
+            reporting_document_contract_violations(&ungated_wordpress_discovery_document)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("AssessmentWordPressDiscoveryAuditDocument")
+                && violations.contains("exactly cfg"),
             "{violations}"
         );
 

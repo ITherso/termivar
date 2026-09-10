@@ -5,7 +5,13 @@ use reqwest::{
 };
 
 #[cfg(any(feature = "graphql-review", feature = "authorization-review"))]
-use reqwest::{header::ACCEPT, Method};
+use reqwest::header::ACCEPT;
+#[cfg(any(
+    feature = "graphql-review",
+    feature = "authorization-review",
+    feature = "wordpress-review"
+))]
+use reqwest::Method;
 
 #[cfg(feature = "authorization-review")]
 use reqwest::header::AUTHORIZATION;
@@ -77,6 +83,8 @@ impl From<RuntimeLimitExceeded> for HttpRequestBrokerError {
 #[derive(Clone)]
 pub(crate) struct HttpRequestBroker {
     client: Client,
+    #[cfg(feature = "wordpress-review")]
+    anonymous_no_proxy_client: Client,
     policy: HttpEvidencePolicy,
     accounting: Option<RequestAccountingBroker>,
 }
@@ -108,8 +116,21 @@ impl HttpRequestBroker {
             .retry(reqwest::retry::never())
             .build()
             .map_err(HttpEvidenceError::Client)?;
+        // WordPress public-metadata discovery has a stricter, anonymous
+        // transport shape than ordinary assessment probes. In particular it
+        // must not inherit a process-level proxy or proxy credentials. Keep a
+        // separate pool so the normal broker behavior remains unchanged.
+        #[cfg(feature = "wordpress-review")]
+        let anonymous_no_proxy_client = Client::builder()
+            .redirect(RedirectPolicy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy()
+            .build()
+            .map_err(HttpEvidenceError::Client)?;
         Ok(Self {
             client,
+            #[cfg(feature = "wordpress-review")]
+            anonymous_no_proxy_client,
             policy,
             accounting,
         })
@@ -157,8 +178,35 @@ impl HttpRequestBroker {
         // Provider resolution, policy validation, and request construction are
         // deliberately complete before a transport dispatch is accounted.
         let request = self.build_request(probe)?;
-        self.collect_built_request(action_id, stage, origin, limits, request)
+        self.collect_built_request(&self.client, action_id, stage, origin, limits, request)
             .await
+    }
+
+    /// Dispatches one fixed-shape anonymous, bodyless WordPress metadata GET.
+    ///
+    /// This path shares the parent assessment's exact-origin policy and
+    /// accounting broker, but uses a no-proxy connection pool and accepts no
+    /// caller headers, cookies, credentials, request body, or alternate method.
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) async fn collect_anonymous_wordpress_get_for_runtime(
+        &self,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        target: &url::Url,
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        self.validate_target(target)?;
+        let request = self.build_anonymous_wordpress_get_request(target)?;
+        self.collect_built_request(
+            &self.anonymous_no_proxy_client,
+            action_id,
+            stage,
+            origin,
+            limits,
+            request,
+        )
+        .await
     }
 
     /// Dispatches one fixed-shape, anonymous GraphQL JSON request through the
@@ -178,7 +226,7 @@ impl HttpRequestBroker {
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
         self.validate_target(target)?;
         let request = self.build_anonymous_graphql_json_request(target, body)?;
-        self.collect_built_request(action_id, stage, origin, limits, request)
+        self.collect_built_request(&self.client, action_id, stage, origin, limits, request)
             .await
     }
 
@@ -211,7 +259,7 @@ impl HttpRequestBroker {
             .header(AUTHORIZATION, authorization)
             .build()
             .map_err(HttpEvidenceError::Request)?;
-        self.collect_built_request(action_id, stage, origin, limits, request)
+        self.collect_built_request(&self.client, action_id, stage, origin, limits, request)
             .await
     }
 
@@ -223,6 +271,7 @@ impl HttpRequestBroker {
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
         self.validate_target(request.url())?;
         self.collect_built_request(
+            &self.client,
             decision.case().action_id(),
             decision.stage(),
             decision.origin(),
@@ -238,6 +287,7 @@ impl HttpRequestBroker {
 
     async fn collect_built_request(
         &self,
+        client: &Client,
         action_id: &str,
         stage: DecisionExecutionStage,
         origin: Option<DecisionActionOrigin>,
@@ -258,8 +308,7 @@ impl HttpRequestBroker {
             self.begin_accounting(action_id, stage, origin, request_body_bytes)?;
 
         let collected = tokio::time::timeout(self.policy.request_timeout(), async {
-            let mut response = self
-                .client
+            let mut response = client
                 .execute(request)
                 .await
                 .map_err(HttpEvidenceError::Request)?;
@@ -405,6 +454,17 @@ impl HttpRequestBroker {
         request.build().map_err(HttpEvidenceError::Request)
     }
 
+    #[cfg(feature = "wordpress-review")]
+    fn build_anonymous_wordpress_get_request(
+        &self,
+        target: &url::Url,
+    ) -> Result<reqwest::Request, HttpEvidenceError> {
+        self.anonymous_no_proxy_client
+            .request(Method::GET, target.clone())
+            .build()
+            .map_err(HttpEvidenceError::Request)
+    }
+
     #[cfg(feature = "graphql-review")]
     fn build_anonymous_graphql_json_request(
         &self,
@@ -467,6 +527,33 @@ mod tests {
 
         assert_eq!(metered_request_body_bytes(&bodyless).unwrap(), 0);
         assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_discovery_request_has_one_closed_anonymous_protocol_shape() {
+        let target = url::Url::parse("https://example.test/wp-json/").unwrap();
+        let broker = HttpRequestBroker::new_unmetered(
+            HttpEvidencePolicy::for_origin(target.clone()).unwrap(),
+        )
+        .unwrap();
+        let request = broker
+            .build_anonymous_wordpress_get_request(&target)
+            .unwrap();
+
+        assert_eq!(request.method(), Method::GET);
+        assert_eq!(request.url(), &target);
+        assert!(request.headers().is_empty());
+        assert!(request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none());
+        assert!(request.headers().get(reqwest::header::COOKIE).is_none());
+        assert!(request
+            .headers()
+            .get(reqwest::header::PROXY_AUTHORIZATION)
+            .is_none());
+        assert!(request.body().is_none());
     }
 
     #[cfg(feature = "graphql-review")]

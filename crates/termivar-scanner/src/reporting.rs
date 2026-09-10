@@ -26,7 +26,10 @@ use crate::{
 };
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 use crate::{
-    web_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID},
+    web_runtime::{
+        WebAssessmentWordPressAudit, WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
+        WORDPRESS_REVIEW_CAPABILITY_ID,
+    },
     wordpress_review::{
         WordPressActivationState, WordPressAdvisoryCatalogSchema, WordPressApplicability,
         WordPressCatalogStatus, WordPressComparisonProfile, WordPressComponentEvidenceClass,
@@ -1049,6 +1052,51 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(discovery) = &document.wordpress_discovery {
+        let evidence_count = discovery
+            .sources
+            .iter()
+            .map(|source| source.evidence_reference_count)
+            .sum::<usize>()
+            .to_string();
+        let summary = discovery.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "wordpress_discovery_audit",
+                discovery.schema,
+                "",
+                "",
+                "",
+                "",
+                "selected",
+                "",
+                "",
+                "",
+                discovery.capability_id,
+                "",
+                "",
+                "informational",
+                "observation",
+                "",
+                "",
+                "",
+                &evidence_count,
+                &summary,
+                "wordpress-discovery",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     for item in &document.items {
         let confidence_ppm = item.confidence_ppm.to_string();
         let evidence_count = item.evidence_count.to_string();
@@ -1187,6 +1235,25 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
         output.push_str("</dl>")?;
         write_wordpress_presentation(&mut WordPressPresentationEmitter::Html(&mut output), audit)?;
         write_html_wordpress_external_attribution(&mut output, audit)?;
+        output.push_str("</section>")?;
+    }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(discovery) = &document.wordpress_discovery {
+        output.push_str(
+            "<section><h2>WordPress public metadata discovery audit</h2><dl class=\"meta\">",
+        )?;
+        for (label, value) in discovery.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl>")?;
+        write_wordpress_discovery_presentation(
+            &mut WordPressPresentationEmitter::Html(&mut output),
+            discovery,
+        )?;
         output.push_str("</section>")?;
     }
     output.push_str("<section><h2>Assessment items</h2>")?;
@@ -1524,6 +1591,128 @@ fn write_wordpress_presentation(
         counts.source_guidance,
     )?;
     emitter.end_fields()
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_discovery_presentation(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    discovery: &AssessmentWordPressDiscoveryAuditDocument,
+) -> Result<(), ReportError> {
+    emitter.note(
+        "Discovery boundary: these anonymous same-origin metadata responses are source-qualified public declarations. They do not authenticate installed state, prove vulnerability applicability, or perform exploitation or impact validation.",
+    )?;
+    emitter.overview(&[
+        ("Root-derived seeds", usize::from(discovery.seed_count)),
+        (
+            "Selected candidates",
+            usize::from(discovery.candidate_count),
+        ),
+        (
+            "Attempted requests",
+            usize::from(discovery.attempted_request_count),
+        ),
+        (
+            "Completed responses",
+            usize::from(discovery.completed_response_count),
+        ),
+        (
+            "Committed responses",
+            usize::from(discovery.committed_response_count),
+        ),
+    ])?;
+    emitter.heading("Discovered metadata sources")?;
+    if discovery.sources.is_empty() {
+        emitter
+            .empty("No eligible metadata source was selected from the committed root response.")?;
+        return Ok(());
+    }
+    for source in &discovery.sources {
+        emitter.begin_record()?;
+        emitter.inline(WordPressPresentationInline::Code(source.kind))?;
+        if let Some(component) = &source.component {
+            emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+            emitter.inline(WordPressPresentationInline::Code(component.kind))?;
+            emitter.inline(WordPressPresentationInline::Literal(":"))?;
+            emitter.inline(WordPressPresentationInline::Code(&component.slug))?;
+        }
+        emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+        emitter.inline(WordPressPresentationInline::Code(source.outcome))?;
+        emitter.end_record_title()?;
+        wordpress_code_field(emitter, "Source class", source.kind)?;
+        wordpress_code_field(emitter, "Collection outcome", source.outcome)?;
+        wordpress_count_field(
+            emitter,
+            "Parent-theme depth",
+            usize::from(source.parent_depth),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Evidence reference count",
+            source.evidence_reference_count,
+        )?;
+        emitter.begin_field("Response bytes")?;
+        emitter.inline(WordPressPresentationInline::Bytes(source.response_bytes))?;
+        emitter.end_field()?;
+        write_wordpress_values(
+            emitter,
+            "REST namespaces (protocol support only)",
+            source.namespaces.iter().map(String::as_str),
+            "none retained",
+        )?;
+        if let Some(theme) = &source.theme {
+            wordpress_optional_code_field(emitter, "Theme display name", theme.name.as_deref())?;
+            wordpress_optional_code_field(
+                emitter,
+                "Artifact-declared theme version",
+                theme.version.as_deref(),
+            )?;
+            wordpress_optional_code_field(
+                emitter,
+                "Declared parent theme slug",
+                theme.template.as_deref(),
+            )?;
+            wordpress_optional_code_field(
+                emitter,
+                "Requires WordPress",
+                theme.requires_wordpress.as_deref(),
+            )?;
+            wordpress_optional_code_field(
+                emitter,
+                "Requires PHP (compatibility declaration)",
+                theme.requires_php.as_deref(),
+            )?;
+            wordpress_optional_code_field(
+                emitter,
+                "Tested up to (compatibility declaration)",
+                theme.tested_up_to.as_deref(),
+            )?;
+        }
+        if let Some(plugin) = &source.plugin {
+            wordpress_optional_code_field(emitter, "Plugin display name", plugin.name.as_deref())?;
+            wordpress_optional_code_field(
+                emitter,
+                "Distribution release hint (not installed version)",
+                plugin.stable_tag.as_deref(),
+            )?;
+            wordpress_optional_code_field(
+                emitter,
+                "Requires WordPress",
+                plugin.requires_wordpress.as_deref(),
+            )?;
+            wordpress_optional_code_field(
+                emitter,
+                "Requires PHP (compatibility declaration)",
+                plugin.requires_php.as_deref(),
+            )?;
+            wordpress_optional_code_field(
+                emitter,
+                "Tested up to (compatibility declaration)",
+                plugin.tested_up_to.as_deref(),
+            )?;
+        }
+        emitter.end_record()?;
+    }
+    Ok(())
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -2436,6 +2625,19 @@ fn render_assessment_markdown(
         )?;
         write_markdown_wordpress_external_attribution(&mut output, audit)?;
     }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(discovery) = &document.wordpress_discovery {
+        output.push_str("\n## WordPress public metadata discovery audit\n\n")?;
+        for (label, value) in discovery.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        write_wordpress_discovery_presentation(
+            &mut WordPressPresentationEmitter::Markdown(&mut output),
+            discovery,
+        )?;
+    }
     output.push_str("\n## Assessment items\n\n")?;
     if document.items.is_empty() {
         output.push_str("No assessment items.\n")?;
@@ -2531,12 +2733,34 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "wordpress-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     wordpress_review: Option<AssessmentWordPressAuditDocument>,
+    #[cfg(feature = "wordpress-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wordpress_discovery: Option<AssessmentWordPressDiscoveryAuditDocument>,
     items: Vec<AssessmentItemDocument<'a>>,
 }
 
 #[cfg(feature = "scanning")]
 impl<'a> AssessmentDocument<'a> {
     fn from_report(report: &'a AssessmentRunReport) -> Result<Self, ReportError> {
+        let items = report
+            .items()
+            .iter()
+            .map(AssessmentItemDocument::from_item)
+            .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_discovery = {
+            let discovery_evidence_references = items
+                .iter()
+                .find(|item| item.capability_id == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
+                .map_or(&[][..], |item| item.evidence_references.as_slice());
+            match report.wordpress_review_audit() {
+                Some(audit) => AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit(
+                    audit,
+                    discovery_evidence_references,
+                )?,
+                None => None,
+            }
+        };
         Ok(Self {
             schema: ASSESSMENT_REPORT_DOCUMENT_SCHEMA,
             source_schema: report.schema(),
@@ -2564,11 +2788,9 @@ impl<'a> AssessmentDocument<'a> {
             wordpress_review: report
                 .wordpress_review_audit()
                 .map(AssessmentWordPressAuditDocument::from_audit),
-            items: report
-                .items()
-                .iter()
-                .map(AssessmentItemDocument::from_item)
-                .collect::<Result<Vec<_>, _>>()?,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_discovery,
+            items,
         })
     }
 
@@ -2619,6 +2841,41 @@ impl<'a> AssessmentDocument<'a> {
             .any(|item| item.capability_id == WORDPRESS_REVIEW_CAPABILITY_ID)
         {
             return Err(ReportError::Serialization);
+        }
+        #[cfg(feature = "wordpress-review")]
+        let discovery_items = self
+            .items
+            .iter()
+            .filter(|item| item.capability_id == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
+            .collect::<Vec<_>>();
+        #[cfg(feature = "wordpress-review")]
+        match (&self.wordpress_review, &self.wordpress_discovery) {
+            (Some(review), Some(discovery)) => {
+                discovery.validate()?;
+                if review.schema != "security.wordpress-review-audit/v7"
+                    || review.additional_request_count != discovery.attempted_request_count
+                    || !wordpress_discovery_matches_review(review, discovery)
+                    || (discovery_items.len() == 1) != (discovery.committed_response_count > 0)
+                    || discovery_items.first().is_some_and(|item| {
+                        item.evidence_count != u64::from(discovery.committed_response_count)
+                            || item.evidence_references
+                                != discovery
+                                    .sources
+                                    .iter()
+                                    .flat_map(|source| source.evidence_references.iter())
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                    })
+                {
+                    return Err(ReportError::Serialization);
+                }
+            },
+            (Some(review), None) if review.schema == "security.wordpress-review-audit/v7" => {
+                return Err(ReportError::Serialization);
+            },
+            (None, Some(_)) => return Err(ReportError::Serialization),
+            _ if !discovery_items.is_empty() => return Err(ReportError::Serialization),
+            _ => {},
         }
         for item in &self.items {
             item.validate()?;
@@ -3004,6 +3261,8 @@ const fn authorization_review_outcome_token(outcome: AuthorizationReviewOutcome)
 #[derive(Serialize)]
 struct AssessmentWordPressAuditDocument {
     schema: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_basis_schema: Option<&'static str>,
     capability_id: &'static str,
     catalog_status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3022,6 +3281,110 @@ struct AssessmentWordPressAuditDocument {
     advisory_count: usize,
     components: Vec<WordPressComponentDocument>,
     advisories: Vec<WordPressAdvisoryDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_DISCOVERY_AUDIT_SCHEMA: &str = "security.wordpress-discovery-audit/v1";
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_DISCOVERY_POLICY_ID: &str = "termivar.wordpress-metadata-discovery/v1";
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_DISCOVERY_CAPABILITY_ID: &str = "technology.wordpress-metadata-discovery@1";
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_SOURCES: usize = 32;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_REQUESTS: u8 = 12;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_REST_REQUESTS: usize = 1;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_THEME_REQUESTS: usize = 3;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_PLUGIN_REQUESTS: usize = 8;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_OMITTED_CANDIDATES: u64 = 4_064;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_METADATA_BYTES: usize = 256;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_VERSION_BYTES: usize = 64;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_NAMESPACE_BYTES: usize = 128;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_NAMESPACES: usize = 64;
+/// Separate optional wire audit for explicitly selected metadata collection.
+///
+/// Collection details remain separate from the versioned WordPress review
+/// result. A discovery-influenced review uses audit v7 so the vocabulary and
+/// request accounting of previously published v1-v6 documents stay unchanged.
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct AssessmentWordPressDiscoveryAuditDocument {
+    schema: &'static str,
+    capability_id: &'static str,
+    policy_id: &'static str,
+    selected: bool,
+    method: &'static str,
+    credential_mode: &'static str,
+    seed_count: u8,
+    candidate_count: u8,
+    candidate_limit_reached: bool,
+    omitted_candidate_count: u64,
+    attempted_request_count: u8,
+    completed_response_count: u8,
+    committed_response_count: u8,
+    response_bytes: u64,
+    source_count: usize,
+    sources: Vec<WordPressDiscoverySourceDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressDiscoverySourceDocument {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    component: Option<WordPressComponentIdentityDocument>,
+    parent_depth: u8,
+    outcome: &'static str,
+    request_attempted: bool,
+    response_bytes: u64,
+    evidence_reference_count: usize,
+    evidence_references: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    namespaces: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    theme: Option<WordPressThemeDiscoveryDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin: Option<WordPressPluginDiscoveryDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressThemeDiscoveryDocument {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requires_wordpress: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requires_php: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tested_up_to: Option<String>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressPluginDiscoveryDocument {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stable_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requires_wordpress: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requires_php: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tested_up_to: Option<String>,
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -3580,20 +3943,27 @@ impl AssessmentWordPressAuditDocument {
                 }
             })
             .collect::<Vec<_>>();
+        let review_basis_schema = if source_identity_external_schema {
+            "security.wordpress-review-audit/v6"
+        } else if explicit_external_schema {
+            "security.wordpress-review-audit/v5"
+        } else if external_schema {
+            "security.wordpress-review-audit/v4"
+        } else if inventory_schema {
+            "security.wordpress-review-audit/v3"
+        } else if profiled {
+            "security.wordpress-review-audit/v2"
+        } else {
+            "security.wordpress-review-audit/v1"
+        };
+        let discovery_influenced = audit.discovery().is_some();
         Self {
-            schema: if source_identity_external_schema {
-                "security.wordpress-review-audit/v6"
-            } else if explicit_external_schema {
-                "security.wordpress-review-audit/v5"
-            } else if external_schema {
-                "security.wordpress-review-audit/v4"
-            } else if inventory_schema {
-                "security.wordpress-review-audit/v3"
-            } else if profiled {
-                "security.wordpress-review-audit/v2"
+            schema: if discovery_influenced {
+                "security.wordpress-review-audit/v7"
             } else {
-                "security.wordpress-review-audit/v1"
+                review_basis_schema
             },
+            review_basis_schema: discovery_influenced.then_some(review_basis_schema),
             capability_id: WORDPRESS_REVIEW_CAPABILITY_ID,
             catalog_status: wordpress_catalog_status(result.catalog_status()),
             catalog_schema: if inventory_schema && !external_schema {
@@ -3622,14 +3992,20 @@ impl AssessmentWordPressAuditDocument {
             .iter()
             .filter(|item| item.capability_id == WORDPRESS_REVIEW_CAPABILITY_ID)
             .count();
+        let discovery_influenced = self.schema == "security.wordpress-review-audit/v7";
+        let review_basis_schema = if discovery_influenced {
+            self.review_basis_schema.unwrap_or("")
+        } else {
+            self.schema
+        };
         let external = matches!(
-            self.schema,
+            review_basis_schema,
             "security.wordpress-review-audit/v4"
                 | "security.wordpress-review-audit/v5"
                 | "security.wordpress-review-audit/v6"
         );
-        let source_identity_external = self.schema == "security.wordpress-review-audit/v6";
-        let explicit_external = match self.schema {
+        let source_identity_external = review_basis_schema == "security.wordpress-review-audit/v6";
+        let explicit_external = match review_basis_schema {
             "security.wordpress-review-audit/v5" => true,
             "security.wordpress-review-audit/v6" => self
                 .external_review
@@ -3651,11 +4027,20 @@ impl AssessmentWordPressAuditDocument {
             .try_fold(0_usize, |count, component| {
                 count.checked_add(component.versions.len())
             });
-        let inventory = self.schema == "security.wordpress-review-audit/v3";
-        let profiled = self.schema == "security.wordpress-review-audit/v2"
+        let discovery_evidence_present = self.components.iter().any(|component| {
+            component
+                .identity_sources
+                .contains(&"theme_stylesheet_declaration")
+                || component
+                    .versions
+                    .iter()
+                    .any(|version| version.source == "theme_stylesheet_declaration")
+        });
+        let inventory = review_basis_schema == "security.wordpress-review-audit/v3";
+        let profiled = review_basis_schema == "security.wordpress-review-audit/v2"
             || (inventory && self.catalog_schema == Some(WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2));
-        let schema_valid = matches!(
-            self.schema,
+        let basis_schema_valid = matches!(
+            review_basis_schema,
             "security.wordpress-review-audit/v1"
                 | "security.wordpress-review-audit/v2"
                 | "security.wordpress-review-audit/v3"
@@ -3663,6 +4048,12 @@ impl AssessmentWordPressAuditDocument {
                 | "security.wordpress-review-audit/v5"
                 | "security.wordpress-review-audit/v6"
         );
+        let schema_valid = basis_schema_valid
+            && if discovery_influenced {
+                self.review_basis_schema == Some(review_basis_schema)
+            } else {
+                self.review_basis_schema.is_none()
+            };
         let catalogue_schema_valid = if external {
             self.catalog_schema.is_none()
         } else if inventory {
@@ -3705,7 +4096,12 @@ impl AssessmentWordPressAuditDocument {
             || !catalogue_schema_valid
             || !inventory_valid
             || !external_valid
-            || self.additional_request_count != 0
+            || (!discovery_influenced && discovery_evidence_present)
+            || if discovery_influenced {
+                self.additional_request_count > MAX_WORDPRESS_DISCOVERY_AUDIT_REQUESTS
+            } else {
+                self.additional_request_count != 0
+            }
             || usize::from(self.signal_count) > MAX_WORDPRESS_SIGNALS
             || usize::from(self.evidence_reference_count) > MAX_WORDPRESS_SIGNALS
             || self.component_count != self.components.len()
@@ -3719,7 +4115,7 @@ impl AssessmentWordPressAuditDocument {
             || self.item_projected != (projected == 1)
             || self.item_projected != (self.signal_count > 0)
             || self.item_projected != (self.evidence_reference_count > 0)
-            || ((self.schema == "security.wordpress-review-audit/v2" || external)
+            || ((review_basis_schema == "security.wordpress-review-audit/v2" || external)
                 && self.catalog_status != "evaluated")
             || self
                 .advisories
@@ -3736,7 +4132,7 @@ impl AssessmentWordPressAuditDocument {
     }
 
     fn metadata(&self) -> Vec<(&'static str, String)> {
-        vec![
+        let mut metadata = vec![
             ("Audit schema", self.schema.to_owned()),
             ("Capability", self.capability_id.to_owned()),
             ("Catalog status", self.catalog_status.to_owned()),
@@ -3752,7 +4148,11 @@ impl AssessmentWordPressAuditDocument {
             ("Item projected", self.item_projected.to_string()),
             ("Component count", self.component_count.to_string()),
             ("Advisory count", self.advisory_count.to_string()),
-        ]
+        ];
+        if let Some(schema) = self.review_basis_schema {
+            metadata.insert(1, ("Review basis schema", schema.to_owned()));
+        }
+        metadata
     }
 
     fn presentation_counts(&self) -> WordPressPresentationCounts {
@@ -3812,6 +4212,452 @@ impl AssessmentWordPressAuditDocument {
         }
         counts
     }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl AssessmentWordPressDiscoveryAuditDocument {
+    fn from_wordpress_audit(
+        audit: &WebAssessmentWordPressAudit,
+        evidence_references: &[String],
+    ) -> Result<Option<Self>, ReportError> {
+        let Some(discovery) = audit.discovery() else {
+            if evidence_references.is_empty() {
+                return Ok(None);
+            }
+            return Err(ReportError::Serialization);
+        };
+        let mut evidence_references = evidence_references.iter();
+        let sources = discovery
+            .sources()
+            .iter()
+            .map(|source| {
+                let evidence_reference_count = source.evidence_ids().len();
+                let source_evidence_references = evidence_references
+                    .by_ref()
+                    .take(evidence_reference_count)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if source_evidence_references.len() != evidence_reference_count {
+                    return Err(ReportError::Serialization);
+                }
+                let component =
+                    source
+                        .component_kind()
+                        .zip(source.component_slug())
+                        .map(|(kind, slug)| WordPressComponentIdentityDocument {
+                            kind: wordpress_component_kind(kind),
+                            slug: slug.to_owned(),
+                        });
+                let theme = source
+                    .theme()
+                    .map(|metadata| WordPressThemeDiscoveryDocument {
+                        name: metadata.name().map(str::to_owned),
+                        version: metadata.version().map(str::to_owned),
+                        template: metadata.template().map(str::to_owned),
+                        requires_wordpress: metadata.requires_wordpress().map(str::to_owned),
+                        requires_php: metadata.requires_php().map(str::to_owned),
+                        tested_up_to: metadata.tested_up_to().map(str::to_owned),
+                    });
+                let plugin = source
+                    .plugin()
+                    .map(|metadata| WordPressPluginDiscoveryDocument {
+                        name: metadata.name().map(str::to_owned),
+                        stable_tag: metadata.stable_tag().map(str::to_owned),
+                        requires_wordpress: metadata.requires_wordpress().map(str::to_owned),
+                        requires_php: metadata.requires_php().map(str::to_owned),
+                        tested_up_to: metadata.tested_up_to().map(str::to_owned),
+                    });
+                Ok(WordPressDiscoverySourceDocument {
+                    kind: source.kind().as_str(),
+                    component,
+                    parent_depth: source.parent_depth(),
+                    outcome: source.outcome().as_str(),
+                    request_attempted: source.request_attempted(),
+                    response_bytes: source.response_bytes(),
+                    evidence_reference_count,
+                    evidence_references: source_evidence_references,
+                    namespaces: source.namespaces().to_vec(),
+                    theme,
+                    plugin,
+                })
+            })
+            .collect::<Result<Vec<_>, ReportError>>()?;
+        if evidence_references.next().is_some() {
+            return Err(ReportError::Serialization);
+        }
+        Ok(Some(Self {
+            schema: WORDPRESS_DISCOVERY_AUDIT_SCHEMA,
+            capability_id: WORDPRESS_DISCOVERY_CAPABILITY_ID,
+            policy_id: discovery.policy_id(),
+            selected: discovery.selected(),
+            method: "get",
+            credential_mode: "anonymous",
+            seed_count: discovery.seed_count(),
+            candidate_count: discovery.candidate_count(),
+            candidate_limit_reached: discovery.candidate_limit_reached(),
+            omitted_candidate_count: discovery.omitted_candidate_count(),
+            attempted_request_count: discovery.attempted_request_count(),
+            completed_response_count: discovery.completed_response_count(),
+            committed_response_count: discovery.committed_response_count(),
+            response_bytes: discovery.response_bytes(),
+            source_count: sources.len(),
+            sources,
+        }))
+    }
+
+    fn validate(&self) -> Result<(), ReportError> {
+        let source_bytes = self.sources.iter().try_fold(0_u64, |total, source| {
+            total.checked_add(source.response_bytes)
+        });
+        let evidence_references = self.sources.iter().try_fold(0_usize, |total, source| {
+            total.checked_add(source.evidence_reference_count)
+        });
+        let unique_evidence_references = self
+            .sources
+            .iter()
+            .flat_map(|source| source.evidence_references.iter())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let attempted_sources = self
+            .sources
+            .iter()
+            .filter(|source| source.request_attempted)
+            .count();
+        let attempted_rest_sources = self
+            .sources
+            .iter()
+            .filter(|source| source.request_attempted && source.kind == "rest_index")
+            .count();
+        let attempted_theme_sources = self
+            .sources
+            .iter()
+            .filter(|source| source.request_attempted && source.kind == "theme_stylesheet")
+            .count();
+        let attempted_plugin_sources = self
+            .sources
+            .iter()
+            .filter(|source| source.request_attempted && source.kind == "plugin_readme")
+            .count();
+        let unique_source_count = self
+            .sources
+            .iter()
+            .map(|source| {
+                (
+                    source.kind,
+                    source
+                        .component
+                        .as_ref()
+                        .map(|component| (component.kind, component.slug.as_str())),
+                    source.parent_depth,
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if self.schema != WORDPRESS_DISCOVERY_AUDIT_SCHEMA
+            || self.capability_id != WORDPRESS_DISCOVERY_CAPABILITY_ID
+            || self.policy_id != WORDPRESS_DISCOVERY_POLICY_ID
+            || !self.selected
+            || self.method != "get"
+            || self.credential_mode != "anonymous"
+            || usize::from(self.seed_count) > MAX_WORDPRESS_DISCOVERY_AUDIT_SOURCES
+            || usize::from(self.candidate_count) > MAX_WORDPRESS_DISCOVERY_AUDIT_SOURCES
+            || self.seed_count > self.candidate_count
+            || self.candidate_limit_reached != (self.omitted_candidate_count > 0)
+            || self.omitted_candidate_count > MAX_WORDPRESS_DISCOVERY_AUDIT_OMITTED_CANDIDATES
+            || (self.omitted_candidate_count > 0
+                && usize::from(self.candidate_count) != MAX_WORDPRESS_DISCOVERY_AUDIT_SOURCES)
+            || self.attempted_request_count > MAX_WORDPRESS_DISCOVERY_AUDIT_REQUESTS
+            || self.attempted_request_count > self.candidate_count
+            || attempted_sources != usize::from(self.attempted_request_count)
+            || attempted_rest_sources > MAX_WORDPRESS_DISCOVERY_AUDIT_REST_REQUESTS
+            || attempted_theme_sources > MAX_WORDPRESS_DISCOVERY_AUDIT_THEME_REQUESTS
+            || attempted_plugin_sources > MAX_WORDPRESS_DISCOVERY_AUDIT_PLUGIN_REQUESTS
+            || self.completed_response_count > self.attempted_request_count
+            || self.committed_response_count != self.completed_response_count
+            || self.source_count != self.sources.len()
+            || self.source_count > MAX_WORDPRESS_DISCOVERY_AUDIT_SOURCES
+            || unique_source_count != self.source_count
+            || usize::from(self.candidate_count) != self.source_count
+            || source_bytes != Some(self.response_bytes)
+            || evidence_references != Some(usize::from(self.committed_response_count))
+            || unique_evidence_references != usize::from(self.committed_response_count)
+            || self.sources.iter().any(|source| !source.is_valid())
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> [(&'static str, String); 11] {
+        [
+            ("Discovery audit schema", self.schema.to_owned()),
+            ("Discovery policy", self.policy_id.to_owned()),
+            ("Request method", self.method.to_owned()),
+            ("Credential mode", self.credential_mode.to_owned()),
+            ("Root-derived seeds", self.seed_count.to_string()),
+            ("Selected candidates", self.candidate_count.to_string()),
+            (
+                "Candidate limit reached",
+                self.candidate_limit_reached.to_string(),
+            ),
+            (
+                "Omitted candidates",
+                self.omitted_candidate_count.to_string(),
+            ),
+            (
+                "Attempted requests",
+                self.attempted_request_count.to_string(),
+            ),
+            (
+                "Completed responses",
+                self.completed_response_count.to_string(),
+            ),
+            ("Discovery response bytes", self.response_bytes.to_string()),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn wordpress_discovery_matches_review(
+    review: &AssessmentWordPressAuditDocument,
+    discovery: &AssessmentWordPressDiscoveryAuditDocument,
+) -> bool {
+    for source in &discovery.sources {
+        if source.parent_depth != 0 || !matches!(source.kind, "theme_stylesheet" | "plugin_readme")
+        {
+            continue;
+        }
+        let Some(source_component) = source.component.as_ref() else {
+            return false;
+        };
+        let Some(review_component) = review.components.iter().find(|component| {
+            component.identity.kind == source_component.kind
+                && component.identity.slug == source_component.slug
+        }) else {
+            return false;
+        };
+        if !review_component
+            .identity_sources
+            .contains(&"same_origin_asset_path")
+        {
+            return false;
+        }
+    }
+
+    let mut discovered = std::collections::BTreeMap::new();
+    for source in &discovery.sources {
+        if source.kind != "theme_stylesheet" {
+            continue;
+        }
+        let Some(version) = source
+            .theme
+            .as_ref()
+            .and_then(|theme| theme.version.as_deref())
+        else {
+            continue;
+        };
+        let Some(component) = source.component.as_ref() else {
+            return false;
+        };
+        if source.outcome != "observed"
+            || component.kind != "theme"
+            || discovered
+                .insert((component.kind, component.slug.as_str()), version)
+                .is_some()
+        {
+            return false;
+        }
+    }
+
+    let mut reviewed = std::collections::BTreeMap::new();
+    for component in &review.components {
+        for version in &component.versions {
+            if version.source != "theme_stylesheet_declaration" {
+                continue;
+            }
+            if component.identity.kind != "theme"
+                || reviewed
+                    .insert(
+                        (component.identity.kind, component.identity.slug.as_str()),
+                        version.value.as_str(),
+                    )
+                    .is_some()
+            {
+                return false;
+            }
+        }
+    }
+    discovered == reviewed
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressDiscoverySourceDocument {
+    fn is_valid(&self) -> bool {
+        let component_valid = self.component.as_ref().is_none_or(|component| {
+            matches!(component.kind, "core" | "plugin" | "theme")
+                && crate::wordpress_review::valid_slug(&component.slug)
+                && ((component.kind == "core") == (component.slug == "wordpress"))
+        });
+        let strings_valid = self
+            .namespaces
+            .iter()
+            .all(|value| valid_wordpress_discovery_namespace(value))
+            && self
+                .theme
+                .as_ref()
+                .is_none_or(WordPressThemeDiscoveryDocument::is_valid)
+            && self
+                .plugin
+                .as_ref()
+                .is_none_or(WordPressPluginDiscoveryDocument::is_valid);
+        let source_shape_valid = match self.kind {
+            "rest_index" => {
+                self.component.is_none()
+                    && self.parent_depth == 0
+                    && self.theme.is_none()
+                    && self.plugin.is_none()
+            },
+            "theme_stylesheet" => {
+                self.component
+                    .as_ref()
+                    .is_some_and(|component| component.kind == "theme")
+                    && self.parent_depth <= 1
+                    && self.namespaces.is_empty()
+                    && self.plugin.is_none()
+            },
+            "plugin_readme" => {
+                self.component
+                    .as_ref()
+                    .is_some_and(|component| component.kind == "plugin")
+                    && self.parent_depth == 0
+                    && self.namespaces.is_empty()
+                    && self.theme.is_none()
+            },
+            _ => false,
+        };
+        let observed_shape_valid = match self.kind {
+            "rest_index" => !self.namespaces.is_empty(),
+            "theme_stylesheet" => self
+                .theme
+                .as_ref()
+                .is_some_and(|metadata| metadata.name.is_some()),
+            "plugin_readme" => self
+                .plugin
+                .as_ref()
+                .is_some_and(|metadata| metadata.name.is_some()),
+            _ => false,
+        };
+        let completed_response = matches!(
+            self.outcome,
+            "observed"
+                | "no_metadata"
+                | "not_found"
+                | "unauthorized"
+                | "rate_limited"
+                | "redirect_observed"
+                | "unsupported_content"
+                | "malformed"
+                | "truncated"
+        );
+        let outcome_valid = completed_response
+            || matches!(
+                self.outcome,
+                "invalid_advertisement"
+                    | "request_failed"
+                    | "budget_exhausted"
+                    | "cancelled"
+                    | "deadline_exceeded"
+                    | "not_selected_by_limit"
+                    | "not_attempted_after_throttle"
+            );
+        let metadata_absent =
+            self.namespaces.is_empty() && self.theme.is_none() && self.plugin.is_none();
+        let definitely_not_dispatched = matches!(
+            self.outcome,
+            "invalid_advertisement" | "not_selected_by_limit" | "not_attempted_after_throttle"
+        );
+        component_valid
+            && strings_valid
+            && source_shape_valid
+            && outcome_valid
+            && self.evidence_reference_count == usize::from(completed_response)
+            && self.evidence_references.len() == self.evidence_reference_count
+            && self
+                .evidence_references
+                .iter()
+                .all(|reference| valid_opaque_assessment_reference(reference, "evidence"))
+            && (!completed_response || self.request_attempted)
+            && (self.request_attempted || self.response_bytes == 0)
+            && (!definitely_not_dispatched || !self.request_attempted)
+            && (if self.outcome == "observed" {
+                observed_shape_valid
+            } else {
+                metadata_absent
+            })
+            && self.namespaces.len() <= MAX_WORDPRESS_DISCOVERY_AUDIT_NAMESPACES
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressThemeDiscoveryDocument {
+    fn is_valid(&self) -> bool {
+        [
+            self.name.as_deref(),
+            self.template.as_deref(),
+            self.requires_wordpress.as_deref(),
+            self.requires_php.as_deref(),
+            self.tested_up_to.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(valid_wordpress_discovery_metadata)
+            && self
+                .version
+                .as_deref()
+                .is_none_or(valid_wordpress_discovery_version)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressPluginDiscoveryDocument {
+    fn is_valid(&self) -> bool {
+        [
+            self.name.as_deref(),
+            self.stable_tag.as_deref(),
+            self.requires_wordpress.as_deref(),
+            self.requires_php.as_deref(),
+            self.tested_up_to.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(valid_wordpress_discovery_metadata)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn valid_wordpress_discovery_metadata(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_DISCOVERY_AUDIT_METADATA_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn valid_wordpress_discovery_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_DISCOVERY_AUDIT_VERSION_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn valid_wordpress_discovery_namespace(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_DISCOVERY_AUDIT_NAMESPACE_BYTES
+        && value.is_ascii()
+        && !value.chars().any(char::is_control)
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -5250,6 +6096,7 @@ const fn wordpress_evidence_source(source: WordPressEvidenceSource) -> &'static 
     match source {
         WordPressEvidenceSource::GeneratorMetadata => "generator_metadata",
         WordPressEvidenceSource::SameOriginAssetPath => "same_origin_asset_path",
+        WordPressEvidenceSource::ThemeStylesheetDeclaration => "theme_stylesheet_declaration",
         WordPressEvidenceSource::OperatorContext => "operator_context",
     }
 }
@@ -6749,6 +7596,8 @@ mod tests {
             rest_review: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_discovery: None,
             items: vec![AssessmentItemDocument {
                 schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
                 capability_id: text,
@@ -6932,6 +7781,7 @@ mod tests {
         };
         document.wordpress_review = Some(AssessmentWordPressAuditDocument {
             schema: "security.wordpress-review-audit/v1",
+            review_basis_schema: None,
             capability_id: WORDPRESS_REVIEW_CAPABILITY_ID,
             catalog_status: "evaluated",
             catalog_schema: None,
@@ -7007,6 +7857,155 @@ mod tests {
                 exploit_execution: "not_performed",
                 impact_validation: "not_performed",
             }],
+        });
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    fn discovered_wordpress_assessment_document() -> AssessmentDocument<'static> {
+        let mut document = observed_wordpress_assessment_document();
+        document.items[0].fingerprint =
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        document.items.push(AssessmentItemDocument {
+            schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
+            capability_id: WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
+            subject_reference: "subject-0000".to_owned(),
+            title: "WordPress metadata-source response outcome observed",
+            disposition: "informational",
+            claim_basis: "observation",
+            severity: None,
+            confidence_ppm: 550_000,
+            fingerprint:
+                "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            evidence_count: 3,
+            redacted_summary: "Bounded response evidence from selected public WordPress metadata sources was collected; usable metadata, installation authenticity, vulnerable-code reachability, and advisory impact were not established.",
+            category: "wordpress-metadata-source-response",
+            cwe: None,
+            remediation: AssessmentRemediationDocument {
+                id: "wordpress-metadata-review",
+                summary: "Confirm the installation inventory and source-qualified metadata before making a security or remediation decision.",
+            },
+            evidence_references: vec![
+                "evidence-0001".to_owned(),
+                "evidence-0002".to_owned(),
+                "evidence-0003".to_owned(),
+            ],
+            control_evidence_references: Vec::new(),
+            candidate_evidence_references: Vec::new(),
+            case_reference: None,
+            outcome_reference: None,
+            verification_stage: None,
+        });
+        document.item_count = document.items.len() as u64;
+        let review = document.wordpress_review.as_mut().unwrap();
+        review.schema = "security.wordpress-review-audit/v7";
+        review.review_basis_schema = Some("security.wordpress-review-audit/v1");
+        review.additional_request_count = 3;
+        review.components.push(WordPressComponentDocument {
+            identity: WordPressComponentIdentityDocument {
+                kind: "theme",
+                slug: "termivar-child".to_owned(),
+            },
+            evidence_class: "observed_hint",
+            identity_sources: vec!["same_origin_asset_path", "theme_stylesheet_declaration"],
+            confidence_classes: vec!["structural_hint", "public_declaration"],
+            versions: vec![WordPressVersionEvidenceDocument {
+                value: "1.2.3".to_owned(),
+                source: "theme_stylesheet_declaration",
+                confidence: "public_declaration",
+            }],
+            activation: None,
+            inventory_status: None,
+        });
+        review.components.push(WordPressComponentDocument {
+            identity: WordPressComponentIdentityDocument {
+                kind: "plugin",
+                slug: "termivar-metadata-lab".to_owned(),
+            },
+            evidence_class: "observed_hint",
+            identity_sources: vec!["same_origin_asset_path"],
+            confidence_classes: vec!["structural_hint"],
+            versions: Vec::new(),
+            activation: None,
+            inventory_status: None,
+        });
+        review.component_count = review.components.len();
+        document.wordpress_discovery = Some(AssessmentWordPressDiscoveryAuditDocument {
+            schema: WORDPRESS_DISCOVERY_AUDIT_SCHEMA,
+            capability_id: WORDPRESS_DISCOVERY_CAPABILITY_ID,
+            policy_id: WORDPRESS_DISCOVERY_POLICY_ID,
+            selected: true,
+            method: "get",
+            credential_mode: "anonymous",
+            seed_count: 3,
+            candidate_count: 3,
+            candidate_limit_reached: false,
+            omitted_candidate_count: 0,
+            attempted_request_count: 3,
+            completed_response_count: 3,
+            committed_response_count: 3,
+            response_bytes: 768,
+            source_count: 3,
+            sources: vec![
+                WordPressDiscoverySourceDocument {
+                    kind: "rest_index",
+                    component: None,
+                    parent_depth: 0,
+                    outcome: "observed",
+                    request_attempted: true,
+                    response_bytes: 256,
+                    evidence_reference_count: 1,
+                    evidence_references: vec!["evidence-0001".to_owned()],
+                    namespaces: vec!["wp/v2".to_owned(), "termivar-lab/v1".to_owned()],
+                    theme: None,
+                    plugin: None,
+                },
+                WordPressDiscoverySourceDocument {
+                    kind: "theme_stylesheet",
+                    component: Some(WordPressComponentIdentityDocument {
+                        kind: "theme",
+                        slug: "termivar-child".to_owned(),
+                    }),
+                    parent_depth: 0,
+                    outcome: "observed",
+                    request_attempted: true,
+                    response_bytes: 256,
+                    evidence_reference_count: 1,
+                    evidence_references: vec!["evidence-0002".to_owned()],
+                    namespaces: Vec::new(),
+                    theme: Some(WordPressThemeDiscoveryDocument {
+                        name: Some("Termivar child".to_owned()),
+                        version: Some("1.2.3".to_owned()),
+                        template: Some("termivar-parent".to_owned()),
+                        requires_wordpress: Some("6.8".to_owned()),
+                        requires_php: Some("8.1".to_owned()),
+                        tested_up_to: Some("6.9".to_owned()),
+                    }),
+                    plugin: None,
+                },
+                WordPressDiscoverySourceDocument {
+                    kind: "plugin_readme",
+                    component: Some(WordPressComponentIdentityDocument {
+                        kind: "plugin",
+                        slug: "termivar-metadata-lab".to_owned(),
+                    }),
+                    parent_depth: 0,
+                    outcome: "observed",
+                    request_attempted: true,
+                    response_bytes: 256,
+                    evidence_reference_count: 1,
+                    evidence_references: vec!["evidence-0003".to_owned()],
+                    namespaces: Vec::new(),
+                    theme: None,
+                    plugin: Some(WordPressPluginDiscoveryDocument {
+                        name: Some("Termivar metadata lab".to_owned()),
+                        stable_tag: Some("9.9.9".to_owned()),
+                        requires_wordpress: Some("6.8".to_owned()),
+                        requires_php: Some("8.1".to_owned()),
+                        tested_up_to: Some("6.9".to_owned()),
+                    }),
+                },
+            ],
         });
         document
     }
@@ -7808,6 +8807,628 @@ mod tests {
         assert!(markdown.contains("WordPress evidence review audit"));
         assert!(markdown.contains("SYNTHETIC-REPORTING-WORDPRESS-0001"));
         assert!(markdown.contains("not_performed"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn wordpress_discovery_reporting_is_separate_strict_and_reader_compatible() {
+        let document = discovered_wordpress_assessment_document();
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let discovery = &parsed["wordpress_discovery"];
+        assert_eq!(
+            parsed["wordpress_review"]["schema"],
+            "security.wordpress-review-audit/v7"
+        );
+        assert_eq!(
+            parsed["wordpress_review"]["review_basis_schema"],
+            "security.wordpress-review-audit/v1"
+        );
+        assert_eq!(discovery["schema"], WORDPRESS_DISCOVERY_AUDIT_SCHEMA);
+        assert_eq!(discovery["policy_id"], WORDPRESS_DISCOVERY_POLICY_ID);
+        assert_eq!(discovery["method"], "get");
+        assert_eq!(discovery["credential_mode"], "anonymous");
+        assert_eq!(discovery["candidate_limit_reached"], false);
+        assert_eq!(discovery["omitted_candidate_count"], 0);
+        assert_eq!(discovery["attempted_request_count"], 3);
+        assert_eq!(discovery["completed_response_count"], 3);
+        assert_eq!(discovery["committed_response_count"], 3);
+        assert_eq!(discovery["response_bytes"], 768);
+        assert_eq!(discovery["sources"][0]["namespaces"][0], "wp/v2");
+        assert_eq!(discovery["sources"][1]["theme"]["version"], "1.2.3");
+        assert_eq!(discovery["sources"][2]["plugin"]["stable_tag"], "9.9.9");
+        assert_eq!(discovery["sources"][1]["theme"]["requires_php"], "8.1");
+        assert_eq!(discovery["sources"][2]["plugin"]["requires_php"], "8.1");
+        assert_eq!(
+            parsed["wordpress_review"]["additional_request_count"], 3,
+            "the discovery-influenced v7 audit must expose actual broker attempts"
+        );
+        assert!(parsed["wordpress_review"]["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|component| component["versions"].as_array().into_iter().flatten())
+            .all(|version| version["value"] != "9.9.9"));
+
+        for format in [ReportFormat::Html, ReportFormat::Markdown] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains(WORDPRESS_DISCOVERY_AUDIT_SCHEMA));
+            assert!(rendered.contains("termivar-metadata-lab"));
+            assert!(rendered.contains("9.9.9"));
+            assert!(rendered.contains("not installed version"));
+            assert!(!rendered.contains("confirmed_vulnerability"));
+        }
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(csv.contains("wordpress_discovery_audit"));
+        assert!(csv.contains(WORDPRESS_DISCOVERY_AUDIT_SCHEMA));
+        assert!(csv.contains("termivar-metadata-lab"));
+
+        let comparison = comparison::compare_reports(
+            json.as_bytes(),
+            json.as_bytes(),
+            comparison::ComparisonFormat::Json,
+        )
+        .unwrap();
+        let comparison: serde_json::Value = serde_json::from_str(&comparison).unwrap();
+        assert_eq!(
+            comparison["wordpress_review_comparison"]["methodology"]["status"],
+            "unchanged"
+        );
+        assert_eq!(
+            comparison["wordpress_review_comparison"]["coverage"]["status"],
+            "not_established"
+        );
+        assert_eq!(comparison["unchanged"].as_array().map(Vec::len), Some(2));
+        assert_eq!(comparison["only_in_after"], serde_json::json!([]));
+        assert_eq!(comparison["only_in_before"], serde_json::json!([]));
+        assert_eq!(comparison["changed"], serde_json::json!([]));
+
+        let mut renumbered: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let replacement_references = ["evidence-0101", "evidence-0102", "evidence-0103"];
+        for (source, replacement) in renumbered["wordpress_discovery"]["sources"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .zip(replacement_references)
+        {
+            source["evidence_references"] = serde_json::json!([replacement]);
+        }
+        let discovery_item = renumbered["items"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|item| item["capability_id"] == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
+            .unwrap();
+        discovery_item["evidence_references"] = serde_json::json!(replacement_references);
+        let renumbered = serde_json::to_vec(&renumbered).unwrap();
+        let renumbering_comparison = comparison::compare_reports(
+            json.as_bytes(),
+            &renumbered,
+            comparison::ComparisonFormat::Json,
+        )
+        .unwrap();
+        let renumbering_comparison: serde_json::Value =
+            serde_json::from_str(&renumbering_comparison).unwrap();
+        assert_eq!(
+            renumbering_comparison["only_in_after"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            renumbering_comparison["only_in_before"],
+            serde_json::json!([])
+        );
+        assert_eq!(renumbering_comparison["changed"], serde_json::json!([]));
+        assert_eq!(
+            renumbering_comparison["unchanged"].as_array().map(Vec::len),
+            Some(2),
+            "report-local evidence reference renumbering is not a semantic change"
+        );
+        assert_eq!(
+            renumbering_comparison["wordpress_review_comparison"]["methodology"]["status"],
+            "unchanged"
+        );
+        assert_eq!(
+            renumbering_comparison["wordpress_review_comparison"]["coverage"]["status"],
+            "not_established"
+        );
+
+        let mut review_only_document = observed_wordpress_assessment_document();
+        review_only_document.items[0].fingerprint =
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let review_only =
+            render_assessment_with_limit(&review_only_document, ReportFormat::Json, usize::MAX)
+                .unwrap();
+        let collection_change = comparison::compare_reports(
+            review_only.as_bytes(),
+            json.as_bytes(),
+            comparison::ComparisonFormat::Json,
+        )
+        .unwrap();
+        let collection_change: serde_json::Value =
+            serde_json::from_str(&collection_change).unwrap();
+        assert_eq!(
+            collection_change["wordpress_review_comparison"]["methodology"]["status"],
+            "changed"
+        );
+        assert_eq!(
+            collection_change["wordpress_review_comparison"]["coverage"]["status"],
+            "changed"
+        );
+        assert_eq!(
+            collection_change["only_in_after"]
+                .as_array()
+                .and_then(|items| items.first())
+                .map(|item| &item["capability_id"]),
+            Some(&serde_json::json!(
+                WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID
+            )),
+            "the distinct observation must remain in Report Compare's exhaustive four-group partition"
+        );
+        assert_eq!(
+            collection_change["only_in_before"],
+            serde_json::json!([]),
+            "absence of discovery must not be labelled remediation"
+        );
+
+        let reverse_collection_change = comparison::compare_reports(
+            json.as_bytes(),
+            review_only.as_bytes(),
+            comparison::ComparisonFormat::Json,
+        )
+        .unwrap();
+        let reverse_collection_change: serde_json::Value =
+            serde_json::from_str(&reverse_collection_change).unwrap();
+        assert_eq!(
+            reverse_collection_change["only_in_after"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            reverse_collection_change["only_in_before"]
+                .as_array()
+                .and_then(|items| items.first())
+                .map(|item| &item["capability_id"]),
+            Some(&serde_json::json!(
+                WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID
+            ))
+        );
+        assert_eq!(
+            reverse_collection_change["wordpress_review_comparison"]["methodology"]["status"],
+            "changed"
+        );
+        assert_eq!(
+            reverse_collection_change["wordpress_review_comparison"]["coverage"]["status"],
+            "changed"
+        );
+
+        let mut invalid: serde_json::Value = serde_json::from_str(&json).unwrap();
+        invalid["wordpress_discovery"]["attempted_request_count"] = serde_json::json!(4);
+        let invalid = serde_json::to_vec(&invalid).unwrap();
+        assert_eq!(
+            comparison::import_assessment_summary(&invalid),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut false_commit: serde_json::Value = serde_json::from_str(&json).unwrap();
+        false_commit["wordpress_discovery"]["sources"][0]["evidence_reference_count"] =
+            serde_json::json!(0);
+        assert_eq!(
+            comparison::import_assessment_summary(&serde_json::to_vec(&false_commit).unwrap()),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut false_observation: serde_json::Value = serde_json::from_str(&json).unwrap();
+        false_observation["wordpress_discovery"]["sources"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("namespaces");
+        assert_eq!(
+            comparison::import_assessment_summary(&serde_json::to_vec(&false_observation).unwrap()),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut old_schema_vocabulary_leak: serde_json::Value =
+            serde_json::from_str(&json).unwrap();
+        old_schema_vocabulary_leak
+            .as_object_mut()
+            .unwrap()
+            .remove("wordpress_discovery");
+        let review = old_schema_vocabulary_leak["wordpress_review"]
+            .as_object_mut()
+            .unwrap();
+        review.insert(
+            "schema".to_owned(),
+            serde_json::json!("security.wordpress-review-audit/v1"),
+        );
+        review.remove("review_basis_schema");
+        review.insert("additional_request_count".to_owned(), serde_json::json!(0));
+        assert_eq!(
+            comparison::import_assessment_summary(
+                &serde_json::to_vec(&old_schema_vocabulary_leak).unwrap()
+            ),
+            Err(comparison::ComparisonError::InvalidDocument),
+            "legacy audit schemas must not accept discovery-only evidence vocabulary"
+        );
+
+        let mut false_discovery_confidence: serde_json::Value =
+            serde_json::from_str(&json).unwrap();
+        let theme = false_discovery_confidence["wordpress_review"]["components"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|component| component["identity"]["slug"] == "termivar-child")
+            .unwrap();
+        theme["confidence_classes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!("operator_assertion"));
+        assert_eq!(
+            comparison::import_assessment_summary(
+                &serde_json::to_vec(&false_discovery_confidence).unwrap()
+            ),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut missing_basis: serde_json::Value = serde_json::from_str(&json).unwrap();
+        missing_basis["wordpress_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove("review_basis_schema");
+        assert_eq!(
+            comparison::import_assessment_summary(&serde_json::to_vec(&missing_basis).unwrap()),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut mismatched_request_accounting: serde_json::Value =
+            serde_json::from_str(&json).unwrap();
+        mismatched_request_accounting["wordpress_review"]["additional_request_count"] =
+            serde_json::json!(2);
+        assert_eq!(
+            comparison::import_assessment_summary(
+                &serde_json::to_vec(&mismatched_request_accounting).unwrap()
+            ),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut invalid_slug: serde_json::Value = serde_json::from_str(&json).unwrap();
+        invalid_slug["wordpress_discovery"]["sources"][1]["component"]["slug"] =
+            serde_json::json!("../theme");
+        assert_eq!(
+            comparison::import_assessment_summary(&serde_json::to_vec(&invalid_slug).unwrap()),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut duplicate_source: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let duplicate = duplicate_source["wordpress_discovery"]["sources"][1].clone();
+        duplicate_source["wordpress_discovery"]["sources"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        for field in [
+            "candidate_count",
+            "attempted_request_count",
+            "completed_response_count",
+            "committed_response_count",
+            "source_count",
+        ] {
+            duplicate_source["wordpress_discovery"][field] = serde_json::json!(4);
+        }
+        duplicate_source["wordpress_discovery"]["response_bytes"] = serde_json::json!(1_024);
+        duplicate_source["wordpress_review"]["additional_request_count"] = serde_json::json!(4);
+        assert_eq!(
+            comparison::import_assessment_summary(&serde_json::to_vec(&duplicate_source).unwrap()),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut false_candidate_limit: serde_json::Value = serde_json::from_str(&json).unwrap();
+        false_candidate_limit["wordpress_discovery"]["candidate_limit_reached"] =
+            serde_json::json!(true);
+        assert_eq!(
+            comparison::import_assessment_summary(
+                &serde_json::to_vec(&false_candidate_limit).unwrap()
+            ),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut too_many_theme_requests: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for ordinal in 0..3 {
+            too_many_theme_requests["wordpress_discovery"]["sources"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "kind": "theme_stylesheet",
+                    "component": {
+                        "kind": "theme",
+                        "slug": format!("quota-theme-{ordinal}"),
+                    },
+                    "parent_depth": 1,
+                    "outcome": "request_failed",
+                    "request_attempted": true,
+                    "response_bytes": 0,
+                    "evidence_reference_count": 0,
+                    "evidence_references": [],
+                }));
+        }
+        too_many_theme_requests["wordpress_discovery"]["candidate_count"] = serde_json::json!(6);
+        too_many_theme_requests["wordpress_discovery"]["attempted_request_count"] =
+            serde_json::json!(6);
+        too_many_theme_requests["wordpress_discovery"]["source_count"] = serde_json::json!(6);
+        too_many_theme_requests["wordpress_review"]["additional_request_count"] =
+            serde_json::json!(6);
+        assert_eq!(
+            comparison::import_assessment_summary(
+                &serde_json::to_vec(&too_many_theme_requests).unwrap()
+            ),
+            Err(comparison::ComparisonError::InvalidDocument),
+            "the strict reader must reject a reconciled audit above the three-theme request ceiling"
+        );
+
+        let mut invalid_producer_slug = discovered_wordpress_assessment_document();
+        invalid_producer_slug
+            .wordpress_discovery
+            .as_mut()
+            .unwrap()
+            .sources[1]
+            .component
+            .as_mut()
+            .unwrap()
+            .slug = "../theme".to_owned();
+        assert_eq!(
+            render_assessment_with_limit(&invalid_producer_slug, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+
+        let mut false_candidate_limit_producer = discovered_wordpress_assessment_document();
+        false_candidate_limit_producer
+            .wordpress_discovery
+            .as_mut()
+            .unwrap()
+            .candidate_limit_reached = true;
+        assert_eq!(
+            render_assessment_with_limit(
+                &false_candidate_limit_producer,
+                ReportFormat::Json,
+                usize::MAX
+            ),
+            Err(ReportError::Serialization)
+        );
+
+        let mut too_many_theme_requests_producer = discovered_wordpress_assessment_document();
+        let discovery = too_many_theme_requests_producer
+            .wordpress_discovery
+            .as_mut()
+            .unwrap();
+        for ordinal in 0..3 {
+            discovery.sources.push(WordPressDiscoverySourceDocument {
+                kind: "theme_stylesheet",
+                component: Some(WordPressComponentIdentityDocument {
+                    kind: "theme",
+                    slug: format!("quota-theme-{ordinal}"),
+                }),
+                parent_depth: 1,
+                outcome: "request_failed",
+                request_attempted: true,
+                response_bytes: 0,
+                evidence_reference_count: 0,
+                evidence_references: Vec::new(),
+                namespaces: Vec::new(),
+                theme: None,
+                plugin: None,
+            });
+        }
+        discovery.candidate_count = 6;
+        discovery.attempted_request_count = 6;
+        discovery.source_count = 6;
+        too_many_theme_requests_producer
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .additional_request_count = 6;
+        assert_eq!(
+            render_assessment_with_limit(
+                &too_many_theme_requests_producer,
+                ReportFormat::Json,
+                usize::MAX
+            ),
+            Err(ReportError::Serialization),
+            "the report writer must reject a reconciled audit above the three-theme request ceiling"
+        );
+
+        // The broker charges the whole transport-delivered chunk that crosses
+        // its two-MiB retention boundary. That chunk has no source-level fixed
+        // maximum, so the strict reader validates u64 accounting and exact
+        // reconciliation rather than inventing a three-MiB wire ceiling.
+        let mut chunk_overrun: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let observed = 4_u64 * 1_024 * 1_024;
+        chunk_overrun["wordpress_discovery"]["sources"][0]["response_bytes"] =
+            serde_json::json!(observed);
+        chunk_overrun["wordpress_discovery"]["response_bytes"] = serde_json::json!(observed + 512);
+        comparison::import_assessment_summary(&serde_json::to_vec(&chunk_overrun).unwrap())
+            .unwrap();
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn wordpress_discovery_writer_enforces_component_links_and_runtime_field_bounds() {
+        let render = |document: &AssessmentDocument<'_>| {
+            render_assessment_with_limit(document, ReportFormat::Json, usize::MAX)
+        };
+
+        let mut missing_component = discovered_wordpress_assessment_document();
+        let review = missing_component.wordpress_review.as_mut().unwrap();
+        review.components.retain(|component| {
+            !(component.identity.kind == "plugin"
+                && component.identity.slug == "termivar-metadata-lab")
+        });
+        review.component_count = review.components.len();
+        assert_eq!(render(&missing_component), Err(ReportError::Serialization));
+
+        let mut wrong_source_class = discovered_wordpress_assessment_document();
+        let component = wrong_source_class
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .components
+            .iter_mut()
+            .find(|component| component.identity.slug == "termivar-metadata-lab")
+            .unwrap();
+        component.identity_sources = vec!["operator_context"];
+        component.confidence_classes = vec!["operator_assertion"];
+        component.evidence_class = "operator_supplied";
+        assert_eq!(render(&wrong_source_class), Err(ReportError::Serialization));
+
+        let mut metadata_at_limit = discovered_wordpress_assessment_document();
+        metadata_at_limit
+            .wordpress_discovery
+            .as_mut()
+            .unwrap()
+            .sources[2]
+            .plugin
+            .as_mut()
+            .unwrap()
+            .name = Some("m".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_METADATA_BYTES));
+        render(&metadata_at_limit).unwrap();
+        metadata_at_limit
+            .wordpress_discovery
+            .as_mut()
+            .unwrap()
+            .sources[2]
+            .plugin
+            .as_mut()
+            .unwrap()
+            .name = Some("m".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_METADATA_BYTES + 1));
+        assert_eq!(render(&metadata_at_limit), Err(ReportError::Serialization));
+
+        let mut version_at_limit = discovered_wordpress_assessment_document();
+        let version = "1".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_VERSION_BYTES);
+        version_at_limit
+            .wordpress_discovery
+            .as_mut()
+            .unwrap()
+            .sources[1]
+            .theme
+            .as_mut()
+            .unwrap()
+            .version = Some(version.clone());
+        version_at_limit
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .components
+            .iter_mut()
+            .find(|component| component.identity.slug == "termivar-child")
+            .unwrap()
+            .versions[0]
+            .value = version;
+        render(&version_at_limit).unwrap();
+        let oversized_version = "1".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_VERSION_BYTES + 1);
+        version_at_limit
+            .wordpress_discovery
+            .as_mut()
+            .unwrap()
+            .sources[1]
+            .theme
+            .as_mut()
+            .unwrap()
+            .version = Some(oversized_version.clone());
+        version_at_limit
+            .wordpress_review
+            .as_mut()
+            .unwrap()
+            .components
+            .iter_mut()
+            .find(|component| component.identity.slug == "termivar-child")
+            .unwrap()
+            .versions[0]
+            .value = oversized_version;
+        assert_eq!(render(&version_at_limit), Err(ReportError::Serialization));
+
+        let mut namespace_at_limit = discovered_wordpress_assessment_document();
+        namespace_at_limit
+            .wordpress_discovery
+            .as_mut()
+            .unwrap()
+            .sources[0]
+            .namespaces[0] = "n".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_NAMESPACE_BYTES);
+        render(&namespace_at_limit).unwrap();
+        namespace_at_limit
+            .wordpress_discovery
+            .as_mut()
+            .unwrap()
+            .sources[0]
+            .namespaces[0] = "n".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_NAMESPACE_BYTES + 1);
+        assert_eq!(render(&namespace_at_limit), Err(ReportError::Serialization));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn wordpress_discovery_importer_rejects_unlinked_components_and_runtime_bound_overruns() {
+        let json = render_assessment_with_limit(
+            &discovered_wordpress_assessment_document(),
+            ReportFormat::Json,
+            usize::MAX,
+        )
+        .unwrap();
+        let valid: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let mut unlinked = valid.clone();
+        unlinked["wordpress_discovery"]["sources"][2]["component"]["slug"] =
+            serde_json::json!("unseen-plugin");
+        assert_eq!(
+            comparison::import_assessment_summary(&serde_json::to_vec(&unlinked).unwrap()),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut metadata_at_limit = valid.clone();
+        metadata_at_limit["wordpress_discovery"]["sources"][2]["plugin"]["name"] =
+            serde_json::json!("m".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_METADATA_BYTES));
+        comparison::import_assessment_summary(&serde_json::to_vec(&metadata_at_limit).unwrap())
+            .unwrap();
+        metadata_at_limit["wordpress_discovery"]["sources"][2]["plugin"]["name"] =
+            serde_json::json!("m".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_METADATA_BYTES + 1));
+        assert_eq!(
+            comparison::import_assessment_summary(&serde_json::to_vec(&metadata_at_limit).unwrap()),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut version_at_limit = valid.clone();
+        let version = "1".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_VERSION_BYTES);
+        version_at_limit["wordpress_discovery"]["sources"][1]["theme"]["version"] =
+            serde_json::json!(version);
+        version_at_limit["wordpress_review"]["components"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|component| component["identity"]["slug"] == "termivar-child")
+            .unwrap()["versions"][0]["value"] = serde_json::json!(version);
+        comparison::import_assessment_summary(&serde_json::to_vec(&version_at_limit).unwrap())
+            .unwrap();
+        let oversized_version = "1".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_VERSION_BYTES + 1);
+        version_at_limit["wordpress_discovery"]["sources"][1]["theme"]["version"] =
+            serde_json::json!(oversized_version);
+        version_at_limit["wordpress_review"]["components"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|component| component["identity"]["slug"] == "termivar-child")
+            .unwrap()["versions"][0]["value"] = serde_json::json!(oversized_version);
+        assert_eq!(
+            comparison::import_assessment_summary(&serde_json::to_vec(&version_at_limit).unwrap()),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
+
+        let mut namespace_at_limit = valid.clone();
+        namespace_at_limit["wordpress_discovery"]["sources"][0]["namespaces"][0] =
+            serde_json::json!("n".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_NAMESPACE_BYTES));
+        comparison::import_assessment_summary(&serde_json::to_vec(&namespace_at_limit).unwrap())
+            .unwrap();
+        namespace_at_limit["wordpress_discovery"]["sources"][0]["namespaces"][0] =
+            serde_json::json!("n".repeat(MAX_WORDPRESS_DISCOVERY_AUDIT_NAMESPACE_BYTES + 1));
+        assert_eq!(
+            comparison::import_assessment_summary(
+                &serde_json::to_vec(&namespace_at_limit).unwrap()
+            ),
+            Err(comparison::ComparisonError::InvalidDocument)
+        );
     }
 
     #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -8957,6 +10578,95 @@ mod tests {
             serde_json::json!(["source_association_variants"])
         );
 
+        let discovery_json = render_assessment_with_limit(
+            &discovered_wordpress_assessment_document(),
+            ReportFormat::Json,
+            usize::MAX,
+        )
+        .unwrap();
+        let discovery_document: serde_json::Value = serde_json::from_str(&discovery_json).unwrap();
+        let discovery = discovery_document["wordpress_discovery"].clone();
+        let discovery_item = discovery_document["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["capability_id"] == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
+            .unwrap()
+            .clone();
+        let depth_zero_identities = discovery["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|source| source["parent_depth"] == 0 && !source["component"].is_null())
+            .map(|source| source["component"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(depth_zero_identities.len(), 2);
+        let discovery_components = depth_zero_identities
+            .iter()
+            .map(|identity| {
+                let matches = discovery_document["wordpress_review"]["components"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|component| component["identity"] == *identity)
+                    .collect::<Vec<_>>();
+                assert_eq!(matches.len(), 1);
+                matches[0].clone()
+            })
+            .collect::<Vec<_>>();
+        let as_discovery_v7 = |source: &str| {
+            let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+            let review = value["wordpress_review"].as_object_mut().unwrap();
+            let basis = review["schema"].clone();
+            review.insert(
+                "schema".to_owned(),
+                serde_json::json!("security.wordpress-review-audit/v7"),
+            );
+            review.insert("review_basis_schema".to_owned(), basis);
+            review.insert("additional_request_count".to_owned(), serde_json::json!(3));
+            let components = review["components"].as_array_mut().unwrap();
+            for discovery_component in &discovery_components {
+                assert!(components
+                    .iter()
+                    .all(|component| { component["identity"] != discovery_component["identity"] }));
+                components.push(discovery_component.clone());
+            }
+            let component_count = components.len();
+            review.insert(
+                "component_count".to_owned(),
+                serde_json::json!(component_count),
+            );
+            value["wordpress_discovery"] = discovery.clone();
+            let items = value["items"].as_array_mut().unwrap();
+            items.push(discovery_item.clone());
+            value["item_count"] = serde_json::json!(items.len());
+            serde_json::to_vec(&value).unwrap()
+        };
+        let v7_before = as_discovery_v7(&before_json);
+        let v7_reordered = as_discovery_v7(&reordered_json);
+        let v7_after = as_discovery_v7(&after_json);
+        for same in [&v7_before, &v7_reordered] {
+            comparison::import_assessment_summary(same).unwrap();
+            let comparison =
+                comparison::compare_reports(&v7_before, same, comparison::ComparisonFormat::Json)
+                    .unwrap();
+            let comparison: serde_json::Value = serde_json::from_str(&comparison).unwrap();
+            let advisories = &comparison["wordpress_review_comparison"]["advisories"];
+            assert_eq!(advisories["paired_unchanged_count"], 1);
+            assert_eq!(advisories["paired_changed"], serde_json::json!([]));
+        }
+        let v7_comparison =
+            comparison::compare_reports(&v7_before, &v7_after, comparison::ComparisonFormat::Json)
+                .unwrap();
+        let v7_comparison: serde_json::Value = serde_json::from_str(&v7_comparison).unwrap();
+        let v7_advisories = &v7_comparison["wordpress_review_comparison"]["advisories"];
+        assert_eq!(v7_advisories["paired_unchanged_count"], 0);
+        assert_eq!(v7_advisories["paired_changed"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            v7_advisories["paired_changed"][0]["changed_dimensions"],
+            serde_json::json!(["source_association_variants"])
+        );
+
         let mut impossible_v1: serde_json::Value = serde_json::from_str(&before_json).unwrap();
         impossible_v1["wordpress_review"]["external_review"]["resource_policy"] =
             serde_json::Value::String(WORDFENCE_V3_RESOURCE_POLICY_V1.to_owned());
@@ -9642,6 +11352,10 @@ mod tests {
             (
                 WordPressEvidenceSource::SameOriginAssetPath,
                 "same_origin_asset_path",
+            ),
+            (
+                WordPressEvidenceSource::ThemeStylesheetDeclaration,
+                "theme_stylesheet_declaration",
             ),
             (WordPressEvidenceSource::OperatorContext, "operator_context"),
         ] {

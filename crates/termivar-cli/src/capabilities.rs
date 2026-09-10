@@ -590,6 +590,23 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/wordpress-review.md",
         ),
         surface!(
+            "option.wordpress-discovery",
+            "WordPress metadata discovery",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("wordpress-review"),
+            cfg!(feature = "wordpress-review"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &[
+                "--profile web-review",
+                "--wordpress-review",
+                "--wordpress-discovery",
+            ],
+            "Explicitly performs at most 12 anonymous same-origin metadata GET requests through the existing assessment broker. It is never enabled by --wordpress-review alone; discovered metadata is unauthenticated evidence, plugin Stable tag is not treated as an installed version, and no exploit or impact validation is performed.",
+            "docs/wordpress-review.md",
+        ),
+        surface!(
             "command.legacy-scan",
             "Legacy scanner",
             SurfaceGroup::Optional,
@@ -756,7 +773,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 22);
+        assert_eq!(document.surfaces.len(), 23);
 
         let keys = document
             .surfaces
@@ -789,6 +806,7 @@ mod tests {
                 "option.resource-authorization-review",
                 "option.ssrf-oast-review",
                 "option.wordpress-review",
+                "option.wordpress-discovery",
                 "command.legacy-scan",
                 "command.api",
                 "command.proxy",
@@ -868,6 +886,7 @@ mod tests {
             ),
             ("option.ssrf-oast-review", "ssrf-oast-review"),
             ("option.wordpress-review", "wordpress-review"),
+            ("option.wordpress-discovery", "wordpress-discovery"),
         ] {
             let state = document
                 .surfaces
@@ -983,6 +1002,12 @@ mod tests {
                 "implemented",
             ),
             (
+                "option.wordpress-discovery",
+                Some("wordpress-review"),
+                "preview",
+                "implemented",
+            ),
+            (
                 "command.legacy-scan",
                 Some("legacy-scanner"),
                 "legacy",
@@ -1051,6 +1076,32 @@ mod tests {
         assert!(wordpress
             .limitation
             .contains("Without that selector the external relation stays indeterminate"));
+
+        let wordpress_discovery = find("option.wordpress-discovery");
+        assert_eq!(
+            wordpress_discovery.prerequisites,
+            [
+                "--profile web-review",
+                "--wordpress-review",
+                "--wordpress-discovery"
+            ]
+        );
+        assert!(matches!(wordpress_discovery.group, SurfaceGroup::Optional));
+        assert!(matches!(wordpress_discovery.kind, SurfaceKind::ScanOption));
+        assert_eq!(
+            wordpress_discovery.compile_feature,
+            Some("wordpress-review")
+        );
+        assert!(wordpress_discovery.limitation.contains("at most 12"));
+        assert!(wordpress_discovery
+            .limitation
+            .contains("anonymous same-origin metadata GET requests"));
+        assert!(wordpress_discovery
+            .limitation
+            .contains("never enabled by --wordpress-review alone"));
+        assert!(wordpress_discovery
+            .limitation
+            .contains("Stable tag is not treated as an installed version"));
 
         assert_eq!(
             find("output.assessment-reports").prerequisites,

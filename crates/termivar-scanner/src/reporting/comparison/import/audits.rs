@@ -1,6 +1,9 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
-use super::super::{ImportedWordPressAudit, WordPressAdvisoryKey, WordPressComponentKey};
+use super::super::{
+    ImportedWordPressAudit, WordPressAdvisoryKey, WordPressComponentKey,
+    WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY,
+};
 use super::{
     array, boolean, check, digest, keys, number, object, optional_boolean, optional_text,
     optional_token, required, string, text, token, ComparisonError, ImportedItem, Value,
@@ -12,13 +15,26 @@ use crate::wordpress_version::{
 use serde_json::Map;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const REST_CAPABILITY: &str = "api.rest-readonly-surface-observed@1";
 pub(super) const WORDPRESS_CAPABILITY: &str = "technology.wordpress-surface-observed@1";
 const OPENAPI_CAPABILITY: &str = "api.openapi-contract-observed@1";
 const AUTHORIZATION_CAPABILITY: &str = "authorization.resource-cross-principal-equivalence@1";
 const MAX_WORDPRESS_SIGNALS: u64 = 256;
+const WORDPRESS_DISCOVERY_AUDIT_SCHEMA: &str = "security.wordpress-discovery-audit/v1";
+const WORDPRESS_DISCOVERY_CAPABILITY: &str = "technology.wordpress-metadata-discovery@1";
+const WORDPRESS_DISCOVERY_POLICY: &str = "termivar.wordpress-metadata-discovery/v1";
+const MAX_WORDPRESS_DISCOVERY_SOURCES: usize = 32;
+const MAX_WORDPRESS_DISCOVERY_REQUESTS: u64 = 12;
+const MAX_WORDPRESS_DISCOVERY_REST_REQUESTS: u64 = 1;
+const MAX_WORDPRESS_DISCOVERY_THEME_REQUESTS: u64 = 3;
+const MAX_WORDPRESS_DISCOVERY_PLUGIN_REQUESTS: u64 = 8;
+const MAX_WORDPRESS_DISCOVERY_OMITTED_CANDIDATES: u64 = 4_064;
+const MAX_WORDPRESS_DISCOVERY_NAMESPACES: usize = 64;
+const MAX_WORDPRESS_DISCOVERY_METADATA_BYTES: usize = 256;
+const MAX_WORDPRESS_DISCOVERY_VERSION_BYTES: usize = 64;
+const MAX_WORDPRESS_DISCOVERY_NAMESPACE_BYTES: usize = 128;
 // These stable wire bounds mirror the feature-owned evaluator constants. The
 // importer is intentionally available without `wordpress-review`, so it cannot
 // depend on that feature-gated module directly.
@@ -223,6 +239,570 @@ pub(super) fn validate(
     }
 }
 
+pub(super) fn validate_wordpress_discovery(
+    value: &Value,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<(), ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "capability_id",
+            "policy_id",
+            "selected",
+            "method",
+            "credential_mode",
+            "seed_count",
+            "candidate_count",
+            "candidate_limit_reached",
+            "omitted_candidate_count",
+            "attempted_request_count",
+            "completed_response_count",
+            "committed_response_count",
+            "response_bytes",
+            "source_count",
+            "sources",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == WORDPRESS_DISCOVERY_AUDIT_SCHEMA)?;
+    check(string(fields, "capability_id")? == WORDPRESS_DISCOVERY_CAPABILITY)?;
+    check(string(fields, "policy_id")? == WORDPRESS_DISCOVERY_POLICY)?;
+    check(boolean(fields, "selected")?)?;
+    check(string(fields, "method")? == "get")?;
+    check(string(fields, "credential_mode")? == "anonymous")?;
+    let seed_count = number(fields, "seed_count", MAX_WORDPRESS_DISCOVERY_SOURCES as u64)?;
+    let candidate_count = number(
+        fields,
+        "candidate_count",
+        MAX_WORDPRESS_DISCOVERY_SOURCES as u64,
+    )?;
+    let attempted = number(
+        fields,
+        "attempted_request_count",
+        MAX_WORDPRESS_DISCOVERY_REQUESTS,
+    )?;
+    let completed = number(
+        fields,
+        "completed_response_count",
+        MAX_WORDPRESS_DISCOVERY_REQUESTS,
+    )?;
+    let committed = number(
+        fields,
+        "committed_response_count",
+        MAX_WORDPRESS_DISCOVERY_REQUESTS,
+    )?;
+    let discovery_items = items
+        .values()
+        .filter(|item| item.capability_id == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY)
+        .collect::<Vec<_>>();
+    check(
+        (discovery_items.len() == 1) == (committed > 0)
+            && discovery_items.first().is_none_or(|item| {
+                let projection = &item.projection;
+                projection.title == "WordPress metadata-source response outcome observed"
+                    && projection.category == "wordpress-metadata-source-response"
+                    && projection.disposition == "informational"
+                    && projection.claim_basis == "observation"
+                    && projection.severity.is_none()
+                    && projection.cwe.is_none()
+                    && projection.confidence_ppm == 550_000
+                    && projection.redacted_summary
+                        == "Bounded response evidence from selected public WordPress metadata sources was collected; usable metadata, installation authenticity, vulnerable-code reachability, and advisory impact were not established."
+                    && projection.remediation.id == "wordpress-metadata-review"
+                    && projection.remediation.summary
+                        == "Confirm the installation inventory and source-qualified metadata before making a security or remediation decision."
+                    && projection.evidence.evidence_count == committed
+                    && projection.evidence.evidence_reference_count == committed as usize
+                    && projection.evidence.control_reference_count == 0
+                    && projection.evidence.candidate_reference_count == 0
+                    && !projection.evidence.case_present
+                    && !projection.evidence.outcome_present
+                    && projection.evidence.verification_stage.is_none()
+            }),
+    )?;
+    let response_bytes = number(fields, "response_bytes", u64::MAX)?;
+    let candidate_limit_reached = boolean(fields, "candidate_limit_reached")?;
+    let omitted_candidate_count = number(
+        fields,
+        "omitted_candidate_count",
+        MAX_WORDPRESS_DISCOVERY_OMITTED_CANDIDATES,
+    )?;
+    let sources = array(fields, "sources")?;
+    check(
+        seed_count <= MAX_WORDPRESS_DISCOVERY_SOURCES as u64
+            && seed_count <= candidate_count
+            && candidate_limit_reached == (omitted_candidate_count > 0)
+            && (omitted_candidate_count == 0
+                || candidate_count == MAX_WORDPRESS_DISCOVERY_SOURCES as u64)
+            && candidate_count == sources.len() as u64
+            && attempted <= candidate_count
+            && completed <= attempted
+            && committed == completed
+            && number(
+                fields,
+                "source_count",
+                MAX_WORDPRESS_DISCOVERY_SOURCES as u64,
+            )? == sources.len() as u64,
+    )?;
+    let mut source_bytes = 0_u64;
+    let mut evidence_references = 0_u64;
+    let mut source_evidence_references = BTreeSet::new();
+    let mut attempted_sources = 0_u64;
+    let mut attempted_rest_sources = 0_u64;
+    let mut attempted_theme_sources = 0_u64;
+    let mut attempted_plugin_sources = 0_u64;
+    let mut source_identities = std::collections::BTreeSet::new();
+    for source in sources {
+        let source = object(source)?;
+        let kind = string(source, "kind")?;
+        let (bytes, references, request_attempted, references_by_source, identity) =
+            validate_wordpress_discovery_source(source)?;
+        source_bytes = source_bytes
+            .checked_add(bytes)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        evidence_references = evidence_references
+            .checked_add(references)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        attempted_sources = attempted_sources
+            .checked_add(u64::from(request_attempted))
+            .ok_or(ComparisonError::InvalidDocument)?;
+        if request_attempted {
+            match kind {
+                "rest_index" => attempted_rest_sources += 1,
+                "theme_stylesheet" => attempted_theme_sources += 1,
+                "plugin_readme" => attempted_plugin_sources += 1,
+                _ => return Err(ComparisonError::InvalidDocument),
+            }
+        }
+        for reference in references_by_source {
+            check(source_evidence_references.insert(reference))?;
+        }
+        check(source_identities.insert(identity))?;
+    }
+    check(
+        source_bytes == response_bytes
+            && evidence_references == committed
+            && attempted_sources == attempted
+            && wordpress_discovery_request_class_counts_valid(
+                attempted_rest_sources,
+                attempted_theme_sources,
+                attempted_plugin_sources,
+            ),
+    )?;
+    check(
+        discovery_items
+            .first()
+            .map_or(source_evidence_references.is_empty(), |item| {
+                item.observation_evidence_references == source_evidence_references
+            }),
+    )
+}
+
+fn wordpress_discovery_request_class_counts_valid(rest: u64, themes: u64, plugins: u64) -> bool {
+    rest <= MAX_WORDPRESS_DISCOVERY_REST_REQUESTS
+        && themes <= MAX_WORDPRESS_DISCOVERY_THEME_REQUESTS
+        && plugins <= MAX_WORDPRESS_DISCOVERY_PLUGIN_REQUESTS
+}
+
+pub(super) fn attach_wordpress_discovery(
+    wordpress: &mut ImportedWordPressAudit,
+    discovery: &Value,
+) -> Result<(), ComparisonError> {
+    let fields = object(discovery)?;
+    validate_wordpress_discovery_review_links(wordpress, fields)?;
+    let attempted_request_count = number(
+        fields,
+        "attempted_request_count",
+        MAX_WORDPRESS_DISCOVERY_REQUESTS,
+    )?;
+    check(
+        number(
+            object(&wordpress.coverage)?,
+            "additional_request_count",
+            MAX_WORDPRESS_DISCOVERY_REQUESTS,
+        )? == attempted_request_count,
+    )?;
+    let methodology = selected_object(
+        fields,
+        &[
+            "schema",
+            "capability_id",
+            "policy_id",
+            "selected",
+            "method",
+            "credential_mode",
+        ],
+        &[],
+    )?;
+    let coverage = selected_object(
+        fields,
+        &[
+            "seed_count",
+            "candidate_count",
+            "candidate_limit_reached",
+            "omitted_candidate_count",
+            "attempted_request_count",
+            "completed_response_count",
+            "committed_response_count",
+            "response_bytes",
+            "source_count",
+        ],
+        &[],
+    )?;
+    let mut source_outcomes = Vec::new();
+    let mut component_metadata = BTreeMap::<WordPressComponentKey, Vec<Value>>::new();
+    let mut rest_source_content = Vec::new();
+    for source in array(fields, "sources")? {
+        let source = object(source)?;
+        source_outcomes.push(selected_object(
+            source,
+            &[
+                "kind",
+                "parent_depth",
+                "outcome",
+                "request_attempted",
+                "response_bytes",
+                "evidence_reference_count",
+            ],
+            &[("component", source.get("component"))],
+        )?);
+        if string(source, "kind")? == "rest_index" {
+            let mut content = selected_object(
+                source,
+                &["kind"],
+                &[("namespaces", source.get("namespaces"))],
+            )?;
+            if let Some(Value::Array(namespaces)) = content.get_mut("namespaces") {
+                namespaces.sort_by_key(Value::to_string);
+            }
+            rest_source_content.push(content);
+        } else if let Some(component) = source.get("component") {
+            let key = comparison_component_key(object(component)?)?;
+            let metadata = selected_object(
+                source,
+                &["kind", "parent_depth"],
+                &[
+                    ("theme", source.get("theme")),
+                    ("plugin", source.get("plugin")),
+                ],
+            )?;
+            if object(&metadata)?.len() > 2 {
+                if !wordpress.components.contains_key(&key)
+                    && (string(source, "kind")? != "theme_stylesheet"
+                        || number(source, "parent_depth", 1)? != 1)
+                {
+                    return Err(ComparisonError::InvalidDocument);
+                }
+                component_metadata.entry(key).or_default().push(metadata);
+            }
+        }
+    }
+    source_outcomes.sort_by_key(Value::to_string);
+    let mut coverage = coverage;
+    object_mut(&mut coverage)?.insert("source_outcomes".to_owned(), Value::Array(source_outcomes));
+    for (key, mut metadata) in component_metadata {
+        metadata.sort_by_key(Value::to_string);
+        wordpress
+            .components
+            .entry(key)
+            .or_default()
+            .insert("discovery_metadata".to_owned(), Value::Array(metadata));
+    }
+    rest_source_content.sort_by_key(Value::to_string);
+    let discovery_source_content = Value::Object(Map::from_iter([(
+        "rest_indexes".to_owned(),
+        Value::Array(rest_source_content),
+    )]));
+    object_mut(&mut wordpress.methodology)?.insert("wordpress_discovery".to_owned(), methodology);
+    object_mut(&mut wordpress.coverage)?.insert("wordpress_discovery".to_owned(), coverage);
+    wordpress.discovery_source_content = Some(discovery_source_content);
+    Ok(())
+}
+
+fn validate_wordpress_discovery_review_links(
+    wordpress: &ImportedWordPressAudit,
+    discovery: &Map<String, Value>,
+) -> Result<(), ComparisonError> {
+    let mut discovered = BTreeMap::new();
+    for source in array(discovery, "sources")? {
+        let source = object(source)?;
+        let kind = string(source, "kind")?;
+        let parent_depth = number(source, "parent_depth", 1)?;
+        if parent_depth == 0 && matches!(kind, "theme_stylesheet" | "plugin_readme") {
+            let component = comparison_component_key(object(required(source, "component")?)?)?;
+            let dimensions = wordpress
+                .components
+                .get(&component)
+                .ok_or(ComparisonError::InvalidDocument)?;
+            let evidence = object(
+                dimensions
+                    .get("component_evidence")
+                    .ok_or(ComparisonError::InvalidDocument)?,
+            )?;
+            check(
+                array(evidence, "identity_sources")?
+                    .iter()
+                    .any(|source| source.as_str() == Some("same_origin_asset_path")),
+            )?;
+        }
+        if kind != "theme_stylesheet" {
+            continue;
+        }
+        let Some(theme) = source.get("theme") else {
+            continue;
+        };
+        let theme = object(theme)?;
+        let Some(version) = optional_text(theme, "version", MAX_WORDPRESS_DISCOVERY_VERSION_BYTES)?
+        else {
+            continue;
+        };
+        let component = comparison_component_key(object(required(source, "component")?)?)?;
+        check(component.kind == "theme" && string(source, "outcome")? == "observed")?;
+        check(discovered.insert(component, version).is_none())?;
+    }
+
+    let mut reviewed = BTreeMap::new();
+    for (key, dimensions) in &wordpress.components {
+        let evidence = object(
+            dimensions
+                .get("component_evidence")
+                .ok_or(ComparisonError::InvalidDocument)?,
+        )?;
+        for version in array(evidence, "versions")? {
+            let version = object(version)?;
+            if string(version, "source")? != "theme_stylesheet_declaration" {
+                continue;
+            }
+            check(key.kind == "theme")?;
+            check(
+                reviewed
+                    .insert(
+                        key.clone(),
+                        text(version, "value", MAX_WORDPRESS_DISCOVERY_VERSION_BYTES)?,
+                    )
+                    .is_none(),
+            )?;
+        }
+    }
+    check(discovered == reviewed)
+}
+
+fn validate_wordpress_discovery_source(
+    fields: &Map<String, Value>,
+) -> Result<(u64, u64, bool, Vec<String>, String), ComparisonError> {
+    keys(
+        fields,
+        &[
+            "kind",
+            "parent_depth",
+            "outcome",
+            "request_attempted",
+            "response_bytes",
+            "evidence_reference_count",
+            "evidence_references",
+        ],
+        &["component", "namespaces", "theme", "plugin"],
+    )?;
+    let kind = token(
+        fields,
+        "kind",
+        &["rest_index", "theme_stylesheet", "plugin_readme"],
+    )?;
+    let outcome = token(
+        fields,
+        "outcome",
+        &[
+            "observed",
+            "no_metadata",
+            "not_found",
+            "unauthorized",
+            "rate_limited",
+            "redirect_observed",
+            "unsupported_content",
+            "invalid_advertisement",
+            "malformed",
+            "truncated",
+            "request_failed",
+            "budget_exhausted",
+            "cancelled",
+            "deadline_exceeded",
+            "not_selected_by_limit",
+            "not_attempted_after_throttle",
+        ],
+    )?;
+    let parent_depth = number(fields, "parent_depth", 1)?;
+    let request_attempted = boolean(fields, "request_attempted")?;
+    let response_bytes = number(fields, "response_bytes", u64::MAX)?;
+    let evidence_references = number(fields, "evidence_reference_count", 1)?;
+    let references_by_source = array(fields, "evidence_references")?;
+    check(references_by_source.len() as u64 == evidence_references)?;
+    let mut unique_references = BTreeSet::new();
+    for reference_value in references_by_source {
+        let reference_value = reference_value
+            .as_str()
+            .ok_or(ComparisonError::InvalidDocument)?;
+        super::reference(reference_value, "evidence")?;
+        check(unique_references.insert(reference_value.to_owned()))?;
+    }
+    let component = fields.get("component").map(object).transpose()?;
+    let namespaces = match fields.get("namespaces") {
+        Some(value) => Some(value.as_array().ok_or(ComparisonError::InvalidDocument)?),
+        None => None,
+    };
+    let theme = fields.get("theme").map(object).transpose()?;
+    let plugin = fields.get("plugin").map(object).transpose()?;
+    if let Some(component) = component {
+        keys(component, &["kind", "slug"], &[])?;
+        let component_kind = token(component, "kind", &["core", "plugin", "theme"])?;
+        let component_slug = text(component, "slug", MAX_IDENTIFIER_BYTES)?;
+        check(
+            valid_slug(component_slug)
+                && ((component_kind == "core") == (component_slug == "wordpress")),
+        )?;
+    }
+    if let Some(namespaces) = namespaces {
+        check(namespaces.len() <= MAX_WORDPRESS_DISCOVERY_NAMESPACES)?;
+        let mut unique = std::collections::BTreeSet::new();
+        for namespace in namespaces {
+            let namespace = namespace.as_str().ok_or(ComparisonError::InvalidDocument)?;
+            check(valid_discovery_namespace(namespace) && unique.insert(namespace))?;
+        }
+    }
+    if let Some(theme) = theme {
+        discovery_metadata(
+            theme,
+            &[
+                "name",
+                "version",
+                "template",
+                "requires_wordpress",
+                "requires_php",
+                "tested_up_to",
+            ],
+        )?;
+    }
+    if let Some(plugin) = plugin {
+        discovery_metadata(
+            plugin,
+            &[
+                "name",
+                "stable_tag",
+                "requires_wordpress",
+                "requires_php",
+                "tested_up_to",
+            ],
+        )?;
+    }
+    let source_shape_valid = match kind {
+        "rest_index" => {
+            component.is_none() && parent_depth == 0 && theme.is_none() && plugin.is_none()
+        },
+        "theme_stylesheet" => {
+            component.is_some_and(|value| string(value, "kind") == Ok("theme"))
+                && namespaces.is_none()
+                && plugin.is_none()
+        },
+        "plugin_readme" => {
+            component.is_some_and(|value| string(value, "kind") == Ok("plugin"))
+                && parent_depth == 0
+                && namespaces.is_none()
+                && theme.is_none()
+        },
+        _ => false,
+    };
+    let observed_shape_valid = match kind {
+        "rest_index" => namespaces.is_some_and(|values| !values.is_empty()),
+        "theme_stylesheet" => theme.is_some_and(|value| value.contains_key("name")),
+        "plugin_readme" => plugin.is_some_and(|value| value.contains_key("name")),
+        _ => false,
+    };
+    let completed_response = matches!(
+        outcome,
+        "observed"
+            | "no_metadata"
+            | "not_found"
+            | "unauthorized"
+            | "rate_limited"
+            | "redirect_observed"
+            | "unsupported_content"
+            | "malformed"
+            | "truncated"
+    );
+    let metadata_absent = namespaces.is_none() && theme.is_none() && plugin.is_none();
+    let definitely_not_dispatched = matches!(
+        outcome,
+        "invalid_advertisement" | "not_selected_by_limit" | "not_attempted_after_throttle"
+    );
+    check(
+        source_shape_valid
+            && evidence_references == u64::from(completed_response)
+            && (!completed_response || request_attempted)
+            && (request_attempted || response_bytes == 0)
+            && (!definitely_not_dispatched || !request_attempted)
+            && (if outcome == "observed" {
+                observed_shape_valid
+            } else {
+                metadata_absent
+            }),
+    )?;
+    let component_identity = if let Some(value) = component {
+        format!("{}:{}", string(value, "kind")?, string(value, "slug")?)
+    } else {
+        "none".to_owned()
+    };
+    Ok((
+        response_bytes,
+        evidence_references,
+        request_attempted,
+        unique_references.into_iter().collect(),
+        format!("{kind}:{component_identity}:{parent_depth}"),
+    ))
+}
+
+fn discovery_metadata(
+    fields: &Map<String, Value>,
+    allowed: &[&str],
+) -> Result<(), ComparisonError> {
+    keys(fields, &[], allowed)?;
+    check(!fields.is_empty())?;
+    for (name, value) in fields {
+        let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        check(if name == "version" {
+            valid_discovery_version(value)
+        } else {
+            valid_discovery_metadata(value)
+        })?;
+    }
+    Ok(())
+}
+
+fn valid_discovery_metadata(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_DISCOVERY_METADATA_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_discovery_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_DISCOVERY_VERSION_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_discovery_namespace(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WORDPRESS_DISCOVERY_NAMESPACE_BYTES
+        && value.is_ascii()
+        && !value.chars().any(char::is_control)
+}
+
+fn object_mut(value: &mut Value) -> Result<&mut Map<String, Value>, ComparisonError> {
+    value
+        .as_object_mut()
+        .ok_or(ComparisonError::InvalidDocument)
+}
+
 fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<(), ComparisonError> {
     keys(
         fields,
@@ -244,17 +824,32 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
             "catalog_schema",
             "inventory_import",
             "external_review",
+            "review_basis_schema",
         ],
     )?;
-    let schema = match string(fields, "schema")? {
-        "security.wordpress-review-audit/v1" => WordPressAuditSchema::V1,
-        "security.wordpress-review-audit/v2" => WordPressAuditSchema::V2,
-        "security.wordpress-review-audit/v3" => WordPressAuditSchema::V3,
-        "security.wordpress-review-audit/v4" => WordPressAuditSchema::V4,
-        "security.wordpress-review-audit/v5" => WordPressAuditSchema::V5,
-        "security.wordpress-review-audit/v6" => WordPressAuditSchema::V6,
+    let wire_schema = string(fields, "schema")?;
+    let (schema, discovery_influenced) = match wire_schema {
+        "security.wordpress-review-audit/v1" => (WordPressAuditSchema::V1, false),
+        "security.wordpress-review-audit/v2" => (WordPressAuditSchema::V2, false),
+        "security.wordpress-review-audit/v3" => (WordPressAuditSchema::V3, false),
+        "security.wordpress-review-audit/v4" => (WordPressAuditSchema::V4, false),
+        "security.wordpress-review-audit/v5" => (WordPressAuditSchema::V5, false),
+        "security.wordpress-review-audit/v6" => (WordPressAuditSchema::V6, false),
+        "security.wordpress-review-audit/v7" => (
+            match string(fields, "review_basis_schema")? {
+                "security.wordpress-review-audit/v1" => WordPressAuditSchema::V1,
+                "security.wordpress-review-audit/v2" => WordPressAuditSchema::V2,
+                "security.wordpress-review-audit/v3" => WordPressAuditSchema::V3,
+                "security.wordpress-review-audit/v4" => WordPressAuditSchema::V4,
+                "security.wordpress-review-audit/v5" => WordPressAuditSchema::V5,
+                "security.wordpress-review-audit/v6" => WordPressAuditSchema::V6,
+                _ => return Err(ComparisonError::InvalidDocument),
+            },
+            true,
+        ),
         _ => return Err(ComparisonError::InvalidDocument),
     };
+    check(discovery_influenced == fields.contains_key("review_basis_schema"))?;
     check(string(fields, "capability_id")? == WORDPRESS_CAPABILITY)?;
     let status = token(
         fields,
@@ -322,7 +917,12 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
     };
     let signal_count = number(fields, "signal_count", MAX_WORDPRESS_SIGNALS)?;
     let evidence_count = number(fields, "evidence_reference_count", MAX_WORDPRESS_SIGNALS)?;
-    check(number(fields, "additional_request_count", 0)? == 0)?;
+    let additional_request_count = number(
+        fields,
+        "additional_request_count",
+        MAX_WORDPRESS_DISCOVERY_REQUESTS,
+    )?;
+    check(discovery_influenced || additional_request_count == 0)?;
     let projected = boolean(fields, "item_projected")?;
     check(
         count <= 1
@@ -343,14 +943,15 @@ fn wordpress(fields: &serde_json::Map<String, Value>, count: usize) -> Result<()
     let mut imported_components = BTreeMap::new();
     let mut version_count = 0_usize;
     for value in components {
-        let (identity, component) = component(object(value)?, schema, profiled)?;
+        let (identity, component) =
+            component(object(value)?, schema, profiled, discovery_influenced)?;
         version_count = version_count
             .checked_add(component.versions.len())
             .ok_or(ComparisonError::InvalidDocument)?;
         check(version_count <= MAX_WORDPRESS_RESULT_VERSION_EVIDENCE)?;
         check(imported_components.insert(identity, component).is_none())?;
     }
-    if schema != WordPressAuditSchema::V1 {
+    if schema != WordPressAuditSchema::V1 || discovery_influenced {
         check(
             imported_components
                 .values()
@@ -439,12 +1040,17 @@ fn wordpress_comparison_snapshot(
     fields: &Map<String, Value>,
 ) -> Result<ImportedWordPressAudit, ComparisonError> {
     let schema = string(fields, "schema")?;
+    let review_basis_schema = if schema == "security.wordpress-review-audit/v7" {
+        string(fields, "review_basis_schema")?
+    } else {
+        schema
+    };
     let inventory = fields.get("inventory_import").map(object).transpose()?;
     let external = fields.get("external_review").map(object).transpose()?;
 
     let methodology = selected_object(
         fields,
-        &["schema", "catalog_schema"],
+        &["schema", "review_basis_schema", "catalog_schema"],
         &[
             (
                 "source_namespace",
@@ -501,6 +1107,12 @@ fn wordpress_comparison_snapshot(
         ],
         &[
             (
+                "additional_request_count",
+                (schema == "security.wordpress-review-audit/v7")
+                    .then(|| fields.get("additional_request_count"))
+                    .flatten(),
+            ),
+            (
                 "inventory_coverage",
                 inventory.and_then(|value| value.get("coverage")),
             ),
@@ -556,14 +1168,14 @@ fn wordpress_comparison_snapshot(
 
     let mut advisories = BTreeMap::new();
     if matches!(
-        schema,
+        review_basis_schema,
         "security.wordpress-review-audit/v4"
             | "security.wordpress-review-audit/v5"
             | "security.wordpress-review-audit/v6"
     ) {
         let external = external.ok_or(ComparisonError::InvalidDocument)?;
         let namespace = string(external, "source_namespace")?;
-        let allow_source_variants = schema == "security.wordpress-review-audit/v6"
+        let allow_source_variants = review_basis_schema == "security.wordpress-review-audit/v6"
             && matches!(
                 string(external, "resource_policy")?,
                 WORDFENCE_V3_RESOURCE_POLICY_V2 | WORDFENCE_V3_RESOURCE_POLICY_V3
@@ -580,7 +1192,7 @@ fn wordpress_comparison_snapshot(
         for evaluation in array(external, "evaluations")? {
             let evaluation = object(evaluation)?;
             let wire_key = object(required(evaluation, "key")?)?;
-            let component = if schema == "security.wordpress-review-audit/v6" {
+            let component = if review_basis_schema == "security.wordpress-review-audit/v6" {
                 comparison_component_key(object(required(wire_key, "source_component")?)?)?
             } else {
                 comparison_component_key(object(required(wire_key, "component")?)?)?
@@ -613,7 +1225,11 @@ fn wordpress_comparison_snapshot(
             let content = dimensions(&[
                 (
                     "identity_mapping",
-                    external_identity_mapping_projection(evaluation, wire_key, schema)?,
+                    external_identity_mapping_projection(
+                        evaluation,
+                        wire_key,
+                        review_basis_schema,
+                    )?,
                 ),
                 (
                     "advisory_content",
@@ -672,7 +1288,7 @@ fn wordpress_comparison_snapshot(
                 ),
                 ("attribution", attribution),
             ]);
-            if schema == "security.wordpress-review-audit/v6" {
+            if review_basis_schema == "security.wordpress-review-audit/v6" {
                 collect_wordpress_advisory_projection(
                     &mut source_variants,
                     key,
@@ -683,7 +1299,7 @@ fn wordpress_comparison_snapshot(
                 return Err(ComparisonError::AmbiguousIdentity);
             }
         }
-        if schema == "security.wordpress-review-audit/v6" {
+        if review_basis_schema == "security.wordpress-review-audit/v6" {
             for limitation in array(external, "identity_limitations")? {
                 let limitation = object(limitation)?;
                 let wire_key = object(required(limitation, "key")?)?;
@@ -835,6 +1451,7 @@ fn wordpress_comparison_snapshot(
         inventory_coverage_recorded: inventory.is_some(),
         methodology,
         provenance,
+        discovery_source_content: None,
         components,
         advisories,
     })
@@ -995,6 +1612,7 @@ fn component(
     fields: &serde_json::Map<String, Value>,
     schema: WordPressAuditSchema,
     profiled: bool,
+    discovery_influenced: bool,
 ) -> Result<(String, ImportedWordPressComponent), ComparisonError> {
     keys(
         fields,
@@ -1019,28 +1637,44 @@ fn component(
             "unknown",
         ],
     )?;
-    token_array(
-        fields,
-        "identity_sources",
+    let evidence_sources: &[&str] = if discovery_influenced {
+        &[
+            "generator_metadata",
+            "same_origin_asset_path",
+            "theme_stylesheet_declaration",
+            "operator_context",
+        ]
+    } else {
         &[
             "generator_metadata",
             "same_origin_asset_path",
             "operator_context",
-        ],
-        3,
+        ]
+    };
+    token_array(
+        fields,
+        "identity_sources",
+        evidence_sources,
+        evidence_sources.len(),
     )?;
     let identity_sources = array(fields, "identity_sources")?;
     let identity_sources = identity_sources
         .iter()
         .map(|value| value.as_str().ok_or(ComparisonError::InvalidDocument))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-    if schema != WordPressAuditSchema::V1 {
+    if schema != WordPressAuditSchema::V1 || discovery_influenced {
         check(!identity_sources.contains("generator_metadata") || identity == "core:wordpress")?;
     }
-    let profiled_evidence = if identity_sources
-        .iter()
-        .any(|value| matches!(*value, "generator_metadata" | "same_origin_asset_path"))
-    {
+    check(
+        !identity_sources.contains("theme_stylesheet_declaration")
+            || identity.starts_with("theme:"),
+    )?;
+    let profiled_evidence = if identity_sources.iter().any(|value| {
+        matches!(
+            *value,
+            "generator_metadata" | "same_origin_asset_path" | "theme_stylesheet_declaration"
+        )
+    }) {
         "observed_hint"
     } else if identity_sources
         .iter()
@@ -1069,11 +1703,12 @@ fn component(
         .map(|source| match *source {
             "generator_metadata" => Ok("public_declaration"),
             "same_origin_asset_path" => Ok("structural_hint"),
+            "theme_stylesheet_declaration" => Ok("public_declaration"),
             "operator_context" => Ok("operator_assertion"),
             _ => Err(ComparisonError::InvalidDocument),
         })
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-    if schema != WordPressAuditSchema::V1 {
+    if schema != WordPressAuditSchema::V1 || discovery_influenced {
         check(confidence_classes == expected_confidence_classes)?;
     }
 
@@ -1085,19 +1720,23 @@ fn component(
         let version = object(value)?;
         keys(version, &["value", "source", "confidence"], &[])?;
         let value = source_version(text(version, "value", 64)?)?;
-        let source = token(
-            version,
-            "source",
-            if schema == WordPressAuditSchema::V2 {
-                &["generator_metadata", "operator_context"]
-            } else {
-                &[
-                    "generator_metadata",
-                    "same_origin_asset_path",
-                    "operator_context",
-                ]
-            },
-        )?;
+        let version_sources: &[&str] = if discovery_influenced {
+            &[
+                "generator_metadata",
+                "same_origin_asset_path",
+                "theme_stylesheet_declaration",
+                "operator_context",
+            ]
+        } else if schema == WordPressAuditSchema::V2 {
+            &["generator_metadata", "operator_context"]
+        } else {
+            &[
+                "generator_metadata",
+                "same_origin_asset_path",
+                "operator_context",
+            ]
+        };
+        let source = token(version, "source", version_sources)?;
         let confidence = token(
             version,
             "confidence",
@@ -1112,11 +1751,13 @@ fn component(
                 == match source {
                     "generator_metadata" => "public_declaration",
                     "same_origin_asset_path" => "structural_hint",
+                    "theme_stylesheet_declaration" => "public_declaration",
                     "operator_context" => "operator_assertion",
                     _ => return Err(ComparisonError::InvalidDocument),
                 },
         )?;
-        if schema != WordPressAuditSchema::V1 {
+        check(source != "theme_stylesheet_declaration" || identity.starts_with("theme:"))?;
+        if schema != WordPressAuditSchema::V1 || discovery_influenced {
             check(source != "generator_metadata" || identity == "core:wordpress")?;
             check(identity_sources.contains(source) && confidence_classes.contains(confidence))?;
         }
@@ -1128,10 +1769,10 @@ fn component(
         "activation",
         &["active", "inactive", "network_active", "unknown"],
     )?;
-    if schema != WordPressAuditSchema::V1 {
+    if schema != WordPressAuditSchema::V1 || discovery_influenced {
         check(activation.is_none() || identity_sources.contains("operator_context"))?;
     }
-    if schema != WordPressAuditSchema::V1 {
+    if schema != WordPressAuditSchema::V1 || discovery_influenced {
         let expected_evidence = if profiled
             || matches!(
                 schema,
@@ -4344,6 +4985,14 @@ fn authorization(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wordpress_discovery_request_class_count_contract_is_exact() {
+        assert!(wordpress_discovery_request_class_counts_valid(1, 3, 8));
+        assert!(!wordpress_discovery_request_class_counts_valid(2, 2, 8));
+        assert!(!wordpress_discovery_request_class_counts_valid(0, 4, 8));
+        assert!(!wordpress_discovery_request_class_counts_valid(0, 3, 9));
+    }
 
     fn source_identity_fields(slug: &str, mapping: &str, collision: Option<u64>) -> (Value, Value) {
         let key = serde_json::json!({

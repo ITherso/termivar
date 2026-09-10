@@ -55,7 +55,8 @@ impl CollectedHttpResponse {
         feature = "graphql-review",
         feature = "authorization-review",
         feature = "openapi-review",
-        feature = "ssrf-oast-review"
+        feature = "ssrf-oast-review",
+        feature = "wordpress-review"
     ))]
     pub(crate) fn body_complete(&self) -> bool {
         self.body_complete && !self.body_truncated
@@ -64,7 +65,8 @@ impl CollectedHttpResponse {
     #[cfg(any(
         feature = "graphql-review",
         feature = "authorization-review",
-        feature = "openapi-review"
+        feature = "openapi-review",
+        feature = "wordpress-review"
     ))]
     pub(crate) fn normalized_media_type(&self) -> Option<String> {
         normalized_media_type(&self.headers)

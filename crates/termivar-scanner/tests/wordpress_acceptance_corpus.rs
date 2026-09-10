@@ -1147,6 +1147,9 @@ const fn review_error_code(error: WordPressReviewError) -> &'static str {
         WordPressReviewError::SignalLimitExceeded => "signal_limit_exceeded",
         WordPressReviewError::ResultLimitExceeded => "result_limit_exceeded",
         WordPressReviewError::EvaluationLimitExceeded => "evaluation_limit_exceeded",
+        WordPressReviewError::DiscoveryCandidateIdentityLimitExceeded => {
+            "discovery_candidate_identity_limit_exceeded"
+        },
     }
 }
 

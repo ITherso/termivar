@@ -42,11 +42,13 @@ use crate::web_runtime::openapi_runtime::{OpenApiCandidateSource, OpenApiRuntime
 use crate::web_runtime::rest_runtime::{
     RestObservedMediaClass, RestRuntimeOutcome, REST_REVIEW_ACTION_ID,
 };
-#[cfg(feature = "wordpress-review")]
-use crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID;
 use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 #[cfg(feature = "reporting")]
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
+#[cfg(feature = "wordpress-review")]
+use crate::web_runtime::{
+    WordPressDiscoverySourceKind, WordPressDiscoverySourceOutcome, WORDPRESS_REVIEW_CAPABILITY_ID,
+};
 #[cfg(feature = "authorization-review")]
 use crate::web_runtime::{
     MAX_AUTHORIZATION_REVIEW_REQUESTS, RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID,
@@ -334,6 +336,766 @@ async fn wordpress_review_reuses_root_observation_and_adds_no_requests() {
         assert_eq!(document["wordpress_review"]["additional_request_count"], 0);
         assert_eq!(document["wordpress_review"]["catalog_status"], "evaluated");
     }
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
+fn wordpress_discovery_requires_wordpress_review_at_build_time() {
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .with_wordpress_discovery()
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::WordPressDiscoveryRequiresReview)
+    ));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_uses_shared_accounting_and_retains_typed_metadata() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<html><head>
+                    <link rel="stylesheet" href="/wp-content/themes/child-theme/assets/site.css">
+                    <script src="/wp-content/plugins/cache-tool/assets/app.js"></script>
+                    </head></html>"#,
+            )
+            .with_header("Link", "</wp-json/>; rel=\"https://api.w.org/\""),
+            "/wp-json/" => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"namespaces":["wp/v2","demo/v1"]}"#.to_vec(),
+            ),
+            "/wp-content/themes/child-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Child Theme\nVersion: 1.2.3\nTemplate: parent-theme\nRequires PHP: 8.1 */".to_vec(),
+            ),
+            "/wp-content/themes/parent-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Parent Theme\nVersion: 2.0.0 */".to_vec(),
+            ),
+            "/wp-content/plugins/cache-tool/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Cache Tool ===\nStable tag: 9.9.9\nRequires at least: 6.5\nRequires PHP: 8.0\n".to_vec(),
+            ),
+            _ => FixtureResponse::html(Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut review_only_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .build()
+        .unwrap();
+    let review_only = review_only_runtime.analyze().await.unwrap();
+    let review_only_item = review_only
+        .assessment_items()
+        .iter()
+        .find(|item| item.capability_id() == WORDPRESS_REVIEW_CAPABILITY_ID)
+        .unwrap();
+    let review_only_evidence_count = review_only_item.evidence_count();
+    assert_eq!(
+        review_only
+            .wordpress_review_audit()
+            .unwrap()
+            .evidence_reference_count() as usize,
+        review_only_evidence_count
+    );
+    let review_only_request_count = server.requests().await.len();
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert!(matches!(
+        report.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let wordpress = report.wordpress_review_audit().unwrap();
+    assert_eq!(wordpress.additional_request_count(), 4);
+    assert_eq!(
+        usize::from(wordpress.evidence_reference_count()),
+        review_only_evidence_count,
+        "discovery responses must not broaden the root-surface audit evidence"
+    );
+    let discovery = wordpress.discovery().unwrap();
+    assert_eq!(
+        discovery.policy_id(),
+        "termivar.wordpress-metadata-discovery/v1"
+    );
+    assert_eq!(discovery.seed_count(), 3);
+    assert_eq!(discovery.candidate_count(), 4);
+    assert!(!discovery.candidate_limit_reached());
+    assert_eq!(discovery.omitted_candidate_count(), 0);
+    assert_eq!(discovery.attempted_request_count(), 4);
+    assert_eq!(discovery.completed_response_count(), 4);
+    assert_eq!(discovery.committed_response_count(), 4);
+    assert_eq!(discovery.sources().len(), 4);
+    assert_eq!(
+        discovery
+            .sources()
+            .iter()
+            .map(|source| source.kind())
+            .collect::<Vec<_>>(),
+        vec![
+            WordPressDiscoverySourceKind::RestIndex,
+            WordPressDiscoverySourceKind::ThemeStylesheet,
+            WordPressDiscoverySourceKind::ThemeStylesheet,
+            WordPressDiscoverySourceKind::PluginReadme,
+        ]
+    );
+    assert_eq!(discovery.sources()[0].namespaces(), ["demo/v1", "wp/v2"]);
+    let child = discovery.sources()[1].theme().unwrap();
+    assert_eq!(child.name(), Some("Child Theme"));
+    assert_eq!(child.version(), Some("1.2.3"));
+    assert_eq!(child.template(), Some("parent-theme"));
+    assert_eq!(child.requires_php(), Some("8.1"));
+    let plugin = discovery.sources()[3].plugin().unwrap();
+    assert_eq!(plugin.stable_tag(), Some("9.9.9"));
+    assert_eq!(plugin.requires_php(), Some("8.0"));
+    let child_component = wordpress
+        .result()
+        .components()
+        .iter()
+        .find(|component| component.identity().slug() == "child-theme")
+        .unwrap();
+    assert!(child_component
+        .identity_sources()
+        .contains(&crate::wordpress_review::WordPressEvidenceSource::ThemeStylesheetDeclaration));
+    assert!(child_component.versions().iter().any(|version| {
+        version.value() == "1.2.3"
+            && version.source()
+                == crate::wordpress_review::WordPressEvidenceSource::ThemeStylesheetDeclaration
+    }));
+    assert!(discovery.sources().iter().all(|source| {
+        source.outcome() == WordPressDiscoverySourceOutcome::Observed
+            && source.evidence_ids().len() == 1
+    }));
+    let discovery_ceiling = ConfidenceScore::from_percent(70).unwrap();
+    assert!(discovery.sources().iter().all(|source| {
+        runtime
+            .authority
+            .knowledge()
+            .evidence(&source.evidence_ids()[0])
+            .is_some_and(|evidence| evidence.reliability() == discovery_ceiling)
+    }));
+    let surface = report
+        .assessment_items()
+        .iter()
+        .find(|item| item.capability_id() == WORDPRESS_REVIEW_CAPABILITY_ID)
+        .unwrap();
+    assert_eq!(
+        surface.evidence_count(),
+        review_only_evidence_count,
+        "REST, stylesheet, and readme evidence must not broaden the root-hint item"
+    );
+    assert_eq!(discovery.committed_response_count(), 4);
+    assert_eq!(
+        discovery.response_bytes(),
+        discovery
+            .sources()
+            .iter()
+            .map(|source| source.response_bytes())
+            .sum::<u64>()
+    );
+    assert_eq!(report.usage().total_requests(), 6);
+
+    let all_requests = server.requests().await;
+    let requests = &all_requests[review_only_request_count..];
+    assert_eq!(
+        requests
+            .iter()
+            .take(5)
+            .map(|request| (request.method.as_str(), request.target.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("GET", "/"),
+            ("GET", "/wp-json/"),
+            ("GET", "/wp-content/themes/child-theme/style.css"),
+            ("GET", "/wp-content/themes/parent-theme/style.css"),
+            ("GET", "/wp-content/plugins/cache-tool/readme.txt"),
+        ]
+    );
+    assert!(requests.iter().skip(1).take(4).all(|request| {
+        !request.headers.contains_key("authorization")
+            && !request.headers.contains_key("cookie")
+            && !request.headers.contains_key("proxy-authorization")
+    }));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_evidence_never_exceeds_low_transport_reliability() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html("<html><head></head></html>")
+                .with_header("Link", "</wp-json/>; rel=\"https://api.w.org/\""),
+            "/wp-json/" => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"namespaces":["wp/v2"]}"#.to_vec(),
+            ),
+            _ => FixtureResponse::html(Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let reliability = ConfidenceScore::from_percent(37).unwrap();
+    let policy = HttpEvidencePolicy::for_origin(server.url("/"))
+        .unwrap()
+        .with_reliability(reliability)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .http_policy(policy)
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    let source = &report
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap()
+        .sources()[0];
+    assert_eq!(source.outcome(), WordPressDiscoverySourceOutcome::Observed);
+    let child = runtime
+        .authority
+        .knowledge()
+        .evidence(&source.evidence_ids()[0])
+        .unwrap();
+    assert_eq!(child.reliability(), reliability);
+    let derivation = child.origin().derivation().unwrap();
+    assert!(!derivation.parents().is_empty());
+    for parent_id in derivation.parents() {
+        let parent = runtime.authority.knowledge().evidence(parent_id).unwrap();
+        assert!(child.reliability() <= parent.reliability());
+        assert!(child.reliability() <= reliability);
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_remains_anonymous_beside_authorized_root_comparison() {
+    let server = serve(|request| {
+        if request.path() == "/"
+            && request.headers.get("accept").map(String::as_str) == Some("application/json")
+        {
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                r#"{"id":1}"#,
+            ));
+        }
+        let response = match request.path() {
+            "/" => FixtureResponse::html("<html><head></head></html>")
+                .with_header("Link", "</wp-json/>; rel=\"https://api.w.org/\""),
+            "/wp-json/" => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"namespaces":["wp/v2"]}"#.to_vec(),
+            ),
+            _ => FixtureResponse::html(Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_root_authorization_context(root_authorization_context())
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+    assert_eq!(
+        report
+            .wordpress_review_audit()
+            .unwrap()
+            .discovery()
+            .unwrap()
+            .attempted_request_count(),
+        1
+    );
+
+    let requests = server.requests().await;
+    let authorized = requests
+        .iter()
+        .filter(|request| {
+            request.headers.get("authorization").map(String::as_str)
+                == Some(PRIVATE_AUTHORIZATION_SENTINEL)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(authorized.len(), 1);
+    assert_eq!(authorized[0].target, "/");
+
+    let metadata_gets = requests
+        .iter()
+        .filter(|request| request.method == "GET" && request.target == "/wp-json/")
+        .collect::<Vec<_>>();
+    assert_eq!(metadata_gets.len(), 1);
+    assert!(metadata_gets.iter().all(|request| {
+        !request.headers.contains_key("authorization")
+            && !request.headers.contains_key("cookie")
+            && !request.headers.contains_key("proxy-authorization")
+    }));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_never_dispatches_foreign_base_link_or_asset_candidates() {
+    let forbidden = serve(|_| {
+        FixtureReply::Response(FixtureResponse::html(
+            "forbidden listener must receive no request",
+        ))
+    })
+    .await;
+    let foreign_origin = forbidden.url("/");
+    let foreign_rest = format!("{foreign_origin}wp-json/");
+    let foreign_theme = format!("{foreign_origin}wp-content/themes/foreign-theme/assets/site.css");
+    let foreign_plugin =
+        format!("{foreign_origin}wp-content/plugins/foreign-plugin/assets/site.js");
+    let body = format!(
+        r#"<html><head>
+            <base href="{foreign_origin}">
+            <link rel="https://api.w.org/" href="{foreign_rest}">
+            <link rel="stylesheet" href="{foreign_theme}">
+            <script src="{foreign_plugin}"></script>
+            <meta name="generator" content="WordPress 7.1">
+            </head></html>"#
+    );
+    let advertised = format!("<{foreign_rest}>; rel=\"https://api.w.org/\"");
+    let server = serve(move |_| {
+        FixtureReply::Response(FixtureResponse::html(body.clone()).with_header("Link", &advertised))
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    let discovery = report
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap();
+    assert_eq!(discovery.seed_count(), 1);
+    assert_eq!(discovery.candidate_count(), 1);
+    assert_eq!(discovery.omitted_candidate_count(), 0);
+    assert_eq!(discovery.attempted_request_count(), 0);
+    assert_eq!(discovery.sources().len(), 1);
+    assert_eq!(
+        discovery.sources()[0].outcome(),
+        WordPressDiscoverySourceOutcome::InvalidAdvertisement
+    );
+    assert!(
+        forbidden.requests().await.is_empty(),
+        "a foreign Link, base, or asset candidate reached the forbidden listener"
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_link_only_failure_does_not_mint_a_root_surface_item() {
+    let server = serve(|request| {
+        let response = if request.path() == "/" {
+            FixtureResponse::html("<html><head><title>Plain page</title></head></html>")
+                .with_header("Link", "</wp-json/>; rel=\"https://api.w.org/\"")
+        } else {
+            FixtureResponse::new("404 Not Found", Some("text/html"), b"missing".to_vec())
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    let wordpress = report.wordpress_review_audit().unwrap();
+    assert_eq!(wordpress.signal_count(), 0);
+    assert_eq!(wordpress.evidence_reference_count(), 0);
+    assert!(!wordpress.item_projected());
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.capability_id() != WORDPRESS_REVIEW_CAPABILITY_ID));
+    let discovery = wordpress.discovery().unwrap();
+    assert_eq!(discovery.seed_count(), 1);
+    assert_eq!(discovery.candidate_count(), 1);
+    assert_eq!(discovery.omitted_candidate_count(), 0);
+    assert_eq!(discovery.attempted_request_count(), 1);
+    assert_eq!(discovery.completed_response_count(), 1);
+    assert_eq!(discovery.committed_response_count(), 1);
+    assert_eq!(discovery.sources().len(), 1);
+    assert_eq!(
+        discovery.sources()[0].outcome(),
+        WordPressDiscoverySourceOutcome::NotFound
+    );
+    let discovery_items = report
+        .assessment_items()
+        .iter()
+        .filter(|item| {
+            item.capability_id()
+                == crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(discovery_items.len(), 1);
+    assert_eq!(discovery_items[0].evidence_count(), 1);
+    assert_eq!(
+        discovery_items[0].title(),
+        "WordPress metadata-source response outcome observed"
+    );
+    assert_eq!(
+        discovery_items[0].category(),
+        "wordpress-metadata-source-response"
+    );
+    assert_eq!(
+        discovery_items[0].redacted_summary(),
+        "Bounded response evidence from selected public WordPress metadata sources was collected; usable metadata, installation authenticity, vulnerable-code reachability, and advisory impact were not established."
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_parent_expansion_reports_candidate_limit() {
+    let root_html = (0..31)
+        .map(|index| {
+            format!(
+                r#"<link rel="stylesheet" href="/wp-content/themes/child-{index:02}/asset.css">"#
+            )
+        })
+        .collect::<String>();
+    let server = serve(move |request| {
+        let response = if request.path() == "/" {
+            FixtureResponse::html(root_html.as_bytes().to_vec())
+        } else if let Some(slug) = request
+            .path()
+            .strip_prefix("/wp-content/themes/")
+            .and_then(|path| path.strip_suffix("/style.css"))
+        {
+            let template = slug
+                .strip_prefix("child-")
+                .map(|suffix| format!("parent-{suffix}"));
+            let body = template.map_or_else(
+                || format!("/* Theme Name: {slug} */"),
+                |template| format!("/* Theme Name: {slug}\nTemplate: {template} */"),
+            );
+            FixtureResponse::new("200 OK", Some("text/css"), body)
+        } else {
+            FixtureResponse::html(Vec::new())
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert!(matches!(
+        report.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let discovery = report
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap();
+
+    assert_eq!(discovery.seed_count(), 31);
+    assert_eq!(discovery.candidate_count(), 32);
+    assert!(discovery.candidate_limit_reached());
+    assert_eq!(discovery.omitted_candidate_count(), 1);
+    assert_eq!(discovery.attempted_request_count(), 3);
+    assert_eq!(discovery.sources().len(), 32);
+    assert_eq!(
+        discovery
+            .sources()
+            .iter()
+            .filter(|source| source.outcome() == WordPressDiscoverySourceOutcome::NotSelectedByLimit)
+            .count(),
+        29
+    );
+    assert_eq!(
+        server
+            .hit_count("/wp-content/themes/child-00/style.css")
+            .await,
+        1
+    );
+    assert_eq!(
+        server
+            .hit_count("/wp-content/themes/parent-00/style.css")
+            .await,
+        1
+    );
+    assert_eq!(
+        server
+            .hit_count("/wp-content/themes/child-01/style.css")
+            .await,
+        1
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_global_candidate_cap_preserves_each_request_quota() {
+    let themes = (0..31)
+        .map(|index| {
+            format!(
+                r#"<link rel="stylesheet" href="/wp-content/themes/theme-{index:02}/asset.css">"#
+            )
+        })
+        .collect::<String>();
+    let plugins = (0..8)
+        .map(|index| {
+            format!(r#"<script src="/wp-content/plugins/plugin-{index:02}/asset.js"></script>"#)
+        })
+        .collect::<String>();
+    let root_html = format!("{themes}{plugins}");
+    let server = serve(move |request| {
+        let response = if request.path() == "/" {
+            FixtureResponse::html(root_html.as_bytes().to_vec())
+                .with_header("Link", "</wp-json/>; rel=\"https://api.w.org/\"")
+        } else if request.path() == "/wp-json/" {
+            FixtureResponse::new("200 OK", Some("application/json"), br#"{"namespaces":[]}"#)
+        } else if request.path().starts_with("/wp-content/themes/") {
+            FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Quota Theme */".to_vec(),
+            )
+        } else if request.path().starts_with("/wp-content/plugins/") {
+            FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Quota Plugin ===\n\n".to_vec(),
+            )
+        } else {
+            FixtureResponse::html(Vec::new())
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let discovery = report
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap();
+
+    assert_eq!(discovery.seed_count(), 32);
+    assert_eq!(discovery.candidate_count(), 32);
+    assert_eq!(discovery.omitted_candidate_count(), 8);
+    assert_eq!(discovery.attempted_request_count(), 12);
+    let attempted_by_kind = discovery
+        .sources()
+        .iter()
+        .filter(|source| source.request_attempted())
+        .fold(BTreeMap::new(), |mut counts, source| {
+            *counts.entry(source.kind()).or_insert(0_usize) += 1;
+            counts
+        });
+    assert_eq!(
+        attempted_by_kind,
+        BTreeMap::from([
+            (WordPressDiscoverySourceKind::RestIndex, 1),
+            (WordPressDiscoverySourceKind::ThemeStylesheet, 3),
+            (WordPressDiscoverySourceKind::PluginReadme, 8),
+        ])
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_rejects_partial_and_broker_truncated_metadata() {
+    let oversized_readme = {
+        let mut body = b"=== Oversized Plugin ===\nStable tag: 9.9.9\n\n".to_vec();
+        body.resize(
+            crate::web_runtime::wordpress_discovery::MAX_WORDPRESS_DISCOVERY_STATIC_BYTES + 1,
+            b'x',
+        );
+        body
+    };
+    let exact_length_theme = {
+        let mut body = b"/* Theme Name: Exact Length Theme\nVersion: 1.2.3 */".to_vec();
+        body.resize(
+            crate::web_runtime::wordpress_discovery::MAX_WORDPRESS_DISCOVERY_STATIC_BYTES,
+            b' ',
+        );
+        body
+    };
+    let exact_chunked_readme = {
+        let mut body = b"=== Exact Chunked Plugin ===\nStable tag: 9.9.9\n\n".to_vec();
+        body.resize(
+            crate::web_runtime::wordpress_discovery::MAX_WORDPRESS_DISCOVERY_STATIC_BYTES,
+            b' ',
+        );
+        body
+    };
+    let server = serve(move |request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<link rel="stylesheet" href="/wp-content/themes/partial-theme/site.css">
+                    <link rel="stylesheet" href="/wp-content/themes/exact-length-theme/site.css">
+                    <script src="/wp-content/plugins/exact-chunked-plugin/app.js"></script>
+                    <script src="/wp-content/plugins/oversized-plugin/app.js"></script>"#,
+            ),
+            "/wp-content/themes/partial-theme/style.css" => FixtureResponse::new(
+                "206 Partial Content",
+                Some("text/css"),
+                b"/* Theme Name: Partial Theme\nVersion: 1.2.3 */".to_vec(),
+            ),
+            "/wp-content/themes/exact-length-theme/style.css" => {
+                FixtureResponse::new("200 OK", Some("text/css"), exact_length_theme.clone())
+            },
+            "/wp-content/plugins/exact-chunked-plugin/readme.txt" => {
+                FixtureResponse::new("200 OK", Some("text/plain"), exact_chunked_readme.clone())
+                    .chunked()
+            },
+            "/wp-content/plugins/oversized-plugin/readme.txt" => {
+                FixtureResponse::new("200 OK", Some("text/plain"), oversized_readme.clone())
+            },
+            _ => FixtureResponse::html(Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert!(matches!(
+        report.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let wordpress = report.wordpress_review_audit().unwrap();
+    let discovery = wordpress.discovery().unwrap();
+    assert_eq!(discovery.attempted_request_count(), 4);
+    assert_eq!(discovery.completed_response_count(), 4);
+    assert_eq!(discovery.committed_response_count(), 4);
+    assert_eq!(discovery.sources().len(), 4);
+    assert!(discovery.sources().iter().all(|source| {
+        source.outcome() == WordPressDiscoverySourceOutcome::Truncated
+            && source.evidence_ids().len() == 1
+            && source.namespaces().is_empty()
+            && source.theme().is_none()
+            && source.plugin().is_none()
+    }));
+    for slug in ["exact-length-theme", "exact-chunked-plugin"] {
+        let source = discovery
+            .sources()
+            .iter()
+            .find(|source| source.component_slug() == Some(slug))
+            .unwrap();
+        assert_eq!(source.outcome(), WordPressDiscoverySourceOutcome::Truncated);
+        assert!(source.theme().is_none());
+        assert!(source.plugin().is_none());
+    }
+    let partial_theme = wordpress
+        .result()
+        .components()
+        .iter()
+        .find(|component| component.identity().slug() == "partial-theme")
+        .unwrap();
+    assert!(partial_theme.versions().is_empty());
+    let exact_length_theme = wordpress
+        .result()
+        .components()
+        .iter()
+        .find(|component| component.identity().slug() == "exact-length-theme")
+        .unwrap();
+    assert!(exact_length_theme.versions().is_empty());
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn wordpress_discovery_throttle_stops_later_candidates_without_attempts() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<link rel="https://api.w.org/" href="/wp-json/">
+                    <link rel="stylesheet" href="/wp-content/themes/later-theme/site.css">
+                    <script src="/wp-content/plugins/later-plugin/app.js"></script>"#,
+            ),
+            "/wp-json/" => FixtureResponse::new(
+                "429 Too Many Requests",
+                Some("application/json"),
+                br#"{"error":"slow down"}"#.to_vec(),
+            ),
+            _ => FixtureResponse::new("500 Internal Server Error", None, Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert!(matches!(
+        report.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let discovery = report
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap();
+    assert_eq!(discovery.attempted_request_count(), 1);
+    assert_eq!(discovery.completed_response_count(), 1);
+    assert_eq!(discovery.committed_response_count(), 1);
+    assert_eq!(discovery.sources().len(), 3);
+    assert_eq!(
+        discovery.sources()[0].outcome(),
+        WordPressDiscoverySourceOutcome::RateLimited
+    );
+    assert!(discovery.sources()[0].request_attempted());
+    assert!(discovery.sources()[1..].iter().all(|source| {
+        source.outcome() == WordPressDiscoverySourceOutcome::NotAttemptedAfterThrottle
+            && !source.request_attempted()
+            && source.evidence_ids().is_empty()
+    }));
+    let requests = server.requests().await;
+    let get_count = |path: &str| {
+        requests
+            .iter()
+            .filter(|request| request.method == "GET" && request.path() == path)
+            .count()
+    };
+    assert_eq!(get_count("/wp-json/"), 1);
+    assert_eq!(get_count("/wp-content/themes/later-theme/style.css"), 0);
+    assert_eq!(get_count("/wp-content/plugins/later-plugin/readme.txt"), 0);
 }
 
 #[cfg(feature = "wordpress-review")]
@@ -5445,6 +6207,7 @@ struct FixtureResponse {
     status: &'static str,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    chunked: bool,
 }
 
 impl FixtureResponse {
@@ -5461,6 +6224,7 @@ impl FixtureResponse {
             status,
             headers,
             body: body.into(),
+            chunked: false,
         }
     }
 
@@ -5469,20 +6233,34 @@ impl FixtureResponse {
         self
     }
 
+    fn chunked(mut self) -> Self {
+        self.chunked = true;
+        self
+    }
+
     fn encode(&self, method: &str) -> Vec<u8> {
         let mut encoded = format!("HTTP/1.1 {}\r\n", self.status).into_bytes();
         for (name, value) in &self.headers {
             encoded.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
         }
-        encoded.extend_from_slice(
-            format!(
-                "Content-Length: {}\r\nConnection: close\r\n\r\n",
-                self.body.len()
-            )
-            .as_bytes(),
-        );
-        if method != "HEAD" {
-            encoded.extend_from_slice(&self.body);
+        if self.chunked {
+            encoded.extend_from_slice(b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+            if method != "HEAD" {
+                encoded.extend_from_slice(format!("{:x}\r\n", self.body.len()).as_bytes());
+                encoded.extend_from_slice(&self.body);
+                encoded.extend_from_slice(b"\r\n0\r\n\r\n");
+            }
+        } else {
+            encoded.extend_from_slice(
+                format!(
+                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    self.body.len()
+                )
+                .as_bytes(),
+            );
+            if method != "HEAD" {
+                encoded.extend_from_slice(&self.body);
+            }
         }
         encoded
     }

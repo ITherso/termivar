@@ -43,7 +43,10 @@ use super::ssrf_oast_runtime::{
     SSRF_OAST_REVIEW_CAPABILITY_ID,
 };
 #[cfg(feature = "wordpress-review")]
-use super::wordpress_runtime::{WebAssessmentWordPressAudit, WORDPRESS_REVIEW_CAPABILITY_ID};
+use super::wordpress_runtime::{
+    WebAssessmentWordPressAudit, WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
+    WORDPRESS_REVIEW_CAPABILITY_ID,
+};
 use super::{
     assessment_item::{
         AssessmentItem, AssessmentItemSet, AssessmentSubjectInventoryEntry,
@@ -389,14 +392,33 @@ fn validate_wordpress_audit(
     if projected > 1 {
         return Err(AssessmentRunReportError::WordPressAuditMismatch);
     }
+    let discovery_items = items
+        .iter()
+        .filter(|item| item.capability_id() == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
+        .collect::<Vec<_>>();
+    if discovery_items.len() > 1 {
+        return Err(AssessmentRunReportError::WordPressAuditMismatch);
+    }
     let Some(audit) = audit else {
-        return if projected == 0 {
+        return if projected == 0 && discovery_items.is_empty() {
             Ok(())
         } else {
             Err(AssessmentRunReportError::WordPressAuditMismatch)
         };
     };
     let result = audit.result();
+    let discovery_consistent = match audit.discovery() {
+        Some(discovery) => {
+            let expected_item = discovery.committed_response_count() > 0;
+            discovery.is_internally_consistent()
+                && audit.additional_request_count() == discovery.attempted_request_count()
+                && (discovery_items.len() == 1) == expected_item
+                && discovery_items.first().is_none_or(|item| {
+                    item.evidence_count() == usize::from(discovery.committed_response_count())
+                })
+        },
+        None => audit.additional_request_count() == 0 && discovery_items.is_empty(),
+    };
     let version_evidence_count = result
         .components()
         .iter()
@@ -417,7 +439,7 @@ fn validate_wordpress_audit(
         || result.components().len() > MAX_WORDPRESS_RESULT_COMPONENTS
         || version_evidence_count.is_none_or(|count| count > MAX_WORDPRESS_RESULT_VERSION_EVIDENCE)
         || result.advisories().len() > MAX_WORDPRESS_ADVISORY_RECORDS
-        || audit.additional_request_count() != 0
+        || !discovery_consistent
         || audit.item_projected() != (projected == 1)
         || audit.item_projected() != (audit.signal_count() > 0)
         || !catalog_consistent

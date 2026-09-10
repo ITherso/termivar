@@ -64,7 +64,8 @@ use super::ssrf_oast_runtime::{
 };
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_runtime::{
-    extract_wordpress_signals, CommittedWordPressReview, WebAssessmentWordPressAudit,
+    extract_wordpress_discovery_seeds, extract_wordpress_signals, CommittedWordPressReview,
+    WebAssessmentWordPressAudit, WordPressDiscoverySeedSelection, WordPressDiscoveryStop,
     WordPressReviewBinding, WordPressSignalCollector,
 };
 use super::{
@@ -1678,6 +1679,9 @@ pub enum WebAssessmentRuntimeError {
     #[error("WordPress evidence review requires an exact origin root target")]
     WordPressReviewRequiresOriginRoot,
     #[cfg(feature = "wordpress-review")]
+    #[error("WordPress metadata discovery requires WordPress review in the same assessment")]
+    WordPressDiscoveryRequiresReview,
+    #[cfg(feature = "wordpress-review")]
     #[error("WordPress context root does not match the exact assessment target")]
     WordPressContextRootMismatch,
     #[error(transparent)]
@@ -1745,6 +1749,10 @@ impl fmt::Debug for WebAssessmentRuntimeError {
                 formatter.write_str("WebAssessmentRuntimeError::WordPressReviewRequiresOriginRoot")
             },
             #[cfg(feature = "wordpress-review")]
+            Self::WordPressDiscoveryRequiresReview => {
+                formatter.write_str("WebAssessmentRuntimeError::WordPressDiscoveryRequiresReview")
+            },
+            #[cfg(feature = "wordpress-review")]
             Self::WordPressContextRootMismatch => {
                 formatter.write_str("WebAssessmentRuntimeError::WordPressContextRootMismatch")
             },
@@ -1802,6 +1810,8 @@ pub struct WebAssessmentRuntimeBuilder {
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewInputs>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_discovery: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
 }
 
@@ -1828,6 +1838,8 @@ impl WebAssessmentRuntimeBuilder {
             ssrf_oast_review: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_discovery: false,
             root_authorization_context: None,
         }
     }
@@ -1911,6 +1923,16 @@ impl WebAssessmentRuntimeBuilder {
         self.wordpress_review = Some(inputs);
         self
     }
+    /// Explicitly enables bounded public WordPress metadata discovery.
+    ///
+    /// Build rejects this selection unless WordPress review is also enabled.
+    /// Every request uses the assessment's existing exact-origin broker,
+    /// cancellation token, deadline, and global request/response accounting.
+    #[cfg(feature = "wordpress-review")]
+    pub fn with_wordpress_discovery(mut self) -> Self {
+        self.wordpress_discovery = true;
+        self
+    }
     /// Adds one explicitly selected, four-view resource authorization review.
     ///
     /// The policy and move-only principals are consumed by this builder. The
@@ -1955,6 +1977,10 @@ impl WebAssessmentRuntimeBuilder {
             return Err(WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview);
         }
         #[cfg(feature = "wordpress-review")]
+        if self.wordpress_discovery && self.wordpress_review.is_none() {
+            return Err(WebAssessmentRuntimeError::WordPressDiscoveryRequiresReview);
+        }
+        #[cfg(feature = "wordpress-review")]
         if self.wordpress_review.is_some()
             && (!self.target.username().is_empty()
                 || self.target.password().is_some()
@@ -1995,7 +2021,9 @@ impl WebAssessmentRuntimeBuilder {
             return Err(WebAssessmentRuntimeError::WordPressContextRootMismatch);
         }
         #[cfg(feature = "wordpress-review")]
-        let wordpress_review = self.wordpress_review.map(WordPressReviewBinding::new);
+        let wordpress_review = self
+            .wordpress_review
+            .map(|inputs| WordPressReviewBinding::new(inputs, self.wordpress_discovery));
         #[cfg(feature = "authorization-review")]
         if self
             .resource_authorization_review
@@ -2595,7 +2623,8 @@ impl WebAssessmentRuntime {
                 #[cfg(feature = "wordpress-review")]
                 let subject_observer = if subject.url == self.root.url && subject.depth == 0 {
                     if let Some(review) = self.wordpress_review.as_ref() {
-                        subject_observer.with_wordpress_signals(review.collector())
+                        subject_observer
+                            .with_wordpress_signals(review.collector(), review.discovery_enabled())
                     } else {
                         subject_observer
                     }
@@ -3438,6 +3467,86 @@ impl WebAssessmentRuntime {
                                         );
                                     },
                                 }
+                            }
+                        }
+                        #[cfg(feature = "wordpress-review")]
+                        if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot
+                            && !should_stop
+                        {
+                            let discovery_result = match self.wordpress_review.as_mut() {
+                                Some(review) if review.discovery_enabled() => {
+                                    let root_subject =
+                                        EntityId::new(format!("endpoint:{}", self.root.url()))
+                                            .map_err(|_| {
+                                                WebAssessmentRuntimeError::NativeReviewComposition
+                                            })?;
+                                    Some(
+                                        review
+                                            .execute_discovery(
+                                                root_subject,
+                                                &self.authority,
+                                                timing.deadline(),
+                                            )
+                                            .await,
+                                    )
+                                },
+                                _ => None,
+                            };
+                            match discovery_result {
+                                None => {},
+                                Some(Ok(WordPressDiscoveryStop::Complete)) => {},
+                                Some(Ok(WordPressDiscoveryStop::Cancelled)) => {
+                                    reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                                    reasons.insert(
+                                        WebAssessmentIncompleteReason::WordPressReviewIncomplete,
+                                    );
+                                    should_stop = true;
+                                    suppress_discovery_projection = true;
+                                },
+                                Some(Ok(WordPressDiscoveryStop::DeadlineExceeded)) => {
+                                    reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
+                                    reasons.insert(
+                                        WebAssessmentIncompleteReason::WordPressReviewIncomplete,
+                                    );
+                                    should_stop = true;
+                                    suppress_discovery_projection = true;
+                                },
+                                Some(Ok(WordPressDiscoveryStop::RuntimeLimit(dimension))) => {
+                                    reasons.insert(reason_for_runtime_dimension(dimension));
+                                    reasons.insert(
+                                        WebAssessmentIncompleteReason::WordPressReviewIncomplete,
+                                    );
+                                    should_stop = true;
+                                    suppress_discovery_projection = true;
+                                },
+                                Some(Ok(WordPressDiscoveryStop::DiscoveryResponseLimit)) => {
+                                    reasons.insert(
+                                        WebAssessmentIncompleteReason::WordPressReviewIncomplete,
+                                    );
+                                    should_stop = true;
+                                    suppress_discovery_projection = true;
+                                },
+                                Some(Err(
+                                    super::wordpress_discovery::WordPressDiscoveryExecutionError::CandidateIdentityLimitExceeded,
+                                )) => {
+                                    reasons.insert(
+                                        WebAssessmentIncompleteReason::WordPressReviewIncomplete,
+                                    );
+                                    should_stop = true;
+                                    suppress_discovery_projection = true;
+                                },
+                                Some(Err(_)) => {
+                                    return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                        receipt: Box::new(self.failure_receipt(
+                                            &known_subjects,
+                                            subject_reports,
+                                            forms,
+                                            subject_report,
+                                            failed_reasons(&reasons),
+                                            started_at,
+                                        )),
+                                    });
+                                },
                             }
                         }
                         if let Some(projection) = projection {
@@ -4585,6 +4694,8 @@ pub(crate) struct AssessmentDiscoveryObserver {
     deadline: Option<tokio::time::Instant>,
     #[cfg(feature = "wordpress-review")]
     wordpress_signals: Option<WordPressSignalCollector>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_discovery_enabled: bool,
 }
 
 impl AssessmentDiscoveryObserver {
@@ -4607,12 +4718,19 @@ impl AssessmentDiscoveryObserver {
             deadline,
             #[cfg(feature = "wordpress-review")]
             wordpress_signals: None,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_discovery_enabled: false,
         }
     }
 
     #[cfg(feature = "wordpress-review")]
-    fn with_wordpress_signals(mut self, collector: WordPressSignalCollector) -> Self {
+    fn with_wordpress_signals(
+        mut self,
+        collector: WordPressSignalCollector,
+        discovery_enabled: bool,
+    ) -> Self {
         self.wordpress_signals = Some(collector);
+        self.wordpress_discovery_enabled = discovery_enabled;
         self
     }
 
@@ -4966,6 +5084,18 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
             .wordpress_signals
             .as_ref()
             .map(|_| extract_wordpress_signals(observation.requested_url(), html));
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_discovery_seeds = self.wordpress_signals.as_ref().map(|_| {
+            if self.wordpress_discovery_enabled {
+                extract_wordpress_discovery_seeds(
+                    observation.requested_url(),
+                    html,
+                    observation.wordpress_rest_index_advertisement(),
+                )
+            } else {
+                WordPressDiscoverySeedSelection::default()
+            }
+        });
         if self.stopped() {
             return Ok(evidence);
         }
@@ -4977,10 +5107,12 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
             evidence.retain(|item| item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE);
         } else {
             #[cfg(feature = "wordpress-review")]
-            if let (Some(collector), Some(signals)) =
-                (self.wordpress_signals.as_ref(), wordpress_signals)
-            {
-                collector.record(signals, wordpress_evidence);
+            if let (Some(collector), Some(signals), Some(discovery_seeds)) = (
+                self.wordpress_signals.as_ref(),
+                wordpress_signals,
+                wordpress_discovery_seeds,
+            ) {
+                collector.record(signals, discovery_seeds, wordpress_evidence);
             }
         }
         Ok(evidence)

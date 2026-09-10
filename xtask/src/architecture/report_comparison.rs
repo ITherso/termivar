@@ -715,6 +715,7 @@ impl ComparisonVisitor<'_> {
                     "super::RemediationProjection",
                     "super::SourceMetadata",
                     "super::MAX_COMPARISON_INPUT_BYTES",
+                    "super::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY",
                 ][..],
                 "reporting/comparison/import/audits.rs" => &[
                     "super::array",
@@ -727,6 +728,7 @@ impl ComparisonVisitor<'_> {
                     "super::optional_boolean",
                     "super::optional_text",
                     "super::optional_token",
+                    "super::reference",
                     "super::required",
                     "super::string",
                     "super::text",
@@ -740,6 +742,7 @@ impl ComparisonVisitor<'_> {
                     "super::super::ImportedWordPressAudit",
                     "super::super::WordPressAdvisoryKey",
                     "super::super::WordPressComponentKey",
+                    "super::super::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY",
                 ][..],
                 "reporting/comparison/html.rs" => &[
                     "super::ComparisonDocument",

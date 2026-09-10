@@ -706,6 +706,7 @@ impl WordPressReviewInputs {
 pub enum WordPressEvidenceSource {
     GeneratorMetadata,
     SameOriginAssetPath,
+    ThemeStylesheetDeclaration,
     OperatorContext,
 }
 
@@ -741,6 +742,20 @@ impl WordPressComponentSignal {
             identity: WordPressComponentIdentity::new(kind, slug)?,
             version: None,
             source: WordPressEvidenceSource::SameOriginAssetPath,
+        })
+    }
+
+    /// Records a version declared by a fetched, exact-origin theme stylesheet.
+    /// The declaration is public artifact metadata, not authenticated install
+    /// state or an operator assertion.
+    pub fn theme_stylesheet_declaration(
+        slug: &str,
+        version: &str,
+    ) -> Result<Self, WordPressReviewError> {
+        Ok(Self {
+            identity: WordPressComponentIdentity::new(WordPressComponentKind::Theme, slug)?,
+            version: Some(validate_source_version(version)?),
+            source: WordPressEvidenceSource::ThemeStylesheetDeclaration,
         })
     }
 
@@ -1742,6 +1757,8 @@ pub enum WordPressReviewError {
     InvalidVersionRange,
     #[error("WordPress response signal limit exceeded")]
     SignalLimitExceeded,
+    #[error("WordPress discovery candidate identity accounting limit exceeded")]
+    DiscoveryCandidateIdentityLimitExceeded,
     #[error("WordPress review result limit exceeded")]
     ResultLimitExceeded,
     #[error("WordPress advisory evaluation work limit exceeded")]
@@ -2985,6 +3002,7 @@ fn component_assessment(
             source,
             WordPressEvidenceSource::GeneratorMetadata
                 | WordPressEvidenceSource::SameOriginAssetPath
+                | WordPressEvidenceSource::ThemeStylesheetDeclaration
         )
     });
     let operator = aggregate
@@ -3016,6 +3034,9 @@ const fn confidence_for_source(source: WordPressEvidenceSource) -> WordPressEvid
             WordPressEvidenceConfidence::PublicDeclaration
         },
         WordPressEvidenceSource::SameOriginAssetPath => WordPressEvidenceConfidence::StructuralHint,
+        WordPressEvidenceSource::ThemeStylesheetDeclaration => {
+            WordPressEvidenceConfidence::PublicDeclaration
+        },
         WordPressEvidenceSource::OperatorContext => WordPressEvidenceConfidence::OperatorAssertion,
     }
 }
@@ -3114,6 +3135,7 @@ fn profile_independent_component_evidence(
             source,
             WordPressEvidenceSource::GeneratorMetadata
                 | WordPressEvidenceSource::SameOriginAssetPath
+                | WordPressEvidenceSource::ThemeStylesheetDeclaration
         )
     }) {
         WordPressComponentEvidenceClass::ObservedHint
@@ -3424,7 +3446,7 @@ fn validate_text(value: &str, maximum: usize) -> Result<(), WordPressReviewError
     Ok(())
 }
 
-fn valid_slug(value: &str) -> bool {
+pub(crate) fn valid_slug(value: &str) -> bool {
     if value.is_empty() || value.len() > MAX_WORDPRESS_SLUG_BYTES {
         return false;
     }

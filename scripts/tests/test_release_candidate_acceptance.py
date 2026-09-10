@@ -67,6 +67,7 @@ EXPECTED_FEATURE_STATES = {
 }
 EXPECTED_WORDPRESS_OPTIONS = (
     "--wordpress-review",
+    "--wordpress-discovery",
     "--wordpress-context",
     "--wordpress-advisories",
     "--wordpress-plugins-json",
@@ -87,6 +88,31 @@ EXPECTED_WORDPRESS_PREREQUISITES = (
     "optional --wordpress-themes-json FILE",
     "optional --wordpress-core-version-file FILE",
 )
+EXPECTED_WORDPRESS_DISCOVERY_PREREQUISITES = (
+    "--profile web-review",
+    "--wordpress-review",
+    "--wordpress-discovery",
+)
+EXPECTED_WORDPRESS_DISCOVERY_TRACE = (
+    "GET / HTTP/1.1",
+    "GET / HTTP/1.1",
+    "GET / HTTP/1.1",
+    "GET /wp-json/ HTTP/1.1",
+    "GET /wp-content/themes/synthetic-discovery-theme/style.css HTTP/1.1",
+    "GET /wp-content/plugins/synthetic-discovery-plugin/readme.txt HTTP/1.1",
+    "HEAD /wp-content/plugins/synthetic-discovery-plugin/style.css HTTP/1.1",
+    "HEAD /wp-content/themes/synthetic-discovery-theme/style.css HTTP/1.1",
+    "HEAD /wp-json/ HTTP/1.1",
+)
+EXPECTED_WORDPRESS_DISCOVERY_SOURCES = (
+    "plugin_readme", "rest_index", "theme_stylesheet",
+)
+EXPECTED_WORDPRESS_DISCOVERY_SOURCE_BYTES = {
+    "plugin_readme": 94,
+    "rest_index": 37,
+    "theme_stylesheet": 98,
+}
+EXPECTED_WORDPRESS_DISCOVERY_RESPONSE_BYTES = 229
 EXPECTED_WORDPRESS_NOTICE = {
     "id": ("wordfence-notice-sha256:"
            "826c6b2cc3601beebdd82831cb757c64e721434a7e6ea7d5f1511ca041858379"),
@@ -247,6 +273,24 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
                 "selector the external relation stays indeterminate."
             ),
         },
+        {
+            "key": "option.wordpress-discovery",
+            "label": "WordPress metadata discovery",
+            "compile_feature": "wordpress-review",
+            "build_state": "compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_WORDPRESS_DISCOVERY_PREREQUISITES),
+            "limitation": (
+                "Explicitly performs at most 12 anonymous same-origin metadata "
+                "GET requests. It is never enabled by --wordpress-review alone; "
+                "discovered metadata is unauthenticated, Stable tag is not treated "
+                "as an installed version, and no exploit or impact validation occurs."
+            ),
+        },
     ]
     return {
         "schema": runner.CAPABILITIES_SCHEMA,
@@ -399,6 +443,146 @@ def native_wordpress_audit() -> dict:
     }
 
 
+def discovery_wordpress_assessment() -> dict:
+    review = {
+        "schema": "security.wordpress-review-audit/v7",
+        "review_basis_schema": "security.wordpress-review-audit/v1",
+        "catalog_schema": "security.wordpress-advisory-catalog/v1",
+        "catalog_status": "evaluated",
+        "additional_request_count": 3,
+        "item_projected": True,
+        "components": [
+            {
+                "identity": {
+                    "kind": "theme",
+                    "slug": "synthetic-discovery-theme",
+                },
+                "identity_sources": [
+                    "same_origin_asset_path",
+                    "theme_stylesheet_declaration",
+                ],
+                "confidence_classes": [
+                    "structural_hint",
+                    "public_declaration",
+                ],
+                "versions": [{
+                    "value": "1.5",
+                    "source": "theme_stylesheet_declaration",
+                    "confidence": "public_declaration",
+                }],
+            },
+            {
+                "identity": {
+                    "kind": "plugin",
+                    "slug": "synthetic-discovery-plugin",
+                },
+                "identity_sources": ["same_origin_asset_path"],
+                "confidence_classes": ["structural_hint"],
+                "versions": [],
+            },
+        ],
+        "advisories": [{
+            "id": "SYNTHETIC-DISCOVERED-THEME-0001",
+            "version_relation": "within_declared_range",
+            "applicability": "candidate_match_on_declared_facts",
+            "exploit_execution": "not_performed",
+            "impact_validation": "not_performed",
+        }],
+    }
+    document = wordpress_assessment(review)
+    document["items"].append({
+        "capability_id": "technology.wordpress-metadata-source-response-observed@1",
+        "title": "WordPress metadata-source response outcome observed",
+        "category": "wordpress-metadata-source-response",
+        "disposition": "informational",
+        "claim_basis": "observation",
+        "severity": None,
+        "cwe": None,
+        "confidence_ppm": 550_000,
+        "evidence_count": 3,
+        "evidence_references": ["evidence-0001", "evidence-0002", "evidence-0003"],
+        "control_evidence_references": [],
+        "candidate_evidence_references": [],
+        "case_reference": None,
+        "outcome_reference": None,
+        "verification_stage": None,
+        "redacted_summary": "Bounded response evidence from selected public WordPress metadata sources was collected; usable metadata, installation authenticity, vulnerable-code reachability, and advisory impact were not established.",
+        "remediation": {
+            "id": "wordpress-metadata-review",
+            "summary": "Confirm the installation inventory and source-qualified metadata before making a security or remediation decision.",
+        },
+    })
+    document["item_count"] = len(document["items"])
+    document["wordpress_discovery"] = {
+        "schema": "security.wordpress-discovery-audit/v1",
+        "capability_id": "technology.wordpress-metadata-discovery@1",
+        "policy_id": "termivar.wordpress-metadata-discovery/v1",
+        "selected": True,
+        "method": "get",
+        "credential_mode": "anonymous",
+        "seed_count": 3,
+        "candidate_count": 3,
+        "candidate_limit_reached": False,
+        "omitted_candidate_count": 0,
+        "attempted_request_count": 3,
+        "completed_response_count": 3,
+        "committed_response_count": 3,
+        "response_bytes": EXPECTED_WORDPRESS_DISCOVERY_RESPONSE_BYTES,
+        "source_count": 3,
+        "sources": [
+            {
+                "kind": "rest_index",
+                "parent_depth": 0,
+                "outcome": "observed",
+                "request_attempted": True,
+                "response_bytes": EXPECTED_WORDPRESS_DISCOVERY_SOURCE_BYTES["rest_index"],
+                "evidence_reference_count": 1,
+                "evidence_references": ["evidence-0001"],
+                "namespaces": ["oembed/1.0", "wp/v2"],
+            },
+            {
+                "kind": "theme_stylesheet",
+                "component": {
+                    "kind": "theme", "slug": "synthetic-discovery-theme",
+                },
+                "parent_depth": 0,
+                "outcome": "observed",
+                "request_attempted": True,
+                "response_bytes": EXPECTED_WORDPRESS_DISCOVERY_SOURCE_BYTES[
+                    "theme_stylesheet"
+                ],
+                "evidence_reference_count": 1,
+                "evidence_references": ["evidence-0002"],
+                "theme": {
+                    "name": "Synthetic Discovery Theme",
+                    "version": "1.5",
+                    "requires_wordpress": "6.0",
+                    "tested_up_to": "6.9",
+                },
+            },
+            {
+                "kind": "plugin_readme",
+                "component": {
+                    "kind": "plugin", "slug": "synthetic-discovery-plugin",
+                },
+                "parent_depth": 0,
+                "outcome": "observed",
+                "request_attempted": True,
+                "response_bytes": EXPECTED_WORDPRESS_DISCOVERY_SOURCE_BYTES["plugin_readme"],
+                "evidence_reference_count": 1,
+                "evidence_references": ["evidence-0003"],
+                "plugin": {
+                    "name": "Synthetic Discovery Plugin",
+                    "stable_tag": "9.9.9",
+                    "requires_wordpress": "6.0",
+                    "tested_up_to": "6.9",
+                },
+            },
+        ],
+    }
+    return document
+
+
 def external_wordpress_audit(feed: Path, profile: str | None) -> dict:
     slugs = (
         "synthetic-policy-within",
@@ -530,13 +714,15 @@ class FakeCommands:
                  extra_incomplete_request: bool = False,
                  omit_progress_help: bool = False,
                  omitted_wordpress_option: str | None = None,
-                 progress_stderr: bytes | None = None) -> None:
+                 progress_stderr: bytes | None = None,
+                 discovery_mutation: str | None = None) -> None:
         self.root = root
         self.include_ssrf = include_ssrf
         self.extra_incomplete_request = extra_incomplete_request
         self.omit_progress_help = omit_progress_help
         self.omitted_wordpress_option = omitted_wordpress_option
         self.progress_stderr = progress_stderr
+        self.discovery_mutation = discovery_mutation
         self.arguments: list[list[str]] = []
 
     def __call__(self, argv, directory, record):
@@ -593,6 +779,51 @@ class FakeCommands:
                 exit_code, stderr = 1, b"WordPress advisory input is malformed\n"
             elif destination.name == "wordpress-conflict-must-not-exist":
                 exit_code, stderr = 2, b"WordPress input options conflict\n"
+            elif destination.name == "wordpress-discovery-missing-review-must-not-exist":
+                exit_code, stderr = 2, b"--wordpress-discovery requires --wordpress-review\n"
+            elif destination.name == "wordpress-discovery-baseline-must-not-exist":
+                exit_code, stderr = 2, b"WordPress discovery requires web-review\n"
+            elif destination.name == "wordpress-discovery":
+                assert fixture is not None and target == fixture.origin
+                fixture.server.counts["root"] += len(EXPECTED_WORDPRESS_DISCOVERY_TRACE)
+                fixture.server.request_lines.extend(EXPECTED_WORDPRESS_DISCOVERY_TRACE)
+                assessment = discovery_wordpress_assessment()
+                discovery = assessment["wordpress_discovery"]
+                if self.discovery_mutation == "zero_attempts":
+                    discovery["attempted_request_count"] = 0
+                elif self.discovery_mutation == "review_request_mismatch":
+                    assessment["wordpress_review"]["additional_request_count"] = 2
+                elif self.discovery_mutation == "missing_source":
+                    discovery["sources"].pop()
+                elif self.discovery_mutation == "stable_tag_as_version":
+                    next(source for source in discovery["sources"]
+                         if source["kind"] == "plugin_readme")["plugin"]["version"] = "9.9.9"
+                elif self.discovery_mutation == "shifted_source_bytes":
+                    by_kind = {source["kind"]: source for source in discovery["sources"]}
+                    by_kind["plugin_readme"]["response_bytes"] += 1
+                    by_kind["theme_stylesheet"]["response_bytes"] -= 1
+                elif self.discovery_mutation == "theme_review_version_changed":
+                    assessment["wordpress_review"]["components"][0]["versions"][0][
+                        "value"
+                    ] = "1.6"
+                elif self.discovery_mutation == "theme_review_version_missing":
+                    assessment["wordpress_review"]["components"][0]["versions"] = []
+                elif self.discovery_mutation == "theme_review_version_extra":
+                    assessment["wordpress_review"]["components"][0]["versions"].append({
+                        "value": "1.5",
+                        "source": "operator_inventory",
+                        "confidence": "operator_supplied",
+                    })
+                elif self.discovery_mutation == "forbidden_header":
+                    fixture.server.discovery_forbidden_headers.append((
+                        "GET /wp-json/ HTTP/1.1",
+                        ("authorization",),
+                    ))
+                elif self.discovery_mutation == "extra_request":
+                    fixture.server.counts["root"] += 1
+                    fixture.server.request_lines.append("GET /unexpected HTTP/1.1")
+                write_bundle(destination, assessment=assessment)
+                stderr = b"Report bundle completed\n"
             elif destination.name.startswith("wordpress-"):
                 assert fixture is not None and target == fixture.origin
                 fixture.server.counts["root"] += 5
@@ -765,6 +996,34 @@ class CapabilityInventoryContractTests(unittest.TestCase):
              ]
         self.assert_rejected(implicit, "explicit opt-in contract")
 
+        missing_discovery = capabilities()
+        missing_discovery["surfaces"] = [
+            surface for surface in missing_discovery["surfaces"]
+            if surface["key"] != "option.wordpress-discovery"
+        ]
+        self.assert_rejected(missing_discovery, "discovery surface identity")
+
+        discovery_not_compiled = capabilities()
+        next(surface for surface in discovery_not_compiled["surfaces"]
+             if surface["key"] == "option.wordpress-discovery")["build_state"] = (
+                 "not_compiled"
+             )
+        self.assert_rejected(discovery_not_compiled, "discovery surface metadata")
+
+        discovery_implicit = capabilities()
+        next(surface for surface in discovery_implicit["surfaces"]
+             if surface["key"] == "option.wordpress-discovery")["prerequisites"] = [
+                 "--profile web-review", "--wordpress-review"
+             ]
+        self.assert_rejected(discovery_implicit, "discovery opt-in contract")
+
+        discovery_overclaim = capabilities()
+        next(surface for surface in discovery_overclaim["surfaces"]
+             if surface["key"] == "option.wordpress-discovery")["limitation"] = (
+                 "Discovers authenticated installed plugin versions."
+             )
+        self.assert_rejected(discovery_overclaim, "discovery limitation")
+
         document = capabilities()
         text = capabilities_text(document).replace(b"WordPress evidence review", b"other")
         self.assert_rejected(document, "text and JSON views disagree", text)
@@ -859,7 +1118,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
 
     def execute(self, *, include_ssrf=False, extra_incomplete_request=False,
                 omit_progress_help=False, omitted_wordpress_option=None,
-                progress_stderr=None, path_suffix=""):
+                progress_stderr=None, discovery_mutation=None, path_suffix=""):
         commands = FakeCommands(
             self.root,
             include_ssrf=include_ssrf,
@@ -867,6 +1126,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
             omit_progress_help=omit_progress_help,
             omitted_wordpress_option=omitted_wordpress_option,
             progress_stderr=progress_stderr,
+            discovery_mutation=discovery_mutation,
         )
         with mock.patch.object(runner.platform, "system", return_value="Windows"), \
                 mock.patch.object(runner.platform, "machine", return_value="AMD64"), \
@@ -951,6 +1211,30 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(wordpress["self_comparison"]["advisory_differences"], 0)
         self.assertEqual(
             wordpress["controlled_comparison"]["paired_advisory_differences"], 5)
+        self.assertEqual(wordpress["discovery"]["schema"],
+                         "security.wordpress-discovery-audit/v1")
+        self.assertEqual(wordpress["discovery"]["attempted_requests"], 3)
+        self.assertEqual(wordpress["discovery"]["committed_responses"], 3)
+        self.assertEqual(wordpress["discovery"]["observed_sources"], [
+            *EXPECTED_WORDPRESS_DISCOVERY_SOURCES,
+        ])
+        self.assertEqual(wordpress["discovery"]["theme_version_relation"],
+                         "within_declared_range")
+        self.assertFalse(
+            wordpress["discovery"]["plugin_stable_tag_is_installed_version"])
+        self.assertEqual(
+            wordpress["discovery"]["request_trace"],
+            list(EXPECTED_WORDPRESS_DISCOVERY_TRACE),
+        )
+        self.assertEqual(runner.WORDPRESS_DISCOVERY_TRACE,
+                         EXPECTED_WORDPRESS_DISCOVERY_TRACE)
+        self.assertEqual(runner.WORDPRESS_DISCOVERY_SOURCE_BYTES,
+                         EXPECTED_WORDPRESS_DISCOVERY_SOURCE_BYTES)
+        self.assertEqual(runner.WORDPRESS_DISCOVERY_RESPONSE_BYTES,
+                         EXPECTED_WORDPRESS_DISCOVERY_RESPONSE_BYTES)
+        self.assertIn("discovery", wordpress["bundle_verification"])
+        self.assertEqual(
+            wordpress["discovery_self_comparison"]["groups"]["changed"], 0)
         self.assertEqual([path.name for path in self.evidence.iterdir()], [runner.EVIDENCE_NAME])
         stored = json.loads((self.evidence / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
         self.assertEqual(stored, result)
@@ -958,7 +1242,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertNotIn(str(self.root), encoded)
         self.assertNotIn("127.0.0.1", encoded)
         self.assertLessEqual(len(runner._encode_evidence(result)), runner.EVIDENCE_LIMIT)
-        self.assertEqual(len(commands.arguments), 27)
+        self.assertEqual(len(commands.arguments), 32)
         self.assertEqual(runner.first_use.digest_file(self.archive),
                          result["archive"]["archive_sha256"])
 
@@ -984,6 +1268,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
     def test_packaged_help_must_expose_every_bundled_wordpress_option(self):
         for index, option in enumerate((
             "--wordpress-review",
+            "--wordpress-discovery",
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-advisories-format",
@@ -999,6 +1284,27 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 )
                 self.assertEqual(result["status"], "failed")
                 self.assertIn("omits bundled WordPress option", result["failure"])
+
+    def test_packaged_discovery_contract_fails_closed_on_independent_mutations(self):
+        for index, (mutation, expected) in enumerate((
+            ("zero_attempts", "audit identity or accounting"),
+            ("review_request_mismatch", "review schema or request accounting"),
+            ("missing_source", "source cardinality"),
+            ("stable_tag_as_version", "promoted to an installed version"),
+            ("shifted_source_bytes", "per-source response accounting"),
+            ("theme_review_version_changed", "source-qualified theme version"),
+            ("theme_review_version_missing", "source-qualified theme version"),
+            ("theme_review_version_extra", "source-qualified theme version"),
+            ("forbidden_header", "forbidden credential header"),
+            ("extra_request", "request method/order/count"),
+        )):
+            with self.subTest(mutation=mutation):
+                result, _ = self.execute(
+                    discovery_mutation=mutation,
+                    path_suffix=f"-discovery-{index}",
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(expected, result["failure"])
 
     def test_packaged_progress_must_have_bounded_complete_lifecycle(self):
         malformed = (
