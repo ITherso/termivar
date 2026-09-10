@@ -12,6 +12,7 @@
 </head>
 <body <?php body_class(); ?>>
 <main><h1>Termivar WordPress metadata discovery lab</h1></main>
+<img src="/wp-includes/images/blank.gif" alt="" width="1" height="1">
 <?php wp_footer(); ?>
 </body>
 </html>

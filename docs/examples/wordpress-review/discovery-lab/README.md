@@ -44,7 +44,9 @@ the runner's ordinary Docker cache.
 
 The derived image contains only original GPL-2.0-or-later test code:
 
-- child theme `termivar-child` at `1.4.0`;
+- child theme `termivar-child` at `1.4.0`, with one task-owned
+  `/wp-includes/images/blank.gif` reference that supplies a deterministic
+  identity-only core signal even when the generator is suppressed;
 - parent theme `termivar-parent` at `3.2.1`, referenced only by the child's
   `Template` header;
 - active plugin `termivar-metadata-lab` at `2.3.4`, whose readme deliberately

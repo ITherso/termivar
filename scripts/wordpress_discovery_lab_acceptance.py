@@ -195,6 +195,11 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
     require("http://" not in dockerfile and "https://" not in dockerfile,
             "lab build must not fetch network content")
     require("ADD " not in dockerfile, "lab build must use only checked-in COPY sources")
+    child_template = (root / "themes/termivar-child/index.php").read_text(encoding="utf-8")
+    require(
+        '<img src="/wp-includes/images/blank.gif"' in child_template,
+        "lab root must retain its deterministic identity-only core asset reference",
+    )
     require(GROUND_TRUTH_PATH.is_file() and not GROUND_TRUTH_PATH.is_symlink(),
             "lab ground-truth declaration is unavailable")
     truth = parse_json(GROUND_TRUTH_PATH.read_bytes(), "lab ground truth")
