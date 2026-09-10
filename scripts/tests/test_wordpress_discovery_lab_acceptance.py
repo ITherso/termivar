@@ -223,6 +223,25 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             upstream_thread.join(timeout=2)
         self.assertFalse(upstream_thread.is_alive())
 
+    def test_html_execution_boundary_is_exact_and_bounded(self):
+        html = (
+            "<h3>Execution boundary</h3>"
+            "<dl class=\"meta\">"
+            "<dt>Exploit execution</dt><dd><code>not_performed</code></dd>"
+            "<dt>Impact validation</dt><dd><code>not_performed</code></dd>"
+            "</dl>"
+        ).encode()
+        runner._validate_wordpress_execution_boundary(html)
+
+        duplicated = html.replace(
+            b"</dl>",
+            b"<dt>Exploit execution</dt><dd><code>not_performed</code></dd></dl>",
+        )
+        with self.assertRaisesRegex(runner.AcceptanceError, "omits or duplicates"):
+            runner._validate_wordpress_execution_boundary(duplicated)
+        with self.assertRaisesRegex(runner.AcceptanceError, "report bound"):
+            runner._validate_wordpress_execution_boundary(b"")
+
     def test_internal_container_address_rejects_network_or_address_drift(self):
         network_name = "termivar-wp-net-0123456789ab"
         network_id = "a" * 64
@@ -383,10 +402,6 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                         "versions": [],
                     },
                 ],
-                "execution": {
-                    "exploit_execution": "not_performed",
-                    "impact_validation": "not_performed",
-                },
             },
             "wordpress_discovery": {
                 "schema": "security.wordpress-discovery-audit/v1",

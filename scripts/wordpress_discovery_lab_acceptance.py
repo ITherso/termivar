@@ -70,6 +70,7 @@ GROUND_TRUTH_PATH = (
 )
 MAX_COMMAND_OUTPUT = 2 * 1024 * 1024
 MAX_EVIDENCE_OUTPUT = 256 * 1024
+MAX_REPORT_PAYLOAD_BYTES = 16 * 1024 * 1024
 PRIVATE_DIRECTORY_MODE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
 WORDPRESS_CONTAINER_PORT = 8080
 MAX_RELAY_CONNECTION_BYTES = 64 * 1024 * 1024
@@ -1000,6 +1001,25 @@ def _report_identity(bundle: Path) -> dict[str, Any]:
     return identity
 
 
+def _validate_wordpress_execution_boundary(html_bytes: bytes) -> None:
+    require(
+        0 < len(html_bytes) <= MAX_REPORT_PAYLOAD_BYTES,
+        "assessment HTML is empty or exceeds its report bound",
+    )
+    try:
+        html = html_bytes.decode("utf-8", "strict")
+    except UnicodeDecodeError as error:
+        raise AcceptanceError("assessment HTML is not valid UTF-8") from error
+    for marker in (
+        "<dt>Exploit execution</dt><dd><code>not_performed</code></dd>",
+        "<dt>Impact validation</dt><dd><code>not_performed</code></dd>",
+    ):
+        require(
+            html.count(marker) == 1,
+            "assessment HTML omits or duplicates its fixed WordPress execution boundary",
+        )
+
+
 def _validate_discovery_document(document: dict[str, Any], *, generator_visible: bool) -> str:
     audit = document.get("wordpress_review")
     discovery = document.get("wordpress_discovery")
@@ -1085,7 +1105,6 @@ def _validate_discovery_document(document: dict[str, Any], *, generator_visible:
     for expected in (
         "termivar-child", "1.4.0", "termivar-parent", "3.2.1",
         "termivar-metadata-lab", "9.9.9", "wp/v2", "termivar-lab/v1",
-        "not_performed",
     ):
         require(expected in strings, f"discovery audit omits expected typed value {expected}")
     # The inactive fixture has no public reference and must remain absent rather
@@ -1530,6 +1549,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 quality = None
                 discovery_response_bytes = 0
                 if discovery:
+                    _validate_wordpress_execution_boundary(
+                        (bundle / "assessment.html").read_bytes()
+                    )
                     schema = _validate_discovery_document(
                         document, generator_visible=not name.startswith("suppressed-")
                     )
