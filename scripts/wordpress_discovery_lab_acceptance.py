@@ -90,6 +90,14 @@ REQUEST_RE = re.compile(
 )
 SOURCE_REF_RE = re.compile(r"[0-9a-f]{40}\Z")
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?\Z")
+ITEM_FINGERPRINT_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+CAPABILITY_ID_RE = re.compile(r"[!-~]{1,256}\Z")
+COMPARISON_GROUPS = (
+    "only_in_after",
+    "only_in_before",
+    "changed",
+    "unchanged",
+)
 
 EXPECTED_COMPONENTS = {
     ("core", "wordpress"): ("7.1", "installed"),
@@ -238,6 +246,14 @@ class CommandResult:
     returncode: int
     elapsed_seconds: float = 0.0
     peak_memory: dict[str, Any] | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class AssessmentInventory:
+    schema: str
+    item_count: int
+    identities: dict[str, str]
+    sha256: str
 
 
 class ProcessRunner:
@@ -1362,6 +1378,160 @@ def _run_scan(
     )
 
 
+def _read_assessment_inventory(path: Path, label: str) -> AssessmentInventory:
+    require(path.is_file() and not path.is_symlink(), f"{label} is not a regular report file")
+    with path.open("rb") as source:
+        raw = source.read(MAX_REPORT_PAYLOAD_BYTES + 1)
+    require(0 < len(raw) <= MAX_REPORT_PAYLOAD_BYTES,
+            f"{label} is empty or exceeds the report bound")
+    document = parse_json(raw, label)
+    require(isinstance(document, dict), f"{label} root is not an object")
+    schema = document.get("schema")
+    require(schema == "venom-rendered-assessment/v1",
+            f"{label} has an unsupported assessment schema")
+    require(document.get("status") == "complete", f"{label} is not complete")
+    item_count = document.get("item_count")
+    require(isinstance(item_count, int) and not isinstance(item_count, bool)
+            and item_count >= 0,
+            f"{label} has an invalid item_count")
+    items = document.get("items")
+    require(isinstance(items, list) and len(items) == item_count,
+            f"{label} item_count does not match its item array")
+
+    identities: dict[str, str] = {}
+    for index, item in enumerate(items):
+        require(isinstance(item, dict), f"{label} item {index} is not an object")
+        require(item.get("schema") == "venom-assessment-item/v1",
+                f"{label} item {index} has an unsupported schema")
+        fingerprint = item.get("fingerprint")
+        capability_id = item.get("capability_id")
+        require(isinstance(fingerprint, str)
+                and ITEM_FINGERPRINT_RE.fullmatch(fingerprint) is not None,
+                f"{label} item {index} has an invalid fingerprint")
+        require(isinstance(capability_id, str)
+                and CAPABILITY_ID_RE.fullmatch(capability_id) is not None,
+                f"{label} item {index} has an invalid capability identity")
+        require(fingerprint not in identities,
+                f"{label} contains a duplicate item fingerprint")
+        identities[fingerprint] = capability_id
+    return AssessmentInventory(
+        schema=schema,
+        item_count=item_count,
+        identities=identities,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _comparison_group_arrays(document: Any, label: str) -> dict[str, list[Any]]:
+    require(isinstance(document, dict), f"{label} root is not an object")
+    require(document.get("schema") == "termivar-report-comparison/v1",
+            f"{label} has an unsupported comparison schema")
+    groups: dict[str, list[Any]] = {}
+    for group in COMPARISON_GROUPS:
+        require(group in document, f"{label} omits comparison group {group}")
+        value = document[group]
+        require(isinstance(value, list), f"{label} comparison group {group} is not an array")
+        groups[group] = value
+    return groups
+
+
+def _validate_comparison_partition(
+    document: Any,
+    before: AssessmentInventory,
+    after: AssessmentInventory,
+    label: str,
+) -> tuple[dict[str, int], dict[str, dict[str, str]]]:
+    groups = _comparison_group_arrays(document, label)
+    for side, source in (("before", before), ("after", after)):
+        metadata = document.get(side)
+        require(isinstance(metadata, dict), f"{label} omits {side} source metadata")
+        metadata_count = metadata.get("item_count")
+        require(isinstance(metadata_count, int) and not isinstance(metadata_count, bool)
+                and metadata_count == source.item_count,
+                f"{label} {side} metadata item_count does not match its source")
+        require(metadata.get("schema") == source.schema,
+                f"{label} {side} metadata schema does not match its source")
+        require(metadata.get("sha256") == source.sha256,
+                f"{label} {side} metadata digest does not match its source bytes")
+
+    shared = before.identities.keys() & after.identities.keys()
+    for fingerprint in shared:
+        require(before.identities[fingerprint] == after.identities[fingerprint],
+                f"{label} source capability identities conflict for one fingerprint")
+
+    identities: dict[str, dict[str, str]] = {}
+    seen: set[str] = set()
+    for group, items in groups.items():
+        group_identities: dict[str, str] = {}
+        for index, item in enumerate(items):
+            require(isinstance(item, dict),
+                    f"{label} {group} item {index} is not an object")
+            fingerprint = item.get("fingerprint")
+            capability_id = item.get("capability_id")
+            changed_fields = item.get("changed_fields")
+            require(isinstance(fingerprint, str)
+                    and ITEM_FINGERPRINT_RE.fullmatch(fingerprint) is not None,
+                    f"{label} {group} item {index} has an invalid fingerprint")
+            require(isinstance(capability_id, str)
+                    and CAPABILITY_ID_RE.fullmatch(capability_id) is not None,
+                    f"{label} {group} item {index} has an invalid capability identity")
+            require(fingerprint not in seen,
+                    f"{label} repeats a fingerprint across comparison groups")
+            require(isinstance(changed_fields, list)
+                    and all(isinstance(field, str) for field in changed_fields),
+                    f"{label} {group} item {index} has invalid changed_fields")
+
+            before_projection = item.get("before")
+            after_projection = item.get("after")
+            if group == "only_in_before":
+                valid_shape = (isinstance(before_projection, dict)
+                               and after_projection is None and not changed_fields)
+            elif group == "only_in_after":
+                valid_shape = (before_projection is None
+                               and isinstance(after_projection, dict) and not changed_fields)
+            elif group == "changed":
+                valid_shape = (isinstance(before_projection, dict)
+                               and isinstance(after_projection, dict)
+                               and bool(changed_fields))
+            else:
+                valid_shape = (isinstance(before_projection, dict)
+                               and before_projection == after_projection
+                               and not changed_fields)
+            require(valid_shape, f"{label} {group} item {index} has an invalid group shape")
+            group_identities[fingerprint] = capability_id
+            seen.add(fingerprint)
+        identities[group] = group_identities
+
+    expected_only_before = {
+        fingerprint: before.identities[fingerprint]
+        for fingerprint in before.identities.keys() - after.identities.keys()
+    }
+    expected_only_after = {
+        fingerprint: after.identities[fingerprint]
+        for fingerprint in after.identities.keys() - before.identities.keys()
+    }
+    expected_shared = {
+        fingerprint: before.identities[fingerprint]
+        for fingerprint in shared
+    }
+    actual_shared = {**identities["changed"], **identities["unchanged"]}
+    require(identities["only_in_before"] == expected_only_before,
+            f"{label} only_in_before identities do not match the before source")
+    require(identities["only_in_after"] == expected_only_after,
+            f"{label} only_in_after identities do not match the after source")
+    require(actual_shared == expected_shared,
+            f"{label} paired identities do not match the source intersection")
+
+    counts = {group: len(items) for group, items in groups.items()}
+    require(counts["only_in_before"] + counts["changed"] + counts["unchanged"]
+            == before.item_count,
+            f"{label} does not conserve the before source item count")
+    require(counts["only_in_after"] + counts["changed"] + counts["unchanged"]
+            == after.item_count,
+            f"{label} does not conserve the after source item count")
+    return counts, identities
+
+
 def _run_offline_acceptance(
     runner: ProcessRunner, binary: Path, scenarios: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
@@ -1383,22 +1553,17 @@ def _run_offline_acceptance(
             label=f"offline self comparison {name}",
         )
         compared = parse_json(compare.stdout, f"offline self comparison {name}")
-        counts = compared.get("counts")
-        require(isinstance(counts, dict), "offline comparison omits counts")
-        source = parse_json(
-            (bundle / "assessment.json").read_bytes(),
-            f"offline self comparison source {name}",
+        source = _read_assessment_inventory(
+            bundle / "assessment.json", f"offline self comparison source {name}"
         )
-        item_count = source.get("item_count")
-        require(isinstance(item_count, int) and not isinstance(item_count, bool)
-                and item_count > 0,
+        require(source.item_count > 0,
                 f"offline self comparison source has invalid item count for {name}")
-        require(counts.get("only_in_after") == 0 and counts.get("only_in_before") == 0
-                and counts.get("changed") == 0
-                and counts.get("unchanged") == item_count
-                and sum(counts.get(key, -1) for key in (
-                    "only_in_after", "only_in_before", "changed", "unchanged"
-                )) == item_count,
+        counts, _ = _validate_comparison_partition(
+            compared, source, source, f"offline self comparison {name}"
+        )
+        require(counts["only_in_after"] == 0 and counts["only_in_before"] == 0
+                and counts["changed"] == 0
+                and counts["unchanged"] == source.item_count,
                 f"offline self comparison changed {name}")
         results["bundles"][name] = {
             "verification_status": verified["status"],
@@ -1422,28 +1587,29 @@ def _run_offline_acceptance(
             and wordpress.get("methodology", {}).get("status") == "changed"
             and wordpress.get("coverage", {}).get("status") == "changed",
             "offline comparison did not separate discovery methodology and coverage changes")
-    counts = comparison.get("counts")
-    before_document = parse_json(
-        (before / "assessment.json").read_bytes(),
+    before_document = _read_assessment_inventory(
+        before / "assessment.json",
         "offline collection-policy before assessment",
     )
-    after_document = parse_json(
-        (after / "assessment.json").read_bytes(),
+    after_document = _read_assessment_inventory(
+        after / "assessment.json",
         "offline collection-policy after assessment",
     )
-    require(isinstance(counts, dict)
-            and counts.get("only_in_before") == 0
-            and counts.get("only_in_after")
-            == after_document.get("item_count") - before_document.get("item_count")
-            and sum(counts.get(key, -1) for key in (
-                "only_in_after", "only_in_before", "changed", "unchanged"
-            )) == after_document.get("item_count"),
+    require(before_document.item_count > 0 and after_document.item_count > 0,
+            "offline collection-policy comparison source has invalid item count")
+    counts, identities = _validate_comparison_partition(
+        comparison,
+        before_document,
+        after_document,
+        "offline collection-policy comparison",
+    )
+    require(counts["only_in_before"] == 0
+            and counts["only_in_after"]
+            == after_document.item_count - before_document.item_count,
             "offline collection-policy comparison lost or duplicated observations")
-    only_after = comparison.get("only_in_after")
-    require(isinstance(only_after, list)
-            and any(item.get("capability_id")
-                    == "technology.wordpress-metadata-source-response-observed@1"
-                    for item in only_after if isinstance(item, dict)),
+    require(len(identities["only_in_after"]) == 1
+            and next(iter(identities["only_in_after"].values()), None)
+            == "technology.wordpress-metadata-source-response-observed@1",
             "offline comparison omitted the one-sided discovery observation")
     results["review_only_to_discovery"] = {
         "status": wordpress["status"],
