@@ -43,16 +43,18 @@ fn assessment_flow_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     if functions.len() != 1
         || visitor.invalid
         || visitor.order != ["analyze", "compose", "bundle"]
+        || visitor.runtime_heap != 1
         || visitor.analyze != 1
         || visitor.analysis_future != 1
         || visitor.analysis_pin != 1
+        || visitor.analysis_heap_pin != 1
         || visitor.analysis_select != 1
         || visitor.analysis_await != 1
         || visitor.compose != 1
         || visitor.bundle != 1
     {
         Ok(vec![
-            "completed web-review output must await one runtime analysis, compose one AssessmentRunReport, and delegate one bundle render from `&product`"
+            "completed web-review output must heap-own one runtime, heap-pin and await one analysis, compose one AssessmentRunReport, and delegate one bundle render from `&product`"
                 .to_owned(),
         ])
     } else {
@@ -62,9 +64,11 @@ fn assessment_flow_violations(source: &str) -> Result<Vec<String>, syn::Error> {
 
 #[derive(Default)]
 struct AssessmentFlowVisitor {
+    runtime_heap: usize,
     analyze: usize,
     analysis_future: usize,
     analysis_pin: usize,
+    analysis_heap_pin: usize,
     analysis_select: usize,
     analysis_await: usize,
     compose: usize,
@@ -75,17 +79,41 @@ struct AssessmentFlowVisitor {
 
 impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
     fn visit_local(&mut self, item: &'ast syn::Local) {
-        let is_analysis_binding = matches!(&item.pat, syn::Pat::Ident(binding)
-            if binding.ident == "analysis")
+        let is_heap_runtime = matches!(&item.pat, syn::Pat::Ident(binding)
+            if binding.ident == "runtime")
             && item.init.as_ref().is_some_and(|initialization| {
-                matches!(initialization.expr.as_ref(), Expr::MethodCall(call)
-                    if call.method == "analyze"
-                        && expression_is_path(call.receiver.as_ref(), "runtime")
-                        && call.args.is_empty())
+                matches!(initialization.expr.as_ref(), Expr::Call(call)
+                    if expression_path(call.func.as_ref()).as_deref() == Some("Box::new")
+                        && call.args.len() == 1
+                        && call.args.first().is_some_and(is_runtime_build))
             });
+        if is_heap_runtime {
+            self.runtime_heap += 1;
+            return;
+        }
+        let analysis_initializer = matches!(&item.pat, syn::Pat::Ident(binding)
+            if binding.ident == "analysis")
+        .then(|| {
+            item.init
+                .as_ref()
+                .map(|initialization| initialization.expr.as_ref())
+        })
+        .flatten();
+        let is_direct_analysis = analysis_initializer.is_some_and(is_runtime_analysis);
+        let is_heap_pinned_analysis = analysis_initializer.is_some_and(|expression| {
+            matches!(expression, Expr::Call(call)
+                if expression_path(call.func.as_ref()).as_deref() == Some("Box::pin")
+                    && call.args.len() == 1
+                    && call.args.first().is_some_and(is_runtime_analysis))
+        });
+        let is_analysis_binding = is_direct_analysis || is_heap_pinned_analysis;
         if is_analysis_binding {
             self.analyze += 1;
             self.analysis_future += 1;
+            if is_heap_pinned_analysis {
+                self.analysis_pin += 1;
+                self.analysis_heap_pin += 1;
+            }
             self.order.push("analyze");
             return;
         }
@@ -157,6 +185,21 @@ impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
         }
         syn::visit::visit_macro(self, item);
     }
+}
+
+fn is_runtime_analysis(expression: &Expr) -> bool {
+    matches!(expression, Expr::MethodCall(call)
+        if call.method == "analyze"
+            && expression_is_path(call.receiver.as_ref(), "runtime")
+            && call.args.is_empty())
+}
+
+fn is_runtime_build(expression: &Expr) -> bool {
+    matches!(expression, Expr::Try(try_expression)
+        if matches!(try_expression.expr.as_ref(), Expr::MethodCall(call)
+            if call.method == "build"
+                && expression_is_path(call.receiver.as_ref(), "builder")
+                && call.args.is_empty()))
 }
 
 fn token_stream_contains_identifier(stream: TokenStream, expected: &str) -> bool {
@@ -925,8 +968,8 @@ mod tests {
 
     const VALID_ASSESSMENT_FLOW: &str = r#"
         async fn run_web_review() {
-            let analysis = runtime.analyze();
-            tokio::pin!(analysis);
+            let mut runtime = Box::new(builder.build()?);
+            let mut analysis = Box::pin(runtime.analyze());
             let report = if show_progress {
                 tokio::select! { result = &mut analysis => result }
             } else {
@@ -1149,12 +1192,16 @@ mod tests {
             .is_empty());
         for (from, to) in [
             (
-                "let analysis = runtime.analyze();",
-                "let analysis = runtime.analyze(); let _duplicate = runtime.analyze();",
+                "let mut runtime = Box::new(builder.build()?);",
+                "let mut runtime = builder.build()?;",
             ),
             (
-                "tokio::pin!(analysis);",
-                "let _unpinned = &analysis;",
+                "let mut analysis = Box::pin(runtime.analyze());",
+                "let mut analysis = Box::pin(runtime.analyze()); let _duplicate = runtime.analyze();",
+            ),
+            (
+                "Box::pin(runtime.analyze())",
+                "Box::new(runtime.analyze())",
             ),
             (
                 "tokio::select! { result = &mut analysis => result }",
@@ -1184,6 +1231,18 @@ mod tests {
                 "accepted {to}"
             );
         }
+
+        let stack_pinned = VALID_ASSESSMENT_FLOW.replacen(
+            "let mut analysis = Box::pin(runtime.analyze());",
+            "let analysis = runtime.analyze(); tokio::pin!(analysis);",
+            1,
+        );
+        assert!(
+            !assessment_flow_violations(&stack_pinned)
+                .unwrap()
+                .is_empty(),
+            "accepted the stack-pinned runtime analysis regression"
+        );
     }
 
     #[test]

@@ -2322,8 +2322,8 @@ mod tests {
                 "private wordpress-review feature gate",
             ),
             (
-                "    wordpress_discovery: bool,",
-                "    wordpress_discovery: String,",
+                "    #[arg(long, requires_all = [\"profile\", \"wordpress_review\"])]\n    wordpress_discovery: bool,",
+                "    #[arg(long, requires_all = [\"profile\", \"wordpress_review\"])]\n    wordpress_discovery: String,",
                 "field inventory and types must remain exact",
             ),
             (

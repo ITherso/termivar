@@ -2317,6 +2317,40 @@ def _trace_json(
     ]
 
 
+def _validate_discovery_capability(document: Any) -> None:
+    require(isinstance(document, dict), "capabilities must be a JSON object")
+    require(
+        document.get("schema") == "termivar-cli-capabilities/v1",
+        "capabilities schema is unsupported",
+    )
+    surfaces = document.get("surfaces")
+    require(isinstance(surfaces, list), "capabilities surfaces must be an array")
+    discovery_surfaces = [
+        row
+        for row in surfaces
+        if isinstance(row, dict) and row.get("key") == "option.wordpress-discovery"
+    ]
+    require(
+        len(discovery_surfaces) == 1,
+        "capabilities do not report exactly one WordPress discovery surface",
+    )
+    discovery = discovery_surfaces[0]
+    prerequisites = discovery.get("prerequisites")
+    expected_prerequisites = [
+        "--profile web-review",
+        "--wordpress-review",
+        "--wordpress-discovery",
+        "optional --wordpress-layout FILE",
+    ]
+    require(
+        discovery.get("build_state") == "compiled"
+        and discovery.get("compile_feature") == "wordpress-review"
+        and discovery.get("implementation_status") == "implemented"
+        and prerequisites == expected_prerequisites,
+        "capabilities do not report compiled WordPress discovery",
+    )
+
+
 def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> dict[str, Any]:
     require(binary.is_file() and not binary.is_symlink(), "binary must be a regular non-link file")
     fixture_before = tree_sha256(FIXTURE_ROOT)
@@ -2334,13 +2368,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                    label="capabilities").stdout,
         "capabilities",
     )
-    surfaces = capabilities.get("surfaces", [])
-    discovery_surfaces = [row for row in surfaces if row.get("key") == "option.wordpress-discovery"]
-    require(len(discovery_surfaces) == 1
-            and discovery_surfaces[0].get("build_state") == "compiled"
-            and "optional --wordpress-layout FILE"
-            in discovery_surfaces[0].get("required_inputs", []),
-            "capabilities do not report compiled WordPress discovery")
+    _validate_discovery_capability(capabilities)
 
     result: dict[str, Any] = {
         "schema": TASK_SCHEMA,

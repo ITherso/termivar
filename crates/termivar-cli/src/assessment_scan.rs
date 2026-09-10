@@ -895,7 +895,11 @@ async fn run_web_review(
     if wordpress_discovery.is_enabled() {
         builder = builder.with_wordpress_discovery();
     }
-    let mut runtime = builder.build()?;
+    // Keep the composed runtime and its analysis future off the executable's
+    // main-thread stack. Windows reserves a smaller main stack than the other
+    // native targets, while feature-gated audit state still belongs to this
+    // one runtime and can grow independently of the CLI dispatch frame.
+    let mut runtime = Box::new(builder.build()?);
     let mut progress = if progress_requested {
         let observer = runtime.progress_observer().ok_or_else(|| {
             std::io::Error::other("assessment progress observer could not be created")
@@ -904,8 +908,7 @@ async fn run_web_review(
     } else {
         None
     };
-    let analysis = runtime.analyze();
-    tokio::pin!(analysis);
+    let mut analysis = Box::pin(runtime.analyze());
     let runtime_result = if let Some(session) = progress.as_mut() {
         let mut cadence = ProgressCadence::new(tokio::time::Instant::now(), PROGRESS_PERIOD);
         let timer = tokio::time::sleep_until(cadence.deadline());

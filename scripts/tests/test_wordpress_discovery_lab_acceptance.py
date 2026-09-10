@@ -761,6 +761,132 @@ def layout_offline_fixture(root):
 
 
 class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
+    def test_discovery_capability_uses_the_real_prerequisites_wire_field(self):
+        document = {
+            "schema": "termivar-cli-capabilities/v1",
+            "surfaces": [{
+                "key": "option.wordpress-discovery",
+                "build_state": "compiled",
+                "compile_feature": "wordpress-review",
+                "implementation_status": "implemented",
+                "prerequisites": [
+                    "--profile web-review",
+                    "--wordpress-review",
+                    "--wordpress-discovery",
+                    "optional --wordpress-layout FILE",
+                ],
+            }]
+        }
+
+        runner._validate_discovery_capability(document)
+
+        wrong_field = copy.deepcopy(document)
+        prerequisites = wrong_field["surfaces"][0].pop("prerequisites")
+        wrong_field["surfaces"][0]["required_inputs"] = prerequisites
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "capabilities do not report compiled WordPress discovery",
+        ):
+            runner._validate_discovery_capability(wrong_field)
+
+    def test_discovery_capability_rejects_missing_duplicate_or_uncompiled_rows(self):
+        valid_row = {
+            "key": "option.wordpress-discovery",
+            "build_state": "compiled",
+            "compile_feature": "wordpress-review",
+            "implementation_status": "implemented",
+            "prerequisites": [
+                "--profile web-review",
+                "--wordpress-review",
+                "--wordpress-discovery",
+                "optional --wordpress-layout FILE",
+            ],
+        }
+        cases = (
+            (
+                {"schema": "termivar-cli-capabilities/v1"},
+                "capabilities surfaces must be an array",
+            ),
+            (
+                {"schema": "other", "surfaces": []},
+                "capabilities schema is unsupported",
+            ),
+            (
+                {"schema": "termivar-cli-capabilities/v1", "surfaces": []},
+                "exactly one WordPress discovery surface",
+            ),
+            (
+                {
+                    "schema": "termivar-cli-capabilities/v1",
+                    "surfaces": [valid_row, copy.deepcopy(valid_row)],
+                },
+                "exactly one WordPress discovery surface",
+            ),
+            (
+                {
+                    "schema": "termivar-cli-capabilities/v1",
+                    "surfaces": [{**valid_row, "build_state": "not_compiled"}],
+                },
+                "compiled WordPress discovery",
+            ),
+            (
+                {
+                    "schema": "termivar-cli-capabilities/v1",
+                    "surfaces": [{**valid_row, "prerequisites": None}],
+                },
+                "compiled WordPress discovery",
+            ),
+            (
+                {
+                    "schema": "termivar-cli-capabilities/v1",
+                    "surfaces": [{**valid_row, "prerequisites": []}],
+                },
+                "compiled WordPress discovery",
+            ),
+            (
+                {
+                    "schema": "termivar-cli-capabilities/v1",
+                    "surfaces": [{
+                        **valid_row,
+                        "prerequisites": valid_row["prerequisites"][:-1],
+                    }],
+                },
+                "compiled WordPress discovery",
+            ),
+            (
+                {
+                    "schema": "termivar-cli-capabilities/v1",
+                    "surfaces": [{
+                        **valid_row,
+                        "prerequisites": valid_row["prerequisites"]
+                        + ["optional --wordpress-layout FILE"],
+                    }],
+                },
+                "compiled WordPress discovery",
+            ),
+            (
+                {
+                    "schema": "termivar-cli-capabilities/v1",
+                    "surfaces": [{**valid_row, "compile_feature": "other"}],
+                },
+                "compiled WordPress discovery",
+            ),
+            (
+                {
+                    "schema": "termivar-cli-capabilities/v1",
+                    "surfaces": [{
+                        **valid_row,
+                        "implementation_status": "planned",
+                    }],
+                },
+                "compiled WordPress discovery",
+            ),
+        )
+        for document, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(runner.AcceptanceError, message):
+                    runner._validate_discovery_capability(document)
+
     def test_nonroot_trace_baseline_is_ordinary_typed_incomplete_web_review(self):
         process = mock.Mock()
         diagnostic = {
