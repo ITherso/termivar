@@ -98,6 +98,25 @@ COMPARISON_GROUPS = (
     "changed",
     "unchanged",
 )
+ITEM_PROJECTION_FIELDS = (
+    "title",
+    "category",
+    "disposition",
+    "claim_basis",
+    "severity",
+    "cwe",
+    "confidence_ppm",
+    "redacted_summary",
+    "remediation",
+    "evidence",
+)
+OPTIONAL_AUDIT_FIELDS = (
+    "authorization_review",
+    "openapi_review",
+    "rest_review",
+    "wordpress_review",
+    "wordpress_discovery",
+)
 
 EXPECTED_COMPONENTS = {
     ("core", "wordpress"): ("7.1", "installed"),
@@ -253,6 +272,8 @@ class AssessmentInventory:
     schema: str
     item_count: int
     identities: dict[str, str]
+    projections: dict[str, dict[str, Any]]
+    optional_audits: dict[str, Any]
     sha256: str
 
 
@@ -1399,6 +1420,7 @@ def _read_assessment_inventory(path: Path, label: str) -> AssessmentInventory:
             f"{label} item_count does not match its item array")
 
     identities: dict[str, str] = {}
+    projections: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(items):
         require(isinstance(item, dict), f"{label} item {index} is not an object")
         require(item.get("schema") == "venom-assessment-item/v1",
@@ -1414,10 +1436,46 @@ def _read_assessment_inventory(path: Path, label: str) -> AssessmentInventory:
         require(fingerprint not in identities,
                 f"{label} contains a duplicate item fingerprint")
         identities[fingerprint] = capability_id
+        remediation = item.get("remediation")
+        evidence_references = item.get("evidence_references")
+        control_references = item.get("control_evidence_references")
+        candidate_references = item.get("candidate_evidence_references")
+        require(isinstance(remediation, dict)
+                and isinstance(evidence_references, list)
+                and isinstance(control_references, list)
+                and isinstance(candidate_references, list),
+                f"{label} item {index} has an invalid comparison projection")
+        projections[fingerprint] = {
+            "title": item.get("title"),
+            "category": item.get("category"),
+            "disposition": item.get("disposition"),
+            "claim_basis": item.get("claim_basis"),
+            "severity": item.get("severity"),
+            "cwe": item.get("cwe"),
+            "confidence_ppm": item.get("confidence_ppm"),
+            "redacted_summary": item.get("redacted_summary"),
+            "remediation": remediation,
+            "evidence": {
+                "evidence_count": item.get("evidence_count"),
+                "evidence_reference_count": len(evidence_references),
+                "control_reference_count": len(control_references),
+                "candidate_reference_count": len(candidate_references),
+                "case_present": item.get("case_reference") is not None,
+                "outcome_present": item.get("outcome_reference") is not None,
+                "verification_stage": item.get("verification_stage"),
+            },
+        }
+    optional_audits = {
+        field: document[field]
+        for field in OPTIONAL_AUDIT_FIELDS
+        if field in document
+    }
     return AssessmentInventory(
         schema=schema,
         item_count=item_count,
         identities=identities,
+        projections=projections,
+        optional_audits=optional_audits,
         sha256=hashlib.sha256(raw).hexdigest(),
     )
 
@@ -1453,6 +1511,8 @@ def _validate_comparison_partition(
                 f"{label} {side} metadata schema does not match its source")
         require(metadata.get("sha256") == source.sha256,
                 f"{label} {side} metadata digest does not match its source bytes")
+        require(metadata.get("optional_audits") == source.optional_audits,
+                f"{label} {side} optional audit metadata does not match its source")
 
     shared = before.identities.keys() & after.identities.keys()
     for fingerprint in shared:
@@ -1483,18 +1543,34 @@ def _validate_comparison_partition(
 
             before_projection = item.get("before")
             after_projection = item.get("after")
+            expected_before = before.projections.get(fingerprint)
+            expected_after = after.projections.get(fingerprint)
+            if isinstance(before_projection, dict):
+                require(set(before_projection) == set(ITEM_PROJECTION_FIELDS),
+                        f"{label} {group} item {index} has an invalid before projection")
+            if isinstance(after_projection, dict):
+                require(set(after_projection) == set(ITEM_PROJECTION_FIELDS),
+                        f"{label} {group} item {index} has an invalid after projection")
             if group == "only_in_before":
-                valid_shape = (isinstance(before_projection, dict)
+                valid_shape = (before_projection == expected_before
                                and after_projection is None and not changed_fields)
             elif group == "only_in_after":
                 valid_shape = (before_projection is None
-                               and isinstance(after_projection, dict) and not changed_fields)
+                               and after_projection == expected_after and not changed_fields)
             elif group == "changed":
-                valid_shape = (isinstance(before_projection, dict)
-                               and isinstance(after_projection, dict)
-                               and bool(changed_fields))
+                expected_changed_fields = [
+                    field for field in ITEM_PROJECTION_FIELDS
+                    if (isinstance(before_projection, dict)
+                        and isinstance(after_projection, dict)
+                        and before_projection[field] != after_projection[field])
+                ]
+                valid_shape = (before_projection == expected_before
+                               and after_projection == expected_after
+                               and changed_fields == expected_changed_fields
+                               and bool(expected_changed_fields))
             else:
-                valid_shape = (isinstance(before_projection, dict)
+                valid_shape = (before_projection == expected_before
+                               and after_projection == expected_after
                                and before_projection == after_projection
                                and not changed_fields)
             require(valid_shape, f"{label} {group} item {index} has an invalid group shape")
@@ -1532,19 +1608,50 @@ def _validate_comparison_partition(
     return counts, identities
 
 
+def _require_changed_wordpress_facet(document: dict[str, Any], name: str) -> None:
+    facet = document.get(name)
+    require(isinstance(facet, dict) and facet.get("status") == "changed",
+            f"offline WordPress comparison {name} is not changed")
+    before = facet.get("before")
+    after = facet.get("after")
+    changed_fields = facet.get("changed_fields")
+    require(isinstance(before, dict) and isinstance(after, dict),
+            f"offline WordPress comparison {name} omits compared projections")
+    expected_fields = sorted(
+        key for key in before.keys() | after.keys()
+        if before.get(key) != after.get(key)
+    )
+    require(isinstance(changed_fields, list)
+            and changed_fields == expected_fields
+            and bool(expected_fields),
+            f"offline WordPress comparison {name} has inconsistent changed fields")
+
+
 def _run_offline_acceptance(
     runner: ProcessRunner, binary: Path, scenarios: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
+    def require_bundle_unchanged(name: str, scenario: dict[str, Any]) -> None:
+        expected_identity = scenario.get("bundle")
+        require(isinstance(expected_identity, dict),
+                f"offline source bundle identity is missing for {name}")
+        require(_report_identity(Path(scenario["_bundle"])) == expected_identity,
+                f"offline commands modified report bundle {name}")
+
     results: dict[str, Any] = {"fixture_was_stopped_first": True, "bundles": {}}
     for name, scenario in scenarios.items():
         bundle = Path(scenario["_bundle"])
+        require_bundle_unchanged(name, scenario)
         verify = runner.run(
             [binary, "report", "verify", "--dir", bundle, "--format", "json"],
             label=f"offline verification {name}",
         )
         verified = parse_json(verify.stdout, f"offline verification {name}")
+        require(isinstance(verified, dict)
+                and verified.get("schema") == "termivar-report-verification/v1",
+                f"offline verification returned an unsupported schema for {name}")
         require(verified.get("status") == "integrity_match",
                 f"offline verification rejected {name}")
+        require_bundle_unchanged(name, scenario)
         compare = runner.run(
             [
                 binary, "report", "compare", "--before", bundle / "assessment.json",
@@ -1565,7 +1672,9 @@ def _run_offline_acceptance(
                 and counts["changed"] == 0
                 and counts["unchanged"] == source.item_count,
                 f"offline self comparison changed {name}")
+        require_bundle_unchanged(name, scenario)
         results["bundles"][name] = {
+            "bundle_unchanged": True,
             "verification_status": verified["status"],
             "self_compare_counts": counts,
         }
@@ -1580,13 +1689,6 @@ def _run_offline_acceptance(
         label="offline collection-policy comparison",
     )
     comparison = parse_json(controlled.stdout, "offline collection-policy comparison")
-    wordpress = comparison.get("wordpress_review_comparison")
-    require(isinstance(wordpress, dict),
-            "offline comparison omitted WordPress collection-policy change")
-    require(wordpress.get("status") == "compared"
-            and wordpress.get("methodology", {}).get("status") == "changed"
-            and wordpress.get("coverage", {}).get("status") == "changed",
-            "offline comparison did not separate discovery methodology and coverage changes")
     before_document = _read_assessment_inventory(
         before / "assessment.json",
         "offline collection-policy before assessment",
@@ -1603,6 +1705,14 @@ def _run_offline_acceptance(
         after_document,
         "offline collection-policy comparison",
     )
+    wordpress = comparison.get("wordpress_review_comparison")
+    require(isinstance(wordpress, dict),
+            "offline comparison omitted WordPress collection-policy change")
+    require(wordpress.get("schema") == "termivar-wordpress-review-comparison/v2"
+            and wordpress.get("status") == "compared",
+            "offline comparison did not separate discovery methodology and coverage changes")
+    _require_changed_wordpress_facet(wordpress, "methodology")
+    _require_changed_wordpress_facet(wordpress, "coverage")
     require(counts["only_in_before"] == 0
             and counts["only_in_after"]
             == after_document.item_count - before_document.item_count,
@@ -1617,6 +1727,8 @@ def _run_offline_acceptance(
         "coverage": wordpress["coverage"]["status"],
         "item_counts": counts,
     }
+    for name, scenario in scenarios.items():
+        require_bundle_unchanged(name, scenario)
     return results
 
 

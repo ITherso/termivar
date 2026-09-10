@@ -24,8 +24,56 @@ SPEC.loader.exec_module(runner)
 
 BASE_FINGERPRINT = "sha256:" + "1" * 64
 DISCOVERY_FINGERPRINT = "sha256:" + "2" * 64
-BASE_CAPABILITY = "web.passive.synthetic@1"
+BASE_CAPABILITY = "technology.wordpress-surface-observed@1"
 DISCOVERY_CAPABILITY = "technology.wordpress-metadata-source-response-observed@1"
+DISCOVERY_METHOD = {
+    "schema": "security.wordpress-discovery-audit/v1",
+    "capability_id": "technology.wordpress-metadata-discovery@1",
+    "policy_id": "termivar.wordpress-metadata-discovery/v1",
+    "selected": True,
+    "method": "get",
+    "credential_mode": "anonymous",
+}
+BEFORE_METHOD = {"schema": "security.wordpress-review-audit/v1"}
+AFTER_METHOD = {
+    "schema": "security.wordpress-review-audit/v7",
+    "review_basis_schema": "security.wordpress-review-audit/v1",
+    "wordpress_discovery": DISCOVERY_METHOD,
+}
+BEFORE_COVERAGE = {
+    "catalog_status": "catalogue_not_supplied",
+    "signal_count": 1,
+    "evidence_reference_count": 1,
+    "item_projected": True,
+    "component_count": 1,
+    "advisory_count": 0,
+}
+AFTER_COVERAGE = {
+    **BEFORE_COVERAGE,
+    "additional_request_count": 1,
+    "wordpress_discovery": {
+        "seed_count": 1,
+        "candidate_count": 1,
+        "candidate_limit_reached": False,
+        "omitted_candidate_count": 0,
+        "attempted_request_count": 1,
+        "completed_response_count": 1,
+        "committed_response_count": 1,
+        "response_bytes": 16,
+        "source_count": 1,
+        "source_outcomes": [{
+            "kind": "rest_index",
+            "parent_depth": 0,
+            "outcome": "observed",
+            "request_attempted": True,
+            "response_bytes": 16,
+            "evidence_reference_count": 1,
+        }],
+    },
+}
+DISCOVERY_CONTENT = {
+    "rest_indexes": [{"kind": "rest_index", "namespaces": ["wp/v2"]}],
+}
 
 
 def synthetic_assessment_item(fingerprint, capability_id, title):
@@ -56,8 +104,33 @@ def synthetic_assessment_item(fingerprint, capability_id, title):
     }
 
 
-def synthetic_assessment(items, *, item_count=None):
-    return {
+def synthetic_discovery_item(capability_id=DISCOVERY_CAPABILITY):
+    item = synthetic_assessment_item(
+        DISCOVERY_FINGERPRINT,
+        capability_id,
+        "WordPress metadata-source response outcome observed",
+    )
+    item.update({
+        "category": "wordpress-metadata-source-response",
+        "redacted_summary": (
+            "Bounded response evidence from selected public WordPress metadata "
+            "sources was collected; usable metadata, installation authenticity, "
+            "vulnerable-code reachability, and advisory impact were not established."
+        ),
+        "remediation": {
+            "id": "wordpress-metadata-review",
+            "summary": (
+                "Confirm the installation inventory and source-qualified metadata "
+                "before making a security or remediation decision."
+            ),
+        },
+        "evidence_references": ["evidence-0001"],
+    })
+    return item
+
+
+def synthetic_assessment(items, *, item_count=None, optional_audits=None):
+    document = {
         "schema": "venom-rendered-assessment/v1",
         "source_schema": "venom-assessment-run/v1",
         "run_schema": "venom-run/v1",
@@ -68,6 +141,8 @@ def synthetic_assessment(items, *, item_count=None):
         "item_count": len(items) if item_count is None else item_count,
         "items": items,
     }
+    document.update(copy.deepcopy(optional_audits or {}))
+    return document
 
 
 def synthetic_projection(title):
@@ -96,6 +171,29 @@ def synthetic_projection(title):
     }
 
 
+def projection_from_item(item):
+    return {
+        "title": item["title"],
+        "category": item["category"],
+        "disposition": item["disposition"],
+        "claim_basis": item["claim_basis"],
+        "severity": item["severity"],
+        "cwe": item["cwe"],
+        "confidence_ppm": item["confidence_ppm"],
+        "redacted_summary": item["redacted_summary"],
+        "remediation": copy.deepcopy(item["remediation"]),
+        "evidence": {
+            "evidence_count": item["evidence_count"],
+            "evidence_reference_count": len(item["evidence_references"]),
+            "control_reference_count": len(item["control_evidence_references"]),
+            "candidate_reference_count": len(item["candidate_evidence_references"]),
+            "case_present": item["case_reference"] is not None,
+            "outcome_present": item["outcome_reference"] is not None,
+            "verification_stage": item["verification_stage"],
+        },
+    }
+
+
 def comparison_item(
     fingerprint,
     capability_id,
@@ -114,6 +212,7 @@ def comparison_item(
 
 
 def source_metadata(raw, item_count):
+    document = json.loads(raw)
     return {
         "sha256": hashlib.sha256(raw).hexdigest(),
         "schema": "venom-rendered-assessment/v1",
@@ -124,38 +223,81 @@ def source_metadata(raw, item_count):
         "status": "complete",
         "subject_count": 1,
         "item_count": item_count,
-        "optional_audits": {},
+        "optional_audits": {
+            field: document[field]
+            for field in runner.OPTIONAL_AUDIT_FIELDS
+            if field in document
+        },
     }
 
 
-def wordpress_comparison(*, methodology="changed", coverage="changed"):
-    def facet(status):
+def wordpress_comparison(*, discovery, controlled):
+    def facet(status, changed_fields, before, after):
         return {
             "status": status,
-            "changed_fields": [],
-            "before": {},
-            "after": {},
+            "changed_fields": changed_fields,
+            "before": copy.deepcopy(before),
+            "after": copy.deepcopy(after),
             "note": "Synthetic acceptance facet.",
         }
 
     empty_entities = {
-        "paired_unchanged_count": 0,
+        "paired_unchanged_count": 1,
         "paired_changed": [],
         "only_in_before": [],
         "only_in_after": [],
     }
-    return {
-        "schema": "termivar-wordpress-review-comparison/v2",
+    if controlled:
+        method_before, method_after = BEFORE_METHOD, AFTER_METHOD
+        coverage_before, coverage_after = BEFORE_COVERAGE, AFTER_COVERAGE
+        method_fields = ["review_basis_schema", "schema", "wordpress_discovery"]
+        coverage_fields = ["additional_request_count", "wordpress_discovery"]
+    elif discovery:
+        method_before = method_after = AFTER_METHOD
+        coverage_before = coverage_after = AFTER_COVERAGE
+        method_fields = []
+        coverage_fields = []
+    else:
+        method_before = method_after = BEFORE_METHOD
+        coverage_before = coverage_after = BEFORE_COVERAGE
+        method_fields = []
+        coverage_fields = []
+    comparison = {
+        "schema": (
+            "termivar-wordpress-review-comparison/v2"
+            if discovery else "termivar-wordpress-review-comparison/v1"
+        ),
         "status": "compared",
         "scope_assurance": "operator-declared",
-        "coverage": facet(coverage),
-        "methodology": facet(methodology),
-        "provenance": facet("unchanged"),
-        "discovery_source_content": facet("not_comparable"),
+        "coverage": facet(
+            "changed" if controlled else "not_established",
+            coverage_fields,
+            coverage_before,
+            coverage_after,
+        ),
+        "methodology": facet(
+            "changed" if controlled else "unchanged",
+            method_fields,
+            method_before,
+            method_after,
+        ),
+        "provenance": facet("unchanged", [], {}, {}),
         "components": copy.deepcopy(empty_entities),
-        "advisories": copy.deepcopy(empty_entities),
+        "advisories": {
+            "paired_unchanged_count": 0,
+            "paired_changed": [],
+            "only_in_before": [],
+            "only_in_after": [],
+        },
         "interpretation_limits": [],
     }
+    if discovery:
+        comparison["discovery_source_content"] = (
+            facet("not_comparable", ["audit_presence"], None, DISCOVERY_CONTENT)
+            if controlled else
+            facet("unchanged", [], DISCOVERY_CONTENT, DISCOVERY_CONTENT)
+        )
+    return comparison
 
 
 def comparison_document(before_raw, before_count, after_raw, after_count, *, groups):
@@ -172,8 +314,10 @@ def comparison_document(before_raw, before_count, after_raw, after_count, *, gro
 
 
 class OfflineProcessRunner:
-    def __init__(self, responses):
+    def __init__(self, responses, expected_arguments, *, after_run=None):
         self.responses = responses
+        self.expected_arguments = expected_arguments
+        self.after_run = after_run
         self.calls = []
 
     def run(self, arguments, *, label, **_kwargs):
@@ -181,12 +325,12 @@ class OfflineProcessRunner:
         self.calls.append((label, argv))
         if label not in self.responses:
             raise AssertionError(f"unexpected synthetic command: {label}: {argv!r}")
-        if "verification" in label:
-            assert argv[1:4] == ["report", "verify", "--dir"]
-        else:
-            assert argv[1:4] == ["report", "compare", "--before"]
-            assert "--after" in argv and "--same-scope" in argv
-        assert argv[-2:] == ["--format", "json"]
+        if argv != self.expected_arguments[label]:
+            raise AssertionError(
+                f"unexpected arguments for {label}: {argv!r}"
+            )
+        if self.after_run is not None:
+            self.after_run(label)
         return runner.CommandResult(
             json.dumps(self.responses[label], separators=(",", ":")).encode("utf-8"),
             b"",
@@ -194,21 +338,54 @@ class OfflineProcessRunner:
         )
 
 
-def write_synthetic_bundle(root, name, items, *, item_count=None):
+def write_synthetic_bundle(root, name, items, *, item_count=None, optional_audits=None):
     bundle = root / name
     bundle.mkdir()
     raw = json.dumps(
-        synthetic_assessment(items, item_count=item_count),
+        synthetic_assessment(
+            items, item_count=item_count, optional_audits=optional_audits
+        ),
         separators=(",", ":"),
     ).encode("utf-8")
+    html = b"<!doctype html><title>Synthetic Termivar assessment</title>"
     (bundle / "assessment.json").write_bytes(raw)
+    (bundle / "assessment.html").write_bytes(html)
+    manifest = {
+        "schema": "termivar-report-bundle/v1",
+        "producer": {"product": "Termivar", "version": "0.10.0-alpha.3"},
+        "assessment": {
+            "profile": "web-review",
+            "status": "complete",
+            "subject_count": 1,
+            "item_count": len(items) if item_count is None else item_count,
+        },
+        "files": [
+            {
+                "name": "assessment.html",
+                "format": "html",
+                "media_type": "text/html; charset=utf-8",
+                "byte_length": len(html),
+                "sha256": hashlib.sha256(html).hexdigest(),
+            },
+            {
+                "name": "assessment.json",
+                "format": "json",
+                "media_type": "application/json",
+                "byte_length": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            },
+        ],
+    }
+    (bundle / "manifest.json").write_bytes(
+        json.dumps(manifest, separators=(",", ":")).encode("utf-8")
+    )
     return bundle, raw
 
 
 def self_comparison(raw, items):
     unchanged = []
     for item in items:
-        projection = synthetic_projection(item["title"])
+        projection = projection_from_item(item)
         unchanged.append(comparison_item(
             item["fingerprint"],
             item["capability_id"],
@@ -216,7 +393,7 @@ def self_comparison(raw, items):
             after=copy.deepcopy(projection),
             changed_fields=[],
         ))
-    return comparison_document(
+    result = comparison_document(
         raw,
         len(items),
         raw,
@@ -228,22 +405,142 @@ def self_comparison(raw, items):
             "unchanged": unchanged,
         },
     )
+    assessment = json.loads(raw)
+    if "wordpress_review" in assessment:
+        discovery = "wordpress_discovery" in assessment
+        result["wordpress_review_comparison"] = wordpress_comparison(
+            discovery=discovery,
+            controlled=False,
+        )
+    return result
+
+
+def expected_offline_arguments(scenarios):
+    binary = "synthetic-termivar"
+    expected = {}
+    for name, scenario in scenarios.items():
+        bundle = Path(scenario["_bundle"])
+        expected[f"offline verification {name}"] = [
+            binary, "report", "verify", "--dir", str(bundle), "--format", "json",
+        ]
+        expected[f"offline self comparison {name}"] = [
+            binary, "report", "compare", "--before", str(bundle / "assessment.json"),
+            "--after", str(bundle / "assessment.json"), "--same-scope", "--format", "json",
+        ]
+    before = Path(scenarios["pretty-review-only"]["_bundle"])
+    after = Path(scenarios["pretty-discovery"]["_bundle"])
+    expected["offline collection-policy comparison"] = [
+        binary, "report", "compare", "--before", str(before / "assessment.json"),
+        "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
+    ]
+    return expected
+
+
+def offline_process_runner(responses, scenarios, *, after_run=None):
+    return OfflineProcessRunner(
+        responses,
+        expected_offline_arguments(scenarios),
+        after_run=after_run,
+    )
 
 
 def offline_fixture(root, *, discovery_capability=DISCOVERY_CAPABILITY):
     base_item = synthetic_assessment_item(
-        BASE_FINGERPRINT, BASE_CAPABILITY, "Synthetic baseline observation"
+        BASE_FINGERPRINT, BASE_CAPABILITY, "WordPress surface hints observed"
     )
-    discovery_item = synthetic_assessment_item(
-        DISCOVERY_FINGERPRINT,
-        discovery_capability,
-        "Synthetic discovery observation",
-    )
+    base_item.update({
+        "category": "technology-observation",
+        "redacted_summary": (
+            "The root response contained bounded structured WordPress hints; "
+            "installation authenticity and advisory impact were not established."
+        ),
+        "remediation": {
+            "id": "wordpress-inventory-review",
+            "summary": (
+                "Review supplied WordPress context and advisory applicability "
+                "independently."
+            ),
+        },
+    })
+    after_base_item = copy.deepcopy(base_item)
+    after_base_item["title"] = "WordPress surface hints observed after policy change"
+    discovery_item = synthetic_discovery_item(discovery_capability)
+    core_component = {
+        "identity": {"kind": "core", "slug": "wordpress"},
+        "evidence_class": "observed_hint",
+        "identity_sources": ["generator_metadata"],
+        "confidence_classes": ["public_declaration"],
+        "versions": [{
+            "value": "6.9.4",
+            "source": "generator_metadata",
+            "confidence": "public_declaration",
+        }],
+        "activation": None,
+    }
+    before_audits = {
+        "wordpress_review": {
+            "schema": "security.wordpress-review-audit/v1",
+            "capability_id": BASE_CAPABILITY,
+            "catalog_status": "catalogue_not_supplied",
+            "signal_count": 1,
+            "evidence_reference_count": 1,
+            "additional_request_count": 0,
+            "item_projected": True,
+            "component_count": 1,
+            "advisory_count": 0,
+            "components": [copy.deepcopy(core_component)],
+            "advisories": [],
+        },
+    }
+    after_audits = {
+        "wordpress_review": {
+            "schema": "security.wordpress-review-audit/v7",
+            "review_basis_schema": "security.wordpress-review-audit/v1",
+            "capability_id": BASE_CAPABILITY,
+            "catalog_status": "catalogue_not_supplied",
+            "signal_count": 1,
+            "evidence_reference_count": 1,
+            "additional_request_count": 1,
+            "item_projected": True,
+            "component_count": 1,
+            "advisory_count": 0,
+            "components": [copy.deepcopy(core_component)],
+            "advisories": [],
+        },
+        "wordpress_discovery": {
+            "schema": "security.wordpress-discovery-audit/v1",
+            "capability_id": "technology.wordpress-metadata-discovery@1",
+            "policy_id": "termivar.wordpress-metadata-discovery/v1",
+            "selected": True,
+            "method": "get",
+            "credential_mode": "anonymous",
+            "seed_count": 1,
+            "candidate_count": 1,
+            "candidate_limit_reached": False,
+            "omitted_candidate_count": 0,
+            "attempted_request_count": 1,
+            "completed_response_count": 1,
+            "committed_response_count": 1,
+            "response_bytes": 16,
+            "source_count": 1,
+            "sources": [{
+                "kind": "rest_index",
+                "parent_depth": 0,
+                "outcome": "observed",
+                "request_attempted": True,
+                "response_bytes": 16,
+                "evidence_reference_count": 1,
+                "evidence_references": ["evidence-0001"],
+                "namespaces": ["wp/v2"],
+            }],
+        },
+    }
     before_bundle, before_raw = write_synthetic_bundle(
-        root, "pretty-review-only", [base_item]
+        root, "pretty-review-only", [base_item], optional_audits=before_audits
     )
     after_bundle, after_raw = write_synthetic_bundle(
-        root, "pretty-discovery", [base_item, discovery_item]
+        root, "pretty-discovery", [after_base_item, discovery_item],
+        optional_audits=after_audits,
     )
     controlled = comparison_document(
         before_raw,
@@ -255,21 +552,24 @@ def offline_fixture(root, *, discovery_capability=DISCOVERY_CAPABILITY):
                 DISCOVERY_FINGERPRINT,
                 discovery_capability,
                 before=None,
-                after=synthetic_projection("Synthetic discovery observation"),
+                after=projection_from_item(discovery_item),
                 changed_fields=[],
             )],
             "only_in_before": [],
             "changed": [comparison_item(
                 BASE_FINGERPRINT,
                 BASE_CAPABILITY,
-                before=synthetic_projection("Synthetic baseline observation"),
-                after=synthetic_projection("Synthetic baseline observation with discovery"),
+                before=projection_from_item(base_item),
+                after=projection_from_item(after_base_item),
                 changed_fields=["title"],
             )],
             "unchanged": [],
         },
     )
-    controlled["wordpress_review_comparison"] = wordpress_comparison()
+    controlled["wordpress_review_comparison"] = wordpress_comparison(
+        discovery=True,
+        controlled=True,
+    )
     responses = {
         "offline verification pretty-review-only": {
             "schema": "termivar-report-verification/v1",
@@ -283,13 +583,19 @@ def offline_fixture(root, *, discovery_capability=DISCOVERY_CAPABILITY):
             "status": "integrity_match",
         },
         "offline self comparison pretty-discovery": self_comparison(
-            after_raw, [base_item, discovery_item]
+            after_raw, [after_base_item, discovery_item]
         ),
         "offline collection-policy comparison": controlled,
     }
     scenarios = {
-        "pretty-review-only": {"_bundle": str(before_bundle)},
-        "pretty-discovery": {"_bundle": str(after_bundle)},
+        "pretty-review-only": {
+            "bundle": runner._report_identity(before_bundle),
+            "_bundle": str(before_bundle),
+        },
+        "pretty-discovery": {
+            "bundle": runner._report_identity(after_bundle),
+            "_bundle": str(after_bundle),
+        },
     }
     return scenarios, responses, (before_raw, after_raw)
 
@@ -811,12 +1117,13 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
     def test_offline_acceptance_uses_derived_counts_in_both_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
             scenarios, responses, original_bytes = offline_fixture(Path(temporary))
-            fake = OfflineProcessRunner(responses)
+            fake = offline_process_runner(responses, scenarios)
             result = runner._run_offline_acceptance(
                 fake, Path("synthetic-termivar"), scenarios
             )
 
             self.assertEqual(result["bundles"]["pretty-review-only"], {
+                "bundle_unchanged": True,
                 "verification_status": "integrity_match",
                 "self_compare_counts": {
                     "only_in_after": 0,
@@ -826,6 +1133,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 },
             })
             self.assertEqual(result["bundles"]["pretty-discovery"], {
+                "bundle_unchanged": True,
                 "verification_status": "integrity_match",
                 "self_compare_counts": {
                     "only_in_after": 0,
@@ -845,15 +1153,16 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     "unchanged": 0,
                 },
             })
+            labels = [
+                "offline verification pretty-review-only",
+                "offline self comparison pretty-review-only",
+                "offline verification pretty-discovery",
+                "offline self comparison pretty-discovery",
+                "offline collection-policy comparison",
+            ]
             self.assertEqual(
-                [label for label, _ in fake.calls],
-                [
-                    "offline verification pretty-review-only",
-                    "offline self comparison pretty-review-only",
-                    "offline verification pretty-discovery",
-                    "offline self comparison pretty-discovery",
-                    "offline collection-policy comparison",
-                ],
+                fake.calls,
+                [(label, fake.expected_arguments[label]) for label in labels],
             )
             self.assertEqual(
                 (Path(scenarios["pretty-review-only"]["_bundle"])
@@ -898,10 +1207,10 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
 
         mutations = (
             (empty_self, "paired identities"),
-            (changed_self, "offline self comparison changed"),
+            (changed_self, "invalid group shape"),
             (one_sided_self, "only_in_after identities"),
             (duplicate_identity, "repeats a fingerprint"),
-            (substituted_identity, "paired identities"),
+            (substituted_identity, "invalid group shape"),
         )
         for mutate, message in mutations:
             with self.subTest(mutation=mutate.__name__):
@@ -910,7 +1219,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     mutate(responses)
                     with self.assertRaisesRegex(runner.AcceptanceError, message):
                         runner._run_offline_acceptance(
-                            OfflineProcessRunner(responses),
+                            offline_process_runner(responses, scenarios),
                             Path("synthetic-termivar"),
                             scenarios,
                         )
@@ -925,17 +1234,23 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     document["item_count"] = invalid_count
                     raw = json.dumps(document, separators=(",", ":")).encode("utf-8")
                     (bundle / "assessment.json").write_bytes(raw)
+                    scenarios["pretty-review-only"]["bundle"] = (
+                        runner._report_identity(bundle)
+                    )
                     comparison = responses["offline self comparison pretty-review-only"]
                     comparison["before"] = source_metadata(raw, invalid_count)
                     comparison["after"] = source_metadata(raw, invalid_count)
                     with self.assertRaisesRegex(runner.AcceptanceError, message):
                         runner._run_offline_acceptance(
-                            OfflineProcessRunner(responses),
+                            offline_process_runner(responses, scenarios),
                             Path("synthetic-termivar"),
                             scenarios,
                         )
 
     def test_offline_acceptance_rejects_controlled_partition_and_wordpress_drift(self):
+        def invalid_root(responses):
+            responses["offline collection-policy comparison"] = []
+
         def missing_wordpress(responses):
             del responses["offline collection-policy comparison"][
                 "wordpress_review_comparison"
@@ -951,22 +1266,39 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 "wordpress_review_comparison"
             ]["coverage"]["status"] = "unchanged"
 
+        def false_methodology_change(responses):
+            facet = responses["offline collection-policy comparison"][
+                "wordpress_review_comparison"
+            ]["methodology"]
+            facet["after"] = copy.deepcopy(facet["before"])
+
+        def false_item_change(responses):
+            comparison = responses["offline collection-policy comparison"]
+            comparison["changed"][0]["changed_fields"] = []
+
+        def omitted_source_audits(responses):
+            responses["offline collection-policy comparison"]["before"][
+                "optional_audits"
+            ] = {}
+
         def missing_discovery_identity(responses):
             comparison = responses["offline collection-policy comparison"]
             comparison["only_in_after"][0]["capability_id"] = "synthetic.other@1"
 
         def duplicate_controlled_identity(responses):
             comparison = responses["offline collection-policy comparison"]
-            comparison["unchanged"] = [copy.deepcopy(comparison["changed"][0])]
-            comparison["unchanged"][0]["changed_fields"] = []
-            comparison["unchanged"][0]["after"] = copy.deepcopy(
-                comparison["unchanged"][0]["before"]
+            comparison["changed"].append(
+                copy.deepcopy(comparison["changed"][0])
             )
 
         mutations = (
+            (invalid_root, "root is not an object"),
             (missing_wordpress, "omitted WordPress"),
-            (unchanged_methodology, "methodology and coverage"),
-            (unchanged_coverage, "methodology and coverage"),
+            (unchanged_methodology, "methodology is not changed"),
+            (unchanged_coverage, "coverage is not changed"),
+            (false_methodology_change, "inconsistent changed fields"),
+            (false_item_change, "invalid group shape"),
+            (omitted_source_audits, "optional audit metadata"),
             (missing_discovery_identity, "only_in_after identities"),
             (duplicate_controlled_identity, "repeats a fingerprint"),
         )
@@ -977,7 +1309,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     mutate(responses)
                     with self.assertRaisesRegex(runner.AcceptanceError, message):
                         runner._run_offline_acceptance(
-                            OfflineProcessRunner(responses),
+                            offline_process_runner(responses, scenarios),
                             Path("synthetic-termivar"),
                             scenarios,
                         )
@@ -988,7 +1320,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(runner.AcceptanceError, "one-sided discovery"):
                 runner._run_offline_acceptance(
-                    OfflineProcessRunner(responses),
+                    offline_process_runner(responses, scenarios),
                     Path("synthetic-termivar"),
                     scenarios,
                 )
@@ -999,10 +1331,50 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             responses["offline verification pretty-review-only"]["status"] = "not_verified"
             with self.assertRaisesRegex(runner.AcceptanceError, "verification rejected"):
                 runner._run_offline_acceptance(
-                    OfflineProcessRunner(responses),
+                    offline_process_runner(responses, scenarios),
                     Path("synthetic-termivar"),
                     scenarios,
                 )
+
+    def test_offline_acceptance_rejects_invalid_verification_schema_and_root(self):
+        for replacement in (
+            {"schema": "termivar-report-verification/v2", "status": "integrity_match"},
+            [],
+        ):
+            with self.subTest(replacement=replacement):
+                with tempfile.TemporaryDirectory() as temporary:
+                    scenarios, responses, _ = offline_fixture(Path(temporary))
+                    responses["offline verification pretty-review-only"] = replacement
+                    with self.assertRaisesRegex(
+                        runner.AcceptanceError, "unsupported schema"
+                    ):
+                        runner._run_offline_acceptance(
+                            offline_process_runner(responses, scenarios),
+                            Path("synthetic-termivar"),
+                            scenarios,
+                        )
+
+    def test_offline_acceptance_rejects_bundle_content_changes(self):
+        for filename in ("assessment.html", "assessment.json", "manifest.json"):
+            with self.subTest(filename=filename):
+                with tempfile.TemporaryDirectory() as temporary:
+                    scenarios, responses, _ = offline_fixture(Path(temporary))
+                    bundle = Path(scenarios["pretty-review-only"]["_bundle"])
+
+                    def mutate_after_verify(label, *, path=bundle / filename):
+                        if label == "offline verification pretty-review-only":
+                            path.write_bytes(path.read_bytes() + b"x")
+
+                    with self.assertRaisesRegex(
+                        runner.AcceptanceError, "modified report bundle"
+                    ):
+                        runner._run_offline_acceptance(
+                            offline_process_runner(
+                                responses, scenarios, after_run=mutate_after_verify
+                            ),
+                            Path("synthetic-termivar"),
+                            scenarios,
+                        )
 
     def test_audit_oracle_keeps_stable_tag_out_of_installed_versions(self):
         document = self.discovery_document()
