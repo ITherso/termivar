@@ -4820,7 +4820,46 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("response_bytes", "u64"),
             ("source_count", "usize"),
             ("layout", "WordPressDiscoveryLayoutDocument"),
+            ("page_collection", "Option<WordPressPageCollectionDocument>"),
             ("sources", "Vec<WordPressDiscoverySourceDocument>"),
+        ],
+    ),
+    (
+        "WordPressPageCollectionDocument",
+        &[],
+        &[
+            ("mode", "&'static str"),
+            ("entry_page_reference", "String"),
+            ("candidate_count", "u16"),
+            ("selected_count", "u8"),
+            ("omitted_candidate_count", "u16"),
+            ("reused_response_count", "u8"),
+            ("fetched_response_count", "u8"),
+            ("not_observed_count", "u8"),
+            ("rejected_response_count", "u8"),
+            ("accepted_association_count", "u8"),
+            ("rejected_association_count", "u8"),
+            ("attempted_request_count", "u8"),
+            ("completed_response_count", "u8"),
+            ("committed_response_count", "u8"),
+            ("interpreted_response_bytes", "u64"),
+            ("response_bytes", "u64"),
+            ("pages", "Vec<WordPressPageSourceDocument>"),
+        ],
+    ),
+    (
+        "WordPressPageSourceDocument",
+        &[],
+        &[
+            ("page_reference", "String"),
+            ("acquisition", "&'static str"),
+            ("association", "&'static str"),
+            ("outcome", "&'static str"),
+            ("request_attempted", "bool"),
+            ("interpreted_response_bytes", "u64"),
+            ("response_bytes", "u64"),
+            ("evidence_reference_count", "usize"),
+            ("evidence_references", "Vec<String>"),
         ],
     ),
     (
@@ -4873,6 +4912,7 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("response_bytes", "u64"),
             ("evidence_reference_count", "usize"),
             ("evidence_references", "Vec<String>"),
+            ("source_page_references", "Vec<String>"),
             ("namespaces", "Vec<String>"),
             ("theme", "Option<WordPressThemeDiscoveryDocument>"),
             ("plugin", "Option<WordPressPluginDiscoveryDocument>"),
@@ -5492,6 +5532,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentRestAuditDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
+                | "WordPressPageCollectionDocument"
+                | "WordPressPageSourceDocument"
                 | "WordPressDiscoveryLayoutDocument"
                 | "WordPressDiscoveryLayoutDeclarationDocument"
                 | "WordPressDiscoveryLayoutRoleDocument"
@@ -5570,6 +5612,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
+                | "WordPressPageCollectionDocument"
+                | "WordPressPageSourceDocument"
                 | "WordPressDiscoveryLayoutDocument"
                 | "WordPressDiscoveryLayoutDeclarationDocument"
                 | "WordPressDiscoveryLayoutRoleDocument"
@@ -5683,6 +5727,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                                 field_name.as_str(),
                                 "role_reference" | "component" | "theme" | "plugin"
                             ))
+                        || (name == "AssessmentWordPressDiscoveryAuditDocument"
+                            && field_name == "page_collection")
                         || (name == "WordPressDiscoveryLayoutDocument"
                             && field_name == "declaration")
                         || (name == "WordPressDiscoveryLayoutRoleDocument"
@@ -5757,7 +5803,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         field.attrs.len() == 1
                             && reporting_serde_skip_option_is_none(&field.attrs[0])
                     } else if name == "WordPressDiscoverySourceDocument"
-                        && field_name == "namespaces"
+                        && matches!(field_name.as_str(), "namespaces" | "source_page_references")
                     {
                         field.attrs.len() == 1 && reporting_serde_skip_vec_is_empty(&field.attrs[0])
                     } else {
@@ -8118,8 +8164,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 263_048;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xfa91_6a7d_7782_ec5c_ff9b_1a4f_6ace_897f;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 279_881;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x27dd_9281_003a_09e0_201f_14e3_f6f0_316f;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -8294,6 +8340,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
+    "WordPressPageCollectionDocument::validate",
     "AssessmentWordPressAuditDocument::from_audit",
     "AssessmentRestAuditDocument::from_audit",
     "AssessmentOpenApiAuditDocument::from_audit",
@@ -8690,8 +8737,10 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "str::to_owned",
     "u16::MAX",
     "u32::from",
+    "u16::from",
     "u64::from",
     "u64::try_from",
+    "u8::MAX",
     "usize::from",
     "termivar_core::OutcomeStatus",
     "termivar_core::ResourceAccounting",
@@ -8717,6 +8766,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentRestAuditDocument::from_audit",
     "AssessmentAuthorizationAuditDocument::from_audit",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
+    "WordPressPageCollectionDocument::validate",
     "Err",
     "Ok",
     "RawJsonWriter::new",
@@ -8789,6 +8839,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "step_status_token",
     "stop_code_token",
     "supplied",
+    "u16::from",
     "u32::from",
     "u64::from",
     "u64::try_from",
@@ -8880,6 +8931,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "accepted_association_count",
+    "acquisition",
     "application_reference",
     "association",
     "attempted_request_count",
@@ -8896,28 +8949,41 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "declaration",
     "exact_role",
     "exact_role_reference",
+    "entry_page_reference",
+    "extend",
     "first",
     "flat_map",
+    "fetched_response_count",
+    "interpreted_response_bytes",
     "is_exact_role_bound_component",
     "is_exact_theme_role_bound",
     "layout",
     "namespaces",
+    "not_observed_count",
     "omitted_candidate_count",
     "parent_depth",
+    "page_reference",
+    "page_scope",
+    "pages",
     "plugin",
     "request_attempted",
+    "rejected_association_count",
+    "rejected_response_count",
     "resource_reference",
     "role",
     "role_reference",
     "roles",
+    "reused_response_count",
     "requires_php",
     "requires_wordpress",
     "response_bytes",
     "seed_count",
     "selected",
+    "selected_count",
     "skipped_foreign_origin_count",
     "skipped_sibling_application_count",
     "sources",
+    "source_page_references",
     "stable_tag",
     "sum",
     "take",
@@ -9108,6 +9174,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "to_owned",
     "to_rfc3339",
     "to_string",
+    "transpose",
     "try_reserve",
     "try_fold",
     "unwrap_or",
@@ -13237,7 +13304,43 @@ mod tests {
                 response_bytes: u64,
                 source_count: usize,
                 layout: WordPressDiscoveryLayoutDocument,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                page_collection: Option<WordPressPageCollectionDocument>,
                 sources: Vec<WordPressDiscoverySourceDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressPageCollectionDocument {
+                mode: &'static str,
+                entry_page_reference: String,
+                candidate_count: u16,
+                selected_count: u8,
+                omitted_candidate_count: u16,
+                reused_response_count: u8,
+                fetched_response_count: u8,
+                not_observed_count: u8,
+                rejected_response_count: u8,
+                accepted_association_count: u8,
+                rejected_association_count: u8,
+                attempted_request_count: u8,
+                completed_response_count: u8,
+                committed_response_count: u8,
+                interpreted_response_bytes: u64,
+                response_bytes: u64,
+                pages: Vec<WordPressPageSourceDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressPageSourceDocument {
+                page_reference: String,
+                acquisition: &'static str,
+                association: &'static str,
+                outcome: &'static str,
+                request_attempted: bool,
+                interpreted_response_bytes: u64,
+                response_bytes: u64,
+                evidence_reference_count: usize,
+                evidence_references: Vec<String>,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
@@ -13283,6 +13386,8 @@ mod tests {
                 response_bytes: u64,
                 evidence_reference_count: usize,
                 evidence_references: Vec<String>,
+                #[serde(skip_serializing_if = "Vec::is_empty")]
+                source_page_references: Vec<String>,
                 #[serde(skip_serializing_if = "Vec::is_empty")]
                 namespaces: Vec<String>,
                 #[serde(skip_serializing_if = "Option::is_none")]

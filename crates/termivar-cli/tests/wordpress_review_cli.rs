@@ -232,6 +232,75 @@ fn ambiguous_non_root_target_is_rejected_before_runtime_dispatch() {
     assert!(server.requests.lock().unwrap().is_empty());
 }
 
+fn serve_page_scoped_discovery() -> TestServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address: SocketAddr = listener.local_addr().unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let thread_connections = Arc::clone(&connections);
+    let thread_requests = Arc::clone(&requests);
+    thread::spawn(move || {
+        for incoming in listener.incoming() {
+            let Ok(mut stream) = incoming else {
+                break;
+            };
+            thread_connections.fetch_add(1, Ordering::SeqCst);
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let first_line = String::from_utf8_lossy(&request[..read])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            let path = first_line.split_ascii_whitespace().nth(1).unwrap_or("/");
+            let (content_type, body) = match path {
+                "/" => (
+                    "text/html; charset=utf-8",
+                    r#"<!doctype html><html><head>
+                        <link rel="stylesheet" href="/wp-content/themes/base-theme/assets/site.css">
+                        </head><body>
+                        <a href="/contact">contact</a>
+                        <a href="/gallery">gallery</a>
+                        </body></html>"#,
+                ),
+                "/contact" | "/gallery" => (
+                    "text/html; charset=utf-8",
+                    r#"<!doctype html><html><head>
+                        <script src="/wp-content/plugins/page-only/assets/app.js"></script>
+                        </head><body>ordinary page</body></html>"#,
+                ),
+                "/wp-content/themes/base-theme/style.css" => (
+                    "text/css; charset=utf-8",
+                    "/* Theme Name: Base Theme\nVersion: 1.5 */",
+                ),
+                "/wp-content/plugins/page-only/readme.txt" => (
+                    "text/plain; charset=utf-8",
+                    "=== Page Only ===\nStable tag: 9.9.9\n",
+                ),
+                "/wp-content/themes/base-theme/assets/site.css" => {
+                    ("text/css; charset=utf-8", "body{}")
+                },
+                "/wp-content/plugins/page-only/assets/app.js" => {
+                    ("application/javascript", "void 0;")
+                },
+                _ => ("text/plain; charset=utf-8", ""),
+            };
+            thread_requests.lock().unwrap().push(first_line);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    TestServer {
+        url: format!("http://{address}/"),
+        connections,
+        requests,
+    }
+}
+
 #[test]
 fn trailing_slash_non_root_review_requires_discovery_before_input_acquisition() {
     let server = serve("fixture");
@@ -447,6 +516,167 @@ fn review_selection_adds_no_target_requests_and_keeps_progress_on_stderr() {
     assert_eq!(
         with.connections.load(Ordering::SeqCst),
         without.connections.load(Ordering::SeqCst)
+    );
+}
+
+#[test]
+fn observed_page_scope_reuses_real_process_pages_and_remains_offline_readable() {
+    let baseline_server = serve_page_scoped_discovery();
+    let baseline_directory = tempfile::tempdir().unwrap();
+    let baseline_bundle = baseline_directory.path().join("entry-only");
+    let baseline = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--report-dir",
+        ])
+        .arg(&baseline_bundle)
+        .arg(&baseline_server.url)
+        .output()
+        .expect("entry-only process must start");
+    assert!(
+        baseline.status.success(),
+        "entry-only stdout: {}\nentry-only stderr: {}",
+        String::from_utf8_lossy(&baseline.stdout),
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let observed_server = serve_page_scoped_discovery();
+    let observed_directory = tempfile::tempdir().unwrap();
+    let observed_bundle = observed_directory.path().join("observed-pages");
+    let observed = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-page-scope",
+            "observed",
+            "--report-dir",
+        ])
+        .arg(&observed_bundle)
+        .arg(&observed_server.url)
+        .output()
+        .expect("observed-page process must start");
+    assert!(
+        observed.status.success(),
+        "observed stdout: {}\nobserved stderr: {}",
+        String::from_utf8_lossy(&observed.stdout),
+        String::from_utf8_lossy(&observed.stderr)
+    );
+    assert!(observed.stdout.is_empty());
+
+    let assessment_bytes = fs::read(observed_bundle.join("assessment.json")).unwrap();
+    let assessment: serde_json::Value = serde_json::from_slice(&assessment_bytes).unwrap();
+    let discovery = &assessment["wordpress_discovery"];
+    assert_eq!(discovery["schema"], "security.wordpress-discovery-audit/v3");
+    assert_eq!(discovery["page_collection"]["mode"], "observed");
+    assert_eq!(discovery["page_collection"]["selected_count"], 2);
+    assert_eq!(discovery["page_collection"]["reused_response_count"], 2);
+    assert_eq!(discovery["page_collection"]["attempted_request_count"], 0);
+    assert_eq!(discovery["page_collection"]["response_bytes"], 0);
+    let plugin_source = discovery["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["component"]["slug"] == "page-only")
+        .expect("page-only metadata source");
+    assert_eq!(plugin_source["kind"], "plugin_readme");
+    assert_eq!(plugin_source["plugin"]["stable_tag"], "9.9.9");
+    assert_eq!(
+        plugin_source["source_page_references"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let plugin_component = assessment["wordpress_review"]["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["identity"]["slug"] == "page-only")
+        .expect("page-only review component");
+    assert!(plugin_component["versions"].as_array().unwrap().is_empty());
+
+    let baseline_requests = baseline_server.requests.lock().unwrap().clone();
+    let observed_requests = observed_server.requests.lock().unwrap().clone();
+    let page_trace = |requests: &[String]| {
+        requests
+            .iter()
+            .filter_map(|request| {
+                let mut fields = request.split_ascii_whitespace();
+                let method = fields.next()?;
+                let path = fields.next()?;
+                matches!(path, "/" | "/contact" | "/gallery")
+                    .then(|| (method.to_owned(), path.to_owned()))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        page_trace(&observed_requests),
+        page_trace(&baseline_requests)
+    );
+    assert_eq!(
+        baseline_requests
+            .iter()
+            .filter(|request| request.starts_with("GET /wp-content/plugins/page-only/readme.txt "))
+            .count(),
+        0
+    );
+    assert_eq!(
+        observed_requests
+            .iter()
+            .filter(|request| request.starts_with("GET /wp-content/plugins/page-only/readme.txt "))
+            .count(),
+        1
+    );
+
+    let requests_before_offline = observed_server.requests.lock().unwrap().clone();
+    let verify = termivar()
+        .args(["report", "verify", "--dir"])
+        .arg(&observed_bundle)
+        .args(["--format", "json"])
+        .output()
+        .expect("bundle verifier must start");
+    assert!(
+        verify.status.success(),
+        "verify stderr: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let verification: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verification["status"], "integrity_match");
+
+    let assessment_path = observed_bundle.join("assessment.json");
+    let compare = termivar()
+        .args(["report", "compare", "--before"])
+        .arg(&assessment_path)
+        .arg("--after")
+        .arg(&assessment_path)
+        .args(["--same-scope", "--format", "json"])
+        .output()
+        .expect("report compare must start");
+    assert!(
+        compare.status.success(),
+        "compare stderr: {}",
+        String::from_utf8_lossy(&compare.stderr)
+    );
+    let comparison: serde_json::Value = serde_json::from_slice(&compare.stdout).unwrap();
+    assert_eq!(comparison["schema"], "termivar-report-comparison/v1");
+    assert_eq!(
+        comparison["unchanged"].as_array().unwrap().len(),
+        assessment["item_count"].as_u64().unwrap() as usize
+    );
+    for group in ["only_in_after", "only_in_before", "changed"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+    assert_eq!(
+        observed_server.requests.lock().unwrap().as_slice(),
+        requests_before_offline,
+        "offline Verify and Compare must not contact the target"
     );
 }
 

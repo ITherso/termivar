@@ -92,6 +92,7 @@ const RELEASE_SMOKE_OPTIONS: &[&str] = &[
     "--authorization-review-policy",
     "--wordpress-review",
     "--wordpress-discovery",
+    "--wordpress-page-scope",
     "--wordpress-layout",
     "--wordpress-context",
     "--wordpress-advisories",
@@ -3722,6 +3723,16 @@ mod tests {
                 .iter()
                 .any(|violation| {
                     violation.contains("--wordpress-layout") && violation.contains("found 1 checks")
+                })
+        );
+
+        let missing_page_scope = valid.replacen("unix smoke --wordpress-page-scope\n", "", 1);
+        assert!(
+            release_workflow_policy_violations(&[(path.clone(), missing_page_scope)])
+                .iter()
+                .any(|violation| {
+                    violation.contains("--wordpress-page-scope")
+                        && violation.contains("found 1 checks")
                 })
         );
 

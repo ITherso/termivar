@@ -409,12 +409,25 @@ fn validate_wordpress_audit(
     let result = audit.result();
     let discovery_consistent = match audit.discovery() {
         Some(discovery) => {
-            let expected_item = discovery.committed_response_count() > 0;
+            let page_attempted_request_count = discovery
+                .page_scope()
+                .map_or(0, |pages| pages.attempted_request_count());
+            let page_committed_response_count = discovery
+                .page_scope()
+                .map_or(0, |pages| pages.committed_response_count());
+            let total_attempted_request_count = discovery
+                .attempted_request_count()
+                .checked_add(page_attempted_request_count);
+            let total_committed_response_count = discovery
+                .committed_response_count()
+                .checked_add(page_committed_response_count);
+            let expected_item = total_committed_response_count.is_some_and(|count| count > 0);
             discovery.is_internally_consistent()
-                && audit.additional_request_count() == discovery.attempted_request_count()
+                && total_attempted_request_count == Some(audit.additional_request_count())
                 && (discovery_items.len() == 1) == expected_item
                 && discovery_items.first().is_none_or(|item| {
-                    item.evidence_count() == usize::from(discovery.committed_response_count())
+                    total_committed_response_count
+                        .is_some_and(|count| item.evidence_count() == usize::from(count))
                 })
         },
         None => audit.additional_request_count() == 0 && discovery_items.is_empty(),

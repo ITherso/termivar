@@ -1674,6 +1674,107 @@ fn write_wordpress_discovery_presentation(
         )?;
         emitter.end_record()?;
     }
+    if let Some(pages) = &discovery.page_collection {
+        emitter.heading("Page-scoped collection")?;
+        emitter.paragraph(
+            "The page scope is a bounded first-hop sample under the entry-selected application and layout. Reused responses were already charged by the parent assessment; newly transferred page bytes and metadata requests are reported separately. A missing page response or rejected association is a coverage limit, not evidence that a component is absent.",
+        )?;
+        emitter.begin_fields()?;
+        wordpress_code_field(emitter, "Selected page mode", pages.mode)?;
+        wordpress_code_field(
+            emitter,
+            "Opaque entry page reference",
+            &pages.entry_page_reference,
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Eligible page candidates",
+            usize::from(pages.candidate_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Selected non-entry pages",
+            usize::from(pages.selected_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Omitted page candidates",
+            usize::from(pages.omitted_candidate_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Reused page responses",
+            usize::from(pages.reused_response_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Fetched page responses",
+            usize::from(pages.fetched_response_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Pages not observed",
+            usize::from(pages.not_observed_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Rejected page responses",
+            usize::from(pages.rejected_response_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Accepted page associations",
+            usize::from(pages.accepted_association_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Rejected page associations",
+            usize::from(pages.rejected_association_count),
+        )?;
+        wordpress_count_field(
+            emitter,
+            "Page request attempts",
+            usize::from(pages.attempted_request_count),
+        )?;
+        emitter.begin_field("Interpreted page bytes")?;
+        emitter.inline(WordPressPresentationInline::Bytes(
+            pages.interpreted_response_bytes,
+        ))?;
+        emitter.end_field()?;
+        emitter.begin_field("Newly transferred page bytes")?;
+        emitter.inline(WordPressPresentationInline::Bytes(pages.response_bytes))?;
+        emitter.end_field()?;
+        emitter.end_fields()?;
+        for page in &pages.pages {
+            emitter.begin_record()?;
+            emitter.inline(WordPressPresentationInline::Code(&page.page_reference))?;
+            emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+            emitter.inline(WordPressPresentationInline::Code(page.outcome))?;
+            emitter.end_record_title()?;
+            wordpress_code_field(emitter, "Acquisition class", page.acquisition)?;
+            wordpress_code_field(emitter, "Application association", page.association)?;
+            wordpress_code_field(emitter, "Interpretation outcome", page.outcome)?;
+            wordpress_code_field(
+                emitter,
+                "Opaque source page reference",
+                &page.page_reference,
+            )?;
+            wordpress_count_field(
+                emitter,
+                "Evidence reference count",
+                page.evidence_reference_count,
+            )?;
+            emitter.begin_field("Interpreted response bytes")?;
+            emitter.inline(WordPressPresentationInline::Bytes(
+                page.interpreted_response_bytes,
+            ))?;
+            emitter.end_field()?;
+            emitter.begin_field("Newly transferred response bytes")?;
+            emitter.inline(WordPressPresentationInline::Bytes(page.response_bytes))?;
+            emitter.end_field()?;
+            emitter.end_record()?;
+        }
+    }
     emitter.heading("Discovered metadata sources")?;
     if discovery.sources.is_empty() {
         emitter
@@ -1714,6 +1815,12 @@ fn write_wordpress_discovery_presentation(
             emitter,
             "Evidence reference count",
             source.evidence_reference_count,
+        )?;
+        write_wordpress_values(
+            emitter,
+            "Opaque source page references",
+            source.source_page_references.iter().map(String::as_str),
+            "not recorded by this audit version",
         )?;
         emitter.begin_field("Response bytes")?;
         emitter.inline(WordPressPresentationInline::Bytes(source.response_bytes))?;
@@ -2917,17 +3024,40 @@ impl<'a> AssessmentDocument<'a> {
         match (&self.wordpress_review, &self.wordpress_discovery) {
             (Some(review), Some(discovery)) => {
                 discovery.validate()?;
+                let page_attempted_request_count = discovery
+                    .page_collection
+                    .as_ref()
+                    .map_or(0, |pages| pages.attempted_request_count);
+                let page_committed_response_count = discovery
+                    .page_collection
+                    .as_ref()
+                    .map_or(0, |pages| pages.committed_response_count);
+                let total_attempted_request_count = discovery
+                    .attempted_request_count
+                    .checked_add(page_attempted_request_count);
+                let total_committed_response_count = discovery
+                    .committed_response_count
+                    .checked_add(page_committed_response_count);
                 if review.schema != "security.wordpress-review-audit/v7"
-                    || review.additional_request_count != discovery.attempted_request_count
+                    || total_attempted_request_count != Some(review.additional_request_count)
                     || !wordpress_discovery_matches_review(review, discovery)
-                    || (discovery_items.len() == 1) != (discovery.committed_response_count > 0)
+                    || (discovery_items.len() == 1)
+                        != total_committed_response_count.is_some_and(|count| count > 0)
                     || discovery_items.first().is_some_and(|item| {
-                        item.evidence_count != u64::from(discovery.committed_response_count)
+                        item.evidence_count
+                            != u64::from(total_committed_response_count.unwrap_or(u8::MAX))
                             || item.evidence_references
                                 != discovery
-                                    .sources
+                                    .page_collection
                                     .iter()
-                                    .flat_map(|source| source.evidence_references.iter())
+                                    .flat_map(|pages| pages.pages.iter())
+                                    .flat_map(|page| page.evidence_references.iter())
+                                    .chain(
+                                        discovery
+                                            .sources
+                                            .iter()
+                                            .flat_map(|source| source.evidence_references.iter()),
+                                    )
                                     .cloned()
                                     .collect::<Vec<_>>()
                     })
@@ -3349,10 +3479,15 @@ struct AssessmentWordPressAuditDocument {
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
-const WORDPRESS_DISCOVERY_AUDIT_SCHEMA: &str = "security.wordpress-discovery-audit/v2";
+const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2: &str = "security.wordpress-discovery-audit/v2";
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V3: &str = "security.wordpress-discovery-audit/v3";
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 const WORDPRESS_DISCOVERY_POLICY_ID: &str =
     "termivar.wordpress-deployment-aware-metadata-discovery/v1";
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID: &str =
+    "termivar.wordpress-page-scoped-metadata-discovery/v1";
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 const WORDPRESS_DISCOVERY_LAYOUT_SCHEMA: &str = "security.wordpress-layout/v1";
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -3363,6 +3498,14 @@ const WORDPRESS_DISCOVERY_CAPABILITY_ID: &str = "technology.wordpress-metadata-d
 const MAX_WORDPRESS_DISCOVERY_AUDIT_SOURCES: usize = 32;
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 const MAX_WORDPRESS_DISCOVERY_AUDIT_REQUESTS: u8 = 12;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_PAGE_DISCOVERY_AUDIT_REQUESTS: u8 = 3;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_PAGE_DISCOVERY_AUDIT_CANDIDATES: u16 = 4_096;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_PAGE_DISCOVERY_AUDIT_INTERPRETED_BYTES: u64 = 768 * 1024;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_DISCOVERY_AUDIT_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 const MAX_WORDPRESS_DISCOVERY_AUDIT_REST_REQUESTS: usize = 1;
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -3403,7 +3546,45 @@ struct AssessmentWordPressDiscoveryAuditDocument {
     response_bytes: u64,
     source_count: usize,
     layout: WordPressDiscoveryLayoutDocument,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_collection: Option<WordPressPageCollectionDocument>,
     sources: Vec<WordPressDiscoverySourceDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressPageCollectionDocument {
+    mode: &'static str,
+    entry_page_reference: String,
+    candidate_count: u16,
+    selected_count: u8,
+    omitted_candidate_count: u16,
+    reused_response_count: u8,
+    fetched_response_count: u8,
+    not_observed_count: u8,
+    rejected_response_count: u8,
+    accepted_association_count: u8,
+    rejected_association_count: u8,
+    attempted_request_count: u8,
+    completed_response_count: u8,
+    committed_response_count: u8,
+    interpreted_response_bytes: u64,
+    response_bytes: u64,
+    pages: Vec<WordPressPageSourceDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressPageSourceDocument {
+    page_reference: String,
+    acquisition: &'static str,
+    association: &'static str,
+    outcome: &'static str,
+    request_attempted: bool,
+    interpreted_response_bytes: u64,
+    response_bytes: u64,
+    evidence_reference_count: usize,
+    evidence_references: Vec<String>,
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -3453,6 +3634,8 @@ struct WordPressDiscoverySourceDocument {
     response_bytes: u64,
     evidence_reference_count: usize,
     evidence_references: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_page_references: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     namespaces: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4333,6 +4516,56 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             return Err(ReportError::Serialization);
         };
         let mut evidence_references = evidence_references.iter();
+        let page_collection = discovery
+            .page_scope()
+            .map(|page_scope| {
+                let pages = page_scope
+                    .pages()
+                    .iter()
+                    .map(|page| {
+                        let evidence_reference_count = page.evidence_ids().len();
+                        let page_evidence_references = evidence_references
+                            .by_ref()
+                            .take(evidence_reference_count)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if page_evidence_references.len() != evidence_reference_count {
+                            return Err(ReportError::Serialization);
+                        }
+                        Ok(WordPressPageSourceDocument {
+                            page_reference: page.page_reference().to_owned(),
+                            acquisition: page.acquisition().as_str(),
+                            association: page.association().as_str(),
+                            outcome: page.outcome().as_str(),
+                            request_attempted: page.request_attempted(),
+                            interpreted_response_bytes: page.interpreted_response_bytes(),
+                            response_bytes: page.response_bytes(),
+                            evidence_reference_count,
+                            evidence_references: page_evidence_references,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ReportError>>()?;
+                Ok(WordPressPageCollectionDocument {
+                    mode: page_scope.mode().as_str(),
+                    entry_page_reference: page_scope.entry_page_reference().to_owned(),
+                    candidate_count: page_scope.candidate_count(),
+                    selected_count: page_scope.selected_count(),
+                    omitted_candidate_count: page_scope.omitted_candidate_count(),
+                    reused_response_count: page_scope.reused_response_count(),
+                    fetched_response_count: page_scope.fetched_response_count(),
+                    not_observed_count: page_scope.not_observed_count(),
+                    rejected_response_count: page_scope.rejected_response_count(),
+                    accepted_association_count: page_scope.accepted_association_count(),
+                    rejected_association_count: page_scope.rejected_association_count(),
+                    attempted_request_count: page_scope.attempted_request_count(),
+                    completed_response_count: page_scope.completed_response_count(),
+                    committed_response_count: page_scope.committed_response_count(),
+                    interpreted_response_bytes: page_scope.interpreted_response_bytes(),
+                    response_bytes: page_scope.response_bytes(),
+                    pages,
+                })
+            })
+            .transpose()?;
         let sources = discovery
             .sources()
             .iter()
@@ -4385,6 +4618,7 @@ impl AssessmentWordPressDiscoveryAuditDocument {
                     response_bytes: source.response_bytes(),
                     evidence_reference_count,
                     evidence_references: source_evidence_references,
+                    source_page_references: source.source_page_references().to_vec(),
                     namespaces: source.namespaces().to_vec(),
                     theme,
                     plugin,
@@ -4420,7 +4654,11 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             conflicting_association_count: layout.conflicting_association_count(),
         };
         Ok(Some(Self {
-            schema: WORDPRESS_DISCOVERY_AUDIT_SCHEMA,
+            schema: if page_collection.is_some() {
+                WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V3
+            } else {
+                WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2
+            },
             capability_id: WORDPRESS_DISCOVERY_CAPABILITY_ID,
             policy_id: discovery.policy_id(),
             selected: discovery.selected(),
@@ -4436,11 +4674,17 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             response_bytes: discovery.response_bytes(),
             source_count: sources.len(),
             layout,
+            page_collection,
             sources,
         }))
     }
 
     fn validate(&self) -> Result<(), ReportError> {
+        let page_validation = self
+            .page_collection
+            .as_ref()
+            .map(WordPressPageCollectionDocument::validate)
+            .transpose()?;
         let source_bytes = self.sources.iter().try_fold(0_u64, |total, source| {
             total.checked_add(source.response_bytes)
         });
@@ -4479,9 +4723,30 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             .map(|source| source.resource_reference.as_str())
             .collect::<std::collections::BTreeSet<_>>()
             .len();
-        if self.schema != WORDPRESS_DISCOVERY_AUDIT_SCHEMA
+        let is_page_scoped = page_validation.is_some();
+        let combined_request_count = self.attempted_request_count.checked_add(
+            self.page_collection
+                .as_ref()
+                .map_or(0, |pages| pages.attempted_request_count),
+        );
+        let combined_response_bytes = self.response_bytes.checked_add(
+            self.page_collection
+                .as_ref()
+                .map_or(0, |pages| pages.response_bytes),
+        );
+        if self.schema
+            != if is_page_scoped {
+                WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V3
+            } else {
+                WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2
+            }
             || self.capability_id != WORDPRESS_DISCOVERY_CAPABILITY_ID
-            || self.policy_id != WORDPRESS_DISCOVERY_POLICY_ID
+            || self.policy_id
+                != if is_page_scoped {
+                    WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID
+                } else {
+                    WORDPRESS_DISCOVERY_POLICY_ID
+                }
             || !self.selected
             || self.method != "get"
             || self.credential_mode != "anonymous"
@@ -4493,6 +4758,11 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             || (self.omitted_candidate_count > 0
                 && usize::from(self.candidate_count) != MAX_WORDPRESS_DISCOVERY_AUDIT_SOURCES)
             || self.attempted_request_count > MAX_WORDPRESS_DISCOVERY_AUDIT_REQUESTS
+            || combined_request_count
+                .is_none_or(|count| count > MAX_WORDPRESS_DISCOVERY_AUDIT_REQUESTS)
+            || (is_page_scoped
+                && combined_response_bytes
+                    .is_none_or(|bytes| bytes > MAX_WORDPRESS_DISCOVERY_AUDIT_RESPONSE_BYTES))
             || self.attempted_request_count > self.candidate_count
             || attempted_sources != usize::from(self.attempted_request_count)
             || attempted_rest_sources > MAX_WORDPRESS_DISCOVERY_AUDIT_REST_REQUESTS
@@ -4508,18 +4778,25 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             || evidence_references != Some(usize::from(self.committed_response_count))
             || unique_evidence_references != usize::from(self.committed_response_count)
             || !self.layout.is_valid()
-            || self
-                .sources
-                .iter()
-                .any(|source| !source.is_valid(&self.layout))
+            || self.sources.iter().any(|source| {
+                !source.is_valid(
+                    &self.layout,
+                    page_validation
+                        .as_ref()
+                        .map(|validation| &validation.accepted_page_references),
+                    self.page_collection
+                        .as_ref()
+                        .map(|pages| pages.entry_page_reference.as_str()),
+                )
+            })
         {
             return Err(ReportError::Serialization);
         }
         Ok(())
     }
 
-    fn metadata(&self) -> [(&'static str, String); 16] {
-        [
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        let mut metadata = vec![
             ("Discovery audit schema", self.schema.to_owned()),
             ("Discovery policy", self.policy_id.to_owned()),
             (
@@ -4567,11 +4844,209 @@ impl AssessmentWordPressDiscoveryAuditDocument {
                 "Conflicting layout associations",
                 self.layout.conflicting_association_count.to_string(),
             ),
-        ]
+        ];
+        if let Some(pages) = &self.page_collection {
+            metadata.extend([
+                ("Page scope mode", pages.mode.to_owned()),
+                ("Selected secondary pages", pages.selected_count.to_string()),
+                (
+                    "Reused page responses",
+                    pages.reused_response_count.to_string(),
+                ),
+                (
+                    "Fetched page responses",
+                    pages.fetched_response_count.to_string(),
+                ),
+                (
+                    "Page request attempts",
+                    pages.attempted_request_count.to_string(),
+                ),
+                (
+                    "Interpreted secondary-page bytes",
+                    pages.interpreted_response_bytes.to_string(),
+                ),
+                ("New secondary-page bytes", pages.response_bytes.to_string()),
+            ]);
+        }
+        metadata
     }
 
     fn wire_json(&self) -> Result<String, ReportError> {
         serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+struct ValidatedWordPressPageCollection {
+    accepted_page_references: std::collections::BTreeSet<String>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressPageCollectionDocument {
+    fn validate(&self) -> Result<ValidatedWordPressPageCollection, ReportError> {
+        let attempted = self
+            .pages
+            .iter()
+            .filter(|page| page.request_attempted)
+            .count();
+        let completed = self
+            .pages
+            .iter()
+            .filter(|page| page.evidence_reference_count == 1)
+            .count();
+        let interpreted_bytes = self.pages.iter().try_fold(0_u64, |total, page| {
+            total.checked_add(page.interpreted_response_bytes)
+        });
+        let response_bytes = self
+            .pages
+            .iter()
+            .try_fold(0_u64, |total, page| total.checked_add(page.response_bytes));
+        let mut page_references = std::collections::BTreeSet::new();
+        let mut evidence_references = std::collections::BTreeSet::new();
+        let mut accepted_page_references = std::collections::BTreeSet::new();
+        for page in &self.pages {
+            if !page.is_valid()
+                || !page_references.insert(page.page_reference.clone())
+                || page
+                    .evidence_references
+                    .iter()
+                    .any(|reference| !evidence_references.insert(reference.clone()))
+            {
+                return Err(ReportError::Serialization);
+            }
+            if page.association == "accepted" {
+                accepted_page_references.insert(page.page_reference.clone());
+            }
+        }
+        let reused = self
+            .pages
+            .iter()
+            .filter(|page| page.acquisition == "reused" && page.evidence_reference_count == 1)
+            .count();
+        let fetched = self
+            .pages
+            .iter()
+            .filter(|page| page.acquisition == "fetched" && page.evidence_reference_count == 1)
+            .count();
+        let not_observed = self
+            .pages
+            .iter()
+            .filter(|page| page.acquisition == "not_observed")
+            .count();
+        let rejected = self
+            .pages
+            .iter()
+            .filter(|page| page.association == "rejected")
+            .count();
+        let accepted = self
+            .pages
+            .iter()
+            .filter(|page| page.association == "accepted")
+            .count();
+        if !matches!(self.mode, "observed" | "linked")
+            || !valid_wordpress_discovery_reference(&self.entry_page_reference)
+            || self.candidate_count > MAX_WORDPRESS_PAGE_DISCOVERY_AUDIT_CANDIDATES
+            || self.selected_count > MAX_WORDPRESS_PAGE_DISCOVERY_AUDIT_REQUESTS
+            || u16::from(self.selected_count) > self.candidate_count
+            || usize::from(self.selected_count) != self.pages.len()
+            || self.candidate_count
+                != u16::from(self.selected_count).saturating_add(self.omitted_candidate_count)
+            || self.omitted_candidate_count > MAX_WORDPRESS_PAGE_DISCOVERY_AUDIT_CANDIDATES
+            || self.reused_response_count as usize != reused
+            || self.fetched_response_count as usize != fetched
+            || self.not_observed_count as usize != not_observed
+            || self.rejected_response_count as usize != rejected
+            || self.accepted_association_count as usize != accepted
+            || self.rejected_association_count as usize != rejected
+            || self.attempted_request_count > MAX_WORDPRESS_PAGE_DISCOVERY_AUDIT_REQUESTS
+            || self.attempted_request_count as usize != attempted
+            || self.completed_response_count as usize != completed
+            || self.committed_response_count != self.completed_response_count
+            || interpreted_bytes != Some(self.interpreted_response_bytes)
+            || response_bytes != Some(self.response_bytes)
+            || self.interpreted_response_bytes
+                > MAX_WORDPRESS_PAGE_DISCOVERY_AUDIT_INTERPRETED_BYTES
+            || (self.mode == "observed"
+                && (self.attempted_request_count != 0
+                    || self.fetched_response_count != 0
+                    || self.response_bytes != 0))
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(ValidatedWordPressPageCollection {
+            accepted_page_references,
+        })
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressPageSourceDocument {
+    fn is_valid(&self) -> bool {
+        let acquisition_valid = matches!(self.acquisition, "reused" | "fetched" | "not_observed");
+        let association_valid = matches!(
+            self.association,
+            "accepted" | "rejected" | "not_established"
+        );
+        let outcome_valid = matches!(
+            self.outcome,
+            "accepted"
+                | "no_component_signals"
+                | "not_observed"
+                | "incompatible_application"
+                | "soft_404"
+                | "login_response"
+                | "unsupported_content"
+                | "malformed"
+                | "truncated"
+                | "request_failed"
+                | "rate_limited"
+                | "budget_exhausted"
+                | "cancelled"
+                | "deadline_exceeded"
+        );
+        valid_wordpress_discovery_reference(&self.page_reference)
+            && acquisition_valid
+            && association_valid
+            && outcome_valid
+            && self.interpreted_response_bytes <= 256 * 1024
+            && self.evidence_reference_count <= 1
+            && self.evidence_references.len() == self.evidence_reference_count
+            && self
+                .evidence_references
+                .iter()
+                .all(|reference| valid_opaque_assessment_reference(reference, "evidence"))
+            && (self.evidence_reference_count == 1 || self.interpreted_response_bytes == 0)
+            && (self.request_attempted || self.response_bytes == 0)
+            && match self.acquisition {
+                "reused" => {
+                    !self.request_attempted
+                        && self.response_bytes == 0
+                        && self.evidence_reference_count == 1
+                },
+                "fetched" => self.request_attempted && self.evidence_reference_count == 1,
+                "not_observed" => {
+                    !self.request_attempted
+                        && self.response_bytes == 0
+                        && self.interpreted_response_bytes == 0
+                        && self.evidence_reference_count == 0
+                        && self.outcome == "not_observed"
+                },
+                _ => false,
+            }
+            && match self.association {
+                "accepted" => self.outcome == "accepted" && self.evidence_reference_count == 1,
+                "rejected" => {
+                    !matches!(
+                        self.outcome,
+                        "accepted" | "no_component_signals" | "not_observed"
+                    ) && self.evidence_reference_count == 1
+                },
+                "not_established" => {
+                    matches!(self.outcome, "no_component_signals" | "not_observed")
+                        && (self.outcome == "not_observed") != (self.evidence_reference_count == 1)
+                },
+                _ => false,
+            }
     }
 }
 
@@ -4732,7 +5207,12 @@ impl WordPressDiscoveryLayoutRoleDocument {
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 impl WordPressDiscoverySourceDocument {
-    fn is_valid(&self, layout: &WordPressDiscoveryLayoutDocument) -> bool {
+    fn is_valid(
+        &self,
+        layout: &WordPressDiscoveryLayoutDocument,
+        accepted_page_references: Option<&std::collections::BTreeSet<String>>,
+        entry_page_reference: Option<&str>,
+    ) -> bool {
         let component_valid = self.component.as_ref().is_none_or(|component| {
             matches!(component.kind, "core" | "plugin" | "theme")
                 && crate::wordpress_review::valid_slug(&component.slug)
@@ -4867,10 +5347,27 @@ impl WordPressDiscoverySourceDocument {
             },
             _ => false,
         };
+        let source_pages_valid = match (accepted_page_references, entry_page_reference) {
+            (Some(accepted), Some(entry)) => {
+                !self.source_page_references.is_empty()
+                    && self.source_page_references.len() <= 4
+                    && self
+                        .source_page_references
+                        .windows(2)
+                        .all(|pair| pair[0] < pair[1])
+                    && self.source_page_references.iter().all(|reference| {
+                        valid_wordpress_discovery_reference(reference)
+                            && (reference == entry || accepted.contains(reference))
+                    })
+            },
+            (None, None) => self.source_page_references.is_empty(),
+            _ => false,
+        };
         component_valid
             && strings_valid
             && source_shape_valid
             && outcome_valid
+            && source_pages_valid
             && valid_wordpress_discovery_reference(&self.resource_reference)
             && association_valid
             && ((!binding_required && self.role_reference.is_none()) || exact_role_bound)
@@ -8253,7 +8750,7 @@ mod tests {
         });
         review.component_count = review.components.len();
         document.wordpress_discovery = Some(AssessmentWordPressDiscoveryAuditDocument {
-            schema: WORDPRESS_DISCOVERY_AUDIT_SCHEMA,
+            schema: WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2,
             capability_id: WORDPRESS_DISCOVERY_CAPABILITY_ID,
             policy_id: WORDPRESS_DISCOVERY_POLICY_ID,
             selected: true,
@@ -8305,6 +8802,7 @@ mod tests {
                 skipped_sibling_application_count: 0,
                 conflicting_association_count: 0,
             },
+            page_collection: None,
             sources: vec![
                 WordPressDiscoverySourceDocument {
                     kind: "rest_index",
@@ -8318,6 +8816,7 @@ mod tests {
                     response_bytes: 256,
                     evidence_reference_count: 1,
                     evidence_references: vec!["evidence-0001".to_owned()],
+                    source_page_references: Vec::new(),
                     namespaces: vec!["wp/v2".to_owned(), "termivar-lab/v1".to_owned()],
                     theme: None,
                     plugin: None,
@@ -8337,6 +8836,7 @@ mod tests {
                     response_bytes: 256,
                     evidence_reference_count: 1,
                     evidence_references: vec!["evidence-0002".to_owned()],
+                    source_page_references: Vec::new(),
                     namespaces: Vec::new(),
                     theme: Some(WordPressThemeDiscoveryDocument {
                         name: Some("Termivar child".to_owned()),
@@ -8363,6 +8863,7 @@ mod tests {
                     response_bytes: 256,
                     evidence_reference_count: 1,
                     evidence_references: vec!["evidence-0003".to_owned()],
+                    source_page_references: Vec::new(),
                     namespaces: Vec::new(),
                     theme: None,
                     plugin: Some(WordPressPluginDiscoveryDocument {
@@ -8375,6 +8876,63 @@ mod tests {
                 },
             ],
         });
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    fn page_scoped_wordpress_assessment_document() -> AssessmentDocument<'static> {
+        let mut document = discovered_wordpress_assessment_document();
+        let entry_reference = format!("sha256:{}", "8".repeat(64));
+        let page_reference = format!("sha256:{}", "9".repeat(64));
+        let discovery = document.wordpress_discovery.as_mut().unwrap();
+        discovery.schema = WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V3;
+        discovery.policy_id = WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID;
+        discovery.page_collection = Some(WordPressPageCollectionDocument {
+            mode: "observed",
+            entry_page_reference: entry_reference.clone(),
+            candidate_count: 1,
+            selected_count: 1,
+            omitted_candidate_count: 0,
+            reused_response_count: 1,
+            fetched_response_count: 0,
+            not_observed_count: 0,
+            rejected_response_count: 0,
+            accepted_association_count: 1,
+            rejected_association_count: 0,
+            attempted_request_count: 0,
+            completed_response_count: 1,
+            committed_response_count: 1,
+            interpreted_response_bytes: 128,
+            response_bytes: 0,
+            pages: vec![WordPressPageSourceDocument {
+                page_reference: page_reference.clone(),
+                acquisition: "reused",
+                association: "accepted",
+                outcome: "accepted",
+                request_attempted: false,
+                interpreted_response_bytes: 128,
+                response_bytes: 0,
+                evidence_reference_count: 1,
+                evidence_references: vec!["evidence-0001".to_owned()],
+            }],
+        });
+        for (ordinal, source) in discovery.sources.iter_mut().enumerate() {
+            source.evidence_references = vec![format!("evidence-{:04}", ordinal + 2)];
+            source.source_page_references = if source.kind == "rest_index" {
+                vec![entry_reference.clone()]
+            } else {
+                vec![page_reference.clone()]
+            };
+        }
+        let item = document
+            .items
+            .iter_mut()
+            .find(|item| item.capability_id == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
+            .unwrap();
+        item.evidence_count = 4;
+        item.evidence_references = (1..=4)
+            .map(|ordinal| format!("evidence-{ordinal:04}"))
+            .collect();
         document
     }
 
@@ -9192,7 +9750,7 @@ mod tests {
             parsed["wordpress_review"]["review_basis_schema"],
             "security.wordpress-review-audit/v1"
         );
-        assert_eq!(discovery["schema"], WORDPRESS_DISCOVERY_AUDIT_SCHEMA);
+        assert_eq!(discovery["schema"], WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2);
         assert_eq!(discovery["policy_id"], WORDPRESS_DISCOVERY_POLICY_ID);
         assert_eq!(
             WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V1,
@@ -9255,7 +9813,7 @@ mod tests {
 
         for format in [ReportFormat::Html, ReportFormat::Markdown] {
             let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
-            assert!(rendered.contains(WORDPRESS_DISCOVERY_AUDIT_SCHEMA));
+            assert!(rendered.contains(WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2));
             assert!(rendered.contains("termivar-metadata-lab"));
             assert!(rendered.contains("9.9.9"));
             assert!(rendered.contains("not installed version"));
@@ -9266,7 +9824,7 @@ mod tests {
         }
         let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
         assert!(csv.contains("wordpress_discovery_audit"));
-        assert!(csv.contains(WORDPRESS_DISCOVERY_AUDIT_SCHEMA));
+        assert!(csv.contains(WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2));
         assert!(csv.contains("termivar-metadata-lab"));
 
         let comparison = comparison::compare_reports(
@@ -9619,6 +10177,7 @@ mod tests {
                 response_bytes: 0,
                 evidence_reference_count: 0,
                 evidence_references: Vec::new(),
+                source_page_references: Vec::new(),
                 namespaces: Vec::new(),
                 theme: None,
                 plugin: None,
@@ -9653,6 +10212,103 @@ mod tests {
         chunk_overrun["wordpress_discovery"]["response_bytes"] = serde_json::json!(observed + 512);
         comparison::import_assessment_summary(&serde_json::to_vec(&chunk_overrun).unwrap())
             .unwrap();
+    }
+
+    #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+    #[test]
+    fn page_scoped_discovery_v3_is_strict_feature_independent_and_compared_as_methodology() {
+        let document = page_scoped_wordpress_assessment_document();
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let discovery = &parsed["wordpress_discovery"];
+        assert_eq!(discovery["schema"], WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V3);
+        assert_eq!(
+            discovery["policy_id"],
+            WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID
+        );
+        assert_eq!(discovery["page_collection"]["mode"], "observed");
+        assert_eq!(
+            discovery["page_collection"]["interpreted_response_bytes"],
+            128
+        );
+        assert_eq!(discovery["page_collection"]["response_bytes"], 0);
+        assert_eq!(
+            discovery["sources"][1]["source_page_references"],
+            serde_json::json!([format!("sha256:{}", "9".repeat(64))])
+        );
+        comparison::import_assessment_summary(json.as_bytes()).unwrap();
+
+        let self_comparison = comparison::compare_reports(
+            json.as_bytes(),
+            json.as_bytes(),
+            comparison::ComparisonFormat::Json,
+        )
+        .unwrap();
+        let self_comparison: serde_json::Value = serde_json::from_str(&self_comparison).unwrap();
+        assert_eq!(
+            self_comparison["wordpress_review_comparison"]["methodology"]["status"],
+            "unchanged"
+        );
+        assert_eq!(
+            self_comparison["wordpress_review_comparison"]["discovery_source_content"]["status"],
+            "unchanged"
+        );
+
+        let entry_only = discovered_wordpress_assessment_document();
+        let entry_only =
+            render_assessment_with_limit(&entry_only, ReportFormat::Json, usize::MAX).unwrap();
+        let scope_change = comparison::compare_reports(
+            entry_only.as_bytes(),
+            json.as_bytes(),
+            comparison::ComparisonFormat::Json,
+        )
+        .unwrap();
+        let scope_change: serde_json::Value = serde_json::from_str(&scope_change).unwrap();
+        assert_eq!(
+            scope_change["wordpress_review_comparison"]["methodology"]["status"],
+            "changed"
+        );
+        assert_eq!(
+            scope_change["wordpress_review_comparison"]["coverage"]["status"],
+            "changed"
+        );
+
+        for mutation in [
+            "missing_page_collection",
+            "missing_source_page_reference",
+            "unknown_source_page_reference",
+            "fabricated_page_evidence_count",
+        ] {
+            let mut invalid = parsed.clone();
+            match mutation {
+                "missing_page_collection" => {
+                    invalid["wordpress_discovery"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("page_collection");
+                },
+                "missing_source_page_reference" => {
+                    invalid["wordpress_discovery"]["sources"][1]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("source_page_references");
+                },
+                "unknown_source_page_reference" => {
+                    invalid["wordpress_discovery"]["sources"][1]["source_page_references"] =
+                        serde_json::json!([format!("sha256:{}", "7".repeat(64))]);
+                },
+                "fabricated_page_evidence_count" => {
+                    invalid["wordpress_discovery"]["page_collection"]["pages"][0]
+                        ["evidence_reference_count"] = serde_json::json!(0);
+                },
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                comparison::import_assessment_summary(&serde_json::to_vec(&invalid).unwrap()),
+                Err(comparison::ComparisonError::InvalidDocument),
+                "mutation {mutation} must fail closed"
+            );
+        }
     }
 
     #[cfg(all(feature = "scanning", feature = "wordpress-review"))]

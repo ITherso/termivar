@@ -602,9 +602,10 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "--profile web-review",
                 "--wordpress-review",
                 "--wordpress-discovery",
+                "optional --wordpress-page-scope observed",
                 "optional --wordpress-layout FILE",
             ],
-            "Explicitly performs at most 12 anonymous same-origin metadata GET requests through the existing assessment broker. It is never enabled by --wordpress-review alone; discovered metadata is unauthenticated evidence, plugin Stable tag is not treated as an installed version, and no exploit or impact validation is performed.",
+            "Explicitly performs at most 12 anonymous same-origin metadata GET requests through the existing assessment broker in entry-only mode. It is never enabled by --wordpress-review alone. Without --wordpress-page-scope it remains entry-only; observed reuses eligible committed page responses without retrieving pages. Reused pages may nominate metadata within the same 12-request WordPress-owned limit. Discovered metadata is unauthenticated evidence, plugin Stable tag is not treated as an installed version, and no exploit or impact validation is performed.",
             "docs/wordpress-review.md",
         ),
         surface!(
@@ -1085,6 +1086,7 @@ mod tests {
                 "--profile web-review",
                 "--wordpress-review",
                 "--wordpress-discovery",
+                "optional --wordpress-page-scope observed",
                 "optional --wordpress-layout FILE"
             ]
         );
@@ -1101,6 +1103,12 @@ mod tests {
         assert!(wordpress_discovery
             .limitation
             .contains("never enabled by --wordpress-review alone"));
+        assert!(wordpress_discovery.limitation.contains(
+            "observed reuses eligible committed page responses without retrieving pages"
+        ));
+        assert!(wordpress_discovery.limitation.contains(
+            "Reused pages may nominate metadata within the same 12-request WordPress-owned limit"
+        ));
         assert!(wordpress_discovery
             .limitation
             .contains("Stable tag is not treated as an installed version"));

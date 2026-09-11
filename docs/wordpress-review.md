@@ -84,6 +84,55 @@ operator-authorized fixture. Termivar does not start WordPress. The discovery
 option requires the explicit review and `web-review` profile; merely compiling
 the feature or selecting `--wordpress-review` does not enable network work.
 
+### Reuse eligible pages already observed by the assessment
+
+An explicit observed-page scope can broaden component interpretation without
+turning discovery into a page crawler:
+
+```bash
+termivar scan https://authorized.example/ \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-discovery \
+  --wordpress-page-scope observed \
+  --report-dir assessment-wordpress-observed-pages
+```
+
+The entry document contributes only ordinary `<a href>` first-hop candidates.
+Termivar retains a deterministic bounded top set, selects at most three
+non-entry pages, and reuses a page only when the same assessment already
+completed and committed an anonymous, bodyless `GET` representation for the
+exact query-free, fragment-free URL. The option never dispatches a missing page,
+promotes a `HEAD` to `GET`, follows a redirect, retries, or recursively follows
+links found on a secondary page. A selected page without such a representation
+is reported as `not_observed`.
+
+Observed mode can still add metadata traffic: a component asset on an eligible
+reused page may nominate its one exact stylesheet or readme under the layout
+already frozen from the entry. Repeated page sightings share one metadata
+request and preserve distinct opaque source-page references. The same
+12-attempt WordPress allowance and metadata category ceilings apply. Reused
+page bytes were charged by the parent assessment and are reported as interpreted,
+not newly transferred WordPress bytes.
+
+Only links inside the selected application directory and exact effective origin
+are eligible. Queries, fragments, downloads, login/admin/API/feed/action routes,
+static resources, encoded traversal or separators, userinfo, foreign ports, and
+sibling applications are excluded. Secondary content cannot replace the entry's
+application or role bases, nominate another REST index, or contribute a core
+generator version. A page whose content conflicts with the frozen application
+is retained as a rejected association and supplies no component or metadata
+candidate. These checks are bounded collection policy, not proof that every
+admitted server route is side-effect-free; the operator remains responsible for
+authorizing the selected application.
+
+Page assets remain identity hints. A theme `Version` in the exact fetched
+stylesheet is a served-artifact declaration, while a plugin readme `Stable tag`
+is still distribution metadata and never becomes an installed plugin version.
+Missing pages or signals do not establish component absence, and extra page
+sightings do not establish activation, execution, authenticity, exploitability,
+or remediation.
+
 The selected application may be an unambiguous directory URL. A conventional
 WordPress application under `/blog/` needs no layout declaration:
 
@@ -171,7 +220,13 @@ spelling is a supported version. Termivar does not fetch plugin PHP entrypoints
 or inspect server source to fill that gap. `trunk` and unsupported tags remain
 nonversion hints.
 
-The current additive top-level `security.wordpress-discovery-audit/v2` records
+Entry-only discovery continues to use the additive top-level
+`security.wordpress-discovery-audit/v2`. Explicit observed-page scope uses the
+strict additive `security.wordpress-discovery-audit/v3`, which adds the selected
+mode, entry and secondary opaque page references, candidate/selection/omission
+counts, reuse and association outcomes, interpreted versus newly transferred
+bytes, page evidence references, and metadata-to-source-page edges. It does not
+contain page bodies or raw URLs. Both versions record
 the deployment-aware policy, an opaque selected-application reference, each
 role's exact/ambiguous/unresolved state and evidence basis, bounded skipped or
 conflicting association counts, anonymous GET method,
@@ -190,6 +245,11 @@ producer feature. Compare applies the recorded review basis to component and
 advisory semantics while treating collection policy and request coverage as
 separate dimensions. A review-only versus discovery comparison is therefore
 not a newly introduced vulnerability or remediation.
+
+The strict v3 document vocabulary also reserves `linked` page mode and
+`fetched` acquisition rows for the coordinated bounded linked-page slice. The
+current CLI exposes only `observed` and rejects `linked`; accepting a saved
+linked row in the strict display-only reader does not activate page retrieval.
 
 No eligible source, a 404, unsupported content, throttling, truncation, or a
 budget/deadline stop remains visible as limited collection. It is never a
@@ -811,10 +871,11 @@ comparison of supplied documents, not remediation proof.
 
 When either supported input to `termivar report compare` contains a WordPress
 audit, the output includes an optional `wordpress_review_comparison` section
-with nested schema `termivar-wordpress-review-comparison/v1`. This is additive:
-the outer `termivar-report-comparison/v1` schema and its four existing item
-groups are unchanged. The section is absent when neither report has a
-WordPress audit.
+with nested schema `termivar-wordpress-review-comparison/v1`, or additive `/v2`
+when either input carries discovery source content such as page-scoped records.
+The outer `termivar-report-comparison/v1` schema and its four existing item
+groups are unchanged. The section is absent when neither report has a WordPress
+audit.
 
 The required `--same-scope` flag remains only the operator's declaration that
 the selected reports are comparable; it does not authenticate a site or prove
@@ -827,14 +888,16 @@ identity, so two different source spellings do not collapse merely because
 they derive the same candidate canonical key. Titles, CVEs, array order, and
 other display content do not replace those stable keys.
 
-Discovery audit v2 also binds WordPress-specific comparison to the opaque
+Discovery audits v2 and v3 also bind WordPress-specific comparison to the opaque
 selected-application identity. Matching identities allow semantic facets to be
 compared. Known different identities produce `not_compared` with an
 application-scope mismatch; a historical audit without that identity produces
 an unknown-scope result. `--same-scope` cannot force inventories from known
 different applications to pair. A changed role base or collection policy within
 one selected application is a methodology/source/coverage change, not a newly
-installed component or verified remediation.
+installed component or verified remediation. For v3, page mode and association
+coverage are methodology/coverage data, while page-to-component source edges
+are source content; a lost page representation is not a component removal.
 
 The section reports component evidence, advisory content, affected ranges,
 source-declared fix/remediation, methodology, provenance, coverage, and
@@ -908,8 +971,9 @@ normal formats. Offline bundle verification checks supported structure and
 bytes, not advisory truth. Offline Report Compare can show that WordPress
 evidence or conclusions changed, but disappearance is not verified
 remediation. The matching development reader accepts the optional WordPress
-audit, including v6. Development readers that know only v1 through v5 do not
-silently reinterpret v6; they reject that unsupported audit version. The
+audit, including the current v7 wrapper and discovery audit v3. Older development
+readers do not silently reinterpret later strict audit versions; they reject an
+unsupported shape. The
 already-published `v0.10.0-alpha.2` Compare and Verify importers predate all
 WordPress audit fields and reject WordPress-extended assessment JSON; use the
 matching development reader or a later release for those files. Neither offline
@@ -920,7 +984,7 @@ command starts a scan or adds network requests.
 The existing development references were reviewed on 2026-09-06. The pinned
 PHP implementation reference for the comparison profiles was additionally
 reviewed on 2026-09-07. The public-metadata discovery references were reviewed
-on 2026-09-10:
+through 2026-09-11:
 
 - WordPress installation in a subdirectory and separate site/core addresses:
   <https://developer.wordpress.org/advanced-administration/server/wordpress-in-directory/>
@@ -936,6 +1000,9 @@ on 2026-09-10:
 - Theme main stylesheet and bounded file-header behavior:
   <https://developer.wordpress.org/themes/core-concepts/main-stylesheet/>
   and <https://developer.wordpress.org/reference/functions/get_file_data/>
+- Conditional plugin asset enqueueing and page predicates:
+  <https://developer.wordpress.org/plugins/javascript/enqueuing/>
+  and <https://developer.wordpress.org/reference/functions/is_page/>
 - Plugin readme and Stable tag semantics:
   <https://developer.wordpress.org/plugins/wordpress-org/how-your-readme-txt-works/>
 - WP-CLI plugin inventory fields and states:

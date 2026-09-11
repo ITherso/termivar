@@ -47,7 +47,9 @@ use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
 #[cfg(feature = "wordpress-review")]
 use crate::web_runtime::{
-    WordPressDiscoverySourceKind, WordPressDiscoverySourceOutcome, WORDPRESS_REVIEW_CAPABILITY_ID,
+    WordPressDiscoverySourceKind, WordPressDiscoverySourceOutcome, WordPressPageAcquisition,
+    WordPressPageAssociation, WordPressPageOutcome, WordPressPageScope,
+    WORDPRESS_REVIEW_CAPABILITY_ID,
 };
 #[cfg(feature = "authorization-review")]
 use crate::web_runtime::{
@@ -353,6 +355,20 @@ fn wordpress_discovery_requires_wordpress_review_at_build_time() {
 
 #[cfg(feature = "wordpress-review")]
 #[test]
+fn wordpress_observed_page_scope_requires_metadata_discovery() {
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::WordPressPageScopeRequiresDiscovery)
+    ));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
 fn non_root_wordpress_review_requires_discovery_at_build_time() {
     let non_root_review =
         WebAssessmentRuntime::builder(Url::parse("https://example.test/blog/").unwrap())
@@ -554,6 +570,370 @@ async fn wordpress_discovery_uses_shared_accounting_and_retains_typed_metadata()
             && !request.headers.contains_key("cookie")
             && !request.headers.contains_key("proxy-authorization")
     }));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_requests() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<html><head>
+                    <link rel="stylesheet" href="/wp-content/themes/base-theme/assets/site.css">
+                    </head><body>
+                    <a href="/contact">contact</a>
+                    <a href="/gallery">gallery</a>
+                    </body></html>"#,
+            ),
+            "/contact" | "/gallery" => FixtureResponse::html(
+                r#"<html><head>
+                    <script src="/wp-content/plugins/page-only/assets/app.js"></script>
+                    </head><body>ordinary page</body></html>"#,
+            ),
+            "/wp-content/themes/base-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Base Theme\nVersion: 1.0 */".to_vec(),
+            ),
+            "/wp-content/plugins/page-only/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Page Only ===\nStable tag: 9.9.9\n".to_vec(),
+            ),
+            _ => FixtureResponse::new("200 OK", Some("text/plain"), Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut entry_only_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let entry_only = entry_only_runtime.analyze().await.unwrap();
+    let entry_only_discovery = entry_only
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap();
+    assert_eq!(
+        entry_only_discovery.policy_id(),
+        "termivar.wordpress-deployment-aware-metadata-discovery/v1"
+    );
+    assert!(entry_only_discovery.page_scope().is_none());
+    assert!(entry_only_discovery
+        .sources()
+        .iter()
+        .all(|source| source.source_page_references().is_empty()));
+    assert_eq!(
+        entry_only_discovery
+            .sources()
+            .iter()
+            .filter(|source| source.component_slug() == Some("page-only"))
+            .count(),
+        0
+    );
+    let entry_only_requests = server.requests().await;
+
+    let mut observed_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build()
+        .unwrap();
+    let observed = observed_runtime.analyze().await.unwrap();
+    assert!(matches!(
+        observed.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let wordpress = observed.wordpress_review_audit().unwrap();
+    let discovery = wordpress.discovery().unwrap();
+    assert_eq!(
+        discovery.policy_id(),
+        "termivar.wordpress-page-scoped-metadata-discovery/v1"
+    );
+    let page_scope = discovery.page_scope().unwrap();
+    assert_eq!(page_scope.mode(), WordPressPageScope::Observed);
+    assert_eq!(page_scope.candidate_count(), 2);
+    assert_eq!(page_scope.selected_count(), 2);
+    assert_eq!(page_scope.omitted_candidate_count(), 0);
+    assert_eq!(page_scope.reused_response_count(), 2);
+    assert_eq!(page_scope.fetched_response_count(), 0);
+    assert_eq!(page_scope.not_observed_count(), 0);
+    assert_eq!(page_scope.attempted_request_count(), 0);
+    assert_eq!(page_scope.completed_response_count(), 2);
+    assert_eq!(page_scope.committed_response_count(), 2);
+    assert_eq!(page_scope.accepted_association_count(), 2);
+    assert_eq!(page_scope.rejected_association_count(), 0);
+    assert!(page_scope.pages().iter().all(|page| {
+        page.acquisition() == WordPressPageAcquisition::Reused
+            && page.association() == WordPressPageAssociation::Accepted
+            && page.outcome() == WordPressPageOutcome::Accepted
+            && !page.request_attempted()
+            && page.interpreted_response_bytes() > 0
+            && page.response_bytes() == 0
+            && page.evidence_ids().len() == 1
+    }));
+
+    let plugin_source = discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("page-only"))
+        .expect("page-only metadata source");
+    assert_eq!(
+        plugin_source.kind(),
+        WordPressDiscoverySourceKind::PluginReadme
+    );
+    assert_eq!(plugin_source.plugin().unwrap().stable_tag(), Some("9.9.9"));
+    let accepted_page_references = page_scope
+        .pages()
+        .iter()
+        .map(|page| page.page_reference())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        plugin_source
+            .source_page_references()
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        accepted_page_references
+    );
+    assert_eq!(plugin_source.source_page_references().len(), 2);
+    let page_only_component = wordpress
+        .result()
+        .components()
+        .iter()
+        .find(|component| component.identity().slug() == "page-only")
+        .expect("page-only component");
+    assert!(
+        page_only_component.versions().is_empty(),
+        "a readme Stable tag is distribution metadata, not an installed version"
+    );
+
+    let observed_requests = server.requests().await;
+    let observed_requests = &observed_requests[entry_only_requests.len()..];
+    let page_trace = |requests: &[RecordedRequest]| {
+        requests
+            .iter()
+            .filter(|request| matches!(request.path(), "/" | "/contact" | "/gallery"))
+            .map(|request| (request.method.clone(), request.path().to_owned()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        page_trace(&entry_only_requests),
+        page_trace(observed_requests)
+    );
+    assert_eq!(
+        page_trace(observed_requests),
+        vec![
+            ("GET".to_owned(), "/".to_owned()),
+            ("GET".to_owned(), "/contact".to_owned()),
+            ("GET".to_owned(), "/gallery".to_owned()),
+        ]
+    );
+    assert_eq!(
+        observed_requests
+            .iter()
+            .filter(|request| {
+                request.method == "GET"
+                    && request.path() == "/wp-content/plugins/page-only/readme.txt"
+            })
+            .count(),
+        1,
+        "two accepted pages must share one metadata request"
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn observed_page_scope_leaves_an_ineligible_completed_page_not_observed() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<html><head>
+                    <link rel="stylesheet" href="/wp-content/themes/base-theme/assets/site.css">
+                    </head><body><a href="/missing">missing</a></body></html>"#,
+            ),
+            "/missing" => FixtureResponse::new("404 Not Found", Some("text/html"), "not found"),
+            "/wp-content/themes/base-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Base Theme\nVersion: 1.0 */".to_vec(),
+            ),
+            _ => FixtureResponse::new("200 OK", Some("text/plain"), Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut entry_only_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let entry_only = entry_only_runtime.analyze().await.unwrap();
+    assert!(matches!(
+        entry_only.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let entry_only_requests = server.requests().await;
+
+    let mut observed_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build()
+        .unwrap();
+    let observed = observed_runtime.analyze().await.unwrap();
+    assert!(matches!(
+        observed.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let page_scope = observed
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap()
+        .page_scope()
+        .unwrap();
+    assert_eq!(page_scope.candidate_count(), 1);
+    assert_eq!(page_scope.selected_count(), 1);
+    assert_eq!(page_scope.reused_response_count(), 0);
+    assert_eq!(page_scope.not_observed_count(), 1);
+    assert_eq!(page_scope.completed_response_count(), 0);
+    assert_eq!(page_scope.committed_response_count(), 0);
+    assert_eq!(page_scope.attempted_request_count(), 0);
+    let page = &page_scope.pages()[0];
+    assert_eq!(page.acquisition(), WordPressPageAcquisition::NotObserved);
+    assert_eq!(page.association(), WordPressPageAssociation::NotEstablished);
+    assert_eq!(page.outcome(), WordPressPageOutcome::NotObserved);
+    assert!(!page.request_attempted());
+    assert!(page.evidence_ids().is_empty());
+
+    let all_requests = server.requests().await;
+    let observed_requests = &all_requests[entry_only_requests.len()..];
+    assert_eq!(
+        entry_only_requests
+            .iter()
+            .filter(|request| request.path() == "/missing")
+            .map(|request| request.method.as_str())
+            .collect::<Vec<_>>(),
+        ["GET"]
+    );
+    assert_eq!(
+        observed_requests
+            .iter()
+            .filter(|request| request.path() == "/missing")
+            .map(|request| request.method.as_str())
+            .collect::<Vec<_>>(),
+        ["GET"],
+        "observed mode must not dispatch a replacement GET"
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn observed_page_scope_never_uses_a_partial_page_to_authorize_metadata() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<html><head>
+                    <link rel="stylesheet" href="/wp-content/themes/base-theme/assets/site.css">
+                    </head><body><a href="/partial-contact">contact</a></body></html>"#,
+            ),
+            "/partial-contact" => FixtureResponse::new(
+                "206 Partial Content",
+                Some("text/html"),
+                r#"<script src="/wp-content/plugins/must-not-authorize/assets/app.js"></script>"#,
+            ),
+            "/wp-content/themes/base-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Base Theme\nVersion: 1.0 */".to_vec(),
+            ),
+            "/wp-content/plugins/must-not-authorize/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Must Not Authorize ===\nStable tag: 1.0\n".to_vec(),
+            ),
+            _ => FixtureResponse::new("200 OK", Some("text/plain"), Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert!(matches!(
+        report.completion(),
+        WebAssessmentCompletion::Incomplete { .. }
+    ));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::PartialRepresentation));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::WordPressReviewIncomplete));
+    assert!(report.wordpress_review_audit().is_none());
+    assert_eq!(server.hit_count("/partial-contact").await, 1);
+    assert_eq!(
+        server
+            .requests()
+            .await
+            .iter()
+            .filter(|request| {
+                request.method == "GET"
+                    && request.path() == "/wp-content/plugins/must-not-authorize/readme.txt"
+            })
+            .count(),
+        0,
+        "an incomplete page representation must not authorize metadata"
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn observed_page_scope_handles_a_committed_non_html_entry_without_fabricating_pages() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::new("200 OK", Some("text/plain"), b"ordinary text".to_vec()),
+            _ => FixtureResponse::new("404 Not Found", Some("text/plain"), Vec::new()),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(WordPressReviewInputs::new(None, None))
+        .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+
+    assert!(matches!(
+        report.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let discovery = report
+        .wordpress_review_audit()
+        .unwrap()
+        .discovery()
+        .unwrap();
+    let pages = discovery.page_scope().unwrap();
+    assert_eq!(pages.candidate_count(), 0);
+    assert_eq!(pages.selected_count(), 0);
+    assert!(pages.pages().is_empty());
+    assert!(discovery.sources().is_empty());
+    assert_eq!(server.requests().await.len(), 1);
 }
 
 #[cfg(feature = "wordpress-review")]

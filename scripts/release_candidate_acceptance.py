@@ -71,6 +71,7 @@ ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATU
 WORDPRESS_OPTIONS = (
     "--wordpress-review",
     "--wordpress-discovery",
+    "--wordpress-page-scope",
     "--wordpress-layout",
     "--wordpress-context",
     "--wordpress-advisories",
@@ -96,6 +97,7 @@ WORDPRESS_DISCOVERY_PREREQUISITES = (
     "--profile web-review",
     "--wordpress-review",
     "--wordpress-discovery",
+    "optional --wordpress-page-scope observed",
     "optional --wordpress-layout FILE",
 )
 GROUPS = ("only_in_after", "only_in_before", "changed", "unchanged")
@@ -453,6 +455,10 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             and "at most 12" in discovery_limitation
             and "anonymous same-origin metadata GET requests" in discovery_limitation
             and "never enabled by --wordpress-review alone" in discovery_limitation
+            and "Without --wordpress-page-scope it remains entry-only" in discovery_limitation
+            and "observed reuses eligible committed page responses without retrieving pages"
+                in discovery_limitation
+            and "same 12-request WordPress-owned limit" in discovery_limitation
             and "Stable tag is not treated as an installed version" in discovery_limitation
             and "no exploit or impact validation" in discovery_limitation,
             "packaged WordPress discovery limitation is incomplete")

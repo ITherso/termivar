@@ -209,6 +209,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "--profile web-review",
             "--wordpress-review",
             "--wordpress-discovery",
+            "optional --wordpress-page-scope observed",
             "optional --wordpress-layout FILE"
         ])
     );
@@ -219,6 +220,8 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "at most 12",
         "anonymous same-origin metadata GET requests",
         "never enabled by --wordpress-review alone",
+        "observed reuses eligible committed page responses without retrieving pages",
+        "Reused pages may nominate metadata within the same 12-request WordPress-owned limit",
         "Stable tag is not treated as an installed version",
         "no exploit or impact validation",
     ] {

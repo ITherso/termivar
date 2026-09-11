@@ -2500,6 +2500,7 @@ def _validate_discovery_capability(document: Any) -> None:
         "--profile web-review",
         "--wordpress-review",
         "--wordpress-discovery",
+        "optional --wordpress-page-scope observed",
         "optional --wordpress-layout FILE",
     ]
     require(
@@ -2521,6 +2522,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
     scan_help = runner.run([binary, "scan", "--help"], label="scan help").stdout.decode()
     require("--wordpress-review" in scan_help
             and "--wordpress-discovery" in scan_help
+            and "--wordpress-page-scope" in scan_help
             and "--wordpress-layout" in scan_help,
             "feature-enabled scan help omits WordPress discovery")
     capabilities = parse_json(

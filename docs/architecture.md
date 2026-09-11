@@ -33,6 +33,17 @@ report. Public hints may yield one `Informational` / `KnowledgeOnly` surface
 item; operator declarations and advisory bibliography add no execution or claim
 authority. Exploit execution and impact validation are not performed.
 
+Metadata discovery remains a separately explicit use of the assessment's one
+broker and budget. Without a page scope it retains the entry-only schedule.
+`--wordpress-page-scope observed` stages bounded first-hop candidates from the
+entry, then reuses only eligible anonymous HTML GET responses after their normal
+same-run evidence commits. It dispatches no page request. Once the eligible
+general collection is complete, the runtime freezes the combined component
+candidates and executes metadata collection once before final composition.
+Callback-time transport data cannot authorize this work, and secondary pages
+cannot replace the application/layout authority frozen at the entry. See
+[ADR 0028](adr/0028-reuse-committed-pages-before-wordpress-metadata.md).
+
 This document defines dependency direction and runtime ownership for the unreleased Termivar `0.10.0-alpha.3` development source line. It is a design contract, not a production-readiness claim.
 
 The editable diagrams.net source is [architecture.drawio](architecture.drawio). A presentation- and print-friendly export is available as [architecture.svg](images/architecture.svg).

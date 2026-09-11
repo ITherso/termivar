@@ -78,6 +78,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "wordpress_core_version_file",
     "wordpress_context",
     "wordpress_discovery",
+    "wordpress_page_scope",
     "wordpress_external_version_profile",
     "wordpress_layout",
     "wordpress_plugins_json",
@@ -684,6 +685,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("rest_review", "bool", None),
         ("wordpress_review", "bool", None),
         ("wordpress_discovery", "bool", None),
+        (
+            "wordpress_page_scope",
+            "Option",
+            Some("CliWordPressPageScope"),
+        ),
         ("wordpress_layout", "Option", Some("PathBuf")),
         ("wordpress_context", "Option", Some("PathBuf")),
         ("wordpress_advisories", "Option", Some("PathBuf")),
@@ -896,6 +902,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             "wordpress_discovery",
             ("bool", None),
             "long,requires_all=[\"profile\",\"wordpress_review\"]",
+        ),
+        (
+            "wordpress_page_scope",
+            ("Option", Some("CliWordPressPageScope")),
+            "long,value_enum,value_name=\"SCOPE\",requires_all=[\"profile\",\"wordpress_review\",\"wordpress_discovery\"]",
         ),
         (
             "wordpress_layout",
@@ -2324,6 +2335,21 @@ mod tests {
             (
                 "    #[arg(long, requires_all = [\"profile\", \"wordpress_review\"])]\n    wordpress_discovery: bool,",
                 "    #[arg(long, requires_all = [\"profile\", \"wordpress_review\"])]\n    wordpress_discovery: String,",
+                "field inventory and types must remain exact",
+            ),
+            (
+                "    #[cfg(feature = \"wordpress-review\")]\n    #[arg(\n        long,\n        value_enum,\n        value_name = \"SCOPE\",\n        requires_all = [\"profile\", \"wordpress_review\", \"wordpress_discovery\"]\n    )]\n    wordpress_page_scope: Option<CliWordPressPageScope>,",
+                "    #[arg(\n        long,\n        value_enum,\n        value_name = \"SCOPE\",\n        requires_all = [\"profile\", \"wordpress_review\", \"wordpress_discovery\"]\n    )]\n    wordpress_page_scope: Option<CliWordPressPageScope>,",
+                "private wordpress-review feature gate",
+            ),
+            (
+                "requires_all = [\"profile\", \"wordpress_review\", \"wordpress_discovery\"]",
+                "requires_all = [\"profile\", \"wordpress_review\"]",
+                "private wordpress-review feature gate",
+            ),
+            (
+                "    wordpress_page_scope: Option<CliWordPressPageScope>,",
+                "    wordpress_page_scope: Option<String>,",
                 "field inventory and types must remain exact",
             ),
             (

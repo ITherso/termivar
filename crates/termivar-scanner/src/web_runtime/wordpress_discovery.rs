@@ -35,6 +35,9 @@ use super::SharedWebRuntimeAuthority;
 
 /// Deployment-aware discovery policy emitted by current assessments.
 pub const WORDPRESS_DISCOVERY_POLICY_ID: &str = WORDPRESS_METADATA_DISCOVERY_POLICY_ID;
+/// Page-scoped discovery policy emitted only for an explicit page-scope selection.
+pub const WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID: &str =
+    "termivar.wordpress-page-scoped-metadata-discovery/v1";
 /// Maximum retained root-derived candidates before per-kind selection.
 pub const MAX_WORDPRESS_DISCOVERY_CANDIDATES: usize = 32;
 /// Maximum broker-owned wire attempts, including failed attempts.
@@ -55,6 +58,14 @@ pub const MAX_WORDPRESS_DISCOVERY_REST_BYTES: usize = 512 * 1024;
 pub const MAX_WORDPRESS_DISCOVERY_STATIC_BYTES: usize = 128 * 1024;
 /// Maximum response bytes charged to discovery, subject to chunk overrun.
 pub const MAX_WORDPRESS_DISCOVERY_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
+/// Maximum first-hop page candidates retained before the fixed top-three selection.
+pub const MAX_WORDPRESS_PAGE_CANDIDATES: usize = 32;
+/// Maximum non-entry pages interpreted by one assessment.
+pub const MAX_WORDPRESS_SELECTED_PAGES: usize = 3;
+/// Maximum complete body interpreted for one secondary page.
+pub const MAX_WORDPRESS_PAGE_RESPONSE_BYTES: usize = 256 * 1024;
+/// Maximum secondary-page bytes interpreted across one assessment.
+pub const MAX_WORDPRESS_PAGE_INTERPRETED_BYTES: u64 = 768 * 1024;
 const WORDPRESS_DISCOVERY_ACTION_ID: &str = "web.review.wordpress.metadata-discovery@1";
 const WORDPRESS_DISCOVERY_EVIDENCE_COMPONENT: &str = "wordpress.metadata-discovery";
 const WORDPRESS_DISCOVERY_EVIDENCE_NAMESPACE: &str = "web.wordpress-discovery";
@@ -69,6 +80,99 @@ const MAX_REST_JSON_COLLECTION_LENGTH: usize = 4_096;
 const MAX_REST_JSON_KEY_BYTES: usize = 256;
 const MAX_REST_JSON_STRING_BYTES: usize = MAX_METADATA_VALUE_BYTES;
 
+/// Explicit breadth selected for WordPress page-scoped metadata discovery.
+///
+/// This is interpretation/collection policy only. It grants no origin or
+/// credential authority and creates no independent runtime.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum WordPressPageScope {
+    Observed,
+}
+
+impl WordPressPageScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Observed => "observed",
+        }
+    }
+}
+
+/// How one selected non-entry representation became available.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WordPressPageAcquisition {
+    Reused,
+    Fetched,
+    NotObserved,
+}
+
+impl WordPressPageAcquisition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reused => "reused",
+            Self::Fetched => "fetched",
+            Self::NotObserved => "not_observed",
+        }
+    }
+}
+
+/// Whether a selected page could be associated with the frozen application.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WordPressPageAssociation {
+    Accepted,
+    Rejected,
+    NotEstablished,
+}
+
+impl WordPressPageAssociation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::NotEstablished => "not_established",
+        }
+    }
+}
+
+/// Bounded terminal state for one selected first-hop page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WordPressPageOutcome {
+    Accepted,
+    NoComponentSignals,
+    NotObserved,
+    IncompatibleApplication,
+    Soft404,
+    LoginResponse,
+    UnsupportedContent,
+    Malformed,
+    Truncated,
+    RequestFailed,
+    RateLimited,
+    BudgetExhausted,
+    Cancelled,
+    DeadlineExceeded,
+}
+
+impl WordPressPageOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::NoComponentSignals => "no_component_signals",
+            Self::NotObserved => "not_observed",
+            Self::IncompatibleApplication => "incompatible_application",
+            Self::Soft404 => "soft_404",
+            Self::LoginResponse => "login_response",
+            Self::UnsupportedContent => "unsupported_content",
+            Self::Malformed => "malformed",
+            Self::Truncated => "truncated",
+            Self::RequestFailed => "request_failed",
+            Self::RateLimited => "rate_limited",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::Cancelled => "cancelled",
+            Self::DeadlineExceeded => "deadline_exceeded",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::web_runtime) struct WordPressDiscoverySeed {
     url: Url,
@@ -80,6 +184,7 @@ pub(in crate::web_runtime) struct WordPressDiscoverySeed {
     parent_depth: u8,
     preflight_outcome: Option<WordPressDiscoverySourceOutcome>,
     source_evidence_ids: Vec<EvidenceId>,
+    source_page_references: Vec<String>,
 }
 
 impl WordPressDiscoverySeed {
@@ -96,6 +201,7 @@ impl WordPressDiscoverySeed {
             parent_depth: 0,
             preflight_outcome: None,
             source_evidence_ids: Vec::new(),
+            source_page_references: Vec::new(),
         }
     }
 
@@ -110,6 +216,7 @@ impl WordPressDiscoverySeed {
             parent_depth: 0,
             preflight_outcome: Some(WordPressDiscoverySourceOutcome::InvalidAdvertisement),
             source_evidence_ids: Vec::new(),
+            source_page_references: Vec::new(),
         }
     }
 
@@ -136,6 +243,7 @@ impl WordPressDiscoverySeed {
             parent_depth,
             preflight_outcome: None,
             source_evidence_ids: Vec::new(),
+            source_page_references: Vec::new(),
         }
     }
 
@@ -155,6 +263,7 @@ impl WordPressDiscoverySeed {
             parent_depth: 0,
             preflight_outcome: None,
             source_evidence_ids: Vec::new(),
+            source_page_references: Vec::new(),
         }
     }
 
@@ -181,6 +290,7 @@ impl WordPressDiscoverySeed {
             parent_depth,
             preflight_outcome: None,
             source_evidence_ids: Vec::new(),
+            source_page_references: Vec::new(),
         }
     }
 
@@ -331,11 +441,38 @@ impl WordPressDiscoverySeed {
         .map_err(|_| WordPressDiscoveryExecutionError::EvidenceModel)
     }
 
-    fn with_source_evidence(mut self, evidence_id: EvidenceId) -> Self {
+    pub(super) fn with_source_evidence(mut self, evidence_id: EvidenceId) -> Self {
         if !self.source_evidence_ids.contains(&evidence_id) {
             self.source_evidence_ids.push(evidence_id);
         }
         self
+    }
+
+    pub(super) fn with_source_page_reference(mut self, reference: String) -> Self {
+        if !self.source_page_references.contains(&reference) {
+            self.source_page_references.push(reference);
+            self.source_page_references.sort();
+        }
+        self
+    }
+
+    pub(super) fn merge_source_provenance(&mut self, other: &Self) {
+        for evidence_id in &other.source_evidence_ids {
+            if !self.source_evidence_ids.contains(evidence_id) {
+                self.source_evidence_ids.push(evidence_id.clone());
+            }
+        }
+        self.source_evidence_ids.sort();
+        for reference in &other.source_page_references {
+            if !self.source_page_references.contains(reference) {
+                self.source_page_references.push(reference.clone());
+            }
+        }
+        self.source_page_references.sort();
+    }
+
+    pub(super) fn source_page_references(&self) -> &[String] {
+        &self.source_page_references
     }
 
     fn source_evidence_ids<'a>(&'a self, root: &'a [EvidenceId]) -> &'a [EvidenceId] {
@@ -894,6 +1031,122 @@ pub struct WordPressPluginDiscoveryMetadata {
     pub(super) tested_up_to: Option<String>,
 }
 
+/// Redaction-safe record for one selected non-entry page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordPressPageAudit {
+    pub(super) page_reference: String,
+    pub(super) acquisition: WordPressPageAcquisition,
+    pub(super) association: WordPressPageAssociation,
+    pub(super) outcome: WordPressPageOutcome,
+    pub(super) request_attempted: bool,
+    pub(super) interpreted_response_bytes: u64,
+    pub(super) response_bytes: u64,
+    pub(super) evidence_ids: Vec<EvidenceId>,
+}
+
+impl WordPressPageAudit {
+    pub fn page_reference(&self) -> &str {
+        &self.page_reference
+    }
+    pub const fn acquisition(&self) -> WordPressPageAcquisition {
+        self.acquisition
+    }
+    pub const fn association(&self) -> WordPressPageAssociation {
+        self.association
+    }
+    pub const fn outcome(&self) -> WordPressPageOutcome {
+        self.outcome
+    }
+    pub const fn request_attempted(&self) -> bool {
+        self.request_attempted
+    }
+    pub const fn interpreted_response_bytes(&self) -> u64 {
+        self.interpreted_response_bytes
+    }
+    pub const fn response_bytes(&self) -> u64 {
+        self.response_bytes
+    }
+    pub fn evidence_ids(&self) -> &[EvidenceId] {
+        &self.evidence_ids
+    }
+}
+
+/// Separate bounded accounting for explicit page-scoped discovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordPressPageScopeAudit {
+    pub(super) mode: WordPressPageScope,
+    pub(super) entry_page_reference: String,
+    pub(super) candidate_count: u16,
+    pub(super) selected_count: u8,
+    pub(super) omitted_candidate_count: u16,
+    pub(super) reused_response_count: u8,
+    pub(super) fetched_response_count: u8,
+    pub(super) not_observed_count: u8,
+    pub(super) rejected_response_count: u8,
+    pub(super) accepted_association_count: u8,
+    pub(super) rejected_association_count: u8,
+    pub(super) attempted_request_count: u8,
+    pub(super) completed_response_count: u8,
+    pub(super) committed_response_count: u8,
+    pub(super) interpreted_response_bytes: u64,
+    pub(super) response_bytes: u64,
+    pub(super) pages: Vec<WordPressPageAudit>,
+}
+
+impl WordPressPageScopeAudit {
+    pub const fn mode(&self) -> WordPressPageScope {
+        self.mode
+    }
+    pub fn entry_page_reference(&self) -> &str {
+        &self.entry_page_reference
+    }
+    pub const fn candidate_count(&self) -> u16 {
+        self.candidate_count
+    }
+    pub const fn selected_count(&self) -> u8 {
+        self.selected_count
+    }
+    pub const fn omitted_candidate_count(&self) -> u16 {
+        self.omitted_candidate_count
+    }
+    pub const fn reused_response_count(&self) -> u8 {
+        self.reused_response_count
+    }
+    pub const fn fetched_response_count(&self) -> u8 {
+        self.fetched_response_count
+    }
+    pub const fn not_observed_count(&self) -> u8 {
+        self.not_observed_count
+    }
+    pub const fn rejected_response_count(&self) -> u8 {
+        self.rejected_response_count
+    }
+    pub const fn accepted_association_count(&self) -> u8 {
+        self.accepted_association_count
+    }
+    pub const fn rejected_association_count(&self) -> u8 {
+        self.rejected_association_count
+    }
+    pub const fn attempted_request_count(&self) -> u8 {
+        self.attempted_request_count
+    }
+    pub const fn completed_response_count(&self) -> u8 {
+        self.completed_response_count
+    }
+    pub const fn committed_response_count(&self) -> u8 {
+        self.committed_response_count
+    }
+    pub const fn interpreted_response_bytes(&self) -> u64 {
+        self.interpreted_response_bytes
+    }
+    pub const fn response_bytes(&self) -> u64 {
+        self.response_bytes
+    }
+    pub fn pages(&self) -> &[WordPressPageAudit] {
+        &self.pages
+    }
+}
+
 impl WordPressPluginDiscoveryMetadata {
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
@@ -928,6 +1181,7 @@ pub struct WordPressDiscoverySourceAudit {
     pub(super) association: WordPressDiscoveryAssociation,
     pub(super) resource_reference: String,
     pub(super) role_reference: Option<String>,
+    pub(super) source_page_references: Vec<String>,
 }
 
 impl WordPressDiscoverySourceAudit {
@@ -978,6 +1232,9 @@ impl WordPressDiscoverySourceAudit {
     pub fn role_reference(&self) -> Option<&str> {
         self.role_reference.as_deref()
     }
+    pub fn source_page_references(&self) -> &[String] {
+        &self.source_page_references
+    }
 }
 
 /// Versioned, redaction-safe discovery audit retained beside the legacy
@@ -994,11 +1251,16 @@ pub struct WebAssessmentWordPressDiscoveryAudit {
     pub(super) response_bytes: u64,
     pub(super) sources: Vec<WordPressDiscoverySourceAudit>,
     pub(super) layout: WordPressDiscoveryLayoutAudit,
+    pub(super) page_scope: Option<WordPressPageScopeAudit>,
 }
 
 impl WebAssessmentWordPressDiscoveryAudit {
     pub const fn policy_id(&self) -> &'static str {
-        WORDPRESS_DISCOVERY_POLICY_ID
+        if self.page_scope.is_some() {
+            WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID
+        } else {
+            WORDPRESS_DISCOVERY_POLICY_ID
+        }
     }
     pub const fn selected(&self) -> bool {
         true
@@ -1036,6 +1298,9 @@ impl WebAssessmentWordPressDiscoveryAudit {
     }
     pub const fn layout(&self) -> &WordPressDiscoveryLayoutAudit {
         &self.layout
+    }
+    pub const fn page_scope(&self) -> Option<&WordPressPageScopeAudit> {
+        self.page_scope.as_ref()
     }
 
     pub(crate) fn is_internally_consistent(&self) -> bool {
@@ -1102,7 +1367,151 @@ impl WebAssessmentWordPressDiscoveryAudit {
             && attempt_shape_valid
             && evidence_references == Some(usize::from(self.committed_response_count))
             && discovery_layout_is_consistent(&self.layout, &self.sources)
+            && page_scope_is_consistent(self)
     }
+}
+
+fn page_scope_is_consistent(audit: &WebAssessmentWordPressDiscoveryAudit) -> bool {
+    let Some(page_scope) = audit.page_scope.as_ref() else {
+        return audit
+            .sources
+            .iter()
+            .all(|source| source.source_page_references.is_empty());
+    };
+    let page_references = page_scope
+        .pages
+        .iter()
+        .map(|page| page.page_reference.as_str())
+        .collect::<BTreeSet<_>>();
+    let interpreted_bytes = page_scope.pages.iter().try_fold(0_u64, |total, page| {
+        total.checked_add(page.interpreted_response_bytes)
+    });
+    let response_bytes = page_scope
+        .pages
+        .iter()
+        .try_fold(0_u64, |total, page| total.checked_add(page.response_bytes));
+    let reused = page_scope
+        .pages
+        .iter()
+        .filter(|page| page.acquisition == WordPressPageAcquisition::Reused)
+        .count();
+    let fetched = page_scope
+        .pages
+        .iter()
+        .filter(|page| page.acquisition == WordPressPageAcquisition::Fetched)
+        .count();
+    let not_observed = page_scope
+        .pages
+        .iter()
+        .filter(|page| page.acquisition == WordPressPageAcquisition::NotObserved)
+        .count();
+    let rejected = page_scope
+        .pages
+        .iter()
+        .filter(|page| page.association == WordPressPageAssociation::Rejected)
+        .count();
+    let accepted = page_scope
+        .pages
+        .iter()
+        .filter(|page| page.association == WordPressPageAssociation::Accepted)
+        .count();
+    let attempted = page_scope
+        .pages
+        .iter()
+        .filter(|page| page.request_attempted)
+        .count();
+    let committed = page_scope.pages.iter().try_fold(0_usize, |total, page| {
+        total.checked_add(page.evidence_ids.len())
+    });
+    valid_opaque_reference(&page_scope.entry_page_reference)
+        && usize::from(page_scope.selected_count) == page_scope.pages.len()
+        && usize::from(page_scope.selected_count) <= MAX_WORDPRESS_SELECTED_PAGES
+        && usize::from(page_scope.candidate_count) <= MAX_WORDPRESS_DISCOVERY_CANDIDATE_IDENTITIES
+        && usize::from(page_scope.candidate_count)
+            == usize::from(page_scope.selected_count)
+                .saturating_add(usize::from(page_scope.omitted_candidate_count))
+        && page_references.len() == page_scope.pages.len()
+        && page_references
+            .iter()
+            .all(|reference| valid_opaque_reference(reference))
+        && reused == usize::from(page_scope.reused_response_count)
+        && fetched == usize::from(page_scope.fetched_response_count)
+        && not_observed == usize::from(page_scope.not_observed_count)
+        && rejected == usize::from(page_scope.rejected_response_count)
+        && rejected == usize::from(page_scope.rejected_association_count)
+        && accepted == usize::from(page_scope.accepted_association_count)
+        && attempted == usize::from(page_scope.attempted_request_count)
+        && page_scope.completed_response_count
+            == page_scope
+                .reused_response_count
+                .saturating_add(page_scope.fetched_response_count)
+        && committed == Some(usize::from(page_scope.committed_response_count))
+        && interpreted_bytes == Some(page_scope.interpreted_response_bytes)
+        && response_bytes == Some(page_scope.response_bytes)
+        && page_scope.interpreted_response_bytes <= MAX_WORDPRESS_PAGE_INTERPRETED_BYTES
+        && page_scope.response_bytes <= MAX_WORDPRESS_DISCOVERY_RESPONSE_BYTES
+        && audit
+            .attempted_request_count
+            .saturating_add(page_scope.attempted_request_count)
+            <= MAX_WORDPRESS_DISCOVERY_REQUESTS
+        && audit
+            .response_bytes
+            .checked_add(page_scope.response_bytes)
+            .is_some_and(|total| total <= MAX_WORDPRESS_DISCOVERY_RESPONSE_BYTES)
+        && audit.sources.iter().all(|source| {
+            !source.source_page_references.is_empty()
+                && source
+                    .source_page_references
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1])
+                && source.source_page_references.iter().all(|reference| {
+                    reference == &page_scope.entry_page_reference
+                        || page_scope.pages.iter().any(|page| {
+                            page.page_reference == *reference
+                                && page.association == WordPressPageAssociation::Accepted
+                        })
+                })
+        })
+        && page_scope.pages.iter().all(|page| {
+            let has_evidence = page.evidence_ids.len() == 1;
+            let terminal_shape = match page.association {
+                WordPressPageAssociation::Accepted => {
+                    page.outcome == WordPressPageOutcome::Accepted && has_evidence
+                },
+                WordPressPageAssociation::Rejected => {
+                    !matches!(
+                        page.outcome,
+                        WordPressPageOutcome::Accepted
+                            | WordPressPageOutcome::NoComponentSignals
+                            | WordPressPageOutcome::NotObserved
+                    ) && has_evidence
+                },
+                WordPressPageAssociation::NotEstablished => {
+                    matches!(
+                        page.outcome,
+                        WordPressPageOutcome::NoComponentSignals
+                            | WordPressPageOutcome::NotObserved
+                    ) && (page.outcome == WordPressPageOutcome::NotObserved) != has_evidence
+                },
+            };
+            let acquisition_shape = match page.acquisition {
+                WordPressPageAcquisition::Reused => {
+                    !page.request_attempted && page.response_bytes == 0 && has_evidence
+                },
+                WordPressPageAcquisition::Fetched => page.request_attempted && has_evidence,
+                WordPressPageAcquisition::NotObserved => {
+                    !page.request_attempted
+                        && page.response_bytes == 0
+                        && page.interpreted_response_bytes == 0
+                        && !has_evidence
+                        && page.outcome == WordPressPageOutcome::NotObserved
+                },
+            };
+            terminal_shape
+                && acquisition_shape
+                && page.interpreted_response_bytes
+                    <= u64::try_from(MAX_WORDPRESS_PAGE_RESPONSE_BYTES).unwrap_or(u64::MAX)
+        })
 }
 
 fn discovery_layout_is_consistent(
@@ -1281,6 +1690,7 @@ pub(super) async fn execute_wordpress_discovery(
                 response_bytes: 0,
                 sources: Vec::new(),
                 layout,
+                page_scope: None,
             },
             signals: Vec::new(),
             stop: WordPressDiscoveryStop::Complete,
@@ -1592,6 +2002,7 @@ pub(super) async fn execute_wordpress_discovery(
             association: candidate.association(),
             resource_reference: candidate.resource_reference(),
             role_reference: candidate.role_reference(),
+            source_page_references: candidate.source_page_references().to_vec(),
         });
         if response_bytes >= MAX_WORDPRESS_DISCOVERY_RESPONSE_BYTES {
             stopped = WordPressDiscoveryStop::DiscoveryResponseLimit;
@@ -1641,6 +2052,7 @@ pub(super) async fn execute_wordpress_discovery(
             response_bytes,
             sources,
             layout,
+            page_scope: None,
         },
         signals,
         stop: stopped,
@@ -1762,6 +2174,7 @@ fn empty_source(
         association: seed.association(),
         resource_reference: seed.resource_reference(),
         role_reference: seed.role_reference(),
+        source_page_references: seed.source_page_references().to_vec(),
     }
 }
 
@@ -2632,6 +3045,7 @@ mod tests {
             response_bytes: 0,
             sources,
             layout,
+            page_scope: None,
         }
     }
 

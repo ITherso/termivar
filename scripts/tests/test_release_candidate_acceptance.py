@@ -69,6 +69,7 @@ EXPECTED_FEATURE_STATES = {
 EXPECTED_WORDPRESS_OPTIONS = (
     "--wordpress-review",
     "--wordpress-discovery",
+    "--wordpress-page-scope",
     "--wordpress-layout",
     "--wordpress-context",
     "--wordpress-advisories",
@@ -94,6 +95,7 @@ EXPECTED_WORDPRESS_DISCOVERY_PREREQUISITES = (
     "--profile web-review",
     "--wordpress-review",
     "--wordpress-discovery",
+    "optional --wordpress-page-scope observed",
     "optional --wordpress-layout FILE",
 )
 EXPECTED_WORDPRESS_DISCOVERY_TRACE = (
@@ -323,6 +325,10 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "limitation": (
                 "Explicitly performs at most 12 anonymous same-origin metadata "
                 "GET requests. It is never enabled by --wordpress-review alone; "
+                "Without --wordpress-page-scope it remains entry-only; observed reuses "
+                "eligible committed page responses without retrieving pages. Reused "
+                "pages may nominate metadata within the same 12-request WordPress-owned "
+                "limit. "
                 "discovered metadata is unauthenticated, Stable tag is not treated "
                 "as an installed version, and no exploit or impact validation occurs."
             ),
@@ -1656,6 +1662,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
         for index, option in enumerate((
             "--wordpress-review",
             "--wordpress-discovery",
+            "--wordpress-page-scope",
             "--wordpress-layout",
             "--wordpress-context",
             "--wordpress-advisories",

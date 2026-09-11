@@ -4,6 +4,16 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ## [Unreleased]
 
+### Added
+
+- Added explicit `--wordpress-page-scope observed` reuse for eligible anonymous,
+  committed HTML `GET` responses that the same assessment already obtained.
+  The mode retrieves no pages, can nominate bounded metadata work within the
+  existing shared WordPress allowance, and records source-page relationships in
+  `security.wordpress-discovery-audit/v3` / `security.wordpress-review-audit/v7`.
+  Current offline readers retain that page-scoped source content through the
+  additive `termivar-wordpress-review-comparison/v2` projection.
+
 ### Changed
 
 - Advanced the post-`v0.10.0-alpha.2` development source line to

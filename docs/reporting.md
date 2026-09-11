@@ -411,10 +411,11 @@ groups:
 When at least one imported assessment contains a supported WordPress audit,
 the comparison includes the additive optional
 `wordpress_review_comparison` section. Its nested schema is
-`termivar-wordpress-review-comparison/v1`; the outer comparison remains
-`termivar-report-comparison/v1`, and the four item groups above retain their
-existing identities and meanings. If neither input has a WordPress audit, the
-section is omitted.
+`termivar-wordpress-review-comparison/v1`, or additive `/v2` when either input
+contains discovery source content such as page-scoped records; the outer
+comparison remains `termivar-report-comparison/v1`, and the four item groups
+above retain their existing identities and meanings. If neither input has a
+WordPress audit, the section is omitted.
 
 WordPress correlation is valid only inside the same operator-declared
 `--same-scope` boundary. Components use component kind plus canonical slug as
@@ -444,7 +445,13 @@ a fix, a new vulnerability, or a change at the installation.
 
 The importer supports the historical
 `security.wordpress-review-audit/v1` through `/v4` contracts and the additive
-`/v5` and `/v6` contracts. `/v6` carries the explicit raw-source identity
+`/v5`, `/v6`, and `/v7` contracts. `/v7` binds the strict page-scoped discovery
+audit `/v3`, including its opaque page sources and association/accounting
+coverage, without importing page bodies or granting scan authority. The strict
+v3 reader vocabulary reserves `linked` / `fetched` rows for the coordinated
+bounded linked-page slice; reader acceptance alone does not dispatch a request,
+and the current CLI exposes only observed mode. `/v6`
+carries the explicit raw-source identity
 mapping and bounded-capacity policy (including the additive 160 MiB V3 import
 envelope while preserving the older V1/V2 ceilings), accounted retained-import
 bytes, reconciled

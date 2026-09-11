@@ -773,6 +773,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     "--profile web-review",
                     "--wordpress-review",
                     "--wordpress-discovery",
+                    "optional --wordpress-page-scope observed",
                     "optional --wordpress-layout FILE",
                 ],
             }]
@@ -799,6 +800,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 "--profile web-review",
                 "--wordpress-review",
                 "--wordpress-discovery",
+                "optional --wordpress-page-scope observed",
                 "optional --wordpress-layout FILE",
             ],
         }

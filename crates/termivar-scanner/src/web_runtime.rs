@@ -178,8 +178,10 @@ pub use web_assessment::{
 pub use wordpress_runtime::{
     WebAssessmentWordPressAudit, WebAssessmentWordPressDiscoveryAudit,
     WordPressDiscoverySourceAudit, WordPressDiscoverySourceKind, WordPressDiscoverySourceOutcome,
-    WordPressPluginDiscoveryMetadata, WordPressThemeDiscoveryMetadata,
-    WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID, WORDPRESS_REVIEW_CAPABILITY_ID,
+    WordPressPageAcquisition, WordPressPageAssociation, WordPressPageAudit, WordPressPageOutcome,
+    WordPressPageScope, WordPressPageScopeAudit, WordPressPluginDiscoveryMetadata,
+    WordPressThemeDiscoveryMetadata, WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
+    WORDPRESS_REVIEW_CAPABILITY_ID,
 };
 
 /// Fuzz-only friend seam for the exact WordPress discovery parsers and

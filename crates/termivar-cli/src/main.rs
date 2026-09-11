@@ -92,6 +92,24 @@ enum CliScanProfile {
     WebReview,
 }
 
+/// Explicit breadth for the opt-in WordPress metadata discovery child. The
+/// absence of this argument preserves the existing entry-only schedule.
+#[cfg(feature = "wordpress-review")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum CliWordPressPageScope {
+    Observed,
+}
+
+#[cfg(feature = "wordpress-review")]
+impl From<CliWordPressPageScope> for termivar_scanner::web_runtime::WordPressPageScope {
+    fn from(value: CliWordPressPageScope) -> Self {
+        match value {
+            CliWordPressPageScope::Observed => Self::Observed,
+        }
+    }
+}
+
 /// Output format for the opt-in local artifact adapter.
 #[cfg(feature = "artifact-adapter")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -197,6 +215,7 @@ fn scan_rest_review_flags_conflict(
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct WordPressReviewFlagSelection {
     discovery: bool,
+    page_scope: bool,
     layout: bool,
     context: bool,
     advisories: bool,
@@ -216,6 +235,8 @@ fn scan_wordpress_review_flags_conflict(
     let saved_inventory_selected = selected.plugins || selected.themes || selected.core_version;
     if selected.layout && !selected.discovery {
         Some("`--wordpress-layout` requires `--wordpress-discovery`")
+    } else if selected.page_scope && !selected.discovery {
+        Some("`--wordpress-page-scope` requires `--wordpress-discovery`")
     } else if selected.advisories_format.is_some() && !selected.advisories {
         Some("`--wordpress-advisories-format` requires `--wordpress-advisories`")
     } else if selected.external_version_profile && !selected.advisories {
@@ -227,6 +248,7 @@ fn scan_wordpress_review_flags_conflict(
     } else if (selected.discovery
         || selected.context
         || selected.layout
+        || selected.page_scope
         || selected.advisories
         || selected.advisories_format.is_some()
         || selected.external_version_profile
@@ -437,6 +459,17 @@ struct ScanArgs {
     #[cfg(feature = "wordpress-review")]
     #[arg(long, requires_all = ["profile", "wordpress_review"])]
     wordpress_discovery: bool,
+    /// Extend metadata discovery across eligible completed page responses
+    /// already obtained by the same assessment. No page request is added;
+    /// absence preserves entry-only discovery.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "SCOPE",
+        requires_all = ["profile", "wordpress_review", "wordpress_discovery"]
+    )]
+    wordpress_page_scope: Option<CliWordPressPageScope>,
     /// Read one bounded `security.wordpress-layout/v1` operator declaration.
     /// The declaration can associate observed same-origin assets with custom
     /// role roots, but grants no network authority on its own.
@@ -865,6 +898,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         #[cfg(feature = "wordpress-review")]
         wordpress_discovery,
         #[cfg(feature = "wordpress-review")]
+        wordpress_page_scope,
+        #[cfg(feature = "wordpress-review")]
         wordpress_layout,
         #[cfg(feature = "wordpress-review")]
         wordpress_context,
@@ -946,6 +981,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_review,
         WordPressReviewFlagSelection {
             discovery: wordpress_discovery,
+            page_scope: wordpress_page_scope.is_some(),
             layout: wordpress_layout.is_some(),
             context: wordpress_context.is_some(),
             advisories: wordpress_advisories.is_some(),
@@ -1177,6 +1213,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 wordpress_review,
                 #[cfg(feature = "wordpress-review")]
                 wordpress_discovery: wordpress_discovery.into(),
+                #[cfg(feature = "wordpress-review")]
+                wordpress_page_scope: wordpress_page_scope.map(Into::into),
             },
         )
         .await
@@ -1690,6 +1728,7 @@ mod tests {
         {
             assert!(!args.wordpress_review);
             assert!(!args.wordpress_discovery);
+            assert_eq!(args.wordpress_page_scope, None);
             assert_eq!(args.wordpress_context, None);
             assert_eq!(args.wordpress_advisories, None);
             assert_eq!(args.wordpress_advisories_format, None);
@@ -1753,6 +1792,7 @@ mod tests {
         {
             assert!(!args.wordpress_review);
             assert!(!args.wordpress_discovery);
+            assert_eq!(args.wordpress_page_scope, None);
             assert_eq!(args.wordpress_context, None);
             assert_eq!(args.wordpress_advisories, None);
             assert_eq!(args.wordpress_advisories_format, None);
@@ -2317,6 +2357,7 @@ mod tests {
         for flag in [
             "--wordpress-review",
             "--wordpress-discovery",
+            "--wordpress-page-scope",
             "--wordpress-layout",
             "--wordpress-context",
             "--wordpress-advisories",
@@ -2336,6 +2377,28 @@ mod tests {
             "https://example.test/",
         ])
         .is_err());
+        let incomplete = vec![
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-page-scope",
+            "observed",
+            "https://example.test/",
+        ];
+        assert!(Cli::try_parse_from(incomplete).is_err());
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                WordPressReviewFlagSelection {
+                    page_scope: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            Some("`--wordpress-page-scope` requires `--wordpress-discovery`")
+        );
         assert!(Cli::try_parse_from([
             "termivar",
             "scan",
@@ -2406,6 +2469,7 @@ mod tests {
                 baseline.wordpress_review,
                 WordPressReviewFlagSelection {
                     discovery: baseline.wordpress_discovery,
+                    page_scope: baseline.wordpress_page_scope.is_some(),
                     layout: baseline.wordpress_layout.is_some(),
                     context: baseline.wordpress_context.is_some(),
                     advisories: baseline.wordpress_advisories.is_some(),
@@ -2432,6 +2496,7 @@ mod tests {
         let discovery = parsed_scan_args(&discovery);
         assert!(discovery.wordpress_review);
         assert!(discovery.wordpress_discovery);
+        assert_eq!(discovery.wordpress_page_scope, None);
         assert_eq!(
             scan_wordpress_review_flags_conflict(
                 discovery.profile,
@@ -2443,6 +2508,50 @@ mod tests {
             ),
             None
         );
+
+        let page_scoped = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-page-scope",
+            "observed",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let page_scoped = parsed_scan_args(&page_scoped);
+        assert_eq!(
+            page_scoped.wordpress_page_scope,
+            Some(CliWordPressPageScope::Observed)
+        );
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                page_scoped.profile,
+                page_scoped.wordpress_review,
+                WordPressReviewFlagSelection {
+                    discovery: page_scoped.wordpress_discovery,
+                    page_scope: page_scoped.wordpress_page_scope.is_some(),
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            None
+        );
+        for invalid in ["entry", "linked", "all", "recursive", "OBSERVED"] {
+            assert!(Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "--profile",
+                "web-review",
+                "--wordpress-review",
+                "--wordpress-discovery",
+                "--wordpress-page-scope",
+                invalid,
+                "https://example.test/",
+            ])
+            .is_err());
+        }
 
         let declared_layout = Cli::try_parse_from([
             "termivar",
@@ -2829,6 +2938,7 @@ mod tests {
         for flag in [
             "--wordpress-review",
             "--wordpress-discovery",
+            "--wordpress-page-scope",
             "--wordpress-layout",
             "--wordpress-context",
             "--wordpress-advisories",
