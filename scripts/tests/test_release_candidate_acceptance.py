@@ -33,6 +33,9 @@ TARGET = "x86_64-pc-windows-msvc"
 ARCHIVE_NAME = f"termivar-main-{TARGET}.zip"
 TEST_VERSION = "0.10.0-alpha.3"
 EXPECTED_FIXTURE_ORIGIN = "http://127.0.0.1:48123/"
+EXPECTED_CAPABILITIES_SCHEMA = "termivar-cli-capabilities/v1"
+EXPECTED_CAPABILITIES_INVENTORY_SCOPE = "cli_surfaces"
+EXPECTED_CAPABILITIES_NOTICE = "Build inventory only. No assessment was started or evaluated."
 
 # This is deliberately independent of release_candidate_acceptance.py. If a
 # package feature is added without an explicit curated-build classification,
@@ -99,6 +102,27 @@ EXPECTED_WORDPRESS_DISCOVERY_PREREQUISITES = (
     "optional --wordpress-page-scope observed",
     "optional --wordpress-layout FILE",
     "optional --wordpress-fingerprints FILE",
+)
+EXPECTED_WORDPRESS_REVIEW_LIMITATION = (
+    "Interprets existing response evidence and explicit bounded local declarations, "
+    "including an explicitly selected local Production-format export; it adds no target "
+    "requests. For that external format an operator may explicitly select one existing "
+    "Termivar version rule, while the source's own comparison semantics remain not "
+    "established. Without that selector the external relation stays indeterminate. A "
+    "missing catalogue is catalogue_not_supplied, never an all-clear, and no exploit or "
+    "impact validation is performed."
+)
+EXPECTED_WORDPRESS_DISCOVERY_LIMITATION = (
+    "Explicitly performs at most 12 anonymous same-origin WordPress-owned GET requests "
+    "through the existing assessment broker in entry-only mode. It is never enabled by "
+    "--wordpress-review alone. Without --wordpress-page-scope it remains entry-only; "
+    "observed reuses eligible committed page responses without retrieving pages. Reused "
+    "pages may nominate metadata within the same shared limit. An optional bounded "
+    "fingerprint catalogue can compare exact complete bytes of already observed JS/CSS "
+    "resources against a finite listed release set; it cannot nominate unseen resources "
+    "or establish an installed version. Discovered metadata and supplied catalogue "
+    "provenance remain unauthenticated evidence, URL ver remain hints, plugin Stable tag "
+    "is not treated as an installed version, and no exploit or impact validation is performed."
 )
 EXPECTED_WORDPRESS_DISCOVERY_TRACE = (
     "GET / HTTP/1.1",
@@ -296,6 +320,7 @@ class FakeFixture:
 
 
 def capabilities(*, include_ssrf: bool = False) -> dict:
+    """Return a hand-written synthetic projection of the current producer contract."""
     states = EXPECTED_FEATURE_STATES.copy()
     if include_ssrf:
         states["ssrf-oast-review"] = "compiled"
@@ -305,7 +330,7 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
     ]
     surfaces = [
         {
-            "key": "inventory.compiled-cli-capabilities",
+            "key": "command.capabilities",
             "label": "Compiled CLI capabilities",
             "compile_feature": None,
             "build_state": "compiled",
@@ -327,11 +352,7 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "implementation_status": "implemented",
             "alias": None,
             "prerequisites": list(EXPECTED_WORDPRESS_PREREQUISITES),
-            "limitation": (
-                "Interprets explicit local declarations, adds no target requests, and "
-                "lets the operator explicitly select a comparison rule. Without that "
-                "selector the external relation stays indeterminate."
-            ),
+            "limitation": EXPECTED_WORDPRESS_REVIEW_LIMITATION,
         },
         {
             "key": "option.wordpress-discovery",
@@ -344,27 +365,18 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "implementation_status": "implemented",
             "alias": None,
             "prerequisites": list(EXPECTED_WORDPRESS_DISCOVERY_PREREQUISITES),
-            "limitation": (
-                "Explicitly performs at most 12 anonymous same-origin metadata "
-                "GET requests. It is never enabled by --wordpress-review alone; "
-                "Without --wordpress-page-scope it remains entry-only; observed reuses "
-                "eligible committed page responses without retrieving pages. Reused "
-                "pages may nominate metadata within the same 12-request WordPress-owned "
-                "limit. An optional bounded fingerprint catalogue compares exact complete "
-                "bytes against a finite listed release set, cannot nominate unseen resources, "
-                "and does not establish an installed version. discovered metadata is "
-                "unauthenticated, Stable tag is not treated as an installed version, URL ver "
-                "remain hints, and no exploit or impact validation occurs."
-            ),
+            "limitation": EXPECTED_WORDPRESS_DISCOVERY_LIMITATION,
         },
     ]
     return {
-        "schema": runner.CAPABILITIES_SCHEMA,
+        "schema": EXPECTED_CAPABILITIES_SCHEMA,
         "product": "Termivar",
         "package_version": TEST_VERSION,
+        "inventory_scope": EXPECTED_CAPABILITIES_INVENTORY_SCOPE,
         "runtime_execution": "not_performed",
         "cli_package_features": features,
         "surfaces": surfaces,
+        "notice": EXPECTED_CAPABILITIES_NOTICE,
         "build_origin_authenticity": (
             "Self-reported package version and compile features do not establish source "
             "authenticity, an official release origin, or runtime readiness."
@@ -1720,6 +1732,149 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
         self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
 
+    def test_pinned_discovery_limitation_matches_the_named_producer_literal(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.wordpress-discovery",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = '\n            "docs/wordpress-review.md",'
+        self.assertEqual(block.count(documentation), 1)
+        before_documentation = block.split(documentation, 1)[0]
+        literal_line = before_documentation.splitlines()[-1].strip()
+        self.assertTrue(literal_line.endswith(","))
+        producer_limitation = json.loads(literal_line[:-1])
+        self.assertEqual(producer_limitation, EXPECTED_WORDPRESS_DISCOVERY_LIMITATION)
+        document = capabilities()
+        discovery = next(surface for surface in document["surfaces"]
+                         if surface["key"] == "option.wordpress-discovery")
+        self.assertEqual(discovery["limitation"], EXPECTED_WORDPRESS_DISCOVERY_LIMITATION)
+
+    def test_inventory_scope_notice_and_surface_identity_fail_closed(self):
+        for field, wrong, message in [
+                ("inventory_scope", None, "CLI inventory scope"),
+                ("inventory_scope", "host_capabilities", "CLI inventory scope"),
+                ("notice", None, "inventory notice"),
+                ("notice", "Assessment completed.", "inventory notice")]:
+            with self.subTest(field=field, wrong=wrong):
+                document = capabilities()
+                document[field] = wrong
+                self.assert_rejected(document, message)
+
+        missing_scope = capabilities()
+        missing_scope.pop("inventory_scope")
+        self.assert_rejected(missing_scope, "CLI inventory scope")
+
+        missing_notice = capabilities()
+        missing_notice.pop("notice")
+        self.assert_rejected(missing_notice, "inventory notice")
+
+        missing_command = capabilities()
+        missing_command["surfaces"] = [
+            surface for surface in missing_command["surfaces"]
+            if surface["key"] != "command.capabilities"
+        ]
+        self.assert_rejected(missing_command, "command surface identity")
+
+        for wrong in (None, True, "not-an-array", {}):
+            with self.subTest(surfaces=wrong):
+                document = capabilities()
+                text = capabilities_text(document)
+                document["surfaces"] = wrong
+                self.assert_rejected(document, "surfaces are unavailable", text)
+
+        malformed_row = capabilities()
+        text = capabilities_text(malformed_row)
+        malformed_row["surfaces"][0] = []
+        self.assert_rejected(malformed_row, "surface row is invalid", text)
+
+        for wrong in (None, True, 12, [], {}):
+            with self.subTest(surface_key=wrong):
+                document = capabilities()
+                document["surfaces"][0]["key"] = wrong
+                self.assert_rejected(document, "surface key is invalid or duplicated")
+
+        duplicate = capabilities()
+        duplicate["surfaces"].insert(1, copy.deepcopy(duplicate["surfaces"][0]))
+        self.assert_rejected(duplicate, "surface key is invalid or duplicated")
+
+    def test_discovery_limitation_claim_mutations_fail_closed(self):
+        mutations = [
+            ("at most 12", "at most 120"),
+            ("anonymous same-origin", "credentialed cross-origin"),
+            ("WordPress-owned GET requests", "metadata GET requests"),
+            ("through the existing assessment broker", "through a separate client"),
+            ("in entry-only mode", "in linked mode"),
+            ("never enabled by --wordpress-review alone",
+             "enabled by --wordpress-review alone"),
+            ("Without --wordpress-page-scope it remains entry-only",
+             "Without --wordpress-page-scope it may retrieve linked pages"),
+            ("observed reuses eligible committed page responses without retrieving pages",
+             "observed retrieves eligible pages"),
+            ("same shared limit", "separate request limit"),
+            ("exact complete bytes of already observed JS/CSS resources",
+             "response hints for catalogue resources"),
+            ("finite listed release set", "complete release history"),
+            ("cannot nominate unseen resources or establish an installed version",
+             "can nominate unseen resources and establish an installed version"),
+            ("remain unauthenticated evidence", "are authenticated evidence"),
+            ("URL ver remain hints", "URL ver establish installed versions"),
+            ("plugin Stable tag is not treated as an installed version",
+             "plugin Stable tag is treated as an installed version"),
+            ("no exploit or impact validation is performed",
+             "exploit and impact validation is performed"),
+        ]
+        for old, new in mutations:
+            with self.subTest(old=old):
+                self.assertEqual(EXPECTED_WORDPRESS_DISCOVERY_LIMITATION.count(old), 1)
+                document = capabilities()
+                discovery = next(surface for surface in document["surfaces"]
+                                 if surface["key"] == "option.wordpress-discovery")
+                discovery["limitation"] = discovery["limitation"].replace(old, new)
+                self.assert_rejected(document, "discovery limitation")
+
+        for addition in (
+                " The total WordPress allowance is actually 120 requests.",
+                " Fingerprints establish the installed plugin version."):
+            with self.subTest(addition=addition):
+                document = capabilities()
+                discovery = next(surface for surface in document["surfaces"]
+                                 if surface["key"] == "option.wordpress-discovery")
+                discovery["limitation"] += addition
+                self.assert_rejected(document, "discovery limitation")
+
+    def test_discovery_limitation_and_prerequisites_require_exact_types(self):
+        for wrong in (None, True, 12, [], {}):
+            with self.subTest(limitation=wrong):
+                document = capabilities()
+                discovery = next(surface for surface in document["surfaces"]
+                                 if surface["key"] == "option.wordpress-discovery")
+                discovery["limitation"] = wrong
+                self.assert_rejected(document, "discovery limitation")
+
+        missing_limitation = capabilities()
+        next(surface for surface in missing_limitation["surfaces"]
+             if surface["key"] == "option.wordpress-discovery").pop("limitation")
+        self.assert_rejected(missing_limitation, "discovery limitation")
+
+        for surface_key, message in [
+                ("option.wordpress-review", "explicit opt-in contract"),
+                ("option.wordpress-discovery", "discovery opt-in contract")]:
+            for wrong in (None, True, "--profile web-review", {}, [True]):
+                with self.subTest(surface_key=surface_key, prerequisites=wrong):
+                    document = capabilities()
+                    surface = next(row for row in document["surfaces"]
+                                   if row["key"] == surface_key)
+                    surface["prerequisites"] = wrong
+                    self.assert_rejected(document, message)
+
+            duplicate = capabilities()
+            surface = next(row for row in duplicate["surfaces"]
+                           if row["key"] == surface_key)
+            surface["prerequisites"].append(surface["prerequisites"][0])
+            self.assert_rejected(duplicate, message)
+
     def test_missing_wordpress_and_same_length_wrong_name_fail(self):
         missing = capabilities()
         missing["cli_package_features"] = [
@@ -1768,6 +1923,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assert_rejected(excluded_surface, "WordPress surface metadata")
 
         for field, wrong in [
+                ("label", "Other evidence review"),
                 ("maturity", "stable"),
                 ("implementation_status", "verified"),
                 ("kind", "command")]:
@@ -1797,6 +1953,13 @@ class CapabilityInventoryContractTests(unittest.TestCase):
                  "not_compiled"
              )
         self.assert_rejected(discovery_not_compiled, "discovery surface metadata")
+
+        discovery_wrong_label = capabilities()
+        next(surface for surface in discovery_wrong_label["surfaces"]
+             if surface["key"] == "option.wordpress-discovery")["label"] = (
+                 "Other metadata discovery"
+             )
+        self.assert_rejected(discovery_wrong_label, "discovery surface metadata")
 
         discovery_implicit = capabilities()
         next(surface for surface in discovery_implicit["surfaces"]

@@ -29,6 +29,8 @@ import verify_release_archive
 
 SCHEMA = "termivar-release-candidate-acceptance/v1"
 CAPABILITIES_SCHEMA = "termivar-cli-capabilities/v1"
+CAPABILITIES_INVENTORY_SCOPE = "cli_surfaces"
+CAPABILITIES_NOTICE = "Build inventory only. No assessment was started or evaluated."
 VERIFICATION_SCHEMA = "termivar-report-verification/v1"
 COMPARISON_SCHEMA = "termivar-report-comparison/v1"
 EVIDENCE_NAME = "acceptance.json"
@@ -101,6 +103,18 @@ WORDPRESS_DISCOVERY_PREREQUISITES = (
     "optional --wordpress-page-scope observed",
     "optional --wordpress-layout FILE",
     "optional --wordpress-fingerprints FILE",
+)
+WORDPRESS_DISCOVERY_LIMITATION = (
+    "Explicitly performs at most 12 anonymous same-origin WordPress-owned GET requests "
+    "through the existing assessment broker in entry-only mode. It is never enabled by "
+    "--wordpress-review alone. Without --wordpress-page-scope it remains entry-only; "
+    "observed reuses eligible committed page responses without retrieving pages. Reused "
+    "pages may nominate metadata within the same shared limit. An optional bounded "
+    "fingerprint catalogue can compare exact complete bytes of already observed JS/CSS "
+    "resources against a finite listed release set; it cannot nominate unseen resources "
+    "or establish an installed version. Discovered metadata and supplied catalogue "
+    "provenance remain unauthenticated evidence, URL ver remain hints, plugin Stable tag "
+    "is not treated as an installed version, and no exploit or impact validation is performed."
 )
 GROUPS = ("only_in_after", "only_in_before", "changed", "unchanged")
 PROGRESS_PREFIX = b"[progress]"
@@ -390,6 +404,10 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             and document.get("package_version") == expected_version
             and document.get("runtime_execution") == "not_performed",
             "capabilities identity or offline state changed")
+    require(document.get("inventory_scope") == CAPABILITIES_INVENTORY_SCOPE,
+            "capabilities CLI inventory scope changed")
+    require(document.get("notice") == CAPABILITIES_NOTICE,
+            "capabilities inventory notice changed")
     features = document.get("cli_package_features")
     require(isinstance(features, list) and len(features) == len(ALL_FEATURES),
             "capabilities feature inventory is incomplete")
@@ -418,14 +436,21 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "capabilities text identity changed")
     surfaces = document.get("surfaces")
     require(isinstance(surfaces, list), "capabilities surfaces are unavailable")
+    surface_keys = set()
     for surface in surfaces:
         require(isinstance(surface, dict), "capabilities surface row is invalid")
+        key = surface.get("key")
         label = surface.get("label")
         state = surface.get("build_state")
-        require(isinstance(label, str) and state in {"compiled", "not_compiled"},
+        require(isinstance(key, str) and key and key not in surface_keys,
+                "capabilities surface key is invalid or duplicated")
+        require(isinstance(label, str) and label and state in {"compiled", "not_compiled"},
                 "capabilities surface state is invalid")
+        surface_keys.add(key)
         require(f"[{state}] {label}" in text_value,
                 "capabilities text and JSON views disagree")
+    require("command.capabilities" in surface_keys,
+            "capabilities command surface identity changed")
     wordpress_surfaces = [
         surface for surface in surfaces
         if surface.get("key") == "option.wordpress-review"
@@ -433,7 +458,8 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
     require(len(wordpress_surfaces) == 1,
             "packaged WordPress surface identity changed")
     wordpress = wordpress_surfaces[0]
-    require(wordpress.get("compile_feature") == "wordpress-review"
+    require(wordpress.get("label") == "WordPress evidence review"
+            and wordpress.get("compile_feature") == "wordpress-review"
             and wordpress.get("build_state") == "compiled"
             and wordpress.get("maturity") == "preview"
             and wordpress.get("implementation_status") == "implemented"
@@ -441,7 +467,10 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             and wordpress.get("kind") == "scan_option"
             and wordpress.get("alias") is None,
             "packaged WordPress surface metadata changed")
-    require(tuple(wordpress.get("prerequisites", ())) == WORDPRESS_PREREQUISITES,
+    wordpress_prerequisites = wordpress.get("prerequisites")
+    require(isinstance(wordpress_prerequisites, list)
+            and all(isinstance(value, str) for value in wordpress_prerequisites)
+            and tuple(wordpress_prerequisites) == WORDPRESS_PREREQUISITES,
             "packaged WordPress explicit opt-in contract changed")
     limitation = wordpress.get("limitation")
     require(isinstance(limitation, str)
@@ -456,7 +485,8 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
     require(len(discovery_surfaces) == 1,
             "packaged WordPress discovery surface identity changed")
     discovery = discovery_surfaces[0]
-    require(discovery.get("compile_feature") == "wordpress-review"
+    require(discovery.get("label") == "WordPress metadata discovery"
+            and discovery.get("compile_feature") == "wordpress-review"
             and discovery.get("build_state") == "compiled"
             and discovery.get("maturity") == "preview"
             and discovery.get("implementation_status") == "implemented"
@@ -464,24 +494,13 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             and discovery.get("kind") == "scan_option"
             and discovery.get("alias") is None,
             "packaged WordPress discovery surface metadata changed")
-    require(tuple(discovery.get("prerequisites", ()))
-            == WORDPRESS_DISCOVERY_PREREQUISITES,
+    discovery_prerequisites = discovery.get("prerequisites")
+    require(isinstance(discovery_prerequisites, list)
+            and all(isinstance(value, str) for value in discovery_prerequisites)
+            and tuple(discovery_prerequisites) == WORDPRESS_DISCOVERY_PREREQUISITES,
             "packaged WordPress discovery opt-in contract changed")
     discovery_limitation = discovery.get("limitation")
-    require(isinstance(discovery_limitation, str)
-            and "at most 12" in discovery_limitation
-            and "anonymous same-origin metadata GET requests" in discovery_limitation
-            and "never enabled by --wordpress-review alone" in discovery_limitation
-            and "Without --wordpress-page-scope it remains entry-only" in discovery_limitation
-            and "observed reuses eligible committed page responses without retrieving pages"
-                in discovery_limitation
-            and "same 12-request WordPress-owned limit" in discovery_limitation
-            and "Stable tag is not treated as an installed version" in discovery_limitation
-            and "exact complete bytes" in discovery_limitation
-            and "finite listed release set" in discovery_limitation
-            and "cannot nominate unseen resources" in discovery_limitation
-            and "URL ver remain hints" in discovery_limitation
-            and "no exploit or impact validation" in discovery_limitation,
+    require(discovery_limitation == WORDPRESS_DISCOVERY_LIMITATION,
             "packaged WordPress discovery limitation is incomplete")
     return {
         "schema": document["schema"],
