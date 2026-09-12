@@ -740,7 +740,10 @@ impl ComparisonVisitor<'_> {
                     "super::MAX_IDENTIFIER_BYTES",
                     "super::MAX_LEGACY_AUDIT_TEXT_BYTES",
                     "super::super::ImportedWordPressAudit",
+                    "super::super::ImportedWordPressAssetFingerprintAudit",
                     "super::super::WordPressAdvisoryKey",
+                    "super::super::WordPressAssetFingerprintComponentKey",
+                    "super::super::WordPressAssetFingerprintResourceKey",
                     "super::super::WordPressComponentKey",
                     "super::super::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY",
                 ][..],
@@ -1080,6 +1083,32 @@ mod tests {
             "use crate::wordpress_review::WordPressComparisonProfile;",
             "use crate::web_runtime::WebAssessmentRunReport;",
             "fn escape() { let _ = crate::wordpress_version::PhpReleaseSubsetVersion::parse(\"1\"); }",
+        ] {
+            let violations =
+                source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
+            assert!(!violations.is_empty(), "accepted `{addition}`");
+        }
+    }
+
+    #[test]
+    fn wordpress_fingerprint_import_uses_only_exact_display_projections() {
+        for addition in [
+            "use super::super::ImportedWordPressAssetFingerprintAudit;",
+            "use super::super::WordPressAssetFingerprintResourceKey;",
+        ] {
+            let violations =
+                source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
+            assert!(
+                violations.is_empty(),
+                "rejected `{addition}`: {violations:?}"
+            );
+        }
+
+        for addition in [
+            "use super::super::WordPressAssetFingerprintExecution;",
+            "use super::super::WordPressAssetFingerprintCatalogue;",
+            "use super::super::WordPressAssetFingerprintObservation;",
+            "use crate::wordpress_review::WordPressAssetFingerprintCatalogue;",
         ] {
             let violations =
                 source_violations("reporting/comparison/import/audits.rs", addition).unwrap();

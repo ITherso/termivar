@@ -80,6 +80,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "wordpress_discovery",
     "wordpress_page_scope",
     "wordpress_external_version_profile",
+    "wordpress_fingerprints",
     "wordpress_layout",
     "wordpress_plugins_json",
     "wordpress_review",
@@ -690,6 +691,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             "Option",
             Some("CliWordPressPageScope"),
         ),
+        ("wordpress_fingerprints", "Option", Some("PathBuf")),
         ("wordpress_layout", "Option", Some("PathBuf")),
         ("wordpress_context", "Option", Some("PathBuf")),
         ("wordpress_advisories", "Option", Some("PathBuf")),
@@ -907,6 +909,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             "wordpress_page_scope",
             ("Option", Some("CliWordPressPageScope")),
             "long,value_enum,value_name=\"SCOPE\",requires_all=[\"profile\",\"wordpress_review\",\"wordpress_discovery\"]",
+        ),
+        (
+            "wordpress_fingerprints",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"wordpress_review\",\"wordpress_discovery\"]",
         ),
         (
             "wordpress_layout",
@@ -2350,6 +2357,16 @@ mod tests {
             (
                 "    wordpress_page_scope: Option<CliWordPressPageScope>,",
                 "    wordpress_page_scope: Option<String>,",
+                "field inventory and types must remain exact",
+            ),
+            (
+                "    #[cfg(feature = \"wordpress-review\")]\n    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"wordpress_review\", \"wordpress_discovery\"]\n    )]\n    wordpress_fingerprints: Option<PathBuf>,",
+                "    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"wordpress_review\", \"wordpress_discovery\"]\n    )]\n    wordpress_fingerprints: Option<PathBuf>,",
+                "private wordpress-review feature gate",
+            ),
+            (
+                "    wordpress_fingerprints: Option<PathBuf>,",
+                "    wordpress_fingerprints: Option<String>,",
                 "field inventory and types must remain exact",
             ),
             (

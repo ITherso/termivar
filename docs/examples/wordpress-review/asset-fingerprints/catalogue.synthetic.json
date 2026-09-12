@@ -1,0 +1,122 @@
+{
+  "catalog": {
+    "id": "termivar-wordpress-asset-matrix",
+    "provenance": {
+      "notices": [
+        {
+          "id": "termivar-synthetic-matrix-notice",
+          "license": "MIT",
+          "license_reference": "https://github.com/ITherso/termivar/blob/main/LICENSE",
+          "notice": "Original synthetic assets created for Termivar acceptance.",
+          "party": "ITherso"
+        }
+      ],
+      "reference": "https://github.com/ITherso/termivar/tree/main/docs/examples/wordpress-review/asset-fingerprints",
+      "revision": "termivar-fingerprint-matrix/v1"
+    },
+    "revision": "v1",
+    "source_namespace": "termivar.synthetic.wordpress-asset-fingerprints"
+  },
+  "components": [
+    {
+      "kind": "plugin",
+      "releases": [
+        {
+          "files": [
+            {
+              "byte_length": 32,
+              "path": "assets/common.css",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "e4b20a225f36b6cecb22bd9c1e89b256f33ed39ad9e34bf2044462bba21bf17f"
+            },
+            {
+              "byte_length": 37,
+              "path": "assets/fingerprint.css",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "9ae3210e7954adbb2ed976b34b4605495de9a8406634bedd92bc14a3d317fdae"
+            },
+            {
+              "byte_length": 49,
+              "path": "assets/fingerprint.js",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "0a0760b281d010ed4d70610e4f2f460a33846088b373ec10fd47d0d5ccb4bf26"
+            }
+          ],
+          "release_id": "release-a",
+          "source": {
+            "notice_ids": [
+              "termivar-synthetic-matrix-notice"
+            ],
+            "reference": "https://github.com/ITherso/termivar/tree/main/docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-a",
+            "revision": "release-a/v1"
+          },
+          "version": "1.0.0"
+        },
+        {
+          "files": [
+            {
+              "byte_length": 32,
+              "path": "assets/common.css",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "e4b20a225f36b6cecb22bd9c1e89b256f33ed39ad9e34bf2044462bba21bf17f"
+            },
+            {
+              "byte_length": 37,
+              "path": "assets/fingerprint.css",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "c8b61302a47ea3208b743c287349570d3580756b3fafc73ac14a5eada9557b90"
+            },
+            {
+              "byte_length": 49,
+              "path": "assets/fingerprint.js",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "0a0760b281d010ed4d70610e4f2f460a33846088b373ec10fd47d0d5ccb4bf26"
+            }
+          ],
+          "release_id": "release-b",
+          "source": {
+            "notice_ids": [
+              "termivar-synthetic-matrix-notice"
+            ],
+            "reference": "https://github.com/ITherso/termivar/tree/main/docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b",
+            "revision": "release-b/v1"
+          },
+          "version": "2.0.0"
+        },
+        {
+          "files": [
+            {
+              "byte_length": 32,
+              "path": "assets/common.css",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "e4b20a225f36b6cecb22bd9c1e89b256f33ed39ad9e34bf2044462bba21bf17f"
+            },
+            {
+              "byte_length": 37,
+              "path": "assets/fingerprint.css",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "c8b61302a47ea3208b743c287349570d3580756b3fafc73ac14a5eada9557b90"
+            },
+            {
+              "byte_length": 50,
+              "path": "assets/fingerprint.js",
+              "representation_profile": "identity-content-bytes/v1",
+              "sha256": "4f770e9b2646e3b0d0b0ac777c7f76ad3893f1477d1a9e00c3cfbfb443b5f4a2"
+            }
+          ],
+          "release_id": "release-c",
+          "source": {
+            "notice_ids": [
+              "termivar-synthetic-matrix-notice"
+            ],
+            "reference": "https://github.com/ITherso/termivar/tree/main/docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-c",
+            "revision": "release-c/v1"
+          },
+          "version": "3.0.0"
+        }
+      ],
+      "slug": "termivar-fingerprint-lab"
+    }
+  ],
+  "schema": "security.wordpress-asset-fingerprint-catalog/v1"
+}

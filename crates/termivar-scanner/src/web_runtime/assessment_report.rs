@@ -8,15 +8,15 @@
 //! adapter performs a separate explicit, redacted wire projection.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     time::{Duration, SystemTime},
 };
 
 use sha2::{Digest, Sha256};
 use termivar_core::{
-    ResourceAccounting, RunAccounting, RunReport, RunReportInput, RunStatus, RunStepReport,
-    RunStepStatus, RunStopCode, RunStopReason,
+    EvidenceId, ResourceAccounting, RunAccounting, RunReport, RunReportInput, RunStatus,
+    RunStepReport, RunStepStatus, RunStopCode, RunStopReason,
 };
 use thiserror::Error;
 use url::Url;
@@ -43,14 +43,18 @@ use super::ssrf_oast_runtime::{
     SSRF_OAST_REVIEW_CAPABILITY_ID,
 };
 #[cfg(feature = "wordpress-review")]
+use super::wordpress_fingerprint_runtime::{
+    WordPressAssetFingerprintExecution, WordPressAssetFingerprintResourceReceipt,
+};
+#[cfg(feature = "wordpress-review")]
 use super::wordpress_runtime::{
     WebAssessmentWordPressAudit, WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
     WORDPRESS_REVIEW_CAPABILITY_ID,
 };
 use super::{
     assessment_item::{
-        AssessmentItem, AssessmentItemSet, AssessmentSubjectInventoryEntry,
-        MAX_ASSESSMENT_ITEM_SET_ITEMS,
+        AssessmentEvidenceReference, AssessmentItem, AssessmentItemSet,
+        AssessmentSubjectInventoryEntry, MAX_ASSESSMENT_ITEM_SET_ITEMS,
     },
     scan_profile::{BuiltInScanProfile, ScanProfileV1},
     web_assessment::{
@@ -190,6 +194,7 @@ pub struct AssessmentRunReport {
     profile: ScanProfileV1,
     subjects: Vec<AssessmentSubjectInventoryEntry>,
     items: Vec<AssessmentItem>,
+    evidence_references: BTreeMap<EvidenceId, AssessmentEvidenceReference>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
@@ -290,7 +295,7 @@ impl AssessmentRunReport {
         if !items.contains_stable_subject("authorized-root@1") {
             return Err(AssessmentRunReportError::SubjectReferenceMismatch);
         }
-        let (subjects, mut items) = items.into_parts();
+        let (subjects, mut items, evidence_references) = items.into_report_parts();
         validate_subject_inventory(&subjects, &items)?;
         validate_and_canonicalize_items(truth.profile.profile(), &mut items)?;
         #[cfg(feature = "authorization-review")]
@@ -309,6 +314,7 @@ impl AssessmentRunReport {
             profile: truth.profile,
             subjects,
             items,
+            evidence_references,
             #[cfg(feature = "authorization-review")]
             authorization_review,
             #[cfg(feature = "openapi-review")]
@@ -349,6 +355,17 @@ impl AssessmentRunReport {
     /// Returns the bounded assessment-item count.
     pub fn item_count(&self) -> usize {
         self.items.len()
+    }
+
+    /// Resolves one runtime-owned evidence identity to the opaque reference
+    /// minted by the same consumed projection authority. This mapping remains
+    /// private to report composition and is never serialized as runtime state.
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) fn evidence_reference_for(
+        &self,
+        evidence_id: &EvidenceId,
+    ) -> Option<AssessmentEvidenceReference> {
+        self.evidence_references.get(evidence_id).copied()
     }
 
     /// Returns the optional redaction-safe resource-authorization audit.
@@ -407,6 +424,17 @@ fn validate_wordpress_audit(
         };
     };
     let result = audit.result();
+    let fingerprint_attempted_request_count = audit.asset_fingerprints().map_or(
+        0,
+        WordPressAssetFingerprintExecution::attempted_request_count,
+    );
+    let fingerprint_evidence_reference_count = audit
+        .asset_fingerprints()
+        .into_iter()
+        .flat_map(WordPressAssetFingerprintExecution::resources)
+        .flat_map(WordPressAssetFingerprintResourceReceipt::evidence_ids)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     let discovery_consistent = match audit.discovery() {
         Some(discovery) => {
             let page_attempted_request_count = discovery
@@ -417,20 +445,25 @@ fn validate_wordpress_audit(
                 .map_or(0, |pages| pages.committed_response_count());
             let total_attempted_request_count = discovery
                 .attempted_request_count()
-                .checked_add(page_attempted_request_count);
-            let total_committed_response_count = discovery
-                .committed_response_count()
-                .checked_add(page_committed_response_count);
-            let expected_item = total_committed_response_count.is_some_and(|count| count > 0);
+                .checked_add(page_attempted_request_count)
+                .and_then(|count| count.checked_add(fingerprint_attempted_request_count));
+            let total_committed_evidence_count = usize::from(discovery.committed_response_count())
+                .checked_add(usize::from(page_committed_response_count))
+                .and_then(|count| count.checked_add(fingerprint_evidence_reference_count));
+            let expected_item = total_committed_evidence_count.is_some_and(|count| count > 0);
             discovery.is_internally_consistent()
                 && total_attempted_request_count == Some(audit.additional_request_count())
                 && (discovery_items.len() == 1) == expected_item
                 && discovery_items.first().is_none_or(|item| {
-                    total_committed_response_count
-                        .is_some_and(|count| item.evidence_count() == usize::from(count))
+                    total_committed_evidence_count
+                        .is_some_and(|count| item.evidence_count() == count)
                 })
         },
-        None => audit.additional_request_count() == 0 && discovery_items.is_empty(),
+        None => {
+            audit.asset_fingerprints().is_none()
+                && audit.additional_request_count() == 0
+                && discovery_items.is_empty()
+        },
     };
     let version_evidence_count = result
         .components()

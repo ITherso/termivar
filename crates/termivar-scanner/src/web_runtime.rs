@@ -74,6 +74,8 @@ mod web_review_execution;
 #[cfg(feature = "wordpress-review")]
 mod wordpress_discovery;
 #[cfg(feature = "wordpress-review")]
+mod wordpress_fingerprint_runtime;
+#[cfg(feature = "wordpress-review")]
 mod wordpress_runtime;
 
 use assessment_defense::AssessmentDefenseController;
@@ -177,6 +179,8 @@ pub use web_assessment::{
 #[cfg(feature = "wordpress-review")]
 pub use wordpress_runtime::{
     WebAssessmentWordPressAudit, WebAssessmentWordPressDiscoveryAudit,
+    WordPressAssetFingerprintAcquisition, WordPressAssetFingerprintExecution,
+    WordPressAssetFingerprintResourceOutcome, WordPressAssetFingerprintResourceReceipt,
     WordPressDiscoverySourceAudit, WordPressDiscoverySourceKind, WordPressDiscoverySourceOutcome,
     WordPressPageAcquisition, WordPressPageAssociation, WordPressPageAudit, WordPressPageOutcome,
     WordPressPageScope, WordPressPageScopeAudit, WordPressPluginDiscoveryMetadata,

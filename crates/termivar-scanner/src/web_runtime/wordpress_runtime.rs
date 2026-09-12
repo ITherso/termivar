@@ -32,6 +32,16 @@ use super::assessment_item::{
     AssessmentCapabilityDescriptor, AssessmentItemProjectionError, AssessmentItemTarget,
     AssessmentProjectionContext,
 };
+use super::wordpress_fingerprint_runtime::{
+    execute_wordpress_asset_fingerprints, WordPressAssetFingerprintAllowance,
+    WordPressAssetFingerprintCollector, WordPressAssetFingerprintRuntimeError,
+    WordPressAssetFingerprintStop, WordPressObservedAssetCandidate,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES,
+};
+pub use super::wordpress_fingerprint_runtime::{
+    WordPressAssetFingerprintAcquisition, WordPressAssetFingerprintExecution,
+    WordPressAssetFingerprintResourceOutcome, WordPressAssetFingerprintResourceReceipt,
+};
 
 pub(super) use super::wordpress_discovery::WordPressDiscoveryStop;
 use super::wordpress_discovery::{
@@ -111,8 +121,14 @@ pub(super) struct WordPressPageCandidateSelection {
 #[derive(Clone, Default)]
 pub(super) struct FrozenWordPressPageLayout {
     application_url: Option<Url>,
-    themes_base_url: Option<Url>,
-    plugins_base_url: Option<Url>,
+    themes: Option<FrozenWordPressRoleBinding>,
+    plugins: Option<FrozenWordPressRoleBinding>,
+}
+
+#[derive(Clone)]
+struct FrozenWordPressRoleBinding {
+    base_url: Url,
+    association: WordPressDiscoveryAssociation,
 }
 
 pub(super) struct PendingWordPressPageObservation {
@@ -123,6 +139,8 @@ pub(super) struct PendingWordPressPageObservation {
     outcome: WordPressPageOutcome,
     interpreted_response_bytes: u64,
     parent_evidence_ids: Vec<EvidenceId>,
+    pub(super) asset_fingerprint_candidates: Vec<WordPressObservedAssetCandidate>,
+    pub(super) asset_fingerprint_candidate_limit_exceeded: bool,
 }
 
 struct CollectedPageScope {
@@ -212,6 +230,15 @@ pub(super) struct WordPressEntryObservation {
     pub(super) discovery: WordPressDiscoverySeedSelection,
     pub(super) page_candidates: WordPressPageCandidateSelection,
     pub(super) frozen_page_layout: FrozenWordPressPageLayout,
+    pub(super) asset_fingerprint_candidates: Vec<WordPressObservedAssetCandidate>,
+    pub(super) asset_fingerprint_candidate_limit_exceeded: bool,
+}
+
+#[derive(Clone)]
+struct ObservedAssetReference {
+    raw_reference: String,
+    resolution_base: Url,
+    resolved_url: Url,
 }
 
 impl WordPressDiscoverySeedSelection {
@@ -849,6 +876,8 @@ pub(super) struct WordPressReviewBinding {
     discovery_audit: Option<WebAssessmentWordPressDiscoveryAudit>,
     discovery_context: WordPressDiscoveryContext,
     page_scope: Option<WordPressPageScope>,
+    asset_fingerprint_collector: Option<WordPressAssetFingerprintCollector>,
+    asset_fingerprint_audit: Option<WordPressAssetFingerprintExecution>,
 }
 
 #[derive(Debug)]
@@ -865,6 +894,9 @@ impl WordPressReviewBinding {
         application_url: Url,
     ) -> Self {
         let collector = WordPressSignalCollector::new(page_scope, &application_url);
+        let asset_fingerprint_collector = inputs
+            .shared_asset_fingerprint_catalog()
+            .map(WordPressAssetFingerprintCollector::new);
         let discovery_context =
             WordPressDiscoveryContext::new(application_url, inputs.discovery_layout().cloned());
         Self {
@@ -874,6 +906,8 @@ impl WordPressReviewBinding {
             discovery_audit: None,
             discovery_context,
             page_scope,
+            asset_fingerprint_collector,
+            asset_fingerprint_audit: None,
         }
     }
 
@@ -887,6 +921,14 @@ impl WordPressReviewBinding {
 
     pub(super) const fn page_scope(&self) -> Option<WordPressPageScope> {
         self.page_scope
+    }
+
+    pub(super) const fn asset_fingerprints_enabled(&self) -> bool {
+        self.asset_fingerprint_collector.is_some()
+    }
+
+    pub(super) fn asset_fingerprint_collector(&self) -> Option<WordPressAssetFingerprintCollector> {
+        self.asset_fingerprint_collector.clone()
     }
 
     pub(super) fn discovery_context(&self) -> WordPressDiscoveryContext {
@@ -934,11 +976,58 @@ impl WordPressReviewBinding {
         Ok(stop)
     }
 
+    pub(super) async fn execute_asset_fingerprints(
+        &mut self,
+        subject: EntityId,
+        authority: &super::SharedWebRuntimeAuthority,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<WordPressAssetFingerprintStop, WordPressAssetFingerprintRuntimeError> {
+        let Some(collector) = self.asset_fingerprint_collector.as_ref() else {
+            return Ok(WordPressAssetFingerprintStop::Complete);
+        };
+        if self.asset_fingerprint_audit.is_some() {
+            return Err(WordPressAssetFingerprintRuntimeError::EvidenceModel);
+        }
+        let discovery = self
+            .discovery_audit
+            .as_ref()
+            .ok_or(WordPressAssetFingerprintRuntimeError::EvidenceModel)?;
+        let page_attempts = discovery
+            .page_scope()
+            .map_or(0, WordPressPageScopeAudit::attempted_request_count);
+        let page_bytes = discovery
+            .page_scope()
+            .map_or(0, WordPressPageScopeAudit::response_bytes);
+        let prior_attempts = discovery
+            .attempted_request_count()
+            .checked_add(page_attempts)
+            .ok_or(WordPressAssetFingerprintRuntimeError::EvidenceModel)?;
+        let prior_response_bytes = discovery
+            .response_bytes()
+            .checked_add(page_bytes)
+            .ok_or(WordPressAssetFingerprintRuntimeError::EvidenceModel)?;
+        let allowance =
+            WordPressAssetFingerprintAllowance::new(prior_attempts, prior_response_bytes, true)?;
+        let execution = execute_wordpress_asset_fingerprints(
+            collector.plan()?,
+            authority,
+            &subject,
+            allowance,
+            deadline,
+        )
+        .await?;
+        let stop = execution.stop();
+        self.asset_fingerprint_audit = Some(execution);
+        Ok(stop)
+    }
+
     pub(super) fn finish(
         self,
         subject: EntityId,
     ) -> Result<CommittedWordPressReview, WordPressReviewFinishError> {
-        if self.discovery_enabled && self.discovery_audit.is_none() {
+        if self.discovery_enabled && self.discovery_audit.is_none()
+            || self.asset_fingerprint_collector.is_some() && self.asset_fingerprint_audit.is_none()
+        {
             return Err(WordPressReviewFinishError::DiscoveryNotExecuted);
         }
         let (signals, evidence_ids) = self
@@ -955,6 +1044,7 @@ impl WordPressReviewBinding {
                 .map_err(|_| WordPressReviewFinishError::Review)?,
             item_projected: !signals.is_empty(),
             discovery: self.discovery_audit,
+            asset_fingerprints: self.asset_fingerprint_audit,
         };
         Ok(CommittedWordPressReview {
             subject,
@@ -973,6 +1063,7 @@ pub struct WebAssessmentWordPressAudit {
     evidence_reference_count: u16,
     item_projected: bool,
     discovery: Option<WebAssessmentWordPressDiscoveryAudit>,
+    asset_fingerprints: Option<WordPressAssetFingerprintExecution>,
 }
 
 impl WebAssessmentWordPressAudit {
@@ -991,19 +1082,29 @@ impl WebAssessmentWordPressAudit {
     /// Returns zero for the legacy transport-free review and the exact broker-
     /// accounted attempt count for explicitly selected metadata discovery.
     pub fn additional_request_count(&self) -> u8 {
-        match &self.discovery {
+        let discovery = match &self.discovery {
             Some(discovery) => discovery.attempted_request_count().saturating_add(
                 discovery
                     .page_scope()
                     .map_or(0, WordPressPageScopeAudit::attempted_request_count),
             ),
             None => 0,
-        }
+        };
+        discovery.saturating_add(self.asset_fingerprints.as_ref().map_or(
+            0,
+            WordPressAssetFingerprintExecution::attempted_request_count,
+        ))
     }
 
     /// Returns the separately versioned, explicitly selected metadata audit.
     pub const fn discovery(&self) -> Option<&WebAssessmentWordPressDiscoveryAudit> {
         self.discovery.as_ref()
+    }
+
+    /// Returns the explicitly selected finite-catalogue byte-comparison audit.
+    /// Candidate releases remain conditional matches, never installed versions.
+    pub const fn asset_fingerprints(&self) -> Option<&WordPressAssetFingerprintExecution> {
+        self.asset_fingerprints.as_ref()
     }
 
     pub const fn item_projected(&self) -> bool {
@@ -1033,7 +1134,7 @@ pub(super) fn project_wordpress_item(
             context.register_evidence(knowledge, evidence_id)?;
         }
     }
-    let discovery_evidence_ids = review
+    let mut discovery_evidence_ids = review
         .audit
         .discovery()
         .map(|discovery| {
@@ -1054,6 +1155,17 @@ pub(super) fn project_wordpress_item(
             evidence_ids
         })
         .unwrap_or_default();
+    if let Some(fingerprints) = review.audit.asset_fingerprints() {
+        discovery_evidence_ids.extend(
+            fingerprints
+                .resources()
+                .iter()
+                .flat_map(WordPressAssetFingerprintResourceReceipt::evidence_ids)
+                .cloned(),
+        );
+    }
+    discovery_evidence_ids.sort();
+    discovery_evidence_ids.dedup();
     for evidence_id in &discovery_evidence_ids {
         if !context.has_evidence(evidence_id) {
             context.register_evidence(knowledge, evidence_id)?;
@@ -1083,6 +1195,7 @@ pub(super) fn project_wordpress_item(
 /// Parses the committed entry representation once, then resolves component
 /// signals and metadata candidates against the same selected application and
 /// layout decision. A raw asset reference is never normalized into authority.
+#[cfg(any(test, fuzzing))]
 pub(super) fn extract_wordpress_entry_observation(
     context: &WordPressDiscoveryContext,
     document_url: &Url,
@@ -1090,6 +1203,27 @@ pub(super) fn extract_wordpress_entry_observation(
     rest_header: &WordPressRestIndexAdvertisement,
     discovery_enabled: bool,
     page_scope_selected: bool,
+) -> WordPressEntryObservation {
+    extract_wordpress_entry_observation_with_asset_fingerprints(
+        context,
+        document_url,
+        html,
+        rest_header,
+        discovery_enabled,
+        page_scope_selected,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn extract_wordpress_entry_observation_with_asset_fingerprints(
+    context: &WordPressDiscoveryContext,
+    document_url: &Url,
+    html: &str,
+    rest_header: &WordPressRestIndexAdvertisement,
+    discovery_enabled: bool,
+    page_scope_selected: bool,
+    asset_fingerprints_selected: bool,
 ) -> WordPressEntryObservation {
     let mut selection = WordPressDiscoverySeedSelection {
         layout: Some(context.unresolved_audit()),
@@ -1105,11 +1239,15 @@ pub(super) fn extract_wordpress_entry_observation(
             discovery: selection,
             page_candidates: WordPressPageCandidateSelection::default(),
             frozen_page_layout: FrozenWordPressPageLayout::default(),
+            asset_fingerprint_candidates: Vec::new(),
+            asset_fingerprint_candidate_limit_exceeded: false,
         };
     }
     let dom = parse_document(RcDom::default(), ParseOpts::default()).one(html);
     let resolution_base = effective_document_base(&dom.document, document_url);
     let mut assets = Vec::new();
+    let mut fingerprint_references = BTreeMap::<String, ObservedAssetReference>::new();
+    let mut fingerprint_reference_limit_exceeded = false;
     let mut asset_identities = BTreeSet::new();
     let mut skipped_foreign_origin_count = 0_u16;
     let mut rest_candidates = Vec::new();
@@ -1181,6 +1319,47 @@ pub(super) fn extract_wordpress_entry_observation(
                         }
                     }
                 }
+                let fingerprint_reference = asset_fingerprints_selected
+                    .then(|| match local {
+                        "script" => html_attribute(attrs, "src"),
+                        "link" if link_has_stylesheet_relation(attrs) => {
+                            html_attribute(attrs, "href")
+                        },
+                        _ => None,
+                    })
+                    .flatten();
+                if let (Some(reference), Some(base)) =
+                    (fingerprint_reference, resolution_base.as_ref())
+                {
+                    if crate::http_evidence::wordpress_reference_path_is_safe(&reference) {
+                        if let Ok(url) = base.join(&reference) {
+                            if safe_observed_asset_url(document_url, &url)
+                                && asset_is_layout_candidate(context, &url)
+                            {
+                                let identity = url.as_str().to_owned();
+                                if let Some(existing) = fingerprint_references.get_mut(&identity) {
+                                    if reference < existing.raw_reference {
+                                        existing.raw_reference.clone_from(&reference);
+                                        existing.resolution_base.clone_from(base);
+                                    }
+                                } else if fingerprint_references.len()
+                                    == MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES
+                                {
+                                    fingerprint_reference_limit_exceeded = true;
+                                } else {
+                                    fingerprint_references.insert(
+                                        identity,
+                                        ObservedAssetReference {
+                                            raw_reference: reference,
+                                            resolution_base: base.clone(),
+                                            resolved_url: url,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
                 let asset = match local {
                     "link" if link_relation_can_load_resource(attrs) => {
                         html_attribute(attrs, "href")
@@ -1229,6 +1408,8 @@ pub(super) fn extract_wordpress_entry_observation(
             discovery: selection,
             page_candidates: WordPressPageCandidateSelection::default(),
             frozen_page_layout: FrozenWordPressPageLayout::default(),
+            asset_fingerprint_candidates: Vec::new(),
+            asset_fingerprint_candidate_limit_exceeded: fingerprint_reference_limit_exceeded,
         };
     }
     resolve_entry_layout(
@@ -1244,6 +1425,20 @@ pub(super) fn extract_wordpress_entry_observation(
         &mut selection,
     );
     let frozen_page_layout = freeze_page_layout(context, &mut selection);
+    let asset_fingerprint_candidates = if asset_fingerprints_selected {
+        observed_asset_fingerprint_candidates(
+            context.application_url(),
+            document_url,
+            &frozen_page_layout,
+            super::wordpress_discovery::opaque_url_reference(
+                "wordpress-discovery-page",
+                document_url,
+            ),
+            fingerprint_references.into_values(),
+        )
+    } else {
+        Vec::new()
+    };
     let page_candidates = select_wordpress_page_candidates(
         page_candidate_urls.into_values(),
         page_candidate_identities.len(),
@@ -1254,14 +1449,17 @@ pub(super) fn extract_wordpress_entry_observation(
         discovery: selection,
         page_candidates,
         frozen_page_layout,
+        asset_fingerprint_candidates,
+        asset_fingerprint_candidate_limit_exceeded: fingerprint_reference_limit_exceeded,
     }
 }
 
-pub(super) fn extract_wordpress_page_observation(
+pub(super) fn extract_wordpress_page_observation_with_asset_fingerprints(
     page: WordPressPageCandidate,
     frozen: &FrozenWordPressPageLayout,
     html: &str,
     parent_evidence_ids: Vec<EvidenceId>,
+    asset_fingerprints_selected: bool,
 ) -> PendingWordPressPageObservation {
     let mut observation = PendingWordPressPageObservation {
         page: page.clone(),
@@ -1271,6 +1469,8 @@ pub(super) fn extract_wordpress_page_observation(
         outcome: WordPressPageOutcome::NoComponentSignals,
         interpreted_response_bytes: u64::try_from(html.len()).unwrap_or(u64::MAX),
         parent_evidence_ids,
+        asset_fingerprint_candidates: Vec::new(),
+        asset_fingerprint_candidate_limit_exceeded: false,
     };
     if html.len() > MAX_WORDPRESS_PAGE_RESPONSE_BYTES
         || observation.interpreted_response_bytes > MAX_WORDPRESS_PAGE_INTERPRETED_BYTES
@@ -1298,6 +1498,8 @@ pub(super) fn extract_wordpress_page_observation(
     let mut soft_404 = false;
     let mut login_response = false;
     let mut assets = BTreeMap::<String, Url>::new();
+    let mut fingerprint_references = BTreeMap::<String, ObservedAssetReference>::new();
+    let mut fingerprint_reference_limit_exceeded = false;
     while let Some(handle) = pending.pop() {
         if let NodeData::Element { name, attrs, .. } = &handle.data {
             if name.ns == ns!(html) {
@@ -1328,6 +1530,47 @@ pub(super) fn extract_wordpress_page_observation(
                         }
                     }
                 }
+                let fingerprint_reference = asset_fingerprints_selected
+                    .then(|| match local {
+                        "script" => html_attribute(attrs, "src"),
+                        "link" if link_has_stylesheet_relation(attrs) => {
+                            html_attribute(attrs, "href")
+                        },
+                        _ => None,
+                    })
+                    .flatten();
+                if let (Some(reference), Some(base)) =
+                    (fingerprint_reference, resolution_base.as_ref())
+                {
+                    if crate::http_evidence::wordpress_reference_path_is_safe(&reference) {
+                        if let Ok(url) = base.join(&reference) {
+                            if safe_observed_asset_url(&page.url, &url)
+                                && asset_is_component_candidate(&url, frozen)
+                            {
+                                let identity = url.as_str().to_owned();
+                                if let Some(existing) = fingerprint_references.get_mut(&identity) {
+                                    if reference < existing.raw_reference {
+                                        existing.raw_reference.clone_from(&reference);
+                                        existing.resolution_base.clone_from(base);
+                                    }
+                                } else if fingerprint_references.len()
+                                    == MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES
+                                {
+                                    fingerprint_reference_limit_exceeded = true;
+                                } else {
+                                    fingerprint_references.insert(
+                                        identity,
+                                        ObservedAssetReference {
+                                            raw_reference: reference,
+                                            resolution_base: base.clone(),
+                                            resolved_url: url,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
                 let asset = match local {
                     "link" if link_relation_can_load_resource(attrs) => {
                         html_attribute(attrs, "href")
@@ -1339,7 +1582,7 @@ pub(super) fn extract_wordpress_page_observation(
                     if crate::http_evidence::wordpress_reference_path_is_safe(&reference) {
                         if let Ok(url) = base.join(&reference) {
                             if safe_observed_asset_url(&page.url, &url)
-                                && asset_is_component_candidate(&url)
+                                && asset_is_component_candidate(&url, frozen)
                             {
                                 assets.insert(url.as_str().to_owned(), url);
                             }
@@ -1363,22 +1606,16 @@ pub(super) fn extract_wordpress_page_observation(
         return observation;
     }
     for asset in assets.into_values() {
-        let mut matched = false;
-        for (kind, role_base) in [
-            (
-                WordPressComponentKind::Theme,
-                frozen.themes_base_url.as_ref(),
-            ),
-            (
-                WordPressComponentKind::Plugin,
-                frozen.plugins_base_url.as_ref(),
-            ),
+        let mut matched_bindings = Vec::new();
+        for (kind, binding) in [
+            (WordPressComponentKind::Theme, frozen.themes.as_ref()),
+            (WordPressComponentKind::Plugin, frozen.plugins.as_ref()),
         ] {
-            let Some(role_base) = role_base else {
+            let Some(binding) = binding else {
                 continue;
             };
-            if let Some(component) = component_under_role_base(&asset, role_base, kind) {
-                matched = true;
+            if let Some(component) = component_under_role_base(&asset, &binding.base_url, kind) {
+                matched_bindings.push((component.clone(), binding.base_url.clone()));
                 if let Ok(signal) =
                     WordPressComponentSignal::same_origin_asset(kind, component.slug())
                 {
@@ -1389,13 +1626,15 @@ pub(super) fn extract_wordpress_page_observation(
                     WordPressComponentKind::Plugin => "readme.txt",
                     WordPressComponentKind::Core => continue,
                 };
-                if let Some(resource) = exact_role_resource(role_base, component.slug(), filename) {
+                if let Some(resource) =
+                    exact_role_resource(&binding.base_url, component.slug(), filename)
+                {
                     observation.discovery.insert(
                         WordPressDiscoverySeed::admitted_component(
                             resource,
                             application_url.clone(),
-                            role_base.clone(),
-                            WordPressDiscoveryAssociation::ObservedConventional,
+                            binding.base_url.clone(),
+                            binding.association,
                             component,
                             0,
                         )
@@ -1404,14 +1643,16 @@ pub(super) fn extract_wordpress_page_observation(
                 }
             }
         }
-        if !matched
-            && matches!(
-                conventional_component_asset(&asset),
-                ConventionalComponentResult::Observed(_)
-                    | ConventionalComponentResult::MultipleContentMarkers
-            )
-        {
-            conflicting_application_signal = true;
+        match conventional_component_asset(&asset) {
+            ConventionalComponentResult::MultipleContentMarkers => {
+                conflicting_application_signal = true;
+            },
+            ConventionalComponentResult::Observed(observation) => {
+                if !matched_bindings.contains(&(observation.component, observation.role_base)) {
+                    conflicting_application_signal = true;
+                }
+            },
+            ConventionalComponentResult::NotComponent => {},
         }
     }
     if conflicting_application_signal {
@@ -1425,15 +1666,35 @@ pub(super) fn extract_wordpress_page_observation(
     } else {
         observation.association = WordPressPageAssociation::Accepted;
         observation.outcome = WordPressPageOutcome::Accepted;
+        if asset_fingerprints_selected {
+            observation.asset_fingerprint_candidates = observed_asset_fingerprint_candidates(
+                application_url,
+                &page.url,
+                frozen,
+                page.page_reference,
+                fingerprint_references.into_values(),
+            );
+            observation.asset_fingerprint_candidate_limit_exceeded =
+                fingerprint_reference_limit_exceeded;
+        }
     }
     observation
 }
 
-fn asset_is_component_candidate(url: &Url) -> bool {
+fn asset_is_component_candidate(url: &Url, frozen: &FrozenWordPressPageLayout) -> bool {
     !matches!(
         conventional_component_asset(url),
         ConventionalComponentResult::NotComponent
-    )
+    ) || [
+        (WordPressComponentKind::Theme, frozen.themes.as_ref()),
+        (WordPressComponentKind::Plugin, frozen.plugins.as_ref()),
+    ]
+    .into_iter()
+    .any(|(kind, binding)| {
+        binding.is_some_and(|binding| {
+            component_under_role_base(url, &binding.base_url, kind).is_some()
+        })
+    })
 }
 
 /// Compatibility seam for the bounded signal fuzz/unit corpus. Production
@@ -2006,6 +2267,68 @@ fn component_under_role_base(
         .flatten()
 }
 
+fn observed_asset_fingerprint_candidates(
+    application_url: &Url,
+    document_url: &Url,
+    frozen: &FrozenWordPressPageLayout,
+    source_page_reference: String,
+    references: impl IntoIterator<Item = ObservedAssetReference>,
+) -> Vec<WordPressObservedAssetCandidate> {
+    let mut candidates = Vec::new();
+    for reference in references {
+        for (kind, binding) in [
+            (WordPressComponentKind::Theme, frozen.themes.as_ref()),
+            (WordPressComponentKind::Plugin, frozen.plugins.as_ref()),
+        ] {
+            let Some(binding) = binding else {
+                continue;
+            };
+            let Some(component) =
+                component_under_role_base(&reference.resolved_url, &binding.base_url, kind)
+            else {
+                continue;
+            };
+            let Some(relative_path) = component_relative_asset_path(
+                &reference.resolved_url,
+                &binding.base_url,
+                component.slug(),
+            ) else {
+                continue;
+            };
+            if let Ok(candidate) = WordPressObservedAssetCandidate::from_html_reference(
+                application_url,
+                &binding.base_url,
+                component,
+                binding.association,
+                document_url,
+                &reference.resolution_base,
+                &reference.raw_reference,
+                &reference.resolved_url,
+                relative_path,
+                source_page_reference.clone(),
+            ) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn component_relative_asset_path(resource: &Url, base: &Url, slug: &str) -> Option<String> {
+    if resource.origin() != base.origin() {
+        return None;
+    }
+    let resource_segments = url_segments(resource);
+    let base_segments = url_segments(base);
+    if resource_segments.get(base_segments.len()).copied() != Some(slug) {
+        return None;
+    }
+    let relative = resource_segments.get(base_segments.len().saturating_add(1)..)?;
+    (!relative.is_empty()).then(|| relative.join("/"))
+}
+
 fn exact_role_resource(base: &Url, slug: &str, filename: &str) -> Option<Url> {
     let resource = base.join(&format!("{slug}/{filename}")).ok()?;
     safe_resource_shape(&resource).then_some(resource)
@@ -2395,65 +2718,101 @@ fn freeze_page_layout(
 ) -> FrozenWordPressPageLayout {
     let mut frozen = FrozenWordPressPageLayout {
         application_url: Some(context.application_url().clone()),
-        themes_base_url: context
+        themes: context
             .declared_layout()
             .and_then(WordPressDiscoveryLayout::themes_base_url)
-            .cloned(),
-        plugins_base_url: context
+            .cloned()
+            .map(|base_url| FrozenWordPressRoleBinding {
+                base_url,
+                association: WordPressDiscoveryAssociation::ExplicitOperator,
+            }),
+        plugins: context
             .declared_layout()
             .and_then(WordPressDiscoveryLayout::plugins_base_url)
-            .cloned(),
+            .cloned()
+            .map(|base_url| FrozenWordPressRoleBinding {
+                base_url,
+                association: WordPressDiscoveryAssociation::ExplicitOperator,
+            }),
     };
     for seed in &selection.seeds {
         match seed.kind() {
-            WordPressDiscoverySourceKind::ThemeStylesheet if frozen.themes_base_url.is_none() => {
-                frozen.themes_base_url = Some(seed.role_base_url().clone());
+            WordPressDiscoverySourceKind::ThemeStylesheet if frozen.themes.is_none() => {
+                frozen.themes = Some(FrozenWordPressRoleBinding {
+                    base_url: seed.role_base_url().clone(),
+                    association: seed.association(),
+                });
             },
-            WordPressDiscoverySourceKind::PluginReadme if frozen.plugins_base_url.is_none() => {
-                frozen.plugins_base_url = Some(seed.role_base_url().clone());
+            WordPressDiscoverySourceKind::PluginReadme if frozen.plugins.is_none() => {
+                frozen.plugins = Some(FrozenWordPressRoleBinding {
+                    base_url: seed.role_base_url().clone(),
+                    association: seed.association(),
+                });
             },
             _ => {},
         }
     }
-    let conventional_content_base = [
-        frozen.themes_base_url.as_ref().map(|url| (url, "themes")),
-        frozen.plugins_base_url.as_ref().map(|url| (url, "plugins")),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(|(url, role)| {
-        let mut segments = url_segments(url);
-        (segments.pop() == Some(role)).then(|| directory_from_segments(url, &segments))?
-    })
-    .collect::<BTreeSet<_>>();
+    let conventional_content_base = selection
+        .seeds
+        .iter()
+        .filter_map(|seed| {
+            let role = match seed.kind() {
+                WordPressDiscoverySourceKind::ThemeStylesheet => "themes",
+                WordPressDiscoverySourceKind::PluginReadme => "plugins",
+                WordPressDiscoverySourceKind::RestIndex => return None,
+            };
+            let url = seed.role_base_url();
+            let mut segments = url_segments(url);
+            let role_matches = segments.pop() == Some(role);
+            let content_matches = segments.last().copied() == Some("wp-content");
+            (role_matches
+                && content_matches
+                && directory_is_within_application(context.application_url(), url))
+            .then(|| directory_from_segments(url, &segments))?
+        })
+        .collect::<BTreeSet<_>>();
     if conventional_content_base.len() == 1 {
         let content_base = conventional_content_base.iter().next().expect("one base");
-        if frozen.themes_base_url.is_none() {
-            frozen.themes_base_url = content_base.join("themes/").ok();
-            if let (Some(layout), Some(base)) =
-                (selection.layout.as_mut(), frozen.themes_base_url.as_ref())
+        if frozen.themes.is_none() {
+            frozen.themes =
+                content_base
+                    .join("themes/")
+                    .ok()
+                    .map(|base_url| FrozenWordPressRoleBinding {
+                        base_url,
+                        association: WordPressDiscoveryAssociation::ObservedConventional,
+                    });
+            if let (Some(layout), Some(binding)) =
+                (selection.layout.as_mut(), frozen.themes.as_ref())
             {
                 set_layout_role(
                     layout,
                     WordPressDiscoveryLayoutRole::Themes,
                     WordPressDiscoveryLayoutStatus::Exact,
                     WordPressDiscoveryLayoutBasis::ConventionalAsset,
-                    Some(base),
+                    Some(&binding.base_url),
                     1,
                 );
             }
         }
-        if frozen.plugins_base_url.is_none() {
-            frozen.plugins_base_url = content_base.join("plugins/").ok();
-            if let (Some(layout), Some(base)) =
-                (selection.layout.as_mut(), frozen.plugins_base_url.as_ref())
+        if frozen.plugins.is_none() {
+            frozen.plugins =
+                content_base
+                    .join("plugins/")
+                    .ok()
+                    .map(|base_url| FrozenWordPressRoleBinding {
+                        base_url,
+                        association: WordPressDiscoveryAssociation::ObservedConventional,
+                    });
+            if let (Some(layout), Some(binding)) =
+                (selection.layout.as_mut(), frozen.plugins.as_ref())
             {
                 set_layout_role(
                     layout,
                     WordPressDiscoveryLayoutRole::Plugins,
                     WordPressDiscoveryLayoutStatus::Exact,
                     WordPressDiscoveryLayoutBasis::ConventionalAsset,
-                    Some(base),
+                    Some(&binding.base_url),
                     1,
                 );
             }
@@ -2490,6 +2849,14 @@ fn link_relation_can_load_resource(attrs: &std::cell::RefCell<Vec<html5ever::Att
                 .iter()
                 .any(|supported| relation.eq_ignore_ascii_case(supported))
         })
+    })
+}
+
+fn link_has_stylesheet_relation(attrs: &std::cell::RefCell<Vec<html5ever::Attribute>>) -> bool {
+    html_attribute(attrs, "rel").is_some_and(|relations| {
+        relations
+            .split_ascii_whitespace()
+            .any(|relation| relation.eq_ignore_ascii_case("stylesheet"))
     })
 }
 
@@ -2859,19 +3226,233 @@ mod tests {
             true,
         );
         let candidate = entry.page_candidates.candidates[0].clone();
-        let page = extract_wordpress_page_observation(
+        let page = extract_wordpress_page_observation_with_asset_fingerprints(
             candidate,
             &entry.frozen_page_layout,
             r#"<meta name="generator" content="WordPress 99.0">
                 <link rel="https://api.w.org/" href="/shop/wp-json/">
-                <script src="/shop/wp-content/plugins/sibling/app.js"></script>"#,
+                <script src="/shop/wp-content/plugins/sibling/app.js"></script>
+                <script src="/blog/wp-content/plugins/tempting/app.js"></script>"#,
             Vec::new(),
+            true,
         );
 
         assert_eq!(page.association, WordPressPageAssociation::Rejected);
         assert_eq!(page.outcome, WordPressPageOutcome::IncompatibleApplication);
         assert!(page.signals.is_empty());
         assert!(page.discovery.seeds.is_empty());
+        assert!(page.asset_fingerprint_candidates.is_empty());
+    }
+
+    #[test]
+    fn secondary_pages_preserve_declared_custom_role_bindings() {
+        let application = Url::parse("https://example.test/blog/").unwrap();
+        let declared = parse_wordpress_discovery_layout(
+            br#"{
+              "schema":"security.wordpress-layout/v1",
+              "application_url":"https://example.test/blog/",
+              "themes_base_url":"https://example.test/site-content/themes/",
+              "plugins_base_url":"https://example.test/modules/"
+            }"#,
+        )
+        .unwrap();
+        let entry = extract_wordpress_entry_observation(
+            &WordPressDiscoveryContext::new(application.clone(), Some(declared)),
+            &application,
+            r#"<a href="/blog/contact/">contact</a>"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            true,
+        );
+        let candidate = entry.page_candidates.candidates[0].clone();
+        let html = r#"<script src="/modules/conditional/assets/fingerprint.js?ver=cache-42"></script>
+            <link rel="stylesheet" href="/modules/conditional/assets/fingerprint.css?ver=cache-42">"#;
+
+        let without_fingerprints = extract_wordpress_page_observation_with_asset_fingerprints(
+            candidate.clone(),
+            &entry.frozen_page_layout,
+            html,
+            Vec::new(),
+            false,
+        );
+        assert_eq!(
+            without_fingerprints.association,
+            WordPressPageAssociation::Accepted
+        );
+        assert_eq!(without_fingerprints.discovery.seeds().len(), 1);
+        assert_eq!(
+            without_fingerprints.discovery.seeds()[0].association(),
+            WordPressDiscoveryAssociation::ExplicitOperator
+        );
+        assert_eq!(
+            without_fingerprints.discovery.seeds()[0].url().as_str(),
+            "https://example.test/modules/conditional/readme.txt"
+        );
+        assert!(without_fingerprints.asset_fingerprint_candidates.is_empty());
+
+        let with_fingerprints = extract_wordpress_page_observation_with_asset_fingerprints(
+            candidate,
+            &entry.frozen_page_layout,
+            html,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            with_fingerprints.association,
+            WordPressPageAssociation::Accepted
+        );
+        assert_eq!(with_fingerprints.discovery.seeds().len(), 1);
+        assert_eq!(
+            with_fingerprints.discovery.seeds()[0].association(),
+            WordPressDiscoveryAssociation::ExplicitOperator
+        );
+        assert_eq!(with_fingerprints.asset_fingerprint_candidates.len(), 2);
+        assert!(with_fingerprints
+            .asset_fingerprint_candidates
+            .iter()
+            .all(|candidate| candidate.component().slug() == "conditional"));
+    }
+
+    #[test]
+    fn secondary_custom_roles_require_a_frozen_binding_and_retain_conflicts() {
+        let application = Url::parse("https://example.test/blog/").unwrap();
+        let unresolved = extract_wordpress_entry_observation(
+            &WordPressDiscoveryContext::new(application.clone(), None),
+            &application,
+            r#"<a href="/blog/contact/">contact</a>"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            true,
+        );
+        let unresolved_page = extract_wordpress_page_observation_with_asset_fingerprints(
+            unresolved.page_candidates.candidates[0].clone(),
+            &unresolved.frozen_page_layout,
+            r#"<script src="/modules/conditional/assets/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            unresolved_page.association,
+            WordPressPageAssociation::NotEstablished
+        );
+        assert!(unresolved_page.discovery.seeds().is_empty());
+        assert!(unresolved_page.asset_fingerprint_candidates.is_empty());
+
+        let declared = parse_wordpress_discovery_layout(
+            br#"{
+              "schema":"security.wordpress-layout/v1",
+              "application_url":"https://example.test/blog/",
+              "plugins_base_url":"https://example.test/modules/"
+            }"#,
+        )
+        .unwrap();
+        let frozen = extract_wordpress_entry_observation(
+            &WordPressDiscoveryContext::new(application.clone(), Some(declared)),
+            &application,
+            r#"<a href="/blog/contact/">contact</a>"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            true,
+        );
+        let lookalike = extract_wordpress_page_observation_with_asset_fingerprints(
+            frozen.page_candidates.candidates[0].clone(),
+            &frozen.frozen_page_layout,
+            r#"<script src="/modules-evil/conditional/assets/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            lookalike.association,
+            WordPressPageAssociation::NotEstablished
+        );
+        assert!(lookalike.discovery.seeds().is_empty());
+
+        let conflicting = extract_wordpress_page_observation_with_asset_fingerprints(
+            frozen.page_candidates.candidates[0].clone(),
+            &frozen.frozen_page_layout,
+            r#"<script src="/modules/conditional/assets/app.js"></script>
+                <script src="/blog/wp-content/plugins/sibling/assets/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(conflicting.association, WordPressPageAssociation::Rejected);
+        assert_eq!(
+            conflicting.outcome,
+            WordPressPageOutcome::IncompatibleApplication
+        );
+        assert!(conflicting.signals.is_empty());
+        assert!(conflicting.discovery.seeds().is_empty());
+        assert!(conflicting.asset_fingerprint_candidates.is_empty());
+
+        let nested_conflict = extract_wordpress_page_observation_with_asset_fingerprints(
+            frozen.page_candidates.candidates[0].clone(),
+            &frozen.frozen_page_layout,
+            r#"<script src="/modules/conditional/vendor/wp-content/plugins/sibling/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            nested_conflict.association,
+            WordPressPageAssociation::Rejected
+        );
+        assert_eq!(
+            nested_conflict.outcome,
+            WordPressPageOutcome::IncompatibleApplication
+        );
+        assert!(nested_conflict.signals.is_empty());
+        assert!(nested_conflict.discovery.seeds().is_empty());
+        assert!(nested_conflict.asset_fingerprint_candidates.is_empty());
+
+        let same_slug_nested_base = extract_wordpress_page_observation_with_asset_fingerprints(
+            frozen.page_candidates.candidates[0].clone(),
+            &frozen.frozen_page_layout,
+            r#"<script src="/modules/conditional/vendor/wp-content/plugins/conditional/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            same_slug_nested_base.association,
+            WordPressPageAssociation::Rejected
+        );
+        assert_eq!(
+            same_slug_nested_base.outcome,
+            WordPressPageOutcome::IncompatibleApplication
+        );
+        assert!(same_slug_nested_base.signals.is_empty());
+        assert!(same_slug_nested_base.discovery.seeds().is_empty());
+        assert!(same_slug_nested_base
+            .asset_fingerprint_candidates
+            .is_empty());
+
+        let declared_theme = parse_wordpress_discovery_layout(
+            br#"{
+              "schema":"security.wordpress-layout/v1",
+              "application_url":"https://example.test/blog/",
+              "themes_base_url":"https://example.test/site-content/themes/"
+            }"#,
+        )
+        .unwrap();
+        let theme_entry = extract_wordpress_entry_observation(
+            &WordPressDiscoveryContext::new(application.clone(), Some(declared_theme)),
+            &application,
+            r#"<a href="/blog/contact/">contact</a>
+                <link rel="stylesheet" href="/site-content/themes/child/assets/site.css">"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            true,
+        );
+        let invented_sibling = extract_wordpress_page_observation_with_asset_fingerprints(
+            theme_entry.page_candidates.candidates[0].clone(),
+            &theme_entry.frozen_page_layout,
+            r#"<script src="/site-content/plugins/not-declared/assets/app.js"></script>"#,
+            Vec::new(),
+            false,
+        );
+        assert_eq!(
+            invented_sibling.association,
+            WordPressPageAssociation::NotEstablished
+        );
+        assert!(invented_sibling.discovery.seeds().is_empty());
     }
 
     #[test]
@@ -2894,6 +3475,55 @@ mod tests {
             .find(|signal| signal.identity().slug() == "cache-tool")
             .unwrap();
         assert_eq!(plugin.version(), None, "asset queries are not versions");
+    }
+
+    #[test]
+    fn fingerprint_candidates_are_only_observed_script_and_stylesheet_resources() {
+        let application = origin();
+        let observation = extract_wordpress_entry_observation_with_asset_fingerprints(
+            &WordPressDiscoveryContext::new(application.clone(), None),
+            &application,
+            r#"<script src="/wp-content/plugins/cache-tool/assets/app.js?ver=cache-42"></script>
+                <link rel="stylesheet preload" href="/wp-content/themes/child/assets/site.css">
+                <link rel="icon" href="/wp-content/plugins/cache-tool/assets/icon.css">
+                <img src="/wp-content/plugins/cache-tool/assets/image.js">
+                <script src="/wp-content/plugins/cache-tool/assets/bad.js?ver=1&amp;x=2"></script>
+                <script src="https://other.test/wp-content/plugins/cache-tool/assets/foreign.js"></script>"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            false,
+            true,
+        );
+
+        let actual = observation
+            .asset_fingerprint_candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.component().kind(),
+                    candidate.component().slug(),
+                    candidate.relative_path(),
+                    candidate.target_url().as_str(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual,
+            BTreeSet::from([
+                (
+                    WordPressComponentKind::Plugin,
+                    "cache-tool",
+                    "assets/app.js",
+                    "https://example.test/wp-content/plugins/cache-tool/assets/app.js?ver=cache-42",
+                ),
+                (
+                    WordPressComponentKind::Theme,
+                    "child",
+                    "assets/site.css",
+                    "https://example.test/wp-content/themes/child/assets/site.css",
+                ),
+            ])
+        );
     }
 
     #[test]

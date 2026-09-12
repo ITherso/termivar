@@ -271,6 +271,8 @@ const WORDPRESS_RESOURCE_ACCEPTANCE_JOB: &str = r#"  wordpress-resource-acceptan
           toolchain: "1.88.0"
       - name: Test WordPress resource acceptance contracts
         run: python -m unittest discover -s scripts/tests -p test_wordpress_resource_acceptance.py
+      - name: Test WordPress fingerprint catalogue preparation
+        run: python -m unittest discover -s scripts/tests -p test_prepare_wordpress_fingerprint_catalog.py
       - name: Build feature-minimal WordPress acceptance executables
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-resource-target-${{ github.run_id }}-${{ github.run_attempt }}
@@ -2642,6 +2644,10 @@ mod tests {
             ),
             (
                 "      - name: Test WordPress resource acceptance contracts\n        run: python -m unittest discover -s scripts/tests -p test_wordpress_resource_acceptance.py\n",
+                "",
+            ),
+            (
+                "      - name: Test WordPress fingerprint catalogue preparation\n        run: python -m unittest discover -s scripts/tests -p test_prepare_wordpress_fingerprint_catalog.py\n",
                 "",
             ),
             (

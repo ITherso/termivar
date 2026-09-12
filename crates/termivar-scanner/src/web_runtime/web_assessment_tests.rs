@@ -42,6 +42,8 @@ use crate::web_runtime::openapi_runtime::{OpenApiCandidateSource, OpenApiRuntime
 use crate::web_runtime::rest_runtime::{
     RestObservedMediaClass, RestRuntimeOutcome, REST_REVIEW_ACTION_ID,
 };
+#[cfg(feature = "wordpress-review")]
+use crate::web_runtime::wordpress_discovery::WordPressDiscoveryAssociation;
 use crate::web_runtime::{AssessmentBasis, AssessmentDisposition};
 #[cfg(feature = "reporting")]
 use crate::web_runtime::{BuiltInScanProfile, ASSESSMENT_RUN_REPORT_SCHEMA};
@@ -58,8 +60,9 @@ use crate::web_runtime::{
 };
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::{
-    parse_wordpress_advisory_catalog, parse_wordpress_context, parse_wordpress_discovery_layout,
-    WordPressApplicability, WordPressCatalogStatus, WordPressReviewInputs,
+    parse_wordpress_advisory_catalog, parse_wordpress_asset_fingerprint_catalog,
+    parse_wordpress_context, parse_wordpress_discovery_layout, WordPressApplicability,
+    WordPressCatalogStatus, WordPressReviewInputs,
 };
 #[cfg(any(feature = "authorization-review", feature = "rest-review"))]
 use crate::DecisionActionOrigin;
@@ -369,6 +372,524 @@ fn wordpress_observed_page_scope_requires_metadata_discovery() {
 
 #[cfg(feature = "wordpress-review")]
 #[test]
+fn wordpress_asset_fingerprints_require_metadata_discovery() {
+    let catalogue = parse_wordpress_asset_fingerprint_catalog(include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json"
+    ))
+    .unwrap();
+    let inputs = WordPressReviewInputs::new(None, None)
+        .with_asset_fingerprint_catalog(catalogue)
+        .unwrap();
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .with_wordpress_review(inputs)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::WordPressAssetFingerprintsRequireDiscovery)
+    ));
+}
+
+#[cfg(all(feature = "wordpress-review", feature = "reporting"))]
+#[tokio::test]
+async fn wordpress_asset_fingerprint_candidates_render_in_assessment_csv_and_markdown() {
+    const SCRIPT: &[u8] = include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b/assets/fingerprint.js"
+    );
+    const STYLESHEET: &[u8] = include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b/assets/fingerprint.css"
+    );
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<html><head>
+                    <link rel="stylesheet" href="/wp-content/themes/base-theme/assets/site.css">
+                    </head><body>
+                    <a href="/contact">contact</a>
+                    <a href="/gallery">gallery</a>
+                    </body></html>"#,
+            ),
+            "/contact" | "/gallery" => FixtureResponse::html(
+                r#"<html><head>
+                    <script src="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42"></script>
+                    <link rel="stylesheet" href="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42">
+                    </head><body>task-owned secondary page</body></html>"#,
+            ),
+            "/wp-content/themes/base-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Base Theme\nVersion: 1.0 */".to_vec(),
+            ),
+            "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js" => {
+                FixtureResponse::new("200 OK", Some("application/javascript"), SCRIPT.to_vec())
+            },
+            "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css" => {
+                FixtureResponse::new("200 OK", Some("text/css"), STYLESHEET.to_vec())
+            },
+            "/wp-content/plugins/termivar-fingerprint-lab/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                "=== Termivar Fingerprint Lab ===\nStable tag: 9.9.9\n",
+            ),
+            _ => FixtureResponse::new("404 Not Found", Some("text/plain"), "not found"),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let catalogue = parse_wordpress_asset_fingerprint_catalog(include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json"
+    ))
+    .unwrap();
+    let inputs = WordPressReviewInputs::new(None, None)
+        .with_asset_fingerprint_catalog(catalogue)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(inputs)
+        .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let product =
+        ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap()).unwrap();
+
+    let json = ReportGenerator::generate_assessment(&product, ReportFormat::Json).unwrap();
+    let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let fingerprints = &document["wordpress_asset_fingerprints"];
+    assert_eq!(fingerprints["component_count"], 1);
+    let page_collection = &document["wordpress_discovery"]["page_collection"];
+    assert_eq!(page_collection["mode"], "observed");
+    assert_eq!(page_collection["candidate_count"], 2);
+    assert_eq!(page_collection["selected_count"], 2);
+    assert_eq!(page_collection["reused_response_count"], 2);
+    assert_eq!(page_collection["attempted_request_count"], 0);
+    assert_eq!(page_collection["committed_response_count"], 2);
+    assert_eq!(page_collection["accepted_association_count"], 2);
+    let accepted_page_references = page_collection["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|page| page["page_reference"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(accepted_page_references.len(), 2);
+    assert_eq!(fingerprints["resource_count"], 2);
+    assert_eq!(
+        fingerprints["components"][0]["state"],
+        "single_catalogue_candidate"
+    );
+    assert_eq!(
+        fingerprints["components"][0]["compatible_release_ids"],
+        serde_json::json!(["release-b"])
+    );
+    let plugin = document["wordpress_review"]["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["identity"]["slug"] == "termivar-fingerprint-lab")
+        .expect("fingerprinted plugin remains in the WordPress component inventory");
+    assert_eq!(plugin["versions"], serde_json::json!([]));
+    assert!(fingerprints["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|resource| {
+            resource["source_page_references"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|page| page.as_str().unwrap())
+                .collect::<BTreeSet<_>>()
+                == accepted_page_references
+        }));
+
+    for format in [ReportFormat::Csv, ReportFormat::Markdown] {
+        let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+        assert!(rendered.contains("release-b"));
+        assert!(rendered.contains("single_catalogue_candidate"));
+        assert!(!rendered.contains("window.termivarFingerprintLab"));
+        match format {
+            ReportFormat::Csv => {
+                assert!(rendered.contains("wordpress_asset_fingerprint_audit"));
+                assert!(rendered.contains("not_established_by_asset_fingerprints"));
+            },
+            ReportFormat::Markdown => {
+                assert!(rendered.contains("WordPress observed asset fingerprint candidates"));
+                assert!(rendered.contains("Finite reference catalogue"));
+                assert!(rendered.contains("not installed-version evidence"));
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    let requests = server.requests().await;
+    for page in ["/contact", "/gallery"] {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == "GET" && request.path() == page)
+                .count(),
+            1,
+            "the ordinary assessment must obtain each selected page once"
+        );
+    }
+    for target in [
+        "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
+        "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
+    ] {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == "GET" && request.target == target)
+                .count(),
+            1
+        );
+    }
+}
+
+#[cfg(all(feature = "wordpress-review", feature = "reporting"))]
+#[tokio::test]
+async fn declared_custom_roles_survive_secondary_page_reuse_with_fingerprints_off_and_on() {
+    const SCRIPT: &[u8] = include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b/assets/fingerprint.js"
+    );
+    const STYLESHEET: &[u8] = include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b/assets/fingerprint.css"
+    );
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/blog/" => FixtureResponse::html(
+                r#"<html><head>
+                    <link rel="stylesheet" href="/site-content/themes/custom-child/assets/site.css">
+                    <script src="/modules/entry-plugin/assets/entry.js"></script>
+                    </head><body>
+                    <a href="/blog/contact/">contact</a>
+                    <a href="/blog/gallery/">gallery</a>
+                    </body></html>"#,
+            )
+            .with_header("Link", "</cms/wp-json/>; rel=\"https://api.w.org/\""),
+            "/blog/contact/" | "/blog/gallery/" => FixtureResponse::html(
+                r#"<html><head>
+                    <script src="/modules/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42"></script>
+                    <link rel="stylesheet" href="/modules/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42">
+                    </head><body>task-owned secondary page</body></html>"#,
+            ),
+            "/cms/wp-json/" => FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"namespaces":["wp/v2"]}"#.to_vec(),
+            ),
+            "/site-content/themes/custom-child/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Custom Child\nVersion: 1.5\nTemplate: custom-parent */".to_vec(),
+            ),
+            "/site-content/themes/custom-parent/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Custom Parent\nVersion: 2.0 */".to_vec(),
+            ),
+            "/modules/entry-plugin/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Entry Plugin ===\nStable tag: 1.0\n".to_vec(),
+            ),
+            "/modules/termivar-fingerprint-lab/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Conditional Plugin ===\nStable tag: 9.9.9\n".to_vec(),
+            ),
+            "/modules/termivar-fingerprint-lab/assets/fingerprint.js" => {
+                FixtureResponse::new("200 OK", Some("application/javascript"), SCRIPT.to_vec())
+            },
+            "/modules/termivar-fingerprint-lab/assets/fingerprint.css" => {
+                FixtureResponse::new("200 OK", Some("text/css"), STYLESHEET.to_vec())
+            },
+            _ => FixtureResponse::new("404 Not Found", Some("text/plain"), "not found"),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let layout_document = format!(
+        r#"{{"schema":"security.wordpress-layout/v1","application_url":"{}","core_base_url":"{}","themes_base_url":"{}","plugins_base_url":"{}"}}"#,
+        server.url("/blog/"),
+        server.url("/cms/"),
+        server.url("/site-content/themes/"),
+        server.url("/modules/"),
+    );
+    let review_inputs = |with_fingerprints: bool| {
+        let layout = parse_wordpress_discovery_layout(layout_document.as_bytes()).unwrap();
+        let inputs = WordPressReviewInputs::new(None, None)
+            .with_discovery_layout(layout)
+            .unwrap();
+        if with_fingerprints {
+            inputs
+                .with_asset_fingerprint_catalog(
+                    parse_wordpress_asset_fingerprint_catalog(include_bytes!(
+                        "../../../../docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json"
+                    ))
+                    .unwrap(),
+                )
+                .unwrap()
+        } else {
+            inputs
+        }
+    };
+
+    let mut without_runtime = WebAssessmentRuntime::builder(server.url("/blog/"))
+        .with_wordpress_review(review_inputs(false))
+        .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build()
+        .unwrap();
+    let without_report = without_runtime.analyze().await.unwrap();
+    let without_wordpress = without_report.wordpress_review_audit().unwrap();
+    assert!(without_wordpress.asset_fingerprints().is_none());
+    let without_discovery = without_wordpress.discovery().unwrap();
+    let without_pages = without_discovery.page_scope().unwrap();
+    assert_eq!(without_pages.selected_count(), 2);
+    assert_eq!(without_pages.reused_response_count(), 2);
+    assert_eq!(without_pages.completed_response_count(), 2);
+    assert_eq!(without_pages.committed_response_count(), 2);
+    assert_eq!(without_pages.attempted_request_count(), 0);
+    assert_eq!(without_pages.accepted_association_count(), 2);
+    assert_eq!(without_pages.rejected_association_count(), 0);
+    assert_eq!(without_discovery.attempted_request_count(), 5);
+    assert_eq!(without_discovery.sources().len(), 5);
+    let without_conditional = without_discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("termivar-fingerprint-lab"))
+        .unwrap();
+    assert_eq!(
+        without_conditional.association(),
+        WordPressDiscoveryAssociation::ExplicitOperator
+    );
+    assert_eq!(without_conditional.source_page_references().len(), 2);
+    let without_conditional_component = without_wordpress
+        .result()
+        .components()
+        .iter()
+        .find(|component| component.identity().slug() == "termivar-fingerprint-lab")
+        .unwrap();
+    assert!(without_conditional_component.versions().is_empty());
+    let without_requests = server.requests().await;
+    assert_eq!(
+        without_requests
+            .iter()
+            .filter(|request| request.target == "/modules/termivar-fingerprint-lab/readme.txt")
+            .count(),
+        1
+    );
+
+    let mut with_runtime = WebAssessmentRuntime::builder(server.url("/blog/"))
+        .with_wordpress_review(review_inputs(true))
+        .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build()
+        .unwrap();
+    let with_report = with_runtime.analyze().await.unwrap();
+    let with_wordpress = with_report.wordpress_review_audit().unwrap();
+    let with_discovery = with_wordpress.discovery().unwrap();
+    let with_pages = with_discovery.page_scope().unwrap();
+    assert_eq!(with_pages.selected_count(), 2);
+    assert_eq!(with_pages.reused_response_count(), 2);
+    assert_eq!(with_pages.attempted_request_count(), 0);
+    assert_eq!(with_pages.accepted_association_count(), 2);
+    assert_eq!(with_discovery.attempted_request_count(), 5);
+    let with_conditional = with_discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("termivar-fingerprint-lab"))
+        .unwrap();
+    assert_eq!(
+        with_conditional.association(),
+        WordPressDiscoveryAssociation::ExplicitOperator
+    );
+    assert_eq!(with_conditional.source_page_references().len(), 2);
+
+    let product =
+        ReportGenerator::compose_assessment(with_report, ScanProfileV1::web_review().unwrap())
+            .unwrap();
+    let rendered = ReportGenerator::generate_assessment(&product, ReportFormat::Json).unwrap();
+    let document: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    let fingerprints = &document["wordpress_asset_fingerprints"];
+    assert_eq!(fingerprints["candidate_count"], 2);
+    assert_eq!(fingerprints["selected_resource_count"], 2);
+    assert_eq!(fingerprints["attempted_request_count"], 2);
+    assert_eq!(fingerprints["fetched_response_count"], 2);
+    assert_eq!(fingerprints["resource_count"], 2);
+    assert_eq!(fingerprints["component_count"], 1);
+    assert_eq!(
+        fingerprints["components"][0]["state"],
+        "single_catalogue_candidate"
+    );
+    assert_eq!(
+        fingerprints["components"][0]["compatible_release_ids"],
+        serde_json::json!(["release-b"])
+    );
+    assert!(fingerprints["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|resource| resource["source_page_references"].as_array().unwrap().len() == 2));
+    let rendered_component = document["wordpress_review"]["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["identity"]["slug"] == "termivar-fingerprint-lab")
+        .unwrap();
+    assert_eq!(rendered_component["versions"], serde_json::json!([]));
+
+    let with_requests = server.requests().await;
+    let new_requests = &with_requests[without_requests.len()..];
+    for page in ["/blog/contact/", "/blog/gallery/"] {
+        assert_eq!(
+            new_requests
+                .iter()
+                .filter(|request| request.method == "GET" && request.path() == page)
+                .count(),
+            1,
+            "ordinary collection should obtain each secondary page once"
+        );
+    }
+    assert_eq!(
+        new_requests
+            .iter()
+            .filter(|request| request.target == "/modules/termivar-fingerprint-lab/readme.txt")
+            .count(),
+        1
+    );
+    for target in [
+        "/modules/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
+        "/modules/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
+    ] {
+        assert_eq!(
+            new_requests
+                .iter()
+                .filter(|request| request.method == "GET" && request.target == target)
+                .count(),
+            1
+        );
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+#[tokio::test]
+async fn secondary_only_custom_theme_keeps_declared_basis_and_same_base_parent() {
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/blog/" => FixtureResponse::html(
+                r#"<html><head>
+                    <script src="/modules/entry-plugin/assets/entry.js"></script>
+                    </head><body><a href="/blog/contact/">contact</a></body></html>"#,
+            ),
+            "/blog/contact/" => FixtureResponse::html(
+                r#"<link rel="stylesheet" href="/site-content/themes/secondary-child/assets/site.css">"#,
+            ),
+            "/modules/entry-plugin/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                b"=== Entry Plugin ===\nStable tag: 1.0\n".to_vec(),
+            ),
+            "/site-content/themes/secondary-child/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Secondary Child\nVersion: 4.2\nTemplate: secondary-parent */"
+                    .to_vec(),
+            ),
+            "/site-content/themes/secondary-parent/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Secondary Parent\nVersion: 4.0 */".to_vec(),
+            ),
+            _ => FixtureResponse::new("404 Not Found", Some("text/plain"), "not found"),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+    let layout_document = format!(
+        r#"{{"schema":"security.wordpress-layout/v1","application_url":"{}","themes_base_url":"{}","plugins_base_url":"{}"}}"#,
+        server.url("/blog/"),
+        server.url("/site-content/themes/"),
+        server.url("/modules/"),
+    );
+    let layout = parse_wordpress_discovery_layout(layout_document.as_bytes()).unwrap();
+    let inputs = WordPressReviewInputs::new(None, None)
+        .with_discovery_layout(layout)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/blog/"))
+        .with_wordpress_review(inputs)
+        .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let wordpress = report.wordpress_review_audit().unwrap();
+    let discovery = wordpress.discovery().unwrap();
+    let pages = discovery.page_scope().unwrap();
+    assert_eq!(pages.accepted_association_count(), 1);
+    assert_eq!(pages.attempted_request_count(), 0);
+
+    let child = discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("secondary-child"))
+        .unwrap();
+    assert_eq!(
+        child.association(),
+        WordPressDiscoveryAssociation::ExplicitOperator
+    );
+    assert_eq!(child.parent_depth(), 0);
+    assert_eq!(child.theme().unwrap().version(), Some("4.2"));
+    assert_eq!(child.source_page_references().len(), 1);
+    let parent = discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("secondary-parent"))
+        .unwrap();
+    assert_eq!(
+        parent.association(),
+        WordPressDiscoveryAssociation::SameThemeBaseParent
+    );
+    assert_eq!(parent.parent_depth(), 1);
+    assert_eq!(parent.theme().unwrap().version(), Some("4.0"));
+    assert_eq!(
+        parent.source_page_references(),
+        child.source_page_references()
+    );
+    let child_component = wordpress
+        .result()
+        .components()
+        .iter()
+        .find(|component| component.identity().slug() == "secondary-child")
+        .unwrap();
+    assert!(child_component
+        .versions()
+        .iter()
+        .any(|version| version.value() == "4.2"));
+
+    let requests = server.requests().await;
+    for target in [
+        "/site-content/themes/secondary-child/style.css",
+        "/site-content/themes/secondary-parent/style.css",
+    ] {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == "GET" && request.target == target)
+                .count(),
+            1
+        );
+    }
+    assert!(requests
+        .iter()
+        .all(|request| !request.target.contains("wp-content")));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
 fn non_root_wordpress_review_requires_discovery_at_build_time() {
     let non_root_review =
         WebAssessmentRuntime::builder(Url::parse("https://example.test/blog/").unwrap())
@@ -593,7 +1114,12 @@ async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_req
             "/wp-content/themes/base-theme/style.css" => FixtureResponse::new(
                 "200 OK",
                 Some("text/css"),
-                b"/* Theme Name: Base Theme\nVersion: 1.0 */".to_vec(),
+                b"/* Theme Name: Base Theme\nVersion: 1.0\nTemplate: parent-theme */".to_vec(),
+            ),
+            "/wp-content/themes/parent-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Parent Theme\nVersion: 2.0 */".to_vec(),
             ),
             "/wp-content/plugins/page-only/readme.txt" => FixtureResponse::new(
                 "200 OK",
@@ -648,6 +1174,10 @@ async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_req
         WebAssessmentCompletion::Complete
     ));
     let wordpress = observed.wordpress_review_audit().unwrap();
+    assert!(
+        wordpress.asset_fingerprints().is_none(),
+        "observed page reuse remains valid when fingerprinting is not selected"
+    );
     let discovery = wordpress.discovery().unwrap();
     assert_eq!(
         discovery.policy_id(),
@@ -700,6 +1230,16 @@ async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_req
         accepted_page_references
     );
     assert_eq!(plugin_source.source_page_references().len(), 2);
+    let parent_source = discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("parent-theme"))
+        .expect("derived parent-theme metadata source");
+    assert_eq!(
+        parent_source.source_page_references(),
+        &[page_scope.entry_page_reference().to_owned()],
+        "a derived parent-theme source must retain the entry-page association"
+    );
     let page_only_component = wordpress
         .result()
         .components()
@@ -743,6 +1283,9 @@ async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_req
         1,
         "two accepted pages must share one metadata request"
     );
+    #[cfg(feature = "reporting")]
+    ReportGenerator::compose_assessment(observed, ScanProfileV1::web_review().unwrap())
+        .expect("observed-page parent provenance must survive report validation");
 }
 
 #[cfg(feature = "wordpress-review")]

@@ -8,6 +8,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     fmt,
+    sync::Arc,
 };
 
 use serde::{
@@ -18,11 +19,34 @@ use serde_json::{Map, Number, Value};
 use thiserror::Error;
 use url::Url;
 
+mod asset_fingerprint;
 mod inventory;
 mod layout;
 mod wordfence_v3;
 
+pub(crate) use asset_fingerprint::valid_wordpress_asset_fingerprint_path;
 pub(crate) use wordfence_v3::MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD;
+
+pub use asset_fingerprint::{
+    match_wordpress_asset_fingerprint_component, parse_wordpress_asset_fingerprint_catalog,
+    WordPressAssetFingerprintAggregateState, WordPressAssetFingerprintCatalog,
+    WordPressAssetFingerprintCatalogImport, WordPressAssetFingerprintCatalogMetadata,
+    WordPressAssetFingerprintComponent, WordPressAssetFingerprintComponentMatch,
+    WordPressAssetFingerprintError, WordPressAssetFingerprintFile, WordPressAssetFingerprintNotice,
+    WordPressAssetFingerprintProvenance, WordPressAssetFingerprintRelation,
+    WordPressAssetFingerprintRelease, WordPressAssetFingerprintReleaseMatch,
+    WordPressAssetFingerprintReleaseSource, WordPressAssetFingerprintReleaseState,
+    WordPressAssetFingerprintRepresentationProfile, WordPressAssetFingerprintResourceMatch,
+    WordPressAssetFingerprintUnknownReason, WordPressObservedAssetFingerprint,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES, MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_COMPONENTS,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_FILES,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_FILES_PER_RELEASE, MAX_WORDPRESS_ASSET_FINGERPRINT_PATH_BYTES,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_RELEASES_PER_COMPONENT,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_RESOURCES_PER_COMPONENT,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_RETAINED_BYTES, WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA,
+    WORDPRESS_ASSET_FINGERPRINT_REPRESENTATION_PROFILE,
+};
 
 pub use inventory::{
     parse_wordpress_saved_inventory, WordPressInventoryCategoryStatus,
@@ -598,6 +622,7 @@ pub struct WordPressReviewInputs {
     inventory_summary: Option<WordPressSavedInventorySummary>,
     local_input_provenance: Vec<WordPressLocalInputProvenance>,
     discovery_layout: Option<WordPressDiscoveryLayout>,
+    asset_fingerprint_catalog: Option<Arc<WordPressAssetFingerprintCatalogImport>>,
 }
 
 impl WordPressReviewInputs {
@@ -614,6 +639,7 @@ impl WordPressReviewInputs {
             inventory_summary: None,
             local_input_provenance: Vec::new(),
             discovery_layout: None,
+            asset_fingerprint_catalog: None,
         }
     }
 
@@ -639,6 +665,7 @@ impl WordPressReviewInputs {
             inventory_summary: Some(inventory_summary),
             local_input_provenance,
             discovery_layout: None,
+            asset_fingerprint_catalog: None,
         })
     }
 
@@ -695,6 +722,22 @@ impl WordPressReviewInputs {
         Ok(self)
     }
 
+    /// Attaches one validated finite catalogue of exact JS/CSS reference bytes.
+    ///
+    /// The catalogue is inert local data. It neither nominates target URLs nor
+    /// grants network authority, and matching its listed releases never creates
+    /// installed-version evidence.
+    pub fn with_asset_fingerprint_catalog(
+        mut self,
+        catalog: WordPressAssetFingerprintCatalogImport,
+    ) -> Result<Self, WordPressReviewError> {
+        if self.asset_fingerprint_catalog.is_some() {
+            return Err(WordPressReviewError::InvalidAssetFingerprintCatalog);
+        }
+        self.asset_fingerprint_catalog = Some(Arc::new(catalog));
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn context(&self) -> Option<&WordPressContext> {
         self.context.as_ref()
@@ -728,6 +771,17 @@ impl WordPressReviewInputs {
     #[must_use]
     pub const fn discovery_layout(&self) -> Option<&WordPressDiscoveryLayout> {
         self.discovery_layout.as_ref()
+    }
+
+    #[must_use]
+    pub fn asset_fingerprint_catalog(&self) -> Option<&WordPressAssetFingerprintCatalogImport> {
+        self.asset_fingerprint_catalog.as_deref()
+    }
+
+    pub(crate) fn shared_asset_fingerprint_catalog(
+        &self,
+    ) -> Option<Arc<WordPressAssetFingerprintCatalogImport>> {
+        self.asset_fingerprint_catalog.clone()
     }
 }
 
@@ -1774,6 +1828,8 @@ pub enum WordPressReviewError {
     InvalidInventoryProvenance,
     #[error("WordPress advisory catalog is invalid")]
     InvalidCatalog,
+    #[error("WordPress asset fingerprint catalogue selection is invalid")]
+    InvalidAssetFingerprintCatalog,
     #[error("native and external WordPress advisory inputs cannot be combined")]
     ConflictingAdvisoryInputs,
     #[error("an external version profile requires a local Wordfence V3 advisory export")]

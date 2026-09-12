@@ -3734,7 +3734,10 @@ fn reporting_cross_source_set_violations_with_inventory(
     let run_report_aliases = collect_run_report_aliases(&parsed);
     let mut violations = Vec::new();
     for (relative_path, syntax) in parsed {
-        if relative_path == "web_runtime/web_assessment_tests.rs" {
+        if matches!(
+            relative_path.as_str(),
+            "web_runtime/assessment_item_tests.rs" | "web_runtime/web_assessment_tests.rs"
+        ) {
             continue;
         }
         let imported_macro_bindings = collect_production_use_bindings(&syntax);
@@ -3763,7 +3766,7 @@ fn reporting_cross_source_set_violations_with_inventory(
         if enforce_internal_reporting_cfg_inventory {
             let expected = match relative_path.as_str() {
                 "web_runtime.rs" => Some(2),
-                "web_runtime/assessment_item.rs" => Some(7),
+                "web_runtime/assessment_item.rs" => Some(9),
                 "web_runtime/web_assessment.rs" => Some(7),
                 _ => None,
             };
@@ -4772,6 +4775,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "wordpress_discovery",
                 "Option<AssessmentWordPressDiscoveryAuditDocument>",
             ),
+            (
+                "wordpress_asset_fingerprints",
+                "Option<AssessmentWordPressAssetFingerprintAuditDocument>",
+            ),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
         ],
     ),
@@ -4822,6 +4829,176 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("layout", "WordPressDiscoveryLayoutDocument"),
             ("page_collection", "Option<WordPressPageCollectionDocument>"),
             ("sources", "Vec<WordPressDiscoverySourceDocument>"),
+        ],
+    ),
+    (
+        "AssessmentWordPressAssetFingerprintAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("policy_id", "&'static str"),
+            ("selected", "bool"),
+            ("representation_profile", "&'static str"),
+            ("finite_reference_scope", "&'static str"),
+            ("same_release_assumption", "&'static str"),
+            ("installed_version_assurance", "&'static str"),
+            ("source_authenticity", "&'static str"),
+            ("catalogue", "WordPressAssetFingerprintCatalogueDocument"),
+            ("candidate_count", "u64"),
+            ("selected_resource_count", "usize"),
+            ("omitted_resource_count", "usize"),
+            ("attempted_request_count", "u8"),
+            ("reused_response_count", "usize"),
+            ("fetched_response_count", "usize"),
+            ("response_bytes", "u64"),
+            ("stop", "&'static str"),
+            ("resource_count", "usize"),
+            (
+                "resources",
+                "Vec<WordPressAssetFingerprintResourceDocument>",
+            ),
+            ("component_count", "usize"),
+            (
+                "components",
+                "Vec<WordPressAssetFingerprintComponentDocument>",
+            ),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintCatalogueDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("id", "String"),
+            ("revision", "String"),
+            ("source_namespace", "String"),
+            ("byte_length", "u64"),
+            ("sha256", "String"),
+            ("semantic_sha256", "String"),
+            ("retained_bytes", "usize"),
+            ("component_count", "usize"),
+            ("release_count", "usize"),
+            ("file_count", "usize"),
+            ("provenance", "WordPressAssetFingerprintProvenanceDocument"),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintProvenanceDocument",
+        &[],
+        &[
+            ("reference", "String"),
+            ("revision", "String"),
+            ("notices", "Vec<WordPressAssetFingerprintNoticeDocument>"),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintNoticeDocument",
+        &[],
+        &[
+            ("id", "String"),
+            ("party", "String"),
+            ("notice", "String"),
+            ("license", "String"),
+            ("license_reference", "String"),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintResourceDocument",
+        &[],
+        &[
+            ("component", "WordPressComponentIdentityDocument"),
+            ("relative_path", "String"),
+            ("resource_reference", "String"),
+            ("source_page_references", "Vec<String>"),
+            ("observed_variant_count", "usize"),
+            ("acquisition", "&'static str"),
+            ("outcome", "&'static str"),
+            ("request_attempted", "bool"),
+            ("interpreted_response_bytes", "u64"),
+            ("response_bytes", "u64"),
+            ("evidence_reference_count", "usize"),
+            ("evidence_references", "Vec<String>"),
+            (
+                "observation",
+                "Option<WordPressAssetFingerprintObservationDocument>",
+            ),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintObservationDocument",
+        &[],
+        &[("byte_length", "u64"), ("sha256", "String")],
+    ),
+    (
+        "WordPressAssetFingerprintComponentDocument",
+        &[],
+        &[
+            ("identity", "WordPressComponentIdentityDocument"),
+            ("catalogue_component_listed", "bool"),
+            ("state", "&'static str"),
+            ("candidate_resource_count", "usize"),
+            ("selected_resource_count", "usize"),
+            ("completely_interpreted_resource_count", "usize"),
+            ("omitted_resource_count", "usize"),
+            ("informative_resource_count", "usize"),
+            ("listed_matrix_complete", "bool"),
+            ("compatible_release_ids", "Vec<String>"),
+            ("undetermined_release_ids", "Vec<String>"),
+            ("inconsistent_release_ids", "Vec<String>"),
+            ("resource_count", "usize"),
+            (
+                "resources",
+                "Vec<WordPressAssetFingerprintResourceMatchDocument>",
+            ),
+            ("release_count", "usize"),
+            (
+                "releases",
+                "Vec<WordPressAssetFingerprintReleaseMatchDocument>",
+            ),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintResourceMatchDocument",
+        &[],
+        &[
+            ("relative_path", "String"),
+            ("distinct_observation_count", "usize"),
+            ("informative", "bool"),
+            ("release_relation_count", "usize"),
+            (
+                "release_relations",
+                "Vec<WordPressAssetFingerprintReleaseRelationDocument>",
+            ),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintReleaseRelationDocument",
+        &[],
+        &[
+            ("release_id", "String"),
+            ("relation", "&'static str"),
+            ("unknown_reason", "Option<&'static str>"),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintReleaseMatchDocument",
+        &[],
+        &[
+            ("release_id", "String"),
+            ("version", "String"),
+            ("build_variant", "Option<String>"),
+            ("state", "&'static str"),
+            ("source", "WordPressAssetFingerprintReleaseSourceDocument"),
+        ],
+    ),
+    (
+        "WordPressAssetFingerprintReleaseSourceDocument",
+        &[],
+        &[
+            ("reference", "String"),
+            ("revision", "String"),
+            ("notice_ids", "Vec<String>"),
         ],
     ),
     (
@@ -5532,6 +5709,17 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentRestAuditDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
+                | "AssessmentWordPressAssetFingerprintAuditDocument"
+                | "WordPressAssetFingerprintCatalogueDocument"
+                | "WordPressAssetFingerprintProvenanceDocument"
+                | "WordPressAssetFingerprintNoticeDocument"
+                | "WordPressAssetFingerprintResourceDocument"
+                | "WordPressAssetFingerprintObservationDocument"
+                | "WordPressAssetFingerprintComponentDocument"
+                | "WordPressAssetFingerprintResourceMatchDocument"
+                | "WordPressAssetFingerprintReleaseRelationDocument"
+                | "WordPressAssetFingerprintReleaseMatchDocument"
+                | "WordPressAssetFingerprintReleaseSourceDocument"
                 | "WordPressPageCollectionDocument"
                 | "WordPressPageSourceDocument"
                 | "WordPressDiscoveryLayoutDocument"
@@ -5612,6 +5800,17 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
+                | "AssessmentWordPressAssetFingerprintAuditDocument"
+                | "WordPressAssetFingerprintCatalogueDocument"
+                | "WordPressAssetFingerprintProvenanceDocument"
+                | "WordPressAssetFingerprintNoticeDocument"
+                | "WordPressAssetFingerprintResourceDocument"
+                | "WordPressAssetFingerprintObservationDocument"
+                | "WordPressAssetFingerprintComponentDocument"
+                | "WordPressAssetFingerprintResourceMatchDocument"
+                | "WordPressAssetFingerprintReleaseRelationDocument"
+                | "WordPressAssetFingerprintReleaseMatchDocument"
+                | "WordPressAssetFingerprintReleaseSourceDocument"
                 | "WordPressPageCollectionDocument"
                 | "WordPressPageSourceDocument"
                 | "WordPressDiscoveryLayoutDocument"
@@ -5704,7 +5903,9 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                     } else if name == "AssessmentDocument"
                         && matches!(
                             field_name.as_str(),
-                            "wordpress_review" | "wordpress_discovery"
+                            "wordpress_review"
+                                | "wordpress_discovery"
+                                | "wordpress_asset_fingerprints"
                         )
                     {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "wordpress-review")
@@ -5729,6 +5930,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                             ))
                         || (name == "AssessmentWordPressDiscoveryAuditDocument"
                             && field_name == "page_collection")
+                        || (name == "WordPressAssetFingerprintResourceDocument"
+                            && field_name == "observation")
+                        || (name == "WordPressAssetFingerprintReleaseRelationDocument"
+                            && field_name == "unknown_reason")
                         || (name == "WordPressDiscoveryLayoutDocument"
                             && field_name == "declaration")
                         || (name == "WordPressDiscoveryLayoutRoleDocument"
@@ -8164,8 +8369,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 279_881;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x27dd_9281_003a_09e0_201f_14e3_f6f0_316f;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 326_637;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xe275_f7c1_afc8_b34e_b693_0d82_a420_6ae4;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -8273,10 +8478,19 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::WebAssessmentRunReport",
+    "crate::web_runtime::WordPressAssetFingerprintExecution",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::WebAssessmentWordPressAudit",
     "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_COMPONENTS",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_FILES",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_PATH_BYTES",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RELEASES_PER_COMPONENT",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RESOURCES_PER_COMPONENT",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RETAINED_BYTES",
     "crate::wordpress_review::MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS",
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_COMPONENTS",
     "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE",
@@ -8291,9 +8505,15 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::WORDFENCE_V3_RESOURCE_POLICY_V3",
     "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA",
     "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2",
+    "crate::wordpress_review::WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA",
+    "crate::wordpress_review::WORDPRESS_ASSET_FINGERPRINT_REPRESENTATION_PROFILE",
     "crate::wordpress_review::WordPressActivationState",
     "crate::wordpress_review::WordPressAdvisoryCatalogSchema",
     "crate::wordpress_review::WordPressApplicability",
+    "crate::wordpress_review::WordPressAssetFingerprintAggregateState",
+    "crate::wordpress_review::WordPressAssetFingerprintRelation",
+    "crate::wordpress_review::WordPressAssetFingerprintReleaseState",
+    "crate::wordpress_review::WordPressAssetFingerprintUnknownReason",
     "crate::wordpress_review::WordPressCatalogStatus",
     "crate::wordpress_review::WordPressComparisonProfile",
     "crate::wordpress_review::WordPressComponentEvidenceClass",
@@ -8339,6 +8559,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "WordPressPageCollectionDocument::validate",
     "AssessmentWordPressAuditDocument::from_audit",
@@ -8383,6 +8604,21 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "WordPressApplicability::ContradictedByDeclaredFacts",
     "WordPressApplicability::IndeterminateMissingEvidence",
     "WordPressApplicability::IndeterminateUnsupported",
+    "WordPressAssetFingerprintAggregateState::MultipleCatalogueCandidates",
+    "WordPressAssetFingerprintAggregateState::NoCatalogueByteMatch",
+    "WordPressAssetFingerprintAggregateState::NoConsistentCatalogueRelease",
+    "WordPressAssetFingerprintAggregateState::ProvisionalCandidates",
+    "WordPressAssetFingerprintAggregateState::SingleCatalogueCandidate",
+    "WordPressAssetFingerprintAggregateState::Undetermined",
+    "WordPressAssetFingerprintRelation::Match",
+    "WordPressAssetFingerprintRelation::Mismatch",
+    "WordPressAssetFingerprintRelation::Unknown",
+    "WordPressAssetFingerprintReleaseState::Compatible",
+    "WordPressAssetFingerprintReleaseState::Inconsistent",
+    "WordPressAssetFingerprintReleaseState::Undetermined",
+    "WordPressAssetFingerprintUnknownReason::ConflictingObservations",
+    "WordPressAssetFingerprintUnknownReason::MissingReference",
+    "WebAssessmentWordPressAudit::discovery",
     "WordPressCatalogStatus::CatalogNotSupplied",
     "WordPressCatalogStatus::Evaluated",
     "WordPressComparisonProfile::NumericDottedV1",
@@ -8630,11 +8866,22 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::WebAssessmentWordPressAudit",
+    "crate::web_runtime::WordPressAssetFingerprintExecution",
+    "WebAssessmentWordPressAudit::asset_fingerprints",
+    "WordPressAssetFingerprintExecution::resources",
     "crate::authorization_review::AuthorizationReviewOutcome",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "crate::rest_review::RestDocumentedResponseClass",
     "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_COMPONENTS",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_FILES",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_PATH_BYTES",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RELEASES_PER_COMPONENT",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RESOURCES_PER_COMPONENT",
+    "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RETAINED_BYTES",
     "crate::wordpress_review::MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS",
     "crate::wordpress_review::MAX_WORDPRESS_CONTEXT_COMPONENTS",
     "crate::wordpress_review::MAX_WORDPRESS_EVALUATION_WORK",
@@ -8665,9 +8912,15 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::WORDFENCE_V3_RESOURCE_POLICY_V3",
     "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA",
     "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2",
+    "crate::wordpress_review::WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA",
+    "crate::wordpress_review::WORDPRESS_ASSET_FINGERPRINT_REPRESENTATION_PROFILE",
     "crate::wordpress_review::WordPressActivationState",
     "crate::wordpress_review::WordPressAdvisoryCatalogSchema",
     "crate::wordpress_review::WordPressApplicability",
+    "crate::wordpress_review::WordPressAssetFingerprintAggregateState",
+    "crate::wordpress_review::WordPressAssetFingerprintRelation",
+    "crate::wordpress_review::WordPressAssetFingerprintReleaseState",
+    "crate::wordpress_review::WordPressAssetFingerprintUnknownReason",
     "crate::wordpress_review::WordPressCatalogStatus",
     "crate::wordpress_review::WordPressComparisonProfile",
     "crate::wordpress_review::WordPressComponentEvidenceClass",
@@ -8701,6 +8954,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::wordpress_review::WordPressVersionResolution",
     "crate::wordpress_review::WordPressVersionResolutionReason",
     "crate::wordpress_review::valid_slug",
+    "crate::wordpress_review::valid_wordpress_asset_fingerprint_path",
     "crate::wordpress_review::WordfenceV3AffectedRange",
     "crate::wordpress_review::WordfenceV3CvssRating",
     "crate::wordpress_review::WordfenceV3IdentityMapping",
@@ -8741,7 +8995,10 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "u64::from",
     "u64::try_from",
     "u8::MAX",
+    "u8::try_from",
+    "usize::MAX",
     "usize::from",
+    "usize::try_from",
     "termivar_core::OutcomeStatus",
     "termivar_core::ResourceAccounting",
     "termivar_core::ResourceAccountingMode",
@@ -8762,6 +9019,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentBasisLinkageDocument::from_basis",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
+    "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentOpenApiAuditDocument::from_audit",
     "AssessmentRestAuditDocument::from_audit",
     "AssessmentAuthorizationAuditDocument::from_audit",
@@ -8843,7 +9101,9 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "u32::from",
     "u64::from",
     "u64::try_from",
+    "u8::try_from",
     "usize::from",
+    "usize::try_from",
     "visible_text",
     "valid_opaque_assessment_reference",
     "valid_inventory_label",
@@ -8872,6 +9132,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "write_wordpress_advisory",
     "write_wordpress_component",
     "write_wordpress_discovery_presentation",
+    "write_wordpress_asset_fingerprint_presentation",
     "write_wordpress_endpoint",
     "write_wordpress_evaluation_group",
     "write_wordpress_external_evaluation",
@@ -8885,6 +9146,9 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_optional_code_field",
     "wordpress_activation",
     "wordpress_applicability",
+    "wordpress_asset_fingerprint_aggregate_state",
+    "wordpress_asset_fingerprint_relation",
+    "wordpress_asset_fingerprint_release_state",
     "wordpress_catalog_status",
     "wordpress_comparison_profile",
     "wordpress_component_identity",
@@ -8925,6 +9189,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "wordpress_version_resolution_reason",
     "wordpress_discovery_versions_match",
     "crate::wordpress_review::valid_slug",
+    "crate::wordpress_review::valid_wordpress_asset_fingerprint_path",
     "crate::wordpress_version::ProfiledVersionKey::parse",
     "crate::wordpress_version::checked_accumulate_external_interpretation_work",
     "url::Url::parse",
@@ -8934,14 +9199,20 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accepted_association_count",
     "acquisition",
     "application_reference",
+    "asset_fingerprints",
     "association",
     "attempted_request_count",
     "by_ref",
     "candidate_count",
+    "candidate_resource_count",
     "candidate_limit_reached",
+    "catalog",
+    "catalogue_component_listed",
     "committed_response_count",
     "completed_response_count",
+    "completely_interpreted_resource_count",
     "component_kind",
+    "component_matches",
     "component_slug",
     "conflicting_association_count",
     "cloned",
@@ -8954,6 +9225,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "first",
     "flat_map",
     "fetched_response_count",
+    "file_count",
+    "informative_resource_count",
     "interpreted_response_bytes",
     "is_exact_role_bound_component",
     "is_exact_theme_role_bound",
@@ -8961,6 +9234,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "namespaces",
     "not_observed_count",
     "omitted_candidate_count",
+    "omitted_resource_count",
     "parent_depth",
     "page_reference",
     "page_scope",
@@ -8970,6 +9244,11 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "rejected_association_count",
     "rejected_response_count",
     "resource_reference",
+    "relative_path",
+    "release_count",
+    "release_id",
+    "releases",
+    "resources",
     "role",
     "role_reference",
     "roles",
@@ -8980,16 +9259,21 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "seed_count",
     "selected",
     "selected_count",
+    "selected_resource_count",
     "skipped_foreign_origin_count",
     "skipped_sibling_application_count",
     "sources",
     "source_page_references",
     "stable_tag",
+    "state",
+    "stop",
     "sum",
     "take",
     "template",
     "tested_up_to",
     "theme",
+    "undetermined_release_ids",
+    "unknown_reason",
     "accounting",
     "accounted_retained_limit",
     "action_id",
@@ -9019,6 +9303,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "chain",
     "chars",
     "checked_add",
+    "checked_sub",
     "checked_mul",
     "class",
     "clone",
@@ -9026,6 +9311,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "collect",
     "completed_at",
     "component_count",
+    "compatible_release_ids",
     "confidence",
     "contains",
     "consumed",
@@ -9038,6 +9324,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "dimensions",
     "disposition",
     "distinct_spelling_count",
+    "distinct_observation_count",
     "deprecated_operation_count",
     "declared_name",
     "documented_response",
@@ -9054,6 +9341,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "evidence_ids",
     "evidence",
     "evidence_count",
+    "evidence_reference_for",
     "evidence_row_count",
     "explicit_auth_operation_count",
     "extend_from_slice",
@@ -9074,12 +9362,15 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "inventory_summary",
     "inline",
     "identity_limitations",
+    "inconsistent_release_ids",
+    "informative",
     "is_ascii_alphanumeric",
     "is_ascii_control",
     "is_control",
     "is_ascii",
     "is_ascii_digit",
     "is_empty",
+    "is_disjoint",
     "is_err",
     "is_none",
     "is_none_or",
@@ -9096,6 +9387,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "len_utf8",
     "limit",
     "limitations",
+    "license_reference",
+    "listed_matrix_complete",
     "local_input_provenance",
     "map",
     "map_err",
@@ -9110,6 +9403,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "ok",
     "openapi_review_audit",
     "observed_media",
+    "observation",
+    "observed_variant_count",
     "operation_count",
     "ordinal",
     "outcomes",
@@ -9132,6 +9427,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "push_fmt",
     "push_str",
     "profile",
+    "provenance",
     "primary_stable",
     "query_parameter_count",
     "redacted_summary",
@@ -9163,6 +9459,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "steps",
     "stop_reason",
     "strip_prefix",
+    "split_at",
     "subject_count",
     "subject_reference",
     "summary",
@@ -9184,6 +9481,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "rest_review_audit",
     "validate",
     "version",
+    "build_variant",
     "version_evidence_resolution",
     "verification_outcome",
     "wall_time_ms",
@@ -9404,7 +9702,16 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID"
                         | "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID"
                         | "crate::web_runtime::WebAssessmentWordPressAudit"
+                        | "crate::web_runtime::WordPressAssetFingerprintExecution"
                         | "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_COMPONENTS"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_FILES"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_PATH_BYTES"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RELEASES_PER_COMPONENT"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RESOURCES_PER_COMPONENT"
+                        | "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_RETAINED_BYTES"
                         | "crate::wordpress_review::MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS"
                         | "crate::wordpress_review::MAX_WORDPRESS_RESULT_COMPONENTS"
                         | "crate::wordpress_review::MAX_WORDPRESS_RESULT_VERSION_EVIDENCE"
@@ -9419,9 +9726,15 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::wordpress_review::WORDFENCE_V3_RESOURCE_POLICY_V3"
                         | "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA"
                         | "crate::wordpress_review::WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2"
+                        | "crate::wordpress_review::WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA"
+                        | "crate::wordpress_review::WORDPRESS_ASSET_FINGERPRINT_REPRESENTATION_PROFILE"
                         | "crate::wordpress_review::WordPressActivationState"
                         | "crate::wordpress_review::WordPressAdvisoryCatalogSchema"
                         | "crate::wordpress_review::WordPressApplicability"
+                        | "crate::wordpress_review::WordPressAssetFingerprintAggregateState"
+                        | "crate::wordpress_review::WordPressAssetFingerprintRelation"
+                        | "crate::wordpress_review::WordPressAssetFingerprintReleaseState"
+                        | "crate::wordpress_review::WordPressAssetFingerprintUnknownReason"
                         | "crate::wordpress_review::WordPressCatalogStatus"
                         | "crate::wordpress_review::WordPressComparisonProfile"
                         | "crate::wordpress_review::WordPressComponentEvidenceClass"
@@ -12795,13 +13108,16 @@ mod tests {
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             use crate::{
                 web_runtime::{
-                    WebAssessmentWordPressAudit,
+                    WebAssessmentWordPressAudit, WordPressAssetFingerprintExecution,
                     WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
                     WORDPRESS_REVIEW_CAPABILITY_ID,
                 },
                 wordpress_review::{
                     WordPressActivationState, WordPressAdvisoryCatalogSchema,
-                    WordPressApplicability, WordPressCatalogStatus, WordPressComparisonProfile,
+                    WordPressApplicability, WordPressAssetFingerprintAggregateState,
+                    WordPressAssetFingerprintRelation, WordPressAssetFingerprintReleaseState,
+                    WordPressAssetFingerprintUnknownReason, WordPressCatalogStatus,
+                    WordPressComparisonProfile,
                     WordPressComponentEvidenceClass, WordPressComponentKind,
                     WordPressEvidenceConfidence, WordPressEvidenceSource,
                     WordPressExecutionStatus, WordPressExternalApplicability,
@@ -12816,6 +13132,14 @@ mod tests {
                     WordPressVersionResolution, WordPressVersionResolutionReason,
                     WordfenceV3CvssRating, WordfenceV3IdentityMapping, WordfenceV3RangeValue,
                     MAX_WORDPRESS_ADVISORY_RECORDS,
+                    MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES,
+                    MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES,
+                    MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_COMPONENTS,
+                    MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_FILES,
+                    MAX_WORDPRESS_ASSET_FINGERPRINT_PATH_BYTES,
+                    MAX_WORDPRESS_ASSET_FINGERPRINT_RELEASES_PER_COMPONENT,
+                    MAX_WORDPRESS_ASSET_FINGERPRINT_RESOURCES_PER_COMPONENT,
+                    MAX_WORDPRESS_ASSET_FINGERPRINT_RETAINED_BYTES,
                     MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS,
                     MAX_WORDPRESS_RESULT_COMPONENTS, MAX_WORDPRESS_RESULT_VERSION_EVIDENCE,
                     MAX_WORDPRESS_SAVED_INVENTORY_BYTES, MAX_WORDPRESS_SIGNALS,
@@ -12824,6 +13148,8 @@ mod tests {
                     WORDFENCE_V3_MAPPING_REVISION_V2, WORDFENCE_V3_RESOURCE_POLICY_V1,
                     WORDFENCE_V3_RESOURCE_POLICY_V2, WORDFENCE_V3_RESOURCE_POLICY_V3,
                     WORDPRESS_ADVISORY_CATALOG_SCHEMA, WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2,
+                    WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA,
+                    WORDPRESS_ASSET_FINGERPRINT_REPRESENTATION_PROFILE,
                 },
             };
         "#
@@ -13258,6 +13584,9 @@ mod tests {
                 #[cfg(feature = "wordpress-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_discovery: Option<AssessmentWordPressDiscoveryAuditDocument>,
+                #[cfg(feature = "wordpress-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                wordpress_asset_fingerprints: Option<AssessmentWordPressAssetFingerprintAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -13307,6 +13636,141 @@ mod tests {
                 #[serde(skip_serializing_if = "Option::is_none")]
                 page_collection: Option<WordPressPageCollectionDocument>,
                 sources: Vec<WordPressDiscoverySourceDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct AssessmentWordPressAssetFingerprintAuditDocument {
+                schema: &'static str,
+                capability_id: &'static str,
+                policy_id: &'static str,
+                selected: bool,
+                representation_profile: &'static str,
+                finite_reference_scope: &'static str,
+                same_release_assumption: &'static str,
+                installed_version_assurance: &'static str,
+                source_authenticity: &'static str,
+                catalogue: WordPressAssetFingerprintCatalogueDocument,
+                candidate_count: u64,
+                selected_resource_count: usize,
+                omitted_resource_count: usize,
+                attempted_request_count: u8,
+                reused_response_count: usize,
+                fetched_response_count: usize,
+                response_bytes: u64,
+                stop: &'static str,
+                resource_count: usize,
+                resources: Vec<WordPressAssetFingerprintResourceDocument>,
+                component_count: usize,
+                components: Vec<WordPressAssetFingerprintComponentDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintCatalogueDocument {
+                schema: &'static str,
+                id: String,
+                revision: String,
+                source_namespace: String,
+                byte_length: u64,
+                sha256: String,
+                semantic_sha256: String,
+                retained_bytes: usize,
+                component_count: usize,
+                release_count: usize,
+                file_count: usize,
+                provenance: WordPressAssetFingerprintProvenanceDocument,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintProvenanceDocument {
+                reference: String,
+                revision: String,
+                notices: Vec<WordPressAssetFingerprintNoticeDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintNoticeDocument {
+                id: String,
+                party: String,
+                notice: String,
+                license: String,
+                license_reference: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintResourceDocument {
+                component: WordPressComponentIdentityDocument,
+                relative_path: String,
+                resource_reference: String,
+                source_page_references: Vec<String>,
+                observed_variant_count: usize,
+                acquisition: &'static str,
+                outcome: &'static str,
+                request_attempted: bool,
+                interpreted_response_bytes: u64,
+                response_bytes: u64,
+                evidence_reference_count: usize,
+                evidence_references: Vec<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                observation: Option<WordPressAssetFingerprintObservationDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintObservationDocument {
+                byte_length: u64,
+                sha256: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintComponentDocument {
+                identity: WordPressComponentIdentityDocument,
+                catalogue_component_listed: bool,
+                state: &'static str,
+                candidate_resource_count: usize,
+                selected_resource_count: usize,
+                completely_interpreted_resource_count: usize,
+                omitted_resource_count: usize,
+                informative_resource_count: usize,
+                listed_matrix_complete: bool,
+                compatible_release_ids: Vec<String>,
+                undetermined_release_ids: Vec<String>,
+                inconsistent_release_ids: Vec<String>,
+                resource_count: usize,
+                resources: Vec<WordPressAssetFingerprintResourceMatchDocument>,
+                release_count: usize,
+                releases: Vec<WordPressAssetFingerprintReleaseMatchDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintResourceMatchDocument {
+                relative_path: String,
+                distinct_observation_count: usize,
+                informative: bool,
+                release_relation_count: usize,
+                release_relations: Vec<WordPressAssetFingerprintReleaseRelationDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintReleaseRelationDocument {
+                release_id: String,
+                relation: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                unknown_reason: Option<&'static str>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintReleaseMatchDocument {
+                release_id: String,
+                version: String,
+                build_variant: Option<String>,
+                state: &'static str,
+                source: WordPressAssetFingerprintReleaseSourceDocument,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressAssetFingerprintReleaseSourceDocument {
+                reference: String,
+                revision: String,
+                notice_ids: Vec<String>,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
@@ -13973,6 +14437,65 @@ mod tests {
             "{violations}"
         );
 
+        let public_wordpress_fingerprints = source.replace(
+            "                wordpress_asset_fingerprints: Option<AssessmentWordPressAssetFingerprintAuditDocument>,",
+            "                pub wordpress_asset_fingerprints: Option<AssessmentWordPressAssetFingerprintAuditDocument>,",
+        );
+        assert_ne!(public_wordpress_fingerprints, source);
+        let violations = reporting_document_contract_violations(&public_wordpress_fingerprints)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let ungated_wordpress_fingerprint_document = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentWordPressAssetFingerprintAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentWordPressAssetFingerprintAuditDocument",
+        );
+        assert_ne!(ungated_wordpress_fingerprint_document, source);
+        let violations =
+            reporting_document_contract_violations(&ungated_wordpress_fingerprint_document)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("AssessmentWordPressAssetFingerprintAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
+        let serialized_null_fingerprint_observation = source.replace(
+            "                #[serde(skip_serializing_if = \"Option::is_none\")]\n                observation: Option<WordPressAssetFingerprintObservationDocument>,",
+            "                observation: Option<WordPressAssetFingerprintObservationDocument>,",
+        );
+        assert_ne!(serialized_null_fingerprint_observation, source);
+        let violations =
+            reporting_document_contract_violations(&serialized_null_fingerprint_observation)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("WordPressAssetFingerprintResourceDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let broadened_fingerprint_relation_reason = source.replace(
+            "                #[serde(skip_serializing_if = \"Option::is_none\")]\n                unknown_reason: Option<&'static str>,",
+            "                unknown_reason: Option<&'static str>,",
+        );
+        assert_ne!(broadened_fingerprint_relation_reason, source);
+        let violations =
+            reporting_document_contract_violations(&broadened_fingerprint_relation_reason)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("WordPressAssetFingerprintReleaseRelationDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
         let serialized_empty_discovery_namespaces = source.replace(
             "                #[serde(skip_serializing_if = \"Vec::is_empty\")]\n                namespaces: Vec<String>,",
             "                namespaces: Vec<String>,",
@@ -14169,8 +14692,11 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        let missing_semantic_digest =
-            source.replacen("                semantic_sha256: String,\n", "", 1);
+        let missing_semantic_digest = source.replacen(
+            "            struct WordPressExternalInputDocument {\n                byte_length: u64,\n                sha256: String,\n                semantic_sha256: String,",
+            "            struct WordPressExternalInputDocument {\n                byte_length: u64,\n                sha256: String,",
+            1,
+        );
         assert_ne!(missing_semantic_digest, source);
         let violations = reporting_document_contract_violations(&missing_semantic_digest)
             .unwrap()
@@ -14300,6 +14826,17 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("production AST/body inventory changed")));
         }
+    }
+
+    #[test]
+    fn checked_in_reporting_source_matches_exact_private_contracts() {
+        let source = include_str!("../../../crates/termivar-scanner/src/reporting.rs");
+        let import_violations = reporting_source_import_violations(source).unwrap();
+        assert!(import_violations.is_empty(), "{import_violations:#?}");
+        let source_violations = reporting_source_violations(source).unwrap();
+        assert!(source_violations.is_empty(), "{source_violations:#?}");
+        let document_violations = reporting_document_contract_violations(source).unwrap();
+        assert!(document_violations.is_empty(), "{document_violations:#?}");
     }
 
     fn valid_cli_contract() -> (

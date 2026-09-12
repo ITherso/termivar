@@ -50,6 +50,19 @@
     },
     {
       "kind": "plugin",
+      "slug": "termivar-fingerprint-lab",
+      "version": "4.0.0",
+      "state": "active",
+      "conditional_pages": [
+        "contact",
+        "gallery"
+      ],
+      "catalogue_contains_installed_version": false,
+      "url_version_hint": "cache-42",
+      "readme_stable_tag": "9.9.9"
+    },
+    {
+      "kind": "plugin",
       "slug": "termivar-hidden-lab",
       "version": "4.5.6",
       "state": "inactive",
@@ -94,6 +107,7 @@
     "generator_absence": "unknown_not_negative",
     "namespace_suffix": "protocol_version_not_component_version",
     "readme_stable_tag": "distribution_release_hint_not_installed_version",
+    "asset_fingerprint_candidate": "finite_catalogue_compatibility_not_installed_version",
     "inactive_plugin": "intentionally_unobservable_from_root"
   }
 }

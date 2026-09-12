@@ -58,12 +58,16 @@ pub use policy::{
     HttpBodyCapture, HttpEvidencePolicy, DEFAULT_HTTP_BODY_LIMIT, MAX_HTTP_BODY_LIMIT,
 };
 pub use probe::{HttpProbe, HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider};
-pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 #[cfg(feature = "wordpress-review")]
 pub(crate) use request_broker::{
+    wordpress_asset_request_binding_value, WordPressAssetRequestDescriptor,
     WordPressMetadataRequestDescriptor, WordPressMetadataRequestSource,
-    WordPressMetadataResourceKind, WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
+    WordPressMetadataResourceKind, WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+    WORDPRESS_ASSET_NOMINATION_COMPONENT, WORDPRESS_ASSET_NOMINATION_METHOD,
+    WORDPRESS_ASSET_NOMINATION_NAMESPACE, WORDPRESS_ASSET_NOMINATION_PREDICATE,
+    WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
 };
+pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 #[cfg(feature = "authorization-review")]
 pub(crate) use response::AuthorizationResponseDefense;
 pub(crate) use response::CollectedHttpResponse;
@@ -185,6 +189,12 @@ pub enum HttpEvidenceError {
     #[error("WordPress metadata request violated its closed admission contract")]
     InvalidWordPressMetadataRequest,
 
+    /// A WordPress asset request was not the exact JS/CSS resource admitted
+    /// from committed HTML under the frozen application/component binding.
+    #[cfg(feature = "wordpress-review")]
+    #[error("WordPress asset request violated its closed admission contract")]
+    InvalidWordPressAssetRequest,
+
     /// A request header could alter destination or message framing.
     #[error("HTTP request header {name} is forbidden by evidence policy")]
     ForbiddenRequestHeader { name: String },
@@ -256,7 +266,8 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
             DecisionExecutionFailureKind::BlockedByPolicy
         },
         #[cfg(feature = "wordpress-review")]
-        HttpEvidenceError::InvalidWordPressMetadataRequest => {
+        HttpEvidenceError::InvalidWordPressMetadataRequest
+        | HttpEvidenceError::InvalidWordPressAssetRequest => {
             DecisionExecutionFailureKind::BlockedByPolicy
         },
         HttpEvidenceError::EmbeddedCredentials
@@ -966,7 +977,23 @@ impl HttpEvidenceExecutor {
                 status: response.status.as_u16(),
                 media_type: media_type.as_deref(),
                 reliability: self.policy().reliability(),
-                complete_body: response.body_complete.then_some(response.body.as_slice()),
+                complete_body: (response.body_complete && !response.body_truncated)
+                    .then_some(response.body.as_slice()),
+                #[cfg(feature = "wordpress-review")]
+                request_headers_empty: probe.headers().is_empty(),
+                #[cfg(feature = "wordpress-review")]
+                response_final_url_matches_request: response.final_url == *probe.url(),
+                #[cfg(feature = "wordpress-review")]
+                response_content_encoding_absent: !response
+                    .headers
+                    .contains_key(reqwest::header::CONTENT_ENCODING),
+                #[cfg(feature = "wordpress-review")]
+                response_content_length_consistent: response::content_length_matches_body(
+                    &response.headers,
+                    u64::try_from(response.body.len()).unwrap_or(u64::MAX),
+                ),
+                #[cfg(feature = "wordpress-review")]
+                response_body_bytes: u64::try_from(response.body.len()).unwrap_or(u64::MAX),
                 request_method_evidence_id: evidence_id(HttpEvidencePredicate::REQUEST_METHOD),
                 request_url_evidence_id: evidence_id(HttpEvidencePredicate::REQUEST_URL),
                 response_status_evidence_id: evidence_id(HttpEvidencePredicate::RESPONSE_STATUS),
@@ -978,6 +1005,10 @@ impl HttpEvidenceExecutor {
                 ),
                 response_body_truncated_evidence_id: evidence_id(
                     HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+                ),
+                #[cfg(feature = "wordpress-review")]
+                response_body_bytes_evidence_id: evidence_id(
+                    HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
                 ),
                 response_body_digest_evidence_id: evidence_id(
                     HttpEvidencePredicate::RESPONSE_BODY_SHA256,
@@ -1123,12 +1154,24 @@ pub(crate) struct CompleteHttpResponseObservation<'a> {
     media_type: Option<&'a str>,
     reliability: ConfidenceScore,
     complete_body: Option<&'a [u8]>,
+    #[cfg(feature = "wordpress-review")]
+    request_headers_empty: bool,
+    #[cfg(feature = "wordpress-review")]
+    response_final_url_matches_request: bool,
+    #[cfg(feature = "wordpress-review")]
+    response_content_encoding_absent: bool,
+    #[cfg(feature = "wordpress-review")]
+    response_content_length_consistent: bool,
+    #[cfg(feature = "wordpress-review")]
+    response_body_bytes: u64,
     request_method_evidence_id: Option<&'a termivar_core::EvidenceId>,
     request_url_evidence_id: Option<&'a termivar_core::EvidenceId>,
     response_status_evidence_id: Option<&'a termivar_core::EvidenceId>,
     response_final_url_evidence_id: Option<&'a termivar_core::EvidenceId>,
     response_media_type_evidence_id: Option<&'a termivar_core::EvidenceId>,
     response_body_truncated_evidence_id: Option<&'a termivar_core::EvidenceId>,
+    #[cfg(feature = "wordpress-review")]
+    response_body_bytes_evidence_id: Option<&'a termivar_core::EvidenceId>,
     response_body_digest_evidence_id: Option<&'a termivar_core::EvidenceId>,
     passive_response_projection: &'a PassiveResponseProjection,
     review_response_projection: &'a review_response::ReviewResponseProjection,
@@ -1197,6 +1240,44 @@ impl CompleteHttpResponseObservation<'_> {
         self.complete_body
     }
 
+    /// Returns bytes suitable for the identity-content fingerprint profile.
+    /// This is stricter than `complete_body()`: the request must have carried
+    /// no caller headers, the redirect-disabled transport must have retained
+    /// the exact requested URL, and the response must contain no
+    /// Content-Encoding field.
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) const fn complete_identity_content_body(&self) -> Option<&[u8]> {
+        if self.request_headers_empty
+            && self.response_final_url_matches_request
+            && self.response_content_encoding_absent
+            && self.response_content_length_consistent
+        {
+            self.complete_body
+        } else {
+            None
+        }
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) const fn response_body_bytes(&self) -> u64 {
+        self.response_body_bytes
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) const fn response_final_url_matches_request(&self) -> bool {
+        self.response_final_url_matches_request
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) const fn response_content_encoding_absent(&self) -> bool {
+        self.response_content_encoding_absent
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) const fn response_content_length_consistent(&self) -> bool {
+        self.response_content_length_consistent
+    }
+
     pub(crate) const fn request_method_evidence_id(&self) -> Option<&termivar_core::EvidenceId> {
         self.request_method_evidence_id
     }
@@ -1225,6 +1306,13 @@ impl CompleteHttpResponseObservation<'_> {
         &self,
     ) -> Option<&termivar_core::EvidenceId> {
         self.response_body_truncated_evidence_id
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) const fn response_body_bytes_evidence_id(
+        &self,
+    ) -> Option<&termivar_core::EvidenceId> {
+        self.response_body_bytes_evidence_id
     }
 
     pub(crate) const fn response_body_digest_evidence_id(
@@ -1302,12 +1390,27 @@ pub(crate) fn complete_http_response_observation_for_test<'a>(
         media_type: input.media_type,
         reliability: input.reliability,
         complete_body: input.complete_body,
+        #[cfg(feature = "wordpress-review")]
+        request_headers_empty: true,
+        #[cfg(feature = "wordpress-review")]
+        response_final_url_matches_request: true,
+        #[cfg(feature = "wordpress-review")]
+        response_content_encoding_absent: true,
+        #[cfg(feature = "wordpress-review")]
+        response_content_length_consistent: true,
+        #[cfg(feature = "wordpress-review")]
+        response_body_bytes: input
+            .complete_body
+            .map(|body| u64::try_from(body.len()).unwrap_or(u64::MAX))
+            .unwrap_or(0),
         request_method_evidence_id: input.request_method_evidence_id,
         request_url_evidence_id: input.request_url_evidence_id,
         response_status_evidence_id: input.response_status_evidence_id,
         response_final_url_evidence_id: input.response_final_url_evidence_id,
         response_media_type_evidence_id: input.response_media_type_evidence_id,
         response_body_truncated_evidence_id: input.response_body_truncated_evidence_id,
+        #[cfg(feature = "wordpress-review")]
+        response_body_bytes_evidence_id: None,
         response_body_digest_evidence_id: input.response_body_digest_evidence_id,
         passive_response_projection: input.passive_response_projection,
         review_response_projection: input

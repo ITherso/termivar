@@ -268,6 +268,33 @@ fn mapped_context(
     (context, evidence_ids, knowledge)
 }
 
+#[cfg(feature = "reporting")]
+#[test]
+fn finished_projection_retains_exact_evidence_identity_to_reference_mapping() {
+    let subject = EntityId::new("endpoint:https://assessment-tests.test/").unwrap();
+    let (context, evidence_ids, _knowledge) = mapped_context(
+        &subject,
+        "authorized-root@1",
+        &[],
+        &["runtime:z", "runtime:a", "runtime:m"],
+    );
+    let expected = evidence_ids
+        .iter()
+        .map(|evidence_id| {
+            (
+                evidence_id.clone(),
+                context.evidence_reference_for(evidence_id).unwrap(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let (_subjects, _items, retained) = context.finish().into_report_parts();
+    assert_eq!(retained, expected);
+    assert_eq!(retained[&evidence_ids[0]].ordinal(), 0);
+    assert_eq!(retained[&evidence_ids[1]].ordinal(), 1);
+    assert_eq!(retained[&evidence_ids[2]].ordinal(), 2);
+}
+
 fn valid_confirmation_proof() -> ConfirmationProof {
     ConfirmationProof {
         capability_policy: true,
