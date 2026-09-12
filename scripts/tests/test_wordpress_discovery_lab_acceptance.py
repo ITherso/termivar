@@ -2225,6 +2225,52 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         ]
         return document
 
+    def _accepted_custom_fingerprint_document(self):
+        document = self._accepted_root_observed_document()
+        review = document["wordpress_review"]
+        review["schema"] = "security.wordpress-review-audit/v8"
+        review["additional_request_count"] = 7
+
+        discovery = document["wordpress_discovery"]
+        fingerprint_source = next(
+            source
+            for source in discovery["sources"]
+            if source.get("component")
+            == {
+                "kind": runner.FINGERPRINT_COMPONENT[0],
+                "slug": runner.FINGERPRINT_COMPONENT[1],
+            }
+        )
+        fingerprint_source["association"] = "explicit_operator"
+        page_references = [
+            page["page_reference"]
+            for page in discovery["page_collection"]["pages"]
+        ]
+
+        audit = synthetic_fingerprint_audit(variant="release-b")
+        audit["catalogue"].update({
+            "byte_length": runner.FINGERPRINT_CATALOGUE_PATH.stat().st_size,
+            "sha256": runner.sha256_file(runner.FINGERPRINT_CATALOGUE_PATH),
+        })
+        audit.update({
+            "attempted_request_count": 2,
+            "reused_response_count": 0,
+            "fetched_response_count": 2,
+            "response_bytes": sum(
+                resource["observation"]["byte_length"]
+                for resource in audit["resources"]
+            ),
+        })
+        for resource in audit["resources"]:
+            resource.update({
+                "source_page_references": list(page_references),
+                "acquisition": "fetched",
+                "request_attempted": True,
+                "response_bytes": resource["observation"]["byte_length"],
+            })
+        document["wordpress_asset_fingerprints"] = audit
+        return document
+
     def test_rejected_blog_pages_preserve_empty_selected_fingerprint_audit(self):
         self.assertEqual(
             runner._framed_reference(
@@ -2425,6 +2471,110 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             "source identities changed",
         ):
             runner._validate_observed_page_baseline(reordered)
+
+    def test_observed_page_baseline_requires_independent_role_binding_basis(self):
+        document = self._accepted_root_observed_document()
+        fingerprint_source = next(
+            source
+            for source in document["wordpress_discovery"]["sources"]
+            if source.get("component")
+            == {
+                "kind": runner.FINGERPRINT_COMPONENT[0],
+                "slug": runner.FINGERPRINT_COMPONENT[1],
+            }
+        )
+        self.assertEqual(fingerprint_source["association"], "observed_conventional")
+
+        custom_document = copy.deepcopy(document)
+        custom_source = next(
+            source
+            for source in custom_document["wordpress_discovery"]["sources"]
+            if source.get("component")
+            == {
+                "kind": runner.FINGERPRINT_COMPONENT[0],
+                "slug": runner.FINGERPRINT_COMPONENT[1],
+            }
+        )
+        custom_source["association"] = "explicit_operator"
+        self.assertEqual(
+            runner._validate_observed_page_baseline(
+                custom_document,
+                expected_component_association="explicit_operator",
+            ),
+            "security.wordpress-discovery-audit/v3",
+        )
+
+        for wrong_association in (
+            "observed_conventional",
+            "same_theme_base_parent",
+            None,
+            True,
+        ):
+            with self.subTest(wrong_association=wrong_association):
+                mutated = copy.deepcopy(custom_document)
+                mutated_source = next(
+                    source
+                    for source in mutated["wordpress_discovery"]["sources"]
+                    if source.get("component")
+                    == {
+                        "kind": runner.FINGERPRINT_COMPONENT[0],
+                        "slug": runner.FINGERPRINT_COMPONENT[1],
+                    }
+                )
+                mutated_source["association"] = wrong_association
+                with self.assertRaisesRegex(
+                    runner.AcceptanceError,
+                    "conditional plugin binding",
+                ):
+                    runner._validate_observed_page_baseline(
+                        mutated,
+                        expected_component_association="explicit_operator",
+                    )
+
+    def test_fingerprint_document_requires_declared_custom_role_binding_basis(self):
+        document = self._accepted_custom_fingerprint_document()
+        resources = document["wordpress_asset_fingerprints"]["resources"]
+        asset_oracle = {
+            resource["relative_path"]: copy.deepcopy(resource["observation"])
+            for resource in resources
+        }
+        summary = runner._validate_fingerprint_document(
+            document,
+            catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+            asset_oracle=asset_oracle,
+            expected_state="single_catalogue_candidate",
+            compatible=["release-b"],
+            undetermined=[],
+            inconsistent=["release-a", "release-c"],
+            expected_component_association="explicit_operator",
+        )
+        self.assertEqual(summary["state"], "single_catalogue_candidate")
+
+        mutated = copy.deepcopy(document)
+        fingerprint_source = next(
+            source
+            for source in mutated["wordpress_discovery"]["sources"]
+            if source.get("component")
+            == {
+                "kind": runner.FINGERPRINT_COMPONENT[0],
+                "slug": runner.FINGERPRINT_COMPONENT[1],
+            }
+        )
+        fingerprint_source["association"] = "observed_conventional"
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "plugin metadata",
+        ):
+            runner._validate_fingerprint_document(
+                mutated,
+                catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+                asset_oracle=asset_oracle,
+                expected_state="single_catalogue_candidate",
+                compatible=["release-b"],
+                undetermined=[],
+                inconsistent=["release-a", "release-c"],
+                expected_component_association="explicit_operator",
+            )
 
     def test_rejected_blog_fingerprint_oracle_rejects_false_authority(self):
         mutations = []

@@ -121,8 +121,14 @@ pub(super) struct WordPressPageCandidateSelection {
 #[derive(Clone, Default)]
 pub(super) struct FrozenWordPressPageLayout {
     application_url: Option<Url>,
-    themes_base_url: Option<Url>,
-    plugins_base_url: Option<Url>,
+    themes: Option<FrozenWordPressRoleBinding>,
+    plugins: Option<FrozenWordPressRoleBinding>,
+}
+
+#[derive(Clone)]
+struct FrozenWordPressRoleBinding {
+    base_url: Url,
+    association: WordPressDiscoveryAssociation,
 }
 
 pub(super) struct PendingWordPressPageObservation {
@@ -1539,7 +1545,7 @@ pub(super) fn extract_wordpress_page_observation_with_asset_fingerprints(
                     if crate::http_evidence::wordpress_reference_path_is_safe(&reference) {
                         if let Ok(url) = base.join(&reference) {
                             if safe_observed_asset_url(&page.url, &url)
-                                && asset_is_component_candidate(&url)
+                                && asset_is_component_candidate(&url, frozen)
                             {
                                 let identity = url.as_str().to_owned();
                                 if let Some(existing) = fingerprint_references.get_mut(&identity) {
@@ -1576,7 +1582,7 @@ pub(super) fn extract_wordpress_page_observation_with_asset_fingerprints(
                     if crate::http_evidence::wordpress_reference_path_is_safe(&reference) {
                         if let Ok(url) = base.join(&reference) {
                             if safe_observed_asset_url(&page.url, &url)
-                                && asset_is_component_candidate(&url)
+                                && asset_is_component_candidate(&url, frozen)
                             {
                                 assets.insert(url.as_str().to_owned(), url);
                             }
@@ -1600,22 +1606,16 @@ pub(super) fn extract_wordpress_page_observation_with_asset_fingerprints(
         return observation;
     }
     for asset in assets.into_values() {
-        let mut matched = false;
-        for (kind, role_base) in [
-            (
-                WordPressComponentKind::Theme,
-                frozen.themes_base_url.as_ref(),
-            ),
-            (
-                WordPressComponentKind::Plugin,
-                frozen.plugins_base_url.as_ref(),
-            ),
+        let mut matched_bindings = Vec::new();
+        for (kind, binding) in [
+            (WordPressComponentKind::Theme, frozen.themes.as_ref()),
+            (WordPressComponentKind::Plugin, frozen.plugins.as_ref()),
         ] {
-            let Some(role_base) = role_base else {
+            let Some(binding) = binding else {
                 continue;
             };
-            if let Some(component) = component_under_role_base(&asset, role_base, kind) {
-                matched = true;
+            if let Some(component) = component_under_role_base(&asset, &binding.base_url, kind) {
+                matched_bindings.push((component.clone(), binding.base_url.clone()));
                 if let Ok(signal) =
                     WordPressComponentSignal::same_origin_asset(kind, component.slug())
                 {
@@ -1626,13 +1626,15 @@ pub(super) fn extract_wordpress_page_observation_with_asset_fingerprints(
                     WordPressComponentKind::Plugin => "readme.txt",
                     WordPressComponentKind::Core => continue,
                 };
-                if let Some(resource) = exact_role_resource(role_base, component.slug(), filename) {
+                if let Some(resource) =
+                    exact_role_resource(&binding.base_url, component.slug(), filename)
+                {
                     observation.discovery.insert(
                         WordPressDiscoverySeed::admitted_component(
                             resource,
                             application_url.clone(),
-                            role_base.clone(),
-                            WordPressDiscoveryAssociation::ObservedConventional,
+                            binding.base_url.clone(),
+                            binding.association,
                             component,
                             0,
                         )
@@ -1641,14 +1643,16 @@ pub(super) fn extract_wordpress_page_observation_with_asset_fingerprints(
                 }
             }
         }
-        if !matched
-            && matches!(
-                conventional_component_asset(&asset),
-                ConventionalComponentResult::Observed(_)
-                    | ConventionalComponentResult::MultipleContentMarkers
-            )
-        {
-            conflicting_application_signal = true;
+        match conventional_component_asset(&asset) {
+            ConventionalComponentResult::MultipleContentMarkers => {
+                conflicting_application_signal = true;
+            },
+            ConventionalComponentResult::Observed(observation) => {
+                if !matched_bindings.contains(&(observation.component, observation.role_base)) {
+                    conflicting_application_signal = true;
+                }
+            },
+            ConventionalComponentResult::NotComponent => {},
         }
     }
     if conflicting_application_signal {
@@ -1677,11 +1681,20 @@ pub(super) fn extract_wordpress_page_observation_with_asset_fingerprints(
     observation
 }
 
-fn asset_is_component_candidate(url: &Url) -> bool {
+fn asset_is_component_candidate(url: &Url, frozen: &FrozenWordPressPageLayout) -> bool {
     !matches!(
         conventional_component_asset(url),
         ConventionalComponentResult::NotComponent
-    )
+    ) || [
+        (WordPressComponentKind::Theme, frozen.themes.as_ref()),
+        (WordPressComponentKind::Plugin, frozen.plugins.as_ref()),
+    ]
+    .into_iter()
+    .any(|(kind, binding)| {
+        binding.is_some_and(|binding| {
+            component_under_role_base(url, &binding.base_url, kind).is_some()
+        })
+    })
 }
 
 /// Compatibility seam for the bounded signal fuzz/unit corpus. Production
@@ -2263,33 +2276,30 @@ fn observed_asset_fingerprint_candidates(
 ) -> Vec<WordPressObservedAssetCandidate> {
     let mut candidates = Vec::new();
     for reference in references {
-        for (kind, role_base) in [
-            (
-                WordPressComponentKind::Theme,
-                frozen.themes_base_url.as_ref(),
-            ),
-            (
-                WordPressComponentKind::Plugin,
-                frozen.plugins_base_url.as_ref(),
-            ),
+        for (kind, binding) in [
+            (WordPressComponentKind::Theme, frozen.themes.as_ref()),
+            (WordPressComponentKind::Plugin, frozen.plugins.as_ref()),
         ] {
-            let Some(role_base) = role_base else {
+            let Some(binding) = binding else {
                 continue;
             };
             let Some(component) =
-                component_under_role_base(&reference.resolved_url, role_base, kind)
+                component_under_role_base(&reference.resolved_url, &binding.base_url, kind)
             else {
                 continue;
             };
-            let Some(relative_path) =
-                component_relative_asset_path(&reference.resolved_url, role_base, component.slug())
-            else {
+            let Some(relative_path) = component_relative_asset_path(
+                &reference.resolved_url,
+                &binding.base_url,
+                component.slug(),
+            ) else {
                 continue;
             };
             if let Ok(candidate) = WordPressObservedAssetCandidate::from_html_reference(
                 application_url,
-                role_base,
+                &binding.base_url,
                 component,
+                binding.association,
                 document_url,
                 &reference.resolution_base,
                 &reference.raw_reference,
@@ -2708,65 +2718,101 @@ fn freeze_page_layout(
 ) -> FrozenWordPressPageLayout {
     let mut frozen = FrozenWordPressPageLayout {
         application_url: Some(context.application_url().clone()),
-        themes_base_url: context
+        themes: context
             .declared_layout()
             .and_then(WordPressDiscoveryLayout::themes_base_url)
-            .cloned(),
-        plugins_base_url: context
+            .cloned()
+            .map(|base_url| FrozenWordPressRoleBinding {
+                base_url,
+                association: WordPressDiscoveryAssociation::ExplicitOperator,
+            }),
+        plugins: context
             .declared_layout()
             .and_then(WordPressDiscoveryLayout::plugins_base_url)
-            .cloned(),
+            .cloned()
+            .map(|base_url| FrozenWordPressRoleBinding {
+                base_url,
+                association: WordPressDiscoveryAssociation::ExplicitOperator,
+            }),
     };
     for seed in &selection.seeds {
         match seed.kind() {
-            WordPressDiscoverySourceKind::ThemeStylesheet if frozen.themes_base_url.is_none() => {
-                frozen.themes_base_url = Some(seed.role_base_url().clone());
+            WordPressDiscoverySourceKind::ThemeStylesheet if frozen.themes.is_none() => {
+                frozen.themes = Some(FrozenWordPressRoleBinding {
+                    base_url: seed.role_base_url().clone(),
+                    association: seed.association(),
+                });
             },
-            WordPressDiscoverySourceKind::PluginReadme if frozen.plugins_base_url.is_none() => {
-                frozen.plugins_base_url = Some(seed.role_base_url().clone());
+            WordPressDiscoverySourceKind::PluginReadme if frozen.plugins.is_none() => {
+                frozen.plugins = Some(FrozenWordPressRoleBinding {
+                    base_url: seed.role_base_url().clone(),
+                    association: seed.association(),
+                });
             },
             _ => {},
         }
     }
-    let conventional_content_base = [
-        frozen.themes_base_url.as_ref().map(|url| (url, "themes")),
-        frozen.plugins_base_url.as_ref().map(|url| (url, "plugins")),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(|(url, role)| {
-        let mut segments = url_segments(url);
-        (segments.pop() == Some(role)).then(|| directory_from_segments(url, &segments))?
-    })
-    .collect::<BTreeSet<_>>();
+    let conventional_content_base = selection
+        .seeds
+        .iter()
+        .filter_map(|seed| {
+            let role = match seed.kind() {
+                WordPressDiscoverySourceKind::ThemeStylesheet => "themes",
+                WordPressDiscoverySourceKind::PluginReadme => "plugins",
+                WordPressDiscoverySourceKind::RestIndex => return None,
+            };
+            let url = seed.role_base_url();
+            let mut segments = url_segments(url);
+            let role_matches = segments.pop() == Some(role);
+            let content_matches = segments.last().copied() == Some("wp-content");
+            (role_matches
+                && content_matches
+                && directory_is_within_application(context.application_url(), url))
+            .then(|| directory_from_segments(url, &segments))?
+        })
+        .collect::<BTreeSet<_>>();
     if conventional_content_base.len() == 1 {
         let content_base = conventional_content_base.iter().next().expect("one base");
-        if frozen.themes_base_url.is_none() {
-            frozen.themes_base_url = content_base.join("themes/").ok();
-            if let (Some(layout), Some(base)) =
-                (selection.layout.as_mut(), frozen.themes_base_url.as_ref())
+        if frozen.themes.is_none() {
+            frozen.themes =
+                content_base
+                    .join("themes/")
+                    .ok()
+                    .map(|base_url| FrozenWordPressRoleBinding {
+                        base_url,
+                        association: WordPressDiscoveryAssociation::ObservedConventional,
+                    });
+            if let (Some(layout), Some(binding)) =
+                (selection.layout.as_mut(), frozen.themes.as_ref())
             {
                 set_layout_role(
                     layout,
                     WordPressDiscoveryLayoutRole::Themes,
                     WordPressDiscoveryLayoutStatus::Exact,
                     WordPressDiscoveryLayoutBasis::ConventionalAsset,
-                    Some(base),
+                    Some(&binding.base_url),
                     1,
                 );
             }
         }
-        if frozen.plugins_base_url.is_none() {
-            frozen.plugins_base_url = content_base.join("plugins/").ok();
-            if let (Some(layout), Some(base)) =
-                (selection.layout.as_mut(), frozen.plugins_base_url.as_ref())
+        if frozen.plugins.is_none() {
+            frozen.plugins =
+                content_base
+                    .join("plugins/")
+                    .ok()
+                    .map(|base_url| FrozenWordPressRoleBinding {
+                        base_url,
+                        association: WordPressDiscoveryAssociation::ObservedConventional,
+                    });
+            if let (Some(layout), Some(binding)) =
+                (selection.layout.as_mut(), frozen.plugins.as_ref())
             {
                 set_layout_role(
                     layout,
                     WordPressDiscoveryLayoutRole::Plugins,
                     WordPressDiscoveryLayoutStatus::Exact,
                     WordPressDiscoveryLayoutBasis::ConventionalAsset,
-                    Some(base),
+                    Some(&binding.base_url),
                     1,
                 );
             }
@@ -3196,6 +3242,217 @@ mod tests {
         assert!(page.signals.is_empty());
         assert!(page.discovery.seeds.is_empty());
         assert!(page.asset_fingerprint_candidates.is_empty());
+    }
+
+    #[test]
+    fn secondary_pages_preserve_declared_custom_role_bindings() {
+        let application = Url::parse("https://example.test/blog/").unwrap();
+        let declared = parse_wordpress_discovery_layout(
+            br#"{
+              "schema":"security.wordpress-layout/v1",
+              "application_url":"https://example.test/blog/",
+              "themes_base_url":"https://example.test/site-content/themes/",
+              "plugins_base_url":"https://example.test/modules/"
+            }"#,
+        )
+        .unwrap();
+        let entry = extract_wordpress_entry_observation(
+            &WordPressDiscoveryContext::new(application.clone(), Some(declared)),
+            &application,
+            r#"<a href="/blog/contact/">contact</a>"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            true,
+        );
+        let candidate = entry.page_candidates.candidates[0].clone();
+        let html = r#"<script src="/modules/conditional/assets/fingerprint.js?ver=cache-42"></script>
+            <link rel="stylesheet" href="/modules/conditional/assets/fingerprint.css?ver=cache-42">"#;
+
+        let without_fingerprints = extract_wordpress_page_observation_with_asset_fingerprints(
+            candidate.clone(),
+            &entry.frozen_page_layout,
+            html,
+            Vec::new(),
+            false,
+        );
+        assert_eq!(
+            without_fingerprints.association,
+            WordPressPageAssociation::Accepted
+        );
+        assert_eq!(without_fingerprints.discovery.seeds().len(), 1);
+        assert_eq!(
+            without_fingerprints.discovery.seeds()[0].association(),
+            WordPressDiscoveryAssociation::ExplicitOperator
+        );
+        assert_eq!(
+            without_fingerprints.discovery.seeds()[0].url().as_str(),
+            "https://example.test/modules/conditional/readme.txt"
+        );
+        assert!(without_fingerprints.asset_fingerprint_candidates.is_empty());
+
+        let with_fingerprints = extract_wordpress_page_observation_with_asset_fingerprints(
+            candidate,
+            &entry.frozen_page_layout,
+            html,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            with_fingerprints.association,
+            WordPressPageAssociation::Accepted
+        );
+        assert_eq!(with_fingerprints.discovery.seeds().len(), 1);
+        assert_eq!(
+            with_fingerprints.discovery.seeds()[0].association(),
+            WordPressDiscoveryAssociation::ExplicitOperator
+        );
+        assert_eq!(with_fingerprints.asset_fingerprint_candidates.len(), 2);
+        assert!(with_fingerprints
+            .asset_fingerprint_candidates
+            .iter()
+            .all(|candidate| candidate.component().slug() == "conditional"));
+    }
+
+    #[test]
+    fn secondary_custom_roles_require_a_frozen_binding_and_retain_conflicts() {
+        let application = Url::parse("https://example.test/blog/").unwrap();
+        let unresolved = extract_wordpress_entry_observation(
+            &WordPressDiscoveryContext::new(application.clone(), None),
+            &application,
+            r#"<a href="/blog/contact/">contact</a>"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            true,
+        );
+        let unresolved_page = extract_wordpress_page_observation_with_asset_fingerprints(
+            unresolved.page_candidates.candidates[0].clone(),
+            &unresolved.frozen_page_layout,
+            r#"<script src="/modules/conditional/assets/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            unresolved_page.association,
+            WordPressPageAssociation::NotEstablished
+        );
+        assert!(unresolved_page.discovery.seeds().is_empty());
+        assert!(unresolved_page.asset_fingerprint_candidates.is_empty());
+
+        let declared = parse_wordpress_discovery_layout(
+            br#"{
+              "schema":"security.wordpress-layout/v1",
+              "application_url":"https://example.test/blog/",
+              "plugins_base_url":"https://example.test/modules/"
+            }"#,
+        )
+        .unwrap();
+        let frozen = extract_wordpress_entry_observation(
+            &WordPressDiscoveryContext::new(application.clone(), Some(declared)),
+            &application,
+            r#"<a href="/blog/contact/">contact</a>"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            true,
+        );
+        let lookalike = extract_wordpress_page_observation_with_asset_fingerprints(
+            frozen.page_candidates.candidates[0].clone(),
+            &frozen.frozen_page_layout,
+            r#"<script src="/modules-evil/conditional/assets/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            lookalike.association,
+            WordPressPageAssociation::NotEstablished
+        );
+        assert!(lookalike.discovery.seeds().is_empty());
+
+        let conflicting = extract_wordpress_page_observation_with_asset_fingerprints(
+            frozen.page_candidates.candidates[0].clone(),
+            &frozen.frozen_page_layout,
+            r#"<script src="/modules/conditional/assets/app.js"></script>
+                <script src="/blog/wp-content/plugins/sibling/assets/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(conflicting.association, WordPressPageAssociation::Rejected);
+        assert_eq!(
+            conflicting.outcome,
+            WordPressPageOutcome::IncompatibleApplication
+        );
+        assert!(conflicting.signals.is_empty());
+        assert!(conflicting.discovery.seeds().is_empty());
+        assert!(conflicting.asset_fingerprint_candidates.is_empty());
+
+        let nested_conflict = extract_wordpress_page_observation_with_asset_fingerprints(
+            frozen.page_candidates.candidates[0].clone(),
+            &frozen.frozen_page_layout,
+            r#"<script src="/modules/conditional/vendor/wp-content/plugins/sibling/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            nested_conflict.association,
+            WordPressPageAssociation::Rejected
+        );
+        assert_eq!(
+            nested_conflict.outcome,
+            WordPressPageOutcome::IncompatibleApplication
+        );
+        assert!(nested_conflict.signals.is_empty());
+        assert!(nested_conflict.discovery.seeds().is_empty());
+        assert!(nested_conflict.asset_fingerprint_candidates.is_empty());
+
+        let same_slug_nested_base = extract_wordpress_page_observation_with_asset_fingerprints(
+            frozen.page_candidates.candidates[0].clone(),
+            &frozen.frozen_page_layout,
+            r#"<script src="/modules/conditional/vendor/wp-content/plugins/conditional/app.js"></script>"#,
+            Vec::new(),
+            true,
+        );
+        assert_eq!(
+            same_slug_nested_base.association,
+            WordPressPageAssociation::Rejected
+        );
+        assert_eq!(
+            same_slug_nested_base.outcome,
+            WordPressPageOutcome::IncompatibleApplication
+        );
+        assert!(same_slug_nested_base.signals.is_empty());
+        assert!(same_slug_nested_base.discovery.seeds().is_empty());
+        assert!(same_slug_nested_base
+            .asset_fingerprint_candidates
+            .is_empty());
+
+        let declared_theme = parse_wordpress_discovery_layout(
+            br#"{
+              "schema":"security.wordpress-layout/v1",
+              "application_url":"https://example.test/blog/",
+              "themes_base_url":"https://example.test/site-content/themes/"
+            }"#,
+        )
+        .unwrap();
+        let theme_entry = extract_wordpress_entry_observation(
+            &WordPressDiscoveryContext::new(application.clone(), Some(declared_theme)),
+            &application,
+            r#"<a href="/blog/contact/">contact</a>
+                <link rel="stylesheet" href="/site-content/themes/child/assets/site.css">"#,
+            &WordPressRestIndexAdvertisement::Missing,
+            true,
+            true,
+        );
+        let invented_sibling = extract_wordpress_page_observation_with_asset_fingerprints(
+            theme_entry.page_candidates.candidates[0].clone(),
+            &theme_entry.frozen_page_layout,
+            r#"<script src="/site-content/plugins/not-declared/assets/app.js"></script>"#,
+            Vec::new(),
+            false,
+        );
+        assert_eq!(
+            invented_sibling.association,
+            WordPressPageAssociation::NotEstablished
+        );
+        assert!(invented_sibling.discovery.seeds().is_empty());
     }
 
     #[test]

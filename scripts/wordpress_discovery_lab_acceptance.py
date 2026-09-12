@@ -3928,6 +3928,7 @@ def _validate_observed_page_baseline(
     *,
     expected_discovery_request_count: int = 5,
     expected_page_association: str = "accepted",
+    expected_component_association: str = "observed_conventional",
 ) -> str:
     require(
         document.get("wordpress_asset_fingerprints") is None,
@@ -3950,8 +3951,10 @@ def _validate_observed_page_baseline(
         require(
             len(fingerprint_readmes) == 1
             and fingerprint_readmes[0].get("plugin", {}).get("stable_tag") == "9.9.9"
+            and fingerprint_readmes[0].get("association")
+            == expected_component_association
             and len(fingerprint_readmes[0].get("source_page_references", [])) == 2,
-            "observed-page baseline did not deduplicate its conditional plugin metadata",
+            "observed-page baseline did not preserve its conditional plugin binding",
             diagnostic,
         )
     else:
@@ -4264,6 +4267,7 @@ def _validate_fingerprint_document(
     compatible: Sequence[str],
     undetermined: Sequence[str],
     inconsistent: Sequence[str],
+    expected_component_association: str = "observed_conventional",
 ) -> dict[str, Any]:
     """Validate the literal fingerprint wire contract without rerunning its matcher."""
     audit = document.get("wordpress_asset_fingerprints")
@@ -4485,6 +4489,8 @@ def _validate_fingerprint_document(
     require(
         len(fingerprint_readmes) == 1
         and fingerprint_readmes[0].get("outcome") == "observed"
+        and fingerprint_readmes[0].get("association")
+        == expected_component_association
         and set(fingerprint_readmes[0].get("source_page_references", []))
         == page_references
         and fingerprint_readmes[0].get("plugin", {}).get("stable_tag") == "9.9.9",
@@ -4690,6 +4696,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 rejected_page_fingerprint_expectation: bool = False,
                 observed_discovery_request_count: int = 5,
                 observed_page_association: str = "accepted",
+                expected_component_association: str = "observed_conventional",
             ) -> list[tuple[str, str, int, tuple[str, ...]]]:
                 before = lab.request_log()
                 bundle = bundles / name
@@ -4739,6 +4746,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                             fingerprint_summary = _validate_fingerprint_document(
                                 document,
                                 catalogue_path=fingerprints_path,
+                                expected_component_association=(
+                                    expected_component_association
+                                ),
                                 **fingerprint_expectation,
                             )
                         elif page_scope == "observed":
@@ -4748,6 +4758,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                                     observed_discovery_request_count
                                 ),
                                 expected_page_association=observed_page_association,
+                                expected_component_association=(
+                                    expected_component_association
+                                ),
                             )
                         else:
                             schema = _validate_discovery_document(
@@ -5264,6 +5277,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 target=cms_target,
                 layout_path=layout_path,
                 page_scope="observed",
+                expected_component_association="explicit_operator",
             )
             _assert_fingerprint_option_off_trace(
                 custom_fingerprint_baseline,
@@ -5291,6 +5305,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                     "undetermined": [],
                     "inconsistent": ["release-a", "release-c"],
                 },
+                expected_component_association="explicit_operator",
             )
             _assert_fingerprint_request_delta(
                 custom_fingerprint_baseline,

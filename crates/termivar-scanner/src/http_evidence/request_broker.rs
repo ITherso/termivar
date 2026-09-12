@@ -265,6 +265,7 @@ pub(crate) struct WordPressAssetRequestDescriptor {
     role_base_url: url::Url,
     target: url::Url,
     component: WordPressComponentIdentity,
+    source: WordPressMetadataRequestSource,
     relative_path: String,
     root_subject: EntityId,
     source_evidence_ids: Vec<EvidenceId>,
@@ -279,6 +280,7 @@ impl WordPressAssetRequestDescriptor {
         role_base_url: &url::Url,
         target: &url::Url,
         component: &WordPressComponentIdentity,
+        source: WordPressMetadataRequestSource,
         relative_path: &str,
         source_evidence_count: usize,
     ) -> Result<(), HttpEvidenceError> {
@@ -292,11 +294,31 @@ impl WordPressAssetRequestDescriptor {
             && valid_wordpress_asset_fingerprint_path(relative_path)
             && application_url.origin() == role_base_url.origin()
             && application_url.origin() == target.origin()
-            && wordpress_role_is_within_application(application_url, role_base_url)
             && matches!(
                 component.kind(),
                 WordPressComponentKind::Plugin | WordPressComponentKind::Theme
             )
+            && match (component.kind(), source) {
+                (
+                    WordPressComponentKind::Plugin,
+                    WordPressMetadataRequestSource::ObservedConventional,
+                ) => {
+                    wordpress_role_is_within_application(application_url, role_base_url)
+                        && wordpress_conventional_role_is_exact(role_base_url, "plugins")
+                },
+                (
+                    WordPressComponentKind::Theme,
+                    WordPressMetadataRequestSource::ObservedConventional,
+                ) => {
+                    wordpress_role_is_within_application(application_url, role_base_url)
+                        && wordpress_conventional_role_is_exact(role_base_url, "themes")
+                },
+                (
+                    WordPressComponentKind::Plugin | WordPressComponentKind::Theme,
+                    WordPressMetadataRequestSource::ExplicitOperator,
+                ) => true,
+                _ => false,
+            }
             && wordpress_asset_resource_is_exact(role_base_url, component, relative_path, target);
         if admitted {
             Ok(())
@@ -312,6 +334,7 @@ impl WordPressAssetRequestDescriptor {
         role_base_url: &url::Url,
         target: &url::Url,
         component: WordPressComponentIdentity,
+        source: WordPressMetadataRequestSource,
         relative_path: impl Into<String>,
         root_subject: &EntityId,
         source_evidence_ids: Vec<EvidenceId>,
@@ -323,6 +346,7 @@ impl WordPressAssetRequestDescriptor {
             role_base_url: role_base_url.clone(),
             target: target.clone(),
             component,
+            source,
             relative_path: relative_path.into(),
             root_subject: root_subject.clone(),
             source_evidence_ids,
@@ -338,6 +362,7 @@ impl WordPressAssetRequestDescriptor {
             &self.role_base_url,
             &self.target,
             &self.component,
+            self.source,
             &self.relative_path,
             self.source_evidence_ids.len(),
         )?;
@@ -366,6 +391,7 @@ impl WordPressAssetRequestDescriptor {
                                     &self.role_base_url,
                                     &self.target,
                                     &self.component,
+                                    self.source,
                                     &self.relative_path,
                                     source_page_reference,
                                 )
@@ -399,11 +425,12 @@ pub(crate) fn wordpress_asset_request_binding_value(
     role_base_url: &url::Url,
     target: &url::Url,
     component: &WordPressComponentIdentity,
+    source: WordPressMetadataRequestSource,
     relative_path: &str,
     source_page_reference: &str,
 ) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"termivar.wordpress-observed-asset-request-binding/v1\0");
+    digest.update(b"termivar.wordpress-observed-asset-request-binding/v2\0");
     for value in [
         application_url.as_str(),
         role_base_url.as_str(),
@@ -414,6 +441,15 @@ pub(crate) fn wordpress_asset_request_binding_value(
             WordPressComponentKind::Theme => "theme",
         },
         component.slug(),
+        match source {
+            WordPressMetadataRequestSource::ObservedConventional => "observed_conventional",
+            WordPressMetadataRequestSource::ExplicitOperator => "explicit_operator",
+            WordPressMetadataRequestSource::StructuredAdvertisement => "structured_advertisement",
+            WordPressMetadataRequestSource::OperatorQualifiedAdvertisement => {
+                "operator_qualified_advertisement"
+            },
+            WordPressMetadataRequestSource::SameThemeBaseParent => "same_theme_base_parent",
+        },
         relative_path,
         source_page_reference,
     ] {
@@ -1093,13 +1129,14 @@ mod tests {
         role_base: &url::Url,
         target: &url::Url,
         component: WordPressComponentIdentity,
+        request_source: WordPressMetadataRequestSource,
         relative_path: &str,
     ) -> (KnowledgeBase, WordPressAssetRequestDescriptor) {
         use termivar_core::{ConfidenceScore, Evidence, EvidenceSource, KnowledgePredicate};
 
         let root_subject = EntityId::new(format!("endpoint:{application}")).unwrap();
         let source_page_reference = format!("sha256:{}", "0".repeat(64));
-        let source = EvidenceSource::new(
+        let evidence_source = EvidenceSource::new(
             WORDPRESS_ASSET_NOMINATION_COMPONENT,
             WORDPRESS_ASSET_NOMINATION_METHOD,
         )
@@ -1118,10 +1155,11 @@ mod tests {
                 role_base,
                 target,
                 &component,
+                request_source,
                 relative_path,
                 &source_page_reference,
             )),
-            source,
+            evidence_source,
             ConfidenceScore::from_percent(70).unwrap(),
         );
         let evidence_id = evidence.id().clone();
@@ -1133,6 +1171,7 @@ mod tests {
             role_base,
             target,
             component,
+            request_source,
             relative_path,
             &root_subject,
             vec![evidence_id],
@@ -1209,6 +1248,7 @@ mod tests {
             &role_base,
             &target,
             component.clone(),
+            WordPressMetadataRequestSource::ObservedConventional,
             "assets/runtime.js",
         );
         assert_eq!(descriptor.component(), &component);
@@ -1239,6 +1279,79 @@ mod tests {
 
     #[cfg(feature = "wordpress-review")]
     #[test]
+    fn wordpress_asset_request_preserves_explicit_custom_role_authority() {
+        let application = url::Url::parse("https://example.test/blog/").unwrap();
+        let role_base = url::Url::parse("https://example.test/modules/").unwrap();
+        let target = role_base
+            .join("sample-plugin/assets/runtime.js?ver=cache-42")
+            .unwrap();
+        let component =
+            WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
+                .unwrap();
+
+        WordPressAssetRequestDescriptor::validate_candidate_shape(
+            WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+            &application,
+            &role_base,
+            &target,
+            &component,
+            WordPressMetadataRequestSource::ExplicitOperator,
+            "assets/runtime.js",
+            1,
+        )
+        .unwrap();
+        assert!(matches!(
+            WordPressAssetRequestDescriptor::validate_candidate_shape(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &target,
+                &component,
+                WordPressMetadataRequestSource::ObservedConventional,
+                "assets/runtime.js",
+                1,
+            ),
+            Err(HttpEvidenceError::InvalidWordPressAssetRequest)
+        ));
+
+        let (_knowledge, descriptor) = committed_asset_descriptor(
+            &application,
+            &role_base,
+            &target,
+            component,
+            WordPressMetadataRequestSource::ExplicitOperator,
+            "assets/runtime.js",
+        );
+        assert_eq!(descriptor.target(), &target);
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_asset_request_binding_seals_its_role_authority_source() {
+        let application = url::Url::parse("https://example.test/blog/").unwrap();
+        let role_base = application.join("wp-content/plugins/").unwrap();
+        let target = role_base.join("sample-plugin/assets/runtime.js").unwrap();
+        let component =
+            WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
+                .unwrap();
+        let (knowledge, mut descriptor) = committed_asset_descriptor(
+            &application,
+            &role_base,
+            &target,
+            component,
+            WordPressMetadataRequestSource::ObservedConventional,
+            "assets/runtime.js",
+        );
+
+        descriptor.source = WordPressMetadataRequestSource::ExplicitOperator;
+        assert!(matches!(
+            descriptor.validate(&knowledge),
+            Err(HttpEvidenceError::InvalidWordPressAssetRequest)
+        ));
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
     fn wordpress_asset_descriptor_rejects_forged_paths_queries_and_bindings() {
         let application = url::Url::parse("https://example.test/blog/").unwrap();
         let role_base = url::Url::parse("https://example.test/blog/wp-content/plugins/").unwrap();
@@ -1251,6 +1364,7 @@ mod tests {
                           role_base: &url::Url,
                           target: &url::Url,
                           component: WordPressComponentIdentity,
+                          source: WordPressMetadataRequestSource,
                           path: &str,
                           evidence_count| {
             WordPressAssetRequestDescriptor::validate_candidate_shape(
@@ -1259,6 +1373,7 @@ mod tests {
                 role_base,
                 target,
                 &component,
+                source,
                 path,
                 evidence_count,
             )
@@ -1270,6 +1385,7 @@ mod tests {
                 &role_base,
                 &valid_target,
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 1,
             ),
@@ -1279,6 +1395,7 @@ mod tests {
                 &role_base,
                 &valid_target,
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 0,
             ),
@@ -1288,6 +1405,7 @@ mod tests {
                 &role_base,
                 &valid_target,
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 MAX_WORDPRESS_ASSET_SOURCE_EVIDENCE + 1,
             ),
@@ -1297,6 +1415,7 @@ mod tests {
                 &role_base,
                 &valid_target,
                 WordPressComponentIdentity::core(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 1,
             ),
@@ -1306,6 +1425,7 @@ mod tests {
                 &url::Url::parse("https://example.test/").unwrap(),
                 &valid_target,
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 1,
             ),
@@ -1318,6 +1438,7 @@ mod tests {
                 )
                 .unwrap(),
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 1,
             ),
@@ -1327,6 +1448,7 @@ mod tests {
                 &role_base,
                 &role_base.join("other-plugin/assets/runtime.js").unwrap(),
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 1,
             ),
@@ -1336,6 +1458,7 @@ mod tests {
                 &role_base,
                 &valid_target,
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/../runtime.js",
                 1,
             ),
@@ -1345,6 +1468,7 @@ mod tests {
                 &role_base,
                 &role_base.join("sample-plugin/assets/runtime.php").unwrap(),
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.php",
                 1,
             ),
@@ -1356,6 +1480,7 @@ mod tests {
                     .join("sample-plugin/assets/runtime.js?ver=1.0&debug=1")
                     .unwrap(),
                 component.clone(),
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 1,
             ),
@@ -1367,6 +1492,7 @@ mod tests {
                     .join("sample-plugin/assets/runtime.js?ver=1%2E0")
                     .unwrap(),
                 component,
+                WordPressMetadataRequestSource::ObservedConventional,
                 "assets/runtime.js",
                 1,
             ),
@@ -1610,6 +1736,7 @@ mod tests {
             &target,
             WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
                 .unwrap(),
+            WordPressMetadataRequestSource::ObservedConventional,
             "assets/runtime.js",
         );
         descriptor.target = application.join("private/same-origin-data.js").unwrap();
@@ -1647,6 +1774,7 @@ mod tests {
             &target,
             WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
                 .unwrap(),
+            WordPressMetadataRequestSource::ObservedConventional,
             "assets/runtime.js",
         );
         uncommitted.source_evidence_ids = vec![EvidenceId::new()];

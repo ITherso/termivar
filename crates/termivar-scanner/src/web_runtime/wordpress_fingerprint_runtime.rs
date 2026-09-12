@@ -24,9 +24,9 @@ use crate::{
     http_evidence::{
         wordpress_asset_request_binding_value, CompleteHttpResponseObservation, HttpEvidenceError,
         HttpProbeMethod, HttpRequestBrokerError, WordPressAssetRequestDescriptor,
-        WORDPRESS_ASSET_FINGERPRINT_POLICY_ID, WORDPRESS_ASSET_NOMINATION_COMPONENT,
-        WORDPRESS_ASSET_NOMINATION_METHOD, WORDPRESS_ASSET_NOMINATION_NAMESPACE,
-        WORDPRESS_ASSET_NOMINATION_PREDICATE,
+        WordPressMetadataRequestSource, WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+        WORDPRESS_ASSET_NOMINATION_COMPONENT, WORDPRESS_ASSET_NOMINATION_METHOD,
+        WORDPRESS_ASSET_NOMINATION_NAMESPACE, WORDPRESS_ASSET_NOMINATION_PREDICATE,
     },
     wordpress_review::{
         match_wordpress_asset_fingerprint_component, valid_wordpress_asset_fingerprint_path,
@@ -37,7 +37,10 @@ use crate::{
     DecisionActionOrigin, DecisionExecutionLimits, DecisionExecutionStage, KnowledgeBase,
 };
 
-use super::{wordpress_discovery::opaque_url_reference, SharedWebRuntimeAuthority};
+use super::{
+    wordpress_discovery::{opaque_url_reference, WordPressDiscoveryAssociation},
+    SharedWebRuntimeAuthority,
+};
 
 pub const WORDPRESS_ASSET_FINGERPRINT_ACTION_ID: &str = "web.review.wordpress.asset-fingerprint@1";
 pub const MAX_WORDPRESS_ASSET_FINGERPRINT_REQUESTS: u8 = 4;
@@ -78,6 +81,7 @@ pub(super) struct WordPressObservedAssetCandidate {
     document_url: Url,
     target_url: Url,
     component: WordPressComponentIdentity,
+    association: WordPressDiscoveryAssociation,
     relative_path: String,
     source_page_reference: String,
 }
@@ -88,6 +92,7 @@ impl WordPressObservedAssetCandidate {
         application_url: &Url,
         role_base_url: &Url,
         component: WordPressComponentIdentity,
+        association: WordPressDiscoveryAssociation,
         document_url: &Url,
         resolution_base: &Url,
         raw_reference: &str,
@@ -121,6 +126,7 @@ impl WordPressObservedAssetCandidate {
             role_base_url,
             resolved_url,
             &component,
+            asset_request_source(association)?,
             &relative_path,
             1,
         )
@@ -131,6 +137,7 @@ impl WordPressObservedAssetCandidate {
             document_url: document_url.clone(),
             target_url: resolved_url.clone(),
             component,
+            association,
             relative_path,
             source_page_reference,
         })
@@ -400,6 +407,12 @@ impl WordPressAssetFingerprintCollector {
                 .get_mut(&key)
                 .and_then(|variants| variants.get_mut(&target))
             {
+                if existing.candidate.application_url != candidate.application_url
+                    || existing.candidate.role_base_url != candidate.role_base_url
+                    || existing.candidate.association != candidate.association
+                {
+                    return Err(WordPressAssetFingerprintRuntimeError::EvidenceModel);
+                }
                 existing.root_evidence_ids.insert(binding_id.clone());
                 existing
                     .source_page_references
@@ -753,6 +766,7 @@ pub(super) struct WordPressSelectedObservedAsset {
     role_base_url: Url,
     target_url: Url,
     component: WordPressComponentIdentity,
+    association: WordPressDiscoveryAssociation,
     relative_path: String,
     resource_reference: String,
     source_page_references: Vec<String>,
@@ -787,6 +801,7 @@ impl WordPressSelectedObservedAsset {
             &self.role_base_url,
             &self.target_url,
             self.component.clone(),
+            asset_request_source(self.association)?,
             self.relative_path.clone(),
             root_subject,
             self.source_evidence_ids.clone(),
@@ -1658,6 +1673,7 @@ fn selected_assets(state: &CollectedFingerprintState) -> Vec<WordPressSelectedOb
                 role_base_url: committed.candidate.role_base_url.clone(),
                 target_url: committed.candidate.target_url.clone(),
                 component: committed.candidate.component.clone(),
+                association: committed.candidate.association,
                 relative_path: committed.candidate.relative_path.clone(),
                 resource_reference: asset_path_reference(
                     &committed.candidate.application_url,
@@ -1763,6 +1779,7 @@ fn candidate_fingerprint(candidate: &WordPressObservedAssetCandidate) -> [u8; 32
         candidate.target_url.as_str(),
         component_kind_name(candidate.component.kind()),
         candidate.component.slug(),
+        candidate.association.as_str(),
         candidate.relative_path.as_str(),
         candidate.source_page_reference.as_str(),
     ] {
@@ -1821,6 +1838,20 @@ fn component_kind_name(kind: WordPressComponentKind) -> &'static str {
     }
 }
 
+fn asset_request_source(
+    association: WordPressDiscoveryAssociation,
+) -> Result<WordPressMetadataRequestSource, WordPressAssetFingerprintRuntimeError> {
+    match association {
+        WordPressDiscoveryAssociation::ObservedConventional => {
+            Ok(WordPressMetadataRequestSource::ObservedConventional)
+        },
+        WordPressDiscoveryAssociation::ExplicitOperator => {
+            Ok(WordPressMetadataRequestSource::ExplicitOperator)
+        },
+        _ => Err(WordPressAssetFingerprintRuntimeError::InvalidCandidate),
+    }
+}
+
 fn candidate_binding_evidence(
     root_subject: &EntityId,
     candidate: &WordPressObservedAssetCandidate,
@@ -1830,6 +1861,7 @@ fn candidate_binding_evidence(
         &candidate.role_base_url,
         &candidate.target_url,
         &candidate.component,
+        asset_request_source(candidate.association)?,
         &candidate.relative_path,
         &candidate.source_page_reference,
     );
@@ -2139,9 +2171,10 @@ mod tests {
         root_representation_binding_evidence, selected_variants_completely_interpreted,
         source_page_capacity_allows, summarize_reused_representations, CommittedRepresentation,
         WordPressAssetFingerprintCollector, WordPressAssetFingerprintRuntimeError,
-        WordPressComponentIdentity, WordPressComponentKind, WordPressObservedAssetCandidate,
-        WordPressObservedAssetFingerprint, WordPressSelectedObservedAsset,
-        ASSET_FETCHED_ROOT_DERIVATION, MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES,
+        WordPressComponentIdentity, WordPressComponentKind, WordPressDiscoveryAssociation,
+        WordPressObservedAssetCandidate, WordPressObservedAssetFingerprint,
+        WordPressSelectedObservedAsset, ASSET_FETCHED_ROOT_DERIVATION,
+        MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES,
     };
     use crate::wordpress_review::parse_wordpress_asset_fingerprint_catalog;
     use std::collections::BTreeSet;
@@ -2165,6 +2198,7 @@ mod tests {
             &application,
             &role,
             component.clone(),
+            WordPressDiscoveryAssociation::ObservedConventional,
             &document,
             &document,
             "/blog/wp-content/plugins/sample-plugin/assets/app.js?ver=release-1_2",
@@ -2181,6 +2215,7 @@ mod tests {
             &application,
             &role,
             component,
+            WordPressDiscoveryAssociation::ObservedConventional,
             &document,
             &document,
             "/blog/wp-content/plugins/sample-plugin/assets/app.js?ver=release-1_2",
@@ -2192,6 +2227,42 @@ mod tests {
             forged,
             Err(WordPressAssetFingerprintRuntimeError::InvalidCandidate)
         );
+
+        let custom_role = Url::parse("https://example.test/modules/").unwrap();
+        let custom_target = custom_role
+            .join("sample-plugin/assets/app.js?ver=release-1_2")
+            .unwrap();
+        let custom_reference = "/modules/sample-plugin/assets/app.js?ver=release-1_2";
+        WordPressObservedAssetCandidate::from_html_reference(
+            &application,
+            &custom_role,
+            WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
+                .unwrap(),
+            WordPressDiscoveryAssociation::ExplicitOperator,
+            &document,
+            &document,
+            custom_reference,
+            &custom_target,
+            "assets/app.js",
+            opaque_url_reference("wordpress-discovery-page", &document),
+        )
+        .unwrap();
+        assert!(matches!(
+            WordPressObservedAssetCandidate::from_html_reference(
+                &application,
+                &custom_role,
+                WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin",)
+                    .unwrap(),
+                WordPressDiscoveryAssociation::ObservedConventional,
+                &document,
+                &document,
+                custom_reference,
+                &custom_target,
+                "assets/app.js",
+                opaque_url_reference("wordpress-discovery-page", &document),
+            ),
+            Err(WordPressAssetFingerprintRuntimeError::InvalidCandidate)
+        ));
     }
 
     #[test]
@@ -2218,6 +2289,7 @@ mod tests {
                     &application,
                     &role,
                     component.clone(),
+                    WordPressDiscoveryAssociation::ObservedConventional,
                     &application,
                     &application,
                     &raw,
@@ -2285,6 +2357,7 @@ mod tests {
                 .join(&format!("sample-plugin/assets/app.js?ver={query}"))
                 .unwrap(),
             component: component.clone(),
+            association: WordPressDiscoveryAssociation::ObservedConventional,
             relative_path: "assets/app.js".to_owned(),
             resource_reference: format!("resource-{query}"),
             source_page_references: vec![format!("page-{query}")],
@@ -2344,6 +2417,7 @@ mod tests {
                 .join(&format!("sample-plugin/assets/app.js?ver={query}"))
                 .unwrap(),
             component: component.clone(),
+            association: WordPressDiscoveryAssociation::ObservedConventional,
             relative_path: "assets/app.js".to_owned(),
             resource_reference: "resource-path".to_owned(),
             source_page_references: vec![format!("page-{query}")],
@@ -2389,6 +2463,7 @@ mod tests {
             &application,
             &role,
             component.clone(),
+            WordPressDiscoveryAssociation::ObservedConventional,
             &document,
             &document,
             "/blog/wp-content/plugins/sample-plugin/assets/app.js?ver=one",
@@ -2412,6 +2487,7 @@ mod tests {
             role_base_url: role,
             target_url: target,
             component: component.clone(),
+            association: WordPressDiscoveryAssociation::ObservedConventional,
             relative_path: "assets/app.js".to_owned(),
             resource_reference: "resource-one".to_owned(),
             source_page_references: vec!["page-one".to_owned()],
@@ -2472,6 +2548,7 @@ mod tests {
                     &application,
                     &role,
                     component.clone(),
+                    WordPressDiscoveryAssociation::ObservedConventional,
                     &document,
                     &document,
                     "/blog/wp-content/plugins/sample-plugin/assets/app.js",
@@ -2505,6 +2582,7 @@ mod tests {
                     &application,
                     &role,
                     component.clone(),
+                    WordPressDiscoveryAssociation::ObservedConventional,
                     &document,
                     &document,
                     &format!("/blog/wp-content/plugins/sample-plugin/assets/app.js?ver={query}"),

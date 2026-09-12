@@ -71,6 +71,19 @@ const FINGERPRINT_PAGE: &[u8] = br#"<!doctype html><html><head>
 <script src="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42"></script>
 <link rel="stylesheet" href="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42">
 </head><body>synthetic secondary fingerprint page</body></html>"#;
+const CUSTOM_OBSERVED_FINGERPRINT_ROOT: &[u8] = br#"<!doctype html><html><head>
+<meta name="generator" content="WordPress 6.9.4">
+<link rel="https://api.w.org/" href="/blog/wp-json/">
+<script src="/site-content/themes/synthetic-child/assets/site.js"></script>
+<script src="/modules/synthetic-discovery-plugin/assets/site.js"></script>
+</head><body>
+<a href="/blog/contact/">contact</a>
+<a href="/blog/gallery/">gallery</a>
+</body></html>"#;
+const CUSTOM_OBSERVED_FINGERPRINT_PAGE: &[u8] = br#"<!doctype html><html><head>
+<script src="/modules/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42"></script>
+<link rel="stylesheet" href="/modules/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42">
+</head><body>synthetic custom-layout secondary fingerprint page</body></html>"#;
 const FINGERPRINT_PLUGIN_README: &[u8] = br#"=== Termivar Fingerprint Lab ===
 Stable tag: 9.9.9
 "#;
@@ -294,6 +307,82 @@ fn serve_fingerprint_fixture() -> RoutedServer {
     }
 }
 
+fn serve_custom_observed_fingerprint_fixture() -> RoutedServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address: SocketAddr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let thread_requests = Arc::clone(&requests);
+    thread::spawn(move || {
+        for incoming in listener.incoming() {
+            let Ok(mut stream) = incoming else {
+                break;
+            };
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let first_line = String::from_utf8_lossy(&request[..read])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            thread_requests.lock().unwrap().push(first_line.clone());
+            let mut words = first_line.split_ascii_whitespace();
+            let method = words.next().unwrap_or_default();
+            let path = words.next().unwrap_or_default();
+            let (status, media_type, body): (&str, &str, &[u8]) = match (method, path) {
+                ("GET" | "HEAD", "/blog/") => (
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    CUSTOM_OBSERVED_FINGERPRINT_ROOT,
+                ),
+                ("GET" | "HEAD", "/blog/contact/" | "/blog/gallery/") => (
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    CUSTOM_OBSERVED_FINGERPRINT_PAGE,
+                ),
+                ("GET", "/blog/wp-json/") => {
+                    ("200 OK", "application/json; charset=utf-8", REST_INDEX)
+                },
+                ("GET", "/site-content/themes/synthetic-child/style.css") => {
+                    ("200 OK", "text/css; charset=utf-8", CHILD_THEME_STYLESHEET)
+                },
+                ("GET", "/site-content/themes/synthetic-parent/style.css") => {
+                    ("200 OK", "text/css; charset=utf-8", PARENT_THEME_STYLESHEET)
+                },
+                ("GET", "/modules/synthetic-discovery-plugin/readme.txt") => {
+                    ("200 OK", "text/plain; charset=utf-8", PLUGIN_README)
+                },
+                ("GET", "/modules/termivar-fingerprint-lab/readme.txt") => (
+                    "200 OK",
+                    "text/plain; charset=utf-8",
+                    FINGERPRINT_PLUGIN_README,
+                ),
+                (
+                    "GET" | "HEAD",
+                    "/modules/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
+                ) => ("200 OK", "application/javascript", FINGERPRINT_JS),
+                (
+                    "GET" | "HEAD",
+                    "/modules/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
+                ) => ("200 OK", "text/css", FINGERPRINT_CSS),
+                _ => ("404 Not Found", "text/plain; charset=utf-8", b"not found"),
+            };
+            let headers = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            if method != "HEAD" {
+                let _ = stream.write_all(body);
+            }
+            let _ = stream.flush();
+        }
+    });
+    RoutedServer {
+        origin: format!("http://{address}/"),
+        requests,
+    }
+}
+
 fn assert_success(output: &Output, context: &str) {
     assert!(
         output.status.success(),
@@ -305,6 +394,366 @@ fn assert_success(output: &Output, context: &str) {
 
 fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+fn assert_custom_observed_pages_and_metadata(
+    assessment: &serde_json::Value,
+    review_schema: &str,
+    expected_additional_requests: u64,
+) -> BTreeSet<String> {
+    assert_eq!(assessment["wordpress_review"]["schema"], review_schema);
+    assert_eq!(
+        assessment["wordpress_review"]["additional_request_count"],
+        expected_additional_requests
+    );
+    let discovery = &assessment["wordpress_discovery"];
+    assert_eq!(discovery["schema"], "security.wordpress-discovery-audit/v3");
+    assert_eq!(discovery["attempted_request_count"], 5);
+    assert_eq!(discovery["completed_response_count"], 5);
+    assert_eq!(discovery["committed_response_count"], 5);
+    assert_eq!(discovery["source_count"], 5);
+
+    let pages = &discovery["page_collection"];
+    assert_eq!(pages["mode"], "observed");
+    assert_eq!(pages["candidate_count"], 2);
+    assert_eq!(pages["selected_count"], 2);
+    assert_eq!(pages["reused_response_count"], 2);
+    assert_eq!(pages["fetched_response_count"], 0);
+    assert_eq!(pages["attempted_request_count"], 0);
+    assert_eq!(pages["completed_response_count"], 2);
+    assert_eq!(pages["committed_response_count"], 2);
+    assert_eq!(pages["accepted_association_count"], 2);
+    assert_eq!(pages["rejected_association_count"], 0);
+    let page_rows = pages["pages"].as_array().unwrap();
+    assert_eq!(page_rows.len(), 2);
+    assert!(page_rows.iter().all(|page| {
+        page["acquisition"] == "reused"
+            && page["association"] == "accepted"
+            && page["outcome"] == "accepted"
+            && page["request_attempted"] == false
+    }));
+    let page_references = page_rows
+        .iter()
+        .map(|page| page["page_reference"].as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(page_references.len(), 2);
+    assert!(page_references
+        .iter()
+        .all(|reference| reference.starts_with("sha256:") && reference.len() == 71));
+
+    let sources = discovery["sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 5);
+    let source_identities = sources
+        .iter()
+        .map(|source| {
+            let component = source.get("component");
+            format!(
+                "{}:{}:{}",
+                source["kind"].as_str().unwrap(),
+                component
+                    .and_then(|value| value.get("kind"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("none"),
+                component
+                    .and_then(|value| value.get("slug"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("none")
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        source_identities,
+        BTreeSet::from([
+            "plugin_readme:plugin:synthetic-discovery-plugin".to_owned(),
+            "plugin_readme:plugin:termivar-fingerprint-lab".to_owned(),
+            "rest_index:none:none".to_owned(),
+            "theme_stylesheet:theme:synthetic-child".to_owned(),
+            "theme_stylesheet:theme:synthetic-parent".to_owned(),
+        ])
+    );
+    assert!(sources.iter().any(|source| {
+        source["kind"] == "theme_stylesheet"
+            && source["component"] == serde_json::json!({"kind":"theme","slug":"synthetic-child"})
+            && source["association"] == "explicit_operator"
+    }));
+    assert!(sources.iter().any(|source| {
+        source["kind"] == "theme_stylesheet"
+            && source["component"] == serde_json::json!({"kind":"theme","slug":"synthetic-parent"})
+            && source["association"] == "same_theme_base_parent"
+    }));
+    assert!(sources.iter().any(|source| {
+        source["kind"] == "plugin_readme"
+            && source["component"]
+                == serde_json::json!({"kind":"plugin","slug":"synthetic-discovery-plugin"})
+            && source["association"] == "explicit_operator"
+    }));
+    let conditional_readme = sources
+        .iter()
+        .find(|source| {
+            source["kind"] == "plugin_readme"
+                && source["component"]
+                    == serde_json::json!({"kind":"plugin","slug":"termivar-fingerprint-lab"})
+        })
+        .unwrap();
+    assert_eq!(conditional_readme["association"], "explicit_operator");
+    assert_eq!(conditional_readme["outcome"], "observed");
+    assert_eq!(conditional_readme["plugin"]["stable_tag"], "9.9.9");
+    assert_eq!(
+        conditional_readme["source_page_references"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        conditional_readme["source_page_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|reference| reference.as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>(),
+        page_references
+    );
+
+    let conditional_component = assessment["wordpress_review"]["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["identity"]["slug"] == "termivar-fingerprint-lab")
+        .expect("the accepted secondary pages must nominate their plugin");
+    assert_eq!(conditional_component["versions"], serde_json::json!([]));
+    page_references
+}
+
+#[test]
+fn declared_custom_layout_secondary_pages_drive_metadata_and_fingerprints_through_cli() {
+    let server = serve_custom_observed_fingerprint_fixture();
+    let temporary = tempfile::tempdir().unwrap();
+    let selected_application = format!("{}blog/", server.origin);
+    let layout = temporary.path().join("custom-layout.json");
+    let layout_document = format!(
+        "{{\"schema\":\"security.wordpress-layout/v1\",\"application_url\":\"{selected_application}\",\"core_base_url\":\"{}cms/\",\"themes_base_url\":\"{}site-content/themes/\",\"plugins_base_url\":\"{}modules/\"}}",
+        server.origin, server.origin, server.origin
+    );
+    fs::write(&layout, layout_document.as_bytes()).unwrap();
+    let catalogue = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json");
+    let original_catalogue = fs::read(&catalogue).unwrap();
+
+    let option_off_directory = temporary.path().join("custom-option-off");
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-page-scope",
+            "observed",
+            "--wordpress-layout",
+        ])
+        .arg(&layout)
+        .arg("--report-dir")
+        .arg(&option_off_directory)
+        .arg(&selected_application)
+        .output()
+        .expect("termivar process must start");
+    assert_success(&output, "custom-layout observed option-off scan");
+    assert!(output.stdout.is_empty());
+    let option_off_assessment = read_json(&option_off_directory.join("assessment.json"));
+    assert!(option_off_assessment
+        .get("wordpress_asset_fingerprints")
+        .is_none());
+    assert_custom_observed_pages_and_metadata(
+        &option_off_assessment,
+        "security.wordpress-review-audit/v7",
+        5,
+    );
+    let option_off_requests = server.requests.lock().unwrap().clone();
+    for page in ["/blog/contact/", "/blog/gallery/"] {
+        assert_eq!(
+            option_off_requests
+                .iter()
+                .filter(|request| *request == &format!("GET {page} HTTP/1.1"))
+                .count(),
+            1,
+            "observed mode must reuse each ordinary page GET exactly once"
+        );
+    }
+    assert_eq!(
+        option_off_requests
+            .iter()
+            .filter(|request| {
+                *request == "GET /modules/termivar-fingerprint-lab/readme.txt HTTP/1.1"
+            })
+            .count(),
+        1
+    );
+    assert!(!option_off_requests
+        .iter()
+        .any(|request| { request.starts_with("GET /modules/termivar-fingerprint-lab/assets/") }));
+
+    let fingerprint_directory = temporary.path().join("custom-fingerprints");
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-page-scope",
+            "observed",
+            "--wordpress-layout",
+        ])
+        .arg(&layout)
+        .arg("--wordpress-fingerprints")
+        .arg(&catalogue)
+        .arg("--report-dir")
+        .arg(&fingerprint_directory)
+        .arg(&selected_application)
+        .output()
+        .expect("termivar process must start");
+    assert_success(&output, "custom-layout observed fingerprint scan");
+    assert!(output.stdout.is_empty());
+    assert_eq!(fs::read(&layout).unwrap(), layout_document.as_bytes());
+    assert_eq!(fs::read(&catalogue).unwrap(), original_catalogue);
+
+    let assessment = read_json(&fingerprint_directory.join("assessment.json"));
+    let page_references = assert_custom_observed_pages_and_metadata(
+        &assessment,
+        "security.wordpress-review-audit/v8",
+        7,
+    );
+    let fingerprints = &assessment["wordpress_asset_fingerprints"];
+    assert_eq!(
+        fingerprints["schema"],
+        "security.wordpress-asset-fingerprint-audit/v1"
+    );
+    assert_eq!(
+        fingerprints["installed_version_assurance"],
+        "not_established_by_asset_fingerprints"
+    );
+    assert_eq!(fingerprints["candidate_count"], 2);
+    assert_eq!(fingerprints["selected_resource_count"], 2);
+    assert_eq!(fingerprints["attempted_request_count"], 2);
+    assert_eq!(fingerprints["fetched_response_count"], 2);
+    assert_eq!(fingerprints["reused_response_count"], 0);
+    assert_eq!(fingerprints["resource_count"], 2);
+    assert_eq!(fingerprints["component_count"], 1);
+    let component = &fingerprints["components"][0];
+    assert_eq!(
+        component["identity"],
+        serde_json::json!({"kind":"plugin","slug":"termivar-fingerprint-lab"})
+    );
+    assert_eq!(component["state"], "single_catalogue_candidate");
+    assert_eq!(
+        component["compatible_release_ids"],
+        serde_json::json!(["release-b"])
+    );
+    assert_eq!(component["candidate_resource_count"], 2);
+    assert_eq!(component["selected_resource_count"], 2);
+    assert_eq!(component["completely_interpreted_resource_count"], 2);
+
+    let resources = fingerprints["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 2);
+    for resource in resources {
+        assert_eq!(resource["outcome"], "observed");
+        assert_eq!(resource["request_attempted"], true);
+        assert_eq!(
+            resource["source_page_references"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(
+            resource["source_page_references"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|reference| reference.as_str().unwrap().to_owned())
+                .collect::<BTreeSet<_>>(),
+            page_references
+        );
+        let expected = match resource["relative_path"].as_str().unwrap() {
+            "assets/fingerprint.js" => FINGERPRINT_JS,
+            "assets/fingerprint.css" => FINGERPRINT_CSS,
+            path => panic!("unexpected custom fingerprint resource {path}"),
+        };
+        assert_eq!(resource["observation"]["byte_length"], expected.len());
+        assert_eq!(
+            resource["observation"]["sha256"],
+            format!("{:x}", Sha256::digest(expected))
+        );
+    }
+
+    let all_requests = server.requests.lock().unwrap().clone();
+    let fingerprint_requests = &all_requests[option_off_requests.len()..];
+    for page in ["/blog/contact/", "/blog/gallery/"] {
+        assert_eq!(
+            fingerprint_requests
+                .iter()
+                .filter(|request| *request == &format!("GET {page} HTTP/1.1"))
+                .count(),
+            1
+        );
+    }
+    assert_eq!(
+        fingerprint_requests
+            .iter()
+            .filter(|request| {
+                *request == "GET /modules/termivar-fingerprint-lab/readme.txt HTTP/1.1"
+            })
+            .count(),
+        1
+    );
+    for path in [
+        "/modules/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
+        "/modules/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
+    ] {
+        assert_eq!(
+            fingerprint_requests
+                .iter()
+                .filter(|request| *request == &format!("GET {path} HTTP/1.1"))
+                .count(),
+            1
+        );
+    }
+
+    let before_offline = all_requests.len();
+    for (label, directory, assessment) in [
+        ("option-off", &option_off_directory, &option_off_assessment),
+        ("fingerprint", &fingerprint_directory, &assessment),
+    ] {
+        let verify = termivar()
+            .args(["report", "verify", "--dir"])
+            .arg(directory)
+            .args(["--format", "json"])
+            .output()
+            .expect("termivar process must start");
+        assert_success(&verify, &format!("custom-layout {label} Report Verify"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&verify.stdout).unwrap()["status"],
+            "integrity_match"
+        );
+
+        let assessment_path = directory.join("assessment.json");
+        let compare = termivar()
+            .args(["report", "compare", "--before"])
+            .arg(&assessment_path)
+            .arg("--after")
+            .arg(&assessment_path)
+            .args(["--same-scope", "--format", "json"])
+            .output()
+            .expect("termivar process must start");
+        assert_success(&compare, &format!("custom-layout {label} self-Compare"));
+        let comparison: serde_json::Value = serde_json::from_slice(&compare.stdout).unwrap();
+        assert!(comparison["only_in_after"].as_array().unwrap().is_empty());
+        assert!(comparison["only_in_before"].as_array().unwrap().is_empty());
+        assert!(comparison["changed"].as_array().unwrap().is_empty());
+        assert_eq!(
+            comparison["unchanged"].as_array().unwrap().len(),
+            assessment["item_count"].as_u64().unwrap() as usize
+        );
+    }
+    assert_eq!(server.requests.lock().unwrap().len(), before_offline);
 }
 
 #[test]

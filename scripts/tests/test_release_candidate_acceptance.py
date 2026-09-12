@@ -814,9 +814,13 @@ def discovery_wordpress_assessment(case: str = "root",
     return document
 
 
-def fingerprint_wordpress_assessment(catalogue_path: Path, *, partial: bool) -> dict:
+def fingerprint_wordpress_assessment(
+        catalogue_path: Path, *, partial: bool,
+        custom_layout_path: Path | None = None) -> dict:
     """Literal synthetic wire fixture, independent of the packaged matcher."""
-    document = discovery_wordpress_assessment()
+    custom_layout = custom_layout_path is not None
+    document = discovery_wordpress_assessment(
+        "custom" if custom_layout else "root", custom_layout_path)
     review = document["wordpress_review"]
     review["schema"] = "security.wordpress-review-audit/v8"
     review["components"].append({
@@ -825,10 +829,35 @@ def fingerprint_wordpress_assessment(catalogue_path: Path, *, partial: bool) -> 
         "confidence_classes": ["structural_hint"],
         "versions": [],
     })
-    plugin_source = next(
+    existing_plugin_source = next(
         source for source in document["wordpress_discovery"]["sources"]
         if source["kind"] == "plugin_readme"
+        and source["component"]["slug"] == "synthetic-discovery-plugin"
     )
+    if custom_layout:
+        plugin_source = copy.deepcopy(existing_plugin_source)
+        plugin_source.update({
+            "association": "explicit_operator",
+            "resource_reference": opaque_wordpress_reference(
+                "wordpress-discovery-resource",
+                (f"{EXPECTED_FIXTURE_ORIGIN}modules/"
+                 f"{runner.WORDPRESS_FINGERPRINT_COMPONENT}/readme.txt"),
+            ),
+            "response_bytes": len(runner.WORDPRESS_FINGERPRINT_PLUGIN),
+            "evidence_references": ["evidence-0005"],
+        })
+        document["wordpress_discovery"]["sources"].append(plugin_source)
+        for field in (
+                "candidate_count", "attempted_request_count",
+                "completed_response_count", "committed_response_count",
+                "source_count"):
+            document["wordpress_discovery"][field] = 5
+        document["wordpress_discovery"]["seed_count"] = 4
+        document["wordpress_discovery"]["response_bytes"] += len(
+            runner.WORDPRESS_FINGERPRINT_PLUGIN)
+        review["additional_request_count"] = 7
+    else:
+        plugin_source = existing_plugin_source
     plugin_source["component"]["slug"] = runner.WORDPRESS_FINGERPRINT_COMPONENT
     plugin_source["plugin"] = {
         "name": "Termivar Fingerprint Lab", "stable_tag": "9.9.9",
@@ -871,10 +900,32 @@ def fingerprint_wordpress_assessment(catalogue_path: Path, *, partial: bool) -> 
         ],
     }
     for source in discovery["sources"]:
+        secondary_custom_theme = (
+            custom_layout
+            and source.get("kind") == "theme_stylesheet"
+            and source.get("component", {}).get("slug") in {
+                "synthetic-discovery-theme", "synthetic-discovery-parent",
+            }
+        )
         source["source_page_references"] = (
             list(page_references)
-            if source is plugin_source else [entry_page_reference]
+            if source is plugin_source or secondary_custom_theme
+            else [entry_page_reference]
         )
+    metadata_item = next(
+        item for item in document["items"]
+        if item.get("capability_id")
+        == "technology.wordpress-metadata-source-response-observed@1"
+    )
+    source_evidence = [
+        source["evidence_references"][0] for source in discovery["sources"]
+    ]
+    page_evidence = [
+        page["evidence_references"][0]
+        for page in discovery["page_collection"]["pages"]
+    ]
+    metadata_item["evidence_count"] = len(source_evidence) + len(page_evidence)
+    metadata_item["evidence_references"] = [*source_evidence, *page_evidence]
     raw_catalogue = catalogue_path.read_bytes()
     input_catalogue = json.loads(raw_catalogue)
     catalogue_id = input_catalogue["catalog"]["id"]
@@ -1234,41 +1285,77 @@ class FakeCommands:
             elif destination.name == "wordpress-fingerprint-missing-discovery-must-not-exist":
                 exit_code, stderr = 2, b"--wordpress-fingerprints requires --wordpress-discovery\n"
             elif destination.name in {
-                    "wordpress-fingerprint-full", "wordpress-fingerprint-partial"}:
-                assert fixture is not None and target == fixture.origin
+                    "wordpress-fingerprint-full", "wordpress-fingerprint-partial",
+                    "wordpress-fingerprint-custom"}:
+                custom_layout = destination.name.endswith("custom")
+                assert fixture is not None and target == (
+                    f"{fixture.origin}blog/" if custom_layout else fixture.origin)
                 assert arguments[arguments.index("--wordpress-page-scope") + 1] == "observed"
                 partial = destination.name.endswith("partial")
                 catalogue = Path(arguments[arguments.index("--wordpress-fingerprints") + 1])
-                trace = (
-                    "GET / HTTP/1.1",
-                    "GET / HTTP/1.1",
-                    "GET / HTTP/1.1",
-                    "GET /contact/ HTTP/1.1",
-                    "GET /gallery/ HTTP/1.1",
-                    "GET /wp-content/plugins/termivar-fingerprint-lab/readme.txt HTTP/1.1",
-                    ("GET /wp-content/plugins/termivar-fingerprint-lab/assets/"
-                     "fingerprint.js?ver=release-c HTTP/1.1"),
-                    ("GET /wp-content/plugins/termivar-fingerprint-lab/assets/"
-                     "fingerprint.css?ver=release-a HTTP/1.1"),
-                    ("HEAD /wp-content/plugins/termivar-fingerprint-lab/assets/"
-                     "fingerprint.js?ver=release-c HTTP/1.1"),
-                    ("HEAD /wp-content/plugins/termivar-fingerprint-lab/assets/"
-                     "fingerprint.css?ver=release-a HTTP/1.1"),
-                )
+                if custom_layout:
+                    layout_path = Path(
+                        arguments[arguments.index("--wordpress-layout") + 1])
+                    trace = (
+                        "GET /blog/ HTTP/1.1",
+                        "GET /blog/ HTTP/1.1",
+                        "GET /blog/ HTTP/1.1",
+                        "GET /blog/contact/ HTTP/1.1",
+                        "GET /blog/gallery/ HTTP/1.1",
+                        "GET /cms/wp-json/ HTTP/1.1",
+                        ("GET /site-content/themes/synthetic-discovery-theme/"
+                         "style.css HTTP/1.1"),
+                        ("GET /site-content/themes/synthetic-discovery-parent/"
+                         "style.css HTTP/1.1"),
+                        "GET /modules/synthetic-discovery-plugin/readme.txt HTTP/1.1",
+                        ("GET /modules/termivar-fingerprint-lab/readme.txt "
+                         "HTTP/1.1"),
+                        ("GET /modules/termivar-fingerprint-lab/assets/"
+                         "fingerprint.js?ver=release-c HTTP/1.1"),
+                        ("GET /modules/termivar-fingerprint-lab/assets/"
+                         "fingerprint.css?ver=release-a HTTP/1.1"),
+                    )
+                else:
+                    layout_path = None
+                    trace = (
+                        "GET / HTTP/1.1",
+                        "GET / HTTP/1.1",
+                        "GET / HTTP/1.1",
+                        "GET /contact/ HTTP/1.1",
+                        "GET /gallery/ HTTP/1.1",
+                        ("GET /wp-content/plugins/termivar-fingerprint-lab/"
+                         "readme.txt HTTP/1.1"),
+                        ("GET /wp-content/plugins/termivar-fingerprint-lab/assets/"
+                         "fingerprint.js?ver=release-c HTTP/1.1"),
+                        ("GET /wp-content/plugins/termivar-fingerprint-lab/assets/"
+                         "fingerprint.css?ver=release-a HTTP/1.1"),
+                        ("HEAD /wp-content/plugins/termivar-fingerprint-lab/assets/"
+                         "fingerprint.js?ver=release-c HTTP/1.1"),
+                        ("HEAD /wp-content/plugins/termivar-fingerprint-lab/assets/"
+                         "fingerprint.css?ver=release-a HTTP/1.1"),
+                    )
                 if self.discovery_mutation == "fingerprint_unseen_request" and not partial:
                     trace += (
                         "GET /wp-content/plugins/termivar-fingerprint-lab/assets/common.css HTTP/1.1",
                     )
                 fixture.server.counts["root"] += len(trace)
                 fixture.server.request_lines.extend(trace)
+                asset_prefix = ("/modules/" if custom_layout else "/wp-content/plugins/")
                 encodings = [
-                    (trace[6], ("identity",)),
-                    (trace[7], ("identity",)),
+                    (next(line for line in trace
+                          if line == (f"GET {asset_prefix}termivar-fingerprint-lab/"
+                                      "assets/fingerprint.js?ver=release-c HTTP/1.1")),
+                     ("identity",)),
+                    (next(line for line in trace
+                          if line == (f"GET {asset_prefix}termivar-fingerprint-lab/"
+                                      "assets/fingerprint.css?ver=release-a HTTP/1.1")),
+                     ("identity",)),
                 ]
                 if self.discovery_mutation == "fingerprint_nonidentity" and not partial:
                     encodings[0] = (encodings[0][0], ())
                 fixture.server.fingerprint_accept_encodings.extend(encodings)
-                assessment = fingerprint_wordpress_assessment(catalogue, partial=partial)
+                assessment = fingerprint_wordpress_assessment(
+                    catalogue, partial=partial, custom_layout_path=layout_path)
                 fingerprints = assessment["wordpress_asset_fingerprints"]
                 if self.discovery_mutation == "fingerprint_catalog_digest" and not partial:
                     fingerprints["catalogue"]["sha256"] = "f" * 64
@@ -1298,6 +1385,18 @@ class FakeCommands:
                     fingerprints["resources"][0]["source_page_references"] = [
                         fingerprints["resources"][0]["source_page_references"][0]
                     ]
+                elif (self.discovery_mutation == "fingerprint_custom_source_basis"
+                      and custom_layout):
+                    next(
+                        source for source in assessment["wordpress_discovery"]["sources"]
+                        if source.get("component") == {
+                            "kind": "plugin",
+                            "slug": runner.WORDPRESS_FINGERPRINT_COMPONENT,
+                        }
+                    )["association"] = "observed_conventional"
+                elif (self.discovery_mutation == "fingerprint_custom_metadata_count"
+                      and custom_layout):
+                    assessment["wordpress_discovery"]["source_count"] = 4
                 write_bundle(destination, assessment=assessment)
                 stderr = b"Report bundle completed\n"
             elif destination.name in {
@@ -1991,13 +2090,45 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertFalse(
             fingerprints["two_file_intersection"]
             ["plugin_stable_tag_is_installed_version"])
+        custom = fingerprints["custom_secondary"]
+        self.assertTrue(custom["custom_layout"])
+        self.assertEqual(custom["metadata_source_count"], 5)
+        self.assertEqual(custom["conditional_readme_association"],
+                         "explicit_operator")
+        self.assertEqual(custom["compatible_release_ids"], ["release-b"])
+        self.assertEqual(custom["state"], "single_catalogue_candidate")
+        self.assertEqual(custom["source_page_reference_count"], 2)
+        self.assertEqual(custom["fingerprint_request_count"], 2)
+        self.assertEqual(custom["fingerprint_fetched_response_count"], 2)
+        self.assertEqual(custom["observed_resources"], [
+            "assets/fingerprint.css", "assets/fingerprint.js",
+        ])
+        self.assertEqual(custom["page_collection"], {
+            "selected": 2,
+            "reused": 2,
+            "committed": 2,
+            "wordpress_owned_page_requests": 0,
+        })
+        custom_trace = fingerprints["request_traces"]["fingerprint_custom"]
+        for path in (
+                "/blog/contact/", "/blog/gallery/", "/cms/wp-json/",
+                "/site-content/themes/synthetic-discovery-theme/style.css",
+                "/site-content/themes/synthetic-discovery-parent/style.css",
+                "/modules/synthetic-discovery-plugin/readme.txt",
+                "/modules/termivar-fingerprint-lab/readme.txt",
+                *runner.WORDPRESS_FINGERPRINT_CUSTOM_ASSET_PATHS):
+            self.assertEqual(custom_trace.count(f"GET {path} HTTP/1.1"), 1)
         self.assertEqual(fingerprints["unseen_catalogue_paths_requested"], 0)
         self.assertTrue(fingerprints["identity_content_encoding_requested"])
         self.assertFalse(fingerprints["listed_release_scope_is_exhaustive"])
         self.assertEqual(
             {case: groups["changed"] for case, groups in
              fingerprints["self_comparison"]["groups_by_case"].items()},
-            {"fingerprint_full": 0, "fingerprint_partial": 0},
+            {
+                "fingerprint_full": 0,
+                "fingerprint_partial": 0,
+                "fingerprint_custom": 0,
+            },
         )
         catalogue_comparison = fingerprints["catalogue_comparison"]
         self.assertEqual(
@@ -2020,6 +2151,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
         )
         self.assertIn("fingerprint_full", wordpress["bundle_verification"])
         self.assertIn("fingerprint_partial", wordpress["bundle_verification"])
+        self.assertIn("fingerprint_custom", wordpress["bundle_verification"])
         self.assertEqual([path.name for path in self.evidence.iterdir()], [runner.EVIDENCE_NAME])
         stored = json.loads((self.evidence / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
         self.assertEqual(stored, result)
@@ -2027,7 +2159,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertNotIn(str(self.root), encoded)
         self.assertNotIn("127.0.0.1", encoded)
         self.assertLessEqual(len(runner._encode_evidence(result)), runner.EVIDENCE_LIMIT)
-        self.assertEqual(len(commands.arguments), 51)
+        self.assertEqual(len(commands.arguments), 54)
         self.assertEqual(runner.first_use.digest_file(self.archive),
                          result["archive"]["archive_sha256"])
 
@@ -2084,6 +2216,8 @@ class CandidateOrchestrationTests(unittest.TestCase):
             ("fingerprint_installed_version", "became installed-version evidence"),
             ("fingerprint_stable_tag_version", "Stable tag became installed-version"),
             ("fingerprint_page_provenance", "resource assurance changed"),
+            ("fingerprint_custom_source_basis", "source binding changed"),
+            ("fingerprint_custom_metadata_count", "frozen-layout accounting changed"),
             ("fingerprint_self_changed", "fingerprint self comparison changed"),
             ("fingerprint_compare_unchanged", "catalogue/candidate comparison changed"),
         )):
