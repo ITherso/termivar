@@ -27,3 +27,10 @@ docs/examples/wordpress-review/advisories.curated.json -text
 # The synthetic Wordfence-format fixture has an independently recorded exact
 # byte length and digest. Preserve it across native checkouts.
 docs/examples/wordpress-review/wordfence-v3/production.synthetic.json -text
+
+# Asset-fingerprint catalogues and their independently hashed reference and
+# served bytes must remain identical on Linux, macOS, and Windows checkouts.
+docs/examples/wordpress-review/asset-fingerprints/*.json -text
+docs/examples/wordpress-review/asset-fingerprints/reference-assets/** -text
+scripts/fixtures/wordpress-discovery-lab/plugins/termivar-fingerprint-lab/assets/** -text
+scripts/fixtures/wordpress-discovery-lab/plugins/termivar-fingerprint-lab/reference/** -text

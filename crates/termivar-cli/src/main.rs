@@ -217,6 +217,7 @@ struct WordPressReviewFlagSelection {
     discovery: bool,
     page_scope: bool,
     layout: bool,
+    fingerprints: bool,
     context: bool,
     advisories: bool,
     advisories_format: Option<WordPressAdvisoriesFormat>,
@@ -237,6 +238,8 @@ fn scan_wordpress_review_flags_conflict(
         Some("`--wordpress-layout` requires `--wordpress-discovery`")
     } else if selected.page_scope && !selected.discovery {
         Some("`--wordpress-page-scope` requires `--wordpress-discovery`")
+    } else if selected.fingerprints && !selected.discovery {
+        Some("`--wordpress-fingerprints` requires `--wordpress-discovery`")
     } else if selected.advisories_format.is_some() && !selected.advisories {
         Some("`--wordpress-advisories-format` requires `--wordpress-advisories`")
     } else if selected.external_version_profile && !selected.advisories {
@@ -249,6 +252,7 @@ fn scan_wordpress_review_flags_conflict(
         || selected.context
         || selected.layout
         || selected.page_scope
+        || selected.fingerprints
         || selected.advisories
         || selected.advisories_format.is_some()
         || selected.external_version_profile
@@ -480,6 +484,16 @@ struct ScanArgs {
         requires_all = ["profile", "wordpress_review", "wordpress_discovery"]
     )]
     wordpress_layout: Option<PathBuf>,
+    /// Read one bounded local catalogue of exact JS/CSS release fingerprints.
+    /// Only resources already observed in the selected WordPress application
+    /// can be acquired or compared; catalogue paths grant no request authority.
+    #[cfg(feature = "wordpress-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["profile", "wordpress_review", "wordpress_discovery"]
+    )]
+    wordpress_fingerprints: Option<PathBuf>,
     /// Read one bounded `security.wordpress-context/v1` operator declaration.
     /// The path itself is not retained in the assessment.
     #[cfg(feature = "wordpress-review")]
@@ -902,6 +916,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         #[cfg(feature = "wordpress-review")]
         wordpress_layout,
         #[cfg(feature = "wordpress-review")]
+        wordpress_fingerprints,
+        #[cfg(feature = "wordpress-review")]
         wordpress_context,
         #[cfg(feature = "wordpress-review")]
         wordpress_advisories,
@@ -983,6 +999,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             discovery: wordpress_discovery,
             page_scope: wordpress_page_scope.is_some(),
             layout: wordpress_layout.is_some(),
+            fingerprints: wordpress_fingerprints.is_some(),
             context: wordpress_context.is_some(),
             advisories: wordpress_advisories.is_some(),
             advisories_format: wordpress_advisories_format,
@@ -1126,7 +1143,11 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_themes_json,
         wordpress_core_version_file,
     )?
-    .map(|input| input.with_discovery_layout_path(wordpress_layout));
+    .map(|input| {
+        input
+            .with_discovery_layout_path(wordpress_layout)
+            .with_asset_fingerprint_catalog_path(wordpress_fingerprints)
+    });
     #[cfg(feature = "authorization-review")]
     if resource_authorization_input.is_some()
         && !authorization_context_transport_is_allowed(&target)
@@ -2359,6 +2380,7 @@ mod tests {
             "--wordpress-discovery",
             "--wordpress-page-scope",
             "--wordpress-layout",
+            "--wordpress-fingerprints",
             "--wordpress-context",
             "--wordpress-advisories",
             "--wordpress-advisories-format",
@@ -2415,6 +2437,28 @@ mod tests {
             "scan",
             "--profile",
             "web-review",
+            "--wordpress-review",
+            "--wordpress-fingerprints",
+            "PRIVATE-WORDPRESS-FINGERPRINTS",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                WordPressReviewFlagSelection {
+                    fingerprints: true,
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            Some("`--wordpress-fingerprints` requires `--wordpress-discovery`")
+        );
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
             "--wordpress-discovery",
             "https://example.test/",
         ])
@@ -2433,6 +2477,7 @@ mod tests {
         for flag in [
             "--wordpress-context",
             "--wordpress-advisories",
+            "--wordpress-fingerprints",
             "--wordpress-plugins-json",
             "--wordpress-themes-json",
             "--wordpress-core-version-file",
@@ -2471,6 +2516,7 @@ mod tests {
                     discovery: baseline.wordpress_discovery,
                     page_scope: baseline.wordpress_page_scope.is_some(),
                     layout: baseline.wordpress_layout.is_some(),
+                    fingerprints: baseline.wordpress_fingerprints.is_some(),
                     context: baseline.wordpress_context.is_some(),
                     advisories: baseline.wordpress_advisories.is_some(),
                     advisories_format: baseline.wordpress_advisories_format,
@@ -2533,6 +2579,38 @@ mod tests {
                 WordPressReviewFlagSelection {
                     discovery: page_scoped.wordpress_discovery,
                     page_scope: page_scoped.wordpress_page_scope.is_some(),
+                    ..WordPressReviewFlagSelection::default()
+                },
+            ),
+            None
+        );
+        let fingerprinted = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-page-scope",
+            "observed",
+            "--wordpress-fingerprints",
+            "reference-catalogue.json",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let fingerprinted = parsed_scan_args(&fingerprinted);
+        assert_eq!(
+            fingerprinted.wordpress_fingerprints.as_deref(),
+            Some(std::path::Path::new("reference-catalogue.json"))
+        );
+        assert_eq!(
+            scan_wordpress_review_flags_conflict(
+                fingerprinted.profile,
+                fingerprinted.wordpress_review,
+                WordPressReviewFlagSelection {
+                    discovery: fingerprinted.wordpress_discovery,
+                    page_scope: fingerprinted.wordpress_page_scope.is_some(),
+                    fingerprints: fingerprinted.wordpress_fingerprints.is_some(),
                     ..WordPressReviewFlagSelection::default()
                 },
             ),

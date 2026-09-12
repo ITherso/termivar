@@ -775,6 +775,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     "--wordpress-discovery",
                     "optional --wordpress-page-scope observed",
                     "optional --wordpress-layout FILE",
+                    "optional --wordpress-fingerprints FILE",
                 ],
             }]
         }
@@ -802,6 +803,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 "--wordpress-discovery",
                 "optional --wordpress-page-scope observed",
                 "optional --wordpress-layout FILE",
+                "optional --wordpress-fingerprints FILE",
             ],
         }
         cases = (
@@ -861,7 +863,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     "surfaces": [{
                         **valid_row,
                         "prerequisites": valid_row["prerequisites"]
-                        + ["optional --wordpress-layout FILE"],
+                        + ["optional --wordpress-fingerprints FILE"],
                     }],
                 },
                 "compiled WordPress discovery",
@@ -1142,9 +1144,115 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 copy_command,
             )
 
+    def test_fingerprint_variant_selection_uses_only_closed_task_owned_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            lab.wordpress = "task-wordpress"
+            docker_calls = []
+            wp_calls = []
+            lab.docker = lambda *arguments, **_kwargs: (
+                docker_calls.append(arguments)
+                or runner.CommandResult(b"", b"", 0)
+            )
+            lab.wp = lambda *arguments, **_kwargs: (
+                wp_calls.append(arguments)
+                or runner.CommandResult(b"", b"", 0)
+            )
+
+            selected = lab.configure_fingerprint_assets(
+                variant="mixed",
+                mode="one",
+                path="/var/www/html/cms",
+                plugin_directory="/var/www/html/modules",
+            )
+
+            copy_command = docker_calls[0][-1]
+            self.assertIn("reference/release-c/assets/fingerprint.js", copy_command)
+            self.assertIn("reference/release-a/assets/fingerprint.css", copy_command)
+            self.assertNotIn("..", copy_command)
+            self.assertEqual(
+                wp_calls[0],
+                (
+                    "--path=/var/www/html/cms", "option", "update",
+                    "termivar_fingerprint_lab_mode", "one",
+                ),
+            )
+            self.assertEqual(set(selected["observed_assets"]), {"assets/fingerprint.js"})
+            self.assertEqual(selected["installed_plugin_version"], "4.0.0")
+            for invalid in ("newest", "../release-a"):
+                with self.assertRaisesRegex(
+                    runner.AcceptanceError, "unknown fingerprint fixture variant"
+                ):
+                    lab.configure_fingerprint_assets(variant=invalid, mode="two")
+
+    def test_missing_reference_catalogue_is_a_single_independent_mutation(self):
+        original = runner.FINGERPRINT_CATALOGUE_PATH.read_bytes()
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "missing.json"
+            identity = runner._write_missing_reference_catalogue(
+                runner.FINGERPRINT_CATALOGUE_PATH, target
+            )
+            document = json.loads(target.read_bytes())
+            release_a = next(
+                release for release in document["components"][0]["releases"]
+                if release["release_id"] == "release-a"
+            )
+            self.assertNotIn(
+                "assets/fingerprint.css",
+                {row["path"] for row in release_a["files"]},
+            )
+            self.assertEqual(len(release_a["files"]), 2)
+            self.assertEqual(identity["byte_length"], target.stat().st_size)
+            self.assertEqual(identity["sha256"], runner.sha256_file(target))
+        self.assertEqual(runner.FINGERPRINT_CATALOGUE_PATH.read_bytes(), original)
+
+    def test_fingerprint_delta_preserves_existing_trace_and_exact_observed_paths(self):
+        baseline = [
+            ("GET", "/", 200, ()),
+            ("GET", "/contact/", 200, ()),
+            ("GET", "/gallery/", 200, ()),
+            (
+                "GET",
+                "/wp-content/plugins/termivar-fingerprint-lab/readme.txt",
+                200,
+                (),
+            ),
+        ]
+        fingerprint = baseline + [
+            (
+                "GET",
+                "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
+                200,
+                (),
+            ),
+            (
+                "GET",
+                "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
+                200,
+                (),
+            ),
+        ]
+        runner._assert_fingerprint_request_delta(
+            baseline,
+            fingerprint,
+            plugin_base_path="/wp-content/plugins/termivar-fingerprint-lab/",
+            relative_paths=("assets/fingerprint.js", "assets/fingerprint.css"),
+        )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError, "exact observed-resource oracle"
+        ):
+            runner._assert_fingerprint_request_delta(
+                baseline,
+                fingerprint + [("GET", "/unseen.css", 200, ())],
+                plugin_base_path="/wp-content/plugins/termivar-fingerprint-lab/",
+                relative_paths=("assets/fingerprint.js", "assets/fingerprint.css"),
+            )
+
     def test_fixture_inventory_and_digest_pins_are_closed(self):
         result = runner.validate_fixture()
-        self.assertEqual(result["file_count"], 14)
+        self.assertEqual(result["file_count"], 28)
         self.assertRegex(result["fixture_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(result["ground_truth_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(set(result["image_references"]), set(runner.IMAGE_REFERENCES))

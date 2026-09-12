@@ -604,8 +604,9 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "--wordpress-discovery",
                 "optional --wordpress-page-scope observed",
                 "optional --wordpress-layout FILE",
+                "optional --wordpress-fingerprints FILE",
             ],
-            "Explicitly performs at most 12 anonymous same-origin metadata GET requests through the existing assessment broker in entry-only mode. It is never enabled by --wordpress-review alone. Without --wordpress-page-scope it remains entry-only; observed reuses eligible committed page responses without retrieving pages. Reused pages may nominate metadata within the same 12-request WordPress-owned limit. Discovered metadata is unauthenticated evidence, plugin Stable tag is not treated as an installed version, and no exploit or impact validation is performed.",
+            "Explicitly performs at most 12 anonymous same-origin WordPress-owned GET requests through the existing assessment broker in entry-only mode. It is never enabled by --wordpress-review alone. Without --wordpress-page-scope it remains entry-only; observed reuses eligible committed page responses without retrieving pages. Reused pages may nominate metadata within the same shared limit. An optional bounded fingerprint catalogue can compare exact complete bytes of already observed JS/CSS resources against a finite listed release set; it cannot nominate unseen resources or establish an installed version. Discovered metadata and supplied catalogue provenance remain unauthenticated evidence, URL ver remain hints, plugin Stable tag is not treated as an installed version, and no exploit or impact validation is performed.",
             "docs/wordpress-review.md",
         ),
         surface!(
@@ -1087,7 +1088,8 @@ mod tests {
                 "--wordpress-review",
                 "--wordpress-discovery",
                 "optional --wordpress-page-scope observed",
-                "optional --wordpress-layout FILE"
+                "optional --wordpress-layout FILE",
+                "optional --wordpress-fingerprints FILE"
             ]
         );
         assert!(matches!(wordpress_discovery.group, SurfaceGroup::Optional));
@@ -1099,16 +1101,25 @@ mod tests {
         assert!(wordpress_discovery.limitation.contains("at most 12"));
         assert!(wordpress_discovery
             .limitation
-            .contains("anonymous same-origin metadata GET requests"));
+            .contains("anonymous same-origin WordPress-owned GET requests"));
         assert!(wordpress_discovery
             .limitation
             .contains("never enabled by --wordpress-review alone"));
         assert!(wordpress_discovery.limitation.contains(
             "observed reuses eligible committed page responses without retrieving pages"
         ));
-        assert!(wordpress_discovery.limitation.contains(
-            "Reused pages may nominate metadata within the same 12-request WordPress-owned limit"
-        ));
+        assert!(wordpress_discovery
+            .limitation
+            .contains("Reused pages may nominate metadata within the same shared limit"));
+        assert!(wordpress_discovery
+            .limitation
+            .contains("finite listed release set"));
+        assert!(wordpress_discovery
+            .limitation
+            .contains("cannot nominate unseen resources or establish an installed version"));
+        assert!(wordpress_discovery
+            .limitation
+            .contains("URL ver remain hints"));
         assert!(wordpress_discovery
             .limitation
             .contains("Stable tag is not treated as an installed version"));

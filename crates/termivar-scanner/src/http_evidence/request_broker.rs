@@ -4,6 +4,14 @@ use reqwest::{
     Client,
 };
 
+#[cfg(feature = "wordpress-review")]
+use sha2::{Digest, Sha256};
+#[cfg(feature = "wordpress-review")]
+use termivar_core::{EntityId, EvidenceId, EvidenceKind, EvidenceValue};
+
+#[cfg(feature = "wordpress-review")]
+use reqwest::header::ACCEPT_ENCODING;
+
 #[cfg(any(feature = "graphql-review", feature = "authorization-review"))]
 use reqwest::header::ACCEPT;
 #[cfg(any(
@@ -21,8 +29,13 @@ use reqwest::header::CONTENT_TYPE;
 #[cfg(feature = "graphql-review")]
 use crate::graphql_review::MAX_GRAPHQL_REQUEST_JSON_BYTES;
 #[cfg(feature = "wordpress-review")]
-use crate::wordpress_review::valid_slug;
+use crate::wordpress_review::{
+    valid_slug, valid_wordpress_asset_fingerprint_path, WordPressComponentIdentity,
+    WordPressComponentKind,
+};
 
+#[cfg(feature = "wordpress-review")]
+use crate::KnowledgeBase;
 use crate::{
     runtime_budget::{RequestAccountingBroker, RequestAccountingLease, TransportDispatchOutcome},
     DecisionActionOrigin, DecisionExecutionFailureKind, DecisionExecutionLimits,
@@ -39,6 +52,24 @@ const GRAPHQL_RESPONSE_ACCEPT: &str = "application/graphql-response+json, applic
 #[cfg(feature = "wordpress-review")]
 pub(crate) const WORDPRESS_METADATA_DISCOVERY_POLICY_ID: &str =
     "termivar.wordpress-deployment-aware-metadata-discovery/v1";
+
+/// Closed policy revision understood by the broker-owned observed-asset
+/// fingerprint admission descriptor.
+#[cfg(feature = "wordpress-review")]
+pub(crate) const WORDPRESS_ASSET_FINGERPRINT_POLICY_ID: &str =
+    "termivar.wordpress-observed-asset-fingerprint/v1";
+
+#[cfg(feature = "wordpress-review")]
+pub(crate) const WORDPRESS_ASSET_NOMINATION_NAMESPACE: &str = "web.wordpress-asset-fingerprint";
+#[cfg(feature = "wordpress-review")]
+pub(crate) const WORDPRESS_ASSET_NOMINATION_PREDICATE: &str = "observed-resource-nomination";
+#[cfg(feature = "wordpress-review")]
+pub(crate) const WORDPRESS_ASSET_NOMINATION_COMPONENT: &str = "wordpress.asset-fingerprint";
+#[cfg(feature = "wordpress-review")]
+pub(crate) const WORDPRESS_ASSET_NOMINATION_METHOD: &str = "committed-html-resource-nomination";
+
+#[cfg(feature = "wordpress-review")]
+const MAX_WORDPRESS_ASSET_SOURCE_EVIDENCE: usize = 8;
 
 /// Metadata resource shapes that the WordPress discovery transport may fetch.
 #[cfg(feature = "wordpress-review")]
@@ -218,6 +249,180 @@ impl WordPressMetadataRequestDescriptor {
     }
 }
 
+/// Broker-owned proof that one exact observed JavaScript or stylesheet URL is
+/// bound to one component beneath the assessment's already frozen role base.
+///
+/// This descriptor is deliberately separate from WordPress metadata
+/// discovery. A catalogue path cannot construct it: the caller must provide
+/// the exact URL admitted from committed HTML evidence. Private fields prevent
+/// later substitution of an arbitrary same-origin resource, and dispatch
+/// repeats the complete validation before request accounting.
+#[cfg(feature = "wordpress-review")]
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct WordPressAssetRequestDescriptor {
+    policy_id: &'static str,
+    application_url: url::Url,
+    role_base_url: url::Url,
+    target: url::Url,
+    component: WordPressComponentIdentity,
+    relative_path: String,
+    root_subject: EntityId,
+    source_evidence_ids: Vec<EvidenceId>,
+}
+
+#[cfg(feature = "wordpress-review")]
+impl WordPressAssetRequestDescriptor {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn validate_candidate_shape(
+        policy_id: &'static str,
+        application_url: &url::Url,
+        role_base_url: &url::Url,
+        target: &url::Url,
+        component: &WordPressComponentIdentity,
+        relative_path: &str,
+        source_evidence_count: usize,
+    ) -> Result<(), HttpEvidenceError> {
+        let admitted = policy_id == WORDPRESS_ASSET_FINGERPRINT_POLICY_ID
+            && source_evidence_count > 0
+            && source_evidence_count <= MAX_WORDPRESS_ASSET_SOURCE_EVIDENCE
+            && wordpress_metadata_directory_is_safe(application_url)
+            && wordpress_metadata_directory_is_safe(role_base_url)
+            && role_base_url.path() != "/"
+            && wordpress_asset_resource_is_safe(target)
+            && valid_wordpress_asset_fingerprint_path(relative_path)
+            && application_url.origin() == role_base_url.origin()
+            && application_url.origin() == target.origin()
+            && wordpress_role_is_within_application(application_url, role_base_url)
+            && matches!(
+                component.kind(),
+                WordPressComponentKind::Plugin | WordPressComponentKind::Theme
+            )
+            && wordpress_asset_resource_is_exact(role_base_url, component, relative_path, target);
+        if admitted {
+            Ok(())
+        } else {
+            Err(HttpEvidenceError::InvalidWordPressAssetRequest)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_committed_source_evidence(
+        policy_id: &'static str,
+        application_url: &url::Url,
+        role_base_url: &url::Url,
+        target: &url::Url,
+        component: WordPressComponentIdentity,
+        relative_path: impl Into<String>,
+        root_subject: &EntityId,
+        source_evidence_ids: Vec<EvidenceId>,
+        knowledge: &KnowledgeBase,
+    ) -> Result<Self, HttpEvidenceError> {
+        let descriptor = Self {
+            policy_id,
+            application_url: application_url.clone(),
+            role_base_url: role_base_url.clone(),
+            target: target.clone(),
+            component,
+            relative_path: relative_path.into(),
+            root_subject: root_subject.clone(),
+            source_evidence_ids,
+        };
+        descriptor.validate(knowledge)?;
+        Ok(descriptor)
+    }
+
+    fn validate(&self, knowledge: &KnowledgeBase) -> Result<(), HttpEvidenceError> {
+        Self::validate_candidate_shape(
+            self.policy_id,
+            &self.application_url,
+            &self.role_base_url,
+            &self.target,
+            &self.component,
+            &self.relative_path,
+            self.source_evidence_ids.len(),
+        )?;
+        let unique_ids = self
+            .source_evidence_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if unique_ids.len() != self.source_evidence_ids.len()
+            || self.source_evidence_ids.iter().any(|id| {
+                knowledge.inspect_evidence(id, |evidence| {
+                    let Some(source_page_reference) = evidence.source().correlation_id() else {
+                        return false;
+                    };
+                    evidence.subject() == &self.root_subject
+                        && matches!(evidence.kind(), EvidenceKind::Content)
+                        && evidence.predicate().namespace() == WORDPRESS_ASSET_NOMINATION_NAMESPACE
+                        && evidence.predicate().name() == WORDPRESS_ASSET_NOMINATION_PREDICATE
+                        && evidence.source().component() == WORDPRESS_ASSET_NOMINATION_COMPONENT
+                        && evidence.source().method() == WORDPRESS_ASSET_NOMINATION_METHOD
+                        && evidence.origin().derivation().is_none()
+                        && matches!(
+                            evidence.value(),
+                            EvidenceValue::Text(value)
+                                if value == &wordpress_asset_request_binding_value(
+                                    &self.application_url,
+                                    &self.role_base_url,
+                                    &self.target,
+                                    &self.component,
+                                    &self.relative_path,
+                                    source_page_reference,
+                                )
+                        )
+                }) != Some(true)
+            })
+        {
+            return Err(HttpEvidenceError::InvalidWordPressAssetRequest);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn target(&self) -> &url::Url {
+        &self.target
+    }
+
+    #[cfg(test)]
+    pub(crate) fn component(&self) -> &WordPressComponentIdentity {
+        &self.component
+    }
+
+    #[cfg(test)]
+    pub(crate) fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+pub(crate) fn wordpress_asset_request_binding_value(
+    application_url: &url::Url,
+    role_base_url: &url::Url,
+    target: &url::Url,
+    component: &WordPressComponentIdentity,
+    relative_path: &str,
+    source_page_reference: &str,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"termivar.wordpress-observed-asset-request-binding/v1\0");
+    for value in [
+        application_url.as_str(),
+        role_base_url.as_str(),
+        target.as_str(),
+        match component.kind() {
+            WordPressComponentKind::Core => "core",
+            WordPressComponentKind::Plugin => "plugin",
+            WordPressComponentKind::Theme => "theme",
+        },
+        component.slug(),
+        relative_path,
+        source_page_reference,
+    ] {
+        digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    format!("sha256:{:x}", digest.finalize())
+}
+
 #[cfg(feature = "wordpress-review")]
 fn wordpress_metadata_directory_is_safe(url: &url::Url) -> bool {
     matches!(url.scheme(), "http" | "https")
@@ -240,6 +445,48 @@ fn wordpress_metadata_resource_is_safe(url: &url::Url) -> bool {
         && url.fragment().is_none()
         && url.path().starts_with('/')
         && wordpress_metadata_path_is_safe(url.path())
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_asset_resource_is_safe(url: &url::Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.has_host()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+        && url.path().starts_with('/')
+        && wordpress_metadata_path_is_safe(url.path())
+        && wordpress_asset_query_is_safe(url.query())
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_asset_query_is_safe(query: Option<&str>) -> bool {
+    let Some(value) = query else {
+        return true;
+    };
+    let Some(version) = value.strip_prefix("ver=") else {
+        return false;
+    };
+    !version.is_empty()
+        && version.len() <= 64
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+#[cfg(feature = "wordpress-review")]
+fn wordpress_asset_resource_is_exact(
+    role_base_url: &url::Url,
+    component: &WordPressComponentIdentity,
+    relative_path: &str,
+    target: &url::Url,
+) -> bool {
+    let mut request_without_query = target.clone();
+    request_without_query.set_query(None);
+    role_base_url
+        .join(&format!("{}/{relative_path}", component.slug()))
+        .ok()
+        .is_some_and(|expected| expected == request_without_query)
 }
 
 #[cfg(feature = "wordpress-review")]
@@ -472,6 +719,45 @@ impl HttpRequestBroker {
         let target = descriptor.target();
         self.validate_target(target)?;
         let request = self.build_anonymous_wordpress_get_request(target)?;
+        self.collect_built_anonymous_wordpress_get(action_id, stage, origin, limits, request)
+            .await
+    }
+
+    /// Dispatches one fixed-shape anonymous, bodyless GET for an exact
+    /// JavaScript or stylesheet URL already admitted from committed WordPress
+    /// HTML evidence.
+    ///
+    /// The asset descriptor is intentionally not interchangeable with the
+    /// metadata descriptor. Its request asks for identity transfer coding so
+    /// callers can compare complete content bytes without an implicit decoding
+    /// step, while response classification still rejects any Content-Encoding.
+    #[cfg(feature = "wordpress-review")]
+    pub(crate) async fn collect_anonymous_wordpress_asset_get_for_runtime(
+        &self,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        descriptor: &WordPressAssetRequestDescriptor,
+        knowledge: &KnowledgeBase,
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        descriptor.validate(knowledge)?;
+        let target = descriptor.target();
+        self.validate_target(target)?;
+        let request = self.build_anonymous_wordpress_asset_get_request(target)?;
+        self.collect_built_anonymous_wordpress_get(action_id, stage, origin, limits, request)
+            .await
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    async fn collect_built_anonymous_wordpress_get(
+        &self,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        request: reqwest::Request,
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
         self.collect_built_request(
             &self.anonymous_no_proxy_client,
             action_id,
@@ -739,6 +1025,18 @@ impl HttpRequestBroker {
             .map_err(HttpEvidenceError::Request)
     }
 
+    #[cfg(feature = "wordpress-review")]
+    fn build_anonymous_wordpress_asset_get_request(
+        &self,
+        target: &url::Url,
+    ) -> Result<reqwest::Request, HttpEvidenceError> {
+        self.anonymous_no_proxy_client
+            .request(Method::GET, target.clone())
+            .header(ACCEPT_ENCODING, "identity")
+            .build()
+            .map_err(HttpEvidenceError::Request)
+    }
+
     #[cfg(feature = "graphql-review")]
     fn build_anonymous_graphql_json_request(
         &self,
@@ -789,6 +1087,61 @@ fn observe_response_bytes(lease: Option<&mut RequestAccountingLease>, observed: 
 mod tests {
     use super::*;
 
+    #[cfg(feature = "wordpress-review")]
+    fn committed_asset_descriptor(
+        application: &url::Url,
+        role_base: &url::Url,
+        target: &url::Url,
+        component: WordPressComponentIdentity,
+        relative_path: &str,
+    ) -> (KnowledgeBase, WordPressAssetRequestDescriptor) {
+        use termivar_core::{ConfidenceScore, Evidence, EvidenceSource, KnowledgePredicate};
+
+        let root_subject = EntityId::new(format!("endpoint:{application}")).unwrap();
+        let source_page_reference = format!("sha256:{}", "0".repeat(64));
+        let source = EvidenceSource::new(
+            WORDPRESS_ASSET_NOMINATION_COMPONENT,
+            WORDPRESS_ASSET_NOMINATION_METHOD,
+        )
+        .and_then(|source| source.with_correlation_id(source_page_reference.clone()))
+        .unwrap();
+        let evidence = Evidence::new(
+            root_subject.clone(),
+            EvidenceKind::Content,
+            KnowledgePredicate::new(
+                WORDPRESS_ASSET_NOMINATION_NAMESPACE,
+                WORDPRESS_ASSET_NOMINATION_PREDICATE,
+            )
+            .unwrap(),
+            EvidenceValue::Text(wordpress_asset_request_binding_value(
+                application,
+                role_base,
+                target,
+                &component,
+                relative_path,
+                &source_page_reference,
+            )),
+            source,
+            ConfidenceScore::from_percent(70).unwrap(),
+        );
+        let evidence_id = evidence.id().clone();
+        let knowledge = KnowledgeBase::new();
+        knowledge.insert_evidence(evidence).unwrap();
+        let descriptor = WordPressAssetRequestDescriptor::from_committed_source_evidence(
+            WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+            application,
+            role_base,
+            target,
+            component,
+            relative_path,
+            &root_subject,
+            vec![evidence_id],
+            &knowledge,
+        )
+        .unwrap();
+        (knowledge, descriptor)
+    }
+
     #[test]
     fn request_body_meter_counts_buffered_bytes_and_bodyless_requests() {
         let client = Client::new();
@@ -838,6 +1191,189 @@ mod tests {
             .get(reqwest::header::PROXY_AUTHORIZATION)
             .is_none());
         assert!(request.body().is_none());
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_asset_request_requires_exact_observed_path_and_identity_coding() {
+        let application = url::Url::parse("https://example.test/blog/").unwrap();
+        let role_base = url::Url::parse("https://example.test/blog/wp-content/plugins/").unwrap();
+        let target = role_base
+            .join("sample-plugin/assets/runtime.js?ver=1.2-rc_1")
+            .unwrap();
+        let component =
+            WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
+                .unwrap();
+        let (_knowledge, descriptor) = committed_asset_descriptor(
+            &application,
+            &role_base,
+            &target,
+            component.clone(),
+            "assets/runtime.js",
+        );
+        assert_eq!(descriptor.component(), &component);
+        assert_eq!(descriptor.relative_path(), "assets/runtime.js");
+
+        let broker = HttpRequestBroker::new_unmetered(
+            HttpEvidencePolicy::for_origin(target.clone()).unwrap(),
+        )
+        .unwrap();
+        let request = broker
+            .build_anonymous_wordpress_asset_get_request(descriptor.target())
+            .unwrap();
+        assert_eq!(request.method(), Method::GET);
+        assert_eq!(request.url(), &target);
+        assert_eq!(request.headers().len(), 1);
+        assert_eq!(request.headers().get(ACCEPT_ENCODING).unwrap(), "identity");
+        assert!(request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none());
+        assert!(request.headers().get(reqwest::header::COOKIE).is_none());
+        assert!(request
+            .headers()
+            .get(reqwest::header::PROXY_AUTHORIZATION)
+            .is_none());
+        assert!(request.body().is_none());
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_asset_descriptor_rejects_forged_paths_queries_and_bindings() {
+        let application = url::Url::parse("https://example.test/blog/").unwrap();
+        let role_base = url::Url::parse("https://example.test/blog/wp-content/plugins/").unwrap();
+        let component =
+            WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
+                .unwrap();
+        let valid_target = role_base.join("sample-plugin/assets/runtime.js").unwrap();
+        let descriptor = |policy,
+                          application: &url::Url,
+                          role_base: &url::Url,
+                          target: &url::Url,
+                          component: WordPressComponentIdentity,
+                          path: &str,
+                          evidence_count| {
+            WordPressAssetRequestDescriptor::validate_candidate_shape(
+                policy,
+                application,
+                role_base,
+                target,
+                &component,
+                path,
+                evidence_count,
+            )
+        };
+        let invalid = [
+            descriptor(
+                "termivar.wordpress-asset-fingerprint/unreviewed",
+                &application,
+                &role_base,
+                &valid_target,
+                component.clone(),
+                "assets/runtime.js",
+                1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &valid_target,
+                component.clone(),
+                "assets/runtime.js",
+                0,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &valid_target,
+                component.clone(),
+                "assets/runtime.js",
+                MAX_WORDPRESS_ASSET_SOURCE_EVIDENCE + 1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &valid_target,
+                WordPressComponentIdentity::core(),
+                "assets/runtime.js",
+                1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &url::Url::parse("https://example.test/").unwrap(),
+                &valid_target,
+                component.clone(),
+                "assets/runtime.js",
+                1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &url::Url::parse(
+                    "https://other.test/blog/wp-content/plugins/sample-plugin/assets/runtime.js",
+                )
+                .unwrap(),
+                component.clone(),
+                "assets/runtime.js",
+                1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &role_base.join("other-plugin/assets/runtime.js").unwrap(),
+                component.clone(),
+                "assets/runtime.js",
+                1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &valid_target,
+                component.clone(),
+                "assets/../runtime.js",
+                1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &role_base.join("sample-plugin/assets/runtime.php").unwrap(),
+                component.clone(),
+                "assets/runtime.php",
+                1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &role_base
+                    .join("sample-plugin/assets/runtime.js?ver=1.0&debug=1")
+                    .unwrap(),
+                component.clone(),
+                "assets/runtime.js",
+                1,
+            ),
+            descriptor(
+                WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+                &application,
+                &role_base,
+                &role_base
+                    .join("sample-plugin/assets/runtime.js?ver=1%2E0")
+                    .unwrap(),
+                component,
+                "assets/runtime.js",
+                1,
+            ),
+        ];
+        assert!(invalid
+            .into_iter()
+            .all(|result| matches!(result, Err(HttpEvidenceError::InvalidWordPressAssetRequest))));
     }
 
     #[cfg(feature = "wordpress-review")]
@@ -1037,7 +1573,7 @@ mod tests {
 
         let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
         let broker = HttpRequestBroker::new_metered(
-            HttpEvidencePolicy::for_origin(application).unwrap(),
+            HttpEvidencePolicy::for_origin(application.clone()).unwrap(),
             accounting.clone(),
         )
         .unwrap();
@@ -1059,6 +1595,79 @@ mod tests {
         ));
         assert_eq!(accounting.snapshot().total_requests(), 0);
         assert_eq!(accounting.snapshot().response_bytes(), 0);
+        assert!(accounting.dispatch_audit().is_empty());
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[tokio::test]
+    async fn forged_wordpress_asset_descriptor_is_denied_before_request_accounting() {
+        let application = url::Url::parse("http://127.0.0.1:1/blog/").unwrap();
+        let role_base = url::Url::parse("http://127.0.0.1:1/blog/wp-content/plugins/").unwrap();
+        let target = role_base.join("sample-plugin/assets/runtime.js").unwrap();
+        let (knowledge, mut descriptor) = committed_asset_descriptor(
+            &application,
+            &role_base,
+            &target,
+            WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
+                .unwrap(),
+            "assets/runtime.js",
+        );
+        descriptor.target = application.join("private/same-origin-data.js").unwrap();
+
+        let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+        let broker = HttpRequestBroker::new_metered(
+            HttpEvidencePolicy::for_origin(application.clone()).unwrap(),
+            accounting.clone(),
+        )
+        .unwrap();
+        let result = broker
+            .collect_anonymous_wordpress_asset_get_for_runtime(
+                "wordpress.asset-fingerprint",
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+                DecisionExecutionLimits::new(),
+                &descriptor,
+                &knowledge,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(HttpRequestBrokerError::Http(
+                HttpEvidenceError::InvalidWordPressAssetRequest
+            ))
+        ));
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+        assert_eq!(accounting.snapshot().response_bytes(), 0);
+        assert!(accounting.dispatch_audit().is_empty());
+
+        let (_knowledge, mut uncommitted) = committed_asset_descriptor(
+            &application,
+            &role_base,
+            &target,
+            WordPressComponentIdentity::new(WordPressComponentKind::Plugin, "sample-plugin")
+                .unwrap(),
+            "assets/runtime.js",
+        );
+        uncommitted.source_evidence_ids = vec![EvidenceId::new()];
+        let empty_knowledge = KnowledgeBase::new();
+        let result = broker
+            .collect_anonymous_wordpress_asset_get_for_runtime(
+                "wordpress.asset-fingerprint",
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+                DecisionExecutionLimits::new(),
+                &uncommitted,
+                &empty_knowledge,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(HttpRequestBrokerError::Http(
+                HttpEvidenceError::InvalidWordPressAssetRequest
+            ))
+        ));
+        assert_eq!(accounting.snapshot().total_requests(), 0);
         assert!(accounting.dispatch_audit().is_empty());
     }
 

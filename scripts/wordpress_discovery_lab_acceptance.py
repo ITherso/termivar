@@ -68,6 +68,29 @@ GROUND_TRUTH_PATH = (
     Path(__file__).resolve().parents[1]
     / "docs" / "examples" / "wordpress-review" / "discovery-lab" / "ground-truth.json"
 )
+FINGERPRINT_CATALOGUE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs" / "examples" / "wordpress-review" / "asset-fingerprints"
+    / "catalogue.synthetic.json"
+)
+FINGERPRINT_COMPONENT = ("plugin", "termivar-fingerprint-lab")
+FINGERPRINT_REFERENCE_ORACLE = {
+    "release-a": {
+        "assets/common.css": (32, "e4b20a225f36b6cecb22bd9c1e89b256f33ed39ad9e34bf2044462bba21bf17f"),
+        "assets/fingerprint.css": (37, "9ae3210e7954adbb2ed976b34b4605495de9a8406634bedd92bc14a3d317fdae"),
+        "assets/fingerprint.js": (49, "0a0760b281d010ed4d70610e4f2f460a33846088b373ec10fd47d0d5ccb4bf26"),
+    },
+    "release-b": {
+        "assets/common.css": (32, "e4b20a225f36b6cecb22bd9c1e89b256f33ed39ad9e34bf2044462bba21bf17f"),
+        "assets/fingerprint.css": (37, "c8b61302a47ea3208b743c287349570d3580756b3fafc73ac14a5eada9557b90"),
+        "assets/fingerprint.js": (49, "0a0760b281d010ed4d70610e4f2f460a33846088b373ec10fd47d0d5ccb4bf26"),
+    },
+    "release-c": {
+        "assets/common.css": (32, "e4b20a225f36b6cecb22bd9c1e89b256f33ed39ad9e34bf2044462bba21bf17f"),
+        "assets/fingerprint.css": (37, "c8b61302a47ea3208b743c287349570d3580756b3fafc73ac14a5eada9557b90"),
+        "assets/fingerprint.js": (50, "4f770e9b2646e3b0d0b0ac777c7f76ad3893f1477d1a9e00c3cfbfb443b5f4a2"),
+    },
+}
 MAX_COMMAND_OUTPUT = 2 * 1024 * 1024
 MAX_EVIDENCE_OUTPUT = 256 * 1024
 MAX_REPORT_PAYLOAD_BYTES = 16 * 1024 * 1024
@@ -118,6 +141,7 @@ OPTIONAL_AUDIT_FIELDS = (
     "rest_review",
     "wordpress_review",
     "wordpress_discovery",
+    "wordpress_asset_fingerprints",
 )
 
 EXPECTED_COMPONENTS = {
@@ -125,6 +149,7 @@ EXPECTED_COMPONENTS = {
     ("theme", "termivar-child"): ("1.4.0", "active"),
     ("theme", "termivar-parent"): ("3.2.1", "parent"),
     ("plugin", "termivar-metadata-lab"): ("2.3.4", "active"),
+    ("plugin", "termivar-fingerprint-lab"): ("4.0.0", "active"),
     ("plugin", "termivar-hidden-lab"): ("4.5.6", "inactive"),
 }
 EXPECTED_DISCOVERY_PATHS = {
@@ -259,6 +284,20 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
         "plugins/termivar-metadata-lab/termivar-metadata-lab.php",
         "plugins/termivar-metadata-lab/readme.txt",
         "plugins/termivar-metadata-lab/assets/lab.css",
+        "plugins/termivar-fingerprint-lab/termivar-fingerprint-lab.php",
+        "plugins/termivar-fingerprint-lab/readme.txt",
+        "plugins/termivar-fingerprint-lab/assets/common.css",
+        "plugins/termivar-fingerprint-lab/assets/fingerprint.css",
+        "plugins/termivar-fingerprint-lab/assets/fingerprint.js",
+        "plugins/termivar-fingerprint-lab/reference/release-a/assets/common.css",
+        "plugins/termivar-fingerprint-lab/reference/release-a/assets/fingerprint.css",
+        "plugins/termivar-fingerprint-lab/reference/release-a/assets/fingerprint.js",
+        "plugins/termivar-fingerprint-lab/reference/release-b/assets/common.css",
+        "plugins/termivar-fingerprint-lab/reference/release-b/assets/fingerprint.css",
+        "plugins/termivar-fingerprint-lab/reference/release-b/assets/fingerprint.js",
+        "plugins/termivar-fingerprint-lab/reference/release-c/assets/common.css",
+        "plugins/termivar-fingerprint-lab/reference/release-c/assets/fingerprint.css",
+        "plugins/termivar-fingerprint-lab/reference/release-c/assets/fingerprint.js",
         "plugins/termivar-hidden-lab/termivar-hidden-lab.php",
         "plugins/termivar-hidden-lab/readme.txt",
         "plugins/termivar-generator-control/termivar-generator-control.php",
@@ -291,6 +330,39 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
         'href="/shop/wp-content/themes/termivar-child/assets/decoy.css"'
         in child_template,
         "lab child theme must retain its selected-/blog sibling decoy",
+    )
+    require(
+        "home_url( '/contact/' )" in child_template
+        and "home_url( '/gallery/' )" in child_template,
+        "lab theme must retain its two ordinary page links",
+    )
+    fingerprint_plugin = (
+        root / "plugins" / "termivar-fingerprint-lab" / "termivar-fingerprint-lab.php"
+    ).read_text(encoding="utf-8")
+    require(
+        "Version: 4.0.0" in fingerprint_plugin
+        and "is_page( array( 'contact', 'gallery' ) )" in fingerprint_plugin
+        and "'cache-42'" in fingerprint_plugin,
+        "fingerprint plugin identity or page-conditional asset policy changed",
+    )
+    for release_id, files in FINGERPRINT_REFERENCE_ORACLE.items():
+        for relative_path, (byte_length, sha256) in files.items():
+            reference = (
+                root / "plugins" / "termivar-fingerprint-lab" / "reference"
+                / release_id / Path(relative_path)
+            )
+            require(
+                reference.stat().st_size == byte_length
+                and sha256_file(reference) == sha256,
+                f"fingerprint reference oracle changed for {release_id}/{relative_path}",
+            )
+    require(
+        FINGERPRINT_CATALOGUE_PATH.is_file()
+        and not FINGERPRINT_CATALOGUE_PATH.is_symlink()
+        and FINGERPRINT_CATALOGUE_PATH.stat().st_size == 4601
+        and sha256_file(FINGERPRINT_CATALOGUE_PATH)
+        == "49d914864f0bf7f342a69b2fc10a5656fa021342209bcb328b409dba1ca76140",
+        "checked-in fingerprint catalogue oracle changed",
     )
     sibling_style = (
         root / "sibling-shop/wp-content/themes/termivar-child/style.css"
@@ -959,9 +1031,78 @@ class DockerWordPressLab:
         self.wp("theme", "activate", "termivar-child", label="child theme activation")
         self.wp("plugin", "activate", "termivar-metadata-lab",
                 label="metadata plugin activation")
+        self.wp("plugin", "activate", "termivar-fingerprint-lab",
+                label="fingerprint plugin activation")
+        for slug, title in (("contact", "Contact"), ("gallery", "Gallery")):
+            post_id = self.wp(
+                "post", "create", "--post_type=page", "--post_status=publish",
+                f"--post_name={slug}", f"--post_title={title}", "--porcelain",
+                label=f"{slug} page creation",
+            ).stdout.decode("utf-8", "strict").strip()
+            require(post_id.isdigit() and int(post_id) > 0,
+                    f"{slug} page ground truth is unavailable")
         self.wp("option", "update", "permalink_structure", "/%postname%/",
                 label="pretty permalink selection")
         self.wp("rewrite", "flush", "--hard", label="pretty permalink flush")
+
+    def configure_fingerprint_assets(
+        self,
+        *,
+        variant: str,
+        mode: str,
+        path: str = "/var/www/html",
+        plugin_directory: str | None = None,
+    ) -> dict[str, Any]:
+        """Select immutable task-owned bytes without exposing a version to Termivar."""
+        require(variant in {"release-a", "release-b", "release-c", "mixed"},
+                "unknown fingerprint fixture variant")
+        require(mode in {"two", "one", "common"},
+                "unknown fingerprint fixture mode")
+        plugin = (
+            f"{plugin_directory}/termivar-fingerprint-lab"
+            if plugin_directory is not None
+            else f"{path}/wp-content/plugins/termivar-fingerprint-lab"
+        )
+        js_release = "release-c" if variant == "mixed" else variant
+        css_release = "release-a" if variant == "mixed" else variant
+        self.docker(
+            "exec", self.wordpress, "sh", "-eu", "-c",
+            f"cp {plugin}/reference/{js_release}/assets/fingerprint.js "
+            f"{plugin}/assets/fingerprint.js; "
+            f"cp {plugin}/reference/{css_release}/assets/fingerprint.css "
+            f"{plugin}/assets/fingerprint.css; "
+            f"cp {plugin}/reference/release-a/assets/common.css "
+            f"{plugin}/assets/common.css",
+            label=f"fingerprint {variant} asset selection",
+        )
+        self.wp(
+            f"--path={path}", "option", "update", "termivar_fingerprint_lab_mode", mode,
+            label=f"fingerprint {mode} presentation selection",
+        )
+        expected_paths = (
+            ["assets/common.css"] if mode == "common"
+            else ["assets/fingerprint.js"] if mode == "one"
+            else ["assets/fingerprint.css", "assets/fingerprint.js"]
+        )
+        expected = {}
+        for relative_path in expected_paths:
+            release = (
+                "release-a" if relative_path == "assets/common.css"
+                else js_release if relative_path.endswith(".js") else css_release
+            )
+            byte_length, sha256 = FINGERPRINT_REFERENCE_ORACLE[release][relative_path]
+            expected[relative_path] = {
+                "byte_length": byte_length,
+                "sha256": sha256,
+            }
+        return {
+            "installed_plugin_version": "4.0.0",
+            "variant": variant,
+            "mode": mode,
+            "observed_assets": expected,
+            "url_version_hint": "cache-42",
+            "readme_stable_tag": "9.9.9",
+        }
 
     def configure(self, *, permalink: str, generator_visible: bool) -> None:
         self.configure_at(
@@ -1132,6 +1273,8 @@ class DockerWordPressLab:
                 "metadata plugin WP-CLI ground truth differs")
         require(plugin_map.get("termivar-hidden-lab") == ("4.5.6", "inactive"),
                 "hidden plugin WP-CLI ground truth differs")
+        require(plugin_map.get("termivar-fingerprint-lab") == ("4.0.0", "active"),
+                "fingerprint plugin WP-CLI ground truth differs")
         return {
             "core_version": core,
             "active_stylesheet": stylesheet,
@@ -1142,9 +1285,20 @@ class DockerWordPressLab:
             },
             "task_plugins": {
                 name: {"version": plugin_map[name][0], "status": plugin_map[name][1]}
-                for name in ("termivar-metadata-lab", "termivar-hidden-lab")
+                for name in (
+                    "termivar-metadata-lab",
+                    "termivar-hidden-lab",
+                    "termivar-fingerprint-lab",
+                )
             },
             "plugin_readme_stable_tag": "9.9.9",
+            "fingerprint_plugin": {
+                "installed_version": "4.0.0",
+                "catalogue_contains_installed_version": False,
+                "conditional_pages": ["contact", "gallery"],
+                "url_version_hint": "cache-42",
+                "readme_stable_tag": "9.9.9",
+            },
         }
 
     def deployment_ground_truth(
@@ -1913,6 +2067,54 @@ def _assert_request_delta(
             f"{oracle_name} discovery request delta differs from the ordered four-request oracle")
 
 
+def _assert_fingerprint_request_delta(
+    baseline_trace: list[tuple[str, str, int, tuple[str, ...]]],
+    fingerprint_trace: list[tuple[str, str, int, tuple[str, ...]]],
+    *,
+    plugin_base_path: str,
+    relative_paths: Sequence[str],
+    page_paths: Sequence[str] = ("/contact/", "/gallery/"),
+) -> None:
+    matched_baseline = 0
+    extra: list[tuple[str, str, int, tuple[str, ...]]] = []
+    for request in fingerprint_trace:
+        if (
+            matched_baseline < len(baseline_trace)
+            and request == baseline_trace[matched_baseline]
+        ):
+            matched_baseline += 1
+        else:
+            extra.append(request)
+    require(
+        matched_baseline == len(baseline_trace),
+        "fingerprint selection changed, removed, or reordered existing scan requests",
+    )
+    expected = [
+        ("GET", f"{plugin_base_path}{path}?ver=cache-42", 200, ())
+        for path in sorted(relative_paths)
+    ]
+    require(
+        extra == expected,
+        "fingerprint request delta differs from the exact observed-resource oracle",
+    )
+    for page in page_paths:
+        require(
+            sum(1 for method, target, status, _ in fingerprint_trace
+                if (method, target, status) == ("GET", page, 200)) == 1,
+            f"observed page {page} was not reused from exactly one ordinary GET",
+        )
+    readme = f"{plugin_base_path}readme.txt"
+    require(
+        sum(1 for method, target, status, _ in fingerprint_trace
+            if (method, target, status) == ("GET", readme, 200)) == 1,
+        "page-repeated fingerprint plugin metadata was not deduplicated",
+    )
+    require(
+        not any("/reference/" in target for _, target, _, _ in fingerprint_trace),
+        "catalogue-only reference paths unexpectedly created request authority",
+    )
+
+
 def _run_scan(
     runner: ProcessRunner,
     binary: Path,
@@ -1922,6 +2124,8 @@ def _run_scan(
     wordpress_review: bool,
     discovery: bool,
     layout_path: Path | None = None,
+    page_scope: str | None = None,
+    fingerprints_path: Path | None = None,
     label: str,
 ) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes, dict[str, Any]]:
     arguments: list[str | os.PathLike[str]] = [
@@ -1933,6 +2137,11 @@ def _run_scan(
         arguments.append("--wordpress-discovery")
     if layout_path is not None:
         arguments.extend(["--wordpress-layout", layout_path])
+    if page_scope is not None:
+        require(page_scope == "observed", "lab does not support linked page acquisition")
+        arguments.extend(["--wordpress-page-scope", page_scope])
+    if fingerprints_path is not None:
+        arguments.extend(["--wordpress-fingerprints", fingerprints_path])
     result = runner.run(
         arguments,
         label=label,
@@ -1944,12 +2153,14 @@ def _run_scan(
             f"{label} diagnostic exposed a forbidden credential-header name")
     identity = _report_identity(bundle)
     assessment_bytes = (bundle / "assessment.json").read_bytes()
-    if layout_path is not None:
-        private_path = os.fsencode(layout_path)
+    for private_input in (layout_path, fingerprints_path):
+        if private_input is None:
+            continue
+        private_path = os.fsencode(private_input)
         require(private_path not in result.stdout and private_path not in result.stderr
                 and all(private_path not in (bundle / name).read_bytes()
                         for name in ("assessment.html", "assessment.json", "manifest.json")),
-                f"{label} exposed its private layout input path")
+                f"{label} exposed a private local input path")
     document = parse_json(assessment_bytes, f"{label} assessment")
     require(document.get("schema") == "venom-rendered-assessment/v1",
             f"{label} assessment schema changed")
@@ -2311,6 +2522,33 @@ def _run_offline_acceptance(
                 and counts["changed"] == 0
                 and counts["unchanged"] == source.item_count,
                 f"offline self comparison changed {name}")
+        if scenario.get("fingerprints") is not None:
+            wordpress = compared.get("wordpress_review_comparison")
+            fingerprints = (
+                wordpress.get("asset_fingerprints")
+                if isinstance(wordpress, dict) else None
+            )
+            require(
+                isinstance(wordpress, dict)
+                and wordpress.get("schema")
+                == "termivar-wordpress-review-comparison/v3"
+                and wordpress.get("status") == "compared"
+                and isinstance(fingerprints, dict)
+                and fingerprints.get("status") == "compared"
+                and all(
+                    fingerprints.get(facet, {}).get("status") == "unchanged"
+                    for facet in ("methodology", "catalogue", "coverage")
+                )
+                and fingerprints.get("resources", {}).get("paired_unchanged_count")
+                == scenario["fingerprints"]["resource_count"]
+                and fingerprints.get("components", {}).get("paired_unchanged_count") == 1
+                and all(
+                    not fingerprints.get(entity, {}).get(group)
+                    for entity in ("resources", "components")
+                    for group in ("paired_changed", "only_in_before", "only_in_after")
+                ),
+                f"offline fingerprint self comparison changed {name}",
+            )
         require_bundle_unchanged(name, scenario)
         results["bundles"][name] = {
             "bundle_unchanged": True,
@@ -2457,6 +2695,124 @@ def _run_offline_acceptance(
             "reason": wordpress["reason"],
             "item_counts": counts,
         }
+
+    fingerprint_names = {
+        "fingerprint-release-b",
+        "fingerprint-mixed-artifacts",
+        "fingerprint-missing-reference",
+    }
+    if fingerprint_names <= scenarios.keys():
+        def compare_fingerprints(
+            before_name: str,
+            after_name: str,
+            *,
+            catalogue_status: str,
+            changed_resource_count: int,
+            unchanged_resource_count: int,
+            required_component_dimensions: set[str],
+            label: str,
+        ) -> dict[str, Any]:
+            before_path = Path(scenarios[before_name]["_bundle"]) / "assessment.json"
+            after_path = Path(scenarios[after_name]["_bundle"]) / "assessment.json"
+            command = runner.run(
+                [
+                    binary, "report", "compare", "--before", before_path,
+                    "--after", after_path, "--same-scope", "--format", "json",
+                ],
+                label=label,
+            )
+            comparison = parse_json(command.stdout, label)
+            before_document = _read_assessment_inventory(before_path, f"{label} before")
+            after_document = _read_assessment_inventory(after_path, f"{label} after")
+            require(before_document.item_count == after_document.item_count,
+                    f"{label} unexpectedly changed item cardinality")
+            counts, _ = _validate_comparison_partition(
+                comparison, before_document, after_document, label
+            )
+            require(
+                counts == {
+                    "only_in_after": 0,
+                    "only_in_before": 0,
+                    "changed": 0,
+                    "unchanged": before_document.item_count,
+                },
+                f"{label} confused fingerprint audit changes with assessment items",
+            )
+            wordpress = comparison.get("wordpress_review_comparison")
+            fingerprints = (
+                wordpress.get("asset_fingerprints")
+                if isinstance(wordpress, dict) else None
+            )
+            resources = (
+                fingerprints.get("resources") if isinstance(fingerprints, dict) else None
+            )
+            components = (
+                fingerprints.get("components") if isinstance(fingerprints, dict) else None
+            )
+            resource_changes = (
+                resources.get("paired_changed") if isinstance(resources, dict) else None
+            )
+            component_changes = (
+                components.get("paired_changed") if isinstance(components, dict) else None
+            )
+            require(
+                isinstance(wordpress, dict)
+                and wordpress.get("schema") == "termivar-wordpress-review-comparison/v3"
+                and wordpress.get("status") == "compared"
+                and isinstance(fingerprints, dict)
+                and fingerprints.get("status") == "compared"
+                and fingerprints.get("methodology", {}).get("status") == "unchanged"
+                and fingerprints.get("catalogue", {}).get("status") == catalogue_status
+                and fingerprints.get("coverage", {}).get("status") == "unchanged"
+                and isinstance(resources, dict)
+                and resources.get("paired_unchanged_count") == unchanged_resource_count
+                and isinstance(resource_changes, list)
+                and len(resource_changes) == changed_resource_count
+                and isinstance(components, dict)
+                and isinstance(component_changes, list)
+                and len(component_changes) == 1
+                and required_component_dimensions
+                <= set(component_changes[0].get("changed_dimensions", [])),
+                f"{label} did not separate bytes, catalogue, coverage, and candidates",
+            )
+            if changed_resource_count:
+                require(
+                    all(
+                        set(change.get("changed_dimensions", [])) == {"resource_bytes"}
+                        for change in resource_changes
+                    ),
+                    f"{label} attributed a byte-only change to another resource dimension",
+                )
+            return {
+                "item_counts": counts,
+                "catalogue": catalogue_status,
+                "changed_resources": changed_resource_count,
+                "unchanged_resources": unchanged_resource_count,
+                "component_changed_dimensions": component_changes[0][
+                    "changed_dimensions"
+                ],
+            }
+
+        results["fingerprint_bytes_changed"] = compare_fingerprints(
+            "fingerprint-release-b",
+            "fingerprint-mixed-artifacts",
+            catalogue_status="unchanged",
+            changed_resource_count=2,
+            unchanged_resource_count=0,
+            required_component_dimensions={"candidate_set", "reference_matrix"},
+            label="offline fingerprint byte comparison",
+        )
+        results["fingerprint_catalogue_changed"] = compare_fingerprints(
+            "fingerprint-release-b",
+            "fingerprint-missing-reference",
+            catalogue_status="changed",
+            changed_resource_count=0,
+            unchanged_resource_count=2,
+            required_component_dimensions={
+                "candidate_set", "reference_matrix", "resource_coverage"
+            },
+            label="offline fingerprint catalogue comparison",
+        )
     for name, scenario in scenarios.items():
         require_bundle_unchanged(name, scenario)
     return results
@@ -2475,6 +2831,353 @@ def _trace_json(
         }
         for index, (method, target, status, forbidden_headers) in enumerate(trace)
     ]
+
+
+def _validate_observed_page_baseline(document: dict[str, Any]) -> str:
+    require(
+        document.get("wordpress_asset_fingerprints") is None,
+        "option-off observed run unexpectedly emitted a fingerprint audit",
+    )
+    review = document.get("wordpress_review")
+    discovery = document.get("wordpress_discovery")
+    pages = discovery.get("page_collection") if isinstance(discovery, dict) else None
+    require(
+        isinstance(review, dict)
+        and review.get("schema") == "security.wordpress-review-audit/v7"
+        and isinstance(discovery, dict)
+        and discovery.get("schema") == "security.wordpress-discovery-audit/v3"
+        and discovery.get("attempted_request_count") == 5
+        and discovery.get("committed_response_count") == 5
+        and review.get("additional_request_count") == 5
+        and isinstance(pages, dict)
+        and pages.get("mode") == "observed"
+        and pages.get("candidate_count") == 2
+        and pages.get("selected_count") == 2
+        and pages.get("reused_response_count") == 2
+        and pages.get("fetched_response_count") == 0
+        and pages.get("attempted_request_count") == 0
+        and pages.get("committed_response_count") == 2,
+        "option-off observed-page baseline changed its reuse or request accounting",
+    )
+    fingerprint_readmes = [
+        source for source in discovery.get("sources", [])
+        if isinstance(source, dict)
+        and source.get("kind") == "plugin_readme"
+        and source.get("component")
+        == {"kind": FINGERPRINT_COMPONENT[0], "slug": FINGERPRINT_COMPONENT[1]}
+    ]
+    require(
+        len(fingerprint_readmes) == 1
+        and fingerprint_readmes[0].get("plugin", {}).get("stable_tag") == "9.9.9"
+        and len(fingerprint_readmes[0].get("source_page_references", [])) == 2,
+        "observed-page baseline did not deduplicate its conditional plugin metadata",
+    )
+    return discovery["schema"]
+
+
+def _write_missing_reference_catalogue(source: Path, target: Path) -> dict[str, Any]:
+    """Create one labelled synthetic coverage mutation without production helpers."""
+    document = parse_json(source.read_bytes(), "fingerprint source catalogue")
+    require(isinstance(document, dict), "fingerprint source catalogue is not an object")
+    components = document.get("components")
+    require(isinstance(components, list) and len(components) == 1,
+            "fingerprint source catalogue component matrix changed")
+    releases = components[0].get("releases") if isinstance(components[0], dict) else None
+    require(isinstance(releases, list) and len(releases) == 3,
+            "fingerprint source catalogue release matrix changed")
+    removed = 0
+    for release in releases:
+        if not isinstance(release, dict) or release.get("release_id") != "release-a":
+            continue
+        files = release.get("files")
+        require(isinstance(files, list), "release-a fingerprint rows are unavailable")
+        kept = []
+        for row in files:
+            if isinstance(row, dict) and row.get("path") == "assets/fingerprint.css":
+                removed += 1
+            else:
+                kept.append(row)
+        release["files"] = kept
+    require(removed == 1, "missing-reference mutation did not remove exactly one row")
+    encoded = (json.dumps(document, separators=(",", ":"), sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    target.write_bytes(encoded)
+    os.chmod(target, 0o600)
+    return {
+        "byte_length": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "mutation": "release-a/assets/fingerprint.css reference removed",
+    }
+
+
+def _validate_fingerprint_document(
+    document: dict[str, Any],
+    *,
+    catalogue_path: Path,
+    asset_oracle: dict[str, dict[str, Any]],
+    expected_state: str,
+    compatible: Sequence[str],
+    undetermined: Sequence[str],
+    inconsistent: Sequence[str],
+) -> dict[str, Any]:
+    """Validate the literal fingerprint wire contract without rerunning its matcher."""
+    audit = document.get("wordpress_asset_fingerprints")
+    require(isinstance(audit, dict), "fingerprint audit is unavailable")
+    require(
+        audit.get("schema") == "security.wordpress-asset-fingerprint-audit/v1"
+        and audit.get("capability_id")
+        == "technology.wordpress-asset-fingerprint-candidate@1"
+        and audit.get("policy_id")
+        == "termivar.wordpress-observed-asset-fingerprint/v1"
+        and audit.get("selected") is True
+        and audit.get("representation_profile") == "identity-content-bytes/v1"
+        and audit.get("finite_reference_scope") == "listed_releases_only"
+        and audit.get("same_release_assumption")
+        == "considered_paths_share_one_listed_release_artifact_set"
+        and audit.get("installed_version_assurance")
+        == "not_established_by_asset_fingerprints"
+        and audit.get("source_authenticity") == "not_established",
+        "fingerprint audit changed its bounded conditional claim contract",
+    )
+    catalogue = audit.get("catalogue")
+    require(isinstance(catalogue, dict), "fingerprint catalogue provenance is unavailable")
+    require(
+        catalogue.get("schema") == "security.wordpress-asset-fingerprint-catalog/v1"
+        and catalogue.get("byte_length") == catalogue_path.stat().st_size
+        and catalogue.get("sha256") == sha256_file(catalogue_path)
+        and isinstance(catalogue.get("semantic_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", catalogue["semantic_sha256"]) is not None
+        and catalogue.get("component_count") == 1
+        and catalogue.get("release_count") == 3,
+        "fingerprint catalogue identity or finite scope differs",
+    )
+    resources = audit.get("resources")
+    require(isinstance(resources, list), "fingerprint resource rows are unavailable")
+    require(
+        audit.get("candidate_count") == len(asset_oracle)
+        and audit.get("selected_resource_count") == len(asset_oracle)
+        and audit.get("omitted_resource_count") == 0
+        and audit.get("attempted_request_count") == len(asset_oracle)
+        and audit.get("reused_response_count") == 0
+        and audit.get("fetched_response_count") == len(asset_oracle)
+        and audit.get("stop") == "complete"
+        and audit.get("resource_count") == len(asset_oracle)
+        and len(resources) == len(asset_oracle),
+        "fingerprint acquisition accounting differs from the literal oracle",
+    )
+    actual_resources: dict[str, dict[str, Any]] = {}
+    transferred_bytes = 0
+    for resource in resources:
+        require(isinstance(resource, dict), "fingerprint resource row is malformed")
+        path = resource.get("relative_path")
+        require(isinstance(path, str) and path not in actual_resources,
+                "fingerprint resource identity is missing or duplicated")
+        require(
+            resource.get("component")
+            == {"kind": FINGERPRINT_COMPONENT[0], "slug": FINGERPRINT_COMPONENT[1]}
+            and resource.get("acquisition") == "fetched"
+            and resource.get("outcome") == "observed"
+            and resource.get("request_attempted") is True
+            and resource.get("observed_variant_count") == 1
+            and "url" not in resource
+            and "query" not in resource,
+            f"fingerprint resource policy differs for {path!r}",
+        )
+        source_pages = resource.get("source_page_references")
+        require(
+            isinstance(source_pages, list)
+            and len(source_pages) == 2
+            and len(set(source_pages)) == 2
+            and all(isinstance(value, str) and OPAQUE_REFERENCE_RE.fullmatch(value)
+                    for value in source_pages),
+            f"fingerprint page provenance differs for {path!r}",
+        )
+        evidence = resource.get("evidence_references")
+        require(
+            resource.get("evidence_reference_count") == 1
+            and isinstance(evidence, list)
+            and len(evidence) == 1
+            and isinstance(evidence[0], str),
+            f"fingerprint evidence accounting differs for {path!r}",
+        )
+        expected = asset_oracle.get(path)
+        observation = resource.get("observation")
+        require(
+            expected is not None
+            and isinstance(observation, dict)
+            and observation.get("byte_length") == expected["byte_length"]
+            and observation.get("sha256") == expected["sha256"]
+            and resource.get("interpreted_response_bytes") == expected["byte_length"]
+            and resource.get("response_bytes") == expected["byte_length"],
+            f"fingerprint bytes differ from the independent oracle for {path!r}",
+        )
+        transferred_bytes += expected["byte_length"]
+        actual_resources[path] = observation
+    require(set(actual_resources) == set(asset_oracle),
+            "fingerprint resource set differs from the independent oracle")
+    require(
+        audit.get("response_bytes") == transferred_bytes,
+        "fingerprint transferred-byte accounting differs from complete asset bytes",
+    )
+
+    components = audit.get("components")
+    require(
+        audit.get("component_count") == 1
+        and isinstance(components, list)
+        and len(components) == 1,
+        "fingerprint component accounting differs",
+    )
+    component = components[0]
+    expected_release_states = {
+        release_id: "compatible" for release_id in compatible
+    }
+    expected_release_states.update(
+        {release_id: "undetermined" for release_id in undetermined}
+    )
+    expected_release_states.update(
+        {release_id: "inconsistent" for release_id in inconsistent}
+    )
+    release_rows = component.get("releases") if isinstance(component, dict) else None
+    require(isinstance(release_rows, list), "fingerprint release rows are unavailable")
+    actual_release_states = {
+        release.get("release_id"): release.get("state")
+        for release in release_rows
+        if isinstance(release, dict)
+    }
+    require(
+        component.get("identity")
+        == {"kind": FINGERPRINT_COMPONENT[0], "slug": FINGERPRINT_COMPONENT[1]}
+        and component.get("catalogue_component_listed") is True
+        and component.get("state") == expected_state
+        and component.get("candidate_resource_count") == len(asset_oracle)
+        and component.get("selected_resource_count") == len(asset_oracle)
+        and component.get("completely_interpreted_resource_count") == len(asset_oracle)
+        and component.get("omitted_resource_count") == 0
+        and component.get("compatible_release_ids") == list(compatible)
+        and component.get("undetermined_release_ids") == list(undetermined)
+        and component.get("inconsistent_release_ids") == list(inconsistent)
+        and component.get("resource_count") == len(asset_oracle)
+        and component.get("release_count") == 3
+        and len(release_rows) == 3
+        and actual_release_states == expected_release_states,
+        "fingerprint candidate aggregation differs from the independent oracle",
+    )
+    review = document.get("wordpress_review")
+    require(
+        isinstance(review, dict)
+        and review.get("schema") == "security.wordpress-review-audit/v8",
+        "fingerprint run did not use the coordinated WordPress v8 wrapper",
+    )
+    discovery = document.get("wordpress_discovery")
+    page_collection = (
+        discovery.get("page_collection") if isinstance(discovery, dict) else None
+    )
+    require(
+        isinstance(discovery, dict)
+        and discovery.get("schema") == "security.wordpress-discovery-audit/v3"
+        and discovery.get("attempted_request_count") == 5
+        and discovery.get("committed_response_count") == 5
+        and isinstance(page_collection, dict)
+        and page_collection.get("mode") == "observed"
+        and page_collection.get("candidate_count") == 2
+        and page_collection.get("selected_count") == 2
+        and page_collection.get("omitted_candidate_count") == 0
+        and page_collection.get("reused_response_count") == 2
+        and page_collection.get("fetched_response_count") == 0
+        and page_collection.get("not_observed_count") == 0
+        and page_collection.get("rejected_response_count") == 0
+        and page_collection.get("accepted_association_count") == 2
+        and page_collection.get("rejected_association_count") == 0
+        and page_collection.get("attempted_request_count") == 0
+        and page_collection.get("completed_response_count") == 2
+        and page_collection.get("committed_response_count") == 2
+        and isinstance(page_collection.get("pages"), list)
+        and len(page_collection["pages"]) == 2
+        and review.get("additional_request_count") == 5 + len(asset_oracle),
+        "fingerprint run did not preserve observed-page reuse and shared accounting",
+    )
+    page_references = {
+        page.get("page_reference")
+        for page in page_collection["pages"]
+        if isinstance(page, dict)
+    }
+    require(
+        len(page_references) == 2
+        and all(isinstance(value, str) and OPAQUE_REFERENCE_RE.fullmatch(value)
+                for value in page_references)
+        and all(set(resource["source_page_references"]) == page_references
+                for resource in resources),
+        "fingerprint resource-to-page provenance does not reconcile",
+    )
+    fingerprint_readmes = [
+        source for source in discovery.get("sources", [])
+        if isinstance(source, dict)
+        and source.get("kind") == "plugin_readme"
+        and source.get("component")
+        == {"kind": FINGERPRINT_COMPONENT[0], "slug": FINGERPRINT_COMPONENT[1]}
+    ]
+    require(
+        len(fingerprint_readmes) == 1
+        and fingerprint_readmes[0].get("outcome") == "observed"
+        and set(fingerprint_readmes[0].get("source_page_references", []))
+        == page_references
+        and fingerprint_readmes[0].get("plugin", {}).get("stable_tag") == "9.9.9",
+        "fingerprint plugin metadata was not deduplicated across observed pages",
+    )
+    review_rows = review.get("components")
+    require(isinstance(review_rows, list), "fingerprint review component rows are unavailable")
+    require(
+        len(review_rows) == 5
+        and all(
+            isinstance(row, dict) and isinstance(row.get("identity"), dict)
+            for row in review_rows
+        ),
+        "fingerprint run changed the bounded WordPress component-row cardinality",
+    )
+    review_identities = {
+        (row.get("identity", {}).get("kind"), row.get("identity", {}).get("slug"))
+        for row in review_rows
+        if isinstance(row, dict) and isinstance(row.get("identity"), dict)
+    }
+    require(
+        review_identities
+        == {
+            ("core", "wordpress"),
+            ("theme", "termivar-child"),
+            ("theme", "termivar-parent"),
+            ("plugin", "termivar-metadata-lab"),
+            FINGERPRINT_COMPONENT,
+        },
+        "fingerprint run lost, substituted, or invented a WordPress component identity",
+    )
+    fingerprint_rows = [
+        row for row in review_rows
+        if isinstance(row, dict)
+        and row.get("identity")
+        == {"kind": FINGERPRINT_COMPONENT[0], "slug": FINGERPRINT_COMPONENT[1]}
+    ]
+    require(len(fingerprint_rows) == 1, "fingerprint component identity was lost or duplicated")
+    require(
+        fingerprint_rows[0].get("identity_sources") == ["same_origin_asset_path"]
+        and fingerprint_rows[0].get("versions") == [],
+        "fingerprint, Stable tag, or URL ver was promoted to installed-version evidence",
+    )
+    return {
+        "state": expected_state,
+        "compatible_release_ids": list(compatible),
+        "undetermined_release_ids": list(undetermined),
+        "inconsistent_release_ids": list(inconsistent),
+        "resource_count": len(resources),
+        "attempted_request_count": audit["attempted_request_count"],
+        "reused_response_count": audit["reused_response_count"],
+        "fetched_response_count": audit["fetched_response_count"],
+        "response_bytes": audit["response_bytes"],
+        "informative_resource_count": component.get("informative_resource_count"),
+        "listed_matrix_complete": component.get("listed_matrix_complete"),
+        "catalogue_sha256": catalogue["sha256"],
+        "catalogue_semantic_sha256": catalogue["semantic_sha256"],
+    }
 
 
 def _validate_discovery_capability(document: Any) -> None:
@@ -2502,6 +3205,7 @@ def _validate_discovery_capability(document: Any) -> None:
         "--wordpress-discovery",
         "optional --wordpress-page-scope observed",
         "optional --wordpress-layout FILE",
+        "optional --wordpress-fingerprints FILE",
     ]
     require(
         discovery.get("build_state") == "compiled"
@@ -2516,6 +3220,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
     require(binary.is_file() and not binary.is_symlink(), "binary must be a regular non-link file")
     fixture_before = tree_sha256(FIXTURE_ROOT)
     ground_truth_before = sha256_file(GROUND_TRUTH_PATH)
+    fingerprint_catalogue_before = sha256_file(FINGERPRINT_CATALOGUE_PATH)
     runner = ProcessRunner()
     version = runner.run([binary, "--version"], label="binary version").stdout.decode().strip()
     require(version == f"termivar {expected_version}", "binary version differs from expectation")
@@ -2523,7 +3228,8 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
     require("--wordpress-review" in scan_help
             and "--wordpress-discovery" in scan_help
             and "--wordpress-page-scope" in scan_help
-            and "--wordpress-layout" in scan_help,
+            and "--wordpress-layout" in scan_help
+            and "--wordpress-fingerprints" in scan_help,
             "feature-enabled scan help omits WordPress discovery")
     capabilities = parse_json(
         runner.run([binary, "capabilities", "--format", "json"],
@@ -2551,6 +3257,10 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
         "claim_limits": {
             "metadata_authenticity": "not_established",
             "plugin_stable_tag": "distribution_hint_not_installed_version",
+            "asset_fingerprint_candidate": (
+                "finite_catalogue_compatibility_not_installed_version"
+            ),
+            "url_ver": "cache_hint_not_release_selector",
             "generator_absence": "unknown_not_negative",
             "rest_namespace": "protocol_support_not_component_version",
             "exploit_execution": "not_performed",
@@ -2608,6 +3318,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 target: str | None = None,
                 discovery_oracle: DiscoveryOracle | None = None,
                 layout_path: Path | None = None,
+                page_scope: str | None = None,
+                fingerprints_path: Path | None = None,
+                fingerprint_expectation: dict[str, Any] | None = None,
             ) -> list[tuple[str, str, int, tuple[str, ...]]]:
                 before = lab.request_log()
                 bundle = bundles / name
@@ -2615,7 +3328,8 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                     document, identity, _, _, process_metrics = _run_scan(
                         runner, binary, target or lab.origin or "", bundle,
                         wordpress_review=review, discovery=discovery,
-                        layout_path=layout_path, label=name,
+                        layout_path=layout_path, page_scope=page_scope,
+                        fingerprints_path=fingerprints_path, label=name,
                     )
                 except Exception:
                     lab.assert_relay_healthy()
@@ -2625,25 +3339,39 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 schema = None
                 quality = None
                 discovery_response_bytes = 0
+                fingerprint_summary = None
                 if discovery:
                     _validate_wordpress_execution_boundary(
                         (bundle / "assessment.html").read_bytes()
                     )
                     try:
-                        schema = _validate_discovery_document(
-                            document,
-                            generator_visible=not name.startswith("suppressed-"),
-                            oracle=discovery_oracle,
-                        )
+                        if fingerprint_expectation is not None:
+                            require(fingerprints_path is not None,
+                                    "fingerprint expectation has no catalogue input")
+                            schema = document.get("wordpress_discovery", {}).get("schema")
+                            fingerprint_summary = _validate_fingerprint_document(
+                                document,
+                                catalogue_path=fingerprints_path,
+                                **fingerprint_expectation,
+                            )
+                        elif page_scope == "observed":
+                            schema = _validate_observed_page_baseline(document)
+                        else:
+                            schema = _validate_discovery_document(
+                                document,
+                                generator_visible=not name.startswith("suppressed-"),
+                                oracle=discovery_oracle,
+                            )
+                            if discovery_oracle is None or discovery_oracle.full_component_set:
+                                quality = _discovery_quality_metrics(
+                                    document,
+                                    generator_visible=not name.startswith("suppressed-"),
+                                )
                     except AcceptanceError as error:
                         outcomes = _bounded_discovery_source_outcomes(document)
                         raise AcceptanceError(
                             f"{name}: {error}; source_outcomes={outcomes}"
                         ) from error
-                    if discovery_oracle is None or discovery_oracle.full_component_set:
-                        quality = _discovery_quality_metrics(
-                            document, generator_visible=not name.startswith("suppressed-")
-                        )
                     discovery_response_bytes = document["wordpress_discovery"]["response_bytes"]
                 scenarios[name] = {
                     "wordpress_review": review,
@@ -2679,6 +3407,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                         if discovery_oracle is not None else []
                     ),
                     "quality": quality,
+                    "fingerprints": fingerprint_summary,
                     "discovery_response_bytes": discovery_response_bytes,
                     "process_metrics": process_metrics,
                     "bundle": identity,
@@ -2751,6 +3480,132 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 len(plain_discovery) - len(plain_review)
             )
 
+            # The finite catalogue is checked independently above. These cases
+            # vary only task-owned served bytes and presentation, never a version
+            # declaration supplied to Termivar.
+            lab.configure(permalink="pretty", generator_visible=True)
+            missing_catalogue_path = work / "fingerprint-catalogue-missing-a-css.json"
+            missing_catalogue_identity = _write_missing_reference_catalogue(
+                FINGERPRINT_CATALOGUE_PATH, missing_catalogue_path
+            )
+            result["ground_truth"]["fingerprint_catalogues"] = {
+                "complete": {
+                    "byte_length": FINGERPRINT_CATALOGUE_PATH.stat().st_size,
+                    "sha256": sha256_file(FINGERPRINT_CATALOGUE_PATH),
+                    "release_ids": ["release-a", "release-b", "release-c"],
+                },
+                "missing_reference_mutation": missing_catalogue_identity,
+            }
+
+            lab.configure_fingerprint_assets(variant="release-b", mode="two")
+            observed_baseline = run_case(
+                "fingerprint-observed-option-off",
+                review=True,
+                discovery=True,
+                page_scope="observed",
+            )
+            require(
+                not any("termivar-fingerprint-lab/assets/" in target
+                        for _, target, _, _ in observed_baseline),
+                "option-off observed discovery acquired fingerprint asset bytes",
+            )
+
+            def run_fingerprint_case(
+                name: str,
+                *,
+                variant: str,
+                mode: str,
+                catalogue_path: Path = FINGERPRINT_CATALOGUE_PATH,
+                state: str,
+                compatible: Sequence[str],
+                undetermined: Sequence[str],
+                inconsistent: Sequence[str],
+            ) -> list[tuple[str, str, int, tuple[str, ...]]]:
+                ground_truth = lab.configure_fingerprint_assets(
+                    variant=variant, mode=mode
+                )
+                trace = run_case(
+                    name,
+                    review=True,
+                    discovery=True,
+                    page_scope="observed",
+                    fingerprints_path=catalogue_path,
+                    fingerprint_expectation={
+                        "asset_oracle": ground_truth["observed_assets"],
+                        "expected_state": state,
+                        "compatible": compatible,
+                        "undetermined": undetermined,
+                        "inconsistent": inconsistent,
+                    },
+                )
+                _assert_fingerprint_request_delta(
+                    observed_baseline,
+                    trace,
+                    plugin_base_path="/wp-content/plugins/termivar-fingerprint-lab/",
+                    relative_paths=tuple(ground_truth["observed_assets"]),
+                )
+                scenarios[name]["ground_truth"] = ground_truth
+                scenarios[name]["additional_asset_requests_vs_option_off"] = (
+                    len(trace) - len(observed_baseline)
+                )
+                return trace
+
+            run_fingerprint_case(
+                "fingerprint-release-b",
+                variant="release-b",
+                mode="two",
+                state="single_catalogue_candidate",
+                compatible=["release-b"],
+                undetermined=[],
+                inconsistent=["release-a", "release-c"],
+            )
+            run_fingerprint_case(
+                "fingerprint-release-a",
+                variant="release-a",
+                mode="two",
+                state="single_catalogue_candidate",
+                compatible=["release-a"],
+                undetermined=[],
+                inconsistent=["release-b", "release-c"],
+            )
+            run_fingerprint_case(
+                "fingerprint-one-file",
+                variant="release-b",
+                mode="one",
+                state="provisional_candidates",
+                compatible=["release-a", "release-b"],
+                undetermined=[],
+                inconsistent=["release-c"],
+            )
+            run_fingerprint_case(
+                "fingerprint-common-file",
+                variant="release-b",
+                mode="common",
+                state="provisional_candidates",
+                compatible=["release-a", "release-b", "release-c"],
+                undetermined=[],
+                inconsistent=[],
+            )
+            run_fingerprint_case(
+                "fingerprint-mixed-artifacts",
+                variant="mixed",
+                mode="two",
+                state="no_consistent_catalogue_release",
+                compatible=[],
+                undetermined=[],
+                inconsistent=["release-a", "release-b", "release-c"],
+            )
+            run_fingerprint_case(
+                "fingerprint-missing-reference",
+                variant="release-b",
+                mode="two",
+                catalogue_path=missing_catalogue_path,
+                state="provisional_candidates",
+                compatible=["release-b"],
+                undetermined=["release-a"],
+                inconsistent=["release-c"],
+            )
+
             blog_target = lab.prepare_blog_application()
             result["ground_truth"]["blog"] = {
                 "inventory": lab.ground_truth("/var/www/html/blog"),
@@ -2784,6 +3639,50 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             ] = (
                 len(blog_pretty_discovery) - len(blog_pretty_baseline)
             )
+
+            lab.configure_fingerprint_assets(
+                variant="release-c", mode="two", path="/var/www/html/blog"
+            )
+            blog_fingerprint_baseline = run_case(
+                "blog-fingerprint-observed-option-off",
+                review=True,
+                discovery=True,
+                target=blog_target,
+                page_scope="observed",
+            )
+            blog_fingerprint_truth = lab.configure_fingerprint_assets(
+                variant="release-c", mode="two", path="/var/www/html/blog"
+            )
+            blog_fingerprint = run_case(
+                "blog-fingerprint-release-c",
+                review=True,
+                discovery=True,
+                target=blog_target,
+                page_scope="observed",
+                fingerprints_path=FINGERPRINT_CATALOGUE_PATH,
+                fingerprint_expectation={
+                    "asset_oracle": blog_fingerprint_truth["observed_assets"],
+                    "expected_state": "single_catalogue_candidate",
+                    "compatible": ["release-c"],
+                    "undetermined": [],
+                    "inconsistent": ["release-a", "release-b"],
+                },
+            )
+            _assert_fingerprint_request_delta(
+                blog_fingerprint_baseline,
+                blog_fingerprint,
+                plugin_base_path=(
+                    "/blog/wp-content/plugins/termivar-fingerprint-lab/"
+                ),
+                relative_paths=tuple(blog_fingerprint_truth["observed_assets"]),
+                page_paths=("/blog/contact/", "/blog/gallery/"),
+            )
+            scenarios["blog-fingerprint-release-c"]["ground_truth"] = (
+                blog_fingerprint_truth
+            )
+            scenarios["blog-fingerprint-release-c"][
+                "additional_asset_requests_vs_option_off"
+            ] = len(blog_fingerprint) - len(blog_fingerprint_baseline)
 
             lab.configure_at(
                 "/var/www/html/blog", permalink="plain", generator_visible=True
@@ -2884,6 +3783,59 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 "unchanged_after_scan": True,
             }
 
+            lab.configure_fingerprint_assets(
+                variant="release-b",
+                mode="two",
+                path="/var/www/html/cms",
+                plugin_directory="/var/www/html/modules",
+            )
+            custom_fingerprint_baseline = run_case(
+                "custom-fingerprint-observed-option-off",
+                review=True,
+                discovery=True,
+                target=cms_target,
+                layout_path=layout_path,
+                page_scope="observed",
+            )
+            custom_fingerprint_truth = lab.configure_fingerprint_assets(
+                variant="release-b",
+                mode="two",
+                path="/var/www/html/cms",
+                plugin_directory="/var/www/html/modules",
+            )
+            custom_fingerprint = run_case(
+                "custom-fingerprint-release-b",
+                review=True,
+                discovery=True,
+                target=cms_target,
+                layout_path=layout_path,
+                page_scope="observed",
+                fingerprints_path=FINGERPRINT_CATALOGUE_PATH,
+                fingerprint_expectation={
+                    "asset_oracle": custom_fingerprint_truth["observed_assets"],
+                    "expected_state": "single_catalogue_candidate",
+                    "compatible": ["release-b"],
+                    "undetermined": [],
+                    "inconsistent": ["release-a", "release-c"],
+                },
+            )
+            _assert_fingerprint_request_delta(
+                custom_fingerprint_baseline,
+                custom_fingerprint,
+                plugin_base_path="/modules/termivar-fingerprint-lab/",
+                relative_paths=tuple(custom_fingerprint_truth["observed_assets"]),
+            )
+            scenarios["custom-fingerprint-release-b"]["ground_truth"] = (
+                custom_fingerprint_truth
+            )
+            scenarios["custom-fingerprint-release-b"][
+                "additional_asset_requests_vs_option_off"
+            ] = len(custom_fingerprint) - len(custom_fingerprint_baseline)
+            require(
+                layout_path.read_bytes() == declaration_bytes,
+                "fingerprint run modified the operator layout declaration",
+            )
+
             measured = [
                 scenario["process_metrics"]["peak_memory"].get("status") == "measured"
                 for scenario in scenarios.values()
@@ -2913,6 +3865,8 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             "acceptance modified the checked-in fixture inputs")
     require(sha256_file(GROUND_TRUTH_PATH) == ground_truth_before,
             "acceptance modified the checked-in ground truth")
+    require(sha256_file(FINGERPRINT_CATALOGUE_PATH) == fingerprint_catalogue_before,
+            "acceptance modified the checked-in fingerprint catalogue")
     result["fixture"]["unchanged_after_execution"] = True
     result["status"] = "passed"
     result["claims"] = {
@@ -2961,11 +3915,15 @@ def render_markdown(evidence: dict[str, Any]) -> str:
             )
         lines.extend([
             "",
-            "The original review-only trace matched ordinary web-review. Each fully "
-            "resolved discovery case added exactly one REST index, one child stylesheet, "
-            "one bounded parent stylesheet, and one plugin readme GET at its selected "
-            "layout. The undeclared custom-root case added only its advertised REST GET. "
-            "All metadata requests were same-origin and loopback.",
+            "The original review-only trace matched ordinary web-review. Legacy entry-only "
+            "discovery cases added exactly one REST index, one child stylesheet, one bounded "
+            "parent stylesheet, and one plugin readme GET at their selected layout. Observed-"
+            "page cases reused the two ordinary contact/gallery responses and added one "
+            "deduplicated readme GET for the page-only fingerprint plugin. Fingerprint-enabled "
+            "cases then fetched only the one or two exact observed CSS/JS representations "
+            "listed by their scenario; no catalogue-only reference path was requested. The "
+            "undeclared custom-root case added only its advertised REST GET. All WordPress-"
+            "owned metadata and asset requests were same-origin and loopback.",
             "",
             "WP-CLI was used only inside the disposable lab for independent ground truth. "
             "Termivar received no credentials or inventory. The Stable tag remained a "
@@ -2977,6 +3935,13 @@ def render_markdown(evidence: dict[str, Any]) -> str:
             "matched 2/2; generator-version denominators are scenario-specific. The "
             "hidden inactive plugin and Stable-tag-as-installed-version cases are "
             "reported as expected abstentions, not successful discoveries.",
+            "",
+            "The task-owned fingerprint plugin was independently installed as version 4.0.0, "
+            "which is absent from the finite three-release catalogue. Two complementary "
+            "observed assets produced the expected listed-release intersections; one shared "
+            "asset remained provisional, mixed assets produced no consistent listed release, "
+            "and a deliberately removed reference row remained undetermined. These are "
+            "finite-catalogue compatibility results, not installed-version evidence.",
             "",
             "The selected `/blog/` application did not derive its sibling `/shop/` "
             "stylesheet. Declaring the moved theme/plugin roots changed methodology and "

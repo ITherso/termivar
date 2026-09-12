@@ -512,6 +512,8 @@ struct EvidenceProjection {
 pub(crate) struct AssessmentItemSet {
     #[cfg(feature = "reporting")]
     stable_scope_id: StableAssessmentScopeId,
+    #[cfg(feature = "reporting")]
+    evidence_references: BTreeMap<EvidenceId, AssessmentEvidenceReference>,
     subjects: Vec<AssessmentSubjectInventoryEntry>,
     items: Vec<AssessmentItem>,
 }
@@ -570,9 +572,20 @@ impl AssessmentItemSet {
         })
     }
 
-    #[cfg(any(feature = "reporting", test))]
+    #[cfg(test)]
     pub(crate) fn into_parts(self) -> (Vec<AssessmentSubjectInventoryEntry>, Vec<AssessmentItem>) {
         (self.subjects, self.items)
+    }
+
+    #[cfg(feature = "reporting")]
+    pub(crate) fn into_report_parts(
+        self,
+    ) -> (
+        Vec<AssessmentSubjectInventoryEntry>,
+        Vec<AssessmentItem>,
+        BTreeMap<EvidenceId, AssessmentEvidenceReference>,
+    ) {
+        (self.subjects, self.items, self.evidence_references)
     }
 }
 
@@ -968,6 +981,12 @@ impl AssessmentProjectionContext {
         AssessmentItemSet {
             #[cfg(feature = "reporting")]
             stable_scope_id: self.stable_scope_id,
+            #[cfg(feature = "reporting")]
+            evidence_references: self
+                .evidence
+                .into_iter()
+                .map(|(evidence_id, projection)| (evidence_id, projection.reference))
+                .collect(),
             subjects,
             items: self.items,
         }

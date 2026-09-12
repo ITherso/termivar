@@ -1,0 +1,107 @@
+{
+  "schema": "termivar-test.wordpress-asset-fingerprint-catalog-source/v1",
+  "catalog": {
+    "id": "termivar-wordpress-asset-matrix",
+    "revision": "v1",
+    "source_namespace": "termivar.synthetic.wordpress-asset-fingerprints",
+    "provenance": {
+      "reference": "https://github.com/ITherso/termivar/tree/main/docs/examples/wordpress-review/asset-fingerprints",
+      "revision": "termivar-fingerprint-matrix/v1",
+      "notices": [
+        {
+          "id": "termivar-synthetic-matrix-notice",
+          "party": "ITherso",
+          "notice": "Original synthetic assets created for Termivar acceptance.",
+          "license": "MIT",
+          "license_reference": "https://github.com/ITherso/termivar/blob/main/LICENSE"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "kind": "plugin",
+      "slug": "termivar-fingerprint-lab",
+      "releases": [
+        {
+          "release_id": "release-a",
+          "version": "1.0.0",
+          "source": {
+            "reference": "https://github.com/ITherso/termivar/tree/main/docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-a",
+            "revision": "release-a/v1",
+            "notice_ids": ["termivar-synthetic-matrix-notice"]
+          },
+          "files": [
+            {
+              "path": "assets/fingerprint.js",
+              "local_file": "reference-assets/release-a/assets/fingerprint.js",
+              "representation_profile": "identity-content-bytes/v1"
+            },
+            {
+              "path": "assets/fingerprint.css",
+              "local_file": "reference-assets/release-a/assets/fingerprint.css",
+              "representation_profile": "identity-content-bytes/v1"
+            },
+            {
+              "path": "assets/common.css",
+              "local_file": "reference-assets/release-a/assets/common.css",
+              "representation_profile": "identity-content-bytes/v1"
+            }
+          ]
+        },
+        {
+          "release_id": "release-b",
+          "version": "2.0.0",
+          "source": {
+            "reference": "https://github.com/ITherso/termivar/tree/main/docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b",
+            "revision": "release-b/v1",
+            "notice_ids": ["termivar-synthetic-matrix-notice"]
+          },
+          "files": [
+            {
+              "path": "assets/fingerprint.js",
+              "local_file": "reference-assets/release-b/assets/fingerprint.js",
+              "representation_profile": "identity-content-bytes/v1"
+            },
+            {
+              "path": "assets/fingerprint.css",
+              "local_file": "reference-assets/release-b/assets/fingerprint.css",
+              "representation_profile": "identity-content-bytes/v1"
+            },
+            {
+              "path": "assets/common.css",
+              "local_file": "reference-assets/release-b/assets/common.css",
+              "representation_profile": "identity-content-bytes/v1"
+            }
+          ]
+        },
+        {
+          "release_id": "release-c",
+          "version": "3.0.0",
+          "source": {
+            "reference": "https://github.com/ITherso/termivar/tree/main/docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-c",
+            "revision": "release-c/v1",
+            "notice_ids": ["termivar-synthetic-matrix-notice"]
+          },
+          "files": [
+            {
+              "path": "assets/fingerprint.js",
+              "local_file": "reference-assets/release-c/assets/fingerprint.js",
+              "representation_profile": "identity-content-bytes/v1"
+            },
+            {
+              "path": "assets/fingerprint.css",
+              "local_file": "reference-assets/release-c/assets/fingerprint.css",
+              "representation_profile": "identity-content-bytes/v1"
+            },
+            {
+              "path": "assets/common.css",
+              "local_file": "reference-assets/release-c/assets/common.css",
+              "representation_profile": "identity-content-bytes/v1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

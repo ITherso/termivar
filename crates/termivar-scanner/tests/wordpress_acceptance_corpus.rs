@@ -1132,6 +1132,7 @@ const fn review_error_code(error: WordPressReviewError) -> &'static str {
         WordPressReviewError::InvalidContext => "invalid_context",
         WordPressReviewError::InvalidInventory => "invalid_inventory",
         WordPressReviewError::InvalidDiscoveryLayout => "invalid_discovery_layout",
+        WordPressReviewError::InvalidAssetFingerprintCatalog => "invalid_asset_fingerprint_catalog",
         WordPressReviewError::InventoryComponentLimitExceeded => {
             "inventory_component_limit_exceeded"
         },

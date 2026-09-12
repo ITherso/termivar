@@ -210,7 +210,8 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "--wordpress-review",
             "--wordpress-discovery",
             "optional --wordpress-page-scope observed",
-            "optional --wordpress-layout FILE"
+            "optional --wordpress-layout FILE",
+            "optional --wordpress-fingerprints FILE"
         ])
     );
     let discovery_limit = wordpress_discovery["limitation"]
@@ -218,11 +219,14 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         .expect("WordPress discovery limitation");
     for required in [
         "at most 12",
-        "anonymous same-origin metadata GET requests",
+        "anonymous same-origin WordPress-owned GET requests",
         "never enabled by --wordpress-review alone",
         "observed reuses eligible committed page responses without retrieving pages",
-        "Reused pages may nominate metadata within the same 12-request WordPress-owned limit",
-        "Stable tag is not treated as an installed version",
+        "Reused pages may nominate metadata within the same shared limit",
+        "finite listed release set",
+        "cannot nominate unseen resources or establish an installed version",
+        "URL ver remain hints",
+        "plugin Stable tag is not treated as an installed version",
         "no exploit or impact validation",
     ] {
         assert!(

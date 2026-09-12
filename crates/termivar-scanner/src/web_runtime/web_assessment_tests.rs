@@ -58,8 +58,9 @@ use crate::web_runtime::{
 };
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::{
-    parse_wordpress_advisory_catalog, parse_wordpress_context, parse_wordpress_discovery_layout,
-    WordPressApplicability, WordPressCatalogStatus, WordPressReviewInputs,
+    parse_wordpress_advisory_catalog, parse_wordpress_asset_fingerprint_catalog,
+    parse_wordpress_context, parse_wordpress_discovery_layout, WordPressApplicability,
+    WordPressCatalogStatus, WordPressReviewInputs,
 };
 #[cfg(any(feature = "authorization-review", feature = "rest-review"))]
 use crate::DecisionActionOrigin;
@@ -364,6 +365,26 @@ fn wordpress_observed_page_scope_requires_metadata_discovery() {
     assert!(matches!(
         result,
         Err(WebAssessmentRuntimeError::WordPressPageScopeRequiresDiscovery)
+    ));
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
+fn wordpress_asset_fingerprints_require_metadata_discovery() {
+    let catalogue = parse_wordpress_asset_fingerprint_catalog(include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json"
+    ))
+    .unwrap();
+    let inputs = WordPressReviewInputs::new(None, None)
+        .with_asset_fingerprint_catalog(catalogue)
+        .unwrap();
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .with_wordpress_review(inputs)
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::WordPressAssetFingerprintsRequireDiscovery)
     ));
 }
 

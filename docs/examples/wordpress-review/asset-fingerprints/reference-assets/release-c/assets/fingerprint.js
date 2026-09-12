@@ -1,0 +1,1 @@
+window.termivarFingerprintLab={channel:"cobalt"};

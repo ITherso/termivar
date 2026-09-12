@@ -26,6 +26,7 @@ pub const COMPARISON_DOCUMENT_SCHEMA: &str = "termivar-report-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
+pub(super) const WORDPRESS_COMPARISON_SCHEMA_V3: &str = "termivar-wordpress-review-comparison/v3";
 const WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY: &str =
     "technology.wordpress-metadata-source-response-observed@1";
 /// Each input is bounded by the existing renderer's byte ceiling.
@@ -202,9 +203,24 @@ pub(super) struct WordPressReviewComparison {
     pub(super) provenance: WordPressFacetComparison,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) discovery_source_content: Option<WordPressFacetComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) asset_fingerprints: Option<WordPressAssetFingerprintComparison>,
     pub(super) components: WordPressEntityChanges<WordPressComponentKey>,
     pub(super) advisories: WordPressEntityChanges<WordPressAdvisoryKey>,
     pub(super) interpretation_limits: [&'static str; 6],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct WordPressAssetFingerprintComparison {
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) catalogue: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) resources: WordPressEntityChanges<WordPressAssetFingerprintResourceKey>,
+    pub(super) components: WordPressEntityChanges<WordPressAssetFingerprintComponentKey>,
+    pub(super) interpretation_limits: [&'static str; 5],
 }
 
 #[derive(Debug, Serialize)]
@@ -264,6 +280,28 @@ pub(super) struct WordPressAdvisoryKey {
     pub(super) component: WordPressComponentKey,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(super) struct WordPressAssetFingerprintResourceKey {
+    pub(super) source_namespace: String,
+    pub(super) component: WordPressComponentKey,
+    pub(super) relative_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(super) struct WordPressAssetFingerprintComponentKey {
+    pub(super) source_namespace: String,
+    pub(super) component: WordPressComponentKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedWordPressAssetFingerprintAudit {
+    pub(super) methodology: Value,
+    pub(super) catalogue: Value,
+    pub(super) coverage: Value,
+    pub(super) resources: BTreeMap<WordPressAssetFingerprintResourceKey, BTreeMap<String, Value>>,
+    pub(super) components: BTreeMap<WordPressAssetFingerprintComponentKey, BTreeMap<String, Value>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedWordPressAudit {
     /// Opaque deployment-aware application identity; absent from legacy audits.
@@ -273,6 +311,7 @@ pub(super) struct ImportedWordPressAudit {
     pub(super) methodology: Value,
     pub(super) provenance: Value,
     pub(super) discovery_source_content: Option<Value>,
+    pub(super) asset_fingerprints: Option<ImportedWordPressAssetFingerprintAudit>,
     pub(super) components: BTreeMap<WordPressComponentKey, BTreeMap<String, Value>>,
     pub(super) advisories: BTreeMap<WordPressAdvisoryKey, BTreeMap<String, Value>>,
 }
@@ -462,6 +501,13 @@ fn compare_wordpress_reviews(
     } else {
         None
     };
+    let asset_fingerprints = compare_wordpress_asset_fingerprints(
+        before.and_then(|audit| audit.asset_fingerprints.as_ref()),
+        after.and_then(|audit| audit.asset_fingerprints.as_ref()),
+        status,
+        reason,
+        compare_entities,
+    );
     let (components, advisories) =
         if let (true, Some(before), Some(after)) = (compare_entities, before, after) {
             (
@@ -475,7 +521,9 @@ fn compare_wordpress_reviews(
             )
         };
     Some(WordPressReviewComparison {
-        schema: if discovery_source_content.is_some() {
+        schema: if asset_fingerprints.is_some() {
+            WORDPRESS_COMPARISON_SCHEMA_V3
+        } else if discovery_source_content.is_some() {
             WORDPRESS_COMPARISON_SCHEMA_V2
         } else {
             WORDPRESS_COMPARISON_SCHEMA_V1
@@ -487,6 +535,7 @@ fn compare_wordpress_reviews(
         methodology,
         provenance,
         discovery_source_content,
+        asset_fingerprints,
         components,
         advisories,
         interpretation_limits: [
@@ -498,6 +547,107 @@ fn compare_wordpress_reviews(
             "Public metadata content is compared separately from collection outcomes; neither dimension authenticates installation state.",
         ],
     })
+}
+
+fn compare_wordpress_asset_fingerprints(
+    before: Option<&ImportedWordPressAssetFingerprintAudit>,
+    after: Option<&ImportedWordPressAssetFingerprintAudit>,
+    scope_status: &'static str,
+    scope_reason: Option<&'static str>,
+    compare_entities: bool,
+) -> Option<WordPressAssetFingerprintComparison> {
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) if compare_entities => ("compared", None),
+        (Some(_), Some(_)) => (scope_status, scope_reason),
+        (Some(_), None) => ("not_compared", Some("after_fingerprint_audit_missing")),
+        (None, Some(_)) => ("not_compared", Some("before_fingerprint_audit_missing")),
+        (None, None) => return None,
+    };
+    let methodology = facet(
+        before.map(|audit| &audit.methodology),
+        after.map(|audit| &audit.methodology),
+        paired_status(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+        ),
+        "Fingerprint methodology changes can change candidate sets without target resource bytes changing.",
+    );
+    let catalogue = facet(
+        before.map(|audit| &audit.catalogue),
+        after.map(|audit| &audit.catalogue),
+        wordpress_fingerprint_catalogue_status(
+            before.map(|audit| &audit.catalogue),
+            after.map(|audit| &audit.catalogue),
+        ),
+        "A changed finite reference set can change candidates without an installed component or target resource changing.",
+    );
+    let coverage = facet(
+        before.map(|audit| &audit.coverage),
+        after.map(|audit| &audit.coverage),
+        paired_status(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+        ),
+        "Unavailable or omitted resource coverage is not a component removal, clean result, or remediation.",
+    );
+    let (resources, components) = match (before, after, compare_entities) {
+        (Some(before), Some(after), true) => (
+            compare_wordpress_entities(&before.resources, &after.resources),
+            compare_wordpress_entities(&before.components, &after.components),
+        ),
+        _ => (
+            WordPressEntityChanges::default(),
+            WordPressEntityChanges::default(),
+        ),
+    };
+    Some(WordPressAssetFingerprintComparison {
+        status,
+        reason,
+        methodology,
+        catalogue,
+        coverage,
+        resources,
+        components,
+        interpretation_limits: [
+            "Compared SHA-256 values and byte lengths describe complete admitted response bytes, not whole-package verification.",
+            "Catalogue candidates are conditional on a finite operator-supplied reference set and are not installed-version evidence.",
+            "Identical bytes can occur in unlisted releases, copied assets, caches, or custom builds.",
+            "A one-sided or failed resource observation does not establish component installation, removal, or remediation.",
+            "Source labels and digests identify supplied data; they do not authenticate its publisher or completeness.",
+        ],
+    })
+}
+
+fn wordpress_fingerprint_catalogue_status(
+    before: Option<&Value>,
+    after: Option<&Value>,
+) -> &'static str {
+    let (Some(before), Some(after)) = (before, after) else {
+        return "not_comparable";
+    };
+    if before == after {
+        return "unchanged";
+    }
+    let (Some(before_fields), Some(after_fields)) = (before.as_object(), after.as_object()) else {
+        return "changed";
+    };
+    if before_fields.get("semantic_sha256") == after_fields.get("semantic_sha256")
+        && fingerprint_catalogue_without_byte_identity(before)
+            == fingerprint_catalogue_without_byte_identity(after)
+    {
+        "input_bytes_changed_without_reference_semantic_change"
+    } else {
+        "changed"
+    }
+}
+
+fn fingerprint_catalogue_without_byte_identity(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("byte_length");
+        fields.remove("sha256");
+    }
+    value
 }
 
 fn wordpress_comparison_scope(
@@ -857,6 +1007,51 @@ fn write_wordpress_comparison_markdown(
         output.push_str("\n- Interpretation: ")?;
         write_markdown_code_span(output, facet.note)?;
         output.push_str("\n\n")?;
+    }
+    if let Some(fingerprints) = &comparison.asset_fingerprints {
+        output.push_str("### Asset fingerprint candidates\n\n- Status: ")?;
+        write_markdown_code_span(output, fingerprints.status)?;
+        if let Some(reason) = fingerprints.reason {
+            output.push_str("\n- Reason: ")?;
+            write_markdown_code_span(output, reason)?;
+        }
+        output.push_str("\n\n")?;
+        for (label, facet) in [
+            ("Fingerprint methodology", &fingerprints.methodology),
+            ("Finite reference catalogue", &fingerprints.catalogue),
+            ("Resource coverage", &fingerprints.coverage),
+        ] {
+            output.push_fmt(format_args!("#### {label}\n\n- Status: "))?;
+            write_markdown_code_span(output, &facet.status)?;
+            if !facet.changed_fields.is_empty() {
+                output.push_str("\n- Changed fields: ")?;
+                write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+            }
+            output.push_str("\n- Before: ")?;
+            write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+            output.push_str("\n- After: ")?;
+            write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+            output.push_str("\n- Interpretation: ")?;
+            write_markdown_code_span(output, facet.note)?;
+            output.push_str("\n\n")?;
+        }
+        write_wordpress_entity_changes_markdown(
+            output,
+            "Fingerprint resources",
+            &fingerprints.resources,
+        )?;
+        write_wordpress_entity_changes_markdown(
+            output,
+            "Fingerprint candidate sets",
+            &fingerprints.components,
+        )?;
+        output.push_str("#### Fingerprint interpretation limits\n\n")?;
+        for limit in fingerprints.interpretation_limits {
+            output.push_str("- ")?;
+            write_markdown_code_span(output, limit)?;
+            output.push_char('\n')?;
+        }
+        output.push_char('\n')?;
     }
     write_wordpress_entity_changes_markdown(output, "Components", &comparison.components)?;
     write_wordpress_entity_changes_markdown(output, "Advisories", &comparison.advisories)?;

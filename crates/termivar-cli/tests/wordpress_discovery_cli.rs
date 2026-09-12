@@ -3,6 +3,7 @@
 #![cfg(feature = "wordpress-review")]
 
 use std::{
+    collections::BTreeSet,
     fs,
     io::{Read, Write},
     net::{SocketAddr, TcpListener},
@@ -60,6 +61,21 @@ Version: 2.0
 */
 body { color: #222; }
 "#;
+const FINGERPRINT_ROOT: &[u8] = br#"<!doctype html><html><head>
+<script src="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42"></script>
+<link rel="stylesheet" href="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42">
+</head><body>synthetic fingerprint fixture</body></html>"#;
+const FINGERPRINT_PLUGIN_README: &[u8] = br#"=== Termivar Fingerprint Lab ===
+Stable tag: 9.9.9
+"#;
+const FINGERPRINT_JS: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b/assets/fingerprint.js"
+));
+const FINGERPRINT_CSS: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b/assets/fingerprint.css"
+));
 
 fn termivar() -> Command {
     Command::new(env!("CARGO_BIN_EXE_termivar"))
@@ -208,6 +224,62 @@ fn serve_deployment(fixture: DeploymentFixture) -> RoutedServer {
     }
 }
 
+fn serve_fingerprint_fixture() -> RoutedServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address: SocketAddr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let thread_requests = Arc::clone(&requests);
+    thread::spawn(move || {
+        for incoming in listener.incoming() {
+            let Ok(mut stream) = incoming else {
+                break;
+            };
+            let mut request = [0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let first_line = String::from_utf8_lossy(&request[..read])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            thread_requests.lock().unwrap().push(first_line.clone());
+            let mut words = first_line.split_ascii_whitespace();
+            let method = words.next().unwrap_or_default();
+            let path = words.next().unwrap_or_default();
+            let (status, media_type, body): (&str, &str, &[u8]) = match (method, path) {
+                ("GET" | "HEAD", "/") => {
+                    ("200 OK", "text/html; charset=utf-8", FINGERPRINT_ROOT)
+                }
+                (
+                    "GET" | "HEAD",
+                    "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
+                ) => ("200 OK", "application/javascript", FINGERPRINT_JS),
+                (
+                    "GET" | "HEAD",
+                    "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
+                ) => ("200 OK", "text/css", FINGERPRINT_CSS),
+                (
+                    "GET",
+                    "/wp-content/plugins/termivar-fingerprint-lab/readme.txt",
+                ) => ("200 OK", "text/plain; charset=utf-8", FINGERPRINT_PLUGIN_README),
+                _ => ("404 Not Found", "text/plain; charset=utf-8", b"not found"),
+            };
+            let headers = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            if method != "HEAD" {
+                let _ = stream.write_all(body);
+            }
+            let _ = stream.flush();
+        }
+    });
+    RoutedServer {
+        origin: format!("http://{address}/"),
+        requests,
+    }
+}
+
 fn assert_success(output: &Output, context: &str) {
     assert!(
         output.status.success(),
@@ -219,6 +291,190 @@ fn assert_success(output: &Output, context: &str) {
 
 fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+#[test]
+fn observed_asset_fingerprints_intersect_listed_releases_and_remain_offline_readable() {
+    let server = serve_fingerprint_fixture();
+    let temporary = tempfile::tempdir().unwrap();
+    let catalogue = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json");
+    let original_catalogue = fs::read(&catalogue).unwrap();
+
+    let option_off = temporary.path().join("fingerprint-option-off");
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--report-dir",
+        ])
+        .arg(&option_off)
+        .arg(&server.origin)
+        .output()
+        .expect("termivar process must start");
+    assert_success(&output, "fingerprint option-off scan");
+    let option_off_document = read_json(&option_off.join("assessment.json"));
+    assert!(option_off_document
+        .get("wordpress_asset_fingerprints")
+        .is_none());
+    assert_eq!(
+        option_off_document["wordpress_review"]["schema"],
+        "security.wordpress-review-audit/v7"
+    );
+    let option_off_requests = server.requests.lock().unwrap().clone();
+    assert!(!option_off_requests.iter().any(|request| {
+        request.starts_with("GET /wp-content/plugins/termivar-fingerprint-lab/assets/")
+    }));
+
+    let output_directory = temporary.path().join("fingerprint-bundle");
+    let output = termivar()
+        .args([
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-fingerprints",
+        ])
+        .arg(&catalogue)
+        .arg("--report-dir")
+        .arg(&output_directory)
+        .arg(&server.origin)
+        .output()
+        .expect("termivar process must start");
+    assert_success(&output, "asset fingerprint scan");
+    assert!(output.stdout.is_empty());
+    assert_eq!(fs::read(&catalogue).unwrap(), original_catalogue);
+
+    let assessment = read_json(&output_directory.join("assessment.json"));
+    assert_eq!(
+        assessment["wordpress_review"]["schema"],
+        "security.wordpress-review-audit/v8"
+    );
+    let fingerprints = &assessment["wordpress_asset_fingerprints"];
+    assert_eq!(
+        fingerprints["schema"],
+        "security.wordpress-asset-fingerprint-audit/v1"
+    );
+    assert_eq!(
+        fingerprints["representation_profile"],
+        "identity-content-bytes/v1"
+    );
+    assert_eq!(
+        fingerprints["installed_version_assurance"],
+        "not_established_by_asset_fingerprints"
+    );
+    assert_eq!(fingerprints["candidate_count"], 2);
+    assert_eq!(fingerprints["selected_resource_count"], 2);
+    assert_eq!(fingerprints["attempted_request_count"], 2);
+    assert_eq!(fingerprints["fetched_response_count"], 2);
+    assert_eq!(fingerprints["reused_response_count"], 0);
+    assert_eq!(fingerprints["stop"], "complete");
+    assert_eq!(fingerprints["resource_count"], 2);
+    assert_eq!(fingerprints["component_count"], 1);
+    let component = &fingerprints["components"][0];
+    assert_eq!(
+        component["identity"],
+        serde_json::json!({"kind":"plugin","slug":"termivar-fingerprint-lab"})
+    );
+    assert_eq!(component["state"], "single_catalogue_candidate");
+    assert_eq!(component["candidate_resource_count"], 2);
+    assert_eq!(component["selected_resource_count"], 2);
+    assert_eq!(component["completely_interpreted_resource_count"], 2);
+    assert_eq!(component["omitted_resource_count"], 0);
+    assert_eq!(component["informative_resource_count"], 2);
+    assert_eq!(component["listed_matrix_complete"], true);
+    assert_eq!(
+        component["compatible_release_ids"],
+        serde_json::json!(["release-b"])
+    );
+    assert_eq!(component["undetermined_release_ids"], serde_json::json!([]));
+    assert_eq!(
+        component["inconsistent_release_ids"],
+        serde_json::json!(["release-a", "release-c"])
+    );
+    assert_eq!(component["releases"][1]["version"], "2.0.0");
+    assert_eq!(component["releases"][1]["state"], "compatible");
+    assert!(fingerprints["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|resource| {
+            resource.get("url").is_none()
+                && resource["observed_variant_count"] == 1
+                && resource["outcome"] == "observed"
+                && resource["request_attempted"] == true
+                && resource["observation"]["sha256"]
+                    .as_str()
+                    .is_some_and(|digest| digest.len() == 64)
+        }));
+    assert_eq!(
+        assessment["wordpress_review"]["components"][0]["versions"],
+        serde_json::json!([])
+    );
+
+    let requests = server.requests.lock().unwrap().clone();
+    for path in [
+        "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
+        "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
+    ] {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| *request == &format!("GET {path} HTTP/1.1"))
+                .count(),
+            1
+        );
+    }
+    assert!(!requests
+        .iter()
+        .any(|request| request.contains("assets/common.css")));
+
+    let before_offline = requests.len();
+    let verify = termivar()
+        .args(["report", "verify", "--dir"])
+        .arg(&output_directory)
+        .args(["--format", "json"])
+        .output()
+        .expect("termivar process must start");
+    assert_success(&verify, "fingerprint Report Verify");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&verify.stdout).unwrap()["status"],
+        "integrity_match"
+    );
+
+    let assessment_path = output_directory.join("assessment.json");
+    let compare = termivar()
+        .args(["report", "compare", "--before"])
+        .arg(&assessment_path)
+        .arg("--after")
+        .arg(&assessment_path)
+        .args(["--same-scope", "--format", "json"])
+        .output()
+        .expect("termivar process must start");
+    assert_success(&compare, "fingerprint Report Compare");
+    let comparison: serde_json::Value = serde_json::from_slice(&compare.stdout).unwrap();
+    assert!(comparison["only_in_after"].as_array().unwrap().is_empty());
+    assert!(comparison["only_in_before"].as_array().unwrap().is_empty());
+    assert!(comparison["changed"].as_array().unwrap().is_empty());
+    assert_eq!(
+        comparison["unchanged"].as_array().unwrap().len(),
+        assessment["item_count"].as_u64().unwrap() as usize
+    );
+    let wordpress = &comparison["wordpress_review_comparison"];
+    assert_eq!(
+        wordpress["schema"],
+        "termivar-wordpress-review-comparison/v3"
+    );
+    assert_eq!(wordpress["asset_fingerprints"]["status"], "compared");
+    assert_eq!(
+        wordpress["asset_fingerprints"]["components"]["paired_unchanged_count"],
+        1
+    );
+    assert_eq!(server.requests.lock().unwrap().len(), before_offline);
 }
 
 #[test]
@@ -342,10 +598,18 @@ fn discovery_bundle_is_verified_and_self_compares_without_extra_requests() {
         .flat_map(|source| source["evidence_references"].as_array().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(item_references.len(), 3);
-    assert_eq!(
-        source_references,
-        item_references.iter().collect::<Vec<_>>()
-    );
+    assert_eq!(source_references.len(), 3);
+    let item_reference_set = item_references
+        .iter()
+        .map(|reference| reference.as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    let source_reference_set = source_references
+        .into_iter()
+        .map(|reference| reference.as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(item_reference_set.len(), 3);
+    assert_eq!(source_reference_set.len(), 3);
+    assert_eq!(source_reference_set, item_reference_set);
 
     let requests = server.requests.lock().unwrap().clone();
     assert_eq!(

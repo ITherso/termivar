@@ -1271,6 +1271,217 @@ fn deployment_aware_wordpress_document(application_identity: char) -> Value {
     document
 }
 
+fn fingerprinted_wordpress_document_for(application_identity: char) -> Value {
+    let mut document = deployment_aware_wordpress_document(application_identity);
+    document["wordpress_review"]["schema"] = json!("security.wordpress-review-audit/v8");
+
+    let observation = document["items"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|item| {
+            item["capability_id"]
+                == json!("technology.wordpress-metadata-source-response-observed@1")
+        })
+        .unwrap();
+    observation["evidence_count"] = json!(3);
+    observation["evidence_references"] = json!(["evidence-0001", "evidence-0002", "evidence-0003"]);
+
+    let catalogue = json!({
+        "schema":"security.wordpress-asset-fingerprint-catalog/v1",
+        "id":"synthetic-fingerprint-catalogue",
+        "revision":"r1",
+        "source_namespace":"termivar-synthetic-test",
+        "byte_length":2048,
+        "sha256":"1111111111111111111111111111111111111111111111111111111111111111",
+        "semantic_sha256":"2222222222222222222222222222222222222222222222222222222222222222",
+        "retained_bytes":4096,
+        "component_count":1,
+        "release_count":3,
+        "file_count":6,
+        "provenance":{
+            "reference":"https://example.test/fingerprint-catalogue",
+            "revision":"fixture-r1",
+            "notices":[{
+                "id":"fixture-notice",
+                "party":"Termivar synthetic fixture authors",
+                "notice":"Original harmless fixture bytes.",
+                "license":"Synthetic test data permission.",
+                "license_reference":"https://example.test/fingerprint-catalogue/license"
+            }]
+        }
+    });
+    let script_resource = json!({
+        "component":{"kind":"plugin","slug":"fixture-assets"},
+        "relative_path":"assets/app.js",
+        "resource_reference":format!("sha256:{}", "3".repeat(64)),
+        "source_page_references":[format!("sha256:{}", "4".repeat(64))],
+        "observed_variant_count":1,
+        "acquisition":"reused",
+        "outcome":"observed",
+        "request_attempted":false,
+        "interpreted_response_bytes":10,
+        "response_bytes":0,
+        "evidence_reference_count":1,
+        "evidence_references":["evidence-0002"],
+        "observation":{
+            "byte_length":10,
+            "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+    });
+    let style_resource = json!({
+        "component":{"kind":"plugin","slug":"fixture-assets"},
+        "relative_path":"assets/app.css",
+        "resource_reference":format!("sha256:{}", "5".repeat(64)),
+        "source_page_references":[format!("sha256:{}", "4".repeat(64))],
+        "observed_variant_count":1,
+        "acquisition":"reused",
+        "outcome":"observed",
+        "request_attempted":false,
+        "interpreted_response_bytes":20,
+        "response_bytes":0,
+        "evidence_reference_count":1,
+        "evidence_references":["evidence-0003"],
+        "observation":{
+            "byte_length":20,
+            "sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+    });
+    let script_matrix = json!({
+        "relative_path":"assets/app.js",
+        "distinct_observation_count":1,
+        "informative":true,
+        "release_relation_count":3,
+        "release_relations":[
+            {"release_id":"release-a","relation":"match"},
+            {"release_id":"release-b","relation":"match"},
+            {"release_id":"release-c","relation":"mismatch"}
+        ]
+    });
+    let style_matrix = json!({
+        "relative_path":"assets/app.css",
+        "distinct_observation_count":1,
+        "informative":true,
+        "release_relation_count":3,
+        "release_relations":[
+            {"release_id":"release-a","relation":"mismatch"},
+            {"release_id":"release-b","relation":"match"},
+            {"release_id":"release-c","relation":"match"}
+        ]
+    });
+    let releases = vec![
+        json!({
+            "release_id":"release-a",
+            "version":"1.0",
+            "build_variant":null,
+            "state":"inconsistent",
+            "source":{
+                "reference":"https://example.test/releases/a",
+                "revision":"source-a",
+                "notice_ids":["fixture-notice"]
+            }
+        }),
+        json!({
+            "release_id":"release-b",
+            "version":"2.0",
+            "build_variant":"standard",
+            "state":"compatible",
+            "source":{
+                "reference":"https://example.test/releases/b",
+                "revision":"source-b",
+                "notice_ids":["fixture-notice"]
+            }
+        }),
+        json!({
+            "release_id":"release-c",
+            "version":"3.0",
+            "build_variant":null,
+            "state":"inconsistent",
+            "source":{
+                "reference":"https://example.test/releases/c",
+                "revision":"source-c",
+                "notice_ids":["fixture-notice"]
+            }
+        }),
+    ];
+    let component = json!({
+        "identity":{"kind":"plugin","slug":"fixture-assets"},
+        "catalogue_component_listed":true,
+        "state":"single_catalogue_candidate",
+        "candidate_resource_count":2,
+        "selected_resource_count":2,
+        "completely_interpreted_resource_count":2,
+        "omitted_resource_count":0,
+        "informative_resource_count":2,
+        "listed_matrix_complete":true,
+        "compatible_release_ids":["release-b"],
+        "undetermined_release_ids":[],
+        "inconsistent_release_ids":["release-a","release-c"],
+        "resource_count":2,
+        "resources":[script_matrix, style_matrix],
+        "release_count":3,
+        "releases":releases
+    });
+    document["wordpress_asset_fingerprints"] = json!({
+        "schema":"security.wordpress-asset-fingerprint-audit/v1",
+        "capability_id":"technology.wordpress-asset-fingerprint-candidate@1",
+        "policy_id":"termivar.wordpress-observed-asset-fingerprint/v1",
+        "selected":true,
+        "representation_profile":"identity-content-bytes/v1",
+        "finite_reference_scope":"listed_releases_only",
+        "same_release_assumption":"considered_paths_share_one_listed_release_artifact_set",
+        "installed_version_assurance":"not_established_by_asset_fingerprints",
+        "source_authenticity":"not_established",
+        "catalogue":catalogue,
+        "candidate_count":2,
+        "selected_resource_count":2,
+        "omitted_resource_count":0,
+        "attempted_request_count":0,
+        "reused_response_count":2,
+        "fetched_response_count":0,
+        "response_bytes":0,
+        "stop":"complete",
+        "resource_count":2,
+        "resources":[script_resource, style_resource],
+        "component_count":1,
+        "components":[component]
+    });
+    document
+}
+
+fn fingerprinted_wordpress_document() -> Value {
+    fingerprinted_wordpress_document_for('a')
+}
+
+fn page_scoped_fingerprinted_wordpress_document() -> Value {
+    let mut document = fingerprinted_wordpress_document();
+    let entry_reference = format!("sha256:{}", "4".repeat(64));
+    let discovery = &mut document["wordpress_discovery"];
+    discovery["schema"] = json!("security.wordpress-discovery-audit/v3");
+    discovery["policy_id"] = json!("termivar.wordpress-page-scoped-metadata-discovery/v1");
+    discovery["page_collection"] = json!({
+        "mode":"observed",
+        "entry_page_reference":entry_reference,
+        "candidate_count":0,
+        "selected_count":0,
+        "omitted_candidate_count":0,
+        "reused_response_count":0,
+        "fetched_response_count":0,
+        "not_observed_count":0,
+        "rejected_response_count":0,
+        "accepted_association_count":0,
+        "rejected_association_count":0,
+        "attempted_request_count":0,
+        "completed_response_count":0,
+        "committed_response_count":0,
+        "interpreted_response_bytes":0,
+        "response_bytes":0,
+        "pages":[]
+    });
+    discovery["sources"][0]["source_page_references"] = json!([entry_reference]);
+    document
+}
+
 fn assert_no_wordpress_entity_changes(comparison: &Value) {
     for entity in ["components", "advisories"] {
         assert_eq!(comparison[entity]["paired_unchanged_count"], 0);
@@ -1439,6 +1650,665 @@ fn wordpress_deployment_self_compare_and_layout_facets_are_independent() {
     assert_eq!(source_content["methodology"]["status"], "unchanged");
     assert_eq!(source_content["coverage"]["status"], "not_established");
     assert_eq!(source_content["provenance"]["status"], "unchanged");
+}
+
+#[test]
+fn wordpress_asset_fingerprint_audit_is_strict_feature_independent_and_self_stable() {
+    let document = fingerprinted_wordpress_document();
+    let imported = import::parse(&bytes(&document)).unwrap();
+    assert!(imported
+        .wordpress_review
+        .as_ref()
+        .unwrap()
+        .asset_fingerprints
+        .is_some());
+
+    let comparison = compare(&document, &document);
+    assert_eq!(group(&comparison, "unchanged").len(), 2);
+    let wordpress = wordpress_comparison(&comparison);
+    assert_eq!(
+        wordpress["schema"],
+        "termivar-wordpress-review-comparison/v3"
+    );
+    let fingerprints = &wordpress["asset_fingerprints"];
+    assert_eq!(fingerprints["status"], "compared");
+    for facet in ["methodology", "catalogue", "coverage"] {
+        assert_eq!(fingerprints[facet]["status"], "unchanged", "{facet}");
+        assert!(fingerprints[facet]["changed_fields"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    assert_eq!(fingerprints["resources"]["paired_unchanged_count"], 2);
+    assert_eq!(fingerprints["components"]["paired_unchanged_count"], 1);
+    for entity in ["resources", "components"] {
+        for class in ["paired_changed", "only_in_before", "only_in_after"] {
+            assert!(fingerprints[entity][class].as_array().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn fingerprint_sources_are_bound_to_entry_or_accepted_discovery_pages() {
+    let entry_bound = page_scoped_fingerprinted_wordpress_document();
+    assert!(import::parse(&bytes(&entry_bound)).is_ok());
+
+    let accepted_reference = format!("sha256:{}", "5".repeat(64));
+    let mut accepted = entry_bound.clone();
+    let pages = &mut accepted["wordpress_discovery"]["page_collection"];
+    pages["candidate_count"] = json!(1);
+    pages["selected_count"] = json!(1);
+    pages["reused_response_count"] = json!(1);
+    pages["accepted_association_count"] = json!(1);
+    pages["completed_response_count"] = json!(1);
+    pages["committed_response_count"] = json!(1);
+    pages["interpreted_response_bytes"] = json!(64);
+    pages["pages"] = json!([{
+        "page_reference":accepted_reference,
+        "acquisition":"reused",
+        "association":"accepted",
+        "outcome":"accepted",
+        "request_attempted":false,
+        "interpreted_response_bytes":64,
+        "response_bytes":0,
+        "evidence_reference_count":1,
+        "evidence_references":["evidence-0004"]
+    }]);
+    accepted["wordpress_asset_fingerprints"]["resources"][1]["source_page_references"] =
+        json!([accepted_reference]);
+    accepted["items"][1]["evidence_count"] = json!(4);
+    accepted["items"][1]["evidence_references"] = json!([
+        "evidence-0001",
+        "evidence-0002",
+        "evidence-0003",
+        "evidence-0004"
+    ]);
+    assert!(import::parse(&bytes(&accepted)).is_ok());
+
+    let mut unknown = accepted.clone();
+    unknown["wordpress_asset_fingerprints"]["resources"][0]["source_page_references"] =
+        json!([format!("sha256:{}", "7".repeat(64))]);
+    reject(&unknown);
+
+    let mut rejected = accepted.clone();
+    rejected["wordpress_discovery"]["page_collection"]["pages"][0]["association"] =
+        json!("rejected");
+    rejected["wordpress_discovery"]["page_collection"]["pages"][0]["outcome"] =
+        json!("incompatible_application");
+    rejected["wordpress_discovery"]["page_collection"]["accepted_association_count"] = json!(0);
+    rejected["wordpress_discovery"]["page_collection"]["rejected_response_count"] = json!(1);
+    rejected["wordpress_discovery"]["page_collection"]["rejected_association_count"] = json!(1);
+    reject(&rejected);
+}
+
+#[test]
+fn wordpress_asset_fingerprint_compare_separates_catalogue_bytes_and_candidate_changes() {
+    let baseline = fingerprinted_wordpress_document();
+
+    let mut reformatted_catalogue = baseline.clone();
+    reformatted_catalogue["wordpress_asset_fingerprints"]["catalogue"]["byte_length"] = json!(2050);
+    reformatted_catalogue["wordpress_asset_fingerprints"]["catalogue"]["sha256"] =
+        json!("abababababababababababababababababababababababababababababababab");
+    let comparison = compare(&baseline, &reformatted_catalogue);
+    let fingerprints = &wordpress_comparison(&comparison)["asset_fingerprints"];
+    assert_eq!(
+        fingerprints["catalogue"]["status"],
+        "input_bytes_changed_without_reference_semantic_change"
+    );
+    assert_eq!(fingerprints["resources"]["paired_unchanged_count"], 2);
+    assert_eq!(fingerprints["components"]["paired_unchanged_count"], 1);
+
+    let mut catalogue = baseline.clone();
+    catalogue["wordpress_asset_fingerprints"]["catalogue"]["revision"] = json!("r2");
+    catalogue["wordpress_asset_fingerprints"]["catalogue"]["semantic_sha256"] =
+        json!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+    let comparison = compare(&baseline, &catalogue);
+    let fingerprints = &wordpress_comparison(&comparison)["asset_fingerprints"];
+    assert_eq!(fingerprints["catalogue"]["status"], "changed");
+    assert_eq!(fingerprints["methodology"]["status"], "unchanged");
+    assert_eq!(fingerprints["coverage"]["status"], "unchanged");
+    assert_eq!(fingerprints["resources"]["paired_unchanged_count"], 2);
+    assert_eq!(fingerprints["components"]["paired_unchanged_count"], 1);
+
+    let mut changed = baseline.clone();
+    changed["wordpress_asset_fingerprints"]["resources"][1]["observation"]["sha256"] =
+        json!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+    let component = &mut changed["wordpress_asset_fingerprints"]["components"][0];
+    component["compatible_release_ids"] = json!(["release-a"]);
+    component["inconsistent_release_ids"] = json!(["release-b", "release-c"]);
+    component["resources"][1]["release_relations"] = json!([
+        {"release_id":"release-a","relation":"match"},
+        {"release_id":"release-b","relation":"mismatch"},
+        {"release_id":"release-c","relation":"match"}
+    ]);
+    component["releases"][0]["state"] = json!("compatible");
+    component["releases"][1]["state"] = json!("inconsistent");
+    let comparison = compare(&baseline, &changed);
+    let fingerprints = &wordpress_comparison(&comparison)["asset_fingerprints"];
+    assert_eq!(fingerprints["catalogue"]["status"], "unchanged");
+    assert_eq!(
+        fingerprints["resources"]["paired_changed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        fingerprints["resources"]["paired_changed"][0]["changed_dimensions"],
+        json!(["resource_bytes"])
+    );
+    assert_eq!(
+        fingerprints["components"]["paired_changed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let dimensions = fingerprints["components"]["paired_changed"][0]["changed_dimensions"]
+        .as_array()
+        .unwrap();
+    assert!(dimensions.contains(&json!("candidate_set")));
+    assert!(dimensions.contains(&json!("reference_matrix")));
+    assert!(dimensions.contains(&json!("resource_coverage")));
+}
+
+#[test]
+fn fingerprint_entities_are_not_correlated_across_catalogue_namespaces() {
+    let before = fingerprinted_wordpress_document();
+    let mut after = before.clone();
+    after["wordpress_asset_fingerprints"]["catalogue"]["source_namespace"] =
+        json!("another-synthetic-catalogue");
+
+    let comparison = compare(&before, &after);
+    let fingerprints = &wordpress_comparison(&comparison)["asset_fingerprints"];
+    assert_eq!(fingerprints["status"], "compared");
+    assert_eq!(fingerprints["catalogue"]["status"], "changed");
+    assert_eq!(fingerprints["resources"]["paired_unchanged_count"], 0);
+    assert!(fingerprints["resources"]["paired_changed"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        fingerprints["resources"]["only_in_before"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        fingerprints["resources"]["only_in_after"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(fingerprints["components"]["paired_unchanged_count"], 0);
+    assert_eq!(
+        fingerprints["components"]["only_in_before"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        fingerprints["components"]["only_in_after"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        fingerprints["resources"]["only_in_before"][0]["key"]["source_namespace"],
+        "termivar-synthetic-test"
+    );
+    assert_eq!(
+        fingerprints["resources"]["only_in_after"][0]["key"]["source_namespace"],
+        "another-synthetic-catalogue"
+    );
+}
+
+#[test]
+fn wordpress_asset_fingerprint_presence_change_is_coverage_not_remediation() {
+    let without = deployment_aware_wordpress_document('a');
+    let with = fingerprinted_wordpress_document();
+    for comparison in [compare(&without, &with), compare(&with, &without)] {
+        let wordpress = wordpress_comparison(&comparison);
+        assert_eq!(
+            wordpress["schema"],
+            "termivar-wordpress-review-comparison/v3"
+        );
+        let fingerprints = &wordpress["asset_fingerprints"];
+        assert_eq!(fingerprints["status"], "not_compared");
+        assert_eq!(fingerprints["methodology"]["status"], "not_comparable");
+        assert_eq!(fingerprints["catalogue"]["status"], "not_comparable");
+        assert_eq!(fingerprints["coverage"]["status"], "not_comparable");
+        assert!(fingerprints["resources"]["only_in_before"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(fingerprints["resources"]["only_in_after"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn wordpress_asset_fingerprint_reader_rejects_claim_counter_linkage_and_shape_mutations() {
+    let valid = fingerprinted_wordpress_document();
+    let mut invalid_documents = Vec::new();
+
+    let mut value = valid.clone();
+    value["wordpress_review"]["schema"] = json!("security.wordpress-review-audit/v7");
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("wordpress_asset_fingerprints");
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value["wordpress_asset_fingerprints"]["installed_version_assurance"] =
+        json!("installed_version_verified");
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value["wordpress_asset_fingerprints"]["candidate_count"] = json!(3);
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value["wordpress_asset_fingerprints"]["resources"][0]["observation"]["sha256"] = json!("AA");
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value["wordpress_asset_fingerprints"]["unexpected"] = json!(true);
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value["wordpress_discovery"]["schema"] = json!("security.wordpress-discovery-audit/v1");
+    value["wordpress_discovery"]["policy_id"] = json!("termivar.wordpress-metadata-discovery/v1");
+    value["wordpress_discovery"]
+        .as_object_mut()
+        .unwrap()
+        .remove("layout");
+    for source in value["wordpress_discovery"]["sources"]
+        .as_array_mut()
+        .unwrap()
+    {
+        let source = source.as_object_mut().unwrap();
+        source.remove("association");
+        source.remove("resource_reference");
+        source.remove("role_reference");
+    }
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value["wordpress_asset_fingerprints"]["resources"][1] =
+        value["wordpress_asset_fingerprints"]["resources"][0].clone();
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    let component = &mut value["wordpress_asset_fingerprints"]["components"][0];
+    component["catalogue_component_listed"] = json!(false);
+    component["state"] = json!("no_catalogue_byte_match");
+    component["informative_resource_count"] = json!(0);
+    component["listed_matrix_complete"] = json!(false);
+    component["compatible_release_ids"] = json!([]);
+    component["undetermined_release_ids"] = json!([]);
+    component["inconsistent_release_ids"] = json!([]);
+    component["release_count"] = json!(0);
+    component["releases"] = json!([]);
+    for resource in component["resources"].as_array_mut().unwrap() {
+        resource["informative"] = json!(false);
+        resource["release_relation_count"] = json!(0);
+        resource["release_relations"] = json!([]);
+    }
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value["wordpress_asset_fingerprints"]["components"][0]["resources"][0]
+        ["distinct_observation_count"] = json!(2);
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    let component = &mut value["wordpress_asset_fingerprints"]["components"][0];
+    component["state"] = json!("provisional_candidates");
+    component["informative_resource_count"] = json!(1);
+    component["resources"][0]["informative"] = json!(false);
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    let component = &mut value["wordpress_asset_fingerprints"]["components"][0];
+    component["state"] = json!("multiple_catalogue_candidates");
+    component["compatible_release_ids"] = json!(["release-b", "release-c"]);
+    component["inconsistent_release_ids"] = json!(["release-a"]);
+    component["resources"][0]["release_relations"] = json!([
+        {"release_id":"release-a","relation":"match"},
+        {"release_id":"release-b","relation":"match"},
+        {"release_id":"release-c","relation":"match"}
+    ]);
+    component["releases"][2]["state"] = json!("compatible");
+    invalid_documents.push(value);
+
+    let mut value = valid.clone();
+    value["items"][1]["evidence_references"] =
+        json!(["evidence-0001", "evidence-0002", "evidence-0004"]);
+    invalid_documents.push(value);
+
+    let mut value = valid;
+    value["wordpress_asset_fingerprints"]["components"][0]["state"] =
+        json!("installed_version_confirmed");
+    invalid_documents.push(value);
+
+    for invalid in invalid_documents {
+        reject(&invalid);
+    }
+}
+
+#[test]
+fn wordpress_asset_fingerprint_reader_rejects_incomplete_and_impossible_complete_audits() {
+    let valid = fingerprinted_wordpress_document();
+
+    for stop in [
+        "cancelled",
+        "deadline_exceeded",
+        "request_limit",
+        "response_limit",
+        "runtime_limit",
+        "rate_limited",
+    ] {
+        let mut value = valid.clone();
+        value["wordpress_asset_fingerprints"]["stop"] = json!(stop);
+        reject(&value);
+    }
+
+    for (acquisition, outcome, attempted) in [
+        ("not_acquired", "not_selected_by_limit", false),
+        ("not_acquired", "budget_exhausted", false),
+        ("not_acquired", "request_failed", false),
+        ("fetched", "cancelled", true),
+        ("fetched", "deadline_exceeded", true),
+        ("fetched", "rate_limited", true),
+        ("reused", "ordinary_response_ineligible", false),
+    ] {
+        let mut value = valid.clone();
+        let resource = &mut value["wordpress_asset_fingerprints"]["resources"][0];
+        resource["acquisition"] = json!(acquisition);
+        resource["outcome"] = json!(outcome);
+        resource["request_attempted"] = json!(attempted);
+        reject(&value);
+    }
+
+    let mut no_selected = valid.clone();
+    no_selected["items"][1]["evidence_count"] = json!(1);
+    no_selected["items"][1]["evidence_references"] = json!(["evidence-0001"]);
+    let audit = &mut no_selected["wordpress_asset_fingerprints"];
+    audit["candidate_count"] = json!(1);
+    audit["selected_resource_count"] = json!(0);
+    audit["omitted_resource_count"] = json!(1);
+    audit["resource_count"] = json!(0);
+    audit["resources"] = json!([]);
+    audit["component_count"] = json!(0);
+    audit["components"] = json!([]);
+    audit["reused_response_count"] = json!(0);
+    reject(&no_selected);
+}
+
+#[test]
+fn fingerprint_component_coverage_includes_selected_failed_resources() {
+    let mut document = fingerprinted_wordpress_document();
+    document["wordpress_review"]["additional_request_count"] = json!(2);
+    document["items"][1]["evidence_count"] = json!(2);
+    document["items"][1]["evidence_references"] = json!(["evidence-0001", "evidence-0003"]);
+    let audit = &mut document["wordpress_asset_fingerprints"];
+    audit["catalogue"]["component_count"] = json!(2);
+    audit["catalogue"]["release_count"] = json!(6);
+    audit["catalogue"]["file_count"] = json!(12);
+    audit["attempted_request_count"] = json!(1);
+    audit["reused_response_count"] = json!(1);
+    audit["response_bytes"] = json!(64);
+
+    let failed = &mut audit["resources"][0];
+    failed["component"] = json!({"kind":"plugin","slug":"missing-assets"});
+    failed["acquisition"] = json!("fetched");
+    failed["outcome"] = json!("not_found");
+    failed["request_attempted"] = json!(true);
+    failed["interpreted_response_bytes"] = json!(0);
+    failed["response_bytes"] = json!(64);
+    failed["evidence_reference_count"] = json!(0);
+    failed["evidence_references"] = json!([]);
+    failed.as_object_mut().unwrap().remove("observation");
+
+    let mut missing_component = audit["components"][0].clone();
+    missing_component["identity"] = json!({"kind":"plugin","slug":"missing-assets"});
+    missing_component["state"] = json!("undetermined");
+    missing_component["candidate_resource_count"] = json!(1);
+    missing_component["selected_resource_count"] = json!(1);
+    missing_component["completely_interpreted_resource_count"] = json!(0);
+    missing_component["omitted_resource_count"] = json!(0);
+    missing_component["informative_resource_count"] = json!(0);
+    missing_component["listed_matrix_complete"] = json!(false);
+    missing_component["compatible_release_ids"] = json!([]);
+    missing_component["undetermined_release_ids"] = json!(["release-a", "release-b", "release-c"]);
+    missing_component["inconsistent_release_ids"] = json!([]);
+    missing_component["resource_count"] = json!(0);
+    missing_component["resources"] = json!([]);
+    for release in missing_component["releases"].as_array_mut().unwrap() {
+        release["state"] = json!("undetermined");
+    }
+    let retained_style = audit["components"][0]["resources"][1].clone();
+    let retained_component = &mut audit["components"][0];
+    retained_component["state"] = json!("provisional_candidates");
+    retained_component["candidate_resource_count"] = json!(1);
+    retained_component["selected_resource_count"] = json!(1);
+    retained_component["completely_interpreted_resource_count"] = json!(1);
+    retained_component["omitted_resource_count"] = json!(0);
+    retained_component["informative_resource_count"] = json!(1);
+    retained_component["compatible_release_ids"] = json!(["release-b", "release-c"]);
+    retained_component["inconsistent_release_ids"] = json!(["release-a"]);
+    retained_component["resource_count"] = json!(1);
+    retained_component["resources"] = json!([retained_style]);
+    retained_component["releases"][2]["state"] = json!("compatible");
+    audit["component_count"] = json!(2);
+    audit["components"]
+        .as_array_mut()
+        .unwrap()
+        .push(missing_component);
+
+    assert!(import::parse(&bytes(&document)).is_ok());
+
+    let mut false_complete = document.clone();
+    false_complete["wordpress_asset_fingerprints"]["components"][1]
+        ["completely_interpreted_resource_count"] = json!(1);
+    reject(&false_complete);
+
+    let mut understated_components = document.clone();
+    understated_components["wordpress_asset_fingerprints"]["catalogue"]["component_count"] =
+        json!(1);
+    reject(&understated_components);
+
+    let mut understated_releases = document.clone();
+    understated_releases["wordpress_asset_fingerprints"]["catalogue"]["release_count"] = json!(5);
+    reject(&understated_releases);
+
+    let mut understated_files = document.clone();
+    understated_files["wordpress_asset_fingerprints"]["catalogue"]["file_count"] = json!(2);
+    reject(&understated_files);
+
+    let mut deleted = document.clone();
+    deleted["wordpress_asset_fingerprints"]["component_count"] = json!(1);
+    deleted["wordpress_asset_fingerprints"]["components"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|component| component["identity"]["slug"] == "fixture-assets");
+    reject(&deleted);
+
+    let mut substituted = document;
+    substituted["wordpress_asset_fingerprints"]["components"][1]["identity"]["slug"] =
+        json!("substituted-assets");
+    reject(&substituted);
+}
+
+#[test]
+fn fingerprint_entities_are_not_correlated_across_application_scopes() {
+    let before = fingerprinted_wordpress_document_for('a');
+    let mut after = fingerprinted_wordpress_document_for('e');
+    after["wordpress_asset_fingerprints"]["resources"][0]["observation"]["sha256"] =
+        json!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+
+    let comparison = compare(&before, &after);
+    let wordpress = wordpress_comparison(&comparison);
+    assert_eq!(wordpress["status"], "not_compared");
+    assert_eq!(wordpress["reason"], "application_scope_mismatch");
+    let fingerprints = &wordpress["asset_fingerprints"];
+    assert_eq!(fingerprints["status"], "not_compared");
+    assert_eq!(fingerprints["reason"], "application_scope_mismatch");
+    for entity in ["resources", "components"] {
+        assert_eq!(fingerprints[entity]["paired_unchanged_count"], 0);
+        for group in ["paired_changed", "only_in_before", "only_in_after"] {
+            assert!(fingerprints[entity][group].as_array().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn wordpress_asset_fingerprint_conflicting_representations_remain_unknown_and_strict() {
+    let mut document = fingerprinted_wordpress_document();
+    document["items"][1]["evidence_count"] = json!(4);
+    document["items"][1]["evidence_references"] = json!([
+        "evidence-0001",
+        "evidence-0002",
+        "evidence-0003",
+        "evidence-0004"
+    ]);
+    let resource = &mut document["wordpress_asset_fingerprints"]["resources"][0];
+    resource["outcome"] = json!("conflicting_representations");
+    resource["interpreted_response_bytes"] = json!(0);
+    resource["evidence_reference_count"] = json!(2);
+    resource["evidence_references"] = json!(["evidence-0002", "evidence-0004"]);
+    resource.as_object_mut().unwrap().remove("observation");
+
+    let component = &mut document["wordpress_asset_fingerprints"]["components"][0];
+    component["state"] = json!("undetermined");
+    component["completely_interpreted_resource_count"] = json!(1);
+    component["informative_resource_count"] = json!(1);
+    component["listed_matrix_complete"] = json!(false);
+    component["compatible_release_ids"] = json!([]);
+    component["undetermined_release_ids"] = json!(["release-b", "release-c"]);
+    component["inconsistent_release_ids"] = json!(["release-a"]);
+    component["resources"][0]["distinct_observation_count"] = json!(2);
+    component["resources"][0]["informative"] = json!(false);
+    component["resources"][0]["release_relations"] = json!([
+        {"release_id":"release-a","relation":"unknown","unknown_reason":"conflicting_observations"},
+        {"release_id":"release-b","relation":"unknown","unknown_reason":"conflicting_observations"},
+        {"release_id":"release-c","relation":"unknown","unknown_reason":"conflicting_observations"}
+    ]);
+    component["releases"][0]["state"] = json!("inconsistent");
+    component["releases"][1]["state"] = json!("undetermined");
+    component["releases"][2]["state"] = json!("undetermined");
+
+    let mut undercounted = document.clone();
+    undercounted["wordpress_asset_fingerprints"]["components"][0]["resources"][0]
+        ["distinct_observation_count"] = json!(1);
+    reject(&undercounted);
+
+    let comparison = compare(&document, &document);
+    let fingerprints = &wordpress_comparison(&comparison)["asset_fingerprints"];
+    assert_eq!(fingerprints["status"], "compared");
+    assert_eq!(fingerprints["resources"]["paired_unchanged_count"], 2);
+    assert_eq!(fingerprints["components"]["paired_unchanged_count"], 1);
+}
+
+#[test]
+fn wordpress_asset_fingerprint_query_variant_ambiguity_downgrades_strong_candidates() {
+    let mut wholly_other_component_omitted = fingerprinted_wordpress_document();
+    wholly_other_component_omitted["wordpress_asset_fingerprints"]["candidate_count"] = json!(3);
+    wholly_other_component_omitted["wordpress_asset_fingerprints"]["omitted_resource_count"] =
+        json!(1);
+    assert!(import::parse(&bytes(&wholly_other_component_omitted)).is_ok());
+    assert_eq!(
+        wholly_other_component_omitted["wordpress_asset_fingerprints"]["components"][0]["state"],
+        "single_catalogue_candidate"
+    );
+
+    let mut document = fingerprinted_wordpress_document();
+    document["wordpress_asset_fingerprints"]["resources"][0]["observed_variant_count"] = json!(256);
+    let component = &mut document["wordpress_asset_fingerprints"]["components"][0];
+    component["state"] = json!("provisional_candidates");
+    component["completely_interpreted_resource_count"] = json!(1);
+    component["listed_matrix_complete"] = json!(false);
+
+    let comparison = compare(&document, &document);
+    let fingerprints = &wordpress_comparison(&comparison)["asset_fingerprints"];
+    assert_eq!(fingerprints["status"], "compared");
+    assert_eq!(fingerprints["components"]["paired_unchanged_count"], 1);
+
+    let mut bounded_omissions = document.clone();
+    bounded_omissions["wordpress_asset_fingerprints"]["candidate_count"] = json!(256);
+    bounded_omissions["wordpress_asset_fingerprints"]["omitted_resource_count"] = json!(254);
+    bounded_omissions["wordpress_asset_fingerprints"]["components"][0]
+        ["candidate_resource_count"] = json!(256);
+    bounded_omissions["wordpress_asset_fingerprints"]["components"][0]["omitted_resource_count"] =
+        json!(254);
+    let comparison = compare(&bounded_omissions, &bounded_omissions);
+    assert_eq!(
+        wordpress_comparison(&comparison)["asset_fingerprints"]["status"],
+        "compared"
+    );
+
+    let mut over_limit = document.clone();
+    over_limit["wordpress_asset_fingerprints"]["resources"][0]["observed_variant_count"] =
+        json!(257);
+    reject(&over_limit);
+
+    document["wordpress_asset_fingerprints"]["components"][0]["state"] =
+        json!("single_catalogue_candidate");
+    reject(&document);
+
+    let mut inflated = fingerprinted_wordpress_document();
+    inflated["wordpress_asset_fingerprints"]["components"][0]["candidate_resource_count"] =
+        json!(256);
+    inflated["wordpress_asset_fingerprints"]["components"][0]["omitted_resource_count"] =
+        json!(254);
+    inflated["wordpress_asset_fingerprints"]["components"][0]["state"] =
+        json!("provisional_candidates");
+    inflated["wordpress_asset_fingerprints"]["components"][0]["listed_matrix_complete"] =
+        json!(false);
+    reject(&inflated);
+}
+
+#[test]
+fn wordpress_asset_fingerprint_reader_enforces_the_shared_response_byte_envelope() {
+    const SHARED_LIMIT: u64 = 2 * 1_024 * 1_024;
+    const FINGERPRINT_BYTES: u64 = 10;
+
+    let mut exact = fingerprinted_wordpress_document();
+    exact["wordpress_review"]["additional_request_count"] = json!(2);
+    exact["wordpress_discovery"]["response_bytes"] = json!(SHARED_LIMIT - FINGERPRINT_BYTES);
+    exact["wordpress_discovery"]["sources"][0]["response_bytes"] =
+        json!(SHARED_LIMIT - FINGERPRINT_BYTES);
+    exact["wordpress_asset_fingerprints"]["attempted_request_count"] = json!(1);
+    exact["wordpress_asset_fingerprints"]["reused_response_count"] = json!(1);
+    exact["wordpress_asset_fingerprints"]["fetched_response_count"] = json!(1);
+    exact["wordpress_asset_fingerprints"]["response_bytes"] = json!(FINGERPRINT_BYTES);
+    exact["wordpress_asset_fingerprints"]["resources"][0]["acquisition"] = json!("fetched");
+    exact["wordpress_asset_fingerprints"]["resources"][0]["request_attempted"] = json!(true);
+    exact["wordpress_asset_fingerprints"]["resources"][0]["response_bytes"] =
+        json!(FINGERPRINT_BYTES);
+    assert!(import::parse(&bytes(&exact)).is_ok());
+
+    let mut one_over = exact.clone();
+    one_over["wordpress_discovery"]["response_bytes"] = json!(SHARED_LIMIT - FINGERPRINT_BYTES + 1);
+    one_over["wordpress_discovery"]["sources"][0]["response_bytes"] =
+        json!(SHARED_LIMIT - FINGERPRINT_BYTES + 1);
+    reject(&one_over);
+
+    let mut combined_overflow = exact;
+    combined_overflow["wordpress_discovery"]["response_bytes"] = json!(u64::MAX);
+    combined_overflow["wordpress_discovery"]["sources"][0]["response_bytes"] = json!(u64::MAX);
+    reject(&combined_overflow);
 }
 
 #[test]

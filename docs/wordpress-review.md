@@ -8,6 +8,9 @@ local context and advisory data. Selecting `--wordpress-review` alone adds no ta
 provider requests. The separate `--wordpress-discovery` switch described below
 explicitly authorizes a small bounded set of additional anonymous metadata
 GETs through the same assessment broker.
+An additional local `--wordpress-fingerprints` catalogue can authorize exact-byte
+comparison for a few JS/CSS resources that discovery already observed; it does
+not authorize guessing or crawling asset paths.
 
 This feature remains absent from the ordinary default build. The current
 untagged `0.10.0-alpha.3` development `release-bundle` compiles it as a Preview;
@@ -133,6 +136,82 @@ Missing pages or signals do not establish component absence, and extra page
 sightings do not establish activation, execution, authenticity, exploitability,
 or remediation.
 
+### Finite observed-asset fingerprint catalogues
+
+An explicitly supplied development catalogue can compare complete observed
+JS/CSS bytes with a finite set of listed releases:
+
+```bash
+termivar scan http://127.0.0.1:8088/ \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-discovery \
+  --wordpress-page-scope observed \
+  --wordpress-fingerprints \
+    docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json \
+  --report-dir assessment-fingerprints
+```
+
+The loopback service must already be running and authorized. The option is the
+only opt-in and is validated before runtime construction. It accepts strict
+`security.wordpress-asset-fingerprint-catalog/v1` JSON read once through the
+same hardened local-file boundary. Each entry binds a plugin or theme slug, an
+opaque release/build identity, a safe component-relative `.js` or `.css` path,
+an exact byte length, a full SHA-256 digest, and
+`identity-content-bytes/v1`. The input is limited to 4 MiB, 16 components, 128
+releases per component, 32 files per release, 16,384 files overall, and a
+16 MiB accounted prepared index. The checked-in synthetic matrix and its
+independent preparation declaration are documented in
+[`examples/wordpress-review/asset-fingerprints/README.md`](examples/wordpress-review/asset-fingerprints/README.md).
+The test-only `scripts/prepare_wordpress_fingerprint_catalog.py` hashes only
+explicit local files; it performs no discovery or network access.
+
+Catalogue paths never create request authority. Termivar admits only structured
+`script src` and stylesheet `link href` URLs already observed under the frozen
+application and component roots. V1 accepts no query or one literal bounded
+`ver=` value; that value stays a cache/distribution hint and never selects a
+release. The exact admitted URL is retained for acquisition, while the safe
+component-relative path is used for lookup. `linked` remains unsupported; an
+observed page may contribute candidates only through the existing `observed`
+reuse mode.
+
+Eligible committed anonymous `GET` bytes are reused first. Otherwise Termivar
+may issue one anonymous, redirect-free, retry-free identity request for an
+actually observed resource through the existing broker. A request asks for
+identity encoding. Comparison requires a complete status-200 body, an eligible
+JS/CSS media type, no `Content-Encoding`, consistent byte length, and no obvious
+HTML/login body. SHA-256 covers the exact content bytes before UTF-8 decoding,
+newline/BOM handling, whitespace changes, or minification. A truncated, partial,
+encoded, oversized, failed, or uncommitted response never becomes a complete
+fingerprint. Raw code, query values, and local paths are not saved in the audit.
+
+Fingerprint work shares the 12-attempt and 2 MiB WordPress envelopes with
+metadata discovery. It is further limited to four GETs, two resources per
+component, two components, one request in flight, and 512 KiB per asset. Reused
+bytes are interpreted but not charged to the wire twice. Exhausted budgets,
+ambiguous URL variants, missing reference rows, unsupported representations,
+and unavailable responses remain explicit coverage limitations.
+
+Matching is three-valued for each listed release: exact length plus full digest
+is a match, a different listed length/digest is a mismatch, and a missing or
+unusable reference is unknown. The A/B shared-JS and B/C shared-CSS intersection
+in the synthetic matrix leaves B as the sole compatible listed release. A
+strong `single_catalogue_candidate` additionally needs at least two informative
+paths, a complete listed matrix, and no hidden acquisition or variant conflict.
+One file produces only provisional candidates; mixed A/C bytes produce no
+consistent listed release. No majority vote, closest version, fuzzy hash, or
+newest-version fallback is used.
+
+These results never enter installed-version evidence or the vulnerability
+evaluator. They mean only that observed files are compatible with named releases
+inside the supplied finite catalogue under the same-release-artifact assumption.
+Unlisted/custom builds, copied or cached assets, and mixed deployments remain
+possible. SHA-256 is not a signature, catalogue provenance is not publisher
+authentication, and even a single listed candidate is not whole-package
+verification, patch state, exploitation, or remediation evidence. The audit
+keeps separately supplied generator/theme/operator versions and conflicts intact;
+plugin readme `Stable tag` and URL `ver` remain non-installed-version hints.
+
 The selected application may be an unambiguous directory URL. A conventional
 WordPress application under `/blog/` needs no layout declaration:
 
@@ -234,17 +313,21 @@ seed/candidate/attempt/completion/commit counts, accounted response bytes,
 outcomes, typed metadata, and evidence reference counts. Location references
 are framed hashes for stable comparison and are not authentication or a promise
 of anonymity. Historical discovery audit v1 remains readable with its original
-root-only meaning. A discovery-influenced review uses the additive strict
-`security.wordpress-review-audit/v7` wrapper. Its required
+root-only meaning. A discovery-influenced review without asset fingerprints
+uses the additive strict `security.wordpress-review-audit/v7` wrapper. A run
+with an explicit fingerprint catalogue uses the additive strict
+`security.wordpress-review-audit/v8` wrapper and the separate top-level
+`security.wordpress-asset-fingerprint-audit/v1` document. Its required
 `review_basis_schema` preserves which v1–v6 evaluation contract supplied the
-review facts, while `additional_request_count` records the actual discovery
-attempt count. With discovery absent, historical v1–v6 output stays unchanged
-and retains `additional_request_count=0`. Current Compare/Verify readers accept
-the coordinated v7 review and top-level discovery audit without compiling the
-producer feature. Compare applies the recorded review basis to component and
-advisory semantics while treating collection policy and request coverage as
-separate dimensions. A review-only versus discovery comparison is therefore
-not a newly introduced vulnerability or remediation.
+review facts, while `additional_request_count` records the actual discovery and
+fingerprint attempt count. With discovery absent, historical v1–v6 output stays
+unchanged and retains `additional_request_count=0`. Current Compare/Verify
+readers accept the coordinated v7/v8 review and top-level discovery/fingerprint
+audits without compiling the producer feature. Compare applies the recorded
+review basis to component and advisory semantics while treating collection
+policy and request coverage as separate dimensions. A review-only versus
+discovery comparison is therefore not a newly introduced vulnerability or
+remediation.
 
 The strict v3 document vocabulary also reserves `linked` page mode and
 `fetched` acquisition rows for the coordinated bounded linked-page slice. The
@@ -828,6 +911,7 @@ provider snapshot will be accepted.
 | Cross-run semantic Report Compare | Implemented and tested | One benign exact-origin fixture; no remediation causality |
 | Feature-enabled native CLI | Implemented and tested in CI | Linux, Windows, and macOS runners; not a fresh-machine certification |
 | Linux process resource evidence | Measured in exact-head CI | Synthetic inputs and child-process peak RSS; not a heap cap or real-feed benchmark |
+| Supplemental third-party release-byte check | Not run | The mandatory corpus uses original task-owned assets; no external release was downloaded or executed for this feature |
 | Current development release bundle | Compiled Preview; explicit runtime opt-in | Untagged alpha.3 builds include `wordpress-review`; the default build and published alpha.2 archives do not |
 | Private vendor-snapshot acceptance | Separately qualified task evidence | No vendor bytes, account, or API credential are committed; one accepted snapshot does not authenticate its source or guarantee future feeds |
 | Live API retrieval | Unsupported | The assessment performs no Wordfence network request or key discovery |
@@ -867,12 +951,21 @@ contract, not advisory truth. The matching development Report Compare reader
 can add the semantic WordPress comparison described below; it remains a
 comparison of supplied documents, not remediation proof.
 
+Fingerprint-audit evidence references are opaque report-local pointers. Current
+readers validate their syntax, counts, membership in the owning assessment item,
+and permitted entry/accepted-page source references, but the v1 audit does not
+cryptographically bind each opaque evidence pointer to one individual asset
+path. Verify therefore detects contradictory document structure, not a swap of
+two otherwise valid pointers inside the same fingerprint item's reference set;
+the manifest likewise establishes byte integrity, not source authenticity.
+
 ## Offline WordPress comparison
 
 When either supported input to `termivar report compare` contains a WordPress
 audit, the output includes an optional `wordpress_review_comparison` section
-with nested schema `termivar-wordpress-review-comparison/v1`, or additive `/v2`
-when either input carries discovery source content such as page-scoped records.
+with nested schema `termivar-wordpress-review-comparison/v1`, additive `/v2`
+when either input carries discovery source content such as page-scoped records,
+or additive `/v3` when either input carries a validated asset-fingerprint audit.
 The outer `termivar-report-comparison/v1` schema and its four existing item
 groups are unchanged. The section is absent when neither report has a WordPress
 audit.
@@ -907,7 +1000,7 @@ between them. If one report has no WordPress audit, the result is
 new vulnerability or a resolved condition. The same claim limit applies to an
 advisory disappearance or applicability transition.
 
-Supported `security.wordpress-review-audit/v1` through `/v7` inputs are
+Supported `security.wordpress-review-audit/v1` through `/v8` inputs are
 interpreted to the historical depth each contract actually contains; later
 coverage or provenance fields are not invented for earlier versions. An exact
 input SHA-256 identifies bytes, while semantic comparison uses validated typed
@@ -938,6 +1031,15 @@ component and advisory checks. The wrapper adds the selected discovery policy,
 candidate/source coverage, and exact attempt accounting as methodology and
 coverage facts. An older binary that predates v7 cannot be assumed to read a
 v7 document even though the underlying basis is historical.
+
+For v8, the underlying review basis still controls installed-version and
+advisory semantics. The fingerprint section compares stable
+component-kind/slug/path keys and reports resource-byte, catalogue/reference
+set, methodology/coverage, and candidate-set changes separately. Identical
+target bytes can produce a different candidate set when the finite catalogue
+changes; a missing or failed later acquisition is a coverage change, not a
+component removal or remediation. An older binary that predates v8 cannot be
+assumed to read a v8 document.
 
 ## Result and claim limits
 
@@ -983,8 +1085,8 @@ command starts a scan or adds network requests.
 
 The existing development references were reviewed on 2026-09-06. The pinned
 PHP implementation reference for the comparison profiles was additionally
-reviewed on 2026-09-07. The public-metadata discovery references were reviewed
-through 2026-09-11:
+reviewed on 2026-09-07. The public-metadata discovery and asset-fingerprint
+references were reviewed through 2026-09-12:
 
 - WordPress installation in a subdirectory and separate site/core addresses:
   <https://developer.wordpress.org/advanced-administration/server/wordpress-in-directory/>
@@ -1005,6 +1107,15 @@ through 2026-09-11:
   and <https://developer.wordpress.org/reference/functions/is_page/>
 - Plugin readme and Stable tag semantics:
   <https://developer.wordpress.org/plugins/wordpress-org/how-your-readme-txt-works/>
+- Front-end script and stylesheet enqueueing, including cache-busting `ver`
+  query semantics:
+  <https://developer.wordpress.org/reference/functions/wp_enqueue_script/>
+  and <https://developer.wordpress.org/reference/functions/wp_enqueue_style/>
+- WP-CLI's whole-plugin WordPress.org checksum workflow, which is explicitly
+  broader than this finite observed-asset comparison:
+  <https://developer.wordpress.org/cli/commands/plugin/verify-checksums/>
+- HTTP representation data, content codings, and message completeness:
+  <https://www.rfc-editor.org/rfc/rfc9110.html#section-8>
 - WP-CLI plugin inventory fields and states:
   <https://developer.wordpress.org/cli/commands/plugin/list/>
 - WP-CLI theme inventory fields and states:

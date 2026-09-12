@@ -63,11 +63,16 @@ use super::ssrf_oast_runtime::{
     WebAssessmentSsrfOastAudit, MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS,
 };
 #[cfg(feature = "wordpress-review")]
+use super::wordpress_fingerprint_runtime::{
+    WordPressAssetFingerprintCollector, WordPressAssetFingerprintStop,
+};
+#[cfg(feature = "wordpress-review")]
 use super::wordpress_runtime::{
-    extract_wordpress_entry_observation, extract_wordpress_page_observation,
-    CommittedWordPressReview, FrozenWordPressPageLayout, WebAssessmentWordPressAudit,
-    WordPressDiscoveryContext, WordPressDiscoveryStop, WordPressPageCandidate,
-    WordPressReviewBinding, WordPressSignalCollector,
+    extract_wordpress_entry_observation_with_asset_fingerprints,
+    extract_wordpress_page_observation_with_asset_fingerprints, CommittedWordPressReview,
+    FrozenWordPressPageLayout, WebAssessmentWordPressAudit, WordPressDiscoveryContext,
+    WordPressDiscoveryStop, WordPressPageCandidate, WordPressReviewBinding,
+    WordPressSignalCollector,
 };
 use super::{
     assessment_api_visibility::{
@@ -1694,6 +1699,9 @@ pub enum WebAssessmentRuntimeError {
     #[error("WordPress layout declarations require metadata discovery in the same assessment")]
     WordPressLayoutRequiresDiscovery,
     #[cfg(feature = "wordpress-review")]
+    #[error("WordPress asset fingerprints require metadata discovery in the same assessment")]
+    WordPressAssetFingerprintsRequireDiscovery,
+    #[cfg(feature = "wordpress-review")]
     #[error("WordPress context root does not match the exact assessment target")]
     WordPressContextRootMismatch,
     #[error(transparent)]
@@ -1775,6 +1783,9 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             Self::WordPressLayoutRequiresDiscovery => {
                 formatter.write_str("WebAssessmentRuntimeError::WordPressLayoutRequiresDiscovery")
             },
+            #[cfg(feature = "wordpress-review")]
+            Self::WordPressAssetFingerprintsRequireDiscovery => formatter
+                .write_str("WebAssessmentRuntimeError::WordPressAssetFingerprintsRequireDiscovery"),
             #[cfg(feature = "wordpress-review")]
             Self::WordPressContextRootMismatch => {
                 formatter.write_str("WebAssessmentRuntimeError::WordPressContextRootMismatch")
@@ -2059,6 +2070,15 @@ impl WebAssessmentRuntimeBuilder {
             && !self.wordpress_discovery
         {
             return Err(WebAssessmentRuntimeError::WordPressLayoutRequiresDiscovery);
+        }
+        #[cfg(feature = "wordpress-review")]
+        if self
+            .wordpress_review
+            .as_ref()
+            .is_some_and(|inputs| inputs.asset_fingerprint_catalog().is_some())
+            && !self.wordpress_discovery
+        {
+            return Err(WebAssessmentRuntimeError::WordPressAssetFingerprintsRequireDiscovery);
         }
         #[cfg(feature = "wordpress-review")]
         if self.wordpress_review.is_some() && !wordpress_application_target_is_valid(&self.target) {
@@ -2721,19 +2741,34 @@ impl WebAssessmentRuntime {
                             review.discovery_enabled(),
                             review.discovery_context(),
                             review.page_scope().is_some(),
+                            review.asset_fingerprint_collector(),
                         )
                     } else {
                         subject_observer
                     }
                 } else if subject.method == WebAssessmentMethod::Get {
                     if let Some(review) = self.wordpress_review.as_ref() {
-                        if let Some((candidate, frozen_layout)) =
+                        let subject_observer = if let Some((candidate, frozen_layout)) =
                             review.collector().selected_page(&subject.url)
                         {
                             subject_observer.with_wordpress_page_observation(
                                 review.collector(),
                                 candidate,
                                 frozen_layout,
+                            )
+                        } else {
+                            subject_observer
+                        };
+                        if review
+                            .asset_fingerprint_collector()
+                            .is_some_and(|collector| {
+                                collector.selected_observed_asset(&subject.url).is_some()
+                            })
+                        {
+                            subject_observer.with_wordpress_asset_observation(
+                                review
+                                    .asset_fingerprint_collector()
+                                    .expect("selected fingerprint collector remains present"),
                             )
                         } else {
                             subject_observer
@@ -3519,18 +3554,16 @@ impl WebAssessmentRuntime {
                             });
                         }
                         #[cfg(feature = "wordpress-review")]
-                        if let Some(review) = self
-                            .wordpress_review
-                            .as_ref()
-                            .filter(|review| review.page_scope().is_some())
-                        {
+                        if let Some(review) = self.wordpress_review.as_ref().filter(|review| {
+                            review.page_scope().is_some() || review.asset_fingerprints_enabled()
+                        }) {
                             let page_subject = EntityId::new(format!("endpoint:{}", subject.url))
                                 .map_err(|_| {
                                 WebAssessmentRuntimeError::NativeReviewComposition
                             })?;
                             let root_subject = EntityId::new(format!("endpoint:{}", self.root.url))
                                 .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
-                            let committed =
+                            let discovery_committed = if review.page_scope().is_some() {
                                 if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot {
                                     review.collector().commit_staged_entry(
                                         self.authority.knowledge(),
@@ -3544,8 +3577,31 @@ impl WebAssessmentRuntime {
                                         &page_subject,
                                         &subject.url,
                                     )
-                                };
-                            if committed.is_err() {
+                                }
+                            } else {
+                                Ok(())
+                            };
+                            let fingerprints_committed = review
+                                .asset_fingerprint_collector()
+                                .map(|fingerprints| {
+                                    fingerprints
+                                        .commit_staged_candidates(
+                                            self.authority.knowledge(),
+                                            &root_subject,
+                                            &page_subject,
+                                            &subject.url,
+                                        )
+                                        .and_then(|()| {
+                                            fingerprints.commit_staged_response(
+                                                self.authority.knowledge(),
+                                                &root_subject,
+                                                &page_subject,
+                                                &subject.url,
+                                            )
+                                        })
+                                })
+                                .transpose();
+                            if discovery_committed.is_err() || fingerprints_committed.is_err() {
                                 return Err(WebAssessmentRuntimeError::ProjectionInvariant {
                                     receipt: Box::new(self.failure_receipt(
                                         &known_subjects,
@@ -3906,6 +3962,63 @@ impl WebAssessmentRuntime {
                 Some(Ok(WordPressDiscoveryStop::DiscoveryResponseLimit))
                 | Some(Err(
                     super::wordpress_discovery::WordPressDiscoveryExecutionError::CandidateIdentityLimitExceeded,
+                )) => {
+                    reasons.insert(WebAssessmentIncompleteReason::WordPressReviewIncomplete);
+                },
+                Some(Err(_)) => {
+                    let current_subject = subject_reports
+                        .pop()
+                        .unwrap_or_else(|| WebAssessmentSubjectReport::pending(self.root.clone()));
+                    let completed_subjects = subject_reports
+                        .into_iter()
+                        .filter(WebAssessmentSubjectReport::was_executed)
+                        .collect();
+                    return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                        receipt: Box::new(self.failure_receipt(
+                            &known_subjects,
+                            completed_subjects,
+                            forms,
+                            current_subject,
+                            failed_reasons(&reasons),
+                            started_at,
+                        )),
+                    });
+                },
+            }
+        }
+        #[cfg(feature = "wordpress-review")]
+        if reasons.is_empty() {
+            let fingerprint_result = match self.wordpress_review.as_mut() {
+                Some(review) if review.asset_fingerprints_enabled() => {
+                    let root_subject = EntityId::new(format!("endpoint:{}", self.root.url))
+                        .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                    Some(
+                        review
+                            .execute_asset_fingerprints(
+                                root_subject,
+                                &self.authority,
+                                timing.deadline(),
+                            )
+                            .await,
+                    )
+                },
+                _ => None,
+            };
+            match fingerprint_result {
+                None | Some(Ok(WordPressAssetFingerprintStop::Complete)) => {},
+                Some(Ok(WordPressAssetFingerprintStop::Cancelled)) => {
+                    reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                    reasons.insert(WebAssessmentIncompleteReason::WordPressReviewIncomplete);
+                },
+                Some(Ok(WordPressAssetFingerprintStop::DeadlineExceeded)) => {
+                    reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
+                    reasons.insert(WebAssessmentIncompleteReason::WordPressReviewIncomplete);
+                },
+                Some(Ok(
+                    WordPressAssetFingerprintStop::RequestLimit
+                    | WordPressAssetFingerprintStop::ResponseLimit
+                    | WordPressAssetFingerprintStop::RuntimeLimit
+                    | WordPressAssetFingerprintStop::RateLimited,
                 )) => {
                     reasons.insert(WebAssessmentIncompleteReason::WordPressReviewIncomplete);
                 },
@@ -4913,6 +5026,8 @@ pub(crate) struct AssessmentDiscoveryObserver {
     wordpress_page_scope_selected: bool,
     #[cfg(feature = "wordpress-review")]
     wordpress_page_candidate: Option<(WordPressPageCandidate, FrozenWordPressPageLayout)>,
+    #[cfg(feature = "wordpress-review")]
+    wordpress_asset_fingerprints: Option<WordPressAssetFingerprintCollector>,
 }
 
 impl AssessmentDiscoveryObserver {
@@ -4943,6 +5058,8 @@ impl AssessmentDiscoveryObserver {
             wordpress_page_scope_selected: false,
             #[cfg(feature = "wordpress-review")]
             wordpress_page_candidate: None,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_asset_fingerprints: None,
         }
     }
 
@@ -4953,11 +5070,13 @@ impl AssessmentDiscoveryObserver {
         discovery_enabled: bool,
         discovery_context: WordPressDiscoveryContext,
         page_scope_selected: bool,
+        asset_fingerprints: Option<WordPressAssetFingerprintCollector>,
     ) -> Self {
         self.wordpress_signals = Some(collector);
         self.wordpress_discovery_enabled = discovery_enabled;
         self.wordpress_discovery_context = Some(discovery_context);
         self.wordpress_page_scope_selected = page_scope_selected;
+        self.wordpress_asset_fingerprints = asset_fingerprints;
         self
     }
 
@@ -4972,6 +5091,15 @@ impl AssessmentDiscoveryObserver {
         self.wordpress_discovery_enabled = true;
         self.wordpress_page_scope_selected = true;
         self.wordpress_page_candidate = Some((candidate, frozen_layout));
+        self
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    fn with_wordpress_asset_observation(
+        mut self,
+        collector: WordPressAssetFingerprintCollector,
+    ) -> Self {
+        self.wordpress_asset_fingerprints = Some(collector);
         self
     }
 
@@ -5277,6 +5405,17 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                 parents: passive_projection_parents(&observation)?,
             },
         )?;
+        #[cfg(feature = "wordpress-review")]
+        if let Some(fingerprints) = self.wordpress_asset_fingerprints.as_ref() {
+            if observation.method() == HttpProbeMethod::Get {
+                fingerprints
+                    .mark_ordinary_get_attempted(observation.requested_url())
+                    .map_err(|_| HttpEvidenceError::AssessmentObserverInvariant {
+                        invariant: "ordinary WordPress asset GET history must remain bounded",
+                    })?;
+            }
+            evidence.extend(fingerprints.observe_selected_response(&observation)?);
+        }
         if self.expected_method == HttpProbeMethod::Head {
             return Ok(evidence);
         }
@@ -5322,13 +5461,14 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
         let parsed = parse_document(observation.requested_url(), html, self.limits);
         #[cfg(feature = "wordpress-review")]
         let wordpress_observation = self.wordpress_discovery_context.as_ref().map(|context| {
-            extract_wordpress_entry_observation(
+            extract_wordpress_entry_observation_with_asset_fingerprints(
                 context,
                 observation.requested_url(),
                 html,
                 observation.wordpress_rest_index_advertisement(),
                 self.wordpress_discovery_enabled,
                 self.wordpress_page_scope_selected,
+                self.wordpress_asset_fingerprints.is_some(),
             )
         });
         #[cfg(feature = "wordpress-review")]
@@ -5342,11 +5482,12 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                             page_parents.push(final_url.clone());
                         }
                     }
-                    extract_wordpress_page_observation(
+                    extract_wordpress_page_observation_with_asset_fingerprints(
                         candidate.clone(),
                         frozen_layout,
                         html,
                         page_parents,
+                        self.wordpress_asset_fingerprints.is_some(),
                     )
                 });
         if self.stopped() {
@@ -5365,6 +5506,12 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
             }
             evidence_ids
         };
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_fingerprint_evidence = self
+            .wordpress_asset_fingerprints
+            .as_ref()
+            .map(|_| complete_fingerprint_projection_parents(&observation))
+            .transpose()?;
         evidence.extend(self.evidence_for_document(&observation, admitted, parents)?);
         if self.stopped() {
             evidence.retain(|item| item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE);
@@ -5372,6 +5519,18 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
             #[cfg(feature = "wordpress-review")]
             if let Some(collector) = self.wordpress_signals.as_ref() {
                 if let Some(wordpress_observation) = wordpress_observation {
+                    if let Some(fingerprints) = self.wordpress_asset_fingerprints.as_ref() {
+                        fingerprints
+                            .stage_candidates(
+                                observation.requested_url(),
+                                wordpress_observation.asset_fingerprint_candidates.clone(),
+                                wordpress_fingerprint_evidence.clone().unwrap_or_default(),
+                                wordpress_observation.asset_fingerprint_candidate_limit_exceeded,
+                            )
+                            .map_err(|_| HttpEvidenceError::AssessmentObserverInvariant {
+                                invariant: "WordPress asset nominations must remain bounded",
+                            })?;
+                    }
                     if self.wordpress_page_scope_selected {
                         collector.stage_entry(wordpress_observation, wordpress_evidence);
                     } else {
@@ -5383,6 +5542,21 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                     }
                 }
                 if let Some(wordpress_page_observation) = wordpress_page_observation {
+                    if let Some(fingerprints) = self.wordpress_asset_fingerprints.as_ref() {
+                        fingerprints
+                            .stage_candidates(
+                                observation.requested_url(),
+                                wordpress_page_observation
+                                    .asset_fingerprint_candidates
+                                    .clone(),
+                                wordpress_fingerprint_evidence.clone().unwrap_or_default(),
+                                wordpress_page_observation
+                                    .asset_fingerprint_candidate_limit_exceeded,
+                            )
+                            .map_err(|_| HttpEvidenceError::AssessmentObserverInvariant {
+                                invariant: "WordPress page asset nominations must remain bounded",
+                            })?;
+                    }
                     collector.stage_page(wordpress_page_observation);
                 }
             }
@@ -5438,6 +5612,52 @@ fn complete_projection_parents(
         (
             observation.response_media_type_evidence_id(),
             "response-media-type-evidence",
+        ),
+        (
+            observation.response_body_truncated_evidence_id(),
+            "response-body-truncated-evidence",
+        ),
+        (
+            observation.response_body_digest_evidence_id(),
+            "response-body-digest-evidence",
+        ),
+    ]
+    .into_iter()
+    .map(|(id, invariant)| {
+        id.cloned()
+            .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
+    })
+    .collect()
+}
+
+#[cfg(feature = "wordpress-review")]
+fn complete_fingerprint_projection_parents(
+    observation: &CompleteHttpResponseObservation<'_>,
+) -> Result<Vec<EvidenceId>, HttpEvidenceError> {
+    [
+        (
+            observation.request_method_evidence_id(),
+            "request-method-evidence",
+        ),
+        (
+            observation.request_url_evidence_id(),
+            "request-url-evidence",
+        ),
+        (
+            observation.response_status_evidence_id(),
+            "response-status-evidence",
+        ),
+        (
+            observation.response_final_url_evidence_id(),
+            "response-final-url-evidence",
+        ),
+        (
+            observation.response_media_type_evidence_id(),
+            "response-media-type-evidence",
+        ),
+        (
+            observation.response_body_bytes_evidence_id(),
+            "response-body-byte-count-evidence",
         ),
         (
             observation.response_body_truncated_evidence_id(),

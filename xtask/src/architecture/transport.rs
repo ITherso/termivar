@@ -76,6 +76,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     SSRF_OAST_RUNTIME_SOURCE,
     WORDPRESS_RUNTIME_SOURCE,
     WORDPRESS_DISCOVERY_RUNTIME_SOURCE,
+    WORDPRESS_FINGERPRINT_RUNTIME_SOURCE,
     NATIVE_REVIEW_DECISION_SOURCE,
     NATIVE_REVIEW_EXECUTION_SOURCE,
     "crates/termivar-scanner/src/web_runtime/authority.rs",
@@ -118,6 +119,8 @@ const WORDPRESS_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/wordpress_runtime.rs";
 const WORDPRESS_DISCOVERY_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/wordpress_discovery.rs";
+const WORDPRESS_FINGERPRINT_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/wordpress_fingerprint_runtime.rs";
 const NATIVE_OAST_PROVIDER_ADAPTER_SOURCE: &str =
     "crates/termivar-scanner/src/native_oast_provider.rs";
 const ATTRIBUTE_SOURCE_CONTEXT_SOURCE: &str =
@@ -4357,6 +4360,7 @@ fn inspect_assessment_projection_context(syntax: &syn::File, source: &str) -> Ve
                 ],
             )
             && block_has_exact_report_only_field_value(&method.block, "stable_scope_id")
+            && block_has_exact_report_only_evidence_mapping(&method.block)
     });
     if !finish_is_exact {
         violations.push(
@@ -4447,6 +4451,60 @@ fn block_has_exact_report_only_field_value(block: &syn::Block, expected: &str) -
     visitor.total == 1 && visitor.exact == 1
 }
 
+fn block_has_exact_report_only_evidence_mapping(block: &syn::Block) -> bool {
+    struct EvidenceFieldVisitor {
+        total: usize,
+        exact: usize,
+    }
+    impl<'ast> Visit<'ast> for EvidenceFieldVisitor {
+        fn visit_field_value(&mut self, field: &'ast syn::FieldValue) {
+            if matches!(&field.member, syn::Member::Named(member)
+                if ident_name(member) == "evidence_references")
+            {
+                self.total = self.total.saturating_add(1);
+                let exact = attributes_are_exact_cfg_feature(&field.attrs, "reporting")
+                    && matches!(&field.expr, syn::Expr::MethodCall(collect)
+                        if collect.method == "collect"
+                            && collect.args.is_empty()
+                            && matches!(collect.receiver.as_ref(), syn::Expr::MethodCall(map)
+                                if map.method == "map"
+                                    && map.args.len() == 1
+                                    && matches!(map.receiver.as_ref(), syn::Expr::MethodCall(into_iter)
+                                        if into_iter.method == "into_iter"
+                                            && into_iter.args.is_empty()
+                                            && matches!(into_iter.receiver.as_ref(), syn::Expr::Field(evidence)
+                                                if expression_is_path_ident(evidence.base.as_ref(), "self")
+                                                    && matches!(&evidence.member, syn::Member::Named(member)
+                                                        if member == "evidence")))
+                                    && map.args.first().is_some_and(|argument|
+                                        matches!(argument, syn::Expr::Closure(closure)
+                                            if closure.inputs.len() == 1
+                                                && matches!(closure.inputs.first(), Some(syn::Pat::Tuple(pattern))
+                                                    if pattern.elems.len() == 2
+                                                        && matches!(pattern.elems.first(), Some(syn::Pat::Ident(binding))
+                                                            if binding.ident == "evidence_id")
+                                                        && matches!(pattern.elems.iter().nth(1), Some(syn::Pat::Ident(binding))
+                                                            if binding.ident == "projection"))
+                                                && matches!(closure.body.as_ref(), syn::Expr::Tuple(tuple)
+                                                    if tuple.elems.len() == 2
+                                                        && tuple.elems.first().is_some_and(|expression|
+                                                            expression_is_path_ident(expression, "evidence_id"))
+                                                        && matches!(tuple.elems.iter().nth(1), Some(syn::Expr::Field(reference))
+                                                            if expression_is_path_ident(reference.base.as_ref(), "projection")
+                                                                && matches!(&reference.member, syn::Member::Named(member)
+                                                                    if member == "reference")))))));
+                if exact {
+                    self.exact = self.exact.saturating_add(1);
+                }
+            }
+            visit::visit_field_value(self, field);
+        }
+    }
+    let mut visitor = EvidenceFieldVisitor { total: 0, exact: 0 };
+    visitor.visit_block(block);
+    visitor.total == 1 && visitor.exact == 1
+}
+
 fn inspect_assessment_item_set(syntax: &syn::File) -> Vec<String> {
     let mut violations = Vec::new();
     let item_set = syntax.items.iter().find_map(|item| match item {
@@ -4457,13 +4515,22 @@ fn inspect_assessment_item_set(syntax: &syn::File) -> Vec<String> {
         is_pub_crate_visibility(&item.vis)
             && private_named_field(item, "stable_scope_id")
                 .is_some_and(|field| attributes_are_exact_cfg_feature(&field.attrs, "reporting"))
+            && private_named_field(item, "evidence_references")
+                .is_some_and(|field| attributes_are_exact_cfg_feature(&field.attrs, "reporting"))
             && private_named_field(item, "subjects").is_some_and(|field| field.attrs.is_empty())
             && private_named_field(item, "items").is_some_and(|field| field.attrs.is_empty())
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 3
+                fields.len() == 4
                     && fields
                         .get("stable_scope_id")
                         .is_some_and(|field| is_plain_ident(field, "StableAssessmentScopeId"))
+                    && fields.get("evidence_references").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "BTreeMap",
+                            &["EvidenceId", "AssessmentEvidenceReference"],
+                        )
+                    })
                     && fields.get("subjects").is_some_and(|field| {
                         is_generic_of_idents(field, "Vec", &["AssessmentSubjectInventoryEntry"])
                     })
@@ -4553,6 +4620,7 @@ fn inspect_assessment_item_set(syntax: &syn::File) -> Vec<String> {
     let expected = BTreeSet::from([
         "contains_stable_subject".to_owned(),
         "into_parts".to_owned(),
+        "into_report_parts".to_owned(),
         "items".to_owned(),
         "matches_exact_origin".to_owned(),
     ]);
@@ -4615,7 +4683,7 @@ fn inspect_assessment_item_set(syntax: &syn::File) -> Vec<String> {
     }
     let into_parts = methods.get("into_parts").is_some_and(|method| {
         is_pub_crate_visibility(&method.vis)
-            && attributes_are_exact_cfg_feature_or_test(&method.attrs, "reporting")
+            && attributes_are_exact_cfg_test(&method.attrs)
             && method.sig.receiver().is_some_and(|receiver| {
                 receiver.reference.is_none() && receiver.mutability.is_none()
             })
@@ -4627,6 +4695,23 @@ fn inspect_assessment_item_set(syntax: &syn::File) -> Vec<String> {
     if !into_parts {
         violations.push(
             "AssessmentItemSet::into_parts must consume the set into its exact subject inventory and item vector"
+                .to_owned(),
+        );
+    }
+    let into_report_parts = methods.get("into_report_parts").is_some_and(|method| {
+        is_pub_crate_visibility(&method.vis)
+            && attributes_are_exact_cfg_feature(&method.attrs, "reporting")
+            && method.sig.receiver().is_some_and(|receiver| {
+                receiver.reference.is_none() && receiver.mutability.is_none()
+            })
+            && typed_input_types(method).is_empty()
+            && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
+                if is_assessment_item_set_report_parts(output))
+            && block_references_all(&method.block, &["subjects", "items", "evidence_references"])
+    });
+    if !into_report_parts {
+        violations.push(
+            "AssessmentItemSet::into_report_parts must consume the set into its exact subject inventory, item vector, and context-minted evidence-reference map"
                 .to_owned(),
         );
     }
@@ -4964,7 +5049,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 9
+                fields.len() == 10
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -4976,6 +5061,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     })
                     && fields.get("items").is_some_and(|field| {
                         is_generic_of_idents(field, "Vec", &["AssessmentItem"])
+                    })
+                    && fields.get("evidence_references").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "BTreeMap",
+                            &["EvidenceId", "AssessmentEvidenceReference"],
+                        )
                     })
                     && fields.get("authorization_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentAuthorizationAudit"])
@@ -5007,6 +5099,8 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "wordpress_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
             })
+            && private_named_field(item, "evidence_references")
+                .is_some_and(|field| field.attrs.is_empty())
     });
     if !report_shape_is_exact {
         let observed = report
@@ -5149,7 +5243,8 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "ScopeAuthorityMismatch",
                     "contains_stable_subject",
                     "SubjectReferenceMismatch",
-                    "into_parts",
+                    "into_report_parts",
+                    "evidence_references",
                     "validate_subject_inventory",
                     "validate_and_canonicalize_items",
                     "validate_authorization_audit",
@@ -5176,8 +5271,16 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 "validate_run_accounting",
                 "matches_exact_origin",
             )
-            && statement_reference_precedes(&method.block, "matches_exact_origin", "into_parts")
-            && statement_reference_precedes(&method.block, "contains_stable_subject", "into_parts")
+            && statement_reference_precedes(
+                &method.block,
+                "matches_exact_origin",
+                "into_report_parts",
+            )
+            && statement_reference_precedes(
+                &method.block,
+                "contains_stable_subject",
+                "into_report_parts",
+            )
             && statement_reference_precedes(&method.block, "validate_subject_inventory", "Self")
             && statement_reference_precedes(
                 &method.block,
@@ -5193,6 +5296,37 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     if !validator {
         violations.push(
             "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits before construction"
+                .to_owned(),
+        );
+    }
+
+    let evidence_reference_accessor =
+        report_methods
+            .get("evidence_reference_for")
+            .is_some_and(|method| {
+                is_pub_crate_visibility(&method.vis)
+                    && attributes_are_exact_cfg_feature_allowing_docs(
+                        &method.attrs,
+                        "wordpress-review",
+                    )
+                    && method.sig.receiver().is_some_and(|receiver| {
+                        receiver.reference.is_some() && receiver.mutability.is_none()
+                    })
+                    && typed_input_types(method) == ["EvidenceId"]
+                    && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
+                    if is_generic_of_idents(
+                        output,
+                        "Option",
+                        &["AssessmentEvidenceReference"],
+                    ))
+                    && block_references_all(
+                        &method.block,
+                        &["evidence_references", "get", "copied"],
+                    )
+            });
+    if !evidence_reference_accessor {
+        violations.push(
+            "AssessmentRunReport::evidence_reference_for must remain a WordPress-report-only borrowed lookup into the context-minted evidence-reference map"
                 .to_owned(),
         );
     }
@@ -5930,6 +6064,22 @@ fn is_assessment_item_set_parts(item_type: &syn::Type) -> bool {
             && is_generic_of_idents(&tuple.elems[1], "Vec", &["AssessmentItem"]))
 }
 
+fn is_assessment_item_set_report_parts(item_type: &syn::Type) -> bool {
+    matches!(item_type, syn::Type::Tuple(tuple)
+    if tuple.elems.len() == 3
+        && is_generic_of_idents(
+            &tuple.elems[0],
+            "Vec",
+            &["AssessmentSubjectInventoryEntry"],
+        )
+        && is_generic_of_idents(&tuple.elems[1], "Vec", &["AssessmentItem"])
+        && is_generic_of_idents(
+            &tuple.elems[2],
+            "BTreeMap",
+            &["EvidenceId", "AssessmentEvidenceReference"],
+        ))
+}
+
 fn is_borrowed_slice_of(item_type: &syn::Type, expected: &str) -> bool {
     matches!(item_type, syn::Type::Reference(reference)
         if reference.mutability.is_none()
@@ -6583,10 +6733,16 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             "payload_strategy",
             "reliability",
             "request_method_evidence_id",
+            "request_headers_empty",
             "request_url_evidence_id",
+            "response_body_bytes",
+            "response_body_bytes_evidence_id",
             "requested_url",
             "response_body_digest_evidence_id",
             "response_body_truncated_evidence_id",
+            "response_content_encoding_absent",
+            "response_content_length_consistent",
+            "response_final_url_matches_request",
             "response_final_url_evidence_id",
             "response_media_type_evidence_id",
             "response_status_evidence_id",
@@ -6611,7 +6767,16 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             field.ident.as_ref().is_some_and(|ident| {
                 let name = ident_name(ident);
                 assessment_observation_type_matches(&name, &field.ty)
-                    && if name == "wordpress_rest_index_advertisement" {
+                    && if matches!(
+                        name.as_str(),
+                        "request_headers_empty"
+                            | "response_body_bytes"
+                            | "response_body_bytes_evidence_id"
+                            | "response_content_encoding_absent"
+                            | "response_content_length_consistent"
+                            | "response_final_url_matches_request"
+                            | "wordpress_rest_index_advertisement"
+                    ) {
                         attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
                     } else {
                         field.attrs.is_empty()
@@ -6638,7 +6803,9 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
                     .to_owned(),
             );
         }
-        let allowed_accessors = expected_fields;
+        let mut allowed_accessors = expected_fields;
+        allowed_accessors.remove("request_headers_empty");
+        allowed_accessors.insert("complete_identity_content_body".to_owned());
         let accessor_methods = syntax
             .items
             .iter()
@@ -6662,13 +6829,25 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             .iter()
             .map(|method| ident_name(&method.sig.ident))
             .collect::<BTreeSet<_>>();
-        let accessor_signatures_are_exact = accessor_methods.iter().all(|method| {
+        let accessor_signature_is_exact = |method: &&syn::ImplItemFn| {
             let name = ident_name(&method.sig.ident);
             matches!(method.vis, syn::Visibility::Restricted(_))
                 && method.sig.inputs.len() == 1
                 && matches!(method.sig.inputs.first(), Some(syn::FnArg::Receiver(_)))
-                && (if name == "wordpress_rest_index_advertisement" {
-                    attributes_are_exact_cfg_feature(&method.attrs, "wordpress-review")
+                && (if matches!(
+                    name.as_str(),
+                    "complete_identity_content_body"
+                        | "response_body_bytes"
+                        | "response_body_bytes_evidence_id"
+                        | "response_content_encoding_absent"
+                        | "response_content_length_consistent"
+                        | "response_final_url_matches_request"
+                        | "wordpress_rest_index_advertisement"
+                ) {
+                    attributes_are_exact_cfg_feature_allowing_docs(
+                        &method.attrs,
+                        "wordpress-review",
+                    )
                 } else {
                     method.attrs.is_empty()
                 })
@@ -6678,10 +6857,16 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
                     },
                     syn::ReturnType::Default => false,
                 }
-        });
+        };
+        let invalid_accessor_signatures = accessor_methods
+            .iter()
+            .filter(|method| !accessor_signature_is_exact(method))
+            .map(|method| ident_name(&method.sig.ident))
+            .collect::<BTreeSet<_>>();
+        let accessor_signatures_are_exact = invalid_accessor_signatures.is_empty();
         if actual_accessors != allowed_accessors || !accessor_signatures_are_exact {
             violations.push(format!(
-                "complete response observation accessor allowlist drifted; expected {allowed_accessors:?}, observed {actual_accessors:?}"
+                "complete response observation accessor allowlist drifted; expected {allowed_accessors:?}, observed {actual_accessors:?}, invalid signatures {invalid_accessor_signatures:?}"
             ));
         }
         if syntax.items.iter().any(|syntax_item| {
@@ -6914,6 +7099,15 @@ fn attributes_are_exact_cfg_feature_or_test(attributes: &[syn::Attribute], expec
     normalized_token_text(&list.tokens) == format!("any(feature=\"{expected}\",test)")
 }
 
+fn attributes_are_exact_cfg_test(attributes: &[syn::Attribute]) -> bool {
+    attributes.len() == 1
+        && attributes[0].path().is_ident("cfg")
+        && attributes[0]
+            .meta
+            .require_list()
+            .is_ok_and(|list| normalized_token_text(&list.tokens) == "test")
+}
+
 fn type_references_any_ident(item_type: &syn::Type, needles: &[&str]) -> bool {
     needles
         .iter()
@@ -6954,6 +7148,10 @@ fn assessment_observation_type_matches(name: &str, item_type: &syn::Type) -> boo
         "has_payload_strategy" | "applies_hypothesis_transition" => {
             is_plain_ident(item_type, "bool")
         },
+        "request_headers_empty"
+        | "response_content_encoding_absent"
+        | "response_content_length_consistent"
+        | "response_final_url_matches_request" => is_plain_ident(item_type, "bool"),
         "payload_strategy" => is_exact_optional_borrowed_ident(item_type, "PayloadStrategyRef"),
         "stage" => is_plain_ident(item_type, "DecisionExecutionStage"),
         "subject" => is_borrowed_ident(item_type, "EntityId"),
@@ -6962,12 +7160,16 @@ fn assessment_observation_type_matches(name: &str, item_type: &syn::Type) -> boo
         "status" => is_plain_ident(item_type, "u16"),
         "media_type" => is_optional_borrowed_ident(item_type, "str"),
         "reliability" => is_plain_ident(item_type, "ConfidenceScore"),
-        "complete_body" => is_optional_borrowed_u8_slice(item_type),
+        "complete_body" | "complete_identity_content_body" => {
+            is_optional_borrowed_u8_slice(item_type)
+        },
+        "response_body_bytes" => is_plain_ident(item_type, "u64"),
         "request_method_evidence_id"
         | "request_url_evidence_id"
         | "response_status_evidence_id"
         | "response_final_url_evidence_id"
         | "response_media_type_evidence_id"
+        | "response_body_bytes_evidence_id"
         | "response_body_truncated_evidence_id"
         | "response_body_digest_evidence_id" => is_optional_borrowed_ident(item_type, "EvidenceId"),
         "passive_response_projection" => is_borrowed_ident(item_type, "PassiveResponseProjection"),
@@ -8516,7 +8718,8 @@ impl OwnershipVisitor<'_> {
         }
         if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
             || self.source == WORDPRESS_RUNTIME_SOURCE
-            || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE)
+            || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
+            || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
             && segments.iter().any(|segment| {
                 matches!(
                     normalize_identifier(segment),
@@ -8656,7 +8859,8 @@ impl OwnershipVisitor<'_> {
                 let identifier = normalize_identifier(&ident_name(identifier)).to_owned();
                 if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
                     || self.source == WORDPRESS_RUNTIME_SOURCE
-                    || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE)
+                    || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
+                    || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
                     && matches!(
                         identifier.as_str(),
                         "HttpRequestBroker" | "RequestAccountingBroker" | "RuntimeBudget"
@@ -8852,6 +9056,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
+                    "wordpress_fingerprint_runtime"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "resource_authorization_runtime"
                 )
                 | ("crates/termivar-scanner/src/web_runtime.rs", "scan_profile")
@@ -8917,7 +9125,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
         {
             attributes_are_exact_cfg_feature(&item.attrs, "ssrf-oast-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
-            && matches!(module.as_str(), "wordpress_runtime" | "wordpress_discovery")
+            && matches!(
+                module.as_str(),
+                "wordpress_runtime" | "wordpress_discovery" | "wordpress_fingerprint_runtime"
+            )
         {
             attributes_are_exact_cfg_feature(&item.attrs, "wordpress-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime/web_assessment.rs"
@@ -9980,7 +10191,11 @@ mod tests {
 
     #[test]
     fn wordpress_runtime_is_a_transport_free_bounded_consumer() {
-        for source_name in [WORDPRESS_RUNTIME_SOURCE, WORDPRESS_DISCOVERY_RUNTIME_SOURCE] {
+        for source_name in [
+            WORDPRESS_RUNTIME_SOURCE,
+            WORDPRESS_DISCOVERY_RUNTIME_SOURCE,
+            WORDPRESS_FINGERPRINT_RUNTIME_SOURCE,
+        ] {
             assert!(BOUNDED_RUNTIME_SOURCES.contains(&source_name));
             assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&source_name));
             assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&source_name));
@@ -9993,7 +10208,11 @@ mod tests {
             "use crate::RuntimeBudget;",
             "fn escape() { policy!(RuntimeBudget::new()); }",
         ] {
-            for source_name in [WORDPRESS_RUNTIME_SOURCE, WORDPRESS_DISCOVERY_RUNTIME_SOURCE] {
+            for source_name in [
+                WORDPRESS_RUNTIME_SOURCE,
+                WORDPRESS_DISCOVERY_RUNTIME_SOURCE,
+                WORDPRESS_FINGERPRINT_RUNTIME_SOURCE,
+            ] {
                 let violations = inspect_bounded_source(source_name, source)
                     .unwrap()
                     .join("\n");
@@ -12202,6 +12421,45 @@ mod tests {
             "{violations}"
         );
 
+        let missing_set_evidence_map = item_source.replacen(
+            "    #[cfg(feature = \"reporting\")]\n    evidence_references: BTreeMap<EvidenceId, AssessmentEvidenceReference>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_set_evidence_map, item_source);
+        let violations = inspect_assessment_item_projection(&missing_set_evidence_map)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentItemSet must privately own exactly"),
+            "{violations}"
+        );
+
+        let forged_set_evidence_map = item_source.replacen(
+            "(self.subjects, self.items, self.evidence_references)",
+            "(self.subjects, self.items, BTreeMap::new())",
+            1,
+        );
+        assert_ne!(forged_set_evidence_map, item_source);
+        let violations = inspect_assessment_item_projection(&forged_set_evidence_map)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("into_report_parts must consume"),
+            "{violations}"
+        );
+
+        let forged_projection_evidence_map = item_source.replacen(
+            ".map(|(evidence_id, projection)| (evidence_id, projection.reference))",
+            ".map(|(evidence_id, _projection)| (evidence_id, AssessmentEvidenceReference::new(0)))",
+            1,
+        );
+        assert_ne!(forged_projection_evidence_map, item_source);
+        let violations = inspect_assessment_item_projection(&forged_projection_evidence_map)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("finish must consume"), "{violations}");
+
         let borrowed_finish = item_source.replacen(
             "pub(crate) fn finish(self) -> AssessmentItemSet",
             "pub(crate) fn finish(&self) -> AssessmentItemSet",
@@ -12247,6 +12505,48 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains("from_completed_truth must consume AssessmentItemSet"),
+            "{violations}"
+        );
+
+        let missing_report_evidence_map = report_source.replacen(
+            "    evidence_references: BTreeMap<EvidenceId, AssessmentEvidenceReference>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_report_evidence_map, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_report_evidence_map)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentRunReport must privately retain"),
+            "{violations}"
+        );
+
+        let forged_report_evidence_lookup = report_source.replacen(
+            "self.evidence_references.get(evidence_id).copied()",
+            "None",
+            1,
+        );
+        assert_ne!(forged_report_evidence_lookup, report_source);
+        let violations = inspect_assessment_report_boundary(&forged_report_evidence_lookup)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("evidence_reference_for must remain"),
+            "{violations}"
+        );
+
+        let discarded_report_evidence_map = report_source.replacen(
+            "let (subjects, mut items, evidence_references) = items.into_report_parts();",
+            "let (subjects, mut items) = items.into_parts();",
+            1,
+        );
+        assert_ne!(discarded_report_evidence_map, report_source);
+        let violations = inspect_assessment_report_boundary(&discarded_report_evidence_map)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("validate run identity/completion/accounting"),
             "{violations}"
         );
 
@@ -13138,7 +13438,11 @@ mod tests {
     #[test]
     fn sealed_observer_and_eof_header_redirect_markers_are_mutation_locked() {
         let seam = include_str!("../../../crates/termivar-scanner/src/http_evidence.rs");
-        assert!(inspect_complete_observer_seam(seam).unwrap().is_empty());
+        let checked_in_violations = inspect_complete_observer_seam(seam).unwrap();
+        assert!(
+            checked_in_violations.is_empty(),
+            "{checked_in_violations:?}"
+        );
         let broadened = seam.replace(
             "impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}",
             "impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {} impl Sealed for Other {}",

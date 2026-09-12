@@ -7,6 +7,7 @@ LABEL org.opencontainers.image.title="Termivar WordPress discovery acceptance fi
 COPY themes/termivar-parent/ /usr/src/wordpress/wp-content/themes/termivar-parent/
 COPY themes/termivar-child/ /usr/src/wordpress/wp-content/themes/termivar-child/
 COPY plugins/termivar-metadata-lab/ /usr/src/wordpress/wp-content/plugins/termivar-metadata-lab/
+COPY plugins/termivar-fingerprint-lab/ /usr/src/wordpress/wp-content/plugins/termivar-fingerprint-lab/
 COPY plugins/termivar-hidden-lab/ /usr/src/wordpress/wp-content/plugins/termivar-hidden-lab/
 COPY plugins/termivar-generator-control/ /usr/src/wordpress/wp-content/plugins/termivar-generator-control/
 COPY sibling-shop/ /usr/src/termivar-sibling/shop/
@@ -16,6 +17,7 @@ COPY sibling-shop/ /usr/src/termivar-sibling/shop/
 RUN find /usr/src/wordpress/wp-content/themes/termivar-parent \
          /usr/src/wordpress/wp-content/themes/termivar-child \
          /usr/src/wordpress/wp-content/plugins/termivar-metadata-lab \
+         /usr/src/wordpress/wp-content/plugins/termivar-fingerprint-lab \
          /usr/src/wordpress/wp-content/plugins/termivar-hidden-lab \
          /usr/src/wordpress/wp-content/plugins/termivar-generator-control \
          /usr/src/termivar-sibling/shop \
@@ -23,6 +25,7 @@ RUN find /usr/src/wordpress/wp-content/themes/termivar-parent \
  && find /usr/src/wordpress/wp-content/themes/termivar-parent \
          /usr/src/wordpress/wp-content/themes/termivar-child \
          /usr/src/wordpress/wp-content/plugins/termivar-metadata-lab \
+         /usr/src/wordpress/wp-content/plugins/termivar-fingerprint-lab \
          /usr/src/wordpress/wp-content/plugins/termivar-hidden-lab \
          /usr/src/wordpress/wp-content/plugins/termivar-generator-control \
          /usr/src/termivar-sibling/shop \

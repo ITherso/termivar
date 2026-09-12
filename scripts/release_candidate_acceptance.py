@@ -80,6 +80,7 @@ WORDPRESS_OPTIONS = (
     "--wordpress-core-version-file",
     "--wordpress-advisories-format",
     "--wordpress-external-version-profile",
+    "--wordpress-fingerprints",
 )
 WORDPRESS_PREREQUISITES = (
     "--profile web-review",
@@ -99,6 +100,7 @@ WORDPRESS_DISCOVERY_PREREQUISITES = (
     "--wordpress-discovery",
     "optional --wordpress-page-scope observed",
     "optional --wordpress-layout FILE",
+    "optional --wordpress-fingerprints FILE",
 )
 GROUPS = ("only_in_after", "only_in_before", "changed", "unchanged")
 PROGRESS_PREFIX = b"[progress]"
@@ -460,6 +462,10 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
                 in discovery_limitation
             and "same 12-request WordPress-owned limit" in discovery_limitation
             and "Stable tag is not treated as an installed version" in discovery_limitation
+            and "exact complete bytes" in discovery_limitation
+            and "finite listed release set" in discovery_limitation
+            and "cannot nominate unseen resources" in discovery_limitation
+            and "URL ver remain hints" in discovery_limitation
             and "no exploit or impact validation" in discovery_limitation,
             "packaged WordPress discovery limitation is incomplete")
     return {
@@ -663,6 +669,37 @@ WORDPRESS_SEMANTIC_SHA256 = (
     "4694cd26b7f147fc69b9ff9772c71052a5ebb2717b0f2ac8ae592df4dc3a8363"
 )
 WORDPRESS_ACCOUNTED_RETAINED_BYTES = 9_708
+WORDPRESS_FINGERPRINT_CATALOG_SCHEMA = (
+    "security.wordpress-asset-fingerprint-catalog/v1"
+)
+WORDPRESS_FINGERPRINT_AUDIT_SCHEMA = (
+    "security.wordpress-asset-fingerprint-audit/v1"
+)
+WORDPRESS_FINGERPRINT_POLICY = "termivar.wordpress-observed-asset-fingerprint/v1"
+WORDPRESS_FINGERPRINT_REPRESENTATION = "identity-content-bytes/v1"
+WORDPRESS_FINGERPRINT_COMPONENT = "termivar-fingerprint-lab"
+# Literal, original package-acceptance bytes.  The catalogue below is built by
+# this helper with hashlib, independently of the packaged matcher.
+WORDPRESS_FINGERPRINT_JS_AB = b'window.termivarFingerprintLab={channel:"amber"};\n'
+WORDPRESS_FINGERPRINT_JS_C = b'window.termivarFingerprintLab={channel:"cobalt"};\n'
+WORDPRESS_FINGERPRINT_CSS_A = b".termivar-fingerprint{color:#13579b}\n"
+WORDPRESS_FINGERPRINT_CSS_BC = b".termivar-fingerprint{color:#2468ac}\n"
+WORDPRESS_FINGERPRINT_COMMON = b".termivar-common{display:block}\n"
+WORDPRESS_FINGERPRINT_ROOT = (
+    b"<!doctype html><html><head>"
+    b'<script src="/wp-content/plugins/termivar-fingerprint-lab/assets/'
+    b'fingerprint.js?ver=release-c"></script>'
+    b'<link rel="stylesheet" href="/wp-content/plugins/termivar-fingerprint-lab/'
+    b'assets/fingerprint.css?ver=release-a">'
+    b"</head><body>bounded packaged fingerprint fixture</body></html>"
+)
+WORDPRESS_FINGERPRINT_PLUGIN = (
+    b"=== Termivar Fingerprint Lab ===\nStable tag: 9.9.9\n"
+)
+WORDPRESS_FINGERPRINT_ASSET_PATHS = (
+    "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=release-c",
+    "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=release-a",
+)
 
 
 @contextmanager
@@ -855,6 +892,104 @@ def _wordpress_discovery_fixture():
         first_use.DOCUMENT = previous_document
 
 
+@contextmanager
+def _wordpress_fingerprint_fixture():
+    """Serve only the two JS/CSS representations admitted by entry HTML."""
+    routes = {
+        b"/": ("text/html; charset=utf-8", WORDPRESS_FINGERPRINT_ROOT),
+        WORDPRESS_FINGERPRINT_ASSET_PATHS[0].encode("ascii"): (
+            "application/javascript", WORDPRESS_FINGERPRINT_JS_AB,
+        ),
+        WORDPRESS_FINGERPRINT_ASSET_PATHS[1].encode("ascii"): (
+            "text/css", WORDPRESS_FINGERPRINT_CSS_BC,
+        ),
+        b"/wp-content/plugins/termivar-fingerprint-lab/readme.txt": (
+            "text/plain; charset=utf-8", WORDPRESS_FINGERPRINT_PLUGIN,
+        ),
+    }
+
+    class WordPressFingerprintHandler(first_use.StaticHandler):
+        def handle(self) -> None:
+            self.request.settimeout(1.0)
+            request = bytearray()
+            try:
+                while (b"\r\n\r\n" not in request
+                       and len(request) < first_use.HEADER_LIMIT):
+                    chunk = self.request.recv(
+                        min(1024, first_use.HEADER_LIMIT - len(request)))
+                    if not chunk:
+                        return
+                    request.extend(chunk)
+                if b"\r\n\r\n" not in request:
+                    self.server.note("invalid")
+                    return
+                lines = bytes(request).split(b"\r\n")
+                words = lines[0].split(b" ")
+                if len(words) != 3 or words[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
+                    self.server.note("invalid")
+                    return
+                method, path = words[:2]
+                headers = {}
+                for line in lines[1:]:
+                    if b":" in line:
+                        name, value = line.split(b":", 1)
+                        headers.setdefault(name.strip().lower(), []).append(value.strip())
+                forbidden = tuple(sorted(
+                    name.decode("ascii") for name in headers
+                    if name in {b"authorization", b"cookie", b"proxy-authorization"}
+                ))
+                first_line = lines[0].decode("ascii", errors="replace")
+                with self.server.count_lock:
+                    self.server.request_lines.append(first_line)
+                    if forbidden:
+                        self.server.fingerprint_forbidden_headers.append(
+                            (first_line, forbidden))
+                    if (method == b"GET"
+                            and path.decode("ascii", errors="replace")
+                            in WORDPRESS_FINGERPRINT_ASSET_PATHS):
+                        self.server.fingerprint_accept_encodings.append((
+                            first_line,
+                            tuple(value.decode("ascii", errors="replace")
+                                  for value in headers.get(b"accept-encoding", ())),
+                        ))
+                if method not in (b"GET", b"HEAD"):
+                    code, reason, media_type, body, category = (
+                        405, "Method Not Allowed", "text/plain; charset=utf-8",
+                        first_use.METHOD_REFUSED, "unsupported",
+                    )
+                elif path not in routes:
+                    code, reason, media_type, body, category = (
+                        404, "Not Found", "text/plain; charset=utf-8",
+                        first_use.NOT_FOUND, "unknown",
+                    )
+                else:
+                    media_type, body = routes[path]
+                    code, reason, category = 200, "OK", "root"
+                self.server.note(category)
+                response_headers = (
+                    f"HTTP/1.1 {code} {reason}\r\n"
+                    f"Content-Type: {media_type}\r\n"
+                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+                ).encode("ascii")
+                self.request.sendall(
+                    response_headers + (b"" if method == b"HEAD" else body))
+            except (OSError, TimeoutError):
+                return
+
+    previous_document = first_use.DOCUMENT
+    first_use.DOCUMENT = WORDPRESS_FINGERPRINT_ROOT
+    fixture = first_use.Fixture()
+    fixture.server.RequestHandlerClass = WordPressFingerprintHandler
+    fixture.server.request_lines = []
+    fixture.server.fingerprint_forbidden_headers = []
+    fixture.server.fingerprint_accept_encodings = []
+    try:
+        with fixture:
+            yield fixture
+    finally:
+        first_use.DOCUMENT = previous_document
+
+
 def _write_new_input(path: Path, data: bytes) -> None:
     with path.open("xb") as output:
         require(output.write(data) == len(data), "synthetic WordPress input write was incomplete")
@@ -1021,6 +1156,103 @@ def _prepare_wordpress_layout_inputs(work: Path, origin: str) -> dict:
         paths[name] = path
         snapshots[name] = {"bytes": len(data), "sha256": first_use.digest_bytes(data)}
     return {"paths": paths, "snapshots": snapshots}
+
+
+def _prepare_wordpress_fingerprint_inputs(work: Path) -> dict:
+    """Write independent finite-release matrices for packaged execution."""
+    directory = work / "wordpress-inputs"
+
+    def file(path: str, content: bytes) -> dict:
+        return {
+            "path": path,
+            "byte_length": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "representation_profile": WORDPRESS_FINGERPRINT_REPRESENTATION,
+        }
+
+    files = {
+        "js_ab": file("assets/fingerprint.js", WORDPRESS_FINGERPRINT_JS_AB),
+        "js_c": file("assets/fingerprint.js", WORDPRESS_FINGERPRINT_JS_C),
+        "css_a": file("assets/fingerprint.css", WORDPRESS_FINGERPRINT_CSS_A),
+        "css_bc": file("assets/fingerprint.css", WORDPRESS_FINGERPRINT_CSS_BC),
+        "common": file("assets/common.css", WORDPRESS_FINGERPRINT_COMMON),
+    }
+
+    def release(identifier: str, version: str, rows: list[dict]) -> dict:
+        return {
+            "release_id": identifier,
+            "version": version,
+            "source": {
+                "reference": f"https://example.invalid/termivar/{identifier}",
+                "revision": f"{identifier}/v1",
+                "notice_ids": ["termivar-packaged-fingerprint-notice"],
+            },
+            "files": rows,
+        }
+
+    def catalogue(identifier: str, partial: bool) -> bytes:
+        release_a_files = [files["common"], files["js_ab"]]
+        if not partial:
+            release_a_files.append(files["css_a"])
+        document = {
+            "schema": WORDPRESS_FINGERPRINT_CATALOG_SCHEMA,
+            "catalog": {
+                "id": identifier,
+                "revision": "v1",
+                "source_namespace": "termivar.synthetic.packaged-fingerprints",
+                "provenance": {
+                    "reference": "https://example.invalid/termivar/fingerprint-matrix",
+                    "revision": "packaged-matrix/v1",
+                    "notices": [{
+                        "id": "termivar-packaged-fingerprint-notice",
+                        "party": "Termivar synthetic fixture authors",
+                        "notice": "Original harmless package-acceptance bytes.",
+                        "license": "Synthetic test data permission.",
+                        "license_reference": (
+                            "https://example.invalid/termivar/fingerprint-matrix/license"
+                        ),
+                    }],
+                },
+            },
+            "components": [{
+                "kind": "plugin",
+                "slug": WORDPRESS_FINGERPRINT_COMPONENT,
+                "releases": [
+                    release("release-a", "1.0.0", release_a_files),
+                    release("release-b", "2.0.0", [
+                        files["common"], files["js_ab"], files["css_bc"],
+                    ]),
+                    release("release-c", "3.0.0", [
+                        files["common"], files["js_c"], files["css_bc"],
+                    ]),
+                ],
+            }],
+        }
+        return json.dumps(document, separators=(",", ":"), sort_keys=True).encode("ascii") + b"\n"
+
+    values = {
+        "fingerprint_full": catalogue("termivar-packaged-fingerprint-full", False),
+        "fingerprint_partial": catalogue("termivar-packaged-fingerprint-partial", True),
+    }
+    paths = {}
+    snapshots = {}
+    for name, encoded in values.items():
+        path = directory / f"{name}.json"
+        _write_new_input(path, encoded)
+        paths[name] = path
+        snapshots[name] = {
+            "bytes": len(encoded),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+    return {
+        "paths": paths,
+        "snapshots": snapshots,
+        "oracle": {
+            "js_ab": files["js_ab"],
+            "css_bc": files["css_bc"],
+            "unseen_common": files["common"],
+        },
+    }
 
 
 def _read_assessment(bundle_path: Path) -> tuple[dict, dict, str]:
@@ -2081,6 +2313,294 @@ def _run_wordpress_discovery_acceptance(runner: CandidateRunner, work: Path,
     return state
 
 
+def _validate_wordpress_fingerprints(assessment: dict, snapshot: dict,
+                                     *, partial: bool) -> dict:
+    audit = _require_exact_keys(
+        assessment.get("wordpress_asset_fingerprints"),
+        (
+            "schema", "capability_id", "policy_id", "selected",
+            "representation_profile", "finite_reference_scope",
+            "same_release_assumption", "installed_version_assurance",
+            "source_authenticity", "catalogue", "candidate_count",
+            "selected_resource_count", "omitted_resource_count",
+            "attempted_request_count", "reused_response_count",
+            "fetched_response_count", "response_bytes", "stop",
+            "resource_count", "resources", "component_count", "components",
+        ), (), "packaged WordPress asset fingerprint audit",
+    )
+    require(
+        audit.get("schema") == WORDPRESS_FINGERPRINT_AUDIT_SCHEMA
+        and audit.get("capability_id")
+        == "technology.wordpress-asset-fingerprint-candidate@1"
+        and audit.get("policy_id") == WORDPRESS_FINGERPRINT_POLICY
+        and audit.get("selected") is True
+        and audit.get("representation_profile") == WORDPRESS_FINGERPRINT_REPRESENTATION
+        and audit.get("finite_reference_scope") == "listed_releases_only"
+        and audit.get("same_release_assumption")
+        == "considered_paths_share_one_listed_release_artifact_set"
+        and audit.get("installed_version_assurance")
+        == "not_established_by_asset_fingerprints"
+        and audit.get("source_authenticity") == "not_established"
+        and audit.get("candidate_count") == 2
+        and audit.get("selected_resource_count") == 2
+        and audit.get("omitted_resource_count") == 0
+        and audit.get("attempted_request_count") == 2
+        and audit.get("reused_response_count") == 0
+        and audit.get("fetched_response_count") == 2
+        and audit.get("response_bytes")
+        == len(WORDPRESS_FINGERPRINT_JS_AB) + len(WORDPRESS_FINGERPRINT_CSS_BC)
+        and audit.get("stop") == "complete"
+        and audit.get("resource_count") == 2
+        and audit.get("component_count") == 1,
+        "packaged WordPress asset fingerprint policy or accounting changed",
+    )
+    catalogue = _require_exact_keys(
+        audit.get("catalogue"),
+        (
+            "schema", "id", "revision", "source_namespace", "byte_length",
+            "sha256", "semantic_sha256", "retained_bytes", "component_count",
+            "release_count", "file_count", "provenance",
+        ), (), "packaged WordPress fingerprint catalogue provenance",
+    )
+    require(
+        catalogue.get("schema") == WORDPRESS_FINGERPRINT_CATALOG_SCHEMA
+        and catalogue.get("id") == (
+            "termivar-packaged-fingerprint-partial" if partial
+            else "termivar-packaged-fingerprint-full"
+        )
+        and catalogue.get("revision") == "v1"
+        and catalogue.get("source_namespace")
+        == "termivar.synthetic.packaged-fingerprints"
+        and catalogue.get("byte_length") == snapshot["bytes"]
+        and catalogue.get("sha256") == snapshot["sha256"]
+        and isinstance(catalogue.get("semantic_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", catalogue["semantic_sha256"], re.ASCII)
+        and isinstance(catalogue.get("retained_bytes"), int)
+        and not isinstance(catalogue.get("retained_bytes"), bool)
+        and catalogue["retained_bytes"] > 0
+        and catalogue.get("component_count") == 1
+        and catalogue.get("release_count") == 3
+        and catalogue.get("file_count") == (8 if partial else 9),
+        "packaged WordPress fingerprint catalogue identity changed",
+    )
+    resources = audit.get("resources")
+    require(isinstance(resources, list) and len(resources) == 2,
+            "packaged WordPress fingerprint resource cardinality changed")
+    by_path = {}
+    for resource in resources:
+        resource = _require_exact_keys(
+            resource,
+            (
+                "component", "relative_path", "resource_reference",
+                "source_page_references", "observed_variant_count", "acquisition",
+                "outcome", "request_attempted", "interpreted_response_bytes",
+                "response_bytes", "evidence_reference_count",
+                "evidence_references", "observation",
+            ), (), "packaged WordPress fingerprint resource",
+        )
+        path = resource.get("relative_path")
+        require(path in {"assets/fingerprint.js", "assets/fingerprint.css"}
+                and path not in by_path,
+                "packaged WordPress fingerprint resource identity changed")
+        expected = (
+            WORDPRESS_FINGERPRINT_JS_AB
+            if path.endswith(".js") else WORDPRESS_FINGERPRINT_CSS_BC
+        )
+        observation = _require_exact_keys(
+            resource.get("observation"), ("byte_length", "sha256"), (),
+            "packaged WordPress fingerprint byte observation",
+        )
+        require(
+            resource.get("component") == {
+                "kind": "plugin", "slug": WORDPRESS_FINGERPRINT_COMPONENT,
+            }
+            and _is_opaque_wordpress_reference(resource.get("resource_reference"))
+            and isinstance(resource.get("source_page_references"), list)
+            and len(resource["source_page_references"]) == 1
+            and _is_opaque_wordpress_reference(resource["source_page_references"][0])
+            and resource.get("observed_variant_count") == 1
+            and resource.get("acquisition") == "fetched"
+            and resource.get("outcome") == "observed"
+            and resource.get("request_attempted") is True
+            and resource.get("interpreted_response_bytes") == len(expected)
+            and resource.get("response_bytes") == len(expected)
+            and resource.get("evidence_reference_count") == 1
+            and isinstance(resource.get("evidence_references"), list)
+            and len(resource["evidence_references"]) == 1
+            and observation == {
+                "byte_length": len(expected),
+                "sha256": hashlib.sha256(expected).hexdigest(),
+            }
+            and "url" not in resource,
+            "packaged WordPress fingerprint resource assurance changed",
+        )
+        by_path[path] = resource
+
+    components = audit.get("components")
+    require(isinstance(components, list) and len(components) == 1,
+            "packaged WordPress fingerprint component cardinality changed")
+    component = components[0]
+    expected_state = "provisional_candidates" if partial else "single_catalogue_candidate"
+    expected_undetermined = ["release-a"] if partial else []
+    require(
+        component.get("identity") == {
+            "kind": "plugin", "slug": WORDPRESS_FINGERPRINT_COMPONENT,
+        }
+        and component.get("catalogue_component_listed") is True
+        and component.get("state") == expected_state
+        and component.get("candidate_resource_count") == 2
+        and component.get("selected_resource_count") == 2
+        and component.get("completely_interpreted_resource_count") == 2
+        and component.get("omitted_resource_count") == 0
+        and component.get("informative_resource_count") == (1 if partial else 2)
+        and component.get("listed_matrix_complete") is (not partial)
+        and component.get("compatible_release_ids") == ["release-b"]
+        and component.get("undetermined_release_ids") == expected_undetermined
+        and component.get("inconsistent_release_ids")
+        == (["release-c"] if partial else ["release-a", "release-c"])
+        and component.get("resource_count") == 2
+        and component.get("release_count") == 3,
+        "packaged WordPress fingerprint candidate intersection changed",
+    )
+    release_rows = component.get("releases")
+    require(isinstance(release_rows, list)
+            and [row.get("release_id") for row in release_rows]
+            == ["release-a", "release-b", "release-c"]
+            and release_rows[1].get("version") == "2.0.0"
+            and release_rows[1].get("state") == "compatible",
+            "packaged WordPress fingerprint listed-release identity changed")
+    matrix = component.get("resources")
+    require(isinstance(matrix, list) and len(matrix) == 2,
+            "packaged WordPress fingerprint comparison matrix changed")
+
+    review = assessment.get("wordpress_review")
+    require(isinstance(review, dict)
+            and review.get("schema") == "security.wordpress-review-audit/v8",
+            "fingerprint-influenced WordPress review schema changed")
+    plugin_components = [
+        row for row in review.get("components", [])
+        if isinstance(row, dict) and row.get("identity") == {
+            "kind": "plugin", "slug": WORDPRESS_FINGERPRINT_COMPONENT,
+        }
+    ]
+    require(len(plugin_components) == 1 and plugin_components[0].get("versions") == [],
+            "fingerprint candidate or URL ver became installed-version evidence")
+    discovery = assessment.get("wordpress_discovery")
+    sources = discovery.get("sources", []) if isinstance(discovery, dict) else []
+    readmes = [source for source in sources if isinstance(source, dict)
+               and source.get("kind") == "plugin_readme"]
+    require(len(readmes) == 1
+            and readmes[0].get("plugin", {}).get("stable_tag") == "9.9.9"
+            and "version" not in readmes[0].get("plugin", {}),
+            "plugin Stable tag became installed-version evidence")
+    return {
+        "audit_schema": audit["schema"],
+        "catalogue_schema": catalogue["schema"],
+        "catalogue_sha256": catalogue["sha256"],
+        "state": component["state"],
+        "compatible_release_ids": component["compatible_release_ids"],
+        "undetermined_release_ids": component["undetermined_release_ids"],
+        "inconsistent_release_ids": component["inconsistent_release_ids"],
+        "observed_resources": sorted(by_path),
+        "installed_version_assurance": audit["installed_version_assurance"],
+        "url_ver_selected_release": False,
+        "plugin_stable_tag_is_installed_version": False,
+    }
+
+
+def _run_wordpress_fingerprint_acceptance(runner: CandidateRunner, work: Path,
+                                          expected_version: str,
+                                          state: dict) -> dict:
+    fixture = runner.fixture
+    require(fixture is not None, "WordPress fingerprint fixture runner is unavailable")
+    require(fixture.server.snapshot() == {
+        "root": 1, "example": 0, "unknown": 0,
+        "unsupported": 0, "invalid": 0,
+    }, "WordPress fingerprint fixture readiness accounting changed")
+    prepared = _prepare_wordpress_fingerprint_inputs(work)
+    state["inputs"]["paths"].update(prepared["paths"])
+    state["inputs"]["snapshots"].update(prepared["snapshots"])
+
+    preflight = work / "wordpress-fingerprint-missing-discovery-must-not-exist"
+    runner.run("wordpress-fingerprint-missing-discovery", [
+        "scan", fixture.origin, "--profile", "web-review", "--wordpress-review",
+        "--wordpress-fingerprints", str(prepared["paths"]["fingerprint_full"]),
+        "--report-dir", str(preflight),
+    ], expected_exit=2, expected_stderr_empty=False)
+    require(not preflight.exists(),
+            "fingerprints without discovery reserved an output directory")
+
+    cases = {}
+    for name, partial in (("fingerprint_full", False), ("fingerprint_partial", True)):
+        bundle = work / f"wordpress-{name.replace('_', '-')}"
+        before_trace = len(fixture.server.request_lines)
+        before_encodings = len(fixture.server.fingerprint_accept_encodings)
+        arguments = [
+            "scan", fixture.origin, "--profile", "web-review", "--wordpress-review",
+            "--wordpress-discovery", "--wordpress-page-scope", "observed",
+            "--wordpress-fingerprints", str(prepared["paths"][name]),
+            "--report-dir", str(bundle),
+        ]
+        stdout, _ = runner.run(
+            f"wordpress-{name.replace('_', '-')}", arguments,
+            expected_stderr_empty=False,
+        )
+        require(stdout == b"", f"{name} wrote a report document to stdout")
+        trace = tuple(fixture.server.request_lines[before_trace:])
+        for path in WORDPRESS_FINGERPRINT_ASSET_PATHS:
+            require(trace.count(f"GET {path} HTTP/1.1") == 1,
+                    f"{name} did not fetch each admitted asset exactly once")
+        require(not any("assets/common.css" in request for request in trace),
+                f"{name} fetched an unseen catalogue path")
+        require(not fixture.server.fingerprint_forbidden_headers,
+                f"{name} sent a forbidden credential header")
+        encodings = fixture.server.fingerprint_accept_encodings[before_encodings:]
+        require(len(encodings) == 2
+                and all(values == ("identity",) for _, values in encodings),
+                f"{name} did not request identity content bytes")
+        assessment, manifest, _ = _read_assessment(bundle)
+        require(manifest.get("producer") == {
+            "product": "Termivar", "version": expected_version,
+        }, f"{name} bundle producer identity changed")
+        result = _validate_wordpress_fingerprints(
+            assessment, prepared["snapshots"][name], partial=partial)
+        cases[name] = {
+            "path": bundle,
+            "assessment": assessment,
+            "snapshot": _snapshot_files(bundle),
+            "result": result,
+            "trace": trace,
+        }
+
+    by_id = {record["id"]: record for record in runner.records}
+    require(sum(by_id["wordpress-fingerprint-missing-discovery"]
+                ["fixture_requests"].values()) == 0,
+            "fingerprint preflight contacted the target fixture")
+    for name, value in cases.items():
+        state["bundles"][name] = value["path"]
+        state["bundle_snapshots"][name] = value["snapshot"]
+        state["item_counts"][name] = value["assessment"]["item_count"]
+    for name, snapshot in prepared["snapshots"].items():
+        path = prepared["paths"][name]
+        require(path.stat().st_size == snapshot["bytes"]
+                and first_use.digest_file(path) == snapshot["sha256"],
+                f"packaged scan changed synthetic fingerprint catalogue: {name}")
+    state["public"]["asset_fingerprints"] = {
+        "fixture_kind": "original_synthetic_observed_js_css_loopback",
+        "reference_oracle": prepared["oracle"],
+        "two_file_intersection": cases["fingerprint_full"]["result"],
+        "missing_reference_provisional": cases["fingerprint_partial"]["result"],
+        "request_traces": {
+            name: list(value["trace"]) for name, value in cases.items()
+        },
+        "identity_content_encoding_requested": True,
+        "unseen_catalogue_paths_requested": 0,
+        "source_authenticity": "not_established",
+        "listed_release_scope_is_exhaustive": False,
+    }
+    return state
+
+
 def _run_wordpress_offline_acceptance(runner: CandidateRunner, state: dict) -> dict:
     bundles = state["bundles"]
     verifications = {}
@@ -2190,7 +2710,69 @@ def _run_wordpress_offline_acceptance(runner: CandidateRunner, state: dict) -> d
              and provenance.get("changed_fields") == ["wordpress_layout"]
              and source_content.get("status") == "changed"
              and source_content.get("changed_fields") == ["rest_indexes"],
-            "controlled WordPress layout methodology/coverage comparison changed")
+             "controlled WordPress layout methodology/coverage comparison changed")
+
+    fingerprint_self_counts = {}
+    for name in ("fingerprint_full", "fingerprint_partial"):
+        assessment = bundles[name] / "assessment.json"
+        stdout, _ = runner.run(f"wordpress-{name.replace('_', '-')}-self-compare", [
+            "report", "compare", "--before", str(assessment),
+            "--after", str(assessment), "--same-scope", "--format", "json",
+        ], expected_stderr_empty=True)
+        document = _parse_json(
+            stdout, f"packaged WordPress {name} fingerprint self comparison")
+        fingerprint_self_counts[name] = _group_counts(document, {
+            "only_in_after": 0, "only_in_before": 0, "changed": 0,
+            "unchanged": state["item_counts"][name],
+        })
+        wordpress = document.get("wordpress_review_comparison")
+        fingerprints = (wordpress.get("asset_fingerprints", {})
+                        if isinstance(wordpress, dict) else {})
+        require(isinstance(wordpress, dict)
+                and wordpress.get("schema") == "termivar-wordpress-review-comparison/v3"
+                and wordpress.get("status") == "compared"
+                and fingerprints.get("status") == "compared"
+                and all(fingerprints.get(facet, {}).get("status") == "unchanged"
+                        for facet in ("methodology", "catalogue", "coverage"))
+                and fingerprints.get("resources", {}).get("paired_unchanged_count") == 2
+                and fingerprints.get("components", {}).get("paired_unchanged_count") == 1
+                and all(not fingerprints.get(entity, {}).get(group)
+                        for entity in ("resources", "components")
+                        for group in ("paired_changed", "only_in_before", "only_in_after")),
+                f"packaged WordPress {name} fingerprint self comparison changed")
+
+    full = bundles["fingerprint_full"] / "assessment.json"
+    partial = bundles["fingerprint_partial"] / "assessment.json"
+    stdout, _ = runner.run("wordpress-fingerprint-catalogue-compare", [
+        "report", "compare", "--before", str(full), "--after", str(partial),
+        "--same-scope", "--format", "json",
+    ], expected_stderr_empty=True)
+    fingerprint_comparison = _parse_json(
+        stdout, "packaged WordPress fingerprint catalogue comparison")
+    require(state["item_counts"]["fingerprint_full"]
+            == state["item_counts"]["fingerprint_partial"],
+            "controlled fingerprint cases changed item cardinality")
+    fingerprint_comparison_counts = _group_counts(fingerprint_comparison, {
+        "only_in_after": 0, "only_in_before": 0, "changed": 0,
+        "unchanged": state["item_counts"]["fingerprint_full"],
+    })
+    wordpress_fingerprint = fingerprint_comparison.get("wordpress_review_comparison")
+    fingerprints = (wordpress_fingerprint.get("asset_fingerprints", {})
+                    if isinstance(wordpress_fingerprint, dict) else {})
+    component_changes = fingerprints.get("components", {}).get("paired_changed", [])
+    require(isinstance(wordpress_fingerprint, dict)
+            and wordpress_fingerprint.get("schema")
+            == "termivar-wordpress-review-comparison/v3"
+            and wordpress_fingerprint.get("status") == "compared"
+            and fingerprints.get("status") == "compared"
+            and fingerprints.get("methodology", {}).get("status") == "unchanged"
+            and fingerprints.get("catalogue", {}).get("status") == "changed"
+            and fingerprints.get("coverage", {}).get("status") == "unchanged"
+            and fingerprints.get("resources", {}).get("paired_unchanged_count") == 2
+            and isinstance(component_changes, list) and len(component_changes) == 1
+            and {"candidate_set", "reference_matrix", "resource_coverage"}
+            <= set(component_changes[0].get("changed_dimensions", [])),
+            "controlled fingerprint catalogue/candidate comparison changed")
 
     unresolved = bundles["unresolved"] / "assessment.json"
     stdout, _ = runner.run("wordpress-methodology-compare", [
@@ -2248,6 +2830,18 @@ def _run_wordpress_offline_acceptance(runner: CandidateRunner, state: dict) -> d
         "provenance": provenance["status"],
         "discovery_source_content": source_content["status"],
         "input_or_bundle_mutation": False,
+    }
+    public["asset_fingerprints"]["self_comparison"] = {
+        "groups_by_case": fingerprint_self_counts,
+        "input_mutation": False,
+    }
+    public["asset_fingerprints"]["catalogue_comparison"] = {
+        "groups": fingerprint_comparison_counts,
+        "methodology": "unchanged",
+        "catalogue": "changed",
+        "coverage": "component_resource_coverage_changed",
+        "resource_bytes": "unchanged",
+        "candidate_set": "changed",
     }
     public["controlled_comparison"] = {
         "groups": controlled_counts,
@@ -2540,6 +3134,10 @@ def run_acceptance(archive: Path, target: str, archive_ref: str, source_sha: str
         with _wordpress_discovery_fixture() as fixture:
             runner.fixture = fixture
             wordpress_state = _run_wordpress_discovery_acceptance(
+                runner, work, expected_version, wordpress_state)
+        with _wordpress_fingerprint_fixture() as fixture:
+            runner.fixture = fixture
+            wordpress_state = _run_wordpress_fingerprint_acceptance(
                 runner, work, expected_version, wordpress_state)
         runner.fixture = None
         result["application"]["wordpress_preview"] = (

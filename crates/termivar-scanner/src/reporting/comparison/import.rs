@@ -25,9 +25,10 @@ pub(super) const MAX_REFERENCES: usize = 256;
 pub(super) const MAX_AUDIT_TEXT_BYTES: usize = 4_096;
 pub(super) const MAX_LEGACY_AUDIT_TEXT_BYTES: usize = 2_048;
 const MAX_SUBJECTS: u64 = 1_024;
-// Deepest current wire value: root/wordpress_review/advisories/advisory/
-// affected_ranges/range/endpoint/field (root=0).
-const MAX_JSON_DEPTH: usize = 7;
+// Deepest current wire value: root/wordpress_asset_fingerprints/components/
+// component/resources/resource/release_relations/relation/field (root=0).
+// Exact per-schema inventories still reject unrelated shapes at this depth.
+const MAX_JSON_DEPTH: usize = 8;
 // WordPress v6 adds bounded source-identity metadata to the former 25-field
 // external evaluation. Exact per-schema inventories still reject unknown
 // fields after this generic allocation guard.
@@ -65,6 +66,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "rest_review",
             "wordpress_review",
             "wordpress_discovery",
+            "wordpress_asset_fingerprints",
         ],
     )?;
     for (key, expected) in [
@@ -93,17 +95,21 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     let mut optional_audits = BTreeMap::new();
     let mut wordpress_review = None;
     let mut wordpress_discovery = None;
+    let mut wordpress_asset_fingerprints = None;
     for name in [
         "authorization_review",
         "openapi_review",
         "rest_review",
         "wordpress_review",
         "wordpress_discovery",
+        "wordpress_asset_fingerprints",
     ] {
         if let Some(value) = root.get(name) {
             if name == "wordpress_discovery" {
-                audits::validate_wordpress_discovery(value, &items)?;
-                wordpress_discovery = Some(value);
+                wordpress_discovery = Some(audits::validate_wordpress_discovery(value, &items)?);
+            } else if name == "wordpress_asset_fingerprints" {
+                wordpress_asset_fingerprints =
+                    Some(audits::validate_wordpress_asset_fingerprints(value)?);
             } else {
                 let imported = audits::validate(name, value, &items)?;
                 if name == "wordpress_review" {
@@ -117,13 +123,36 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         .get("wordpress_review")
         .map(object)
         .transpose()?
-        .is_some_and(|review| string(review, "schema") == Ok("security.wordpress-review-audit/v7"));
+        .is_some_and(|review| {
+            matches!(
+                string(review, "schema"),
+                Ok("security.wordpress-review-audit/v7" | "security.wordpress-review-audit/v8")
+            )
+        });
+    let review_uses_fingerprints = root
+        .get("wordpress_review")
+        .map(object)
+        .transpose()?
+        .is_some_and(|review| string(review, "schema") == Ok("security.wordpress-review-audit/v8"));
     check(review_uses_discovery == wordpress_discovery.is_some())?;
-    if let Some(discovery) = wordpress_discovery {
+    check(review_uses_fingerprints == wordpress_asset_fingerprints.is_some())?;
+    if let Some(discovery) = wordpress_discovery.as_ref() {
         let wordpress = wordpress_review
             .as_mut()
             .ok_or(ComparisonError::InvalidDocument)?;
-        audits::attach_wordpress_discovery(wordpress, discovery)?;
+        audits::attach_wordpress_discovery(wordpress, &discovery.document)?;
+    }
+    if let Some(fingerprints) = wordpress_asset_fingerprints {
+        let discovery = wordpress_discovery
+            .as_ref()
+            .ok_or(ComparisonError::InvalidDocument)?;
+        let wordpress = wordpress_review
+            .as_mut()
+            .ok_or(ComparisonError::InvalidDocument)?;
+        audits::validate_wordpress_observation_item(&items, discovery, &fingerprints)?;
+        audits::attach_wordpress_asset_fingerprints(wordpress, discovery, fingerprints)?;
+    } else if let Some(discovery) = wordpress_discovery.as_ref() {
+        audits::validate_wordpress_observation_item_without_fingerprints(&items, discovery)?;
     }
     // The existing renderer explicitly requires a REST audit for REST items.
     if items

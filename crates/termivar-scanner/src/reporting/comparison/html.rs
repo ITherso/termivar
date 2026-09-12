@@ -159,6 +159,13 @@ fn wordpress_review(
         write_html_text(output, &facet.status)?;
         output.push_str("</span></div>")?;
     }
+    if let Some(fingerprints) = &comparison.asset_fingerprints {
+        output.push_str(
+            "<div><strong>Asset fingerprint candidates</strong><br><span class=\"hash\">",
+        )?;
+        write_html_text(output, fingerprints.status)?;
+        output.push_str("</span></div>")?;
+    }
     output.push_str("</div>")?;
     if let Some(reason) = comparison.reason {
         output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
@@ -174,6 +181,36 @@ fn wordpress_review(
     }
     if let Some(facet) = &comparison.discovery_source_content {
         wordpress_facet(output, "Discovery source content", facet)?;
+    }
+    if let Some(fingerprints) = &comparison.asset_fingerprints {
+        output.push_str("<details><summary>Asset fingerprint candidates — ")?;
+        write_html_text(output, fingerprints.status)?;
+        output.push_str("</summary><p class=\"muted\">Finite catalogue candidates compare exact admitted response bytes. They are not installed-version evidence or whole-package verification.</p>")?;
+        if let Some(reason) = fingerprints.reason {
+            output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+            write_html_text(output, reason)?;
+            output.push_str("</span></p>")?;
+        }
+        wordpress_facet(output, "Fingerprint methodology", &fingerprints.methodology)?;
+        wordpress_facet(
+            output,
+            "Finite reference catalogue",
+            &fingerprints.catalogue,
+        )?;
+        wordpress_facet(output, "Resource coverage", &fingerprints.coverage)?;
+        wordpress_entities(output, "Fingerprint resources", &fingerprints.resources)?;
+        wordpress_entities(
+            output,
+            "Fingerprint candidate sets",
+            &fingerprints.components,
+        )?;
+        output.push_str("<details><summary>Fingerprint interpretation limits</summary><ul>")?;
+        for limit in fingerprints.interpretation_limits {
+            output.push_str("<li>")?;
+            write_html_text(output, limit)?;
+            output.push_str("</li>")?;
+        }
+        output.push_str("</ul></details></details>")?;
     }
     wordpress_entities(output, "Components", &comparison.components)?;
     wordpress_entities(output, "Advisories", &comparison.advisories)?;

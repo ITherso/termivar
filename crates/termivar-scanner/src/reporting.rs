@@ -27,11 +27,13 @@ use crate::{
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 use crate::{
     web_runtime::{
-        WebAssessmentWordPressAudit, WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
-        WORDPRESS_REVIEW_CAPABILITY_ID,
+        WebAssessmentWordPressAudit, WordPressAssetFingerprintExecution,
+        WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID, WORDPRESS_REVIEW_CAPABILITY_ID,
     },
     wordpress_review::{
         WordPressActivationState, WordPressAdvisoryCatalogSchema, WordPressApplicability,
+        WordPressAssetFingerprintAggregateState, WordPressAssetFingerprintRelation,
+        WordPressAssetFingerprintReleaseState, WordPressAssetFingerprintUnknownReason,
         WordPressCatalogStatus, WordPressComparisonProfile, WordPressComponentEvidenceClass,
         WordPressComponentKind, WordPressEvidenceConfidence, WordPressEvidenceSource,
         WordPressExecutionStatus, WordPressExternalApplicability,
@@ -44,12 +46,20 @@ use crate::{
         WordPressVersionRelation, WordPressVersionResolution, WordPressVersionResolutionReason,
         WordfenceV3CvssRating, WordfenceV3IdentityMapping, WordfenceV3RangeValue,
         MAX_WORDFENCE_V3_SOFTWARE_PER_RECORD, MAX_WORDPRESS_ADVISORY_RECORDS,
+        MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES, MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES,
+        MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_COMPONENTS,
+        MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_FILES, MAX_WORDPRESS_ASSET_FINGERPRINT_PATH_BYTES,
+        MAX_WORDPRESS_ASSET_FINGERPRINT_RELEASES_PER_COMPONENT,
+        MAX_WORDPRESS_ASSET_FINGERPRINT_RESOURCES_PER_COMPONENT,
+        MAX_WORDPRESS_ASSET_FINGERPRINT_RETAINED_BYTES,
         MAX_WORDPRESS_EXTERNAL_IDENTITY_LIMITATION_PROJECTIONS, MAX_WORDPRESS_RESULT_COMPONENTS,
         MAX_WORDPRESS_RESULT_VERSION_EVIDENCE, MAX_WORDPRESS_SAVED_INVENTORY_BYTES,
         MAX_WORDPRESS_SIGNALS, WORDFENCE_V3_IDENTITY_MAPPING_POLICY, WORDFENCE_V3_MAPPING_REVISION,
         WORDFENCE_V3_MAPPING_REVISION_V2, WORDFENCE_V3_RESOURCE_POLICY_V1,
         WORDFENCE_V3_RESOURCE_POLICY_V2, WORDFENCE_V3_RESOURCE_POLICY_V3,
         WORDPRESS_ADVISORY_CATALOG_SCHEMA, WORDPRESS_ADVISORY_CATALOG_SCHEMA_V2,
+        WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA,
+        WORDPRESS_ASSET_FINGERPRINT_REPRESENTATION_PROFILE,
     },
 };
 use serde::Serialize;
@@ -1097,6 +1107,46 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(fingerprints) = &document.wordpress_asset_fingerprints {
+        let evidence_count = fingerprints.evidence_reference_count().to_string();
+        let summary = fingerprints.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "wordpress_asset_fingerprint_audit",
+                fingerprints.schema,
+                "",
+                "",
+                "",
+                "",
+                "selected",
+                "",
+                "",
+                "",
+                fingerprints.capability_id,
+                "",
+                "",
+                "informational",
+                "observation",
+                "",
+                "",
+                "",
+                &evidence_count,
+                &summary,
+                "wordpress-asset-fingerprint",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     for item in &document.items {
         let confidence_ppm = item.confidence_ppm.to_string();
         let evidence_count = item.evidence_count.to_string();
@@ -1235,6 +1285,25 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
         output.push_str("</dl>")?;
         write_wordpress_presentation(&mut WordPressPresentationEmitter::Html(&mut output), audit)?;
         write_html_wordpress_external_attribution(&mut output, audit)?;
+        output.push_str("</section>")?;
+    }
+    #[cfg(feature = "wordpress-review")]
+    if let Some(fingerprints) = &document.wordpress_asset_fingerprints {
+        output.push_str(
+            "<section><h2>WordPress observed asset fingerprint candidates</h2><dl class=\"meta\">",
+        )?;
+        for (label, value) in fingerprints.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl>")?;
+        write_wordpress_asset_fingerprint_presentation(
+            &mut WordPressPresentationEmitter::Html(&mut output),
+            fingerprints,
+        )?;
         output.push_str("</section>")?;
     }
     #[cfg(feature = "wordpress-review")]
@@ -1885,6 +1954,283 @@ fn write_wordpress_discovery_presentation(
         emitter.end_record()?;
     }
     Ok(())
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+fn write_wordpress_asset_fingerprint_presentation(
+    emitter: &mut WordPressPresentationEmitter<'_>,
+    audit: &AssessmentWordPressAssetFingerprintAuditDocument,
+) -> Result<(), ReportError> {
+    emitter.note(
+        "Fingerprint boundary: exact complete-byte observations are compared only with this finite supplied catalogue. Candidate releases are conditional catalogue results, not installed-version evidence, publisher authentication, whole-package verification, vulnerability confirmation, or exhaustive release coverage.",
+    )?;
+    emitter.overview(&[
+        (
+            "Observed asset candidates",
+            usize::try_from(audit.candidate_count).unwrap_or(usize::MAX),
+        ),
+        ("Selected resources", audit.selected_resource_count),
+        ("Omitted resources", audit.omitted_resource_count),
+        ("Compared components", audit.component_count),
+    ])?;
+
+    emitter.heading("Finite reference catalogue")?;
+    emitter.begin_fields()?;
+    wordpress_code_field(emitter, "Catalogue ID", &audit.catalogue.id)?;
+    wordpress_code_field(emitter, "Catalogue revision", &audit.catalogue.revision)?;
+    wordpress_code_field(
+        emitter,
+        "Catalogue source namespace",
+        &audit.catalogue.source_namespace,
+    )?;
+    wordpress_bytes_field(
+        emitter,
+        "Catalogue exact-read bytes",
+        audit.catalogue.byte_length,
+    )?;
+    wordpress_code_field(emitter, "Catalogue byte SHA-256", &audit.catalogue.sha256)?;
+    wordpress_code_field(
+        emitter,
+        "Catalogue semantic SHA-256",
+        &audit.catalogue.semantic_sha256,
+    )?;
+    wordpress_count_field(
+        emitter,
+        "Accounted prepared-index bytes",
+        audit.catalogue.retained_bytes,
+    )?;
+    wordpress_count_field(
+        emitter,
+        "Listed components",
+        audit.catalogue.component_count,
+    )?;
+    wordpress_count_field(emitter, "Listed releases", audit.catalogue.release_count)?;
+    wordpress_count_field(
+        emitter,
+        "Listed reference files",
+        audit.catalogue.file_count,
+    )?;
+    wordpress_code_field(
+        emitter,
+        "Catalogue provenance reference",
+        &audit.catalogue.provenance.reference,
+    )?;
+    wordpress_code_field(
+        emitter,
+        "Catalogue provenance revision",
+        &audit.catalogue.provenance.revision,
+    )?;
+    wordpress_code_field(emitter, "Reference scope", audit.finite_reference_scope)?;
+    wordpress_code_field(
+        emitter,
+        "Same-release assumption",
+        audit.same_release_assumption,
+    )?;
+    wordpress_code_field(
+        emitter,
+        "Installed-version assurance",
+        audit.installed_version_assurance,
+    )?;
+    wordpress_code_field(emitter, "Source authenticity", audit.source_authenticity)?;
+    emitter.end_fields()?;
+
+    emitter.heading("Catalogue notices")?;
+    if audit.catalogue.provenance.notices.is_empty() {
+        emitter.empty("No catalogue notice was supplied.")?;
+    } else {
+        for notice in &audit.catalogue.provenance.notices {
+            emitter.begin_record()?;
+            emitter.inline(WordPressPresentationInline::Code(&notice.id))?;
+            emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+            emitter.inline(WordPressPresentationInline::Code(&notice.party))?;
+            emitter.end_record_title()?;
+            wordpress_code_field(emitter, "Party", &notice.party)?;
+            wordpress_code_field(emitter, "Notice", &notice.notice)?;
+            wordpress_code_field(emitter, "License", &notice.license)?;
+            wordpress_code_field(
+                emitter,
+                "Inert license reference",
+                &notice.license_reference,
+            )?;
+            emitter.end_record()?;
+        }
+    }
+
+    emitter.heading("Observed resource collection")?;
+    emitter.paragraph(
+        "Resource and page references are bounded opaque identifiers. SHA-256 values cover eligible complete identity-coded content bytes and are not signatures. Query strings and raw resource bodies are not retained here.",
+    )?;
+    if audit.resources.is_empty() {
+        emitter.empty("No resource was selected for byte comparison.")?;
+    } else {
+        for resource in &audit.resources {
+            emitter.begin_record()?;
+            emitter.inline(WordPressPresentationInline::Code(resource.component.kind))?;
+            emitter.inline(WordPressPresentationInline::Literal(":"))?;
+            emitter.inline(WordPressPresentationInline::Code(&resource.component.slug))?;
+            emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+            emitter.inline(WordPressPresentationInline::Code(&resource.relative_path))?;
+            emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+            emitter.inline(WordPressPresentationInline::Code(resource.outcome))?;
+            emitter.end_record_title()?;
+            wordpress_code_field(emitter, "Component kind", resource.component.kind)?;
+            wordpress_code_field(emitter, "Component slug", &resource.component.slug)?;
+            wordpress_code_field(emitter, "Component-relative path", &resource.relative_path)?;
+            wordpress_code_field(
+                emitter,
+                "Opaque resource reference",
+                &resource.resource_reference,
+            )?;
+            write_wordpress_values(
+                emitter,
+                "Opaque source page references",
+                resource.source_page_references.iter().map(String::as_str),
+                "none retained",
+            )?;
+            wordpress_count_field(
+                emitter,
+                "Observed URL variants",
+                resource.observed_variant_count,
+            )?;
+            wordpress_code_field(emitter, "Acquisition class", resource.acquisition)?;
+            wordpress_code_field(emitter, "Collection outcome", resource.outcome)?;
+            wordpress_bool_field(emitter, "Request attempted", resource.request_attempted)?;
+            wordpress_bytes_field(
+                emitter,
+                "Interpreted complete-body bytes",
+                resource.interpreted_response_bytes,
+            )?;
+            wordpress_bytes_field(
+                emitter,
+                "Newly transferred response bytes",
+                resource.response_bytes,
+            )?;
+            if let Some(observation) = &resource.observation {
+                wordpress_bytes_field(emitter, "Observed byte length", observation.byte_length)?;
+                wordpress_code_field(emitter, "Observed byte SHA-256", &observation.sha256)?;
+            } else {
+                wordpress_code_field(emitter, "Complete-byte fingerprint", "unavailable")?;
+            }
+            wordpress_count_field(
+                emitter,
+                "Evidence reference count",
+                resource.evidence_reference_count,
+            )?;
+            emitter.end_record()?;
+        }
+    }
+
+    emitter.heading("Catalogue-scoped release candidates")?;
+    if audit.components.is_empty() {
+        emitter.empty("No component had a selected resource comparison.")?;
+    } else {
+        for component in &audit.components {
+            emitter.begin_record()?;
+            emitter.inline(WordPressPresentationInline::Code(component.identity.kind))?;
+            emitter.inline(WordPressPresentationInline::Literal(":"))?;
+            emitter.inline(WordPressPresentationInline::Code(&component.identity.slug))?;
+            emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+            emitter.inline(WordPressPresentationInline::Code(component.state))?;
+            emitter.end_record_title()?;
+            wordpress_code_field(emitter, "Aggregate state", component.state)?;
+            wordpress_bool_field(
+                emitter,
+                "Component represented in catalogue",
+                component.catalogue_component_listed,
+            )?;
+            wordpress_bool_field(
+                emitter,
+                "Listed release matrix complete",
+                component.listed_matrix_complete,
+            )?;
+            wordpress_count_field(
+                emitter,
+                "Informative resource paths",
+                component.informative_resource_count,
+            )?;
+            write_wordpress_values(
+                emitter,
+                "Compatible listed release IDs",
+                component.compatible_release_ids.iter().map(String::as_str),
+                "none",
+            )?;
+            write_wordpress_values(
+                emitter,
+                "Undetermined listed release IDs",
+                component
+                    .undetermined_release_ids
+                    .iter()
+                    .map(String::as_str),
+                "none",
+            )?;
+            write_wordpress_values(
+                emitter,
+                "Inconsistent listed release IDs",
+                component
+                    .inconsistent_release_ids
+                    .iter()
+                    .map(String::as_str),
+                "none",
+            )?;
+            if component.resources.is_empty() {
+                wordpress_code_field(emitter, "Resource comparison matrix", "empty")?;
+            } else {
+                emitter.begin_list_field("Resource comparison matrix")?;
+                for resource in &component.resources {
+                    emitter.begin_list_item()?;
+                    emitter.inline(WordPressPresentationInline::Code(&resource.relative_path))?;
+                    emitter.inline(WordPressPresentationInline::Literal(" — observations "))?;
+                    emitter.inline(WordPressPresentationInline::Count(
+                        resource.distinct_observation_count,
+                    ))?;
+                    emitter.inline(WordPressPresentationInline::Literal("; informative "))?;
+                    emitter.inline(WordPressPresentationInline::Bool(resource.informative))?;
+                    for relation in &resource.release_relations {
+                        emitter.inline(WordPressPresentationInline::Literal("; "))?;
+                        emitter.inline(WordPressPresentationInline::Code(&relation.release_id))?;
+                        emitter.inline(WordPressPresentationInline::Literal("="))?;
+                        emitter.inline(WordPressPresentationInline::Code(relation.relation))?;
+                        if let Some(reason) = relation.unknown_reason {
+                            emitter.inline(WordPressPresentationInline::Literal(" ("))?;
+                            emitter.inline(WordPressPresentationInline::Code(reason))?;
+                            emitter.inline(WordPressPresentationInline::Literal(")"))?;
+                        }
+                    }
+                    emitter.end_list_item()?;
+                }
+                emitter.end_list_field()?;
+            }
+            if component.releases.is_empty() {
+                wordpress_code_field(emitter, "Listed releases", "none")?;
+            } else {
+                emitter.begin_list_field("Listed release sources and states")?;
+                for release in &component.releases {
+                    emitter.begin_list_item()?;
+                    emitter.inline(WordPressPresentationInline::Code(&release.release_id))?;
+                    emitter.inline(WordPressPresentationInline::Literal(" version "))?;
+                    emitter.inline(WordPressPresentationInline::Code(&release.version))?;
+                    if let Some(build) = &release.build_variant {
+                        emitter.inline(WordPressPresentationInline::Literal(" build "))?;
+                        emitter.inline(WordPressPresentationInline::Code(build))?;
+                    }
+                    emitter.inline(WordPressPresentationInline::Literal(" — "))?;
+                    emitter.inline(WordPressPresentationInline::Code(release.state))?;
+                    emitter.inline(WordPressPresentationInline::Literal("; source "))?;
+                    emitter.inline(WordPressPresentationInline::Code(&release.source.reference))?;
+                    emitter.inline(WordPressPresentationInline::Literal(" @ "))?;
+                    emitter.inline(WordPressPresentationInline::Code(&release.source.revision))?;
+                    emitter.end_list_item()?;
+                }
+                emitter.end_list_field()?;
+            }
+            emitter.end_record()?;
+        }
+    }
+
+    emitter.heading("Interpretation boundary")?;
+    emitter.paragraph(
+        "Even one complete listed matrix can identify only a conditional candidate among represented releases. Unlisted releases, custom or cached copies, mixed artifacts, and reused bytes remain possible; existing WordPress installed-version and advisory inputs are not changed by this audit.",
+    )
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -2798,6 +3144,19 @@ fn render_assessment_markdown(
         write_markdown_wordpress_external_attribution(&mut output, audit)?;
     }
     #[cfg(feature = "wordpress-review")]
+    if let Some(fingerprints) = &document.wordpress_asset_fingerprints {
+        output.push_str("\n## WordPress observed asset fingerprint candidates\n\n")?;
+        for (label, value) in fingerprints.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        write_wordpress_asset_fingerprint_presentation(
+            &mut WordPressPresentationEmitter::Markdown(&mut output),
+            fingerprints,
+        )?;
+    }
+    #[cfg(feature = "wordpress-review")]
     if let Some(discovery) = &document.wordpress_discovery {
         output.push_str("\n## WordPress public metadata discovery audit\n\n")?;
         for (label, value) in discovery.metadata() {
@@ -2908,6 +3267,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "wordpress-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     wordpress_discovery: Option<AssessmentWordPressDiscoveryAuditDocument>,
+    #[cfg(feature = "wordpress-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wordpress_asset_fingerprints: Option<AssessmentWordPressAssetFingerprintAuditDocument>,
     items: Vec<AssessmentItemDocument<'a>>,
 }
 
@@ -2920,19 +3282,65 @@ impl<'a> AssessmentDocument<'a> {
             .map(AssessmentItemDocument::from_item)
             .collect::<Result<Vec<_>, _>>()?;
         #[cfg(feature = "wordpress-review")]
+        let wordpress_discovery_evidence_references = report
+            .wordpress_review_audit()
+            .and_then(WebAssessmentWordPressAudit::discovery)
+            .into_iter()
+            .flat_map(|discovery| {
+                discovery
+                    .page_scope()
+                    .into_iter()
+                    .flat_map(|pages| pages.pages())
+                    .flat_map(|page| page.evidence_ids())
+                    .chain(
+                        discovery
+                            .sources()
+                            .iter()
+                            .flat_map(|source| source.evidence_ids()),
+                    )
+            })
+            .map(|evidence_id| {
+                report
+                    .evidence_reference_for(evidence_id)
+                    .map(|reference| reference.to_string())
+                    .ok_or(ReportError::Serialization)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(feature = "wordpress-review")]
+        let fingerprint_evidence_references = report
+            .wordpress_review_audit()
+            .and_then(WebAssessmentWordPressAudit::asset_fingerprints)
+            .into_iter()
+            .flat_map(WordPressAssetFingerprintExecution::resources)
+            .flat_map(|resource| resource.evidence_ids())
+            .map(|evidence_id| {
+                report
+                    .evidence_reference_for(evidence_id)
+                    .map(|reference| reference.to_string())
+                    .ok_or(ReportError::Serialization)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(feature = "wordpress-review")]
         let wordpress_discovery = {
-            let discovery_evidence_references = items
-                .iter()
-                .find(|item| item.capability_id == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
-                .map_or(&[][..], |item| item.evidence_references.as_slice());
             match report.wordpress_review_audit() {
                 Some(audit) => AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit(
                     audit,
-                    discovery_evidence_references,
+                    &wordpress_discovery_evidence_references,
                 )?,
                 None => None,
             }
         };
+        #[cfg(feature = "wordpress-review")]
+        let wordpress_asset_fingerprints = report
+            .wordpress_review_audit()
+            .and_then(WebAssessmentWordPressAudit::asset_fingerprints)
+            .map(|execution| {
+                AssessmentWordPressAssetFingerprintAuditDocument::from_execution(
+                    execution,
+                    &fingerprint_evidence_references,
+                )
+            })
+            .transpose()?;
         Ok(Self {
             schema: ASSESSMENT_REPORT_DOCUMENT_SCHEMA,
             source_schema: report.schema(),
@@ -2962,6 +3370,8 @@ impl<'a> AssessmentDocument<'a> {
                 .map(AssessmentWordPressAuditDocument::from_audit),
             #[cfg(feature = "wordpress-review")]
             wordpress_discovery,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_asset_fingerprints,
             items,
         })
     }
@@ -3021,9 +3431,16 @@ impl<'a> AssessmentDocument<'a> {
             .filter(|item| item.capability_id == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
             .collect::<Vec<_>>();
         #[cfg(feature = "wordpress-review")]
-        match (&self.wordpress_review, &self.wordpress_discovery) {
-            (Some(review), Some(discovery)) => {
+        match (
+            &self.wordpress_review,
+            &self.wordpress_discovery,
+            &self.wordpress_asset_fingerprints,
+        ) {
+            (Some(review), Some(discovery), fingerprints) => {
                 discovery.validate()?;
+                if let Some(fingerprints) = fingerprints {
+                    fingerprints.validate(review, discovery)?;
+                }
                 let page_attempted_request_count = discovery
                     .page_collection
                     .as_ref()
@@ -3034,41 +3451,90 @@ impl<'a> AssessmentDocument<'a> {
                     .map_or(0, |pages| pages.committed_response_count);
                 let total_attempted_request_count = discovery
                     .attempted_request_count
-                    .checked_add(page_attempted_request_count);
+                    .checked_add(page_attempted_request_count)
+                    .and_then(|count| {
+                        fingerprints.as_ref().map_or(Some(count), |audit| {
+                            count.checked_add(audit.attempted_request_count)
+                        })
+                    });
+                let page_response_bytes = discovery
+                    .page_collection
+                    .as_ref()
+                    .map_or(0, |pages| pages.response_bytes);
+                let total_wordpress_response_bytes = discovery
+                    .response_bytes
+                    .checked_add(page_response_bytes)
+                    .and_then(|bytes| {
+                        fingerprints
+                            .as_ref()
+                            .map_or(Some(bytes), |audit| bytes.checked_add(audit.response_bytes))
+                    });
                 let total_committed_response_count = discovery
                     .committed_response_count
-                    .checked_add(page_committed_response_count);
-                if review.schema != "security.wordpress-review-audit/v7"
+                    .checked_add(page_committed_response_count)
+                    .and_then(|count| {
+                        fingerprints.as_ref().map_or(Some(count), |audit| {
+                            u8::try_from(audit.evidence_reference_count())
+                                .ok()
+                                .and_then(|fingerprints| count.checked_add(fingerprints))
+                        })
+                    });
+                let expected_schema = if fingerprints.is_some() {
+                    "security.wordpress-review-audit/v8"
+                } else {
+                    "security.wordpress-review-audit/v7"
+                };
+                let expected_evidence_references = discovery
+                    .page_collection
+                    .iter()
+                    .flat_map(|pages| pages.pages.iter())
+                    .flat_map(|page| page.evidence_references.iter())
+                    .chain(
+                        discovery
+                            .sources
+                            .iter()
+                            .flat_map(|source| source.evidence_references.iter()),
+                    )
+                    .chain(
+                        fingerprints
+                            .iter()
+                            .flat_map(|audit| audit.resources.iter())
+                            .flat_map(|resource| resource.evidence_references.iter()),
+                    )
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                if review.schema != expected_schema
                     || total_attempted_request_count != Some(review.additional_request_count)
+                    || ((discovery.page_collection.is_some() || fingerprints.is_some())
+                        && total_wordpress_response_bytes.is_none_or(|bytes| {
+                            bytes > MAX_WORDPRESS_DISCOVERY_AUDIT_RESPONSE_BYTES
+                        }))
                     || !wordpress_discovery_matches_review(review, discovery)
                     || (discovery_items.len() == 1)
                         != total_committed_response_count.is_some_and(|count| count > 0)
                     || discovery_items.first().is_some_and(|item| {
                         item.evidence_count
                             != u64::from(total_committed_response_count.unwrap_or(u8::MAX))
-                            || item.evidence_references
-                                != discovery
-                                    .page_collection
-                                    .iter()
-                                    .flat_map(|pages| pages.pages.iter())
-                                    .flat_map(|page| page.evidence_references.iter())
-                                    .chain(
-                                        discovery
-                                            .sources
-                                            .iter()
-                                            .flat_map(|source| source.evidence_references.iter()),
-                                    )
-                                    .cloned()
-                                    .collect::<Vec<_>>()
+                            || item
+                                .evidence_references
+                                .iter()
+                                .cloned()
+                                .collect::<std::collections::BTreeSet<_>>()
+                                != expected_evidence_references
                     })
                 {
                     return Err(ReportError::Serialization);
                 }
             },
-            (Some(review), None) if review.schema == "security.wordpress-review-audit/v7" => {
+            (Some(review), None, _)
+                if matches!(
+                    review.schema,
+                    "security.wordpress-review-audit/v7" | "security.wordpress-review-audit/v8"
+                ) =>
+            {
                 return Err(ReportError::Serialization);
             },
-            (None, Some(_)) => return Err(ReportError::Serialization),
+            (None, Some(_), _) | (None, _, Some(_)) => return Err(ReportError::Serialization),
             _ if !discovery_items.is_empty() => return Err(ReportError::Serialization),
             _ => {},
         }
@@ -3549,6 +4015,166 @@ struct AssessmentWordPressDiscoveryAuditDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     page_collection: Option<WordPressPageCollectionDocument>,
     sources: Vec<WordPressDiscoverySourceDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_ASSET_FINGERPRINT_AUDIT_SCHEMA: &str =
+    "security.wordpress-asset-fingerprint-audit/v1";
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_ASSET_FINGERPRINT_POLICY_ID: &str =
+    "termivar.wordpress-observed-asset-fingerprint/v1";
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES: usize = 256;
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_ASSET_FINGERPRINT_CAPABILITY_ID: &str =
+    "technology.wordpress-asset-fingerprint-candidate@1";
+
+/// Optional conditional byte-comparison audit. It never becomes installed-
+/// version evidence and remains separate from the discovery transport audit.
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct AssessmentWordPressAssetFingerprintAuditDocument {
+    schema: &'static str,
+    capability_id: &'static str,
+    policy_id: &'static str,
+    selected: bool,
+    representation_profile: &'static str,
+    finite_reference_scope: &'static str,
+    same_release_assumption: &'static str,
+    installed_version_assurance: &'static str,
+    source_authenticity: &'static str,
+    catalogue: WordPressAssetFingerprintCatalogueDocument,
+    candidate_count: u64,
+    selected_resource_count: usize,
+    omitted_resource_count: usize,
+    attempted_request_count: u8,
+    reused_response_count: usize,
+    fetched_response_count: usize,
+    response_bytes: u64,
+    stop: &'static str,
+    resource_count: usize,
+    resources: Vec<WordPressAssetFingerprintResourceDocument>,
+    component_count: usize,
+    components: Vec<WordPressAssetFingerprintComponentDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintCatalogueDocument {
+    schema: &'static str,
+    id: String,
+    revision: String,
+    source_namespace: String,
+    byte_length: u64,
+    sha256: String,
+    semantic_sha256: String,
+    retained_bytes: usize,
+    component_count: usize,
+    release_count: usize,
+    file_count: usize,
+    provenance: WordPressAssetFingerprintProvenanceDocument,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintProvenanceDocument {
+    reference: String,
+    revision: String,
+    notices: Vec<WordPressAssetFingerprintNoticeDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintNoticeDocument {
+    id: String,
+    party: String,
+    notice: String,
+    license: String,
+    license_reference: String,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintResourceDocument {
+    component: WordPressComponentIdentityDocument,
+    relative_path: String,
+    resource_reference: String,
+    source_page_references: Vec<String>,
+    observed_variant_count: usize,
+    acquisition: &'static str,
+    outcome: &'static str,
+    request_attempted: bool,
+    interpreted_response_bytes: u64,
+    response_bytes: u64,
+    evidence_reference_count: usize,
+    evidence_references: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation: Option<WordPressAssetFingerprintObservationDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintObservationDocument {
+    byte_length: u64,
+    sha256: String,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintComponentDocument {
+    identity: WordPressComponentIdentityDocument,
+    catalogue_component_listed: bool,
+    state: &'static str,
+    candidate_resource_count: usize,
+    selected_resource_count: usize,
+    completely_interpreted_resource_count: usize,
+    omitted_resource_count: usize,
+    informative_resource_count: usize,
+    listed_matrix_complete: bool,
+    compatible_release_ids: Vec<String>,
+    undetermined_release_ids: Vec<String>,
+    inconsistent_release_ids: Vec<String>,
+    resource_count: usize,
+    resources: Vec<WordPressAssetFingerprintResourceMatchDocument>,
+    release_count: usize,
+    releases: Vec<WordPressAssetFingerprintReleaseMatchDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintResourceMatchDocument {
+    relative_path: String,
+    distinct_observation_count: usize,
+    informative: bool,
+    release_relation_count: usize,
+    release_relations: Vec<WordPressAssetFingerprintReleaseRelationDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintReleaseRelationDocument {
+    release_id: String,
+    relation: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unknown_reason: Option<&'static str>,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintReleaseMatchDocument {
+    release_id: String,
+    version: String,
+    build_variant: Option<String>,
+    state: &'static str,
+    source: WordPressAssetFingerprintReleaseSourceDocument,
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[derive(Serialize)]
+struct WordPressAssetFingerprintReleaseSourceDocument {
+    reference: String,
+    revision: String,
+    notice_ids: Vec<String>,
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -4246,13 +4872,17 @@ impl AssessmentWordPressAuditDocument {
             "security.wordpress-review-audit/v1"
         };
         let discovery_influenced = audit.discovery().is_some();
+        let fingerprint_influenced = audit.asset_fingerprints().is_some();
         Self {
-            schema: if discovery_influenced {
+            schema: if fingerprint_influenced {
+                "security.wordpress-review-audit/v8"
+            } else if discovery_influenced {
                 "security.wordpress-review-audit/v7"
             } else {
                 review_basis_schema
             },
-            review_basis_schema: discovery_influenced.then_some(review_basis_schema),
+            review_basis_schema: (discovery_influenced || fingerprint_influenced)
+                .then_some(review_basis_schema),
             capability_id: WORDPRESS_REVIEW_CAPABILITY_ID,
             catalog_status: wordpress_catalog_status(result.catalog_status()),
             catalog_schema: if inventory_schema && !external_schema {
@@ -4281,7 +4911,10 @@ impl AssessmentWordPressAuditDocument {
             .iter()
             .filter(|item| item.capability_id == WORDPRESS_REVIEW_CAPABILITY_ID)
             .count();
-        let discovery_influenced = self.schema == "security.wordpress-review-audit/v7";
+        let discovery_influenced = matches!(
+            self.schema,
+            "security.wordpress-review-audit/v7" | "security.wordpress-review-audit/v8"
+        );
         let review_basis_schema = if discovery_influenced {
             self.review_basis_schema.unwrap_or("")
         } else {
@@ -4760,9 +5393,8 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             || self.attempted_request_count > MAX_WORDPRESS_DISCOVERY_AUDIT_REQUESTS
             || combined_request_count
                 .is_none_or(|count| count > MAX_WORDPRESS_DISCOVERY_AUDIT_REQUESTS)
-            || (is_page_scoped
-                && combined_response_bytes
-                    .is_none_or(|bytes| bytes > MAX_WORDPRESS_DISCOVERY_AUDIT_RESPONSE_BYTES))
+            || combined_response_bytes
+                .is_none_or(|bytes| bytes > MAX_WORDPRESS_DISCOVERY_AUDIT_RESPONSE_BYTES)
             || self.attempted_request_count > self.candidate_count
             || attempted_sources != usize::from(self.attempted_request_count)
             || attempted_rest_sources > MAX_WORDPRESS_DISCOVERY_AUDIT_REST_REQUESTS
@@ -4873,6 +5505,718 @@ impl AssessmentWordPressDiscoveryAuditDocument {
 
     fn wire_json(&self) -> Result<String, ReportError> {
         serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl AssessmentWordPressAssetFingerprintAuditDocument {
+    fn from_execution(
+        execution: &WordPressAssetFingerprintExecution,
+        evidence_references: &[String],
+    ) -> Result<Self, ReportError> {
+        let catalog = execution.catalog();
+        let metadata = catalog.catalog();
+        let provenance = metadata.provenance();
+        let catalogue = WordPressAssetFingerprintCatalogueDocument {
+            schema: WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA,
+            id: metadata.id().to_owned(),
+            revision: metadata.revision().to_owned(),
+            source_namespace: metadata.source_namespace().to_owned(),
+            byte_length: catalog.byte_length(),
+            sha256: lowercase_hex(catalog.sha256()),
+            semantic_sha256: lowercase_hex(catalog.semantic_sha256()),
+            retained_bytes: catalog.retained_bytes(),
+            component_count: catalog.components().len(),
+            release_count: catalog.release_count(),
+            file_count: catalog.file_count(),
+            provenance: WordPressAssetFingerprintProvenanceDocument {
+                reference: provenance.reference().to_owned(),
+                revision: provenance.revision().to_owned(),
+                notices: provenance
+                    .notices()
+                    .iter()
+                    .map(|notice| WordPressAssetFingerprintNoticeDocument {
+                        id: notice.id().to_owned(),
+                        party: notice.party().to_owned(),
+                        notice: notice.notice().to_owned(),
+                        license: notice.license().to_owned(),
+                        license_reference: notice.license_reference().to_owned(),
+                    })
+                    .collect(),
+            },
+        };
+        let mut evidence_references = evidence_references.iter();
+        let resources = execution
+            .resources()
+            .iter()
+            .map(|resource| {
+                let evidence_reference_count = resource.evidence_ids().len();
+                let resource_evidence_references = evidence_references
+                    .by_ref()
+                    .take(evidence_reference_count)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if resource_evidence_references.len() != evidence_reference_count {
+                    return Err(ReportError::Serialization);
+                }
+                Ok(WordPressAssetFingerprintResourceDocument {
+                    component: wordpress_component_identity(resource.component()),
+                    relative_path: resource.relative_path().to_owned(),
+                    resource_reference: resource.resource_reference().to_owned(),
+                    source_page_references: resource.source_page_references().to_vec(),
+                    observed_variant_count: resource.observed_variant_count(),
+                    acquisition: resource.acquisition().as_str(),
+                    outcome: resource.outcome().as_str(),
+                    request_attempted: resource.request_attempted(),
+                    interpreted_response_bytes: resource.interpreted_response_bytes(),
+                    response_bytes: resource.response_bytes(),
+                    evidence_reference_count,
+                    evidence_references: resource_evidence_references,
+                    observation: resource.observation().map(|observation| {
+                        WordPressAssetFingerprintObservationDocument {
+                            byte_length: observation.byte_length(),
+                            sha256: lowercase_hex(observation.sha256()),
+                        }
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, ReportError>>()?;
+        if evidence_references.next().is_some() {
+            return Err(ReportError::Serialization);
+        }
+        let components = execution
+            .component_matches()
+            .iter()
+            .map(|matched| {
+                let catalog_component = catalog.component(matched.identity());
+                if matched.catalogue_component_listed() != catalog_component.is_some() {
+                    return Err(ReportError::Serialization);
+                }
+                let resources = matched
+                    .resources()
+                    .iter()
+                    .map(|resource| WordPressAssetFingerprintResourceMatchDocument {
+                        relative_path: resource.relative_path().to_owned(),
+                        distinct_observation_count: resource.distinct_observation_count(),
+                        informative: resource.informative(),
+                        release_relation_count: resource.releases().len(),
+                        release_relations: resource
+                            .releases()
+                            .iter()
+                            .map(|release| WordPressAssetFingerprintReleaseRelationDocument {
+                                release_id: release.release_id().to_owned(),
+                                relation: wordpress_asset_fingerprint_relation(release.relation()),
+                                unknown_reason: release
+                                    .unknown_reason()
+                                    .map(wordpress_asset_fingerprint_unknown_reason),
+                            })
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>();
+                let releases = matched
+                    .releases()
+                    .iter()
+                    .map(|release| {
+                        let Some(source) = catalog_component
+                            .and_then(|component| {
+                                component.releases().iter().find(|candidate| {
+                                    candidate.release_id() == release.release_id()
+                                })
+                            })
+                            .map(|release| release.source())
+                        else {
+                            return Err(ReportError::Serialization);
+                        };
+                        Ok(WordPressAssetFingerprintReleaseMatchDocument {
+                            release_id: release.release_id().to_owned(),
+                            version: release.version().to_owned(),
+                            build_variant: release.build_variant().map(str::to_owned),
+                            state: wordpress_asset_fingerprint_release_state(release.state()),
+                            source: WordPressAssetFingerprintReleaseSourceDocument {
+                                reference: source.reference().to_owned(),
+                                revision: source.revision().to_owned(),
+                                notice_ids: source.notice_ids().to_vec(),
+                            },
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ReportError>>()?;
+                let compatible_release_ids = matched
+                    .compatible_release_ids()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                let undetermined_release_ids = matched
+                    .undetermined_release_ids()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                let inconsistent_release_ids = matched
+                    .inconsistent_release_ids()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                Ok(WordPressAssetFingerprintComponentDocument {
+                    identity: wordpress_component_identity(matched.identity()),
+                    catalogue_component_listed: matched.catalogue_component_listed(),
+                    state: wordpress_asset_fingerprint_aggregate_state(matched.state()),
+                    candidate_resource_count: matched.candidate_resource_count(),
+                    selected_resource_count: matched.selected_resource_count(),
+                    completely_interpreted_resource_count: matched
+                        .completely_interpreted_resource_count(),
+                    omitted_resource_count: matched.omitted_resource_count(),
+                    informative_resource_count: matched.informative_resource_count(),
+                    listed_matrix_complete: matched.listed_matrix_complete(),
+                    compatible_release_ids,
+                    undetermined_release_ids,
+                    inconsistent_release_ids,
+                    resource_count: resources.len(),
+                    resources,
+                    release_count: releases.len(),
+                    releases,
+                })
+            })
+            .collect::<Result<Vec<_>, ReportError>>()?;
+        Ok(Self {
+            schema: WORDPRESS_ASSET_FINGERPRINT_AUDIT_SCHEMA,
+            capability_id: WORDPRESS_ASSET_FINGERPRINT_CAPABILITY_ID,
+            policy_id: WORDPRESS_ASSET_FINGERPRINT_POLICY_ID,
+            selected: true,
+            representation_profile: WORDPRESS_ASSET_FINGERPRINT_REPRESENTATION_PROFILE,
+            finite_reference_scope: "listed_releases_only",
+            same_release_assumption: "considered_paths_share_one_listed_release_artifact_set",
+            installed_version_assurance: "not_established_by_asset_fingerprints",
+            source_authenticity: "not_established",
+            catalogue,
+            candidate_count: execution.candidate_count(),
+            selected_resource_count: execution.selected_resource_count(),
+            omitted_resource_count: execution.omitted_resource_count(),
+            attempted_request_count: execution.attempted_request_count(),
+            reused_response_count: execution.reused_response_count(),
+            fetched_response_count: execution.fetched_response_count(),
+            response_bytes: execution.response_bytes(),
+            stop: execution.stop().as_str(),
+            resource_count: resources.len(),
+            resources,
+            component_count: components.len(),
+            components,
+        })
+    }
+
+    fn evidence_reference_count(&self) -> usize {
+        self.resources
+            .iter()
+            .map(|resource| resource.evidence_reference_count)
+            .sum()
+    }
+
+    fn validate(
+        &self,
+        review: &AssessmentWordPressAuditDocument,
+        discovery: &AssessmentWordPressDiscoveryAuditDocument,
+    ) -> Result<(), ReportError> {
+        let resource_bytes = self.resources.iter().try_fold(0_u64, |total, resource| {
+            total.checked_add(resource.response_bytes)
+        });
+        let attempts = self
+            .resources
+            .iter()
+            .filter(|resource| resource.request_attempted)
+            .count();
+        let reused = self
+            .resources
+            .iter()
+            .filter(|resource| resource.acquisition == "reused")
+            .count();
+        let fetched = self
+            .resources
+            .iter()
+            .filter(|resource| resource.acquisition == "fetched" && resource.outcome == "observed")
+            .count();
+        let unique_resource_keys = self
+            .resources
+            .iter()
+            .map(|resource| {
+                (
+                    resource.component.kind,
+                    resource.component.slug.as_str(),
+                    resource.relative_path.as_str(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let ambiguous_variant_resource_keys = self
+            .resources
+            .iter()
+            .filter(|resource| resource.observed_variant_count > 1)
+            .map(|resource| {
+                (
+                    resource.component.kind,
+                    resource.component.slug.as_str(),
+                    resource.relative_path.as_str(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let unique_component_keys = self
+            .components
+            .iter()
+            .map(|component| (component.identity.kind, component.identity.slug.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let selected_component_keys = self
+            .resources
+            .iter()
+            .map(|resource| (resource.component.kind, resource.component.slug.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let selected_component_candidate_count = self
+            .components
+            .iter()
+            .try_fold(0_usize, |total, component| {
+                total.checked_add(component.candidate_resource_count)
+            });
+        let selected_component_omitted_count = self
+            .components
+            .iter()
+            .try_fold(0_usize, |total, component| {
+                total.checked_add(component.omitted_resource_count)
+            });
+        let selected_component_release_count = self
+            .components
+            .iter()
+            .try_fold(0_usize, |total, component| {
+                total.checked_add(component.release_count)
+            });
+        let represented_reference_count =
+            self.components
+                .iter()
+                .try_fold(0_usize, |component_total, component| {
+                    component.resources.iter().try_fold(
+                        component_total,
+                        |resource_total, resource| {
+                            resource.release_relations.iter().try_fold(
+                                resource_total,
+                                |total, relation| {
+                                    if relation.relation != "unknown"
+                                        || relation.unknown_reason
+                                            == Some("conflicting_observations")
+                                    {
+                                        total.checked_add(1)
+                                    } else {
+                                        Some(total)
+                                    }
+                                },
+                            )
+                        },
+                    )
+                });
+        let source_pages_valid = discovery.page_collection.as_ref().is_none_or(|pages| {
+            let mut allowed = pages
+                .pages
+                .iter()
+                .filter(|page| page.association == "accepted")
+                .map(|page| page.page_reference.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            allowed.insert(pages.entry_page_reference.as_str());
+            self.resources.iter().all(|resource| {
+                resource
+                    .source_page_references
+                    .iter()
+                    .all(|reference| allowed.contains(reference.as_str()))
+            })
+        });
+        if self.schema != WORDPRESS_ASSET_FINGERPRINT_AUDIT_SCHEMA
+            || self.capability_id != WORDPRESS_ASSET_FINGERPRINT_CAPABILITY_ID
+            || self.policy_id != WORDPRESS_ASSET_FINGERPRINT_POLICY_ID
+            || !self.selected
+            || self.representation_profile != WORDPRESS_ASSET_FINGERPRINT_REPRESENTATION_PROFILE
+            || self.finite_reference_scope != "listed_releases_only"
+            || self.same_release_assumption
+                != "considered_paths_share_one_listed_release_artifact_set"
+            || self.installed_version_assurance != "not_established_by_asset_fingerprints"
+            || self.source_authenticity != "not_established"
+            || self.stop != "complete"
+            || review.schema != "security.wordpress-review-audit/v8"
+            || self.candidate_count
+                != u64::try_from(
+                    self.selected_resource_count
+                        .checked_add(self.omitted_resource_count)
+                        .ok_or(ReportError::Serialization)?,
+                )
+                .map_err(|_| ReportError::Serialization)?
+            || self.candidate_count
+                > u64::try_from(MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES)
+                    .map_err(|_| ReportError::Serialization)?
+            || (self.candidate_count > 0 && self.selected_resource_count == 0)
+            || self.resource_count != self.resources.len()
+            || self.resource_count != self.selected_resource_count
+            || self.resource_count > 4
+            || attempts != usize::from(self.attempted_request_count)
+            || reused != self.reused_response_count
+            || fetched != self.fetched_response_count
+            || resource_bytes != Some(self.response_bytes)
+            || unique_resource_keys.len() != self.resources.len()
+            || self.component_count != self.components.len()
+            || self.component_count > 2
+            || unique_component_keys.len() != self.components.len()
+            || unique_component_keys != selected_component_keys
+            || selected_component_candidate_count.is_none_or(|count| {
+                u64::try_from(count).map_or(true, |count| count > self.candidate_count)
+            })
+            || selected_component_omitted_count
+                .is_none_or(|count| count > self.omitted_resource_count)
+            || self
+                .components
+                .iter()
+                .any(|component| !component.catalogue_component_listed)
+            || self.component_count > self.catalogue.component_count
+            || selected_component_release_count
+                .is_none_or(|count| count > self.catalogue.release_count)
+            || represented_reference_count.is_none_or(|count| count > self.catalogue.file_count)
+            || !source_pages_valid
+            || !self.catalogue.is_valid()
+            || self.resources.iter().any(|resource| !resource.is_valid())
+            || self.components.iter().any(|component| {
+                !component.is_valid(
+                    &self.catalogue,
+                    &unique_resource_keys,
+                    &ambiguous_variant_resource_keys,
+                )
+            })
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Fingerprint audit schema", self.schema.to_owned()),
+            ("Fingerprint policy", self.policy_id.to_owned()),
+            ("Reference scope", self.finite_reference_scope.to_owned()),
+            ("Catalogue ID", self.catalogue.id.clone()),
+            ("Catalogue revision", self.catalogue.revision.clone()),
+            ("Catalogue SHA-256", self.catalogue.sha256.clone()),
+            (
+                "Catalogue semantic SHA-256",
+                self.catalogue.semantic_sha256.clone(),
+            ),
+            (
+                "Observed asset candidates",
+                self.candidate_count.to_string(),
+            ),
+            (
+                "Selected resources",
+                self.selected_resource_count.to_string(),
+            ),
+            ("Omitted resources", self.omitted_resource_count.to_string()),
+            ("Reused responses", self.reused_response_count.to_string()),
+            ("Fetched responses", self.fetched_response_count.to_string()),
+            (
+                "Fingerprint requests",
+                self.attempted_request_count.to_string(),
+            ),
+            (
+                "Fingerprint response bytes",
+                self.response_bytes.to_string(),
+            ),
+            ("Collection stop", self.stop.to_owned()),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressAssetFingerprintCatalogueDocument {
+    fn is_valid(&self) -> bool {
+        self.schema == WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA
+            && self.byte_length > 0
+            && self.byte_length <= MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES as u64
+            && valid_lowercase_sha256(&self.sha256)
+            && valid_lowercase_sha256(&self.semantic_sha256)
+            && self.retained_bytes > 0
+            && self.retained_bytes <= MAX_WORDPRESS_ASSET_FINGERPRINT_RETAINED_BYTES
+            && (1..=MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_COMPONENTS)
+                .contains(&self.component_count)
+            && self.release_count > 0
+            && self.release_count
+                <= MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_COMPONENTS
+                    * MAX_WORDPRESS_ASSET_FINGERPRINT_RELEASES_PER_COMPONENT
+            && self.file_count > 0
+            && self.file_count <= MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_FILES
+            && self.provenance.notices.len() <= 32
+            && self
+                .provenance
+                .notices
+                .iter()
+                .map(|notice| notice.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == self.provenance.notices.len()
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressAssetFingerprintResourceDocument {
+    fn is_valid(&self) -> bool {
+        let observed = self.outcome == "observed";
+        matches!(self.component.kind, "plugin" | "theme")
+            && crate::wordpress_review::valid_slug(&self.component.slug)
+            && self.relative_path.len() <= MAX_WORDPRESS_ASSET_FINGERPRINT_PATH_BYTES
+            && crate::wordpress_review::valid_wordpress_asset_fingerprint_path(&self.relative_path)
+            && valid_wordpress_discovery_reference(&self.resource_reference)
+            && !self.source_page_references.is_empty()
+            && self.source_page_references.len() <= 4
+            && self
+                .source_page_references
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+            && self
+                .source_page_references
+                .iter()
+                .all(|reference| valid_wordpress_discovery_reference(reference))
+            && self.observed_variant_count > 0
+            && self.observed_variant_count <= MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES
+            && matches!(self.acquisition, "reused" | "fetched" | "not_acquired")
+            && matches!(
+                self.outcome,
+                "observed"
+                    | "ordinary_response_ineligible"
+                    | "request_failed"
+                    | "unauthorized"
+                    | "not_found"
+                    | "redirect_observed"
+                    | "partial_or_incomplete"
+                    | "unsupported_media_type"
+                    | "unsupported_content_encoding"
+                    | "inconsistent_content_length"
+                    | "conflicting_representations"
+            )
+            && match self.acquisition {
+                "reused" => {
+                    !self.request_attempted
+                        && self.response_bytes == 0
+                        && matches!(self.outcome, "observed" | "conflicting_representations")
+                },
+                "fetched" => {
+                    self.request_attempted
+                        && matches!(
+                            self.outcome,
+                            "observed"
+                                | "request_failed"
+                                | "unauthorized"
+                                | "not_found"
+                                | "redirect_observed"
+                                | "partial_or_incomplete"
+                                | "unsupported_media_type"
+                                | "unsupported_content_encoding"
+                                | "inconsistent_content_length"
+                        )
+                },
+                "not_acquired" => {
+                    !self.request_attempted
+                        && self.response_bytes == 0
+                        && self.outcome == "ordinary_response_ineligible"
+                },
+                _ => false,
+            }
+            && self.interpreted_response_bytes <= MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES
+            && self.evidence_reference_count == self.evidence_references.len()
+            && match self.outcome {
+                "observed" => self.evidence_reference_count == 1,
+                "conflicting_representations" => (1..=8).contains(&self.evidence_reference_count),
+                _ => self.evidence_reference_count == 0,
+            }
+            && self
+                .evidence_references
+                .iter()
+                .all(|reference| valid_opaque_assessment_reference(reference, "evidence"))
+            && observed == self.observation.is_some()
+            && self.observation.as_ref().is_none_or(|observation| {
+                observation.byte_length == self.interpreted_response_bytes
+                    && observation.byte_length <= MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES
+                    && valid_lowercase_sha256(&observation.sha256)
+            })
+            && (observed || self.interpreted_response_bytes == 0)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+impl WordPressAssetFingerprintComponentDocument {
+    fn is_valid(
+        &self,
+        catalogue: &WordPressAssetFingerprintCatalogueDocument,
+        observed_resources: &std::collections::BTreeSet<(&str, &str, &str)>,
+        ambiguous_variant_resources: &std::collections::BTreeSet<(&str, &str, &str)>,
+    ) -> bool {
+        let release_ids = self
+            .releases
+            .iter()
+            .map(|release| release.release_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let compatible = self
+            .compatible_release_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let undetermined = self
+            .undetermined_release_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let inconsistent = self
+            .inconsistent_release_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let classified_release_ids = compatible
+            .iter()
+            .chain(&undetermined)
+            .chain(&inconsistent)
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let has_unassessed_variant = self.resources.iter().any(|resource| {
+            ambiguous_variant_resources.contains(&(
+                self.identity.kind,
+                self.identity.slug.as_str(),
+                resource.relative_path.as_str(),
+            ))
+        });
+        let collection_complete = self.candidate_resource_count == self.selected_resource_count
+            && self.selected_resource_count == self.completely_interpreted_resource_count
+            && !has_unassessed_variant;
+        matches!(self.identity.kind, "plugin" | "theme")
+            && crate::wordpress_review::valid_slug(&self.identity.slug)
+            && self.release_count == self.releases.len()
+            && self.release_count <= MAX_WORDPRESS_ASSET_FINGERPRINT_RELEASES_PER_COMPONENT
+            && self.catalogue_component_listed != self.releases.is_empty()
+            && self.candidate_resource_count
+                == self
+                    .selected_resource_count
+                    .checked_add(self.omitted_resource_count)
+                    .unwrap_or(usize::MAX)
+            && self.candidate_resource_count > 0
+            && self.selected_resource_count > 0
+            && self.selected_resource_count
+                <= MAX_WORDPRESS_ASSET_FINGERPRINT_RESOURCES_PER_COMPONENT
+            && self.completely_interpreted_resource_count <= self.selected_resource_count
+            && self.completely_interpreted_resource_count <= self.resource_count
+            && self.resource_count <= self.selected_resource_count
+            && (collection_complete
+                || (!self.listed_matrix_complete
+                    && !matches!(
+                        self.state,
+                        "single_catalogue_candidate"
+                            | "multiple_catalogue_candidates"
+                            | "no_consistent_catalogue_release"
+                            | "no_catalogue_byte_match"
+                    )))
+            && release_ids.len() == self.releases.len()
+            && compatible.is_disjoint(&undetermined)
+            && compatible.is_disjoint(&inconsistent)
+            && undetermined.is_disjoint(&inconsistent)
+            && classified_release_ids == release_ids
+            && self.resource_count == self.resources.len()
+            && self.resource_count <= MAX_WORDPRESS_ASSET_FINGERPRINT_RESOURCES_PER_COMPONENT
+            && !(has_unassessed_variant
+                && (self.listed_matrix_complete
+                    || matches!(
+                        self.state,
+                        "single_catalogue_candidate" | "multiple_catalogue_candidates"
+                    )))
+            && self
+                .resources
+                .iter()
+                .map(|resource| resource.relative_path.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                == self.resources.len()
+            && self.resources.iter().all(|resource| {
+                observed_resources.contains(&(
+                    self.identity.kind,
+                    self.identity.slug.as_str(),
+                    resource.relative_path.as_str(),
+                )) && resource.release_relation_count == resource.release_relations.len()
+                    && resource.release_relations.len() == self.releases.len()
+                    && resource
+                        .release_relations
+                        .iter()
+                        .map(|relation| relation.release_id.as_str())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        == release_ids
+            })
+            && self.informative_resource_count
+                == self
+                    .resources
+                    .iter()
+                    .filter(|resource| resource.informative)
+                    .count()
+            && self.releases.iter().all(|release| {
+                let notice_ids = release
+                    .source
+                    .notice_ids
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>();
+                notice_ids.len() == release.source.notice_ids.len()
+                    && notice_ids.iter().all(|id| {
+                        catalogue
+                            .provenance
+                            .notices
+                            .iter()
+                            .any(|notice| notice.id == *id)
+                    })
+            })
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_asset_fingerprint_relation(
+    relation: WordPressAssetFingerprintRelation,
+) -> &'static str {
+    match relation {
+        WordPressAssetFingerprintRelation::Match => "match",
+        WordPressAssetFingerprintRelation::Mismatch => "mismatch",
+        WordPressAssetFingerprintRelation::Unknown => "unknown",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_asset_fingerprint_unknown_reason(
+    reason: WordPressAssetFingerprintUnknownReason,
+) -> &'static str {
+    match reason {
+        WordPressAssetFingerprintUnknownReason::MissingReference => "missing_reference",
+        WordPressAssetFingerprintUnknownReason::ConflictingObservations => {
+            "conflicting_observations"
+        },
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_asset_fingerprint_release_state(
+    state: WordPressAssetFingerprintReleaseState,
+) -> &'static str {
+    match state {
+        WordPressAssetFingerprintReleaseState::Compatible => "compatible",
+        WordPressAssetFingerprintReleaseState::Inconsistent => "inconsistent",
+        WordPressAssetFingerprintReleaseState::Undetermined => "undetermined",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const fn wordpress_asset_fingerprint_aggregate_state(
+    state: WordPressAssetFingerprintAggregateState,
+) -> &'static str {
+    match state {
+        WordPressAssetFingerprintAggregateState::SingleCatalogueCandidate => {
+            "single_catalogue_candidate"
+        },
+        WordPressAssetFingerprintAggregateState::MultipleCatalogueCandidates => {
+            "multiple_catalogue_candidates"
+        },
+        WordPressAssetFingerprintAggregateState::ProvisionalCandidates => "provisional_candidates",
+        WordPressAssetFingerprintAggregateState::NoConsistentCatalogueRelease => {
+            "no_consistent_catalogue_release"
+        },
+        WordPressAssetFingerprintAggregateState::NoCatalogueByteMatch => "no_catalogue_byte_match",
+        WordPressAssetFingerprintAggregateState::Undetermined => "undetermined",
     }
 }
 
@@ -8417,6 +9761,8 @@ mod tests {
             wordpress_review: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_discovery: None,
+            #[cfg(feature = "wordpress-review")]
+            wordpress_asset_fingerprints: None,
             items: vec![AssessmentItemDocument {
                 schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
                 capability_id: text,

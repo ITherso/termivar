@@ -1,6 +1,6 @@
 //! Bounded local inputs for the opt-in WordPress evidence review.
 //!
-//! This CLI-owned module opens at most four explicit regular files. It passes
+//! This CLI-owned module opens only explicitly selected bounded regular files. It passes
 //! only scanner-validated values across the runtime boundary; paths and
 //! filesystem authority are never retained by the assessment.
 
@@ -8,12 +8,13 @@ use std::{fmt, fs::File, io::Read, path::PathBuf};
 
 use sha2::{Digest, Sha256};
 use termivar_scanner::wordpress_review::{
-    parse_wordfence_v3_production, parse_wordpress_advisory_catalog, parse_wordpress_context,
+    parse_wordfence_v3_production, parse_wordpress_advisory_catalog,
+    parse_wordpress_asset_fingerprint_catalog, parse_wordpress_context,
     parse_wordpress_discovery_layout, parse_wordpress_saved_inventory, WordPressComparisonProfile,
     WordPressLocalInputClass, WordPressLocalInputProvenance, WordPressReviewInputs,
     WordfenceV3ProductionError, MAX_WORDFENCE_V3_PRODUCTION_BYTES,
-    MAX_WORDPRESS_DISCOVERY_LAYOUT_BYTES, MAX_WORDPRESS_SAVED_INVENTORY_BYTES,
-    MAX_WORDPRESS_VERSION_BYTES,
+    MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES, MAX_WORDPRESS_DISCOVERY_LAYOUT_BYTES,
+    MAX_WORDPRESS_SAVED_INVENTORY_BYTES, MAX_WORDPRESS_VERSION_BYTES,
 };
 use url::Url;
 
@@ -86,6 +87,7 @@ pub(crate) struct WordPressReviewInput {
     themes_json: Option<PathBuf>,
     core_version_file: Option<PathBuf>,
     layout: Option<PathBuf>,
+    asset_fingerprints: Option<PathBuf>,
 }
 
 impl fmt::Debug for WordPressReviewInput {
@@ -117,6 +119,10 @@ impl fmt::Debug for WordPressReviewInput {
                 &self.core_version_file.as_ref().map(|_| "<redacted>"),
             )
             .field("layout", &self.layout.as_ref().map(|_| "<redacted>"))
+            .field(
+                "asset_fingerprints",
+                &self.asset_fingerprints.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -175,11 +181,20 @@ impl WordPressReviewInput {
             themes_json,
             core_version_file,
             layout: None,
+            asset_fingerprints: None,
         }))
     }
 
     pub(crate) fn with_discovery_layout_path(mut self, layout: Option<PathBuf>) -> Self {
         self.layout = layout;
+        self
+    }
+
+    pub(crate) fn with_asset_fingerprint_catalog_path(
+        mut self,
+        asset_fingerprints: Option<PathBuf>,
+    ) -> Self {
+        self.asset_fingerprints = asset_fingerprints;
         self
     }
 
@@ -196,7 +211,17 @@ impl WordPressReviewInput {
             themes_json,
             core_version_file,
             layout,
+            asset_fingerprints,
         } = self;
+        let asset_fingerprints = asset_fingerprints
+            .map(|path| {
+                let bytes =
+                    read_bounded_regular_file(path, MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES)
+                        .map_err(WordPressInputError::AssetFingerprintSource)?;
+                parse_wordpress_asset_fingerprint_catalog(&bytes)
+                    .map_err(|_| WordPressInputError::InvalidAssetFingerprints)
+            })
+            .transpose()?;
         let layout = layout
             .map(|path| {
                 let bytes = read_bounded_regular_file(path, MAX_WORDPRESS_DISCOVERY_LAYOUT_BYTES)
@@ -296,10 +321,17 @@ impl WordPressReviewInput {
         } else {
             Ok(inputs)
         }?;
-        if let Some(layout) = layout {
+        let inputs = if let Some(layout) = layout {
             inputs
                 .with_discovery_layout(layout)
                 .map_err(|_| WordPressInputError::InvalidLayout)
+        } else {
+            Ok(inputs)
+        }?;
+        if let Some(catalog) = asset_fingerprints {
+            inputs
+                .with_asset_fingerprint_catalog(catalog)
+                .map_err(|_| WordPressInputError::InvalidAssetFingerprints)
         } else {
             Ok(inputs)
         }
@@ -320,6 +352,7 @@ pub(crate) enum WordPressInputError {
     ThemesSource(WordPressFileError),
     CoreVersionSource(WordPressFileError),
     LayoutSource(WordPressFileError),
+    AssetFingerprintSource(WordPressFileError),
     InventoryTooLarge,
     InvalidContext,
     ContextRootMismatch,
@@ -327,6 +360,7 @@ pub(crate) enum WordPressInputError {
     InvalidSavedInventory,
     InvalidLayout,
     LayoutApplicationMismatch,
+    InvalidAssetFingerprints,
 }
 
 impl fmt::Display for WordPressInputError {
@@ -361,6 +395,9 @@ impl fmt::Display for WordPressInputError {
                 "WordPress core version must be a bounded regular local file"
             },
             Self::LayoutSource(_) => "WordPress layout must be a bounded regular local file",
+            Self::AssetFingerprintSource(_) => {
+                "WordPress asset fingerprint catalogue must be a bounded regular local file"
+            },
             Self::InventoryTooLarge => "saved WordPress inventory exceeds its aggregate byte limit",
             Self::InvalidContext => "WordPress context document is invalid",
             Self::ContextRootMismatch => {
@@ -372,6 +409,7 @@ impl fmt::Display for WordPressInputError {
             Self::LayoutApplicationMismatch => {
                 "WordPress layout application must match the exact assessment target"
             },
+            Self::InvalidAssetFingerprints => "WordPress asset fingerprint catalogue is invalid",
         })
     }
 }
@@ -766,6 +804,68 @@ mod tests {
         .unwrap_err();
         assert_eq!(mismatch, WordPressInputError::LayoutApplicationMismatch);
         assert_eq!(std::fs::read(&layout_path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn fingerprint_catalogue_is_read_once_prepared_and_path_redacted() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalogue_path = directory.path().join("PRIVATE-fingerprints.json");
+        let bytes = include_bytes!(
+            "../../../docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json"
+        );
+        std::fs::write(&catalogue_path, bytes).unwrap();
+
+        let selected = WordPressReviewInput::select(
+            true,
+            None,
+            None,
+            WordPressAdvisoryOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap()
+        .with_asset_fingerprint_catalog_path(Some(catalogue_path.clone()));
+        let debug = format!("{selected:?}");
+        assert!(!debug.contains("PRIVATE-fingerprints"));
+
+        let inputs = selected
+            .load(&Url::parse("https://example.test/").unwrap())
+            .unwrap();
+        let catalogue = inputs.asset_fingerprint_catalog().unwrap();
+        assert_eq!(catalogue.byte_length(), bytes.len() as u64);
+        assert_eq!(catalogue.catalog().id(), "termivar-wordpress-asset-matrix");
+        assert_eq!(catalogue.release_count(), 3);
+        assert_eq!(catalogue.file_count(), 9);
+        assert_eq!(std::fs::read(&catalogue_path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn malformed_fingerprint_catalogue_fails_without_modifying_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalogue_path = directory.path().join("PRIVATE-malformed-fingerprints.json");
+        let bytes =
+            br#"{"schema":"security.wordpress-asset-fingerprint-catalog/v1","components":[]}"#;
+        std::fs::write(&catalogue_path, bytes).unwrap();
+
+        let error = WordPressReviewInput::select(
+            true,
+            None,
+            None,
+            WordPressAdvisoryOptions::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap()
+        .with_asset_fingerprint_catalog_path(Some(catalogue_path.clone()))
+        .load(&Url::parse("https://example.test/").unwrap())
+        .unwrap_err();
+
+        assert_eq!(error, WordPressInputError::InvalidAssetFingerprints);
+        assert_eq!(std::fs::read(&catalogue_path).unwrap(), bytes);
     }
 
     #[test]
