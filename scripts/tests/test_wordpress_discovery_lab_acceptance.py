@@ -1704,6 +1704,30 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             "security.wordpress-discovery-audit/v2",
         )
 
+    def test_discovery_evidence_linkage_is_order_independent_but_exact(self):
+        document = self.discovery_document()
+        item_references = document["items"][0]["evidence_references"]
+        item_references.reverse()
+        self.assertEqual(
+            runner._validate_discovery_document(document, generator_visible=True),
+            "security.wordpress-discovery-audit/v2",
+        )
+
+        for replacement in (
+            ["evidence-0001", "evidence-0002", "evidence-0003", "evidence-9999"],
+            ["evidence-0001", "evidence-0002", "evidence-0003", "evidence-0003"],
+        ):
+            malformed = self.discovery_document()
+            malformed["items"][0]["evidence_references"] = replacement
+            with self.subTest(replacement=replacement):
+                with self.assertRaisesRegex(
+                    runner.AcceptanceError,
+                    "discovery source-to-evidence linkage differs",
+                ):
+                    runner._validate_discovery_document(
+                        malformed, generator_visible=True
+                    )
+
     def test_discovery_source_shape_accepts_closed_sparse_metadata_rows(self):
         common = {
             "association": "invalid_advertisement",

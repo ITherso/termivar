@@ -238,6 +238,21 @@ def _is_opaque_wordpress_reference(value: object) -> bool:
             and re.fullmatch(r"sha256:[0-9a-f]{64}", value, re.ASCII) is not None)
 
 
+def _same_unique_string_members(left: object, right: object) -> bool:
+    """Compare exact string membership without imposing serialization order."""
+    if not isinstance(left, list) or not isinstance(right, list):
+        return False
+    if not all(isinstance(value, str) for value in left + right):
+        return False
+    left_members = set(left)
+    right_members = set(right)
+    return (
+        len(left_members) == len(left)
+        and len(right_members) == len(right)
+        and left_members == right_members
+    )
+
+
 def _framed_wordpress_reference(domain: str, value: str) -> str:
     """Independent literal oracle for the documented opaque URL framing."""
     digest = hashlib.sha256()
@@ -2001,7 +2016,9 @@ def _validate_wordpress_discovery(assessment: dict, case: str, origin: str,
             }, "packaged WordPress discovery observation projection changed")
     require(sum(source["response_bytes"] for source in sources) == response_bytes,
             "packaged WordPress discovery response/evidence accounting changed")
-    require(evidence_references == item.get("evidence_references"),
+    require(_same_unique_string_members(
+                evidence_references, item.get("evidence_references")
+            ),
             "packaged WordPress discovery source-to-evidence linkage changed")
     by_kind = {source.get("kind"): source for source in sources
                if isinstance(source, dict)}

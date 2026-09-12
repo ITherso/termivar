@@ -1619,6 +1619,26 @@ def _bounded_discovery_source_outcomes(document: dict[str, Any]) -> str:
     return ",".join(entries) if entries else "empty"
 
 
+def _same_unique_reference_members(
+    source_references: Any,
+    item_references: Any,
+) -> bool:
+    """Compare opaque evidence membership without inventing an order contract."""
+    if not isinstance(source_references, list) or not isinstance(item_references, list):
+        return False
+    if not all(isinstance(reference, str) for reference in source_references):
+        return False
+    if not all(isinstance(reference, str) for reference in item_references):
+        return False
+    source_members = set(source_references)
+    item_members = set(item_references)
+    return (
+        len(source_members) == len(source_references)
+        and len(item_members) == len(item_references)
+        and source_members == item_members
+    )
+
+
 def _validate_discovery_document(
     document: dict[str, Any],
     *,
@@ -1814,8 +1834,9 @@ def _validate_discovery_document(
             "discovery source request-attempt accounting differs")
     source_references = [reference for source in sources
                          for reference in source["evidence_references"]]
-    require(source_references == item.get("evidence_references")
-            and len(set(source_references)) == len(source_references),
+    require(_same_unique_reference_members(
+                source_references, item.get("evidence_references")
+            ),
             "discovery source-to-evidence linkage differs")
     if oracle is not None:
         origin = oracle.application_url.split("/", 3)[:3]

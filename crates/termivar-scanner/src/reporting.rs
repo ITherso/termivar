@@ -6089,8 +6089,7 @@ impl WordPressAssetFingerprintComponentDocument {
             && self.candidate_resource_count
                 == self
                     .selected_resource_count
-                    .checked_add(self.omitted_resource_count)
-                    .unwrap_or(usize::MAX)
+                    .saturating_add(self.omitted_resource_count)
             && self.candidate_resource_count > 0
             && self.selected_resource_count > 0
             && self.selected_resource_count

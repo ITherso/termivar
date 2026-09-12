@@ -1172,7 +1172,7 @@ fn parse_sha256(value: &str) -> Result<[u8; 32], WordPressAssetFingerprintError>
         return Err(WordPressAssetFingerprintError::InvalidCatalog);
     }
     let mut digest = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         digest[index] = hex_nibble(pair[0])
             .and_then(|high| hex_nibble(pair[1]).map(|low| (high << 4) | low))
             .ok_or(WordPressAssetFingerprintError::InvalidCatalog)?;

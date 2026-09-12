@@ -2045,6 +2045,38 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 self.assertEqual(result["status"], "failed")
                 self.assertIn(expected, result["failure"])
 
+    def test_packaged_discovery_evidence_membership_is_order_independent_and_exact(self):
+        assessment = discovery_wordpress_assessment()
+        item = next(
+            item for item in assessment["items"]
+            if item["capability_id"]
+            == "technology.wordpress-metadata-source-response-observed@1"
+        )
+        item["evidence_references"].reverse()
+        result = runner._validate_wordpress_discovery(
+            assessment, "root", EXPECTED_FIXTURE_ORIGIN
+        )
+        self.assertEqual(result["committed_responses"], 3)
+
+        for replacement in (
+            ["evidence-0001", "evidence-0002", "evidence-9999"],
+            ["evidence-0001", "evidence-0002", "evidence-0002"],
+        ):
+            malformed = discovery_wordpress_assessment()
+            next(
+                item for item in malformed["items"]
+                if item["capability_id"]
+                == "technology.wordpress-metadata-source-response-observed@1"
+            )["evidence_references"] = replacement
+            with self.subTest(replacement=replacement):
+                with self.assertRaisesRegex(
+                    runner.AcceptanceError,
+                    "source-to-evidence linkage changed",
+                ):
+                    runner._validate_wordpress_discovery(
+                        malformed, "root", EXPECTED_FIXTURE_ORIGIN
+                    )
+
     def test_packaged_discovery_contract_fails_closed_on_independent_mutations(self):
         for index, (mutation, expected) in enumerate((
             ("zero_attempts", "audit identity or accounting"),

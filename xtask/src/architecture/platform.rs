@@ -13725,6 +13725,10 @@ mod tests {
                 identity: WordPressComponentIdentityDocument,
                 catalogue_component_listed: bool,
                 state: &'static str,
+                candidate_resource_count: usize,
+                selected_resource_count: usize,
+                completely_interpreted_resource_count: usize,
+                omitted_resource_count: usize,
                 informative_resource_count: usize,
                 listed_matrix_complete: bool,
                 compatible_release_ids: Vec<String>,
@@ -14688,8 +14692,11 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        let missing_semantic_digest =
-            source.replacen("                semantic_sha256: String,\n", "", 1);
+        let missing_semantic_digest = source.replacen(
+            "            struct WordPressExternalInputDocument {\n                byte_length: u64,\n                sha256: String,\n                semantic_sha256: String,",
+            "            struct WordPressExternalInputDocument {\n                byte_length: u64,\n                sha256: String,",
+            1,
+        );
         assert_ne!(missing_semantic_digest, source);
         let violations = reporting_document_contract_violations(&missing_semantic_digest)
             .unwrap()
