@@ -31,6 +31,17 @@ APPLICATION_REFERENCE = "sha256:" + "a" * 64
 REST_REFERENCE = "sha256:" + "b" * 64
 THEME_REFERENCE = "sha256:" + "c" * 64
 PLUGIN_REFERENCE = "sha256:" + "d" * 64
+REJECTED_BLOG_APPLICATION_URL = "https://lab.example/blog/"
+REJECTED_BLOG_ENTRY_REFERENCE = (
+    "sha256:ab0026874320ce507442f08c7e0f9b2885258bbb15ac144bbc58963ee844dfa3"
+)
+SYNTHETIC_FINGERPRINT_COMPARISON_LIMITS = [
+    "Compared SHA-256 values and byte lengths describe complete admitted response bytes, not whole-package verification.",
+    "Catalogue candidates are conditional on a finite operator-supplied reference set and are not installed-version evidence.",
+    "Identical bytes can occur in unlisted releases, copied assets, caches, or custom builds.",
+    "A one-sided or failed resource observation does not establish component installation, removal, or remediation.",
+    "Source labels and digests identify supplied data; they do not authenticate its publisher or completeness.",
+]
 DISCOVERY_METHOD = {
     "schema": "security.wordpress-discovery-audit/v2",
     "capability_id": "technology.wordpress-metadata-discovery@1",
@@ -411,6 +422,24 @@ def write_synthetic_bundle(root, name, items, *, item_count=None, optional_audit
     return bundle, raw
 
 
+def rewrite_synthetic_assessment(bundle, document):
+    """Rewrite one task-owned fixture and keep its literal bundle manifest coherent."""
+    raw = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    assessment_path = bundle / "assessment.json"
+    assessment_path.write_bytes(raw)
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    assessment_row = next(
+        row for row in manifest["files"] if row["name"] == "assessment.json"
+    )
+    assessment_row["byte_length"] = len(raw)
+    assessment_row["sha256"] = hashlib.sha256(raw).hexdigest()
+    manifest_path.write_bytes(
+        json.dumps(manifest, separators=(",", ":")).encode("utf-8")
+    )
+    return raw
+
+
 def self_comparison(raw, items):
     unchanged = []
     for item in items:
@@ -444,6 +473,354 @@ def self_comparison(raw, items):
     return result
 
 
+def fingerprint_entity_changes(*, paired_unchanged_count, paired_changed=None):
+    """Literal comparison wire shape; independent of the acceptance helper."""
+    return {
+        "paired_unchanged_count": paired_unchanged_count,
+        "paired_changed": copy.deepcopy(paired_changed or []),
+        "only_in_before": [],
+        "only_in_after": [],
+    }
+
+
+def fingerprint_methodology_projection(audit):
+    return {
+        field: copy.deepcopy(audit[field])
+        for field in (
+            "schema",
+            "capability_id",
+            "policy_id",
+            "selected",
+            "representation_profile",
+            "finite_reference_scope",
+            "same_release_assumption",
+            "installed_version_assurance",
+            "source_authenticity",
+        )
+    }
+
+
+def fingerprint_coverage_projection(audit):
+    return {
+        field: copy.deepcopy(audit[field])
+        for field in (
+            "candidate_count",
+            "selected_resource_count",
+            "omitted_resource_count",
+            "attempted_request_count",
+            "reused_response_count",
+            "fetched_response_count",
+            "response_bytes",
+            "stop",
+            "resource_count",
+            "component_count",
+        )
+    }
+
+
+def fingerprint_resource_projection(resource):
+    return {
+        "resource_bytes": {
+            "observation": copy.deepcopy(resource.get("observation"))
+        },
+        "acquisition": {
+            field: copy.deepcopy(resource[field])
+            for field in (
+                "acquisition",
+                "outcome",
+                "observed_variant_count",
+                "request_attempted",
+                "interpreted_response_bytes",
+                "response_bytes",
+            )
+        },
+        "source_binding": {
+            field: copy.deepcopy(resource[field])
+            for field in ("resource_reference", "source_page_references")
+        },
+    }
+
+
+def fingerprint_component_projection(component):
+    return {
+        "candidate_set": {
+            field: copy.deepcopy(component[field])
+            for field in (
+                "state",
+                "compatible_release_ids",
+                "undetermined_release_ids",
+                "inconsistent_release_ids",
+            )
+        },
+        "reference_matrix": {
+            field: copy.deepcopy(component[field])
+            for field in (
+                "catalogue_component_listed",
+                "listed_matrix_complete",
+                "releases",
+            )
+        },
+        "resource_coverage": {
+            field: copy.deepcopy(component[field])
+            for field in (
+                "candidate_resource_count",
+                "selected_resource_count",
+                "completely_interpreted_resource_count",
+                "omitted_resource_count",
+                "informative_resource_count",
+                "resource_count",
+                "resources",
+            )
+        },
+    }
+
+
+def fingerprint_comparison_facet(
+    status="unchanged", *, before=None, after=None, changed_fields=()
+):
+    return {
+        "status": status,
+        "changed_fields": list(changed_fields),
+        "before": copy.deepcopy(before),
+        "after": copy.deepcopy(after),
+        "note": "Synthetic acceptance facet.",
+    }
+
+
+def attach_fingerprint_self_comparison(
+    comparison, *, audit, resource_count, component_count
+):
+    if (
+        audit["resource_count"] != resource_count
+        or audit["component_count"] != component_count
+    ):
+        raise AssertionError("synthetic source counts differ from the literal oracle")
+    wordpress = comparison["wordpress_review_comparison"]
+    wordpress["schema"] = "termivar-wordpress-review-comparison/v3"
+    wordpress["asset_fingerprints"] = {
+        "status": "compared",
+        "methodology": fingerprint_comparison_facet(
+            before=fingerprint_methodology_projection(audit),
+            after=fingerprint_methodology_projection(audit),
+        ),
+        "catalogue": fingerprint_comparison_facet(
+            before=audit["catalogue"], after=audit["catalogue"]
+        ),
+        "coverage": fingerprint_comparison_facet(
+            before=fingerprint_coverage_projection(audit),
+            after=fingerprint_coverage_projection(audit),
+        ),
+        "resources": fingerprint_entity_changes(
+            paired_unchanged_count=resource_count
+        ),
+        "components": fingerprint_entity_changes(
+            paired_unchanged_count=component_count
+        ),
+        "interpretation_limits": copy.deepcopy(
+            SYNTHETIC_FINGERPRINT_COMPARISON_LIMITS
+        ),
+    }
+    return comparison
+
+
+def synthetic_fingerprint_audit(*, variant):
+    """Reviewed literal v1 wire fixture; it does not call the product matcher."""
+    if variant not in {"release-b", "mixed-artifacts", "missing-reference", "empty"}:
+        raise AssertionError(f"unknown synthetic fingerprint variant: {variant}")
+
+    namespace = "termivar.synthetic.wordpress-asset-fingerprints"
+    component = {
+        "kind": runner.FINGERPRINT_COMPONENT[0],
+        "slug": runner.FINGERPRINT_COMPONENT[1],
+    }
+    missing_reference = variant == "missing-reference"
+    catalogue = {
+        "schema": "security.wordpress-asset-fingerprint-catalog/v1",
+        "id": "synthetic-fingerprint-catalogue",
+        "revision": "r2" if missing_reference else "r1",
+        "source_namespace": namespace,
+        "byte_length": 2048,
+        "sha256": ("9" if missing_reference else "1") * 64,
+        "semantic_sha256": ("c" if missing_reference else "2") * 64,
+        "retained_bytes": 4096,
+        "component_count": 1,
+        "release_count": 3,
+        "file_count": 5 if missing_reference else 6,
+        "provenance": {
+            "reference": "https://example.test/fingerprint-catalogue",
+            "revision": "fixture-r2" if missing_reference else "fixture-r1",
+            "notices": [{
+                "id": "fixture-notice",
+                "party": "Termivar synthetic fixture authors",
+                "notice": "Original harmless fixture bytes.",
+                "license": "Synthetic test data permission.",
+                "license_reference": (
+                    "https://example.test/fingerprint-catalogue/license"
+                ),
+            }],
+        },
+    }
+    audit = {
+        "schema": "security.wordpress-asset-fingerprint-audit/v1",
+        "capability_id": "technology.wordpress-asset-fingerprint-candidate@1",
+        "policy_id": "termivar.wordpress-observed-asset-fingerprint/v1",
+        "selected": True,
+        "representation_profile": "identity-content-bytes/v1",
+        "finite_reference_scope": "listed_releases_only",
+        "same_release_assumption": (
+            "considered_paths_share_one_listed_release_artifact_set"
+        ),
+        "installed_version_assurance": (
+            "not_established_by_asset_fingerprints"
+        ),
+        "source_authenticity": "not_established",
+        "catalogue": catalogue,
+        "candidate_count": 0 if variant == "empty" else 2,
+        "selected_resource_count": 0 if variant == "empty" else 2,
+        "omitted_resource_count": 0,
+        "attempted_request_count": 0,
+        "reused_response_count": 0 if variant == "empty" else 2,
+        "fetched_response_count": 0,
+        "response_bytes": 0,
+        "stop": "complete",
+        "resource_count": 0 if variant == "empty" else 2,
+        "resources": [],
+        "component_count": 0 if variant == "empty" else 1,
+        "components": [],
+    }
+    if variant == "empty":
+        return audit
+
+    release_b_hashes = {
+        "assets/fingerprint.js": "a" * 64,
+        "assets/fingerprint.css": "b" * 64,
+    }
+    mixed_hashes = {
+        "assets/fingerprint.js": "d" * 64,
+        "assets/fingerprint.css": "e" * 64,
+    }
+    observation_hashes = mixed_hashes if variant == "mixed-artifacts" else release_b_hashes
+    resource_specs = (
+        ("assets/fingerprint.js", 49, "3", "evidence-0002"),
+        ("assets/fingerprint.css", 37, "5", "evidence-0003"),
+    )
+    audit["resources"] = [
+        {
+            "component": copy.deepcopy(component),
+            "relative_path": path,
+            "resource_reference": "sha256:" + reference_character * 64,
+            "source_page_references": ["sha256:" + "4" * 64],
+            "observed_variant_count": 1,
+            "acquisition": "reused",
+            "outcome": "observed",
+            "request_attempted": False,
+            "interpreted_response_bytes": byte_length,
+            "response_bytes": 0,
+            "evidence_reference_count": 1,
+            "evidence_references": [evidence_reference],
+            "observation": {
+                "byte_length": byte_length,
+                "sha256": observation_hashes[path],
+            },
+        }
+        for path, byte_length, reference_character, evidence_reference in resource_specs
+    ]
+
+    if variant == "mixed-artifacts":
+        relations = {
+            "assets/fingerprint.js": ("match", "mismatch", "mismatch"),
+            "assets/fingerprint.css": ("mismatch", "mismatch", "match"),
+        }
+        release_states = ("inconsistent", "inconsistent", "inconsistent")
+        aggregate = {
+            "state": "no_consistent_catalogue_release",
+            "compatible_release_ids": [],
+            "undetermined_release_ids": [],
+            "inconsistent_release_ids": ["release-a", "release-b", "release-c"],
+            "informative_resource_count": 2,
+            "listed_matrix_complete": True,
+        }
+    elif missing_reference:
+        relations = {
+            "assets/fingerprint.js": ("match", "match", "mismatch"),
+            "assets/fingerprint.css": ("unknown", "match", "match"),
+        }
+        release_states = ("undetermined", "compatible", "inconsistent")
+        aggregate = {
+            "state": "provisional_candidates",
+            "compatible_release_ids": ["release-b"],
+            "undetermined_release_ids": ["release-a"],
+            "inconsistent_release_ids": ["release-c"],
+            "informative_resource_count": 1,
+            "listed_matrix_complete": False,
+        }
+    else:
+        relations = {
+            "assets/fingerprint.js": ("match", "match", "mismatch"),
+            "assets/fingerprint.css": ("mismatch", "match", "match"),
+        }
+        release_states = ("inconsistent", "compatible", "inconsistent")
+        aggregate = {
+            "state": "single_catalogue_candidate",
+            "compatible_release_ids": ["release-b"],
+            "undetermined_release_ids": [],
+            "inconsistent_release_ids": ["release-a", "release-c"],
+            "informative_resource_count": 2,
+            "listed_matrix_complete": True,
+        }
+
+    release_ids = ("release-a", "release-b", "release-c")
+    matrix = []
+    for path in ("assets/fingerprint.js", "assets/fingerprint.css"):
+        rows = []
+        for release_id, relation in zip(release_ids, relations[path]):
+            row = {"release_id": release_id, "relation": relation}
+            if relation == "unknown":
+                row["unknown_reason"] = "missing_reference"
+            rows.append(row)
+        matrix.append({
+            "relative_path": path,
+            "distinct_observation_count": 1,
+            "informative": (
+                path == "assets/fingerprint.js" or variant != "missing-reference"
+            ),
+            "release_relation_count": 3,
+            "release_relations": rows,
+        })
+    releases = []
+    for release_id, version, build_variant, state in zip(
+        release_ids,
+        ("1.0", "2.0", "3.0"),
+        (None, "standard", None),
+        release_states,
+    ):
+        releases.append({
+            "release_id": release_id,
+            "version": version,
+            "build_variant": build_variant,
+            "state": state,
+            "source": {
+                "reference": f"https://example.test/releases/{release_id[-1]}",
+                "revision": f"source-{release_id[-1]}",
+                "notice_ids": ["fixture-notice"],
+            },
+        })
+    audit["components"] = [{
+        "identity": copy.deepcopy(component),
+        "catalogue_component_listed": True,
+        **aggregate,
+        "candidate_resource_count": 2,
+        "selected_resource_count": 2,
+        "completely_interpreted_resource_count": 2,
+        "omitted_resource_count": 0,
+        "resource_count": 2,
+        "resources": matrix,
+        "release_count": 3,
+        "releases": releases,
+    }]
+    return audit
+
+
 def expected_offline_arguments(scenarios):
     binary = "synthetic-termivar"
     expected = {}
@@ -475,6 +852,25 @@ def expected_offline_arguments(scenarios):
         expected["offline application-scope mismatch comparison"] = [
             binary, "report", "compare", "--before", str(before / "assessment.json"),
             "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
+        ]
+    fingerprint_names = {
+        "fingerprint-release-b",
+        "fingerprint-mixed-artifacts",
+        "fingerprint-missing-reference",
+    }
+    if fingerprint_names <= scenarios.keys():
+        release_b = Path(scenarios["fingerprint-release-b"]["_bundle"])
+        mixed = Path(scenarios["fingerprint-mixed-artifacts"]["_bundle"])
+        missing = Path(scenarios["fingerprint-missing-reference"]["_bundle"])
+        expected["offline fingerprint byte comparison"] = [
+            binary, "report", "compare", "--before",
+            str(release_b / "assessment.json"), "--after",
+            str(mixed / "assessment.json"), "--same-scope", "--format", "json",
+        ]
+        expected["offline fingerprint catalogue comparison"] = [
+            binary, "report", "compare", "--before",
+            str(release_b / "assessment.json"), "--after",
+            str(missing / "assessment.json"), "--same-scope", "--format", "json",
         ]
     return expected
 
@@ -661,6 +1057,240 @@ def offline_fixture(root, *, discovery_capability=DISCOVERY_CAPABILITY):
         },
     }
     return scenarios, responses, (before_raw, after_raw)
+
+
+def fingerprint_controlled_comparison(
+    before_raw,
+    after_raw,
+    items,
+    *,
+    catalogue_status,
+    changed_resource_paths,
+    unchanged_resource_count,
+    component_dimensions,
+):
+    before_audit = json.loads(before_raw)["wordpress_asset_fingerprints"]
+    after_audit = json.loads(after_raw)["wordpress_asset_fingerprints"]
+    result = comparison_document(
+        before_raw,
+        len(items),
+        after_raw,
+        len(items),
+        groups={
+            "only_in_after": [],
+            "only_in_before": [],
+            "changed": [],
+            "unchanged": [
+                comparison_item(
+                    item["fingerprint"],
+                    item["capability_id"],
+                    before=projection_from_item(item),
+                    after=copy.deepcopy(projection_from_item(item)),
+                    changed_fields=[],
+                )
+                for item in items
+            ],
+        },
+    )
+    wordpress = wordpress_comparison(discovery=True, controlled=False)
+    wordpress["schema"] = "termivar-wordpress-review-comparison/v3"
+    namespace = "termivar.synthetic.wordpress-asset-fingerprints"
+    component = {
+        "kind": runner.FINGERPRINT_COMPONENT[0],
+        "slug": runner.FINGERPRINT_COMPONENT[1],
+    }
+    before_resources = {
+        resource["relative_path"]: resource for resource in before_audit["resources"]
+    }
+    after_resources = {
+        resource["relative_path"]: resource for resource in after_audit["resources"]
+    }
+    resource_changes = [
+        {
+            "key": {
+                "source_namespace": namespace,
+                "component": copy.deepcopy(component),
+                "relative_path": path,
+            },
+            "changed_dimensions": ["resource_bytes"],
+            "before": fingerprint_resource_projection(before_resources[path]),
+            "after": fingerprint_resource_projection(after_resources[path]),
+        }
+        for path in changed_resource_paths
+    ]
+    before_component = before_audit["components"][0]
+    after_component = after_audit["components"][0]
+    component_change = {
+        "key": {
+            "source_namespace": namespace,
+            "component": copy.deepcopy(component),
+        },
+        "changed_dimensions": list(component_dimensions),
+        "before": fingerprint_component_projection(before_component),
+        "after": fingerprint_component_projection(after_component),
+    }
+    methodology_before = fingerprint_methodology_projection(before_audit)
+    methodology_after = fingerprint_methodology_projection(after_audit)
+    coverage_before = fingerprint_coverage_projection(before_audit)
+    coverage_after = fingerprint_coverage_projection(after_audit)
+    catalogue_changed_fields = (
+        ("file_count", "provenance", "revision", "semantic_sha256", "sha256")
+        if catalogue_status == "changed" else ()
+    )
+    wordpress["asset_fingerprints"] = {
+        "status": "compared",
+        "methodology": fingerprint_comparison_facet(
+            before=methodology_before, after=methodology_after
+        ),
+        "catalogue": fingerprint_comparison_facet(
+            catalogue_status,
+            before=before_audit["catalogue"],
+            after=after_audit["catalogue"],
+            changed_fields=catalogue_changed_fields,
+        ),
+        "coverage": fingerprint_comparison_facet(
+            before=coverage_before, after=coverage_after
+        ),
+        "resources": fingerprint_entity_changes(
+            paired_unchanged_count=unchanged_resource_count,
+            paired_changed=resource_changes,
+        ),
+        "components": fingerprint_entity_changes(
+            paired_unchanged_count=0,
+            paired_changed=[component_change],
+        ),
+        "interpretation_limits": copy.deepcopy(
+            SYNTHETIC_FINGERPRINT_COMPARISON_LIMITS
+        ),
+    }
+    result["wordpress_review_comparison"] = wordpress
+    return result
+
+
+def fingerprint_offline_fixture(root):
+    """Synthetic full-path oracle with both positive and selected-empty audits."""
+    scenarios, responses, originals = offline_fixture(root)
+    surface_item = synthetic_assessment_item(
+        BASE_FINGERPRINT, BASE_CAPABILITY, "WordPress surface hints observed"
+    )
+    discovery_item = synthetic_discovery_item()
+    discovery_item["evidence_count"] = 3
+    discovery_item["evidence_references"] = [
+        "evidence-0001", "evidence-0002", "evidence-0003"
+    ]
+    items = [surface_item, discovery_item]
+    source_template = json.loads(originals[1])
+    review_template = source_template["wordpress_review"]
+    review_template["schema"] = "security.wordpress-review-audit/v8"
+    discovery_template = source_template["wordpress_discovery"]
+    discovery_template["schema"] = "security.wordpress-discovery-audit/v3"
+    discovery_template["policy_id"] = (
+        "termivar.wordpress-page-scoped-metadata-discovery/v1"
+    )
+    entry_reference = "sha256:" + "4" * 64
+    discovery_template["page_collection"] = {
+        "mode": "observed",
+        "entry_page_reference": entry_reference,
+        "candidate_count": 0,
+        "selected_count": 0,
+        "omitted_candidate_count": 0,
+        "reused_response_count": 0,
+        "fetched_response_count": 0,
+        "not_observed_count": 0,
+        "rejected_response_count": 0,
+        "accepted_association_count": 0,
+        "rejected_association_count": 0,
+        "attempted_request_count": 0,
+        "completed_response_count": 0,
+        "committed_response_count": 0,
+        "interpreted_response_bytes": 0,
+        "response_bytes": 0,
+        "pages": [],
+    }
+    for source in discovery_template["sources"]:
+        source["source_page_references"] = [entry_reference]
+    names_and_variants = (
+        ("fingerprint-release-b", "release-b"),
+        ("fingerprint-mixed-artifacts", "mixed-artifacts"),
+        ("fingerprint-missing-reference", "missing-reference"),
+        ("blog-fingerprint-sibling-rejected", "empty"),
+    )
+    raw_by_name = {}
+    for name, variant in names_and_variants:
+        audit = synthetic_fingerprint_audit(variant=variant)
+        scenario_items = copy.deepcopy(items)
+        if variant == "empty":
+            scenario_items[1]["evidence_count"] = 1
+            scenario_items[1]["evidence_references"] = ["evidence-0001"]
+        optional_audits = {
+            "wordpress_review": copy.deepcopy(review_template),
+            "wordpress_discovery": copy.deepcopy(discovery_template),
+            "wordpress_asset_fingerprints": audit,
+        }
+        bundle, raw = write_synthetic_bundle(
+            root,
+            name,
+            scenario_items,
+            optional_audits=optional_audits,
+        )
+        resource_count = audit["resource_count"]
+        component_count = audit["component_count"]
+        scenarios[name] = {
+            "bundle": runner._report_identity(bundle),
+            "_bundle": str(bundle),
+            "fingerprints": {
+                "resource_count": resource_count,
+                "component_count": component_count,
+            },
+        }
+        raw_by_name[name] = raw
+        responses[f"offline verification {name}"] = {
+            "schema": "termivar-report-verification/v1",
+            "status": "integrity_match",
+        }
+        responses[f"offline self comparison {name}"] = (
+            attach_fingerprint_self_comparison(
+                self_comparison(raw, scenario_items),
+                audit=audit,
+                resource_count=resource_count,
+                component_count=component_count,
+            )
+        )
+
+    responses["offline fingerprint byte comparison"] = (
+        fingerprint_controlled_comparison(
+            raw_by_name["fingerprint-release-b"],
+            raw_by_name["fingerprint-mixed-artifacts"],
+            items,
+            catalogue_status="unchanged",
+            changed_resource_paths=(
+                "assets/fingerprint.js",
+                "assets/fingerprint.css",
+            ),
+            unchanged_resource_count=0,
+            component_dimensions=(
+                "candidate_set",
+                "reference_matrix",
+                "resource_coverage",
+            ),
+        )
+    )
+    responses["offline fingerprint catalogue comparison"] = (
+        fingerprint_controlled_comparison(
+            raw_by_name["fingerprint-release-b"],
+            raw_by_name["fingerprint-missing-reference"],
+            items,
+            catalogue_status="changed",
+            changed_resource_paths=(),
+            unchanged_resource_count=2,
+            component_dimensions=(
+                "candidate_set",
+                "reference_matrix",
+                "resource_coverage",
+            ),
+        )
+    )
+    return scenarios, responses, originals
 
 
 def layout_offline_fixture(root):
@@ -1477,7 +2107,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         discovery["layout"]["skipped_sibling_application_count"] = 1
         discovery["page_collection"] = {
             "mode": "observed",
-            "entry_page_reference": "sha256:" + "8" * 64,
+            "entry_page_reference": REJECTED_BLOG_ENTRY_REFERENCE,
             "candidate_count": 2,
             "selected_count": 2,
             "omitted_candidate_count": 0,
@@ -1517,6 +2147,8 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 },
             ],
         }
+        for source in discovery["sources"]:
+            source["source_page_references"] = [REJECTED_BLOG_ENTRY_REFERENCE]
         item = document["items"][0]
         item["evidence_count"] = 6
         item["evidence_references"] = [
@@ -1594,11 +2226,18 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         return document
 
     def test_rejected_blog_pages_preserve_empty_selected_fingerprint_audit(self):
+        self.assertEqual(
+            runner._framed_reference(
+                "wordpress-discovery-page", REJECTED_BLOG_APPLICATION_URL
+            ),
+            REJECTED_BLOG_ENTRY_REFERENCE,
+        )
         document = self._rejected_blog_fingerprint_document()
         summary = runner._validate_rejected_page_fingerprint_document(
             document,
             catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
             expected_discovery_request_count=4,
+            expected_application_url=REJECTED_BLOG_APPLICATION_URL,
         )
         self.assertEqual(summary["state"], "no_eligible_resources_from_rejected_pages")
         self.assertEqual(summary["candidate_count"], 0)
@@ -1617,6 +2256,159 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             ),
             "security.wordpress-discovery-audit/v3",
         )
+
+    def test_rejected_blog_sources_require_exact_entry_only_provenance(self):
+        def validate(document):
+            runner._validate_rejected_page_fingerprint_document(
+                document,
+                catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+                expected_discovery_request_count=4,
+                expected_application_url=REJECTED_BLOG_APPLICATION_URL,
+            )
+
+        provenance_mutations = []
+        for value in ([], None, "entry", {}, 1, True):
+            document = self._rejected_blog_fingerprint_document()
+            document["wordpress_discovery"]["sources"][0][
+                "source_page_references"
+            ] = value
+            provenance_mutations.append(document)
+        missing = self._rejected_blog_fingerprint_document()
+        del missing["wordpress_discovery"]["sources"][0]["source_page_references"]
+        provenance_mutations.append(missing)
+
+        rejected_reference = self._rejected_blog_fingerprint_document()
+        rejected = rejected_reference["wordpress_discovery"]["page_collection"][
+            "pages"
+        ][0]["page_reference"]
+        rejected_reference["wordpress_discovery"]["sources"][0][
+            "source_page_references"
+        ] = [rejected]
+        provenance_mutations.append(rejected_reference)
+
+        mixed = self._rejected_blog_fingerprint_document()
+        mixed["wordpress_discovery"]["sources"][0]["source_page_references"] = [
+            REJECTED_BLOG_ENTRY_REFERENCE,
+            rejected,
+        ]
+        provenance_mutations.append(mixed)
+
+        duplicate = self._rejected_blog_fingerprint_document()
+        duplicate["wordpress_discovery"]["sources"][0][
+            "source_page_references"
+        ] = [REJECTED_BLOG_ENTRY_REFERENCE, REJECTED_BLOG_ENTRY_REFERENCE]
+        provenance_mutations.append(duplicate)
+
+        substituted = self._rejected_blog_fingerprint_document()
+        substitute_reference = "sha256:" + "f" * 64
+        substituted["wordpress_discovery"]["page_collection"][
+            "entry_page_reference"
+        ] = substitute_reference
+        for source in substituted["wordpress_discovery"]["sources"]:
+            source["source_page_references"] = [substitute_reference]
+        provenance_mutations.append(substituted)
+
+        entry_as_page = self._rejected_blog_fingerprint_document()
+        entry_as_page["wordpress_discovery"]["page_collection"]["pages"][0][
+            "page_reference"
+        ] = REJECTED_BLOG_ENTRY_REFERENCE
+        provenance_mutations.append(entry_as_page)
+
+        for index, document in enumerate(provenance_mutations):
+            with self.subTest(provenance_mutation=index):
+                with self.assertRaises(runner.AcceptanceError):
+                    validate(document)
+
+    def test_rejected_blog_sources_require_literal_unique_identity_order(self):
+        def validate(document):
+            runner._validate_rejected_page_fingerprint_document(
+                document,
+                catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+                expected_discovery_request_count=4,
+                expected_application_url=REJECTED_BLOG_APPLICATION_URL,
+            )
+
+        mutations = []
+        missing = self._rejected_blog_fingerprint_document()
+        missing["wordpress_discovery"]["sources"].pop()
+        mutations.append(missing)
+
+        extra = self._rejected_blog_fingerprint_document()
+        extra["wordpress_discovery"]["sources"].append(
+            copy.deepcopy(extra["wordpress_discovery"]["sources"][0])
+        )
+        mutations.append(extra)
+
+        duplicated = self._rejected_blog_fingerprint_document()
+        duplicated["wordpress_discovery"]["sources"][1] = copy.deepcopy(
+            duplicated["wordpress_discovery"]["sources"][0]
+        )
+        mutations.append(duplicated)
+
+        malformed = self._rejected_blog_fingerprint_document()
+        malformed["wordpress_discovery"]["sources"][0] = []
+        mutations.append(malformed)
+
+        reordered = self._rejected_blog_fingerprint_document()
+        reordered["wordpress_discovery"]["sources"][1:3] = reversed(
+            reordered["wordpress_discovery"]["sources"][1:3]
+        )
+        mutations.append(reordered)
+
+        rest_component = self._rejected_blog_fingerprint_document()
+        rest_component["wordpress_discovery"]["sources"][0]["component"] = {
+            "kind": "core",
+            "slug": "wordpress",
+        }
+        mutations.append(rest_component)
+
+        substituted_slug = self._rejected_blog_fingerprint_document()
+        substituted_slug["wordpress_discovery"]["sources"][3]["component"][
+            "slug"
+        ] = "substituted-plugin"
+        mutations.append(substituted_slug)
+
+        for index, document in enumerate(mutations):
+            with self.subTest(identity_mutation=index):
+                with self.assertRaises(runner.AcceptanceError):
+                    validate(document)
+
+    def test_rejected_blog_provenance_diagnostics_preserve_safe_type_and_membership(self):
+        cases = []
+        missing = self._rejected_blog_fingerprint_document()
+        del missing["wordpress_discovery"]["sources"][0]["source_page_references"]
+        cases.append((missing, '"status": "missing"'))
+
+        wrong_type = self._rejected_blog_fingerprint_document()
+        wrong_type["wordpress_discovery"]["sources"][0][
+            "source_page_references"
+        ] = "https://private.invalid/asset.js?token=secret"
+        cases.append((wrong_type, '"json_type": "string"'))
+
+        substituted = self._rejected_blog_fingerprint_document()
+        substitute_reference = "sha256:" + "f" * 64
+        substituted["wordpress_discovery"]["page_collection"][
+            "entry_page_reference"
+        ] = substitute_reference
+        for source in substituted["wordpress_discovery"]["sources"]:
+            source["source_page_references"] = [substitute_reference]
+        cases.append((substituted, '"matches_application": false'))
+
+        for document, marker in cases:
+            with self.subTest(marker=marker):
+                with self.assertRaises(runner.AcceptanceError) as raised:
+                    runner._validate_rejected_page_fingerprint_document(
+                        document,
+                        catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+                        expected_discovery_request_count=4,
+                        expected_application_url=REJECTED_BLOG_APPLICATION_URL,
+                    )
+                encoded = json.dumps(raised.exception.diagnostic, sort_keys=True)
+                self.assertLess(len(encoded.encode("utf-8")), 8 * 1024)
+                self.assertIn(marker, encoded)
+                self.assertNotIn("private.invalid", encoded)
+                self.assertNotIn("token=secret", encoded)
+                self.assertNotIn(REJECTED_BLOG_APPLICATION_URL, encoded)
 
     def test_accepted_root_pages_retain_deduplicated_fingerprint_readme(self):
         document = self._accepted_root_observed_document()
@@ -1698,6 +2490,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                         mutated,
                         catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
                         expected_discovery_request_count=4,
+                        expected_application_url=REJECTED_BLOG_APPLICATION_URL,
                     )
 
     def test_rejected_blog_fingerprint_failure_diagnostic_is_bounded(self):
@@ -1714,6 +2507,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 document,
                 catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
                 expected_discovery_request_count=4,
+                expected_application_url=REJECTED_BLOG_APPLICATION_URL,
             )
         encoded = json.dumps(raised.exception.diagnostic, sort_keys=True)
         self.assertLess(len(encoded.encode("utf-8")), 8 * 1024)
@@ -2823,6 +3617,403 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                  / "assessment.json").read_bytes(),
                 original_bytes[1],
             )
+
+    def test_offline_acceptance_self_compares_positive_and_selected_empty_fingerprints(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scenarios, responses, _ = fingerprint_offline_fixture(Path(temporary))
+            fake = offline_process_runner(responses, scenarios)
+            result = runner._run_offline_acceptance(
+                fake, Path("synthetic-termivar"), scenarios
+            )
+
+            self.assertEqual(
+                result["bundles"]["fingerprint-release-b"][
+                    "fingerprint_entity_counts"
+                ],
+                {"resources": 2, "components": 1},
+            )
+            self.assertEqual(
+                result["bundles"]["blog-fingerprint-sibling-rejected"][
+                    "fingerprint_entity_counts"
+                ],
+                {"resources": 0, "components": 0},
+            )
+            labels = [label for label, _ in fake.calls]
+            self.assertLess(
+                labels.index(
+                    "offline self comparison blog-fingerprint-sibling-rejected"
+                ),
+                labels.index("offline collection-policy comparison"),
+            )
+            self.assertEqual(
+                labels[-2:],
+                [
+                    "offline fingerprint byte comparison",
+                    "offline fingerprint catalogue comparison",
+                ],
+            )
+
+    def test_literal_fingerprint_audits_are_source_consistent_v1_shapes(self):
+        expected_top_level = {
+            "schema", "capability_id", "policy_id", "selected",
+            "representation_profile", "finite_reference_scope",
+            "same_release_assumption", "installed_version_assurance",
+            "source_authenticity", "catalogue", "candidate_count",
+            "selected_resource_count", "omitted_resource_count",
+            "attempted_request_count", "reused_response_count",
+            "fetched_response_count", "response_bytes", "stop",
+            "resource_count", "resources", "component_count", "components",
+        }
+        expected_catalogue = {
+            "schema", "id", "revision", "source_namespace", "byte_length",
+            "sha256", "semantic_sha256", "retained_bytes", "component_count",
+            "release_count", "file_count", "provenance",
+        }
+        expected = {
+            "release-b": {
+                "counts": (2, 1),
+                "file_count": 6,
+                "state": "single_catalogue_candidate",
+                "release_states": (
+                    "inconsistent", "compatible", "inconsistent"
+                ),
+                "relations": (
+                    ("match", "match", "mismatch"),
+                    ("mismatch", "match", "match"),
+                ),
+            },
+            "mixed-artifacts": {
+                "counts": (2, 1),
+                "file_count": 6,
+                "state": "no_consistent_catalogue_release",
+                "release_states": (
+                    "inconsistent", "inconsistent", "inconsistent"
+                ),
+                "relations": (
+                    ("match", "mismatch", "mismatch"),
+                    ("mismatch", "mismatch", "match"),
+                ),
+            },
+            "missing-reference": {
+                "counts": (2, 1),
+                "file_count": 5,
+                "state": "provisional_candidates",
+                "release_states": (
+                    "undetermined", "compatible", "inconsistent"
+                ),
+                "relations": (
+                    ("match", "match", "mismatch"),
+                    ("unknown", "match", "match"),
+                ),
+            },
+            "empty": {
+                "counts": (0, 0),
+                "file_count": 6,
+                "state": None,
+                "release_states": (),
+                "relations": (),
+            },
+        }
+        for variant, oracle in expected.items():
+            with self.subTest(variant=variant):
+                audit = synthetic_fingerprint_audit(variant=variant)
+                self.assertEqual(set(audit), expected_top_level)
+                self.assertEqual(set(audit["catalogue"]), expected_catalogue)
+                resource_count, component_count = oracle["counts"]
+                self.assertEqual(
+                    (audit["resource_count"], len(audit["resources"])),
+                    (resource_count, resource_count),
+                )
+                self.assertEqual(
+                    (audit["component_count"], len(audit["components"])),
+                    (component_count, component_count),
+                )
+                self.assertEqual(audit["catalogue"]["file_count"], oracle["file_count"])
+                if component_count == 0:
+                    self.assertEqual(audit["candidate_count"], 0)
+                    self.assertEqual(audit["catalogue"]["component_count"], 1)
+                    continue
+                component = audit["components"][0]
+                self.assertEqual(component["state"], oracle["state"])
+                self.assertEqual(
+                    tuple(row["state"] for row in component["releases"]),
+                    oracle["release_states"],
+                )
+                self.assertEqual(
+                    tuple(
+                        tuple(row["relation"] for row in resource["release_relations"])
+                        for resource in component["resources"]
+                    ),
+                    oracle["relations"],
+                )
+                self.assertEqual(
+                    {
+                        (resource["component"]["kind"],
+                         resource["component"]["slug"])
+                        for resource in audit["resources"]
+                    },
+                    {runner.FINGERPRINT_COMPONENT},
+                )
+
+    def test_offline_fingerprint_self_compare_rejects_malformed_entity_partitions(self):
+        def mutate_missing_group(responses):
+            del responses[
+                "offline self comparison blog-fingerprint-sibling-rejected"
+            ]["wordpress_review_comparison"]["asset_fingerprints"]["components"][
+                "only_in_after"
+            ]
+
+        def mutate_wrong_group_type(responses):
+            responses[
+                "offline self comparison blog-fingerprint-sibling-rejected"
+            ]["wordpress_review_comparison"]["asset_fingerprints"]["resources"][
+                "paired_changed"
+            ] = None
+
+        def mutate_boolean_count(responses):
+            responses[
+                "offline self comparison blog-fingerprint-sibling-rejected"
+            ]["wordpress_review_comparison"]["asset_fingerprints"]["components"][
+                "paired_unchanged_count"
+            ] = False
+
+        def mutate_empty_as_one(responses):
+            responses[
+                "offline self comparison blog-fingerprint-sibling-rejected"
+            ]["wordpress_review_comparison"]["asset_fingerprints"]["components"][
+                "paired_unchanged_count"
+            ] = 1
+
+        def mutate_positive_as_zero(responses):
+            responses["offline self comparison fingerprint-release-b"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["components"]["paired_unchanged_count"] = 0
+
+        def mutate_duplicate_changed_identity(responses):
+            resources = responses["offline self comparison fingerprint-release-b"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["resources"]
+            key = {
+                "source_namespace": "termivar.synthetic.wordpress-asset-fingerprints",
+                "component": {
+                    "kind": runner.FINGERPRINT_COMPONENT[0],
+                    "slug": runner.FINGERPRINT_COMPONENT[1],
+                },
+                "relative_path": "assets/fingerprint.js",
+            }
+            change = {
+                "key": key,
+                "changed_dimensions": ["resource_bytes"],
+                "before": {},
+                "after": {},
+            }
+            resources["paired_unchanged_count"] = 0
+            resources["paired_changed"] = [change, copy.deepcopy(change)]
+
+        def mutate_interpretation_limits(responses):
+            responses["offline self comparison fingerprint-release-b"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["interpretation_limits"] = []
+
+        mutations = (
+            mutate_missing_group,
+            mutate_wrong_group_type,
+            mutate_boolean_count,
+            mutate_empty_as_one,
+            mutate_positive_as_zero,
+            mutate_duplicate_changed_identity,
+            mutate_interpretation_limits,
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate.__name__):
+                with tempfile.TemporaryDirectory() as temporary:
+                    scenarios, responses, _ = fingerprint_offline_fixture(
+                        Path(temporary)
+                    )
+                    mutate(responses)
+                    with self.assertRaises(runner.AcceptanceError):
+                        runner._run_offline_acceptance(
+                            offline_process_runner(responses, scenarios),
+                            Path("synthetic-termivar"),
+                            scenarios,
+                        )
+
+    def test_fingerprint_one_sided_interpretations_are_directional(self):
+        key = {
+            "source_namespace": "termivar.synthetic.wordpress-asset-fingerprints",
+            "component": {
+                "kind": runner.FINGERPRINT_COMPONENT[0],
+                "slug": runner.FINGERPRINT_COMPONENT[1],
+            },
+        }
+        encoded = json.dumps(key, sort_keys=True, separators=(",", ":"))
+        cases = (
+            (
+                "only_in_before",
+                {encoded},
+                set(),
+                "present_only_in_the_supplied_before_audit_not_verified_remediation",
+            ),
+            (
+                "only_in_after",
+                set(),
+                {encoded},
+                "present_only_in_the_supplied_after_audit_not_verified_newness",
+            ),
+        )
+        for group, before_keys, after_keys, interpretation in cases:
+            with self.subTest(group=group):
+                document = fingerprint_entity_changes(paired_unchanged_count=0)
+                document[group] = [{
+                    "key": copy.deepcopy(key),
+                    "content": {"candidate_set": {"state": "undetermined"}},
+                    "interpretation": interpretation,
+                }]
+                parsed = runner._fingerprint_comparison_entity_groups(
+                    document,
+                    entity="components",
+                    before_count=len(before_keys),
+                    after_count=len(after_keys),
+                    before_keys=before_keys,
+                    after_keys=after_keys,
+                    label="synthetic directional fingerprint comparison",
+                )
+                self.assertEqual(len(parsed[group]), 1)
+                swapped = copy.deepcopy(document)
+                swapped[group][0]["interpretation"] = (
+                    "present_only_in_the_supplied_after_audit_not_verified_newness"
+                    if group == "only_in_before" else
+                    "present_only_in_the_supplied_before_audit_not_verified_remediation"
+                )
+                with self.assertRaisesRegex(
+                    runner.AcceptanceError, "invalid one-sided content"
+                ):
+                    runner._fingerprint_comparison_entity_groups(
+                        swapped,
+                        entity="components",
+                        before_count=len(before_keys),
+                        after_count=len(after_keys),
+                        before_keys=before_keys,
+                        after_keys=after_keys,
+                        label="synthetic directional fingerprint comparison",
+                    )
+
+    def test_offline_fingerprint_self_compare_rejects_source_audit_drift(self):
+        def rewrite_source(scenarios, responses, mutate):
+            name = "fingerprint-release-b"
+            bundle = Path(scenarios[name]["_bundle"])
+            document = json.loads((bundle / "assessment.json").read_bytes())
+            mutate(document["wordpress_asset_fingerprints"], scenarios[name], responses)
+            raw = rewrite_synthetic_assessment(bundle, document)
+            scenarios[name]["bundle"] = runner._report_identity(bundle)
+            comparison = responses[f"offline self comparison {name}"]
+            comparison["before"] = source_metadata(raw, document["item_count"])
+            comparison["after"] = source_metadata(raw, document["item_count"])
+
+        def boolean_source_count(audit, _scenario, _responses):
+            audit["resource_count"] = True
+
+        def source_count_array_mismatch(audit, _scenario, _responses):
+            audit["resource_count"] = 1
+
+        def duplicate_resource(audit, _scenario, _responses):
+            audit["resources"][1] = copy.deepcopy(audit["resources"][0])
+
+        def duplicate_component(audit, scenario, responses):
+            audit["components"].append(copy.deepcopy(audit["components"][0]))
+            audit["component_count"] = 2
+            scenario["fingerprints"]["component_count"] = 2
+            responses["offline self comparison fingerprint-release-b"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["components"]["paired_unchanged_count"] = 2
+
+        mutations = (
+            boolean_source_count,
+            source_count_array_mismatch,
+            duplicate_resource,
+            duplicate_component,
+        )
+        for mutate in mutations:
+            with self.subTest(mutation=mutate.__name__):
+                with tempfile.TemporaryDirectory() as temporary:
+                    scenarios, responses, _ = fingerprint_offline_fixture(
+                        Path(temporary)
+                    )
+                    rewrite_source(scenarios, responses, mutate)
+                    with self.assertRaises(runner.AcceptanceError):
+                        runner._run_offline_acceptance(
+                            offline_process_runner(responses, scenarios),
+                            Path("synthetic-termivar"),
+                            scenarios,
+                        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            scenarios, responses, _ = fingerprint_offline_fixture(Path(temporary))
+            name = "fingerprint-release-b"
+            bundle = Path(scenarios[name]["_bundle"])
+            document = json.loads((bundle / "assessment.json").read_bytes())
+            del document["wordpress_asset_fingerprints"]
+            raw = rewrite_synthetic_assessment(bundle, document)
+            scenarios[name]["bundle"] = runner._report_identity(bundle)
+            comparison = responses[f"offline self comparison {name}"]
+            comparison["before"] = source_metadata(raw, document["item_count"])
+            comparison["after"] = source_metadata(raw, document["item_count"])
+            with self.assertRaises(runner.AcceptanceError):
+                runner._run_offline_acceptance(
+                    offline_process_runner(responses, scenarios),
+                    Path("synthetic-termivar"),
+                    scenarios,
+                )
+
+    def test_offline_fingerprint_controlled_comparisons_require_closed_partitions(self):
+        def missing_one_sided(responses):
+            del responses["offline fingerprint byte comparison"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["resources"]["only_in_after"]
+
+        def wrong_one_sided_type(responses):
+            responses["offline fingerprint catalogue comparison"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["components"]["only_in_before"] = False
+
+        def boolean_paired_count(responses):
+            responses["offline fingerprint byte comparison"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["resources"]["paired_unchanged_count"] = False
+
+        def substituted_resource_identity(responses):
+            responses["offline fingerprint byte comparison"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["resources"]["paired_changed"][0]["key"][
+                "relative_path"
+            ] = "assets/substituted.js"
+
+        def substituted_component_identity(responses):
+            responses["offline fingerprint catalogue comparison"][
+                "wordpress_review_comparison"
+            ]["asset_fingerprints"]["components"]["paired_changed"][0]["key"][
+                "component"
+            ]["slug"] = "substituted-component"
+
+        for mutate in (
+            missing_one_sided,
+            wrong_one_sided_type,
+            boolean_paired_count,
+            substituted_resource_identity,
+            substituted_component_identity,
+        ):
+            with self.subTest(mutation=mutate.__name__):
+                with tempfile.TemporaryDirectory() as temporary:
+                    scenarios, responses, _ = fingerprint_offline_fixture(
+                        Path(temporary)
+                    )
+                    mutate(responses)
+                    with self.assertRaises(runner.AcceptanceError):
+                        runner._run_offline_acceptance(
+                            offline_process_runner(responses, scenarios),
+                            Path("synthetic-termivar"),
+                            scenarios,
+                        )
 
     def test_offline_acceptance_exercises_layout_and_application_scope_paths(self):
         with tempfile.TemporaryDirectory() as temporary:

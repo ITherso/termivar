@@ -74,6 +74,13 @@ FINGERPRINT_CATALOGUE_PATH = (
     / "catalogue.synthetic.json"
 )
 FINGERPRINT_COMPONENT = ("plugin", "termivar-fingerprint-lab")
+FINGERPRINT_COMPARISON_INTERPRETATION_LIMITS = [
+    "Compared SHA-256 values and byte lengths describe complete admitted response bytes, not whole-package verification.",
+    "Catalogue candidates are conditional on a finite operator-supplied reference set and are not installed-version evidence.",
+    "Identical bytes can occur in unlisted releases, copied assets, caches, or custom builds.",
+    "A one-sided or failed resource observation does not establish component installation, removal, or remediation.",
+    "Source labels and digests identify supplied data; they do not authenticate its publisher or completeness.",
+]
 FINGERPRINT_REFERENCE_ORACLE = {
     "release-a": {
         "assets/common.css": (32, "e4b20a225f36b6cecb22bd9c1e89b256f33ed39ad9e34bf2044462bba21bf17f"),
@@ -698,6 +705,12 @@ class AssessmentInventory:
     projections: dict[str, dict[str, Any]]
     optional_audits: dict[str, Any]
     sha256: str
+
+
+@dataclasses.dataclass(frozen=True)
+class FingerprintEntityInventory:
+    counts: dict[str, int]
+    keys: dict[str, set[str]]
 
 
 class ProcessRunner:
@@ -2806,6 +2819,260 @@ def _require_empty_wordpress_entities(document: dict[str, Any], label: str) -> N
                 f"{label} unexpectedly paired WordPress {name}")
 
 
+def _required_nonnegative_integer(
+    document: dict[str, Any], field: str, label: str
+) -> int:
+    require(field in document, f"{label} omits {field}")
+    value = document[field]
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+        f"{label} has an invalid {field}",
+    )
+    return value
+
+
+def _fingerprint_source_entity_inventory(
+    source: AssessmentInventory, label: str
+) -> FingerprintEntityInventory:
+    audit = source.optional_audits.get("wordpress_asset_fingerprints")
+    require(isinstance(audit, dict), f"{label} omits the selected fingerprint audit")
+    require(
+        audit.get("schema") == "security.wordpress-asset-fingerprint-audit/v1"
+        and audit.get("selected") is True,
+        f"{label} has an unsupported fingerprint audit",
+    )
+    catalogue = audit.get("catalogue")
+    namespace = catalogue.get("source_namespace") if isinstance(catalogue, dict) else None
+    require(
+        isinstance(namespace, str) and 0 < len(namespace.encode("utf-8")) <= 256,
+        f"{label} has an invalid fingerprint source namespace",
+    )
+    resources = audit.get("resources") if "resources" in audit else None
+    components = audit.get("components") if "components" in audit else None
+    require(isinstance(resources, list), f"{label} fingerprint resources are not an array")
+    require(isinstance(components, list), f"{label} fingerprint components are not an array")
+    resource_count = _required_nonnegative_integer(audit, "resource_count", label)
+    component_count = _required_nonnegative_integer(audit, "component_count", label)
+    require(
+        resource_count == len(resources) and component_count == len(components),
+        f"{label} fingerprint counts do not match their source arrays",
+    )
+
+    resource_keys: set[tuple[str, str, str, str]] = set()
+    encoded_resource_keys: set[str] = set()
+    resource_components: set[tuple[str, str]] = set()
+    for index, resource in enumerate(resources):
+        require(isinstance(resource, dict), f"{label} resource {index} is not an object")
+        component = resource.get("component")
+        relative_path = resource.get("relative_path")
+        require(
+            isinstance(component, dict)
+            and set(component) == {"kind", "slug"}
+            and isinstance(component.get("kind"), str)
+            and bool(component["kind"])
+            and isinstance(component.get("slug"), str)
+            and bool(component["slug"])
+            and isinstance(relative_path, str)
+            and bool(relative_path),
+            f"{label} resource {index} has an invalid identity",
+        )
+        component_key = (component["kind"], component["slug"])
+        key = (namespace, *component_key, relative_path)
+        require(key not in resource_keys, f"{label} repeats a fingerprint resource identity")
+        resource_keys.add(key)
+        encoded_resource_keys.add(json.dumps(
+            {
+                "source_namespace": namespace,
+                "component": {
+                    "kind": component["kind"],
+                    "slug": component["slug"],
+                },
+                "relative_path": relative_path,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ))
+        resource_components.add(component_key)
+
+    component_keys: set[tuple[str, str, str]] = set()
+    encoded_component_keys: set[str] = set()
+    component_identities: set[tuple[str, str]] = set()
+    for index, row in enumerate(components):
+        require(isinstance(row, dict), f"{label} component {index} is not an object")
+        identity = row.get("identity")
+        require(
+            isinstance(identity, dict)
+            and set(identity) == {"kind", "slug"}
+            and isinstance(identity.get("kind"), str)
+            and bool(identity["kind"])
+            and isinstance(identity.get("slug"), str)
+            and bool(identity["slug"]),
+            f"{label} component {index} has an invalid identity",
+        )
+        component_identity = (identity["kind"], identity["slug"])
+        key = (namespace, *component_identity)
+        require(key not in component_keys, f"{label} repeats a fingerprint component identity")
+        component_keys.add(key)
+        encoded_component_keys.add(json.dumps(
+            {
+                "source_namespace": namespace,
+                "component": {
+                    "kind": identity["kind"],
+                    "slug": identity["slug"],
+                },
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ))
+        component_identities.add(component_identity)
+    require(
+        resource_components == component_identities,
+        f"{label} fingerprint resource and component identities do not reconcile",
+    )
+    return FingerprintEntityInventory(
+        counts={"resources": resource_count, "components": component_count},
+        keys={"resources": encoded_resource_keys, "components": encoded_component_keys},
+    )
+
+
+def _fingerprint_comparison_entity_groups(
+    document: Any,
+    *,
+    entity: str,
+    before_count: int,
+    after_count: int,
+    before_keys: set[str],
+    after_keys: set[str],
+    label: str,
+) -> dict[str, Any]:
+    require(isinstance(document, dict), f"{label} is not an object")
+    expected_fields = {
+        "paired_unchanged_count",
+        "paired_changed",
+        "only_in_before",
+        "only_in_after",
+    }
+    require(set(document) == expected_fields, f"{label} has an invalid entity shape")
+    paired_unchanged = _required_nonnegative_integer(
+        document, "paired_unchanged_count", label
+    )
+    groups: dict[str, list[Any]] = {}
+    seen_keys: set[str] = set()
+    group_keys: dict[str, set[str]] = {}
+    for group in ("paired_changed", "only_in_before", "only_in_after"):
+        rows = document[group]
+        require(isinstance(rows, list), f"{label} {group} is not an array")
+        groups[group] = rows
+        group_keys[group] = set()
+        for index, row in enumerate(rows):
+            require(isinstance(row, dict), f"{label} {group} row {index} is not an object")
+            expected_row_fields = (
+                {"key", "changed_dimensions", "before", "after"}
+                if group == "paired_changed"
+                else {"key", "content", "interpretation"}
+            )
+            require(
+                set(row) == expected_row_fields,
+                f"{label} {group} row {index} has an invalid shape",
+            )
+            key = row.get("key")
+            require(isinstance(key, dict), f"{label} {group} row {index} omits its key")
+            component = key.get("component")
+            expected_key_fields = (
+                {"source_namespace", "component", "relative_path"}
+                if entity == "resources" else {"source_namespace", "component"}
+            )
+            require(
+                entity in {"resources", "components"}
+                and set(key) == expected_key_fields
+                and isinstance(key.get("source_namespace"), str)
+                and isinstance(component, dict)
+                and set(component) == {"kind", "slug"}
+                and isinstance(component.get("kind"), str)
+                and isinstance(component.get("slug"), str)
+                and (
+                    entity != "resources"
+                    or isinstance(key.get("relative_path"), str)
+                    and bool(key["relative_path"])
+                ),
+                f"{label} {group} row {index} has an invalid key shape",
+            )
+            if group == "paired_changed":
+                changed_dimensions = row.get("changed_dimensions")
+                require(
+                    isinstance(changed_dimensions, list)
+                    and bool(changed_dimensions)
+                    and all(isinstance(value, str) and value for value in changed_dimensions)
+                    and len(set(changed_dimensions)) == len(changed_dimensions),
+                    f"{label} {group} row {index} has invalid changed dimensions",
+                )
+                require(
+                    isinstance(row["before"], dict)
+                    and isinstance(row["after"], dict),
+                    f"{label} {group} row {index} has invalid compared content",
+                )
+            else:
+                expected_interpretation = (
+                    "present_only_in_the_supplied_before_audit_not_verified_remediation"
+                    if group == "only_in_before" else
+                    "present_only_in_the_supplied_after_audit_not_verified_newness"
+                )
+                require(
+                    isinstance(row["content"], dict)
+                    and row["interpretation"] == expected_interpretation,
+                    f"{label} {group} row {index} has invalid one-sided content",
+                )
+            encoded_key = json.dumps(
+                key, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            )
+            require(
+                encoded_key not in seen_keys,
+                f"{label} repeats an entity identity across comparison groups",
+            )
+            seen_keys.add(encoded_key)
+            group_keys[group].add(encoded_key)
+    require(
+        before_count == len(before_keys) and after_count == len(after_keys),
+        f"{label} source identity counts do not reconcile",
+    )
+    shared_keys = before_keys & after_keys
+    require(
+        group_keys["only_in_before"] == before_keys - after_keys
+        and group_keys["only_in_after"] == after_keys - before_keys
+        and group_keys["paired_changed"] <= shared_keys
+        and paired_unchanged
+        == len(shared_keys) - len(group_keys["paired_changed"]),
+        f"{label} identities do not match their source entities",
+    )
+    require(
+        paired_unchanged + len(groups["paired_changed"])
+        + len(groups["only_in_before"]) == before_count
+        and paired_unchanged + len(groups["paired_changed"])
+        + len(groups["only_in_after"]) == after_count,
+        f"{label} does not conserve its source entities",
+    )
+    return {"paired_unchanged_count": paired_unchanged, **groups}
+
+
+def _scenario_fingerprint_entity_counts(
+    scenario: dict[str, Any], label: str
+) -> dict[str, int]:
+    summary = scenario.get("fingerprints")
+    require(isinstance(summary, dict), f"{label} omits fingerprint expectations")
+    counts: dict[str, int] = {}
+    for entity, field in (("resources", "resource_count"), ("components", "component_count")):
+        require(field in summary, f"{label} omits expected {field}")
+        value = summary[field]
+        require(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+            f"{label} has an invalid expected {field}",
+        )
+        counts[entity] = value
+    return counts
+
+
 def _run_offline_acceptance(
     runner: ProcessRunner, binary: Path, scenarios: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
@@ -2851,7 +3118,19 @@ def _run_offline_acceptance(
                 and counts["changed"] == 0
                 and counts["unchanged"] == source.item_count,
                 f"offline self comparison changed {name}")
+        fingerprint_entity_counts = None
         if scenario.get("fingerprints") is not None:
+            expected_entity_counts = _scenario_fingerprint_entity_counts(
+                scenario, f"offline fingerprint source {name}"
+            )
+            fingerprint_entity_inventory = _fingerprint_source_entity_inventory(
+                source, f"offline fingerprint source {name}"
+            )
+            fingerprint_entity_counts = fingerprint_entity_inventory.counts
+            require(
+                fingerprint_entity_counts == expected_entity_counts,
+                f"offline fingerprint source counts differ for {name}",
+            )
             wordpress = compared.get("wordpress_review_comparison")
             fingerprints = (
                 wordpress.get("asset_fingerprints")
@@ -2864,26 +3143,49 @@ def _run_offline_acceptance(
                 and wordpress.get("status") == "compared"
                 and isinstance(fingerprints, dict)
                 and fingerprints.get("status") == "compared"
-                and all(
-                    fingerprints.get(facet, {}).get("status") == "unchanged"
-                    for facet in ("methodology", "catalogue", "coverage")
+                and fingerprints.get("interpretation_limits")
+                == FINGERPRINT_COMPARISON_INTERPRETATION_LIMITS,
+                f"offline fingerprint self comparison is unavailable for {name}",
+            )
+            for facet in ("methodology", "catalogue", "coverage"):
+                facet_document = fingerprints.get(facet)
+                require(
+                    isinstance(facet_document, dict)
+                    and facet_document.get("status") == "unchanged",
+                    f"offline fingerprint self comparison changed {facet} for {name}",
                 )
-                and fingerprints.get("resources", {}).get("paired_unchanged_count")
-                == scenario["fingerprints"]["resource_count"]
-                and fingerprints.get("components", {}).get("paired_unchanged_count") == 1
-                and all(
-                    not fingerprints.get(entity, {}).get(group)
+            entity_groups = {
+                entity: _fingerprint_comparison_entity_groups(
+                    fingerprints.get(entity),
+                    entity=entity,
+                    before_count=fingerprint_entity_counts[entity],
+                    after_count=fingerprint_entity_counts[entity],
+                    before_keys=fingerprint_entity_inventory.keys[entity],
+                    after_keys=fingerprint_entity_inventory.keys[entity],
+                    label=f"offline fingerprint self comparison {name} {entity}",
+                )
+                for entity in ("resources", "components")
+            }
+            require(
+                all(
+                    entity_groups[entity]["paired_unchanged_count"]
+                    == fingerprint_entity_counts[entity]
+                    and entity_groups[entity]["paired_changed"] == []
+                    and entity_groups[entity]["only_in_before"] == []
+                    and entity_groups[entity]["only_in_after"] == []
                     for entity in ("resources", "components")
-                    for group in ("paired_changed", "only_in_before", "only_in_after")
                 ),
                 f"offline fingerprint self comparison changed {name}",
             )
         require_bundle_unchanged(name, scenario)
-        results["bundles"][name] = {
+        bundle_result = {
             "bundle_unchanged": True,
             "verification_status": verified["status"],
             "self_compare_counts": counts,
         }
+        if fingerprint_entity_counts is not None:
+            bundle_result["fingerprint_entity_counts"] = fingerprint_entity_counts
+        results["bundles"][name] = bundle_result
 
     before = Path(scenarios["pretty-review-only"]["_bundle"])
     after = Path(scenarios["pretty-discovery"]["_bundle"])
@@ -3078,11 +3380,56 @@ def _run_offline_acceptance(
             components = (
                 fingerprints.get("components") if isinstance(fingerprints, dict) else None
             )
-            resource_changes = (
-                resources.get("paired_changed") if isinstance(resources, dict) else None
+            before_entity_inventory = _fingerprint_source_entity_inventory(
+                before_document, f"{label} before"
             )
-            component_changes = (
-                components.get("paired_changed") if isinstance(components, dict) else None
+            after_entity_inventory = _fingerprint_source_entity_inventory(
+                after_document, f"{label} after"
+            )
+            before_entity_counts = before_entity_inventory.counts
+            after_entity_counts = after_entity_inventory.counts
+            require(
+                before_entity_counts
+                == _scenario_fingerprint_entity_counts(
+                    scenarios[before_name], f"{label} before"
+                )
+                and after_entity_counts
+                == _scenario_fingerprint_entity_counts(
+                    scenarios[after_name], f"{label} after"
+                ),
+                f"{label} source fingerprint counts differ from scenario expectations",
+            )
+            resource_groups = _fingerprint_comparison_entity_groups(
+                resources,
+                entity="resources",
+                before_count=before_entity_counts["resources"],
+                after_count=after_entity_counts["resources"],
+                before_keys=before_entity_inventory.keys["resources"],
+                after_keys=after_entity_inventory.keys["resources"],
+                label=f"{label} resources",
+            )
+            component_groups = _fingerprint_comparison_entity_groups(
+                components,
+                entity="components",
+                before_count=before_entity_counts["components"],
+                after_count=after_entity_counts["components"],
+                before_keys=before_entity_inventory.keys["components"],
+                after_keys=after_entity_inventory.keys["components"],
+                label=f"{label} components",
+            )
+            resource_changes = resource_groups["paired_changed"]
+            component_changes = component_groups["paired_changed"]
+            methodology = (
+                fingerprints.get("methodology")
+                if isinstance(fingerprints, dict) else None
+            )
+            catalogue = (
+                fingerprints.get("catalogue")
+                if isinstance(fingerprints, dict) else None
+            )
+            coverage = (
+                fingerprints.get("coverage")
+                if isinstance(fingerprints, dict) else None
             )
             require(
                 isinstance(wordpress, dict)
@@ -3090,16 +3437,23 @@ def _run_offline_acceptance(
                 and wordpress.get("status") == "compared"
                 and isinstance(fingerprints, dict)
                 and fingerprints.get("status") == "compared"
-                and fingerprints.get("methodology", {}).get("status") == "unchanged"
-                and fingerprints.get("catalogue", {}).get("status") == catalogue_status
-                and fingerprints.get("coverage", {}).get("status") == "unchanged"
-                and isinstance(resources, dict)
-                and resources.get("paired_unchanged_count") == unchanged_resource_count
-                and isinstance(resource_changes, list)
+                and fingerprints.get("interpretation_limits")
+                == FINGERPRINT_COMPARISON_INTERPRETATION_LIMITS
+                and isinstance(methodology, dict)
+                and methodology.get("status") == "unchanged"
+                and isinstance(catalogue, dict)
+                and catalogue.get("status") == catalogue_status
+                and isinstance(coverage, dict)
+                and coverage.get("status") == "unchanged"
+                and resource_groups["paired_unchanged_count"]
+                == unchanged_resource_count
                 and len(resource_changes) == changed_resource_count
-                and isinstance(components, dict)
-                and isinstance(component_changes, list)
+                and resource_groups["only_in_before"] == []
+                and resource_groups["only_in_after"] == []
+                and component_groups["paired_unchanged_count"] == 0
                 and len(component_changes) == 1
+                and component_groups["only_in_before"] == []
+                and component_groups["only_in_after"] == []
                 and required_component_dimensions
                 <= set(component_changes[0].get("changed_dimensions", [])),
                 f"{label} did not separate bytes, catalogue, coverage, and candidates",
@@ -3240,6 +3594,117 @@ def _bounded_observed_page_accounting_diagnostic(
                 ]
                 if isinstance(rows, list)
                 else {"status": "wrong_type", "json_type": _json_type(rows)}
+            ),
+        },
+    }
+
+
+def _bounded_rejected_page_provenance_diagnostic(
+    discovery: Any,
+    *,
+    expected_entry_reference: str,
+    expected_source_identities: Sequence[tuple[str, tuple[str, str] | None]],
+) -> dict[str, Any]:
+    pages = discovery.get("page_collection") if isinstance(discovery, dict) else None
+    entry_present = isinstance(pages, dict) and "entry_page_reference" in pages
+    entry = pages.get("entry_page_reference") if isinstance(pages, dict) else None
+    page_rows = pages.get("pages") if isinstance(pages, dict) else None
+    secondary_references = (
+        [row.get("page_reference") for row in page_rows if isinstance(row, dict)]
+        if isinstance(page_rows, list) else []
+    )
+
+    def reference_array(value: Any, present: bool) -> dict[str, Any]:
+        if not present:
+            return {"status": "missing"}
+        if not isinstance(value, list):
+            return {"status": "wrong_type", "json_type": _json_type(value)}
+        all_opaque = all(
+            isinstance(reference, str)
+            and OPAQUE_REFERENCE_RE.fullmatch(reference) is not None
+            for reference in value
+        )
+        return {
+            "status": "array",
+            "count": len(value),
+            "all_opaque": all_opaque,
+            "distinct": all_opaque and len(set(value)) == len(value),
+            "entry_only": value == [expected_entry_reference],
+            "contains_secondary": any(
+                reference in secondary_references for reference in value
+            ),
+        }
+
+    sources = discovery.get("sources") if isinstance(discovery, dict) else None
+    source_rows = []
+    if isinstance(sources, list):
+        for index, source in enumerate(sources[:8]):
+            expected = (
+                expected_source_identities[index]
+                if index < len(expected_source_identities) else None
+            )
+            if not isinstance(source, dict):
+                source_rows.append({
+                    "status": "wrong_type",
+                    "json_type": _json_type(source),
+                })
+                continue
+            actual_component = source.get("component") if "component" in source else None
+            expected_component = expected[1] if expected is not None else None
+            component_matches = (
+                "component" not in source
+                if expected_component is None else
+                actual_component == {
+                    "kind": expected_component[0],
+                    "slug": expected_component[1],
+                }
+            )
+            source_rows.append({
+                "status": "object",
+                "identity_matches": (
+                    expected is not None
+                    and source.get("kind") == expected[0]
+                    and component_matches
+                ),
+                "source_page_references": reference_array(
+                    source.get("source_page_references"),
+                    "source_page_references" in source,
+                ),
+            })
+    return {
+        "expected": {
+            "entry_reference_matches_application": True,
+            "source_count": len(expected_source_identities),
+            "source_reference_policy": "exactly_one_entry_reference",
+        },
+        "actual": {
+            "entry_reference": {
+                "status": (
+                    "missing" if not entry_present else
+                    "present" if isinstance(entry, str) else "wrong_type"
+                ),
+                "json_type": (
+                    None if not entry_present or isinstance(entry, str)
+                    else _json_type(entry)
+                ),
+                "opaque": (
+                    isinstance(entry, str)
+                    and OPAQUE_REFERENCE_RE.fullmatch(entry) is not None
+                ),
+                "matches_application": entry == expected_entry_reference,
+            },
+            "secondary_page_references": {
+                "row_count": len(page_rows) if isinstance(page_rows, list) else None,
+                "reference_count": len(secondary_references),
+                "distinct": (
+                    len(secondary_references) == len(set(secondary_references))
+                ),
+                "contains_entry": expected_entry_reference in secondary_references,
+            },
+            "sources": (
+                source_rows
+                if isinstance(sources, list) else
+                {"status": "wrong_type", "json_type": _json_type(sources)}
             ),
         },
     }
@@ -3533,6 +3998,7 @@ def _validate_rejected_page_fingerprint_document(
     *,
     catalogue_path: Path,
     expected_discovery_request_count: int,
+    expected_application_url: str,
 ) -> dict[str, Any]:
     """Require a selected catalogue to gain no authority from rejected pages."""
     audit = document.get("wordpress_asset_fingerprints")
@@ -3572,15 +4038,53 @@ def _validate_rejected_page_fingerprint_document(
         and _is_exact_nonnegative_integer(catalogue.get("file_count"), 9),
         "empty fingerprint catalogue identity or finite scope differs",
     )
-    _, discovery, _, page_diagnostic = _validate_observed_page_accounting(
+    _, discovery, pages, page_diagnostic = _validate_observed_page_accounting(
         document,
         expected_discovery_request_count=expected_discovery_request_count,
         expected_page_association="rejected",
         expected_review_schema="security.wordpress-review-audit/v8",
     )
+    require(
+        isinstance(expected_application_url, str)
+        and expected_application_url.isascii()
+        and 0 < len(expected_application_url) <= 2_048,
+        "rejected-page application URL oracle is invalid",
+    )
+    expected_entry_reference = _framed_reference(
+        "wordpress-discovery-page", expected_application_url
+    )
+    expected_source_identities = [
+        ("rest_index", None),
+        ("theme_stylesheet", ("theme", "termivar-child")),
+        ("theme_stylesheet", ("theme", "termivar-parent")),
+        ("plugin_readme", ("plugin", "termivar-metadata-lab")),
+    ]
+    provenance_diagnostic = _bounded_rejected_page_provenance_diagnostic(
+        discovery,
+        expected_entry_reference=expected_entry_reference,
+        expected_source_identities=expected_source_identities,
+    )
+    entry_reference = pages.get("entry_page_reference")
+    page_rows = pages.get("pages")
+    page_references = (
+        [page.get("page_reference") for page in page_rows]
+        if isinstance(page_rows, list) and all(isinstance(page, dict) for page in page_rows)
+        else []
+    )
+    require(
+        isinstance(entry_reference, str)
+        and OPAQUE_REFERENCE_RE.fullmatch(entry_reference) is not None
+        and entry_reference == expected_entry_reference
+        and len(page_references) == 2
+        and len(set(page_references)) == 2
+        and entry_reference not in page_references,
+        "rejected-page entry or secondary-page provenance differs",
+        provenance_diagnostic,
+    )
     zero_diagnostic = {
         "status": "rejected_page_fingerprint_authority_mismatch",
         "page_collection": page_diagnostic,
+        "entry_provenance": provenance_diagnostic,
         "actual": _bounded_fields(
             audit,
             (
@@ -3654,32 +4158,53 @@ def _validate_rejected_page_fingerprint_document(
         "rejected sibling-page layout accounting changed",
         zero_diagnostic,
     )
-    expected_source_identities = [
-        ("rest_index", None),
-        ("theme_stylesheet", ("theme", "termivar-child")),
-        ("theme_stylesheet", ("theme", "termivar-parent")),
-        ("plugin_readme", ("plugin", "termivar-metadata-lab")),
-    ]
-    actual_source_identities = [
-        (
-            source.get("kind"),
-            (
-                source.get("component", {}).get("kind"),
-                source.get("component", {}).get("slug"),
-            )
-            if isinstance(source, dict) and isinstance(source.get("component"), dict)
-            else None,
+    sources = discovery.get("sources")
+    require(
+        isinstance(sources, list)
+        and len(sources) == len(expected_source_identities)
+        and all(isinstance(source, dict) for source in sources),
+        "rejected sibling pages changed entry-bound discovery source identities",
+        zero_diagnostic,
+    )
+    actual_source_identities: list[tuple[str | None, tuple[str, str] | None]] = []
+    for index, (source, expected_identity) in enumerate(
+        zip(sources, expected_source_identities, strict=True)
+    ):
+        kind, expected_component = expected_identity
+        require(
+            source.get("kind") == kind,
+            f"rejected-page source {index} changed kind",
+            zero_diagnostic,
         )
-        for source in discovery.get("sources", [])
-        if isinstance(source, dict)
-    ]
+        if expected_component is None:
+            require(
+                "component" not in source,
+                f"rejected-page source {index} gained a component identity",
+                zero_diagnostic,
+            )
+            actual_component = None
+        else:
+            expected_component_document = {
+                "kind": expected_component[0],
+                "slug": expected_component[1],
+            }
+            require(
+                source.get("component") == expected_component_document,
+                f"rejected-page source {index} changed component identity",
+                zero_diagnostic,
+            )
+            actual_component = expected_component
+        require(
+            "source_page_references" in source
+            and isinstance(source["source_page_references"], list)
+            and source["source_page_references"] == [entry_reference],
+            f"rejected-page source {index} changed entry-only provenance",
+            zero_diagnostic,
+        )
+        actual_source_identities.append((source["kind"], actual_component))
     require(
         actual_source_identities == expected_source_identities
-        and all(
-            "source_page_references" not in source
-            for source in discovery.get("sources", [])
-            if isinstance(source, dict)
-        ),
+        and len(set(actual_source_identities)) == len(expected_source_identities),
         "rejected sibling pages changed entry-bound discovery source identities",
         zero_diagnostic,
     )
@@ -4009,6 +4534,7 @@ def _validate_fingerprint_document(
         "undetermined_release_ids": list(undetermined),
         "inconsistent_release_ids": list(inconsistent),
         "resource_count": len(resources),
+        "component_count": len(components),
         "attempted_request_count": audit["attempted_request_count"],
         "reused_response_count": audit["reused_response_count"],
         "fetched_response_count": audit["fetched_response_count"],
@@ -4200,6 +4726,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                                     catalogue_path=fingerprints_path,
                                     expected_discovery_request_count=(
                                         observed_discovery_request_count
+                                    ),
+                                    expected_application_url=(
+                                        target or lab.origin or ""
                                     ),
                                 )
                             )
