@@ -1810,6 +1810,22 @@ fn wordpress_asset_fingerprint_compare_separates_catalogue_bytes_and_candidate_c
     assert!(dimensions.contains(&json!("candidate_set")));
     assert!(dimensions.contains(&json!("reference_matrix")));
     assert!(dimensions.contains(&json!("resource_coverage")));
+
+    let markdown = compare_reports(
+        &bytes(&baseline),
+        &bytes(&changed),
+        ComparisonFormat::Markdown,
+    )
+    .unwrap();
+    assert!(markdown.contains("### Asset fingerprint candidates"));
+    assert!(markdown.contains("resource_bytes"));
+    assert!(markdown.contains("candidate_set"));
+
+    let html =
+        compare_reports(&bytes(&baseline), &bytes(&changed), ComparisonFormat::Html).unwrap();
+    assert!(html.contains("Asset fingerprint candidates"));
+    assert!(html.contains("resource_bytes"));
+    assert!(html.contains("candidate_set"));
 }
 
 #[test]

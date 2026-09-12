@@ -474,7 +474,71 @@ fn observed_asset_fingerprints_intersect_listed_releases_and_remain_offline_read
         wordpress["asset_fingerprints"]["components"]["paired_unchanged_count"],
         1
     );
+
+    let option_off_assessment_path = option_off.join("assessment.json");
+    for (case, before, after, expected) in [
+        (
+            "self",
+            assessment_path.as_path(),
+            assessment_path.as_path(),
+            "compared",
+        ),
+        (
+            "presence",
+            option_off_assessment_path.as_path(),
+            assessment_path.as_path(),
+            "before_fingerprint_audit_missing",
+        ),
+    ] {
+        for format in ["markdown", "html"] {
+            let output = termivar()
+                .args(["report", "compare", "--before"])
+                .arg(before)
+                .arg("--after")
+                .arg(after)
+                .args(["--same-scope", "--format", format])
+                .output()
+                .expect("termivar process must start");
+            assert_success(
+                &output,
+                &format!("fingerprint {case} Report Compare {format}"),
+            );
+            let rendered = String::from_utf8(output.stdout).unwrap();
+            assert!(rendered.contains("Asset fingerprint candidates"));
+            assert!(rendered.contains(expected));
+            assert!(rendered.contains("not installed-version evidence"));
+        }
+    }
     assert_eq!(server.requests.lock().unwrap().len(), before_offline);
+
+    for format in ["csv", "markdown"] {
+        let output = termivar()
+            .args([
+                "scan",
+                "--profile",
+                "web-review",
+                "--wordpress-review",
+                "--wordpress-discovery",
+                "--wordpress-fingerprints",
+            ])
+            .arg(&catalogue)
+            .args(["--report-format", format])
+            .arg(&server.origin)
+            .output()
+            .expect("termivar process must start");
+        assert_success(&output, &format!("asset fingerprint {format} report"));
+        let rendered = String::from_utf8(output.stdout).unwrap();
+        assert!(rendered.contains("release-b"));
+        assert!(rendered.contains("single_catalogue_candidate"));
+        match format {
+            "csv" => assert!(rendered.contains("wordpress_asset_fingerprint_audit")),
+            "markdown" => {
+                assert!(rendered.contains("WordPress observed asset fingerprint candidates"));
+                assert!(rendered.contains("Finite reference catalogue"));
+            },
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[test]

@@ -2136,6 +2136,30 @@ def _assert_fingerprint_request_delta(
     )
 
 
+def _assert_fingerprint_option_off_trace(
+    trace: list[tuple[str, str, int, tuple[str, ...]]],
+    *,
+    plugin_base_path: str,
+    relative_paths: Sequence[str],
+) -> None:
+    expected = [
+        ("HEAD", f"{plugin_base_path}{path}", 200, ())
+        for path in sorted(relative_paths)
+        if path.endswith(".css")
+    ]
+    asset_prefix = f"{plugin_base_path}assets/"
+    actual = [
+        request
+        for request in trace
+        if request[1].startswith(asset_prefix)
+    ]
+    require(
+        actual == expected,
+        "option-off observed discovery must preserve the ordinary stylesheet HEAD "
+        "without acquiring fingerprint asset bodies",
+    )
+
+
 def _run_scan(
     runner: ProcessRunner,
     binary: Path,
@@ -3518,17 +3542,19 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 "missing_reference_mutation": missing_catalogue_identity,
             }
 
-            lab.configure_fingerprint_assets(variant="release-b", mode="two")
+            observed_baseline_truth = lab.configure_fingerprint_assets(
+                variant="release-b", mode="two"
+            )
             observed_baseline = run_case(
                 "fingerprint-observed-option-off",
                 review=True,
                 discovery=True,
                 page_scope="observed",
             )
-            require(
-                not any("termivar-fingerprint-lab/assets/" in target
-                        for _, target, _, _ in observed_baseline),
-                "option-off observed discovery acquired fingerprint asset bytes",
+            _assert_fingerprint_option_off_trace(
+                observed_baseline,
+                plugin_base_path="/wp-content/plugins/termivar-fingerprint-lab/",
+                relative_paths=tuple(observed_baseline_truth["observed_assets"]),
             )
 
             def run_fingerprint_case(

@@ -388,6 +388,111 @@ fn wordpress_asset_fingerprints_require_metadata_discovery() {
     ));
 }
 
+#[cfg(all(feature = "wordpress-review", feature = "reporting"))]
+#[tokio::test]
+async fn wordpress_asset_fingerprint_candidates_render_in_assessment_csv_and_markdown() {
+    const SCRIPT: &[u8] = include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b/assets/fingerprint.js"
+    );
+    const STYLESHEET: &[u8] = include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/reference-assets/release-b/assets/fingerprint.css"
+    );
+    let server = serve(|request| {
+        let response = match request.path() {
+            "/" => FixtureResponse::html(
+                r#"<html><head>
+                    <script src="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42"></script>
+                    <link rel="stylesheet" href="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42">
+                    </head><body>task-owned fingerprint fixture</body></html>"#,
+            ),
+            "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js" => {
+                FixtureResponse::new("200 OK", Some("application/javascript"), SCRIPT.to_vec())
+            },
+            "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css" => {
+                FixtureResponse::new("200 OK", Some("text/css"), STYLESHEET.to_vec())
+            },
+            "/wp-content/plugins/termivar-fingerprint-lab/readme.txt" => FixtureResponse::new(
+                "200 OK",
+                Some("text/plain"),
+                "=== Termivar Fingerprint Lab ===\nStable tag: 9.9.9\n",
+            ),
+            _ => FixtureResponse::new("404 Not Found", Some("text/plain"), "not found"),
+        };
+        FixtureReply::Response(response)
+    })
+    .await;
+
+    let catalogue = parse_wordpress_asset_fingerprint_catalog(include_bytes!(
+        "../../../../docs/examples/wordpress-review/asset-fingerprints/catalogue.synthetic.json"
+    ))
+    .unwrap();
+    let inputs = WordPressReviewInputs::new(None, None)
+        .with_asset_fingerprint_catalog(catalogue)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_wordpress_review(inputs)
+        .with_wordpress_discovery()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let product =
+        ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap()).unwrap();
+
+    let json = ReportGenerator::generate_assessment(&product, ReportFormat::Json).unwrap();
+    let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let fingerprints = &document["wordpress_asset_fingerprints"];
+    assert_eq!(fingerprints["component_count"], 1);
+    assert_eq!(fingerprints["resource_count"], 2);
+    assert_eq!(
+        fingerprints["components"][0]["state"],
+        "single_catalogue_candidate"
+    );
+    assert_eq!(
+        fingerprints["components"][0]["compatible_release_ids"],
+        serde_json::json!(["release-b"])
+    );
+    let plugin = document["wordpress_review"]["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["identity"]["slug"] == "termivar-fingerprint-lab")
+        .expect("fingerprinted plugin remains in the WordPress component inventory");
+    assert_eq!(plugin["versions"], serde_json::json!([]));
+
+    for format in [ReportFormat::Csv, ReportFormat::Markdown] {
+        let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+        assert!(rendered.contains("release-b"));
+        assert!(rendered.contains("single_catalogue_candidate"));
+        assert!(!rendered.contains("window.termivarFingerprintLab"));
+        match format {
+            ReportFormat::Csv => {
+                assert!(rendered.contains("wordpress_asset_fingerprint_audit"));
+                assert!(rendered.contains("not_established_by_asset_fingerprints"));
+            },
+            ReportFormat::Markdown => {
+                assert!(rendered.contains("WordPress observed asset fingerprint candidates"));
+                assert!(rendered.contains("Finite reference catalogue"));
+                assert!(rendered.contains("not installed-version evidence"));
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    let requests = server.requests().await;
+    for target in [
+        "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
+        "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
+    ] {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == "GET" && request.target == target)
+                .count(),
+            1
+        );
+    }
+}
+
 #[cfg(feature = "wordpress-review")]
 #[test]
 fn non_root_wordpress_review_requires_discovery_at_build_time() {

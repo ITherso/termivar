@@ -1214,6 +1214,12 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             ("GET", "/contact/", 200, ()),
             ("GET", "/gallery/", 200, ()),
             (
+                "HEAD",
+                "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css",
+                200,
+                (),
+            ),
+            (
                 "GET",
                 "/wp-content/plugins/termivar-fingerprint-lab/readme.txt",
                 200,
@@ -1248,6 +1254,51 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 fingerprint + [("GET", "/unseen.css", 200, ())],
                 plugin_base_path="/wp-content/plugins/termivar-fingerprint-lab/",
                 relative_paths=("assets/fingerprint.js", "assets/fingerprint.css"),
+            )
+
+    def test_option_off_fingerprint_trace_retains_head_without_body_get(self):
+        base = "/wp-content/plugins/termivar-fingerprint-lab/"
+        expected_head = (
+            "HEAD",
+            f"{base}assets/fingerprint.css",
+            200,
+            (),
+        )
+        trace = [
+            ("GET", "/", 200, ()),
+            ("GET", "/contact/", 200, ()),
+            expected_head,
+        ]
+        paths = ("assets/fingerprint.js", "assets/fingerprint.css")
+        runner._assert_fingerprint_option_off_trace(
+            trace,
+            plugin_base_path=base,
+            relative_paths=paths,
+        )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError, "without acquiring fingerprint asset bodies"
+        ):
+            runner._assert_fingerprint_option_off_trace(
+                trace
+                + [("GET", f"{base}assets/fingerprint.js?ver=cache-42", 200, ())],
+                plugin_base_path=base,
+                relative_paths=paths,
+            )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError, "without acquiring fingerprint asset bodies"
+        ):
+            runner._assert_fingerprint_option_off_trace(
+                trace + [("GET", f"{base}assets/unseen.css", 200, ())],
+                plugin_base_path=base,
+                relative_paths=paths,
+            )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError, "preserve the ordinary stylesheet HEAD"
+        ):
+            runner._assert_fingerprint_option_off_trace(
+                trace[:-1],
+                plugin_base_path=base,
+                relative_paths=paths,
             )
 
     def test_fixture_inventory_and_digest_pins_are_closed(self):
