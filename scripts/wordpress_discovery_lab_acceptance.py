@@ -227,10 +227,251 @@ def _framed_reference(domain: str, value: str) -> str:
 class AcceptanceError(RuntimeError):
     """A bounded acceptance assertion failed."""
 
+    def __init__(self, message: str, diagnostic: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
-def require(condition: bool, message: str) -> None:
+
+def require(
+    condition: bool,
+    message: str,
+    diagnostic: dict[str, Any] | None = None,
+) -> None:
     if not condition:
-        raise AcceptanceError(message)
+        raise AcceptanceError(message, diagnostic)
+
+
+def _json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int | float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "unsupported"
+
+
+def _bounded_integer_field(value: Any, present: bool) -> dict[str, Any]:
+    if not present:
+        return {"status": "missing"}
+    if not isinstance(value, int) or isinstance(value, bool):
+        return {"status": "wrong_type", "json_type": _json_type(value)}
+    if value < 0 or value > 1_000_000:
+        return {"status": "out_of_range"}
+    return {"status": "present", "value": value}
+
+
+def _bounded_closed_text_field(
+    value: Any,
+    present: bool,
+    allowed: frozenset[str],
+) -> dict[str, Any]:
+    if not present:
+        return {"status": "missing"}
+    if not isinstance(value, str):
+        return {"status": "wrong_type", "json_type": _json_type(value)}
+    if value not in allowed:
+        return {"status": "unrecognized"}
+    return {"status": "present", "value": value}
+
+
+def _bounded_release_ids(value: Any, present: bool) -> dict[str, Any]:
+    if not present:
+        return {"status": "missing"}
+    if not isinstance(value, list):
+        return {"status": "wrong_type", "json_type": _json_type(value)}
+    allowed = {"release-a", "release-b", "release-c"}
+    if (
+        any(not isinstance(item, str) or item not in allowed for item in value)
+        or len(value) != len(set(value))
+    ):
+        return {"status": "unrecognized", "length": min(len(value), 4)}
+    return {"status": "present", "value": value}
+
+
+def _bounded_fields(
+    value: Any,
+    integer_fields: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {
+            field: {"status": "container_wrong_type", "json_type": _json_type(value)}
+            for field in integer_fields
+        }
+    return {
+        field: _bounded_integer_field(value.get(field), field in value)
+        for field in integer_fields
+    }
+
+
+def _bounded_committed_resource_count(resources: Any) -> dict[str, Any]:
+    if not isinstance(resources, list):
+        return {"status": "wrong_type", "json_type": _json_type(resources)}
+    count = sum(
+        1
+        for resource in resources
+        if isinstance(resource, dict)
+        and resource.get("outcome") == "observed"
+        and isinstance(resource.get("evidence_reference_count"), int)
+        and not isinstance(resource.get("evidence_reference_count"), bool)
+        and resource["evidence_reference_count"] > 0
+        and isinstance(resource.get("evidence_references"), list)
+        and len(resource["evidence_references"])
+        == resource["evidence_reference_count"]
+        and isinstance(resource.get("observation"), dict)
+    )
+    return {"status": "present", "value": count}
+
+
+def _bounded_fingerprint_accounting_diagnostic(
+    document: Any,
+    *,
+    asset_count: int,
+    expected_state: str,
+    compatible: Sequence[str],
+    undetermined: Sequence[str],
+    inconsistent: Sequence[str],
+) -> dict[str, Any]:
+    """Return a value-safe diagnostic without copying report-controlled strings."""
+    audit = document.get("wordpress_asset_fingerprints") if isinstance(document, dict) else None
+    discovery = document.get("wordpress_discovery") if isinstance(document, dict) else None
+    review = document.get("wordpress_review") if isinstance(document, dict) else None
+    pages = discovery.get("page_collection") if isinstance(discovery, dict) else None
+    resources = audit.get("resources") if isinstance(audit, dict) else None
+    components = audit.get("components") if isinstance(audit, dict) else None
+    component = components[0] if isinstance(components, list) and len(components) == 1 else None
+    diagnostic = {
+        "expected": {
+            "fingerprint": {
+                "candidate_count": asset_count,
+                "selected_resource_count": asset_count,
+                "omitted_resource_count": 0,
+                "attempted_request_count": asset_count,
+                "reused_response_count": 0,
+                "fetched_response_count": asset_count,
+                "resource_count": asset_count,
+                "resources_length": asset_count,
+                "committed_resource_count": asset_count,
+                "stop": "complete",
+            },
+            "page_collection": {
+                "candidate_count": 2,
+                "selected_count": 2,
+                "reused_response_count": 2,
+                "fetched_response_count": 0,
+                "attempted_request_count": 0,
+                "completed_response_count": 2,
+                "committed_response_count": 2,
+                "accepted_association_count": 2,
+            },
+            "discovery": {
+                "attempted_request_count": 5,
+                "committed_response_count": 5,
+            },
+            "review": {"additional_request_count": 5 + asset_count},
+            "candidate_result": {
+                "state": expected_state,
+                "compatible_release_ids": list(compatible),
+                "undetermined_release_ids": list(undetermined),
+                "inconsistent_release_ids": list(inconsistent),
+            },
+        },
+        "actual": {
+            "fingerprint": _bounded_fields(
+                audit,
+                (
+                    "candidate_count",
+                    "selected_resource_count",
+                    "omitted_resource_count",
+                    "attempted_request_count",
+                    "reused_response_count",
+                    "fetched_response_count",
+                    "resource_count",
+                ),
+            ),
+            "page_collection": _bounded_fields(
+                pages,
+                (
+                    "candidate_count",
+                    "selected_count",
+                    "reused_response_count",
+                    "fetched_response_count",
+                    "attempted_request_count",
+                    "completed_response_count",
+                    "committed_response_count",
+                    "accepted_association_count",
+                ),
+            ),
+            "discovery": _bounded_fields(
+                discovery, ("attempted_request_count", "committed_response_count")
+            ),
+            "review": _bounded_fields(review, ("additional_request_count",)),
+        },
+    }
+    diagnostic["actual"]["fingerprint"]["resources_length"] = (
+        _bounded_integer_field(len(resources), True)
+        if isinstance(resources, list)
+        else {"status": "wrong_type", "json_type": _json_type(resources)}
+        if isinstance(audit, dict) and "resources" in audit
+        else {"status": "missing"}
+    )
+    diagnostic["actual"]["fingerprint"]["committed_resource_count"] = (
+        _bounded_committed_resource_count(resources)
+        if isinstance(audit, dict) and "resources" in audit
+        else {"status": "missing"}
+    )
+    diagnostic["actual"]["fingerprint"]["stop"] = _bounded_closed_text_field(
+        audit.get("stop") if isinstance(audit, dict) else None,
+        isinstance(audit, dict) and "stop" in audit,
+        frozenset({
+            "complete",
+            "cancelled",
+            "deadline_exceeded",
+            "request_limit",
+            "response_limit",
+            "runtime_limit",
+            "rate_limited",
+        }),
+    )
+    diagnostic["actual"]["candidate_result"] = {
+        "state": _bounded_closed_text_field(
+            component.get("state") if isinstance(component, dict) else None,
+            isinstance(component, dict) and "state" in component,
+            frozenset({
+                "single_catalogue_candidate",
+                "multiple_catalogue_candidates",
+                "provisional_candidates",
+                "no_consistent_catalogue_release",
+                "no_catalogue_byte_match",
+                "undetermined",
+            }),
+        ),
+        "component_rows": _bounded_integer_field(
+            len(components), True
+        ) if isinstance(components, list) else {
+            "status": "wrong_type",
+            "json_type": _json_type(components),
+        } if isinstance(audit, dict) and "components" in audit else {"status": "missing"},
+        "compatible_release_ids": _bounded_release_ids(
+            component.get("compatible_release_ids") if isinstance(component, dict) else None,
+            isinstance(component, dict) and "compatible_release_ids" in component,
+        ),
+        "undetermined_release_ids": _bounded_release_ids(
+            component.get("undetermined_release_ids") if isinstance(component, dict) else None,
+            isinstance(component, dict) and "undetermined_release_ids" in component,
+        ),
+        "inconsistent_release_ids": _bounded_release_ids(
+            component.get("inconsistent_release_ids") if isinstance(component, dict) else None,
+            isinstance(component, dict) and "inconsistent_release_ids" in component,
+        ),
+    }
+    return diagnostic
 
 
 def _json_object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -2997,8 +3238,26 @@ def _validate_fingerprint_document(
         and catalogue.get("release_count") == 3,
         "fingerprint catalogue identity or finite scope differs",
     )
+    try:
+        accounting_diagnostic = _bounded_fingerprint_accounting_diagnostic(
+            document,
+            asset_count=len(asset_oracle),
+            expected_state=expected_state,
+            compatible=compatible,
+            undetermined=undetermined,
+            inconsistent=inconsistent,
+        )
+    except Exception:
+        accounting_diagnostic = {
+            "status": "unavailable",
+            "reason": "diagnostic_capture_failed",
+        }
     resources = audit.get("resources")
-    require(isinstance(resources, list), "fingerprint resource rows are unavailable")
+    require(
+        isinstance(resources, list),
+        "fingerprint resource rows are unavailable",
+        accounting_diagnostic,
+    )
     require(
         audit.get("candidate_count") == len(asset_oracle)
         and audit.get("selected_resource_count") == len(asset_oracle)
@@ -3010,6 +3269,7 @@ def _validate_fingerprint_document(
         and audit.get("resource_count") == len(asset_oracle)
         and len(resources) == len(asset_oracle),
         "fingerprint acquisition accounting differs from the literal oracle",
+        accounting_diagnostic,
     )
     actual_resources: dict[str, dict[str, Any]] = {}
     transferred_bytes = 0
@@ -3107,6 +3367,7 @@ def _validate_fingerprint_document(
         and len(release_rows) == 3
         and actual_release_states == expected_release_states,
         "fingerprint candidate aggregation differs from the independent oracle",
+        accounting_diagnostic,
     )
     review = document.get("wordpress_review")
     require(
@@ -3141,6 +3402,7 @@ def _validate_fingerprint_document(
         and len(page_collection["pages"]) == 2
         and review.get("additional_request_count") == 5 + len(asset_oracle),
         "fingerprint run did not preserve observed-page reuse and shared accounting",
+        accounting_diagnostic,
     )
     page_references = {
         page.get("page_reference")
@@ -3414,8 +3676,18 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                                 )
                     except AcceptanceError as error:
                         outcomes = _bounded_discovery_source_outcomes(document)
+                        diagnostic = None
+                        if isinstance(error.diagnostic, dict):
+                            diagnostic = dict(error.diagnostic)
+                            diagnostic.update({
+                                "scenario": name,
+                                "source_ref": source_ref,
+                                "binary": dict(result["binary"]),
+                                "source_outcomes": outcomes,
+                            })
                         raise AcceptanceError(
-                            f"{name}: {error}; source_outcomes={outcomes}"
+                            f"{name}: {error}; source_outcomes={outcomes}",
+                            diagnostic,
                         ) from error
                     discovery_response_bytes = document["wordpress_discovery"]["response_bytes"]
                 scenarios[name] = {
@@ -4070,7 +4342,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             "failure": str(error)[-4000:],
             "fixture": fixture,
         }
-    write_evidence(args.output_dir, evidence)
+        if isinstance(error, AcceptanceError) and isinstance(error.diagnostic, dict):
+            try:
+                encoded = json.dumps(error.diagnostic, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+                evidence["failure_context"] = (
+                    error.diagnostic
+                    if len(encoded) <= 8 * 1024
+                    else {"status": "unavailable", "reason": "diagnostic_too_large"}
+                )
+            except (TypeError, ValueError, OverflowError):
+                evidence["failure_context"] = {
+                    "status": "unavailable",
+                    "reason": "diagnostic_serialization_failed",
+                }
+    try:
+        write_evidence(args.output_dir, evidence)
+    except (
+        AcceptanceError,
+        OSError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        UnicodeError,
+    ) as write_error:
+        print(
+            f"{evidence.get('failure', 'acceptance evidence write failed')}; "
+            f"evidence_write_error={type(write_error).__name__}",
+            file=sys.stderr,
+        )
+        return 1
     return 0 if evidence["status"] == "passed" else 1
 
 

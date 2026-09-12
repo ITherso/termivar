@@ -62,9 +62,15 @@ Version: 2.0
 body { color: #222; }
 "#;
 const FINGERPRINT_ROOT: &[u8] = br#"<!doctype html><html><head>
+<link rel="stylesheet" href="/wp-content/themes/fingerprint-base/assets/site.css">
+</head><body>
+<a href="/contact/">contact</a>
+<a href="/gallery/">gallery</a>
+</body></html>"#;
+const FINGERPRINT_PAGE: &[u8] = br#"<!doctype html><html><head>
 <script src="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42"></script>
 <link rel="stylesheet" href="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42">
-</head><body>synthetic fingerprint fixture</body></html>"#;
+</head><body>synthetic secondary fingerprint page</body></html>"#;
 const FINGERPRINT_PLUGIN_README: &[u8] = br#"=== Termivar Fingerprint Lab ===
 Stable tag: 9.9.9
 "#;
@@ -249,6 +255,14 @@ fn serve_fingerprint_fixture() -> RoutedServer {
                 ("GET" | "HEAD", "/") => {
                     ("200 OK", "text/html; charset=utf-8", FINGERPRINT_ROOT)
                 }
+                ("GET" | "HEAD", "/contact/" | "/gallery/") => {
+                    ("200 OK", "text/html; charset=utf-8", FINGERPRINT_PAGE)
+                }
+                ("GET", "/wp-content/themes/fingerprint-base/style.css") => (
+                    "200 OK",
+                    "text/css; charset=utf-8",
+                    b"/* Theme Name: Fingerprint Base\nVersion: 1.0 */",
+                ),
                 (
                     "GET" | "HEAD",
                     "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
@@ -309,6 +323,8 @@ fn observed_asset_fingerprints_intersect_listed_releases_and_remain_offline_read
             "web-review",
             "--wordpress-review",
             "--wordpress-discovery",
+            "--wordpress-page-scope",
+            "observed",
             "--report-dir",
         ])
         .arg(&option_off)
@@ -337,6 +353,8 @@ fn observed_asset_fingerprints_intersect_listed_releases_and_remain_offline_read
             "web-review",
             "--wordpress-review",
             "--wordpress-discovery",
+            "--wordpress-page-scope",
+            "observed",
             "--wordpress-fingerprints",
         ])
         .arg(&catalogue)
@@ -375,6 +393,24 @@ fn observed_asset_fingerprints_intersect_listed_releases_and_remain_offline_read
     assert_eq!(fingerprints["stop"], "complete");
     assert_eq!(fingerprints["resource_count"], 2);
     assert_eq!(fingerprints["component_count"], 1);
+    let pages = &assessment["wordpress_discovery"]["page_collection"];
+    assert_eq!(pages["mode"], "observed");
+    assert_eq!(pages["candidate_count"], 2);
+    assert_eq!(pages["selected_count"], 2);
+    assert_eq!(pages["reused_response_count"], 2);
+    assert_eq!(pages["fetched_response_count"], 0);
+    assert_eq!(pages["attempted_request_count"], 0);
+    assert_eq!(pages["completed_response_count"], 2);
+    assert_eq!(pages["committed_response_count"], 2);
+    assert_eq!(pages["accepted_association_count"], 2);
+    assert_eq!(pages["rejected_association_count"], 0);
+    let accepted_page_references = pages["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|page| page["page_reference"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(accepted_page_references.len(), 2);
     let component = &fingerprints["components"][0];
     assert_eq!(
         component["identity"],
@@ -407,22 +443,65 @@ fn observed_asset_fingerprints_intersect_listed_releases_and_remain_offline_read
                 && resource["observed_variant_count"] == 1
                 && resource["outcome"] == "observed"
                 && resource["request_attempted"] == true
+                && resource["source_page_references"]
+                    .as_array()
+                    .is_some_and(|pages| {
+                        pages
+                            .iter()
+                            .map(|page| page.as_str().unwrap())
+                            .collect::<BTreeSet<_>>()
+                            == accepted_page_references
+                    })
                 && resource["observation"]["sha256"]
                     .as_str()
                     .is_some_and(|digest| digest.len() == 64)
         }));
     assert_eq!(
-        assessment["wordpress_review"]["components"][0]["versions"],
-        serde_json::json!([])
+        fingerprints["response_bytes"],
+        (FINGERPRINT_JS.len() + FINGERPRINT_CSS.len()) as u64
     );
+    for resource in fingerprints["resources"].as_array().unwrap() {
+        let expected = match resource["relative_path"].as_str().unwrap() {
+            "assets/fingerprint.js" => FINGERPRINT_JS,
+            "assets/fingerprint.css" => FINGERPRINT_CSS,
+            path => panic!("unexpected fingerprint resource {path}"),
+        };
+        let expected_digest = Sha256::digest(expected);
+        assert_eq!(
+            resource["observation"]["byte_length"],
+            expected.len() as u64
+        );
+        assert_eq!(
+            resource["observation"]["sha256"],
+            format!("{expected_digest:x}")
+        );
+    }
+    let fingerprint_component = assessment["wordpress_review"]["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|component| component["identity"]["slug"] == "termivar-fingerprint-lab")
+        .expect("fingerprinted plugin remains present in the WordPress review");
+    assert_eq!(fingerprint_component["versions"], serde_json::json!([]));
 
     let requests = server.requests.lock().unwrap().clone();
+    let fingerprint_requests = &requests[option_off_requests.len()..];
+    for page in ["/contact/", "/gallery/"] {
+        assert_eq!(
+            fingerprint_requests
+                .iter()
+                .filter(|request| *request == &format!("GET {page} HTTP/1.1"))
+                .count(),
+            1,
+            "the ordinary assessment must retrieve each selected page exactly once"
+        );
+    }
     for path in [
         "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
         "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",
     ] {
         assert_eq!(
-            requests
+            fingerprint_requests
                 .iter()
                 .filter(|request| *request == &format!("GET {path} HTTP/1.1"))
                 .count(),
@@ -519,6 +598,8 @@ fn observed_asset_fingerprints_intersect_listed_releases_and_remain_offline_read
                 "web-review",
                 "--wordpress-review",
                 "--wordpress-discovery",
+                "--wordpress-page-scope",
+                "observed",
                 "--wordpress-fingerprints",
             ])
             .arg(&catalogue)

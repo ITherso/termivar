@@ -702,11 +702,18 @@ WORDPRESS_FINGERPRINT_CSS_BC = b".termivar-fingerprint{color:#2468ac}\n"
 WORDPRESS_FINGERPRINT_COMMON = b".termivar-common{display:block}\n"
 WORDPRESS_FINGERPRINT_ROOT = (
     b"<!doctype html><html><head>"
+    b'<link rel="stylesheet" href="/wp-content/themes/fingerprint-base/assets/site.css">'
+    b"</head><body>"
+    b'<a href="/contact/">contact</a><a href="/gallery/">gallery</a>'
+    b"</body></html>"
+)
+WORDPRESS_FINGERPRINT_PAGE = (
+    b"<!doctype html><html><head>"
     b'<script src="/wp-content/plugins/termivar-fingerprint-lab/assets/'
     b'fingerprint.js?ver=release-c"></script>'
     b'<link rel="stylesheet" href="/wp-content/plugins/termivar-fingerprint-lab/'
     b'assets/fingerprint.css?ver=release-a">'
-    b"</head><body>bounded packaged fingerprint fixture</body></html>"
+    b"</head><body>bounded packaged secondary page</body></html>"
 )
 WORDPRESS_FINGERPRINT_PLUGIN = (
     b"=== Termivar Fingerprint Lab ===\nStable tag: 9.9.9\n"
@@ -909,9 +916,17 @@ def _wordpress_discovery_fixture():
 
 @contextmanager
 def _wordpress_fingerprint_fixture():
-    """Serve only the two JS/CSS representations admitted by entry HTML."""
+    """Serve two page-only JS/CSS representations through ordinary page GETs."""
     routes = {
         b"/": ("text/html; charset=utf-8", WORDPRESS_FINGERPRINT_ROOT),
+        b"/contact/": ("text/html; charset=utf-8", WORDPRESS_FINGERPRINT_PAGE),
+        b"/gallery/": ("text/html; charset=utf-8", WORDPRESS_FINGERPRINT_PAGE),
+        b"/wp-content/themes/fingerprint-base/assets/site.css": (
+            "text/css", b"body{color:#111}\n",
+        ),
+        b"/wp-content/themes/fingerprint-base/style.css": (
+            "text/css", b"/* Theme Name: Fingerprint Base\nVersion: 1.0 */\n",
+        ),
         WORDPRESS_FINGERPRINT_ASSET_PATHS[0].encode("ascii"): (
             "application/javascript", WORDPRESS_FINGERPRINT_JS_AB,
         ),
@@ -2403,6 +2418,67 @@ def _validate_wordpress_fingerprints(assessment: dict, snapshot: dict,
     resources = audit.get("resources")
     require(isinstance(resources, list) and len(resources) == 2,
             "packaged WordPress fingerprint resource cardinality changed")
+    discovery = assessment.get("wordpress_discovery")
+    require(
+        isinstance(discovery, dict)
+        and discovery.get("schema") == "security.wordpress-discovery-audit/v3"
+        and discovery.get("policy_id")
+        == "termivar.wordpress-page-scoped-metadata-discovery/v1",
+        "packaged fingerprint scan did not use observed-page discovery",
+    )
+    page_collection = discovery.get("page_collection")
+    require(
+        isinstance(page_collection, dict)
+        and page_collection.get("mode") == "observed"
+        and page_collection.get("candidate_count") == 2
+        and page_collection.get("selected_count") == 2
+        and page_collection.get("omitted_candidate_count") == 0
+        and page_collection.get("reused_response_count") == 2
+        and page_collection.get("fetched_response_count") == 0
+        and page_collection.get("not_observed_count") == 0
+        and page_collection.get("rejected_response_count") == 0
+        and page_collection.get("accepted_association_count") == 2
+        and page_collection.get("rejected_association_count") == 0
+        and page_collection.get("attempted_request_count") == 0
+        and page_collection.get("completed_response_count") == 2
+        and page_collection.get("committed_response_count") == 2
+        and isinstance(page_collection.get("pages"), list)
+        and len(page_collection["pages"]) == 2,
+        "packaged fingerprint observed-page accounting changed",
+    )
+    page_references = set()
+    for page in page_collection["pages"]:
+        page = _require_exact_keys(
+            page,
+            (
+                "page_reference", "acquisition", "association", "outcome",
+                "request_attempted", "interpreted_response_bytes", "response_bytes",
+                "evidence_reference_count", "evidence_references",
+            ),
+            (), "packaged fingerprint observed-page row",
+        )
+        require(
+            page.get("acquisition") == "reused"
+            and page.get("association") == "accepted"
+            and page.get("outcome") == "accepted"
+            and page.get("request_attempted") is False
+            and isinstance(page.get("interpreted_response_bytes"), int)
+            and not isinstance(page.get("interpreted_response_bytes"), bool)
+            and page["interpreted_response_bytes"] > 0
+            and page.get("response_bytes") == 0
+            and page.get("evidence_reference_count") == 1
+            and isinstance(page.get("evidence_references"), list)
+            and len(page["evidence_references"]) == 1,
+            "packaged fingerprint observed-page assurance changed",
+        )
+        page_references.add(page.get("page_reference"))
+    require(
+        len(page_references) == 2
+        and all(_is_opaque_wordpress_reference(value) for value in page_references)
+        and _is_opaque_wordpress_reference(page_collection.get("entry_page_reference"))
+        and page_collection.get("entry_page_reference") not in page_references,
+        "packaged fingerprint accepted-page provenance changed",
+    )
     by_path = {}
     for resource in resources:
         resource = _require_exact_keys(
@@ -2433,8 +2509,13 @@ def _validate_wordpress_fingerprints(assessment: dict, snapshot: dict,
             }
             and _is_opaque_wordpress_reference(resource.get("resource_reference"))
             and isinstance(resource.get("source_page_references"), list)
-            and len(resource["source_page_references"]) == 1
-            and _is_opaque_wordpress_reference(resource["source_page_references"][0])
+            and all(
+                isinstance(reference, str)
+                and _is_opaque_wordpress_reference(reference)
+                for reference in resource["source_page_references"]
+            )
+            and set(resource["source_page_references"]) == page_references
+            and len(resource["source_page_references"]) == 2
             and resource.get("observed_variant_count") == 1
             and resource.get("acquisition") == "fetched"
             and resource.get("outcome") == "observed"
@@ -2502,7 +2583,6 @@ def _validate_wordpress_fingerprints(assessment: dict, snapshot: dict,
     ]
     require(len(plugin_components) == 1 and plugin_components[0].get("versions") == [],
             "fingerprint candidate or URL ver became installed-version evidence")
-    discovery = assessment.get("wordpress_discovery")
     sources = discovery.get("sources", []) if isinstance(discovery, dict) else []
     readmes = [source for source in sources if isinstance(source, dict)
                and source.get("kind") == "plugin_readme"]
@@ -2519,6 +2599,12 @@ def _validate_wordpress_fingerprints(assessment: dict, snapshot: dict,
         "undetermined_release_ids": component["undetermined_release_ids"],
         "inconsistent_release_ids": component["inconsistent_release_ids"],
         "observed_resources": sorted(by_path),
+        "page_collection": {
+            "selected": page_collection["selected_count"],
+            "reused": page_collection["reused_response_count"],
+            "committed": page_collection["committed_response_count"],
+            "wordpress_owned_page_requests": page_collection["attempted_request_count"],
+        },
         "installed_version_assurance": audit["installed_version_assurance"],
         "url_ver_selected_release": False,
         "plugin_stable_tag_is_installed_version": False,
@@ -2564,6 +2650,9 @@ def _run_wordpress_fingerprint_acceptance(runner: CandidateRunner, work: Path,
         )
         require(stdout == b"", f"{name} wrote a report document to stdout")
         trace = tuple(fixture.server.request_lines[before_trace:])
+        for path in ("/contact/", "/gallery/"):
+            require(trace.count(f"GET {path} HTTP/1.1") == 1,
+                    f"{name} did not reuse each ordinary secondary page exactly once")
         for path in WORDPRESS_FINGERPRINT_ASSET_PATHS:
             require(trace.count(f"GET {path} HTTP/1.1") == 1,
                     f"{name} did not fetch each admitted asset exactly once")
@@ -2603,7 +2692,7 @@ def _run_wordpress_fingerprint_acceptance(runner: CandidateRunner, work: Path,
                 and first_use.digest_file(path) == snapshot["sha256"],
                 f"packaged scan changed synthetic fingerprint catalogue: {name}")
     state["public"]["asset_fingerprints"] = {
-        "fixture_kind": "original_synthetic_observed_js_css_loopback",
+        "fixture_kind": "original_synthetic_secondary_page_observed_js_css_loopback",
         "reference_oracle": prepared["oracle"],
         "two_file_intersection": cases["fingerprint_full"]["result"],
         "missing_reference_provisional": cases["fingerprint_partial"]["result"],

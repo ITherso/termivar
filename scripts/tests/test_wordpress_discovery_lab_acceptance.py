@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import socket
@@ -1300,6 +1301,214 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 plugin_base_path=base,
                 relative_paths=paths,
             )
+
+    def test_fingerprint_accounting_diagnostic_distinguishes_values_and_types(self):
+        document = {
+            "wordpress_asset_fingerprints": {
+                "candidate_count": 0,
+                "attempted_request_count": True,
+                "reused_response_count": "0",
+                "resources": {"body": "https://private.invalid/secret"},
+                "stop": None,
+                "components": [{
+                    "state": "single_catalogue_candidate",
+                    "compatible_release_ids": ["release-b"],
+                    "undetermined_release_ids": [],
+                    "inconsistent_release_ids": ["release-a", "release-c"],
+                    "query": "token=private",
+                }],
+            },
+            "wordpress_discovery": {
+                "page_collection": {"committed_response_count": 0}
+            },
+            "wordpress_review": {},
+        }
+        diagnostic = runner._bounded_fingerprint_accounting_diagnostic(
+            document,
+            asset_count=2,
+            expected_state="single_catalogue_candidate",
+            compatible=["release-b"],
+            undetermined=[],
+            inconsistent=["release-a", "release-c"],
+        )
+        actual = diagnostic["actual"]["fingerprint"]
+        self.assertEqual(actual["candidate_count"], {"status": "present", "value": 0})
+        self.assertEqual(actual["selected_resource_count"], {"status": "missing"})
+        self.assertEqual(
+            actual["attempted_request_count"],
+            {"status": "wrong_type", "json_type": "boolean"},
+        )
+        self.assertEqual(
+            actual["reused_response_count"],
+            {"status": "wrong_type", "json_type": "string"},
+        )
+        self.assertEqual(
+            actual["resources_length"],
+            {"status": "wrong_type", "json_type": "object"},
+        )
+        encoded = json.dumps(diagnostic, sort_keys=True)
+        self.assertLess(len(encoded.encode("utf-8")), 8 * 1024)
+        self.assertNotIn("private.invalid", encoded)
+        self.assertNotIn("token=private", encoded)
+
+    def _fingerprint_accounting_mismatch_document(self):
+        catalogue = runner.FINGERPRINT_CATALOGUE_PATH
+        return {
+            "wordpress_asset_fingerprints": {
+                "schema": "security.wordpress-asset-fingerprint-audit/v1",
+                "capability_id": "technology.wordpress-asset-fingerprint-candidate@1",
+                "policy_id": "termivar.wordpress-observed-asset-fingerprint/v1",
+                "selected": True,
+                "representation_profile": "identity-content-bytes/v1",
+                "finite_reference_scope": "listed_releases_only",
+                "same_release_assumption": (
+                    "considered_paths_share_one_listed_release_artifact_set"
+                ),
+                "installed_version_assurance": (
+                    "not_established_by_asset_fingerprints"
+                ),
+                "source_authenticity": "not_established",
+                "catalogue": {
+                    "schema": "security.wordpress-asset-fingerprint-catalog/v1",
+                    "byte_length": catalogue.stat().st_size,
+                    "sha256": runner.sha256_file(catalogue),
+                    "semantic_sha256": "a" * 64,
+                    "component_count": 1,
+                    "release_count": 3,
+                },
+                "candidate_count": 0,
+                "selected_resource_count": 0,
+                "omitted_resource_count": 0,
+                "attempted_request_count": 0,
+                "reused_response_count": 0,
+                "fetched_response_count": 0,
+                "stop": "complete",
+                "resource_count": 0,
+                "resources": [],
+                "components": [],
+            },
+            "wordpress_discovery": {},
+            "wordpress_review": {},
+        }
+
+    def test_fingerprint_accounting_mismatch_retains_bounded_diagnostic(self):
+        document = self._fingerprint_accounting_mismatch_document()
+        oracle = {
+            "assets/fingerprint.js": {"byte_length": 1, "sha256": "1" * 64},
+            "assets/fingerprint.css": {"byte_length": 1, "sha256": "2" * 64},
+        }
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "fingerprint acquisition accounting differs",
+        ) as raised:
+            runner._validate_fingerprint_document(
+                document,
+                catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+                asset_oracle=oracle,
+                expected_state="single_catalogue_candidate",
+                compatible=["release-b"],
+                undetermined=[],
+                inconsistent=["release-a", "release-c"],
+            )
+        diagnostic = raised.exception.diagnostic
+        self.assertEqual(diagnostic["expected"]["fingerprint"]["candidate_count"], 2)
+        self.assertEqual(
+            diagnostic["actual"]["fingerprint"]["candidate_count"],
+            {"status": "present", "value": 0},
+        )
+
+    def test_diagnostic_capture_failure_preserves_original_acceptance_error(self):
+        document = self._fingerprint_accounting_mismatch_document()
+        oracle = {
+            "assets/fingerprint.js": {"byte_length": 1, "sha256": "1" * 64},
+            "assets/fingerprint.css": {"byte_length": 1, "sha256": "2" * 64},
+        }
+        with mock.patch.object(
+            runner,
+            "_bounded_fingerprint_accounting_diagnostic",
+            side_effect=RuntimeError("diagnostic failed"),
+        ):
+            with self.assertRaisesRegex(
+                runner.AcceptanceError,
+                "fingerprint acquisition accounting differs",
+            ) as raised:
+                runner._validate_fingerprint_document(
+                    document,
+                    catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+                    asset_oracle=oracle,
+                    expected_state="single_catalogue_candidate",
+                    compatible=["release-b"],
+                    undetermined=[],
+                    inconsistent=["release-a", "release-c"],
+                )
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"status": "unavailable", "reason": "diagnostic_capture_failed"},
+        )
+
+    def test_failure_evidence_retains_safe_diagnostic_identity(self):
+        source_ref = "1" * 40
+        failure_context = {
+            "scenario": "fingerprint-release-b",
+            "source_ref": source_ref,
+            "binary": {
+                "version": "termivar 0.10.0-alpha.3",
+                "byte_length": 123,
+                "sha256": "2" * 64,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "evidence"
+            with mock.patch.object(
+                runner,
+                "execute_acceptance",
+                side_effect=runner.AcceptanceError(
+                    "fingerprint acquisition accounting differs",
+                    failure_context,
+                ),
+            ):
+                exit_code = runner.main([
+                    "--binary",
+                    str(MODULE_PATH),
+                    "--output-dir",
+                    str(destination),
+                    "--source-ref",
+                    source_ref,
+                    "--expect-version",
+                    "0.10.0-alpha.3",
+                ])
+            self.assertEqual(exit_code, 1)
+            evidence = json.loads(
+                (destination / "wordpress-discovery-lab-acceptance.json").read_bytes()
+            )
+            self.assertEqual(evidence["failure_context"], failure_context)
+            self.assertNotIn("path", evidence["failure_context"]["binary"])
+
+    def test_evidence_write_failure_does_not_conceal_acceptance_failure(self):
+        source_ref = "1" * 40
+        with mock.patch.object(
+            runner,
+            "execute_acceptance",
+            side_effect=runner.AcceptanceError("original fingerprint mismatch"),
+        ), mock.patch.object(
+            runner,
+            "write_evidence",
+            side_effect=OSError("C:/private/export/report.json"),
+        ), mock.patch.object(runner.sys, "stderr", new_callable=io.StringIO) as stderr:
+            exit_code = runner.main([
+                "--binary",
+                str(MODULE_PATH),
+                "--output-dir",
+                str(Path.cwd() / "unused-evidence"),
+                "--source-ref",
+                source_ref,
+                "--expect-version",
+                "0.10.0-alpha.3",
+            ])
+        self.assertEqual(exit_code, 1)
+        self.assertIn("original fingerprint mismatch", stderr.getvalue())
+        self.assertIn("evidence_write_error=OSError", stderr.getvalue())
+        self.assertNotIn("private/export", stderr.getvalue())
 
     def test_fixture_inventory_and_digest_pins_are_closed(self):
         result = runner.validate_fixture()

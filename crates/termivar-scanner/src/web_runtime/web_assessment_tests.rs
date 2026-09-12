@@ -401,9 +401,22 @@ async fn wordpress_asset_fingerprint_candidates_render_in_assessment_csv_and_mar
         let response = match request.path() {
             "/" => FixtureResponse::html(
                 r#"<html><head>
+                    <link rel="stylesheet" href="/wp-content/themes/base-theme/assets/site.css">
+                    </head><body>
+                    <a href="/contact">contact</a>
+                    <a href="/gallery">gallery</a>
+                    </body></html>"#,
+            ),
+            "/contact" | "/gallery" => FixtureResponse::html(
+                r#"<html><head>
                     <script src="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42"></script>
                     <link rel="stylesheet" href="/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42">
-                    </head><body>task-owned fingerprint fixture</body></html>"#,
+                    </head><body>task-owned secondary page</body></html>"#,
+            ),
+            "/wp-content/themes/base-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Base Theme\nVersion: 1.0 */".to_vec(),
             ),
             "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js" => {
                 FixtureResponse::new("200 OK", Some("application/javascript"), SCRIPT.to_vec())
@@ -432,6 +445,7 @@ async fn wordpress_asset_fingerprint_candidates_render_in_assessment_csv_and_mar
     let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
         .with_wordpress_review(inputs)
         .with_wordpress_discovery()
+        .with_wordpress_page_scope(WordPressPageScope::Observed)
         .build()
         .unwrap();
     let report = runtime.analyze().await.unwrap();
@@ -442,6 +456,21 @@ async fn wordpress_asset_fingerprint_candidates_render_in_assessment_csv_and_mar
     let document: serde_json::Value = serde_json::from_str(&json).unwrap();
     let fingerprints = &document["wordpress_asset_fingerprints"];
     assert_eq!(fingerprints["component_count"], 1);
+    let page_collection = &document["wordpress_discovery"]["page_collection"];
+    assert_eq!(page_collection["mode"], "observed");
+    assert_eq!(page_collection["candidate_count"], 2);
+    assert_eq!(page_collection["selected_count"], 2);
+    assert_eq!(page_collection["reused_response_count"], 2);
+    assert_eq!(page_collection["attempted_request_count"], 0);
+    assert_eq!(page_collection["committed_response_count"], 2);
+    assert_eq!(page_collection["accepted_association_count"], 2);
+    let accepted_page_references = page_collection["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|page| page["page_reference"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(accepted_page_references.len(), 2);
     assert_eq!(fingerprints["resource_count"], 2);
     assert_eq!(
         fingerprints["components"][0]["state"],
@@ -458,6 +487,19 @@ async fn wordpress_asset_fingerprint_candidates_render_in_assessment_csv_and_mar
         .find(|component| component["identity"]["slug"] == "termivar-fingerprint-lab")
         .expect("fingerprinted plugin remains in the WordPress component inventory");
     assert_eq!(plugin["versions"], serde_json::json!([]));
+    assert!(fingerprints["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|resource| {
+            resource["source_page_references"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|page| page.as_str().unwrap())
+                .collect::<BTreeSet<_>>()
+                == accepted_page_references
+        }));
 
     for format in [ReportFormat::Csv, ReportFormat::Markdown] {
         let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
@@ -479,6 +521,16 @@ async fn wordpress_asset_fingerprint_candidates_render_in_assessment_csv_and_mar
     }
 
     let requests = server.requests().await;
+    for page in ["/contact", "/gallery"] {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == "GET" && request.path() == page)
+                .count(),
+            1,
+            "the ordinary assessment must obtain each selected page once"
+        );
+    }
     for target in [
         "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.js?ver=cache-42",
         "/wp-content/plugins/termivar-fingerprint-lab/assets/fingerprint.css?ver=cache-42",

@@ -833,6 +833,48 @@ def fingerprint_wordpress_assessment(catalogue_path: Path, *, partial: bool) -> 
     plugin_source["plugin"] = {
         "name": "Termivar Fingerprint Lab", "stable_tag": "9.9.9",
     }
+    entry_page_reference = "sha256:" + "7" * 64
+    page_references = ["sha256:" + "4" * 64, "sha256:" + "6" * 64]
+    discovery = document["wordpress_discovery"]
+    discovery["schema"] = "security.wordpress-discovery-audit/v3"
+    discovery["policy_id"] = "termivar.wordpress-page-scoped-metadata-discovery/v1"
+    discovery["page_collection"] = {
+        "mode": "observed",
+        "entry_page_reference": entry_page_reference,
+        "candidate_count": 2,
+        "selected_count": 2,
+        "omitted_candidate_count": 0,
+        "reused_response_count": 2,
+        "fetched_response_count": 0,
+        "not_observed_count": 0,
+        "rejected_response_count": 0,
+        "accepted_association_count": 2,
+        "rejected_association_count": 0,
+        "attempted_request_count": 0,
+        "completed_response_count": 2,
+        "committed_response_count": 2,
+        "interpreted_response_bytes": 256,
+        "response_bytes": 0,
+        "pages": [
+            {
+                "page_reference": reference,
+                "acquisition": "reused",
+                "association": "accepted",
+                "outcome": "accepted",
+                "request_attempted": False,
+                "interpreted_response_bytes": 128,
+                "response_bytes": 0,
+                "evidence_reference_count": 1,
+                "evidence_references": [f"evidence-page-{index:04}"],
+            }
+            for index, reference in enumerate(page_references, start=1)
+        ],
+    }
+    for source in discovery["sources"]:
+        source["source_page_references"] = (
+            list(page_references)
+            if source is plugin_source else [entry_page_reference]
+        )
     raw_catalogue = catalogue_path.read_bytes()
     input_catalogue = json.loads(raw_catalogue)
     catalogue_id = input_catalogue["catalog"]["id"]
@@ -868,7 +910,7 @@ def fingerprint_wordpress_assessment(catalogue_path: Path, *, partial: bool) -> 
             },
             "relative_path": path,
             "resource_reference": "sha256:" + marker * 64,
-            "source_page_references": ["sha256:" + "4" * 64],
+            "source_page_references": list(page_references),
             "observed_variant_count": 1,
             "acquisition": "fetched",
             "outcome": "observed",
@@ -1194,12 +1236,15 @@ class FakeCommands:
             elif destination.name in {
                     "wordpress-fingerprint-full", "wordpress-fingerprint-partial"}:
                 assert fixture is not None and target == fixture.origin
+                assert arguments[arguments.index("--wordpress-page-scope") + 1] == "observed"
                 partial = destination.name.endswith("partial")
                 catalogue = Path(arguments[arguments.index("--wordpress-fingerprints") + 1])
                 trace = (
                     "GET / HTTP/1.1",
                     "GET / HTTP/1.1",
                     "GET / HTTP/1.1",
+                    "GET /contact/ HTTP/1.1",
+                    "GET /gallery/ HTTP/1.1",
                     "GET /wp-content/plugins/termivar-fingerprint-lab/readme.txt HTTP/1.1",
                     ("GET /wp-content/plugins/termivar-fingerprint-lab/assets/"
                      "fingerprint.js?ver=release-c HTTP/1.1"),
@@ -1217,11 +1262,11 @@ class FakeCommands:
                 fixture.server.counts["root"] += len(trace)
                 fixture.server.request_lines.extend(trace)
                 encodings = [
-                    (trace[4], ("identity",)),
-                    (trace[5], ("identity",)),
+                    (trace[6], ("identity",)),
+                    (trace[7], ("identity",)),
                 ]
                 if self.discovery_mutation == "fingerprint_nonidentity" and not partial:
-                    encodings[0] = (trace[4], ())
+                    encodings[0] = (encodings[0][0], ())
                 fixture.server.fingerprint_accept_encodings.extend(encodings)
                 assessment = fingerprint_wordpress_assessment(catalogue, partial=partial)
                 fingerprints = assessment["wordpress_asset_fingerprints"]
@@ -1249,6 +1294,10 @@ class FakeCommands:
                         if row["kind"] == "plugin_readme"
                     )
                     source["plugin"]["version"] = "9.9.9"
+                elif self.discovery_mutation == "fingerprint_page_provenance" and not partial:
+                    fingerprints["resources"][0]["source_page_references"] = [
+                        fingerprints["resources"][0]["source_page_references"][0]
+                    ]
                 write_bundle(destination, assessment=assessment)
                 stderr = b"Report bundle completed\n"
             elif destination.name in {
@@ -2034,6 +2083,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
             ("fingerprint_partial_overclaim", "candidate intersection changed"),
             ("fingerprint_installed_version", "became installed-version evidence"),
             ("fingerprint_stable_tag_version", "Stable tag became installed-version"),
+            ("fingerprint_page_provenance", "resource assurance changed"),
             ("fingerprint_self_changed", "fingerprint self comparison changed"),
             ("fingerprint_compare_unchanged", "catalogue/candidate comparison changed"),
         )):

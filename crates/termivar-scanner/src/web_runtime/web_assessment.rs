@@ -2755,6 +2755,7 @@ impl WebAssessmentRuntime {
                                 review.collector(),
                                 candidate,
                                 frozen_layout,
+                                review.asset_fingerprint_collector(),
                             )
                         } else {
                             subject_observer
@@ -5086,11 +5087,13 @@ impl AssessmentDiscoveryObserver {
         collector: WordPressSignalCollector,
         candidate: WordPressPageCandidate,
         frozen_layout: FrozenWordPressPageLayout,
+        asset_fingerprints: Option<WordPressAssetFingerprintCollector>,
     ) -> Self {
         self.wordpress_signals = Some(collector);
         self.wordpress_discovery_enabled = true;
         self.wordpress_page_scope_selected = true;
         self.wordpress_page_candidate = Some((candidate, frozen_layout));
+        self.wordpress_asset_fingerprints = asset_fingerprints;
         self
     }
 
