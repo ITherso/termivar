@@ -2236,17 +2236,19 @@ fn parent_theme_candidate(
         .role_base_url()
         .join(&format!("{template}/style.css"))
         .ok()?;
-    Some(
-        WordPressDiscoverySeed::admitted_component(
-            url,
-            current.application_url().clone(),
-            current.role_base_url().clone(),
-            WordPressDiscoveryAssociation::SameThemeBaseParent,
-            identity,
-            1,
-        )
-        .with_source_evidence(source_evidence_id),
+    let mut parent = WordPressDiscoverySeed::admitted_component(
+        url,
+        current.application_url().clone(),
+        current.role_base_url().clone(),
+        WordPressDiscoveryAssociation::SameThemeBaseParent,
+        identity,
+        1,
     )
+    .with_source_evidence(source_evidence_id);
+    for source_page_reference in current.source_page_references() {
+        parent = parent.with_source_page_reference(source_page_reference.clone());
+    }
+    Some(parent)
 }
 
 fn classify_response(

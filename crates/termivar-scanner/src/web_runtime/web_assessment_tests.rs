@@ -614,7 +614,12 @@ async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_req
             "/wp-content/themes/base-theme/style.css" => FixtureResponse::new(
                 "200 OK",
                 Some("text/css"),
-                b"/* Theme Name: Base Theme\nVersion: 1.0 */".to_vec(),
+                b"/* Theme Name: Base Theme\nVersion: 1.0\nTemplate: parent-theme */".to_vec(),
+            ),
+            "/wp-content/themes/parent-theme/style.css" => FixtureResponse::new(
+                "200 OK",
+                Some("text/css"),
+                b"/* Theme Name: Parent Theme\nVersion: 2.0 */".to_vec(),
             ),
             "/wp-content/plugins/page-only/readme.txt" => FixtureResponse::new(
                 "200 OK",
@@ -669,6 +674,10 @@ async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_req
         WebAssessmentCompletion::Complete
     ));
     let wordpress = observed.wordpress_review_audit().unwrap();
+    assert!(
+        wordpress.asset_fingerprints().is_none(),
+        "observed page reuse remains valid when fingerprinting is not selected"
+    );
     let discovery = wordpress.discovery().unwrap();
     assert_eq!(
         discovery.policy_id(),
@@ -721,6 +730,16 @@ async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_req
         accepted_page_references
     );
     assert_eq!(plugin_source.source_page_references().len(), 2);
+    let parent_source = discovery
+        .sources()
+        .iter()
+        .find(|source| source.component_slug() == Some("parent-theme"))
+        .expect("derived parent-theme metadata source");
+    assert_eq!(
+        parent_source.source_page_references(),
+        &[page_scope.entry_page_reference().to_owned()],
+        "a derived parent-theme source must retain the entry-page association"
+    );
     let page_only_component = wordpress
         .result()
         .components()
@@ -764,6 +783,9 @@ async fn observed_page_scope_reuses_committed_pages_without_dispatching_page_req
         1,
         "two accepted pages must share one metadata request"
     );
+    #[cfg(feature = "reporting")]
+    ReportGenerator::compose_assessment(observed, ScanProfileV1::web_review().unwrap())
+        .expect("observed-page parent provenance must survive report validation");
 }
 
 #[cfg(feature = "wordpress-review")]
