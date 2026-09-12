@@ -625,7 +625,9 @@ def attach_fingerprint_self_comparison(
 
 def synthetic_fingerprint_audit(*, variant):
     """Reviewed literal v1 wire fixture; it does not call the product matcher."""
-    if variant not in {"release-b", "mixed-artifacts", "missing-reference", "empty"}:
+    if variant not in {
+        "release-a", "release-b", "mixed-artifacts", "missing-reference", "empty"
+    }:
         raise AssertionError(f"unknown synthetic fingerprint variant: {variant}")
 
     namespace = "termivar.synthetic.wordpress-asset-fingerprints"
@@ -695,11 +697,21 @@ def synthetic_fingerprint_audit(*, variant):
         "assets/fingerprint.js": "a" * 64,
         "assets/fingerprint.css": "b" * 64,
     }
+    release_a_hashes = {
+        "assets/fingerprint.js": release_b_hashes["assets/fingerprint.js"],
+        "assets/fingerprint.css": "c" * 64,
+    }
     mixed_hashes = {
         "assets/fingerprint.js": "d" * 64,
         "assets/fingerprint.css": "e" * 64,
     }
-    observation_hashes = mixed_hashes if variant == "mixed-artifacts" else release_b_hashes
+    observation_hashes = (
+        mixed_hashes
+        if variant == "mixed-artifacts"
+        else release_a_hashes
+        if variant == "release-a"
+        else release_b_hashes
+    )
     resource_specs = (
         ("assets/fingerprint.js", 49, "3", "evidence-0002"),
         ("assets/fingerprint.css", 37, "5", "evidence-0003"),
@@ -726,7 +738,21 @@ def synthetic_fingerprint_audit(*, variant):
         for path, byte_length, reference_character, evidence_reference in resource_specs
     ]
 
-    if variant == "mixed-artifacts":
+    if variant == "release-a":
+        relations = {
+            "assets/fingerprint.js": ("match", "match", "mismatch"),
+            "assets/fingerprint.css": ("match", "mismatch", "mismatch"),
+        }
+        release_states = ("compatible", "inconsistent", "inconsistent")
+        aggregate = {
+            "state": "single_catalogue_candidate",
+            "compatible_release_ids": ["release-a"],
+            "undetermined_release_ids": [],
+            "inconsistent_release_ids": ["release-b", "release-c"],
+            "informative_resource_count": 2,
+            "listed_matrix_complete": True,
+        }
+    elif variant == "mixed-artifacts":
         relations = {
             "assets/fingerprint.js": ("match", "mismatch", "mismatch"),
             "assets/fingerprint.css": ("mismatch", "mismatch", "match"),
@@ -854,18 +880,19 @@ def expected_offline_arguments(scenarios):
             "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
         ]
     fingerprint_names = {
+        "fingerprint-release-a",
         "fingerprint-release-b",
         "fingerprint-mixed-artifacts",
         "fingerprint-missing-reference",
     }
     if fingerprint_names <= scenarios.keys():
+        release_a = Path(scenarios["fingerprint-release-a"]["_bundle"])
         release_b = Path(scenarios["fingerprint-release-b"]["_bundle"])
-        mixed = Path(scenarios["fingerprint-mixed-artifacts"]["_bundle"])
         missing = Path(scenarios["fingerprint-missing-reference"]["_bundle"])
         expected["offline fingerprint byte comparison"] = [
             binary, "report", "compare", "--before",
             str(release_b / "assessment.json"), "--after",
-            str(mixed / "assessment.json"), "--same-scope", "--format", "json",
+            str(release_a / "assessment.json"), "--same-scope", "--format", "json",
         ]
         expected["offline fingerprint catalogue comparison"] = [
             binary, "report", "compare", "--before",
@@ -1210,6 +1237,7 @@ def fingerprint_offline_fixture(root):
     for source in discovery_template["sources"]:
         source["source_page_references"] = [entry_reference]
     names_and_variants = (
+        ("fingerprint-release-a", "release-a"),
         ("fingerprint-release-b", "release-b"),
         ("fingerprint-mixed-artifacts", "mixed-artifacts"),
         ("fingerprint-missing-reference", "missing-reference"),
@@ -1260,14 +1288,11 @@ def fingerprint_offline_fixture(root):
     responses["offline fingerprint byte comparison"] = (
         fingerprint_controlled_comparison(
             raw_by_name["fingerprint-release-b"],
-            raw_by_name["fingerprint-mixed-artifacts"],
+            raw_by_name["fingerprint-release-a"],
             items,
             catalogue_status="unchanged",
-            changed_resource_paths=(
-                "assets/fingerprint.js",
-                "assets/fingerprint.css",
-            ),
-            unchanged_resource_count=0,
+            changed_resource_paths=("assets/fingerprint.css",),
+            unchanged_resource_count=1,
             component_dimensions=(
                 "candidate_set",
                 "reference_matrix",
@@ -3788,6 +3813,25 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 ],
                 {"resources": 0, "components": 0},
             )
+            self.assertEqual(
+                result["fingerprint_bytes_changed"],
+                {
+                    "item_counts": {
+                        "only_in_after": 0,
+                        "only_in_before": 0,
+                        "changed": 0,
+                        "unchanged": 2,
+                    },
+                    "catalogue": "unchanged",
+                    "changed_resources": 1,
+                    "unchanged_resources": 1,
+                    "component_changed_dimensions": [
+                        "candidate_set",
+                        "reference_matrix",
+                        "resource_coverage",
+                    ],
+                },
+            )
             labels = [label for label, _ in fake.calls]
             self.assertLess(
                 labels.index(
@@ -3802,6 +3846,41 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     "offline fingerprint catalogue comparison",
                 ],
             )
+
+    def test_controlled_byte_pair_is_equal_length_and_mixed_pair_is_not(self):
+        release_a = runner.FINGERPRINT_REFERENCE_ORACLE["release-a"]
+        release_b = runner.FINGERPRINT_REFERENCE_ORACLE["release-b"]
+        release_c = runner.FINGERPRINT_REFERENCE_ORACLE["release-c"]
+
+        self.assertEqual(
+            release_a["assets/fingerprint.js"],
+            release_b["assets/fingerprint.js"],
+        )
+        self.assertEqual(
+            release_a["assets/fingerprint.css"][0],
+            release_b["assets/fingerprint.css"][0],
+        )
+        self.assertNotEqual(
+            release_a["assets/fingerprint.css"][1],
+            release_b["assets/fingerprint.css"][1],
+        )
+        self.assertEqual(
+            sum(release_a[path][0] for path in (
+                "assets/fingerprint.js", "assets/fingerprint.css"
+            )),
+            86,
+        )
+        self.assertEqual(
+            sum(release_b[path][0] for path in (
+                "assets/fingerprint.js", "assets/fingerprint.css"
+            )),
+            86,
+        )
+        self.assertEqual(
+            release_c["assets/fingerprint.js"][0]
+            + release_a["assets/fingerprint.css"][0],
+            87,
+        )
 
     def test_literal_fingerprint_audits_are_source_consistent_v1_shapes(self):
         expected_top_level = {
@@ -3820,6 +3899,18 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             "release_count", "file_count", "provenance",
         }
         expected = {
+            "release-a": {
+                "counts": (2, 1),
+                "file_count": 6,
+                "state": "single_catalogue_candidate",
+                "release_states": (
+                    "compatible", "inconsistent", "inconsistent"
+                ),
+                "relations": (
+                    ("match", "match", "mismatch"),
+                    ("match", "mismatch", "mismatch"),
+                ),
+            },
             "release-b": {
                 "counts": (2, 1),
                 "file_count": 6,
@@ -4164,6 +4255,44 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                             Path("synthetic-termivar"),
                             scenarios,
                         )
+
+    def test_offline_fingerprint_comparison_failure_retains_bounded_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scenarios, responses, _ = fingerprint_offline_fixture(Path(temporary))
+            comparison = responses["offline fingerprint byte comparison"]
+            comparison["wordpress_review_comparison"]["asset_fingerprints"][
+                "coverage"
+            ]["status"] = "changed"
+
+            with self.assertRaises(runner.AcceptanceError) as raised:
+                runner._run_offline_acceptance(
+                    offline_process_runner(responses, scenarios),
+                    Path("synthetic-termivar"),
+                    scenarios,
+                )
+
+            diagnostic = raised.exception.diagnostic
+            self.assertEqual(
+                diagnostic,
+                {
+                    "status": "fingerprint_comparison_contract_mismatch",
+                    "label": "offline fingerprint byte comparison",
+                    "catalogue_status": "unchanged",
+                    "coverage_status": "changed",
+                    "resource_paired_unchanged": 1,
+                    "resource_changed_dimensions": [["resource_bytes"]],
+                    "resource_only_in_before_count": 0,
+                    "resource_only_in_after_count": 0,
+                    "component_paired_unchanged": 0,
+                    "component_changed_dimensions": [[
+                        "candidate_set",
+                        "reference_matrix",
+                        "resource_coverage",
+                    ]],
+                    "component_only_in_before_count": 0,
+                    "component_only_in_after_count": 0,
+                },
+            )
 
     def test_offline_acceptance_exercises_layout_and_application_scope_paths(self):
         with tempfile.TemporaryDirectory() as temporary:

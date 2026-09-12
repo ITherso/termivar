@@ -3328,6 +3328,7 @@ def _run_offline_acceptance(
         }
 
     fingerprint_names = {
+        "fingerprint-release-a",
         "fingerprint-release-b",
         "fingerprint-mixed-artifacts",
         "fingerprint-missing-reference",
@@ -3431,6 +3432,44 @@ def _run_offline_acceptance(
                 fingerprints.get("coverage")
                 if isinstance(fingerprints, dict) else None
             )
+            comparison_diagnostic = {
+                "status": "fingerprint_comparison_contract_mismatch",
+                "label": label,
+                "catalogue_status": (
+                    catalogue.get("status")
+                    if isinstance(catalogue, dict)
+                    else _json_type(catalogue)
+                ),
+                "coverage_status": (
+                    coverage.get("status")
+                    if isinstance(coverage, dict)
+                    else _json_type(coverage)
+                ),
+                "resource_paired_unchanged": resource_groups[
+                    "paired_unchanged_count"
+                ],
+                "resource_changed_dimensions": [
+                    change.get("changed_dimensions") for change in resource_changes
+                ],
+                "resource_only_in_before_count": len(
+                    resource_groups["only_in_before"]
+                ),
+                "resource_only_in_after_count": len(
+                    resource_groups["only_in_after"]
+                ),
+                "component_paired_unchanged": component_groups[
+                    "paired_unchanged_count"
+                ],
+                "component_changed_dimensions": [
+                    change.get("changed_dimensions") for change in component_changes
+                ],
+                "component_only_in_before_count": len(
+                    component_groups["only_in_before"]
+                ),
+                "component_only_in_after_count": len(
+                    component_groups["only_in_after"]
+                ),
+            }
             require(
                 isinstance(wordpress, dict)
                 and wordpress.get("schema") == "termivar-wordpress-review-comparison/v3"
@@ -3457,6 +3496,7 @@ def _run_offline_acceptance(
                 and required_component_dimensions
                 <= set(component_changes[0].get("changed_dimensions", [])),
                 f"{label} did not separate bytes, catalogue, coverage, and candidates",
+                comparison_diagnostic,
             )
             if changed_resource_count:
                 require(
@@ -3465,6 +3505,7 @@ def _run_offline_acceptance(
                         for change in resource_changes
                     ),
                     f"{label} attributed a byte-only change to another resource dimension",
+                    comparison_diagnostic,
                 )
             return {
                 "item_counts": counts,
@@ -3476,12 +3517,23 @@ def _run_offline_acceptance(
                 ],
             }
 
+        release_a = FINGERPRINT_REFERENCE_ORACLE["release-a"]
+        release_b = FINGERPRINT_REFERENCE_ORACLE["release-b"]
+        require(
+            release_a["assets/fingerprint.js"]
+            == release_b["assets/fingerprint.js"]
+            and release_a["assets/fingerprint.css"][0]
+            == release_b["assets/fingerprint.css"][0]
+            and release_a["assets/fingerprint.css"][1]
+            != release_b["assets/fingerprint.css"][1],
+            "fingerprint byte comparison pair is not an isolated equal-length byte change",
+        )
         results["fingerprint_bytes_changed"] = compare_fingerprints(
             "fingerprint-release-b",
-            "fingerprint-mixed-artifacts",
+            "fingerprint-release-a",
             catalogue_status="unchanged",
-            changed_resource_count=2,
-            unchanged_resource_count=0,
+            changed_resource_count=1,
+            unchanged_resource_count=1,
             required_component_dimensions={"candidate_set", "reference_matrix"},
             label="offline fingerprint byte comparison",
         )
