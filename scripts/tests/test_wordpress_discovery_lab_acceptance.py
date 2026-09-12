@@ -1257,6 +1257,61 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 relative_paths=("assets/fingerprint.js", "assets/fingerprint.css"),
             )
 
+    def test_fingerprint_delta_requires_matching_option_off_asset_shape(self):
+        base = "/wp-content/plugins/termivar-fingerprint-lab/"
+        shared = [
+            ("GET", "/", 200, ()),
+            ("GET", "/contact/", 200, ()),
+            ("GET", "/gallery/", 200, ()),
+            ("GET", f"{base}readme.txt", 200, ()),
+        ]
+        two_file_baseline = shared[:-1] + [
+            ("HEAD", f"{base}assets/fingerprint.css", 200, ()),
+            shared[-1],
+        ]
+        one_file_baseline = list(shared)
+        one_file_fingerprint = one_file_baseline + [
+            ("GET", f"{base}assets/fingerprint.js?ver=cache-42", 200, ()),
+        ]
+        common_file_baseline = shared[:-1] + [
+            ("HEAD", f"{base}assets/common.css", 200, ()),
+            shared[-1],
+        ]
+        common_file_fingerprint = common_file_baseline + [
+            ("GET", f"{base}assets/common.css?ver=cache-42", 200, ()),
+        ]
+
+        runner._assert_fingerprint_request_delta(
+            one_file_baseline,
+            one_file_fingerprint,
+            plugin_base_path=base,
+            relative_paths=("assets/fingerprint.js",),
+        )
+        runner._assert_fingerprint_request_delta(
+            common_file_baseline,
+            common_file_fingerprint,
+            plugin_base_path=base,
+            relative_paths=("assets/common.css",),
+        )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "changed, removed, or reordered",
+        ) as raised:
+            runner._assert_fingerprint_request_delta(
+                two_file_baseline,
+                one_file_fingerprint,
+                plugin_base_path=base,
+                relative_paths=("assets/fingerprint.js",),
+            )
+        self.assertEqual(
+            raised.exception.diagnostic["actual"]["matched_baseline_request_count"],
+            3,
+        )
+        self.assertEqual(
+            raised.exception.diagnostic["expected"]["baseline_request_count"],
+            len(two_file_baseline),
+        )
+
     def test_option_off_fingerprint_trace_retains_head_without_body_get(self):
         base = "/wp-content/plugins/termivar-fingerprint-lab/"
         expected_head = (

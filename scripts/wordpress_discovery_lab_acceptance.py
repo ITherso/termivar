@@ -2347,33 +2347,66 @@ def _assert_fingerprint_request_delta(
             matched_baseline += 1
         else:
             extra.append(request)
-    require(
-        matched_baseline == len(baseline_trace),
-        "fingerprint selection changed, removed, or reordered existing scan requests",
-    )
     expected = [
         ("GET", f"{plugin_base_path}{path}?ver=cache-42", 200, ())
         for path in sorted(relative_paths)
     ]
+    diagnostic = {
+        "status": "fingerprint_request_delta_mismatch",
+        "expected": {
+            "baseline_request_count": len(baseline_trace),
+            "asset_request_count": len(expected),
+            "page_get_count": len(page_paths),
+            "readme_get_count": 1,
+        },
+        "actual": {
+            "fingerprint_request_count": len(fingerprint_trace),
+            "matched_baseline_request_count": matched_baseline,
+            "extra_request_count": len(extra),
+            "expected_asset_request_count": sum(
+                1 for request in fingerprint_trace if request in expected
+            ),
+            "page_get_count": sum(
+                1
+                for method, target, status, _ in fingerprint_trace
+                if method == "GET" and status == 200 and target in page_paths
+            ),
+            "readme_get_count": sum(
+                1
+                for method, target, status, _ in fingerprint_trace
+                if (method, target, status)
+                == ("GET", f"{plugin_base_path}readme.txt", 200)
+            ),
+        },
+    }
+    require(
+        matched_baseline == len(baseline_trace),
+        "fingerprint selection changed, removed, or reordered existing scan requests",
+        diagnostic,
+    )
     require(
         extra == expected,
         "fingerprint request delta differs from the exact observed-resource oracle",
+        diagnostic,
     )
     for page in page_paths:
         require(
             sum(1 for method, target, status, _ in fingerprint_trace
                 if (method, target, status) == ("GET", page, 200)) == 1,
             f"observed page {page} was not reused from exactly one ordinary GET",
+            diagnostic,
         )
     readme = f"{plugin_base_path}readme.txt"
     require(
         sum(1 for method, target, status, _ in fingerprint_trace
             if (method, target, status) == ("GET", readme, 200)) == 1,
         "page-repeated fingerprint plugin metadata was not deduplicated",
+        diagnostic,
     )
     require(
         not any("/reference/" in target for _, target, _, _ in fingerprint_trace),
         "catalogue-only reference paths unexpectedly created request authority",
+        diagnostic,
     )
 
 
@@ -3814,20 +3847,37 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 "missing_reference_mutation": missing_catalogue_identity,
             }
 
-            observed_baseline_truth = lab.configure_fingerprint_assets(
-                variant="release-b", mode="two"
-            )
-            observed_baseline = run_case(
-                "fingerprint-observed-option-off",
-                review=True,
-                discovery=True,
-                page_scope="observed",
-            )
-            _assert_fingerprint_option_off_trace(
-                observed_baseline,
-                plugin_base_path="/wp-content/plugins/termivar-fingerprint-lab/",
-                relative_paths=tuple(observed_baseline_truth["observed_assets"]),
-            )
+            observed_baselines: dict[
+                tuple[str, ...],
+                list[tuple[str, str, int, tuple[str, ...]]],
+            ] = {}
+            for baseline_name, baseline_mode in (
+                ("fingerprint-observed-option-off", "two"),
+                ("fingerprint-one-file-observed-option-off", "one"),
+                ("fingerprint-common-file-observed-option-off", "common"),
+            ):
+                baseline_truth = lab.configure_fingerprint_assets(
+                    variant="release-b", mode=baseline_mode
+                )
+                baseline_paths = tuple(baseline_truth["observed_assets"])
+                require(
+                    baseline_paths not in observed_baselines,
+                    "fingerprint option-off baselines must have distinct asset shapes",
+                )
+                baseline_trace = run_case(
+                    baseline_name,
+                    review=True,
+                    discovery=True,
+                    page_scope="observed",
+                )
+                _assert_fingerprint_option_off_trace(
+                    baseline_trace,
+                    plugin_base_path=(
+                        "/wp-content/plugins/termivar-fingerprint-lab/"
+                    ),
+                    relative_paths=baseline_paths,
+                )
+                observed_baselines[baseline_paths] = baseline_trace
 
             def run_fingerprint_case(
                 name: str,
@@ -3843,6 +3893,18 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 ground_truth = lab.configure_fingerprint_assets(
                     variant=variant, mode=mode
                 )
+                observed_paths = tuple(ground_truth["observed_assets"])
+                baseline_trace = observed_baselines.get(observed_paths)
+                require(
+                    baseline_trace is not None,
+                    "fingerprint scenario has no matching option-off asset-shape baseline",
+                    {
+                        "status": "missing_option_off_asset_shape_baseline",
+                        "scenario": name,
+                        "fixture_mode": mode,
+                        "observed_asset_count": len(observed_paths),
+                    },
+                )
                 trace = run_case(
                     name,
                     review=True,
@@ -3857,15 +3919,31 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                         "inconsistent": inconsistent,
                     },
                 )
-                _assert_fingerprint_request_delta(
-                    observed_baseline,
-                    trace,
-                    plugin_base_path="/wp-content/plugins/termivar-fingerprint-lab/",
-                    relative_paths=tuple(ground_truth["observed_assets"]),
-                )
+                try:
+                    _assert_fingerprint_request_delta(
+                        baseline_trace,
+                        trace,
+                        plugin_base_path=(
+                            "/wp-content/plugins/termivar-fingerprint-lab/"
+                        ),
+                        relative_paths=observed_paths,
+                    )
+                except AcceptanceError as error:
+                    diagnostic = (
+                        dict(error.diagnostic)
+                        if isinstance(error.diagnostic, dict)
+                        else {"status": "fingerprint_request_delta_mismatch"}
+                    )
+                    diagnostic.update({
+                        "scenario": name,
+                        "fixture_mode": mode,
+                        "source_ref": source_ref,
+                        "binary": dict(result["binary"]),
+                    })
+                    raise AcceptanceError(f"{name}: {error}", diagnostic) from error
                 scenarios[name]["ground_truth"] = ground_truth
                 scenarios[name]["additional_asset_requests_vs_option_off"] = (
-                    len(trace) - len(observed_baseline)
+                    len(trace) - len(baseline_trace)
                 )
                 return trace
 
