@@ -267,6 +267,16 @@ def _bounded_integer_field(value: Any, present: bool) -> dict[str, Any]:
     return {"status": "present", "value": value}
 
 
+def _is_exact_nonnegative_integer(value: Any, expected: int) -> bool:
+    """Keep JSON booleans from satisfying integer accounting oracles."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+        and value == expected
+    )
+
+
 def _bounded_closed_text_field(
     value: Any,
     present: bool,
@@ -3152,31 +3162,457 @@ def _trace_json(
     ]
 
 
-def _validate_observed_page_baseline(document: dict[str, Any]) -> str:
+def _bounded_observed_page_accounting_diagnostic(
+    document: Any,
+    *,
+    expected_discovery_request_count: int,
+    expected_page_association: str,
+    expected_review_schema: str,
+) -> dict[str, Any]:
+    discovery = document.get("wordpress_discovery") if isinstance(document, dict) else None
+    review = document.get("wordpress_review") if isinstance(document, dict) else None
+    pages = discovery.get("page_collection") if isinstance(discovery, dict) else None
+    rows = pages.get("pages") if isinstance(pages, dict) else None
+    accepted = 2 if expected_page_association == "accepted" else 0
+    rejected = 2 - accepted
+    return {
+        "expected": {
+            "review_schema": expected_review_schema,
+            "discovery_request_count": expected_discovery_request_count,
+            "page_association": expected_page_association,
+            "accepted_association_count": accepted,
+            "rejected_association_count": rejected,
+        },
+        "actual": {
+            "review_schema": _bounded_closed_text_field(
+                review.get("schema") if isinstance(review, dict) else None,
+                isinstance(review, dict) and "schema" in review,
+                frozenset({
+                    "security.wordpress-review-audit/v7",
+                    "security.wordpress-review-audit/v8",
+                }),
+            ),
+            "discovery_schema": _bounded_closed_text_field(
+                discovery.get("schema") if isinstance(discovery, dict) else None,
+                isinstance(discovery, dict) and "schema" in discovery,
+                frozenset({"security.wordpress-discovery-audit/v3"}),
+            ),
+            "review": _bounded_fields(review, ("additional_request_count",)),
+            "discovery": _bounded_fields(
+                discovery, ("attempted_request_count", "committed_response_count")
+            ),
+            "page_collection": _bounded_fields(
+                pages,
+                (
+                    "candidate_count",
+                    "selected_count",
+                    "reused_response_count",
+                    "fetched_response_count",
+                    "not_observed_count",
+                    "rejected_response_count",
+                    "accepted_association_count",
+                    "rejected_association_count",
+                    "attempted_request_count",
+                    "completed_response_count",
+                    "committed_response_count",
+                ),
+            ),
+            "page_rows": (
+                [
+                    {
+                        "acquisition": _bounded_closed_text_field(
+                            row.get("acquisition") if isinstance(row, dict) else None,
+                            isinstance(row, dict) and "acquisition" in row,
+                            frozenset({"reused", "fetched", "not_observed"}),
+                        ),
+                        "association": _bounded_closed_text_field(
+                            row.get("association") if isinstance(row, dict) else None,
+                            isinstance(row, dict) and "association" in row,
+                            frozenset({"accepted", "rejected", "not_established"}),
+                        ),
+                        "outcome": _bounded_closed_text_field(
+                            row.get("outcome") if isinstance(row, dict) else None,
+                            isinstance(row, dict) and "outcome" in row,
+                            frozenset({"accepted", "incompatible_application"}),
+                        ),
+                    }
+                    for row in rows[:3]
+                ]
+                if isinstance(rows, list)
+                else {"status": "wrong_type", "json_type": _json_type(rows)}
+            ),
+        },
+    }
+
+
+def _validate_observed_page_accounting(
+    document: dict[str, Any],
+    *,
+    expected_discovery_request_count: int,
+    expected_page_association: str,
+    expected_review_schema: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     require(
-        document.get("wordpress_asset_fingerprints") is None,
-        "option-off observed run unexpectedly emitted a fingerprint audit",
+        expected_page_association in {"accepted", "rejected"},
+        "observed-page association oracle is invalid",
     )
     review = document.get("wordpress_review")
     discovery = document.get("wordpress_discovery")
     pages = discovery.get("page_collection") if isinstance(discovery, dict) else None
+    diagnostic = _bounded_observed_page_accounting_diagnostic(
+        document,
+        expected_discovery_request_count=expected_discovery_request_count,
+        expected_page_association=expected_page_association,
+        expected_review_schema=expected_review_schema,
+    )
+    accepted = 2 if expected_page_association == "accepted" else 0
+    rejected = 2 - accepted
+    expected_outcome = (
+        "accepted" if expected_page_association == "accepted"
+        else "incompatible_application"
+    )
+    page_rows = pages.get("pages") if isinstance(pages, dict) else None
+    sources = discovery.get("sources") if isinstance(discovery, dict) else None
     require(
         isinstance(review, dict)
-        and review.get("schema") == "security.wordpress-review-audit/v7"
+        and review.get("schema") == expected_review_schema
+        and review.get("review_basis_schema") == "security.wordpress-review-audit/v1"
         and isinstance(discovery, dict)
         and discovery.get("schema") == "security.wordpress-discovery-audit/v3"
-        and discovery.get("attempted_request_count") == 5
-        and discovery.get("committed_response_count") == 5
-        and review.get("additional_request_count") == 5
+        and _is_exact_nonnegative_integer(
+            discovery.get("seed_count"), expected_discovery_request_count - 1
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("candidate_count"), expected_discovery_request_count
+        )
+        and discovery.get("candidate_limit_reached") is False
+        and _is_exact_nonnegative_integer(
+            discovery.get("omitted_candidate_count"), 0
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("attempted_request_count"), expected_discovery_request_count
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("completed_response_count"), expected_discovery_request_count
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("committed_response_count"), expected_discovery_request_count
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("source_count"), expected_discovery_request_count
+        )
+        and isinstance(sources, list)
+        and len(sources) == expected_discovery_request_count
+        and _is_exact_nonnegative_integer(
+            review.get("additional_request_count"), expected_discovery_request_count
+        )
         and isinstance(pages, dict)
+        and set(pages) == {
+            "mode",
+            "entry_page_reference",
+            "candidate_count",
+            "selected_count",
+            "omitted_candidate_count",
+            "reused_response_count",
+            "fetched_response_count",
+            "not_observed_count",
+            "rejected_response_count",
+            "accepted_association_count",
+            "rejected_association_count",
+            "attempted_request_count",
+            "completed_response_count",
+            "committed_response_count",
+            "interpreted_response_bytes",
+            "response_bytes",
+            "pages",
+        }
         and pages.get("mode") == "observed"
-        and pages.get("candidate_count") == 2
-        and pages.get("selected_count") == 2
-        and pages.get("reused_response_count") == 2
-        and pages.get("fetched_response_count") == 0
-        and pages.get("attempted_request_count") == 0
-        and pages.get("committed_response_count") == 2,
-        "option-off observed-page baseline changed its reuse or request accounting",
+        and isinstance(pages.get("entry_page_reference"), str)
+        and OPAQUE_REFERENCE_RE.fullmatch(pages["entry_page_reference"]) is not None
+        and _is_exact_nonnegative_integer(pages.get("candidate_count"), 2)
+        and _is_exact_nonnegative_integer(pages.get("selected_count"), 2)
+        and _is_exact_nonnegative_integer(pages.get("omitted_candidate_count"), 0)
+        and _is_exact_nonnegative_integer(pages.get("reused_response_count"), 2)
+        and _is_exact_nonnegative_integer(pages.get("fetched_response_count"), 0)
+        and _is_exact_nonnegative_integer(pages.get("not_observed_count"), 0)
+        and _is_exact_nonnegative_integer(
+            pages.get("rejected_response_count"), rejected
+        )
+        and _is_exact_nonnegative_integer(
+            pages.get("accepted_association_count"), accepted
+        )
+        and _is_exact_nonnegative_integer(
+            pages.get("rejected_association_count"), rejected
+        )
+        and _is_exact_nonnegative_integer(pages.get("attempted_request_count"), 0)
+        and _is_exact_nonnegative_integer(pages.get("completed_response_count"), 2)
+        and _is_exact_nonnegative_integer(pages.get("committed_response_count"), 2)
+        and _is_exact_nonnegative_integer(pages.get("response_bytes"), 0)
+        and isinstance(pages.get("interpreted_response_bytes"), int)
+        and not isinstance(pages.get("interpreted_response_bytes"), bool)
+        and pages["interpreted_response_bytes"] > 0,
+        "observed-page collection changed its reuse or request accounting",
+        diagnostic,
+    )
+    require(
+        all(
+            isinstance(source, dict)
+            and source.get("outcome") == "observed"
+            and source.get("request_attempted") is True
+            and isinstance(source.get("response_bytes"), int)
+            and not isinstance(source.get("response_bytes"), bool)
+            and source["response_bytes"] > 0
+            and _is_exact_nonnegative_integer(
+                source.get("evidence_reference_count"), 1
+            )
+            and isinstance(source.get("evidence_references"), list)
+            and len(source["evidence_references"]) == 1
+            and isinstance(source["evidence_references"][0], str)
+            and bool(source["evidence_references"][0])
+            for source in sources
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("response_bytes"),
+            sum(source["response_bytes"] for source in sources),
+        ),
+        "observed-page discovery source accounting changed",
+        diagnostic,
+    )
+    expected_page_keys = {
+        "page_reference",
+        "acquisition",
+        "association",
+        "outcome",
+        "request_attempted",
+        "interpreted_response_bytes",
+        "response_bytes",
+        "evidence_reference_count",
+        "evidence_references",
+    }
+    require(
+        isinstance(page_rows, list)
+        and len(page_rows) == 2
+        and all(
+            isinstance(page, dict)
+            and set(page) == expected_page_keys
+            and isinstance(page.get("page_reference"), str)
+            and OPAQUE_REFERENCE_RE.fullmatch(page["page_reference"]) is not None
+            and page.get("acquisition") == "reused"
+            and page.get("association") == expected_page_association
+            and page.get("outcome") == expected_outcome
+            and page.get("request_attempted") is False
+            and isinstance(page.get("interpreted_response_bytes"), int)
+            and not isinstance(page.get("interpreted_response_bytes"), bool)
+            and page["interpreted_response_bytes"] > 0
+            and _is_exact_nonnegative_integer(page.get("response_bytes"), 0)
+            and _is_exact_nonnegative_integer(page.get("evidence_reference_count"), 1)
+            and isinstance(page.get("evidence_references"), list)
+            and len(page["evidence_references"]) == 1
+            and isinstance(page["evidence_references"][0], str)
+            and bool(page["evidence_references"][0])
+            for page in page_rows
+        ),
+        "observed-page rows differ from the independent association oracle",
+        diagnostic,
+    )
+    page_references = [page["page_reference"] for page in page_rows]
+    page_evidence_references = [page["evidence_references"][0] for page in page_rows]
+    require(
+        len(set(page_references)) == 2
+        and len(set(page_evidence_references)) == 2
+        and sum(page["interpreted_response_bytes"] for page in page_rows)
+        == pages["interpreted_response_bytes"],
+        "observed-page references or byte conservation changed",
+        diagnostic,
+    )
+    source_evidence_references = [
+        reference
+        for source in sources
+        if isinstance(source, dict)
+        and isinstance(source.get("evidence_references"), list)
+        for reference in source.get("evidence_references", [])
+    ]
+    items = document.get("items")
+    discovery_items = [
+        item
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict)
+        and item.get("capability_id")
+        == "technology.wordpress-metadata-source-response-observed@1"
+    ]
+    expected_evidence_count = expected_discovery_request_count + 2
+    require(
+        len(source_evidence_references) == expected_discovery_request_count
+        and len(set(source_evidence_references)) == expected_discovery_request_count
+        and len(discovery_items) == 1
+        and _is_exact_nonnegative_integer(
+            discovery_items[0].get("evidence_count"), expected_evidence_count
+        )
+        and _same_unique_reference_members(
+            [*source_evidence_references, *page_evidence_references],
+            discovery_items[0].get("evidence_references"),
+        ),
+        "observed-page evidence conservation changed",
+        diagnostic,
+    )
+    return review, discovery, pages, diagnostic
+
+
+def _validate_observed_page_baseline(
+    document: dict[str, Any],
+    *,
+    expected_discovery_request_count: int = 5,
+    expected_page_association: str = "accepted",
+) -> str:
+    require(
+        document.get("wordpress_asset_fingerprints") is None,
+        "option-off observed run unexpectedly emitted a fingerprint audit",
+    )
+    _, discovery, _, diagnostic = _validate_observed_page_accounting(
+        document,
+        expected_discovery_request_count=expected_discovery_request_count,
+        expected_page_association=expected_page_association,
+        expected_review_schema="security.wordpress-review-audit/v7",
+    )
+    fingerprint_readmes = [
+        source for source in discovery.get("sources", [])
+        if isinstance(source, dict)
+        and source.get("kind") == "plugin_readme"
+        and source.get("component")
+        == {"kind": FINGERPRINT_COMPONENT[0], "slug": FINGERPRINT_COMPONENT[1]}
+    ]
+    if expected_page_association == "accepted":
+        require(
+            len(fingerprint_readmes) == 1
+            and fingerprint_readmes[0].get("plugin", {}).get("stable_tag") == "9.9.9"
+            and len(fingerprint_readmes[0].get("source_page_references", [])) == 2,
+            "observed-page baseline did not deduplicate its conditional plugin metadata",
+            diagnostic,
+        )
+    else:
+        require(
+            not fingerprint_readmes,
+            "rejected sibling pages unexpectedly authorized plugin metadata",
+            diagnostic,
+        )
+    expected_source_identities = [
+        ("rest_index", None),
+        ("theme_stylesheet", ("theme", "termivar-child")),
+        ("theme_stylesheet", ("theme", "termivar-parent")),
+    ]
+    if expected_page_association == "accepted":
+        expected_source_identities.append(
+            ("plugin_readme", FINGERPRINT_COMPONENT)
+        )
+    expected_source_identities.append(
+        ("plugin_readme", ("plugin", "termivar-metadata-lab"))
+    )
+    actual_source_identities = [
+        (
+            source.get("kind"),
+            (
+                source.get("component", {}).get("kind"),
+                source.get("component", {}).get("slug"),
+            )
+            if isinstance(source, dict) and isinstance(source.get("component"), dict)
+            else None,
+        )
+        for source in discovery.get("sources", [])
+        if isinstance(source, dict)
+    ]
+    require(
+        actual_source_identities == expected_source_identities,
+        "observed-page discovery source identities changed",
+        diagnostic,
+    )
+    return discovery["schema"]
+
+
+def _validate_rejected_page_fingerprint_document(
+    document: dict[str, Any],
+    *,
+    catalogue_path: Path,
+    expected_discovery_request_count: int,
+) -> dict[str, Any]:
+    """Require a selected catalogue to gain no authority from rejected pages."""
+    audit = document.get("wordpress_asset_fingerprints")
+    require(isinstance(audit, dict), "fingerprint audit is unavailable")
+    require(
+        audit.get("schema") == "security.wordpress-asset-fingerprint-audit/v1"
+        and audit.get("capability_id")
+        == "technology.wordpress-asset-fingerprint-candidate@1"
+        and audit.get("policy_id")
+        == "termivar.wordpress-observed-asset-fingerprint/v1"
+        and audit.get("selected") is True
+        and audit.get("representation_profile") == "identity-content-bytes/v1"
+        and audit.get("finite_reference_scope") == "listed_releases_only"
+        and audit.get("same_release_assumption")
+        == "considered_paths_share_one_listed_release_artifact_set"
+        and audit.get("installed_version_assurance")
+        == "not_established_by_asset_fingerprints"
+        and audit.get("source_authenticity") == "not_established",
+        "empty fingerprint audit changed its bounded conditional claim contract",
+    )
+    catalogue = audit.get("catalogue")
+    require(isinstance(catalogue, dict), "fingerprint catalogue provenance is unavailable")
+    require(
+        catalogue.get("schema") == "security.wordpress-asset-fingerprint-catalog/v1"
+        and catalogue.get("id") == "termivar-wordpress-asset-matrix"
+        and catalogue.get("revision") == "v1"
+        and catalogue.get("source_namespace")
+        == "termivar.synthetic.wordpress-asset-fingerprints"
+        and _is_exact_nonnegative_integer(
+            catalogue.get("byte_length"), catalogue_path.stat().st_size
+        )
+        and catalogue.get("sha256") == sha256_file(catalogue_path)
+        and isinstance(catalogue.get("semantic_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", catalogue["semantic_sha256"]) is not None
+        and _is_exact_nonnegative_integer(catalogue.get("component_count"), 1)
+        and _is_exact_nonnegative_integer(catalogue.get("release_count"), 3)
+        and _is_exact_nonnegative_integer(catalogue.get("file_count"), 9),
+        "empty fingerprint catalogue identity or finite scope differs",
+    )
+    _, discovery, _, page_diagnostic = _validate_observed_page_accounting(
+        document,
+        expected_discovery_request_count=expected_discovery_request_count,
+        expected_page_association="rejected",
+        expected_review_schema="security.wordpress-review-audit/v8",
+    )
+    zero_diagnostic = {
+        "status": "rejected_page_fingerprint_authority_mismatch",
+        "page_collection": page_diagnostic,
+        "actual": _bounded_fields(
+            audit,
+            (
+                "candidate_count",
+                "selected_resource_count",
+                "omitted_resource_count",
+                "attempted_request_count",
+                "reused_response_count",
+                "fetched_response_count",
+                "response_bytes",
+                "resource_count",
+                "component_count",
+            ),
+        ),
+    }
+    resources = audit.get("resources")
+    components = audit.get("components")
+    require(
+        _is_exact_nonnegative_integer(audit.get("candidate_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("selected_resource_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("omitted_resource_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("attempted_request_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("reused_response_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("fetched_response_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("response_bytes"), 0)
+        and audit.get("stop") == "complete"
+        and _is_exact_nonnegative_integer(audit.get("resource_count"), 0)
+        and resources == []
+        and _is_exact_nonnegative_integer(audit.get("component_count"), 0)
+        and components == [],
+        "rejected sibling pages unexpectedly authorized fingerprint work",
+        zero_diagnostic,
     )
     fingerprint_readmes = [
         source for source in discovery.get("sources", [])
@@ -3186,12 +3622,76 @@ def _validate_observed_page_baseline(document: dict[str, Any]) -> str:
         == {"kind": FINGERPRINT_COMPONENT[0], "slug": FINGERPRINT_COMPONENT[1]}
     ]
     require(
-        len(fingerprint_readmes) == 1
-        and fingerprint_readmes[0].get("plugin", {}).get("stable_tag") == "9.9.9"
-        and len(fingerprint_readmes[0].get("source_page_references", [])) == 2,
-        "observed-page baseline did not deduplicate its conditional plugin metadata",
+        not fingerprint_readmes,
+        "rejected sibling pages unexpectedly authorized fingerprint plugin metadata",
+        zero_diagnostic,
     )
-    return discovery["schema"]
+    review = document.get("wordpress_review")
+    review_rows = review.get("components") if isinstance(review, dict) else None
+    require(
+        isinstance(review_rows, list)
+        and len(review_rows) == 4
+        and {
+            (row.get("identity", {}).get("kind"), row.get("identity", {}).get("slug"))
+            for row in review_rows
+            if isinstance(row, dict) and isinstance(row.get("identity"), dict)
+        }
+        == {
+            ("core", "wordpress"),
+            ("theme", "termivar-child"),
+            ("theme", "termivar-parent"),
+            ("plugin", "termivar-metadata-lab"),
+        },
+        "rejected sibling pages changed the independently known component identities",
+        zero_diagnostic,
+    )
+    layout = discovery.get("layout")
+    require(
+        isinstance(layout, dict)
+        and _is_exact_nonnegative_integer(
+            layout.get("skipped_sibling_application_count"), 1
+        ),
+        "rejected sibling-page layout accounting changed",
+        zero_diagnostic,
+    )
+    expected_source_identities = [
+        ("rest_index", None),
+        ("theme_stylesheet", ("theme", "termivar-child")),
+        ("theme_stylesheet", ("theme", "termivar-parent")),
+        ("plugin_readme", ("plugin", "termivar-metadata-lab")),
+    ]
+    actual_source_identities = [
+        (
+            source.get("kind"),
+            (
+                source.get("component", {}).get("kind"),
+                source.get("component", {}).get("slug"),
+            )
+            if isinstance(source, dict) and isinstance(source.get("component"), dict)
+            else None,
+        )
+        for source in discovery.get("sources", [])
+        if isinstance(source, dict)
+    ]
+    require(
+        actual_source_identities == expected_source_identities
+        and all(
+            "source_page_references" not in source
+            for source in discovery.get("sources", [])
+            if isinstance(source, dict)
+        ),
+        "rejected sibling pages changed entry-bound discovery source identities",
+        zero_diagnostic,
+    )
+    return {
+        "state": "no_eligible_resources_from_rejected_pages",
+        "candidate_count": 0,
+        "attempted_request_count": 0,
+        "resource_count": 0,
+        "component_count": 0,
+        "catalogue_sha256": catalogue["sha256"],
+        "catalogue_semantic_sha256": catalogue["semantic_sha256"],
+    }
 
 
 def _write_missing_reference_catalogue(source: Path, target: Path) -> dict[str, Any]:
@@ -3661,6 +4161,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 page_scope: str | None = None,
                 fingerprints_path: Path | None = None,
                 fingerprint_expectation: dict[str, Any] | None = None,
+                rejected_page_fingerprint_expectation: bool = False,
+                observed_discovery_request_count: int = 5,
+                observed_page_association: str = "accepted",
             ) -> list[tuple[str, str, int, tuple[str, ...]]]:
                 before = lab.request_log()
                 bundle = bundles / name
@@ -3685,7 +4188,22 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                         (bundle / "assessment.html").read_bytes()
                     )
                     try:
-                        if fingerprint_expectation is not None:
+                        if rejected_page_fingerprint_expectation:
+                            require(
+                                fingerprints_path is not None,
+                                "rejected-page fingerprint expectation has no catalogue input",
+                            )
+                            schema = document.get("wordpress_discovery", {}).get("schema")
+                            fingerprint_summary = (
+                                _validate_rejected_page_fingerprint_document(
+                                    document,
+                                    catalogue_path=fingerprints_path,
+                                    expected_discovery_request_count=(
+                                        observed_discovery_request_count
+                                    ),
+                                )
+                            )
+                        elif fingerprint_expectation is not None:
                             require(fingerprints_path is not None,
                                     "fingerprint expectation has no catalogue input")
                             schema = document.get("wordpress_discovery", {}).get("schema")
@@ -3695,7 +4213,13 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                                 **fingerprint_expectation,
                             )
                         elif page_scope == "observed":
-                            schema = _validate_observed_page_baseline(document)
+                            schema = _validate_observed_page_baseline(
+                                document,
+                                expected_discovery_request_count=(
+                                    observed_discovery_request_count
+                                ),
+                                expected_page_association=observed_page_association,
+                            )
                         else:
                             schema = _validate_discovery_document(
                                 document,
@@ -3966,6 +4490,15 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 inconsistent=["release-b", "release-c"],
             )
             run_fingerprint_case(
+                "fingerprint-release-c",
+                variant="release-c",
+                mode="two",
+                state="single_catalogue_candidate",
+                compatible=["release-c"],
+                undetermined=[],
+                inconsistent=["release-a", "release-b"],
+            )
+            run_fingerprint_case(
                 "fingerprint-one-file",
                 variant="release-b",
                 mode="one",
@@ -4046,40 +4579,49 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 discovery=True,
                 target=blog_target,
                 page_scope="observed",
+                observed_discovery_request_count=4,
+                observed_page_association="rejected",
+            )
+            _assert_fingerprint_option_off_trace(
+                blog_fingerprint_baseline,
+                plugin_base_path=(
+                    "/blog/wp-content/plugins/termivar-fingerprint-lab/"
+                ),
+                relative_paths=("assets/fingerprint.js", "assets/fingerprint.css"),
             )
             blog_fingerprint_truth = lab.configure_fingerprint_assets(
                 variant="release-c", mode="two", path="/var/www/html/blog"
             )
             blog_fingerprint = run_case(
-                "blog-fingerprint-release-c",
+                "blog-fingerprint-sibling-rejected",
                 review=True,
                 discovery=True,
                 target=blog_target,
                 page_scope="observed",
                 fingerprints_path=FINGERPRINT_CATALOGUE_PATH,
-                fingerprint_expectation={
-                    "asset_oracle": blog_fingerprint_truth["observed_assets"],
-                    "expected_state": "single_catalogue_candidate",
-                    "compatible": ["release-c"],
-                    "undetermined": [],
-                    "inconsistent": ["release-a", "release-b"],
+                rejected_page_fingerprint_expectation=True,
+                observed_discovery_request_count=4,
+                observed_page_association="rejected",
+            )
+            require(
+                blog_fingerprint == blog_fingerprint_baseline,
+                "rejected sibling pages changed or authorized additional requests",
+                {
+                    "status": "rejected_sibling_request_delta_mismatch",
+                    "scenario": "blog-fingerprint-sibling-rejected",
+                    "baseline_request_count": len(blog_fingerprint_baseline),
+                    "fingerprint_request_count": len(blog_fingerprint),
                 },
             )
-            _assert_fingerprint_request_delta(
-                blog_fingerprint_baseline,
-                blog_fingerprint,
-                plugin_base_path=(
-                    "/blog/wp-content/plugins/termivar-fingerprint-lab/"
-                ),
-                relative_paths=tuple(blog_fingerprint_truth["observed_assets"]),
-                page_paths=("/blog/contact/", "/blog/gallery/"),
-            )
-            scenarios["blog-fingerprint-release-c"]["ground_truth"] = (
+            scenarios["blog-fingerprint-sibling-rejected"]["ground_truth"] = (
                 blog_fingerprint_truth
             )
-            scenarios["blog-fingerprint-release-c"][
+            scenarios["blog-fingerprint-sibling-rejected"][
                 "additional_asset_requests_vs_option_off"
             ] = len(blog_fingerprint) - len(blog_fingerprint_baseline)
+            scenarios["blog-fingerprint-sibling-rejected"][
+                "association_expectation"
+            ] = "rejected_incompatible_application"
 
             lab.configure_at(
                 "/var/www/html/blog", permalink="plain", generator_visible=True
@@ -4193,6 +4735,11 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 target=cms_target,
                 layout_path=layout_path,
                 page_scope="observed",
+            )
+            _assert_fingerprint_option_off_trace(
+                custom_fingerprint_baseline,
+                plugin_base_path="/modules/termivar-fingerprint-lab/",
+                relative_paths=("assets/fingerprint.js", "assets/fingerprint.css"),
             )
             custom_fingerprint_truth = lab.configure_fingerprint_assets(
                 variant="release-b",
@@ -4315,8 +4862,10 @@ def render_markdown(evidence: dict[str, Any]) -> str:
             "The original review-only trace matched ordinary web-review. Legacy entry-only "
             "discovery cases added exactly one REST index, one child stylesheet, one bounded "
             "parent stylesheet, and one plugin readme GET at their selected layout. Observed-"
-            "page cases reused the two ordinary contact/gallery responses and added one "
-            "deduplicated readme GET for the page-only fingerprint plugin. Fingerprint-enabled "
+            "page cases reused the two ordinary contact/gallery responses. Accepted root and "
+            "custom-layout pages added one deduplicated readme GET for the page-only fingerprint "
+            "plugin; the /blog/ sibling-signal case rejected both reused pages and added no "
+            "fingerprint-plugin readme or asset GET. Fingerprint-enabled positive "
             "cases then fetched only the one or two exact observed CSS/JS representations "
             "listed by their scenario; no catalogue-only reference path was requested. The "
             "undeclared custom-root case added only its advertised REST GET. All WordPress-"

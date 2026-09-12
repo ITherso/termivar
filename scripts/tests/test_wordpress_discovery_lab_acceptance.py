@@ -1446,6 +1446,281 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             "wordpress_review": {},
         }
 
+    def _rejected_blog_fingerprint_document(self):
+        document = copy.deepcopy(self.discovery_document())
+        audit = self._fingerprint_accounting_mismatch_document()[
+            "wordpress_asset_fingerprints"
+        ]
+        audit["catalogue"].update({
+            "id": "termivar-wordpress-asset-matrix",
+            "revision": "v1",
+            "source_namespace": "termivar.synthetic.wordpress-asset-fingerprints",
+            "file_count": 9,
+        })
+        audit.update({
+            "response_bytes": 0,
+            "component_count": 0,
+        })
+        document["wordpress_asset_fingerprints"] = audit
+
+        review = document["wordpress_review"]
+        review["schema"] = "security.wordpress-review-audit/v8"
+        review["review_basis_schema"] = "security.wordpress-review-audit/v1"
+        review["additional_request_count"] = 4
+
+        discovery = document["wordpress_discovery"]
+        discovery["schema"] = "security.wordpress-discovery-audit/v3"
+        discovery["policy_id"] = (
+            "termivar.wordpress-page-scoped-metadata-discovery/v1"
+        )
+        discovery["seed_count"] = 3
+        discovery["layout"]["skipped_sibling_application_count"] = 1
+        discovery["page_collection"] = {
+            "mode": "observed",
+            "entry_page_reference": "sha256:" + "8" * 64,
+            "candidate_count": 2,
+            "selected_count": 2,
+            "omitted_candidate_count": 0,
+            "reused_response_count": 2,
+            "fetched_response_count": 0,
+            "not_observed_count": 0,
+            "rejected_response_count": 2,
+            "accepted_association_count": 0,
+            "rejected_association_count": 2,
+            "attempted_request_count": 0,
+            "completed_response_count": 2,
+            "committed_response_count": 2,
+            "interpreted_response_bytes": 768,
+            "response_bytes": 0,
+            "pages": [
+                {
+                    "page_reference": "sha256:" + "9" * 64,
+                    "acquisition": "reused",
+                    "association": "rejected",
+                    "outcome": "incompatible_application",
+                    "request_attempted": False,
+                    "interpreted_response_bytes": 384,
+                    "response_bytes": 0,
+                    "evidence_reference_count": 1,
+                    "evidence_references": ["evidence-0005"],
+                },
+                {
+                    "page_reference": "sha256:" + "e" * 64,
+                    "acquisition": "reused",
+                    "association": "rejected",
+                    "outcome": "incompatible_application",
+                    "request_attempted": False,
+                    "interpreted_response_bytes": 384,
+                    "response_bytes": 0,
+                    "evidence_reference_count": 1,
+                    "evidence_references": ["evidence-0006"],
+                },
+            ],
+        }
+        item = document["items"][0]
+        item["evidence_count"] = 6
+        item["evidence_references"] = [
+            "evidence-0001",
+            "evidence-0002",
+            "evidence-0003",
+            "evidence-0004",
+            "evidence-0005",
+            "evidence-0006",
+        ]
+        return document
+
+    def _accepted_root_observed_document(self):
+        document = self._rejected_blog_fingerprint_document()
+        document.pop("wordpress_asset_fingerprints")
+        review = document["wordpress_review"]
+        review["schema"] = "security.wordpress-review-audit/v7"
+        review["additional_request_count"] = 5
+        review["components"].insert(3, {
+            "identity": {
+                "kind": runner.FINGERPRINT_COMPONENT[0],
+                "slug": runner.FINGERPRINT_COMPONENT[1],
+            },
+            "identity_sources": ["same_origin_asset_path"],
+            "versions": [],
+        })
+
+        discovery = document["wordpress_discovery"]
+        discovery["seed_count"] = 4
+        for field in (
+            "candidate_count",
+            "attempted_request_count",
+            "completed_response_count",
+            "committed_response_count",
+            "source_count",
+        ):
+            discovery[field] = 5
+        discovery["response_bytes"] = 1280
+        discovery["layout"]["skipped_sibling_application_count"] = 0
+        page_collection = discovery["page_collection"]
+        page_collection.update({
+            "rejected_response_count": 0,
+            "accepted_association_count": 2,
+            "rejected_association_count": 0,
+        })
+        page_references = [
+            page["page_reference"] for page in page_collection["pages"]
+        ]
+        for index, page in enumerate(page_collection["pages"], start=6):
+            page.update({
+                "association": "accepted",
+                "outcome": "accepted",
+                "evidence_references": [f"evidence-{index:04d}"],
+            })
+        fingerprint_source = copy.deepcopy(discovery["sources"][3])
+        fingerprint_source.update({
+            "component": {
+                "kind": runner.FINGERPRINT_COMPONENT[0],
+                "slug": runner.FINGERPRINT_COMPONENT[1],
+            },
+            "evidence_references": ["evidence-0004"],
+            "source_page_references": page_references,
+            "plugin": {
+                "name": "Termivar Fingerprint Lab",
+                "stable_tag": "9.9.9",
+            },
+        })
+        discovery["sources"].insert(3, fingerprint_source)
+        discovery["sources"][4]["evidence_references"] = ["evidence-0005"]
+        item = document["items"][0]
+        item["evidence_count"] = 7
+        item["evidence_references"] = [
+            f"evidence-{index:04d}" for index in range(1, 8)
+        ]
+        return document
+
+    def test_rejected_blog_pages_preserve_empty_selected_fingerprint_audit(self):
+        document = self._rejected_blog_fingerprint_document()
+        summary = runner._validate_rejected_page_fingerprint_document(
+            document,
+            catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+            expected_discovery_request_count=4,
+        )
+        self.assertEqual(summary["state"], "no_eligible_resources_from_rejected_pages")
+        self.assertEqual(summary["candidate_count"], 0)
+        self.assertEqual(summary["attempted_request_count"], 0)
+
+        option_off = copy.deepcopy(document)
+        option_off.pop("wordpress_asset_fingerprints")
+        option_off["wordpress_review"]["schema"] = (
+            "security.wordpress-review-audit/v7"
+        )
+        self.assertEqual(
+            runner._validate_observed_page_baseline(
+                option_off,
+                expected_discovery_request_count=4,
+                expected_page_association="rejected",
+            ),
+            "security.wordpress-discovery-audit/v3",
+        )
+
+    def test_accepted_root_pages_retain_deduplicated_fingerprint_readme(self):
+        document = self._accepted_root_observed_document()
+        self.assertEqual(
+            runner._validate_observed_page_baseline(document),
+            "security.wordpress-discovery-audit/v3",
+        )
+
+        reordered = copy.deepcopy(document)
+        sources = reordered["wordpress_discovery"]["sources"]
+        sources[3], sources[4] = sources[4], sources[3]
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "source identities changed",
+        ):
+            runner._validate_observed_page_baseline(reordered)
+
+    def test_rejected_blog_fingerprint_oracle_rejects_false_authority(self):
+        mutations = []
+
+        boolean_count = self._rejected_blog_fingerprint_document()
+        boolean_count["wordpress_asset_fingerprints"]["candidate_count"] = False
+        mutations.append(boolean_count)
+
+        nonempty_resource = self._rejected_blog_fingerprint_document()
+        nonempty_resource["wordpress_asset_fingerprints"]["resources"] = [
+            {"private_url": "https://private.invalid/asset.js"}
+        ]
+        mutations.append(nonempty_resource)
+
+        accepted_page = self._rejected_blog_fingerprint_document()
+        accepted_page["wordpress_discovery"]["page_collection"].update({
+            "rejected_response_count": 1,
+            "accepted_association_count": 1,
+            "rejected_association_count": 1,
+        })
+        accepted_page["wordpress_discovery"]["page_collection"]["pages"][0].update({
+            "association": "accepted",
+            "outcome": "accepted",
+        })
+        mutations.append(accepted_page)
+
+        duplicate_page_reference = self._rejected_blog_fingerprint_document()
+        pages = duplicate_page_reference["wordpress_discovery"]["page_collection"][
+            "pages"
+        ]
+        pages[1]["page_reference"] = pages[0]["page_reference"]
+        mutations.append(duplicate_page_reference)
+
+        duplicate_evidence_reference = self._rejected_blog_fingerprint_document()
+        pages = duplicate_evidence_reference["wordpress_discovery"]["page_collection"][
+            "pages"
+        ]
+        pages[1]["evidence_references"] = pages[0]["evidence_references"]
+        mutations.append(duplicate_evidence_reference)
+
+        fingerprint_readme = self._rejected_blog_fingerprint_document()
+        fingerprint_readme["wordpress_discovery"]["sources"][3]["component"] = {
+            "kind": runner.FINGERPRINT_COMPONENT[0],
+            "slug": runner.FINGERPRINT_COMPONENT[1],
+        }
+        mutations.append(fingerprint_readme)
+
+        fingerprint_component = self._rejected_blog_fingerprint_document()
+        fingerprint_component["wordpress_review"]["components"][3]["identity"] = {
+            "kind": runner.FINGERPRINT_COMPONENT[0],
+            "slug": runner.FINGERPRINT_COMPONENT[1],
+        }
+        mutations.append(fingerprint_component)
+
+        wrong_additional_count = self._rejected_blog_fingerprint_document()
+        wrong_additional_count["wordpress_review"]["additional_request_count"] = 5
+        mutations.append(wrong_additional_count)
+
+        for index, mutated in enumerate(mutations):
+            with self.subTest(index=index):
+                with self.assertRaises(runner.AcceptanceError):
+                    runner._validate_rejected_page_fingerprint_document(
+                        mutated,
+                        catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+                        expected_discovery_request_count=4,
+                    )
+
+    def test_rejected_blog_fingerprint_failure_diagnostic_is_bounded(self):
+        document = self._rejected_blog_fingerprint_document()
+        document["wordpress_asset_fingerprints"]["candidate_count"] = 1
+        document["wordpress_asset_fingerprints"]["private"] = {
+            "url": "https://private.invalid/asset.js?token=secret"
+        }
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "unexpectedly authorized fingerprint work",
+        ) as raised:
+            runner._validate_rejected_page_fingerprint_document(
+                document,
+                catalogue_path=runner.FINGERPRINT_CATALOGUE_PATH,
+                expected_discovery_request_count=4,
+            )
+        encoded = json.dumps(raised.exception.diagnostic, sort_keys=True)
+        self.assertLess(len(encoded.encode("utf-8")), 8 * 1024)
+        self.assertIn('"candidate_count": {"status": "present", "value": 1}', encoded)
+        self.assertNotIn("private.invalid", encoded)
+        self.assertNotIn("token=secret", encoded)
+
     def test_fingerprint_accounting_mismatch_retains_bounded_diagnostic(self):
         document = self._fingerprint_accounting_mismatch_document()
         oracle = {
