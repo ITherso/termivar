@@ -4630,6 +4630,7 @@ def _validate_discovery_capability(document: Any) -> None:
         "optional --wordpress-page-scope observed",
         "optional --wordpress-layout FILE",
         "optional --wordpress-fingerprints FILE",
+        "optional --wordpress-supplied-session when also compiled with supplied-session-review",
     ]
     require(
         discovery.get("build_state") == "compiled"

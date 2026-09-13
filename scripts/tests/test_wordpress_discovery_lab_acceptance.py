@@ -1432,6 +1432,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     "optional --wordpress-page-scope observed",
                     "optional --wordpress-layout FILE",
                     "optional --wordpress-fingerprints FILE",
+                    "optional --wordpress-supplied-session when also compiled with supplied-session-review",
                 ],
             }]
         }
@@ -1460,6 +1461,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 "optional --wordpress-page-scope observed",
                 "optional --wordpress-layout FILE",
                 "optional --wordpress-fingerprints FILE",
+                "optional --wordpress-supplied-session when also compiled with supplied-session-review",
             ],
         }
         cases = (
