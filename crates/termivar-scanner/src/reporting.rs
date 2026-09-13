@@ -13813,6 +13813,204 @@ mod tests {
             comparison["only_in_after"].as_array().map(Vec::len),
             Some(2)
         );
+
+        // The V1 principal reference is deliberately generic. Two reports
+        // with the same policy/application digests but different
+        // operator-declared aliases must therefore remain different session
+        // contexts for both top-level items and the nested WordPress audit.
+        // The reduced supplied-session page binding does not carry that alias
+        // and cannot independently authorize WordPress entity pairing.
+        let mut other_principal = supplied_session_wordpress_assessment_document();
+        other_principal
+            .supplied_session
+            .as_mut()
+            .unwrap()
+            .principal_alias = "fixture-peer".to_owned();
+        let other_principal =
+            render_assessment_with_limit(&other_principal, ReportFormat::Json, usize::MAX).unwrap();
+        let comparison = comparison::compare_reports(
+            valid_json.as_bytes(),
+            other_principal.as_bytes(),
+            comparison::ComparisonFormat::Json,
+        )
+        .unwrap();
+        let comparison: serde_json::Value = serde_json::from_str(&comparison).unwrap();
+        assert_eq!(
+            comparison["supplied_session_comparison"]["status"],
+            "not_compared"
+        );
+        assert_eq!(
+            comparison["supplied_session_comparison"]["reason"],
+            "operator_declared_principal_changed"
+        );
+        let wordpress = &comparison["wordpress_review_comparison"];
+        assert_eq!(
+            wordpress["schema"],
+            "termivar-wordpress-review-comparison/v4"
+        );
+        assert_eq!(wordpress["status"], "not_compared");
+        assert_eq!(wordpress["reason"], "supplied_session_context_mismatch");
+        assert_eq!(wordpress["methodology"]["status"], "unchanged");
+        assert_eq!(
+            wordpress["methodology"]["changed_fields"],
+            serde_json::json!([])
+        );
+        assert_eq!(wordpress["coverage"]["status"], "not_established");
+        assert_eq!(
+            wordpress["coverage"]["changed_fields"],
+            serde_json::json!([])
+        );
+        assert_eq!(wordpress["provenance"]["status"], "unchanged");
+        assert_eq!(
+            wordpress["provenance"]["changed_fields"],
+            serde_json::json!([])
+        );
+        assert_eq!(wordpress["discovery_source_content"]["status"], "unchanged");
+        assert_eq!(
+            wordpress["discovery_source_content"]["changed_fields"],
+            serde_json::json!([])
+        );
+        for entity_group in ["components", "advisories"] {
+            let entities = &wordpress[entity_group];
+            assert_eq!(entities["paired_unchanged_count"], 0);
+            assert_eq!(entities["paired_changed"], serde_json::json!([]));
+            assert_eq!(entities["only_in_before"], serde_json::json!([]));
+            assert_eq!(entities["only_in_after"], serde_json::json!([]));
+        }
+        assert_eq!(
+            comparison["only_in_before"].as_array().map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            comparison["only_in_after"].as_array().map(Vec::len),
+            Some(2)
+        );
+        assert!(comparison["changed"].as_array().unwrap().is_empty());
+        assert!(comparison["unchanged"].as_array().unwrap().is_empty());
+
+        // Health and coverage are outcome facets, not session identity. A
+        // later loss for the same declared principal/policy/application must
+        // remain comparable while the changed collection coverage is shown.
+        let mut session_lost = supplied_session_wordpress_assessment_document();
+        {
+            let session = session_lost.supplied_session.as_mut().unwrap();
+            session.outcome = "session_lost";
+            session.coverage = "none";
+            session.checkpoints[1].outcome = "unhealthy";
+            session.checkpoints[1].predicate = "not_matched";
+            session.resources[0].outcome = "health_unqualified";
+            session.committed_resource_count = 0;
+        }
+        {
+            let discovery = session_lost.wordpress_discovery.as_mut().unwrap();
+            let pages = discovery.supplied_session_pages.as_mut().unwrap();
+            pages.committed_count = 0;
+            pages.accepted_association_count = 0;
+            pages.not_established_association_count = 1;
+            pages.not_evaluated_count = 1;
+            pages.interpreted_response_bytes = 0;
+            let page = &mut pages.pages[0];
+            page.resource_evidence_reference = None;
+            page.association = "not_established";
+            page.outcome = "not_evaluated";
+            page.interpreted_response_bytes = 0;
+            page.evidence_reference_count = 0;
+            page.evidence_references.clear();
+            for source in &mut discovery.sources {
+                source.source_supplied_session_page_references = Some(Vec::new());
+            }
+        }
+        let discovery_item = session_lost
+            .items
+            .iter_mut()
+            .find(|item| item.capability_id == WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID)
+            .unwrap();
+        discovery_item.evidence_count = 3;
+        discovery_item
+            .evidence_references
+            .retain(|reference| reference != "evidence-0004");
+        let session_lost =
+            render_assessment_with_limit(&session_lost, ReportFormat::Json, usize::MAX).unwrap();
+        let comparison = comparison::compare_reports(
+            valid_json.as_bytes(),
+            session_lost.as_bytes(),
+            comparison::ComparisonFormat::Json,
+        )
+        .unwrap();
+        let comparison: serde_json::Value = serde_json::from_str(&comparison).unwrap();
+        assert_eq!(
+            comparison["supplied_session_comparison"]["status"],
+            "compared_within_same_declared_context"
+        );
+        assert_eq!(
+            comparison["supplied_session_comparison"]["health_and_coverage"]["status"],
+            "changed"
+        );
+        let wordpress = &comparison["wordpress_review_comparison"];
+        assert_eq!(wordpress["status"], "compared");
+        assert!(wordpress.get("reason").is_none());
+        assert_eq!(wordpress["methodology"]["status"], "unchanged");
+        assert_eq!(
+            wordpress["methodology"]["changed_fields"],
+            serde_json::json!([])
+        );
+        assert_eq!(wordpress["coverage"]["status"], "changed");
+        assert_eq!(
+            wordpress["coverage"]["changed_fields"],
+            serde_json::json!(["wordpress_discovery"])
+        );
+        assert_eq!(wordpress["provenance"]["status"], "unchanged");
+        assert_eq!(
+            wordpress["provenance"]["changed_fields"],
+            serde_json::json!([])
+        );
+        assert_eq!(wordpress["discovery_source_content"]["status"], "changed");
+        assert_eq!(
+            wordpress["discovery_source_content"]["changed_fields"],
+            serde_json::json!(["supplied_session_pages"])
+        );
+        assert_eq!(wordpress["components"]["paired_unchanged_count"], 2);
+        assert_eq!(
+            wordpress["components"]["paired_changed"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            wordpress["components"]["paired_changed"][0]["key"],
+            serde_json::json!({"kind": "plugin", "slug": "termivar-metadata-lab"})
+        );
+        assert_eq!(
+            wordpress["components"]["paired_changed"][0]["changed_dimensions"],
+            serde_json::json!(["discovery_metadata"])
+        );
+        assert_eq!(wordpress["advisories"]["paired_unchanged_count"], 1);
+        assert_eq!(
+            wordpress["advisories"]["paired_changed"],
+            serde_json::json!([])
+        );
+        for entity_group in ["components", "advisories"] {
+            assert_eq!(
+                wordpress[entity_group]["only_in_before"],
+                serde_json::json!([])
+            );
+            assert_eq!(
+                wordpress[entity_group]["only_in_after"],
+                serde_json::json!([])
+            );
+        }
+        assert!(comparison["only_in_before"].as_array().unwrap().is_empty());
+        assert!(comparison["only_in_after"].as_array().unwrap().is_empty());
+        assert_eq!(comparison["changed"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            comparison["changed"][0]["capability_id"],
+            WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID
+        );
+        assert_eq!(
+            comparison["changed"][0]["changed_fields"],
+            serde_json::json!(["evidence"])
+        );
+        assert_eq!(comparison["unchanged"].as_array().map(Vec::len), Some(1));
     }
 
     #[cfg(all(feature = "scanning", feature = "wordpress-review"))]

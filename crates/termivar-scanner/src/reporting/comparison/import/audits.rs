@@ -3513,7 +3513,13 @@ pub(super) fn attach_wordpress_discovery(
                 &[],
             )?,
         );
-        wordpress.supplied_session_context = Some(canonical_value(&session_pages.context)?);
+        // The page-scope context is intentionally the minimum wire binding
+        // needed to cross-link committed resources. Comparison scope must use
+        // the already validated root audit context as well: it retains the
+        // operator-declared principal alias and the complete declared session
+        // policy. Otherwise two different principals that share the generic
+        // V1 principal slot could incorrectly pair WordPress entities.
+        wordpress.supplied_session_context = Some(supplied_session.context.clone());
     }
     let mut source_outcomes = Vec::new();
     let mut component_metadata = BTreeMap::<WordPressComponentKey, Vec<Value>>::new();
