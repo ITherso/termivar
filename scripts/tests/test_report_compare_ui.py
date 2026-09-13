@@ -17,6 +17,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 HTML_SOURCE = ROOT / "crates/termivar-scanner/src/reporting/comparison/html.rs"
 EXAMPLE = ROOT / "docs/examples/report-compare"
 
+# Keep the JavaScript execution itself bounded to one second in HARNESS.  The
+# outer allowance also covers intermittently slow Node process launch and host
+# scheduling on hosted Windows runners, which has exceeded ten seconds while
+# the same assertions complete in well under a second on other runs.
+NODE_PROCESS_TIMEOUT_SECONDS = 30
+
 HARNESS = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
@@ -99,7 +105,7 @@ class ReportComparisonScriptTests(unittest.TestCase):
             [self.node, "-e", HARNESS, self.script, scenario],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=NODE_PROCESS_TIMEOUT_SECONDS,
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
