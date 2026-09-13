@@ -5182,6 +5182,30 @@ def _compact_session_trace_evidence(
     }
 
 
+def _expected_supplied_session_metadata_paths(
+    entry_paths: Sequence[str],
+    conditional_readme_path: str,
+    *,
+    include_conditional: bool,
+) -> list[str]:
+    """Return the independent full-candidate ordering for the closed lab scene."""
+    require(
+        len(entry_paths) == 4
+        and all(isinstance(path, str) for path in entry_paths)
+        and len(set(entry_paths)) == 4
+        and isinstance(conditional_readme_path, str)
+        and conditional_readme_path not in entry_paths,
+        "supplied-session metadata ordering oracle is malformed",
+    )
+    ordered = list(entry_paths)
+    if include_conditional:
+        # The closed fixture order is REST, child theme, parent theme, then
+        # plugin slugs. termivar-fingerprint-lab sorts before the existing
+        # termivar-metadata-lab entry plugin under that independent oracle.
+        ordered.insert(3, conditional_readme_path)
+    return ordered
+
+
 def _compact_layout_evidence(document: dict[str, Any]) -> dict[str, Any] | None:
     discovery = document.get("wordpress_discovery")
     layout = discovery.get("layout") if isinstance(discovery, dict) else None
@@ -5213,12 +5237,17 @@ def _compact_layout_evidence(document: dict[str, Any]) -> dict[str, Any] | None:
 def _assert_supplied_session_trace(
     trace: list[tuple[str, str, int, tuple[str, ...]]],
     *,
+    scenario: str,
     session: LabSessionInput,
     expected_session_paths: Sequence[str],
     expected_metadata_paths: Sequence[str],
     known_metadata_paths: Sequence[str] | None = None,
     forbidden_anonymous_paths: Sequence[str] = (),
 ) -> dict[str, int]:
+    require(
+        isinstance(scenario, str) and scenario in SESSION_SCENARIOS,
+        "supplied-session trace scenario is not in the closed registry",
+    )
     forbidden_asset_paths = {path.partition("?")[0] for path in forbidden_anonymous_paths}
     expected_credentialed = [
         ("GET", path, 200, ("cookie",)) for path in expected_session_paths
@@ -5226,10 +5255,79 @@ def _assert_supplied_session_trace(
     session_targets = {session.health_path, session.resource_path}
     actual_session_requests = [row for row in trace if row[1] in session_targets]
     actual_credentialed = [row for row in trace if row[3]]
+    known_metadata = tuple(
+        expected_metadata_paths if known_metadata_paths is None else known_metadata_paths
+    )
+    metadata_targets = set(known_metadata)
+    require(
+        len(metadata_targets) == len(known_metadata)
+        and set(expected_metadata_paths) <= metadata_targets,
+        "supplied-session metadata oracle is malformed",
+    )
+    metadata_indices = {
+        target: index + 1 for index, target in enumerate(known_metadata)
+    }
+
+    def metadata_class(
+        row: tuple[str, str, int, tuple[str, ...]],
+    ) -> dict[str, Any]:
+        method, target, status, names = row
+        return {
+            "metadata_index": metadata_indices[target],
+            "method": method if method in {"GET", "HEAD"} else "other",
+            "status": (
+                status
+                if isinstance(status, int)
+                and not isinstance(status, bool)
+                and 100 <= status <= 599
+                else "invalid"
+            ),
+            "credential_state": (
+                "absent"
+                if names == ()
+                else "selected_session"
+                if names == ("cookie",)
+                else "other"
+            ),
+        }
+
+    known_metadata_activity = [
+        metadata_class(row) for row in trace if row[1] in metadata_targets
+    ]
+    actual_metadata = [
+        row for row in trace if row[1] in metadata_targets and row[0] == "GET"
+    ]
+    expected_metadata = [
+        ("GET", target, 200, ()) for target in expected_metadata_paths
+    ]
+    diagnostic_limit = 16
+    diagnostic = {
+        "scenario": scenario,
+        "expected": {
+            "credentialed_request_count": len(expected_credentialed),
+            "metadata_get_sequence": [
+                metadata_class(row) for row in expected_metadata
+            ],
+        },
+        "actual": {
+            "credentialed_request_count": len(actual_credentialed),
+            "metadata_get_sequence": [
+                metadata_class(row) for row in actual_metadata[:diagnostic_limit]
+            ],
+            "metadata_get_omitted_count": max(
+                0, len(actual_metadata) - diagnostic_limit
+            ),
+            "known_metadata_activity": known_metadata_activity[:diagnostic_limit],
+            "known_metadata_activity_omitted_count": max(
+                0, len(known_metadata_activity) - diagnostic_limit
+            ),
+        },
+    }
     require(
         actual_session_requests == expected_credentialed
         and actual_credentialed == expected_credentialed,
         "supplied-session target sequence or credential presence differs from the oracle",
+        diagnostic,
     )
     require(
         all(
@@ -5238,28 +5336,21 @@ def _assert_supplied_session_trace(
             for _, target, _, names in trace
         ),
         "credential material crossed the supplied-session child authority",
+        diagnostic,
     )
-    metadata_targets = set(
-        expected_metadata_paths if known_metadata_paths is None else known_metadata_paths
-    )
-    require(
-        len(metadata_targets) == len(
-            expected_metadata_paths if known_metadata_paths is None else known_metadata_paths
-        )
-        and set(expected_metadata_paths) <= metadata_targets,
-        "supplied-session metadata oracle is malformed",
-    )
-    actual_metadata = [
-        (method, target, status, names)
-        for method, target, status, names in trace
-        if target in metadata_targets
-    ]
-    expected_metadata = [
-        ("GET", target, 200, ()) for target in expected_metadata_paths
-    ]
     require(
         actual_metadata == expected_metadata,
         "anonymous WordPress metadata trace differs from the session oracle",
+        diagnostic,
+    )
+    require(
+        all(
+            method == "HEAD" and status == 200 and names == ()
+            for method, target, status, names in trace
+            if target in metadata_targets and method != "GET"
+        ),
+        "non-GET activity on a WordPress metadata target differs from the baseline",
+        diagnostic,
     )
     if actual_metadata:
         last_session_index = max(
@@ -5268,6 +5359,7 @@ def _assert_supplied_session_trace(
         require(
             all(trace.index(row) > last_session_index for row in actual_metadata),
             "WordPress metadata ran before supplied-session commit qualification",
+            diagnostic,
         )
     require(
         not any(
@@ -5276,6 +5368,7 @@ def _assert_supplied_session_trace(
             if target in metadata_targets
         ),
         "a supplied-session credential was forwarded to WordPress metadata",
+        diagnostic,
     )
     require(
         not any(
@@ -5283,6 +5376,7 @@ def _assert_supplied_session_trace(
             for _, target, _, _ in trace
         ),
         "an authenticated-page-only asset received an unauthorized request",
+        diagnostic,
     )
     return {
         "credentialed_request_count": len(actual_credentialed),
@@ -5302,10 +5396,22 @@ def _assert_session_preserves_anonymous_trace(
     conditional_metadata_path: str | None,
 ) -> None:
     """Remove only the explicitly new S01/S02 requests and compare the old plan."""
-    removed_targets = {session.health_path, session.resource_path}
+    session_targets = {session.health_path, session.resource_path}
+    retained = [row for row in observed if row[1] not in session_targets]
     if conditional_metadata_path is not None:
-        removed_targets.add(conditional_metadata_path)
-    retained = [row for row in observed if row[1] not in removed_targets]
+        conditional_request = ("GET", conditional_metadata_path, 200, ())
+        require(
+            retained.count(conditional_request) == 1,
+            "supplied-session conditional metadata request differs from the oracle",
+        )
+        removed = False
+        without_conditional = []
+        for row in retained:
+            if not removed and row == conditional_request:
+                removed = True
+                continue
+            without_conditional.append(row)
+        retained = without_conditional
     require(
         retained == list(baseline),
         "supplied-session selection changed the existing anonymous request trace",
@@ -6781,7 +6887,10 @@ def _validate_supplied_session_wordpress_document(
     ]
     expected_sources = list(expected_base_sources)
     if committed:
-        expected_sources.append(("plugin_readme", FINGERPRINT_COMPONENT))
+        # Metadata candidates are globally ordered by kind and component slug.
+        # The session-only fingerprint component therefore precedes the entry
+        # metadata component; it is not appended after the entry candidates.
+        expected_sources.insert(3, ("plugin_readme", FINGERPRINT_COMPONENT))
     expected_count = len(expected_sources)
     expected_seed_count = 3 + int(committed)
     require(
@@ -6964,7 +7073,20 @@ def _validate_supplied_session_wordpress_document(
     require(identities == expected_sources and len(set(identities)) == len(identities),
             "session scenario lost, duplicated, or substituted metadata sources")
     if committed:
-        plugin = sources[-1]
+        conditional_sources = [
+            source for source in sources
+            if source.get("kind") == "plugin_readme"
+            and isinstance(source.get("component"), dict)
+            and (
+                source["component"].get("kind"),
+                source["component"].get("slug"),
+            ) == FINGERPRINT_COMPONENT
+        ]
+        require(
+            len(conditional_sources) == 1,
+            "session-nominated plugin source is missing or duplicated",
+        )
+        plugin = conditional_sources[0]
         require(
             plugin.get("association") == expected_component_association
             and plugin.get("plugin", {}).get("stable_tag") == "9.9.9",
@@ -7445,17 +7567,22 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                         + "?ver=private-page"
                         for extension in ("css", "js")
                     }
-                    expected_metadata_paths = list(discovery_oracle.request_paths)
                     conditional_readme_path = (
                         plugin_base[len((lab.origin or "").rstrip("/")):]
                         + "termivar-fingerprint-lab/readme.txt"
                     )
-                    if (wordpress_supplied_session
-                            and expected_session_outcome == "complete"):
-                        expected_metadata_paths.append(conditional_readme_path)
+                    expected_metadata_paths = _expected_supplied_session_metadata_paths(
+                        discovery_oracle.request_paths,
+                        conditional_readme_path,
+                        include_conditional=(
+                            wordpress_supplied_session
+                            and expected_session_outcome == "complete"
+                        ),
+                    )
                     scenario_expected_metadata_paths = expected_metadata_paths
                     session_trace = _assert_supplied_session_trace(
                         trace,
+                        scenario=name,
                         session=supplied_session,
                         expected_session_paths=expected_session_paths,
                         expected_metadata_paths=expected_metadata_paths,
@@ -7715,10 +7842,13 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             conditional_root_readme = (
                 "/wp-content/plugins/termivar-fingerprint-lab/readme.txt"
             )
-            for name, conditional_path in (
-                ("session-root-option-off", None),
-                ("session-root-healthy", conditional_root_readme),
-            ):
+            for case in root_session_cases:
+                name = case["name"]
+                conditional_path = (
+                    conditional_root_readme
+                    if case["integration"] and case["outcome"] == "complete"
+                    else None
+                )
                 session_case_trace, supplied = root_session_traces[name]
                 _assert_session_preserves_anonymous_trace(
                     pretty_discovery,

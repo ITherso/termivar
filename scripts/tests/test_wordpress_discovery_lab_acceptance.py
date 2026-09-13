@@ -5242,7 +5242,7 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             plugin_role = runner._framed_reference(
                 "wordpress-discovery-role", oracle.plugins_base_url
             )
-            discovery["sources"].append({
+            discovery["sources"].insert(3, {
                 "kind": "plugin_readme",
                 "association": "observed_conventional",
                 "resource_reference": "sha256:" + "8" * 64,
@@ -5341,6 +5341,84 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                     if fingerprints:
                         self.assertEqual(fingerprint["resource_count"], 0)
                         self.assertEqual(fingerprint["component_count"], 0)
+
+    def test_session_wordpress_v4_uses_global_order_and_exact_conditional_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            document, session_input, oracle = self.session_wordpress_document(
+                temporary,
+                outcome="complete",
+                integration=True,
+                fingerprints=False,
+            )
+            sources = document["wordpress_discovery"]["sources"]
+            identities = [
+                (
+                    source.get("kind"),
+                    (
+                        source.get("component", {}).get("kind"),
+                        source.get("component", {}).get("slug"),
+                    ) if "component" in source else None,
+                )
+                for source in sources
+            ]
+            self.assertEqual(
+                identities,
+                [
+                    ("rest_index", None),
+                    ("theme_stylesheet", ("theme", "termivar-child")),
+                    ("theme_stylesheet", ("theme", "termivar-parent")),
+                    ("plugin_readme", runner.FINGERPRINT_COMPONENT),
+                    ("plugin_readme", ("plugin", "termivar-metadata-lab")),
+                ],
+            )
+            self.validate_wordpress_document(
+                document,
+                session_input,
+                oracle,
+                outcome="complete",
+                integration=True,
+                fingerprints=False,
+            )
+
+            for field, replacement in (
+                ("association", "explicit_operator"),
+                ("stable_tag", "8.8.8"),
+            ):
+                changed = copy.deepcopy(document)
+                conditional = changed["wordpress_discovery"]["sources"][3]
+                if field == "stable_tag":
+                    conditional["plugin"][field] = replacement
+                else:
+                    conditional[field] = replacement
+                with self.subTest(field=field):
+                    with self.assertRaisesRegex(
+                        runner.AcceptanceError,
+                        "session-nominated plugin metadata meaning changed",
+                    ):
+                        self.validate_wordpress_document(
+                            changed,
+                            session_input,
+                            oracle,
+                            outcome="complete",
+                            integration=True,
+                            fingerprints=False,
+                        )
+
+            appended = copy.deepcopy(document)
+            conditional = appended["wordpress_discovery"]["sources"].pop(3)
+            appended["wordpress_discovery"]["sources"].append(conditional)
+            with self.assertRaisesRegex(
+                runner.AcceptanceError,
+                "lost, duplicated, or substituted metadata sources",
+            ):
+                self.validate_wordpress_document(
+                    appended,
+                    session_input,
+                    oracle,
+                    outcome="complete",
+                    integration=True,
+                    fingerprints=False,
+                )
 
     def test_session_wordpress_v4_rejects_malformed_counts_provenance_and_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -5541,24 +5619,49 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
     def test_supplied_session_trace_is_exact_and_private_assets_are_never_requested(self):
         with tempfile.TemporaryDirectory() as temporary:
             session = self.session_input(temporary)
-            metadata = ["/wp-json/", "/wp-content/plugins/example/readme.txt"]
+            entry_metadata = [
+                "/wp-json/",
+                "/wp-content/themes/child/style.css",
+                "/wp-content/themes/parent/style.css",
+                "/wp-content/plugins/example/readme.txt",
+            ]
+            conditional_readme = "/wp-content/plugins/private/readme.txt"
+            metadata = runner._expected_supplied_session_metadata_paths(
+                entry_metadata,
+                conditional_readme,
+                include_conditional=True,
+            )
+            self.assertEqual(
+                metadata,
+                [*entry_metadata[:3], conditional_readme, entry_metadata[3]],
+            )
+            self.assertEqual(
+                runner._expected_supplied_session_metadata_paths(
+                    entry_metadata,
+                    conditional_readme,
+                    include_conditional=False,
+                ),
+                entry_metadata,
+            )
             trace = [
                 ("GET", "/", 200, ()),
                 ("GET", session.health_path, 200, ("cookie",)),
                 ("GET", session.resource_path, 200, ("cookie",)),
                 ("GET", session.health_path, 200, ("cookie",)),
-                ("GET", metadata[0], 200, ()),
-                ("GET", metadata[1], 200, ()),
+                *[("GET", target, 200, ()) for target in metadata],
+                ("HEAD", entry_metadata[1], 200, ()),
+                ("HEAD", entry_metadata[0], 200, ()),
             ]
-            conditional_readme = "/wp-content/plugins/private/readme.txt"
+            unselected_readme = "/wp-content/plugins/unselected/readme.txt"
             counts = runner._assert_supplied_session_trace(
                 trace,
+                scenario="session-root-healthy",
                 session=session,
                 expected_session_paths=[
                     session.health_path, session.resource_path, session.health_path,
                 ],
                 expected_metadata_paths=metadata,
-                known_metadata_paths=(*metadata, conditional_readme),
+                known_metadata_paths=(*entry_metadata, conditional_readme, unselected_readme),
                 forbidden_anonymous_paths=(
                     "/wp-content/plugins/private/assets/fingerprint.js?ver=private-page",
                     "/wp-content/plugins/private/assets/fingerprint.css?ver=private-page",
@@ -5568,8 +5671,8 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             summary = runner._compact_session_trace_evidence(
                 trace, session, metadata_paths=metadata
             )
-            self.assertEqual(summary["full_request_count"], 6)
-            self.assertEqual(summary["retained_request_count"], 5)
+            self.assertEqual(summary["full_request_count"], 11)
+            self.assertEqual(summary["retained_request_count"], 10)
             self.assertEqual(summary["omitted_anonymous_general_request_count"], 1)
             self.assertRegex(summary["full_trace_sha256"], r"^[0-9a-f]{64}$")
 
@@ -5577,13 +5680,20 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                 trace + [("GET", session.health_path, 200, ())],
                 trace + [("HEAD", "/wp-content/plugins/private/assets/fingerprint.js?ver=private-page", 200, ())],
                 trace + [("GET", "/wp-content/plugins/private/assets/fingerprint.css", 200, ())],
-                trace + [("HEAD", metadata[0], 200, ())],
                 trace + [("GET", metadata[0], 500, ())],
                 trace + [("GET", metadata[0], 200, ())],
-                trace + [("GET", conditional_readme, 200, ())],
+                trace + [("GET", unselected_readme, 200, ())],
+                trace + [("POST", metadata[0], 200, ())],
+                trace + [("HEAD", metadata[0], 500, ())],
                 [
                     row if row[1] != metadata[0]
                     else (row[0], row[1], row[2], ("cookie",))
+                    for row in trace
+                ],
+                [
+                    ("HEAD", row[1], row[2], row[3])
+                    if row == ("GET", metadata[0], 200, ())
+                    else row
                     for row in trace
                 ],
             )
@@ -5592,6 +5702,7 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                     with self.assertRaises(runner.AcceptanceError):
                         runner._assert_supplied_session_trace(
                             mutated,
+                            scenario="session-root-healthy",
                             session=session,
                             expected_session_paths=[
                                 session.health_path,
@@ -5599,12 +5710,78 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                                 session.health_path,
                             ],
                             expected_metadata_paths=metadata,
-                            known_metadata_paths=(*metadata, conditional_readme),
+                            known_metadata_paths=(
+                                *entry_metadata,
+                                conditional_readme,
+                                unselected_readme,
+                            ),
                             forbidden_anonymous_paths=(
                                 "/wp-content/plugins/private/assets/fingerprint.js?ver=private-page",
                                 "/wp-content/plugins/private/assets/fingerprint.css?ver=private-page",
                             ),
                         )
+
+            appended_order = [
+                *entry_metadata,
+                conditional_readme,
+            ]
+            wrong_order_trace = [
+                *trace[:4],
+                *[("GET", target, 200, ()) for target in appended_order],
+                *trace[-2:],
+            ]
+            with self.assertRaisesRegex(
+                runner.AcceptanceError, "metadata trace differs"
+            ) as raised:
+                runner._assert_supplied_session_trace(
+                    wrong_order_trace,
+                    scenario="session-root-healthy",
+                    session=session,
+                    expected_session_paths=[
+                        session.health_path,
+                        session.resource_path,
+                        session.health_path,
+                    ],
+                    expected_metadata_paths=metadata,
+                    known_metadata_paths=(
+                        *entry_metadata,
+                        conditional_readme,
+                        unselected_readme,
+                    ),
+                )
+            diagnostic = raised.exception.diagnostic
+            self.assertEqual(diagnostic["scenario"], "session-root-healthy")
+            self.assertEqual(
+                [
+                    row["metadata_index"]
+                    for row in diagnostic["expected"]["metadata_get_sequence"]
+                ],
+                [1, 2, 3, 5, 4],
+            )
+            self.assertEqual(
+                [
+                    row["metadata_index"]
+                    for row in diagnostic["actual"]["metadata_get_sequence"]
+                ],
+                [1, 2, 3, 4, 5],
+            )
+            encoded_diagnostic = json.dumps(diagnostic, sort_keys=True)
+            self.assertNotIn("wp-json", encoded_diagnostic)
+            self.assertNotIn("/", encoded_diagnostic)
+
+            with self.assertRaisesRegex(runner.AcceptanceError, "closed registry"):
+                runner._assert_supplied_session_trace(
+                    trace,
+                    scenario="../private",
+                    session=session,
+                    expected_session_paths=[
+                        session.health_path,
+                        session.resource_path,
+                        session.health_path,
+                    ],
+                    expected_metadata_paths=metadata,
+                    known_metadata_paths=(*entry_metadata, conditional_readme),
+                )
 
     def test_sensitive_process_failures_withhold_cookie_and_child_output(self):
         secret = b"alice|4102444800|" + b"T" * 43 + b"|" + b"b" * 64
@@ -5672,6 +5849,9 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             for changed, conditional_path in (
                 (option_off[:-1], None),
                 (healthy + [("GET", "/unexpected/", 200, ())], conditional),
+                (healthy + [("HEAD", "/wp-json/", 200, ())], conditional),
+                (healthy + [("HEAD", conditional, 200, ())], conditional),
+                (healthy + [("GET", conditional, 200, ())], conditional),
             ):
                 with self.assertRaises(runner.AcceptanceError):
                     runner._assert_session_preserves_anonymous_trace(
