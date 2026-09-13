@@ -2,7 +2,7 @@
 
 use super::super::{
     ImportedSuppliedSessionAudit, ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit,
-    WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
+    SuppliedSessionResourceBinding, WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
     WordPressAssetFingerprintResourceKey, WordPressComponentKey,
     WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY,
 };
@@ -35,11 +35,14 @@ const MAX_WORDPRESS_SIGNALS: u64 = 256;
 const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V1: &str = "security.wordpress-discovery-audit/v1";
 const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2: &str = "security.wordpress-discovery-audit/v2";
 const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V3: &str = "security.wordpress-discovery-audit/v3";
+const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V4: &str = "security.wordpress-discovery-audit/v4";
 const WORDPRESS_DISCOVERY_CAPABILITY: &str = "technology.wordpress-metadata-discovery@1";
 const WORDPRESS_DISCOVERY_POLICY_V1: &str = "termivar.wordpress-metadata-discovery/v1";
 const WORDPRESS_DISCOVERY_POLICY_V2: &str =
     "termivar.wordpress-deployment-aware-metadata-discovery/v1";
 const WORDPRESS_DISCOVERY_POLICY_V3: &str = "termivar.wordpress-page-scoped-metadata-discovery/v1";
+const WORDPRESS_DISCOVERY_POLICY_V4: &str =
+    "termivar.wordpress-supplied-session-metadata-discovery/v1";
 const WORDPRESS_ASSET_FINGERPRINT_AUDIT_SCHEMA: &str =
     "security.wordpress-asset-fingerprint-audit/v1";
 const WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA: &str =
@@ -69,6 +72,9 @@ const MAX_WORDPRESS_DISCOVERY_REQUESTS: u64 = 12;
 const MAX_WORDPRESS_PAGE_DISCOVERY_REQUESTS: u64 = 3;
 const MAX_WORDPRESS_PAGE_DISCOVERY_CANDIDATES: u64 = 4_096;
 const MAX_WORDPRESS_PAGE_DISCOVERY_INTERPRETED_BYTES: u64 = 768 * 1024;
+const MAX_WORDPRESS_SUPPLIED_SESSION_PAGES: u64 = MAX_SUPPLIED_SESSION_RESOURCES;
+const MAX_WORDPRESS_SUPPLIED_SESSION_INTERPRETED_BYTES: u64 =
+    MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT;
 const MAX_WORDPRESS_DISCOVERY_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_WORDPRESS_DISCOVERY_REST_REQUESTS: u64 = 1;
 const MAX_WORDPRESS_DISCOVERY_THEME_REQUESTS: u64 = 3;
@@ -628,6 +634,24 @@ pub(super) fn validate_supplied_session(
     } else {
         &["outcome", "coverage", "checkpoints", "resources"]
     };
+    let resource_bindings = validated_resources
+        .iter()
+        .map(|resource| {
+            let evidence_reference = if resource.committed {
+                resource.evidence_reference.map(str::to_owned)
+            } else {
+                None
+            };
+            (
+                resource.reference.to_owned(),
+                SuppliedSessionResourceBinding {
+                    evidence_reference,
+                    response_bytes: resource.response_bytes,
+                    epoch: 1,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     Ok(ImportedSuppliedSessionAudit {
         context: selected_object(
             fields,
@@ -653,6 +677,7 @@ pub(super) fn validate_supplied_session(
             ],
             &[],
         )?,
+        resources: resource_bindings,
     })
 }
 
@@ -1177,8 +1202,30 @@ pub(super) struct ValidatedWordPressDiscoveryAudit {
     deployment_aware: bool,
     evidence_references: BTreeSet<String>,
     allowed_page_references: Option<BTreeSet<String>>,
+    supplied_session_pages: Option<ValidatedWordPressSuppliedSessionPages>,
     committed_response_count: u64,
     response_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedWordPressSuppliedSessionPage {
+    page_reference: String,
+    resource_reference: String,
+    resource_evidence_reference: Option<String>,
+    association: String,
+    outcome: String,
+    interpreted_response_bytes: u64,
+    evidence_references: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedWordPressSuppliedSessionPages {
+    context: Value,
+    selected_count: u64,
+    committed_count: u64,
+    accepted_page_references: BTreeSet<String>,
+    evidence_references: BTreeSet<String>,
+    pages: Vec<ValidatedWordPressSuppliedSessionPage>,
 }
 
 pub(super) fn validate_wordpress_discovery(
@@ -1187,10 +1234,11 @@ pub(super) fn validate_wordpress_discovery(
 ) -> Result<ValidatedWordPressDiscoveryAudit, ComparisonError> {
     let fields = object(value)?;
     let schema = string(fields, "schema")?;
-    let (deployment_aware, page_scoped) = match schema {
-        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V1 => (false, false),
-        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2 => (true, false),
-        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V3 => (true, true),
+    let (deployment_aware, page_scoped, supplied_session_scoped) = match schema {
+        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V1 => (false, false, false),
+        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2 => (true, false, false),
+        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V3 => (true, true, false),
+        WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V4 => (true, false, true),
         _ => return Err(ComparisonError::InvalidDocument),
     };
     let required_fields = [
@@ -1217,17 +1265,29 @@ pub(super) fn validate_wordpress_discovery(
         if page_scoped {
             required.push("page_collection");
         }
-        keys(fields, &required, &[])?;
+        if supplied_session_scoped {
+            required.push("supplied_session_pages");
+        }
+        keys(
+            fields,
+            &required,
+            if supplied_session_scoped {
+                &["page_collection"]
+            } else {
+                &[]
+            },
+        )?;
     } else {
         keys(fields, &required_fields, &[])?;
     }
     check(string(fields, "capability_id")? == WORDPRESS_DISCOVERY_CAPABILITY)?;
     check(
         string(fields, "policy_id")?
-            == match (deployment_aware, page_scoped) {
-                (false, false) => WORDPRESS_DISCOVERY_POLICY_V1,
-                (true, false) => WORDPRESS_DISCOVERY_POLICY_V2,
-                (true, true) => WORDPRESS_DISCOVERY_POLICY_V3,
+            == match (deployment_aware, page_scoped, supplied_session_scoped) {
+                (false, false, false) => WORDPRESS_DISCOVERY_POLICY_V1,
+                (true, false, false) => WORDPRESS_DISCOVERY_POLICY_V2,
+                (true, true, false) => WORDPRESS_DISCOVERY_POLICY_V3,
+                (true, false, true) => WORDPRESS_DISCOVERY_POLICY_V4,
                 _ => return Err(ComparisonError::InvalidDocument),
             },
     )?;
@@ -1259,12 +1319,24 @@ pub(super) fn validate_wordpress_discovery(
         .get("page_collection")
         .map(validate_wordpress_page_collection)
         .transpose()?;
-    check(page_scoped == page_collection.is_some())?;
+    check(supplied_session_scoped || page_scoped == page_collection.is_some())?;
+    let supplied_session_pages = fields
+        .get("supplied_session_pages")
+        .map(validate_wordpress_supplied_session_pages)
+        .transpose()?;
+    check(supplied_session_scoped == supplied_session_pages.is_some())?;
     let page_committed = page_collection
         .as_ref()
         .map_or(0, |pages| pages.committed_response_count);
     let total_committed = committed
         .checked_add(page_committed)
+        .and_then(|count| {
+            count.checked_add(
+                supplied_session_pages
+                    .as_ref()
+                    .map_or(0, |pages| pages.evidence_references.len() as u64),
+            )
+        })
         .ok_or(ComparisonError::InvalidDocument)?;
     let response_bytes = number(fields, "response_bytes", u64::MAX)?;
     let candidate_limit_reached = boolean(fields, "candidate_limit_reached")?;
@@ -1307,7 +1379,13 @@ pub(super) fn validate_wordpress_discovery(
         let source = object(source)?;
         let kind = string(source, "kind")?;
         let (bytes, references, request_attempted, references_by_source, identity) =
-            validate_wordpress_discovery_source(source, layout.as_ref(), page_collection.as_ref())?;
+            validate_wordpress_discovery_source(
+                source,
+                layout.as_ref(),
+                page_collection.as_ref(),
+                supplied_session_pages.as_ref(),
+                supplied_session_scoped,
+            )?;
         source_bytes = source_bytes
             .checked_add(bytes)
             .ok_or(ComparisonError::InvalidDocument)?;
@@ -1361,6 +1439,11 @@ pub(super) fn validate_wordpress_discovery(
             check(source_evidence_references.insert(reference.clone()))?;
         }
     }
+    if let Some(session_pages) = &supplied_session_pages {
+        for reference in &session_pages.evidence_references {
+            check(source_evidence_references.insert(reference.clone()))?;
+        }
+    }
     let allowed_page_references = page_collection.as_ref().map(|pages| {
         let mut references = pages.accepted_page_references.clone();
         references.insert(pages.entry_page_reference.clone());
@@ -1371,6 +1454,7 @@ pub(super) fn validate_wordpress_discovery(
         deployment_aware,
         evidence_references: source_evidence_references,
         allowed_page_references,
+        supplied_session_pages,
         committed_response_count: total_committed,
         response_bytes: total_response_bytes,
     })
@@ -2573,6 +2657,278 @@ struct ValidatedWordPressPageCollection {
     response_bytes: u64,
 }
 
+fn validate_wordpress_supplied_session_pages(
+    value: &Value,
+) -> Result<ValidatedWordPressSuppliedSessionPages, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "mode",
+            "policy_reference",
+            "application_reference",
+            "principal_reference",
+            "credential_mechanism",
+            "session_epoch",
+            "selected_count",
+            "committed_count",
+            "accepted_association_count",
+            "rejected_association_count",
+            "not_established_association_count",
+            "not_evaluated_count",
+            "interpreted_response_bytes",
+            "pages",
+        ],
+        &[],
+    )?;
+    check(
+        token(fields, "mode", &["committed_supplied_session_resources"])?
+            == "committed_supplied_session_resources",
+    )?;
+    let policy_reference = text(fields, "policy_reference", MAX_IDENTIFIER_BYTES)?;
+    let application_reference = text(fields, "application_reference", MAX_IDENTIFIER_BYTES)?;
+    let principal_reference = text(fields, "principal_reference", MAX_IDENTIFIER_BYTES)?;
+    check(digest(policy_reference, "supplied-session-policy-sha256:"))?;
+    check(digest(
+        application_reference,
+        "supplied-session-application-sha256:",
+    ))?;
+    check(principal_reference == "supplied-session-principal-0001")?;
+    let _credential_mechanism = token(
+        fields,
+        "credential_mechanism",
+        &["authorization_header", "cookie_jar"],
+    )?;
+    let session_epoch = number(fields, "session_epoch", 1)?;
+    check(session_epoch == 1)?;
+    let selected_count = number(
+        fields,
+        "selected_count",
+        MAX_WORDPRESS_SUPPLIED_SESSION_PAGES,
+    )?;
+    let committed_count = number(
+        fields,
+        "committed_count",
+        MAX_WORDPRESS_SUPPLIED_SESSION_PAGES,
+    )?;
+    let accepted_count = number(
+        fields,
+        "accepted_association_count",
+        MAX_WORDPRESS_SUPPLIED_SESSION_PAGES,
+    )?;
+    let rejected_count = number(
+        fields,
+        "rejected_association_count",
+        MAX_WORDPRESS_SUPPLIED_SESSION_PAGES,
+    )?;
+    let not_established_count = number(
+        fields,
+        "not_established_association_count",
+        MAX_WORDPRESS_SUPPLIED_SESSION_PAGES,
+    )?;
+    let not_evaluated_count = number(
+        fields,
+        "not_evaluated_count",
+        MAX_WORDPRESS_SUPPLIED_SESSION_PAGES,
+    )?;
+    let interpreted_response_bytes = number(
+        fields,
+        "interpreted_response_bytes",
+        MAX_WORDPRESS_SUPPLIED_SESSION_INTERPRETED_BYTES,
+    )?;
+    let pages = array(fields, "pages")?;
+    check(
+        selected_count == pages.len() as u64
+            && committed_count <= selected_count
+            && accepted_count
+                .checked_add(rejected_count)
+                .and_then(|count| count.checked_add(not_established_count))
+                == Some(selected_count),
+    )?;
+
+    let mut validated_pages = Vec::with_capacity(pages.len());
+    let mut page_references = BTreeSet::new();
+    let mut resource_references = BTreeSet::new();
+    let mut resource_evidence_references = BTreeSet::new();
+    let mut accepted_page_references = BTreeSet::new();
+    let mut evidence_references = BTreeSet::new();
+    let mut actual_committed_count = 0_u64;
+    let mut actual_accepted_count = 0_u64;
+    let mut actual_rejected_count = 0_u64;
+    let mut actual_not_established_count = 0_u64;
+    let mut actual_not_evaluated_count = 0_u64;
+    let mut actual_interpreted_bytes = 0_u64;
+    for value in pages {
+        let page = validate_wordpress_supplied_session_page(object(value)?)?;
+        check(page_references.insert(page.page_reference.clone()))?;
+        check(resource_references.insert(page.resource_reference.clone()))?;
+        if let Some(reference) = &page.resource_evidence_reference {
+            check(resource_evidence_references.insert(reference.clone()))?;
+            actual_committed_count += 1;
+        }
+        match page.association.as_str() {
+            "accepted" => {
+                actual_accepted_count += 1;
+                check(accepted_page_references.insert(page.page_reference.clone()))?;
+            },
+            "rejected" => actual_rejected_count += 1,
+            "not_established" => actual_not_established_count += 1,
+            _ => return Err(ComparisonError::InvalidDocument),
+        }
+        if matches!(
+            page.outcome.as_str(),
+            "unsupported_content" | "invalid_utf8" | "not_evaluated"
+        ) {
+            actual_not_evaluated_count += 1;
+        }
+        actual_interpreted_bytes = actual_interpreted_bytes
+            .checked_add(page.interpreted_response_bytes)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        for reference in &page.evidence_references {
+            check(evidence_references.insert(reference.clone()))?;
+        }
+        validated_pages.push(page);
+    }
+    check(
+        actual_committed_count == committed_count
+            && actual_accepted_count == accepted_count
+            && actual_rejected_count == rejected_count
+            && actual_not_established_count == not_established_count
+            && actual_not_evaluated_count == not_evaluated_count
+            && actual_interpreted_bytes == interpreted_response_bytes,
+    )?;
+    let context = selected_object(
+        fields,
+        &[
+            "policy_reference",
+            "application_reference",
+            "principal_reference",
+            "credential_mechanism",
+            "session_epoch",
+        ],
+        &[],
+    )?;
+    Ok(ValidatedWordPressSuppliedSessionPages {
+        context,
+        selected_count,
+        committed_count,
+        accepted_page_references,
+        evidence_references,
+        pages: validated_pages,
+    })
+}
+
+fn validate_wordpress_supplied_session_page(
+    fields: &Map<String, Value>,
+) -> Result<ValidatedWordPressSuppliedSessionPage, ComparisonError> {
+    keys(
+        fields,
+        &[
+            "page_reference",
+            "resource_reference",
+            "resource_evidence_reference",
+            "acquisition",
+            "association",
+            "outcome",
+            "interpreted_response_bytes",
+            "evidence_reference_count",
+            "evidence_references",
+            "fingerprint_evaluation",
+        ],
+        &[],
+    )?;
+    let page_reference = text(
+        fields,
+        "page_reference",
+        WORDPRESS_DISCOVERY_REFERENCE_BYTES,
+    )?;
+    check(digest(page_reference, "sha256:"))?;
+    let resource_reference = text(fields, "resource_reference", MAX_IDENTIFIER_BYTES)?;
+    check(digest(
+        resource_reference,
+        "supplied-session-resource-sha256:",
+    ))?;
+    let resource_evidence_reference =
+        optional_text(fields, "resource_evidence_reference", MAX_IDENTIFIER_BYTES)?;
+    check(
+        resource_evidence_reference.is_none_or(|reference| {
+            digest(reference, "supplied-session-resource-evidence-sha256:")
+        }),
+    )?;
+    check(
+        token(fields, "acquisition", &["reused_supplied_session_response"])?
+            == "reused_supplied_session_response",
+    )?;
+    let association = token(
+        fields,
+        "association",
+        &["accepted", "rejected", "not_established"],
+    )?;
+    let outcome = token(
+        fields,
+        "outcome",
+        &[
+            "accepted",
+            "no_component_signals",
+            "incompatible_application",
+            "soft_404",
+            "login_response",
+            "unsupported_content",
+            "invalid_utf8",
+            "truncated",
+            "not_evaluated",
+        ],
+    )?;
+    let interpreted_response_bytes = number(fields, "interpreted_response_bytes", 64 * 1024)?;
+    let evidence_reference_count = number(fields, "evidence_reference_count", 1)?;
+    let evidence_values = array(fields, "evidence_references")?;
+    check(evidence_reference_count == evidence_values.len() as u64)?;
+    let mut evidence_references = Vec::with_capacity(evidence_values.len());
+    for value in evidence_values {
+        let reference = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        super::reference(reference, "evidence")?;
+        evidence_references.push(reference.to_owned());
+    }
+    check(
+        evidence_references.windows(2).all(|pair| pair[0] < pair[1])
+            && token(fields, "fingerprint_evaluation", &["not_selected_in_v1"])?
+                == "not_selected_in_v1"
+            && match association {
+                "accepted" => outcome == "accepted" && evidence_reference_count == 1,
+                "rejected" => {
+                    matches!(
+                        outcome,
+                        "incompatible_application" | "soft_404" | "login_response" | "truncated"
+                    ) && evidence_reference_count == 1
+                },
+                "not_established" => match outcome {
+                    "no_component_signals" => evidence_reference_count == 1,
+                    "unsupported_content" | "invalid_utf8" | "not_evaluated" => {
+                        evidence_reference_count == 0 && interpreted_response_bytes == 0
+                    },
+                    _ => false,
+                },
+                _ => false,
+            }
+            && match (resource_evidence_reference, outcome) {
+                (None, "not_evaluated") => {
+                    evidence_reference_count == 0 && interpreted_response_bytes == 0
+                },
+                (Some(_), _) => outcome != "not_evaluated",
+                (None, _) => false,
+            },
+    )?;
+    Ok(ValidatedWordPressSuppliedSessionPage {
+        page_reference: page_reference.to_owned(),
+        resource_reference: resource_reference.to_owned(),
+        resource_evidence_reference: resource_evidence_reference.map(str::to_owned),
+        association: association.to_owned(),
+        outcome: outcome.to_owned(),
+        interpreted_response_bytes,
+        evidence_references,
+    })
+}
+
 fn validate_wordpress_page_collection(
     value: &Value,
 ) -> Result<ValidatedWordPressPageCollection, ComparisonError> {
@@ -3005,9 +3361,10 @@ fn validate_wordpress_discovery_layout(
 
 pub(super) fn attach_wordpress_discovery(
     wordpress: &mut ImportedWordPressAudit,
-    discovery: &Value,
+    discovery: &ValidatedWordPressDiscoveryAudit,
+    supplied_session: Option<&ImportedSuppliedSessionAudit>,
 ) -> Result<(), ComparisonError> {
-    let fields = object(discovery)?;
+    let fields = object(&discovery.document)?;
     let layout = fields
         .get("layout")
         .map(validate_wordpress_discovery_layout)
@@ -3133,6 +3490,31 @@ pub(super) fn attach_wordpress_discovery(
             )?,
         );
     }
+    if let Some(session_pages) = &discovery.supplied_session_pages {
+        let supplied_session = supplied_session.ok_or(ComparisonError::InvalidDocument)?;
+        validate_wordpress_supplied_session_cross_links(session_pages, supplied_session)?;
+        object_mut(&mut methodology)?.insert(
+            "supplied_session_context".to_owned(),
+            canonical_value(&session_pages.context)?,
+        );
+        object_mut(&mut coverage)?.insert(
+            "supplied_session_pages".to_owned(),
+            selected_object(
+                object(required(fields, "supplied_session_pages")?)?,
+                &[
+                    "selected_count",
+                    "committed_count",
+                    "accepted_association_count",
+                    "rejected_association_count",
+                    "not_established_association_count",
+                    "not_evaluated_count",
+                    "interpreted_response_bytes",
+                ],
+                &[],
+            )?,
+        );
+        wordpress.supplied_session_context = Some(canonical_value(&session_pages.context)?);
+    }
     let mut source_outcomes = Vec::new();
     let mut component_metadata = BTreeMap::<WordPressComponentKey, Vec<Value>>::new();
     let mut rest_source_content = Vec::new();
@@ -3157,6 +3539,10 @@ pub(super) fn attach_wordpress_discovery(
                     "source_page_references",
                     source.get("source_page_references"),
                 ),
+                (
+                    "source_supplied_session_page_references",
+                    source.get("source_supplied_session_page_references"),
+                ),
             ],
         )?);
         if string(source, "kind")? == "rest_index" {
@@ -3171,6 +3557,10 @@ pub(super) fn attach_wordpress_discovery(
                     (
                         "source_page_references",
                         source.get("source_page_references"),
+                    ),
+                    (
+                        "source_supplied_session_page_references",
+                        source.get("source_supplied_session_page_references"),
                     ),
                 ],
             )?;
@@ -3190,6 +3580,10 @@ pub(super) fn attach_wordpress_discovery(
                     (
                         "source_page_references",
                         source.get("source_page_references"),
+                    ),
+                    (
+                        "source_supplied_session_page_references",
+                        source.get("source_supplied_session_page_references"),
                     ),
                     ("theme", source.get("theme")),
                     ("plugin", source.get("plugin")),
@@ -3242,6 +3636,30 @@ pub(super) fn attach_wordpress_discovery(
         pages.sort_by_key(Value::to_string);
         discovery_source_content.insert("pages".to_owned(), Value::Array(pages));
     }
+    if let Some(session_pages) = fields.get("supplied_session_pages") {
+        let session_page_fields = object(session_pages)?;
+        let mut pages = array(session_page_fields, "pages")?
+            .iter()
+            .map(|page| {
+                selected_object(
+                    object(page)?,
+                    &[
+                        "page_reference",
+                        "resource_reference",
+                        "resource_evidence_reference",
+                        "acquisition",
+                        "association",
+                        "outcome",
+                        "interpreted_response_bytes",
+                        "fingerprint_evaluation",
+                    ],
+                    &[],
+                )
+            })
+            .collect::<Result<Vec<_>, ComparisonError>>()?;
+        pages.sort_by_key(Value::to_string);
+        discovery_source_content.insert("supplied_session_pages".to_owned(), Value::Array(pages));
+    }
     let discovery_source_content = Value::Object(discovery_source_content);
     if let Some(layout) = layout {
         wordpress.application_reference = Some(layout.application_reference.clone());
@@ -3267,10 +3685,63 @@ pub(super) fn attach_wordpress_discovery(
             )])),
         );
     }
+    if let Some(session_pages) = &discovery.supplied_session_pages {
+        object_mut(&mut wordpress.provenance)?.insert(
+            "wordpress_supplied_session".to_owned(),
+            canonical_value(&session_pages.context)?,
+        );
+    }
     object_mut(&mut wordpress.methodology)?.insert("wordpress_discovery".to_owned(), methodology);
     object_mut(&mut wordpress.coverage)?.insert("wordpress_discovery".to_owned(), coverage);
     wordpress.discovery_source_content = Some(discovery_source_content);
     Ok(())
+}
+
+fn validate_wordpress_supplied_session_cross_links(
+    pages: &ValidatedWordPressSuppliedSessionPages,
+    supplied_session: &ImportedSuppliedSessionAudit,
+) -> Result<(), ComparisonError> {
+    let page_context = object(&pages.context)?;
+    let session_context = object(&supplied_session.context)?;
+    for field in [
+        "policy_reference",
+        "application_reference",
+        "principal_reference",
+        "credential_mechanism",
+        "session_epoch",
+    ] {
+        check(page_context.get(field) == session_context.get(field))?;
+    }
+    check(
+        pages.selected_count
+            == number(
+                object(&supplied_session.accounting)?,
+                "selected_resource_count",
+                MAX_SUPPLIED_SESSION_RESOURCES,
+            )?
+            && pages.committed_count
+                == number(
+                    object(&supplied_session.accounting)?,
+                    "committed_resource_count",
+                    MAX_SUPPLIED_SESSION_RESOURCES,
+                )?
+            && pages.pages.len() == supplied_session.resources.len(),
+    )?;
+
+    let mut resource_references = BTreeSet::new();
+    for page in &pages.pages {
+        check(resource_references.insert(page.resource_reference.clone()))?;
+        let binding = supplied_session
+            .resources
+            .get(&page.resource_reference)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        check(
+            binding.evidence_reference.as_deref() == page.resource_evidence_reference.as_deref()
+                && binding.epoch == number(page_context, "session_epoch", 1)?
+                && page.interpreted_response_bytes <= binding.response_bytes,
+        )?;
+    }
+    check(resource_references.len() == supplied_session.resources.len())
 }
 
 fn validate_wordpress_discovery_review_links(
@@ -3377,6 +3848,8 @@ fn validate_wordpress_discovery_source(
     fields: &Map<String, Value>,
     layout: Option<&ValidatedDiscoveryLayout>,
     page_collection: Option<&ValidatedWordPressPageCollection>,
+    supplied_session_pages: Option<&ValidatedWordPressSuppliedSessionPages>,
+    supplied_session_scoped: bool,
 ) -> Result<(u64, u64, bool, Vec<String>, String), ComparisonError> {
     const REQUIRED_V1: [&str; 7] = [
         "kind",
@@ -3393,6 +3866,9 @@ fn validate_wordpress_discovery_source(
         required.extend(["association", "resource_reference"]);
         if page_collection.is_some() {
             required.push("source_page_references");
+        }
+        if supplied_session_scoped {
+            required.push("source_supplied_session_page_references");
         }
         let mut optional = OPTIONAL_V1.to_vec();
         optional.push("role_reference");
@@ -3463,6 +3939,29 @@ fn validate_wordpress_discovery_source(
                     && previous.is_none_or(|previous| previous < reference)
                     && (reference == page_collection.entry_page_reference
                         || page_collection.accepted_page_references.contains(reference)),
+            )?;
+            previous = Some(reference);
+        }
+    }
+    let supplied_session_page_references = fields
+        .get("source_supplied_session_page_references")
+        .map(|value| value.as_array().ok_or(ComparisonError::InvalidDocument))
+        .transpose()?;
+    check(
+        supplied_session_scoped == supplied_session_page_references.is_some()
+            && supplied_session_scoped == supplied_session_pages.is_some(),
+    )?;
+    if let (Some(values), Some(session_pages)) =
+        (supplied_session_page_references, supplied_session_pages)
+    {
+        check(values.len() <= MAX_WORDPRESS_SUPPLIED_SESSION_PAGES as usize)?;
+        let mut previous = None;
+        for value in values {
+            let reference = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+            check(
+                digest(reference, "sha256:")
+                    && previous.is_none_or(|previous| previous < reference)
+                    && session_pages.accepted_page_references.contains(reference),
             )?;
             previous = Some(reference);
         }
@@ -4368,6 +4867,7 @@ fn wordpress_comparison_snapshot(
         methodology,
         provenance,
         discovery_source_content: None,
+        supplied_session_context: None,
         asset_fingerprints: None,
         components,
         advisories,
@@ -8444,9 +8944,14 @@ mod tests {
     fn deployment_layout_and_source_require_exact_role_binding() {
         let layout = validate_wordpress_discovery_layout(&deployment_layout()).unwrap();
         let source = deployment_rest_source();
-        let validated =
-            validate_wordpress_discovery_source(source.as_object().unwrap(), Some(&layout), None)
-                .unwrap();
+        let validated = validate_wordpress_discovery_source(
+            source.as_object().unwrap(),
+            Some(&layout),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(validated.0, 321);
         assert_eq!(validated.1, 1);
         assert!(validated.2);
@@ -8484,6 +8989,8 @@ mod tests {
                     invalid.as_object().unwrap(),
                     Some(&layout),
                     None,
+                    None,
+                    false,
                 ),
                 Err(ComparisonError::InvalidDocument),
             );
@@ -8504,6 +9011,8 @@ mod tests {
             invalid_advertisement.as_object().unwrap(),
             Some(&layout),
             None,
+            None,
+            false,
         )
         .is_ok());
         let mut falsely_bound_invalid_advertisement = invalid_advertisement;
@@ -8514,6 +9023,8 @@ mod tests {
                 falsely_bound_invalid_advertisement.as_object().unwrap(),
                 Some(&layout),
                 None,
+                None,
+                false,
             ),
             Err(ComparisonError::InvalidDocument),
         );
@@ -8537,6 +9048,8 @@ mod tests {
             source.as_object().unwrap(),
             Some(&layout),
             Some(&validated),
+            None,
+            false,
         )
         .unwrap();
 
@@ -8547,6 +9060,8 @@ mod tests {
                 unknown_page.as_object().unwrap(),
                 Some(&layout),
                 Some(&validated),
+                None,
+                false,
             ),
             Err(ComparisonError::InvalidDocument),
         ));
@@ -8657,16 +9172,28 @@ mod tests {
             "evidence_references": ["evidence-0001"],
         });
         assert_eq!(
-            validate_wordpress_discovery_source(legacy.as_object().unwrap(), None, None)
-                .unwrap()
-                .4,
+            validate_wordpress_discovery_source(
+                legacy.as_object().unwrap(),
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap()
+            .4,
             "rest_index:none:0",
         );
 
         let mut v2_field_in_v1 = legacy;
         v2_field_in_v1["resource_reference"] = Value::String(opaque_reference('e'));
         assert_eq!(
-            validate_wordpress_discovery_source(v2_field_in_v1.as_object().unwrap(), None, None,),
+            validate_wordpress_discovery_source(
+                v2_field_in_v1.as_object().unwrap(),
+                None,
+                None,
+                None,
+                false,
+            ),
             Err(ComparisonError::InvalidDocument),
         );
     }
@@ -8682,6 +9209,7 @@ mod tests {
             }),
             provenance: serde_json::json!({}),
             discovery_source_content: None,
+            supplied_session_context: None,
             asset_fingerprints: None,
             components: BTreeMap::new(),
             advisories: BTreeMap::new(),
@@ -8706,7 +9234,8 @@ mod tests {
             "sources": [deployment_rest_source()],
         });
 
-        attach_wordpress_discovery(&mut wordpress, &discovery).unwrap();
+        let validated = validate_wordpress_discovery(&discovery, &BTreeMap::new()).unwrap();
+        attach_wordpress_discovery(&mut wordpress, &validated, None).unwrap();
         assert_eq!(
             wordpress.application_reference.as_deref(),
             Some(opaque_reference('a').as_str()),

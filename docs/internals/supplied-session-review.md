@@ -197,6 +197,32 @@ Offline Verify checks bundle integrity; Compare describes audit/context and
 coverage changes without treating logout or a different principal as
 remediation.
 
+### Explicit WordPress consumer
+
+When the executable is compiled with both `supplied-session-review` and
+`wordpress-review`, an operator can additionally select:
+
+```text
+--profile web-review --wordpress-review --wordpress-discovery \
+  --wordpress-supplied-session
+```
+
+The usual supplied-session policy and exactly one matching credential source
+remain mandatory. This composition interprets only complete selected resource
+HTML whose immediately following health checkpoint and S01 resource evidence
+were committed. It binds the observation to the policy, application, principal,
+credential mechanism and fixed epoch. A login response, incompatible application,
+unsupported representation, truncated body, health loss or uncommitted evidence
+cannot nominate WordPress metadata.
+
+Eligible component hints may nominate only the existing public WordPress
+metadata requests. Those requests remain anonymous, same-origin and broker-owned
+inside the existing shared WordPress allowance; no Cookie or Authorization value
+is forwarded. Authenticated-page JS/CSS does not nominate fingerprint acquisition
+in this initial integration. The authenticated page ledger is separate from the
+anonymous observed-page collection, and a different principal or epoch is a
+context change rather than evidence of installation change or remediation.
+
 ## Secret boundary
 
 Policy validation happens before the selected secret source is read. File input

@@ -27,6 +27,102 @@ use crate::{
     DecisionActionOrigin, DecisionExecutionLimits, DecisionExecutionStage, KnowledgeBase,
 };
 
+/// Sealed runtime observer for consumers of health-qualified supplied-session
+/// resource responses. Implementations may reduce a body while it is alive,
+/// but can publish only after receiving the exact committed S01 receipt.
+pub(super) trait SuppliedSessionCommittedResourceObserver: Send + Sync {
+    fn begin(
+        &self,
+        policy: &SuppliedSessionPolicy,
+        resources: &[(SuppliedSessionRequestDescriptor, String)],
+    ) -> Result<(), ()>;
+
+    fn stage_response(
+        &self,
+        sequence: u8,
+        policy: &SuppliedSessionPolicy,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        response: &CollectedHttpResponse,
+    ) -> Result<(), ()>;
+
+    fn commit_response(
+        &self,
+        sequence: u8,
+        policy: &SuppliedSessionPolicy,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        receipt: &CommittedSuppliedSessionResourceReceipt,
+        knowledge: &KnowledgeBase,
+    ) -> Result<(), ()>;
+
+    fn discard_response(&self, sequence: u8);
+
+    fn fail(&self);
+}
+
+/// Exact, value-safe proof that S01 committed one resource only after its
+/// immediately following healthy checkpoint. Fields are intentionally sealed.
+pub(super) struct CommittedSuppliedSessionResourceReceipt {
+    #[cfg(feature = "wordpress-review")]
+    sequence: u8,
+    #[cfg(feature = "wordpress-review")]
+    resource_reference: String,
+    #[cfg(feature = "wordpress-review")]
+    policy_reference: String,
+    #[cfg(feature = "wordpress-review")]
+    application_reference: String,
+    #[cfg(feature = "wordpress-review")]
+    principal_reference: String,
+    #[cfg(feature = "wordpress-review")]
+    credential_mechanism: SuppliedSessionCredentialMechanism,
+    #[cfg(feature = "wordpress-review")]
+    epoch: u8,
+    evidence_reference: String,
+    #[cfg(feature = "wordpress-review")]
+    expected_evidence: Evidence,
+}
+
+#[cfg(feature = "wordpress-review")]
+impl CommittedSuppliedSessionResourceReceipt {
+    pub(super) const fn sequence(&self) -> u8 {
+        self.sequence
+    }
+
+    pub(super) fn resource_reference(&self) -> &str {
+        &self.resource_reference
+    }
+
+    pub(super) fn evidence_reference(&self) -> &str {
+        &self.evidence_reference
+    }
+
+    pub(super) fn is_valid_for(
+        &self,
+        sequence: u8,
+        policy: &SuppliedSessionPolicy,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        knowledge: &KnowledgeBase,
+    ) -> bool {
+        EvidenceId::parse(self.evidence_reference.clone())
+            .ok()
+            .and_then(|id| {
+                knowledge.inspect_evidence(&id, |stored| stored == &self.expected_evidence)
+            })
+            == Some(true)
+            && self.sequence == sequence
+            && self.resource_reference == descriptor.target_reference()
+            && self.policy_reference == policy.policy_reference()
+            && self.application_reference == policy.application_reference()
+            && self.principal_reference == policy.principal_reference()
+            && self.credential_mechanism == policy.credential_mechanism()
+            && self.epoch == 1
+            && descriptor.validate()
+            && descriptor.purpose() == SuppliedSessionRequestPurpose::Resource
+            && self.expected_evidence.kind() == &EvidenceKind::Authentication
+            && self.expected_evidence.predicate().namespace() == RESOURCE_COMMIT_EVIDENCE_NAMESPACE
+            && self.expected_evidence.predicate().name() == RESOURCE_COMMIT_EVIDENCE_PREDICATE
+    }
+}
+
 /// Stable saved-audit schema for the supplied-session child.
 pub const SUPPLIED_SESSION_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v1";
 /// Strict saved-audit schema for supplied-cookie sessions.
@@ -529,6 +625,7 @@ impl SuppliedSessionRuntimeConfig {
     pub(super) async fn execute(
         self,
         authority: &SharedWebRuntimeAuthority,
+        resource_observer: Option<&dyn SuppliedSessionCommittedResourceObserver>,
     ) -> WebAssessmentSuppliedSessionAudit {
         let selected_resource_count = u8::try_from(self.resources.len()).unwrap_or(u8::MAX);
         let timing = authority.start();
@@ -536,12 +633,22 @@ impl SuppliedSessionRuntimeConfig {
             .checked_add(Duration::from_millis(self.policy.max_wall_time_ms()));
         let deadline = earliest_deadline(timing.deadline(), local_deadline);
         let mut state = ExecutionState::new(&self.policy, selected_resource_count);
+        if resource_observer
+            .is_some_and(|observer| observer.begin(&self.policy, &self.resources).is_err())
+        {
+            resource_observer.expect("observer remains present").fail();
+        }
         let dispatch_context = DispatchContext {
             authority,
             requests: &self.requests,
             credential: &self.credential,
             policy: &self.policy,
             deadline,
+        };
+        let resource_commit_context = ResourceCommitContext {
+            policy: &self.policy,
+            knowledge: authority.knowledge(),
+            observer: resource_observer,
         };
 
         let startup = dispatch(
@@ -583,8 +690,7 @@ impl SuppliedSessionRuntimeConfig {
                 descriptor,
                 reference,
                 resource,
-                &self.policy,
-                authority.knowledge(),
+                resource_commit_context,
             ) {
                 ResourceContinuation::AwaitingHealth(staged) => staged,
                 ResourceContinuation::No(outcome) => {
@@ -622,8 +728,7 @@ impl SuppliedSessionRuntimeConfig {
                         descriptor,
                         reference,
                         staged,
-                        &self.policy,
-                        authority.knowledge(),
+                        resource_commit_context,
                     ) {
                         state.outcome = outcome;
                         state.add_not_dispatched(&self.resources[index + 1..]);
@@ -639,6 +744,9 @@ impl SuppliedSessionRuntimeConfig {
                         &self.policy,
                         authority.knowledge(),
                     );
+                    if let Some(observer) = resource_observer {
+                        observer.discard_response(sequence);
+                    }
                     state.outcome = outcome;
                     state.add_not_dispatched(&self.resources[index + 1..]);
                     return state.finish(self.policy);
@@ -656,6 +764,13 @@ struct ExecutionState {
     outcome: SuppliedSessionAuditOutcome,
     selected_resource_count: u8,
     response_bytes: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ResourceCommitContext<'a> {
+    policy: &'a SuppliedSessionPolicy,
+    knowledge: &'a KnowledgeBase,
+    observer: Option<&'a dyn SuppliedSessionCommittedResourceObserver>,
 }
 
 impl ExecutionState {
@@ -801,8 +916,7 @@ impl ExecutionState {
         descriptor: &SuppliedSessionRequestDescriptor,
         reference: &str,
         dispatch: DispatchResult,
-        policy: &SuppliedSessionPolicy,
-        knowledge: &KnowledgeBase,
+        context: ResourceCommitContext<'_>,
     ) -> ResourceContinuation {
         let (record, stop) = match dispatch {
             DispatchResult::Response {
@@ -811,20 +925,40 @@ impl ExecutionState {
                 exact_target,
                 cookie_update,
             } => {
-                let staged = stage_resource_response(*response, bytes, exact_target, cookie_update);
+                let staged = stage_resource_response(&response, bytes, exact_target, cookie_update);
                 if let Some(outcome) = cookie_update_stop_outcome(staged.cookie_update) {
                     let record = commit_health_unqualified_resource(
-                        sequence, descriptor, reference, policy, knowledge, staged, None,
+                        sequence,
+                        descriptor,
+                        reference,
+                        context.policy,
+                        context.knowledge,
+                        staged,
+                        None,
                     );
                     self.response_bytes = self.response_bytes.saturating_add(record.response_bytes);
                     self.resources.push(record);
                     return ResourceContinuation::No(outcome);
                 }
                 if staged_resource_can_await_health(descriptor, reference, staged) {
+                    if let Some(observer) = context.observer {
+                        if observer
+                            .stage_response(sequence, context.policy, descriptor, &response)
+                            .is_err()
+                        {
+                            observer.fail();
+                        }
+                    }
                     return ResourceContinuation::AwaitingHealth(staged);
                 }
                 let record = commit_staged_resource(
-                    sequence, descriptor, reference, policy, knowledge, staged, None,
+                    sequence,
+                    descriptor,
+                    reference,
+                    context.policy,
+                    context.knowledge,
+                    staged,
+                    None,
                 );
                 let outcome = record.outcome;
                 let stop = (outcome != SuppliedSessionResourceOutcome::Committed)
@@ -883,8 +1017,7 @@ impl ExecutionState {
         descriptor: &SuppliedSessionRequestDescriptor,
         reference: &str,
         staged: StagedSuppliedSessionResource,
-        policy: &SuppliedSessionPolicy,
-        knowledge: &KnowledgeBase,
+        context: ResourceCommitContext<'_>,
     ) -> Continue {
         let qualifying_checkpoint = self.checkpoints.last().and_then(|checkpoint| {
             (checkpoint.outcome == SuppliedSessionHealthOutcome::Healthy
@@ -892,16 +1025,32 @@ impl ExecutionState {
             .then_some(checkpoint.evidence_reference.as_deref())
             .flatten()
         });
-        let record = commit_staged_resource(
+        let (record, receipt) = commit_staged_resource_with_receipt(
             sequence,
             descriptor,
             reference,
-            policy,
-            knowledge,
+            context.policy,
+            context.knowledge,
             staged,
             qualifying_checkpoint,
         );
         let committed = record.outcome == SuppliedSessionResourceOutcome::Committed;
+        if let (Some(observer), Some(receipt)) = (context.observer, receipt.as_ref()) {
+            if observer
+                .commit_response(
+                    sequence,
+                    context.policy,
+                    descriptor,
+                    receipt,
+                    context.knowledge,
+                )
+                .is_err()
+            {
+                observer.fail();
+            }
+        } else if let Some(observer) = context.observer {
+            observer.discard_response(sequence);
+        }
         self.response_bytes = self.response_bytes.saturating_add(record.response_bytes);
         self.resources.push(record);
         if committed {
@@ -1537,7 +1686,7 @@ struct StagedSuppliedSessionResource {
 }
 
 fn stage_resource_response(
-    response: CollectedHttpResponse,
+    response: &CollectedHttpResponse,
     response_bytes: u64,
     exact_target: bool,
     cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
@@ -1573,41 +1722,75 @@ fn commit_staged_resource(
     staged: StagedSuppliedSessionResource,
     qualifying_checkpoint_reference: Option<&str>,
 ) -> WebAssessmentSuppliedSessionResourceAudit {
+    commit_staged_resource_with_receipt(
+        sequence,
+        descriptor,
+        expected_reference,
+        policy,
+        knowledge,
+        staged,
+        qualifying_checkpoint_reference,
+    )
+    .0
+}
+
+fn commit_staged_resource_with_receipt(
+    sequence: u8,
+    descriptor: &SuppliedSessionRequestDescriptor,
+    expected_reference: &str,
+    policy: &SuppliedSessionPolicy,
+    knowledge: &KnowledgeBase,
+    staged: StagedSuppliedSessionResource,
+    qualifying_checkpoint_reference: Option<&str>,
+) -> (
+    WebAssessmentSuppliedSessionResourceAudit,
+    Option<CommittedSuppliedSessionResourceReceipt>,
+) {
     let descriptor_is_exact = descriptor.validate()
         && descriptor.purpose() == SuppliedSessionRequestPurpose::Resource
         && descriptor.target_reference() == expected_reference;
-    let (outcome, evidence_reference) = if (300..400).contains(&staged.status) {
+    let (outcome, receipt) = if (300..400).contains(&staged.status) {
         (SuppliedSessionResourceOutcome::RedirectRefused, None)
     } else if !descriptor_is_exact || !staged.exact_target || !staged.body_complete {
         (SuppliedSessionResourceOutcome::Incomplete, None)
     } else if staged.status == 200 {
         match qualifying_checkpoint_reference.and_then(|checkpoint_reference| {
             commit_resource_evidence(
+                ResourceEvidenceCommitInput {
+                    #[cfg(feature = "wordpress-review")]
+                    sequence,
+                    descriptor,
+                    resource_reference: expected_reference,
+                    response_bytes: staged.response_bytes,
+                    cookie_update: staged.cookie_update,
+                    qualifying_checkpoint_reference: checkpoint_reference,
+                },
                 policy,
-                descriptor,
-                expected_reference,
-                staged.response_bytes,
-                staged.cookie_update,
-                checkpoint_reference,
                 knowledge,
             )
         }) {
-            Some(reference) => (SuppliedSessionResourceOutcome::Committed, Some(reference)),
+            Some(receipt) => (SuppliedSessionResourceOutcome::Committed, Some(receipt)),
             None => (SuppliedSessionResourceOutcome::Incomplete, None),
         }
     } else {
         (SuppliedSessionResourceOutcome::HttpError, None)
     };
-    WebAssessmentSuppliedSessionResourceAudit {
-        sequence,
-        resource_reference: expected_reference.to_owned(),
-        evidence_reference,
-        outcome,
-        status: Some(staged.status),
-        response_bytes: staged.response_bytes,
-        epoch: 1,
-        cookie_update: staged.cookie_update,
-    }
+    let evidence_reference = receipt
+        .as_ref()
+        .map(|receipt| receipt.evidence_reference.clone());
+    (
+        WebAssessmentSuppliedSessionResourceAudit {
+            sequence,
+            resource_reference: expected_reference.to_owned(),
+            evidence_reference,
+            outcome,
+            status: Some(staged.status),
+            response_bytes: staged.response_bytes,
+            epoch: 1,
+            cookie_update: staged.cookie_update,
+        },
+        receipt,
+    )
 }
 
 fn commit_health_unqualified_resource(
@@ -1653,38 +1836,71 @@ fn commit_health_unqualified_resource(
 /// transaction. The retained record includes only typed references, purpose,
 /// status, byte count, and outcome; it never includes the URL, response body,
 /// headers, authorization value, or a digest of the authorization value.
-fn commit_resource_evidence(
-    policy: &SuppliedSessionPolicy,
-    descriptor: &SuppliedSessionRequestDescriptor,
-    resource_reference: &str,
+struct ResourceEvidenceCommitInput<'a> {
+    #[cfg(feature = "wordpress-review")]
+    sequence: u8,
+    descriptor: &'a SuppliedSessionRequestDescriptor,
+    resource_reference: &'a str,
     response_bytes: u64,
     cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
-    qualifying_checkpoint_reference: &str,
+    qualifying_checkpoint_reference: &'a str,
+}
+
+fn commit_resource_evidence(
+    input: ResourceEvidenceCommitInput<'_>,
+    policy: &SuppliedSessionPolicy,
     knowledge: &KnowledgeBase,
-) -> Option<String> {
-    if !descriptor.validate()
-        || descriptor.purpose() != SuppliedSessionRequestPurpose::Resource
-        || descriptor.target_reference() != resource_reference
+) -> Option<CommittedSuppliedSessionResourceReceipt> {
+    if !input.descriptor.validate()
+        || input.descriptor.purpose() != SuppliedSessionRequestPurpose::Resource
+        || input.descriptor.target_reference() != input.resource_reference
     {
         return None;
     }
-    require_committed_health_evidence(qualifying_checkpoint_reference, knowledge)?;
+    require_committed_health_evidence(input.qualifying_checkpoint_reference, knowledge)?;
     let mut binding = format!(
-        "policy={};application={};resource={resource_reference};purpose=resource;status=200;response_bytes={response_bytes};qualifying_checkpoint={qualifying_checkpoint_reference};outcome=committed",
+        "policy={};application={};resource={};purpose=resource;status=200;response_bytes={};qualifying_checkpoint={};outcome=committed",
         policy.policy_reference(),
         policy.application_reference(),
+        input.resource_reference,
+        input.response_bytes,
+        input.qualifying_checkpoint_reference,
     );
-    append_cookie_update_binding(policy, &mut binding, cookie_update);
-    commit_value_safe_evidence(
+    append_cookie_update_binding(policy, &mut binding, input.cookie_update);
+    let evidence_reference = commit_value_safe_evidence(
         policy,
-        resource_reference,
+        input.resource_reference,
         RESOURCE_COMMIT_EVIDENCE_DOMAIN,
         RESOURCE_COMMIT_EVIDENCE_PREFIX,
         RESOURCE_COMMIT_EVIDENCE_PREDICATE,
         resource_commit_evidence_method(policy),
         binding,
         knowledge,
-    )
+    )?;
+    #[cfg(feature = "wordpress-review")]
+    let expected_evidence = {
+        let evidence_id = EvidenceId::parse(evidence_reference.clone()).ok()?;
+        knowledge.inspect_evidence(&evidence_id, Clone::clone)?
+    };
+    Some(CommittedSuppliedSessionResourceReceipt {
+        #[cfg(feature = "wordpress-review")]
+        sequence: input.sequence,
+        #[cfg(feature = "wordpress-review")]
+        resource_reference: input.resource_reference.to_owned(),
+        #[cfg(feature = "wordpress-review")]
+        policy_reference: policy.policy_reference().to_owned(),
+        #[cfg(feature = "wordpress-review")]
+        application_reference: policy.application_reference().to_owned(),
+        #[cfg(feature = "wordpress-review")]
+        principal_reference: policy.principal_reference().to_owned(),
+        #[cfg(feature = "wordpress-review")]
+        credential_mechanism: policy.credential_mechanism(),
+        #[cfg(feature = "wordpress-review")]
+        epoch: 1,
+        evidence_reference,
+        #[cfg(feature = "wordpress-review")]
+        expected_evidence,
+    })
 }
 
 fn commit_health_unqualified_resource_evidence(
@@ -2017,6 +2233,8 @@ mod tests {
     use super::*;
     use crate::supplied_session_review::{SuppliedSessionAuthorization, SuppliedSessionCookies};
     use crate::web_runtime::{WebAssessmentRuntimeBuilder, WebAssessmentRuntimeError};
+    #[cfg(feature = "wordpress-review")]
+    use crate::wordpress_review::WordPressReviewInputs;
     use std::sync::Arc;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -2379,6 +2597,63 @@ same_site = "lax"
     }
 
     #[test]
+    fn committed_resource_receipt_revalidates_the_full_session_binding() {
+        let application = url::Url::parse("https://example.test/app/").unwrap();
+        let policy = policy(&application);
+        let (target, reference) = policy.execution_resources().next().unwrap();
+        let descriptor = SuppliedSessionRequestDescriptor::resource(&policy, target, reference)
+            .expect("fixture resource descriptor");
+        let staged = StagedSuppliedSessionResource {
+            status: 200,
+            response_bytes: 17,
+            exact_target: true,
+            body_complete: true,
+            cookie_update: None,
+        };
+        let knowledge = KnowledgeBase::new();
+        let qualifier = committed_health_qualification(&policy, &knowledge);
+        let (audit, receipt) = commit_staged_resource_with_receipt(
+            0,
+            &descriptor,
+            reference,
+            &policy,
+            &knowledge,
+            staged,
+            Some(&qualifier),
+        );
+        assert_eq!(audit.outcome(), SuppliedSessionResourceOutcome::Committed);
+        let mut receipt = receipt.expect("complete qualified response must mint a sealed receipt");
+        assert!(receipt.is_valid_for(0, &policy, &descriptor, &knowledge));
+
+        receipt.epoch = 2;
+        assert!(!receipt.is_valid_for(0, &policy, &descriptor, &knowledge));
+        receipt.epoch = 1;
+        receipt.principal_reference = "supplied-session-principal-9999".to_owned();
+        assert!(!receipt.is_valid_for(0, &policy, &descriptor, &knowledge));
+        receipt.principal_reference = policy.principal_reference().to_owned();
+        receipt.credential_mechanism = SuppliedSessionCredentialMechanism::CookieJar;
+        assert!(!receipt.is_valid_for(0, &policy, &descriptor, &knowledge));
+        receipt.credential_mechanism = SuppliedSessionCredentialMechanism::AuthorizationHeader;
+        receipt.application_reference =
+            "supplied-session-application-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned();
+        assert!(!receipt.is_valid_for(0, &policy, &descriptor, &knowledge));
+        receipt.application_reference = policy.application_reference().to_owned();
+        receipt.policy_reference =
+            "supplied-session-policy-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_owned();
+        assert!(!receipt.is_valid_for(0, &policy, &descriptor, &knowledge));
+        receipt.policy_reference = policy.policy_reference().to_owned();
+        receipt.resource_reference =
+            "supplied-session-resource-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_owned();
+        assert!(!receipt.is_valid_for(0, &policy, &descriptor, &knowledge));
+        receipt.resource_reference = descriptor.target_reference().to_owned();
+        assert!(!receipt.is_valid_for(1, &policy, &descriptor, &knowledge));
+        assert!(receipt.is_valid_for(0, &policy, &descriptor, &knowledge));
+    }
+
+    #[test]
     fn builder_rejects_cleartext_non_loopback_and_application_mismatch() {
         let insecure = url::Url::parse("http://example.test/app/").unwrap();
         let error = WebAssessmentRuntimeBuilder::new(insecure.clone())
@@ -2423,6 +2698,56 @@ max_wall_time_ms = 5000
             error,
             WebAssessmentRuntimeError::SuppliedSessionApplicationMismatch
         ));
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[test]
+    fn wordpress_supplied_session_selection_requires_every_runtime_input() {
+        let application = url::Url::parse("https://example.test/app/").unwrap();
+        let authorization =
+            || SuppliedSessionAuthorization::new("Bearer REDACTED-WORDPRESS-CANARY").unwrap();
+
+        let missing_all = WebAssessmentRuntimeBuilder::new(application.clone())
+            .with_wordpress_supplied_session()
+            .build()
+            .err()
+            .expect("integration without either child must fail preflight");
+        assert!(matches!(
+            missing_all,
+            WebAssessmentRuntimeError::WordPressSuppliedSessionRequiresInputs
+        ));
+
+        let missing_session = WebAssessmentRuntimeBuilder::new(application.clone())
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .with_wordpress_discovery()
+            .with_wordpress_supplied_session()
+            .build()
+            .err()
+            .expect("WordPress discovery without a supplied session must fail preflight");
+        assert!(matches!(
+            missing_session,
+            WebAssessmentRuntimeError::WordPressSuppliedSessionRequiresInputs
+        ));
+
+        let missing_discovery = WebAssessmentRuntimeBuilder::new(application.clone())
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .with_supplied_session_review(policy(&application), authorization())
+            .with_wordpress_supplied_session()
+            .build()
+            .err()
+            .expect("integration without metadata discovery must fail preflight");
+        assert!(matches!(
+            missing_discovery,
+            WebAssessmentRuntimeError::WordPressSuppliedSessionRequiresInputs
+        ));
+
+        WebAssessmentRuntimeBuilder::new(application.clone())
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .with_wordpress_discovery()
+            .with_supplied_session_review(policy(&application), authorization())
+            .with_wordpress_supplied_session()
+            .build()
+            .expect("complete integration selection must build");
     }
 
     #[tokio::test]
@@ -2588,6 +2913,167 @@ max_wall_time_ms = 5000
         assert_eq!(observed[1], ("/app/private".to_owned(), true, false));
         assert_eq!(observed[2], ("/app/session-health".to_owned(), true, false));
         assert_eq!(observed[3], ("/app/".to_owned(), false, false));
+        server.abort();
+    }
+
+    #[cfg(feature = "wordpress-review")]
+    #[tokio::test]
+    async fn wordpress_integration_commits_health_qualified_html_before_anonymous_metadata() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
+        let server_observed = observed.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 1024];
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n")
+                        || request.len() > 16 * 1024
+                    {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request);
+                let request_line = request.lines().next().unwrap_or_default();
+                let method = request_line
+                    .split_ascii_whitespace()
+                    .next()
+                    .unwrap_or_default();
+                let path = request_line
+                    .split_ascii_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned();
+                let authorized = request.lines().any(|line| {
+                    line.eq_ignore_ascii_case("authorization: Bearer WORDPRESS-SESSION-CANARY")
+                });
+                server_observed
+                    .lock()
+                    .await
+                    .push((path.clone(), authorized));
+                let (media_type, body) = match path.as_str() {
+                    "/app/" => (
+                        "text/html",
+                        r#"<meta name="generator" content="WordPress 6.9.4">
+                           <link rel="https://api.w.org/" href="/app/wp-json/">
+                           <link rel="stylesheet" href="/app/wp-content/themes/session-theme/style.css">"#,
+                    ),
+                    "/app/session-health" => ("application/json", r#"{"authenticated":true}"#),
+                    "/app/private" => (
+                        "text/html",
+                        r#"<script src="/app/wp-content/plugins/private-component/assets/site.js"></script>
+                           <link rel="stylesheet" href="/app/wp-content/plugins/private-component/assets/site.css">"#,
+                    ),
+                    "/app/wp-json/" => ("application/json", r#"{"namespaces":["wp/v2"]}"#),
+                    "/app/wp-content/themes/session-theme/style.css" => (
+                        "text/css",
+                        "/*\nTheme Name: Session Theme\nVersion: 1.5\n*/\n",
+                    ),
+                    "/app/wp-content/plugins/private-component/readme.txt" => (
+                        "text/plain",
+                        "=== Private Component ===\nStable tag: 9.9.9\n",
+                    ),
+                    _ => ("text/plain", "not found"),
+                };
+                let status = if body == "not found" {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+                if method.is_empty() {
+                    break;
+                }
+            }
+        });
+
+        let application = url::Url::parse(&format!("http://{address}/app/")).unwrap();
+        let mut runtime = WebAssessmentRuntimeBuilder::new(application.clone())
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .with_wordpress_discovery()
+            .with_supplied_session_review(
+                policy(&application),
+                SuppliedSessionAuthorization::new("Bearer WORDPRESS-SESSION-CANARY").unwrap(),
+            )
+            .with_wordpress_supplied_session()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let session = report.supplied_session_audit().unwrap();
+        assert_eq!(session.outcome(), SuppliedSessionAuditOutcome::Complete);
+        assert_eq!(session.committed_resource_count(), 1);
+        let wordpress = report.wordpress_review_audit().unwrap();
+        let discovery = wordpress.discovery().unwrap();
+        let pages = discovery.supplied_session_pages().unwrap();
+        assert_eq!(pages.selected_count(), 1);
+        assert_eq!(pages.committed_count(), 1);
+        assert_eq!(pages.accepted_count(), 1);
+        assert_eq!(pages.rejected_count(), 0);
+        assert_eq!(pages.not_established_count(), 0);
+        assert_eq!(pages.not_evaluated_count(), 0);
+        assert_eq!(pages.pages().len(), 1);
+        let page = &pages.pages()[0];
+        assert_eq!(page.association().as_str(), "accepted");
+        assert_eq!(page.outcome().as_str(), "accepted");
+        assert!(page.resource_evidence_reference().is_some());
+        assert_eq!(page.evidence_ids().len(), 1);
+
+        let private_source = discovery
+            .sources()
+            .iter()
+            .find(|source| source.component_slug() == Some("private-component"))
+            .expect("health-qualified private page must nominate one plugin readme");
+        assert!(private_source.source_page_references().is_empty());
+        assert_eq!(
+            private_source.source_supplied_session_page_references(),
+            [page.context_page_reference()]
+        );
+        assert!(discovery
+            .sources()
+            .iter()
+            .filter(|source| source.component_slug() != Some("private-component"))
+            .all(|source| source.source_supplied_session_page_references().is_empty()));
+
+        let observed = observed.lock().await.clone();
+        let root_index = observed
+            .iter()
+            .position(|(path, authorized)| path == "/app/" && !authorized)
+            .unwrap();
+        let startup_index = observed
+            .iter()
+            .position(|(path, authorized)| path == "/app/session-health" && *authorized)
+            .unwrap();
+        let metadata_index = observed
+            .iter()
+            .position(|(path, authorized)| {
+                path == "/app/wp-content/plugins/private-component/readme.txt" && !authorized
+            })
+            .unwrap();
+        assert!(root_index < startup_index && startup_index < metadata_index);
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|(path, _)| path == "/app/private")
+                .count(),
+            1
+        );
+        assert!(observed
+            .iter()
+            .all(|(path, authorized)| { !path.starts_with("/app/wp-content/") || !authorized }));
         server.abort();
     }
 

@@ -131,7 +131,6 @@ impl CollectedHttpResponse {
         feature = "graphql-review",
         feature = "authorization-review",
         feature = "openapi-review",
-        feature = "supplied-session-review",
         feature = "wordpress-review"
     ))]
     pub(crate) fn normalized_media_type(&self) -> Option<String> {

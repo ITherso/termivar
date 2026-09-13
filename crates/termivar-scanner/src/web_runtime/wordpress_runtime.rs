@@ -18,6 +18,12 @@ use termivar_core::{
 };
 use url::Url;
 
+#[cfg(feature = "supplied-session-review")]
+use crate::http_evidence::CollectedHttpResponse;
+#[cfg(feature = "supplied-session-review")]
+use crate::supplied_session_review::{
+    SuppliedSessionCredentialMechanism, SuppliedSessionPolicy, SuppliedSessionRequestDescriptor,
+};
 use crate::{
     http_evidence::WordPressRestIndexAdvertisement,
     wordpress_review::{
@@ -31,6 +37,10 @@ use crate::{
 use super::assessment_item::{
     AssessmentCapabilityDescriptor, AssessmentItemProjectionError, AssessmentItemTarget,
     AssessmentProjectionContext,
+};
+#[cfg(feature = "supplied-session-review")]
+use super::supplied_session_runtime::{
+    CommittedSuppliedSessionResourceReceipt, SuppliedSessionCommittedResourceObserver,
 };
 use super::wordpress_fingerprint_runtime::{
     execute_wordpress_asset_fingerprints, WordPressAssetFingerprintAllowance,
@@ -58,7 +68,10 @@ pub use super::wordpress_discovery::{
     WebAssessmentWordPressDiscoveryAudit, WordPressDiscoverySourceAudit,
     WordPressDiscoverySourceKind, WordPressDiscoverySourceOutcome, WordPressPageAcquisition,
     WordPressPageAssociation, WordPressPageAudit, WordPressPageOutcome, WordPressPageScope,
-    WordPressPageScopeAudit, WordPressPluginDiscoveryMetadata, WordPressThemeDiscoveryMetadata,
+    WordPressPageScopeAudit, WordPressPluginDiscoveryMetadata,
+    WordPressSuppliedSessionCredentialMechanism, WordPressSuppliedSessionPageAudit,
+    WordPressSuppliedSessionPageOutcome, WordPressSuppliedSessionPageScopeAudit,
+    WordPressThemeDiscoveryMetadata,
 };
 
 /// Observation-only product item emitted when the root response carried at
@@ -102,6 +115,44 @@ struct CollectedSignals {
     discovery_candidate_identity_limit_exceeded: bool,
     discovery_layout: Option<WordPressDiscoveryLayoutAudit>,
     page_scope: Option<CollectedPageScope>,
+    supplied_session: Option<CollectedSuppliedSessionPages>,
+}
+
+struct CollectedSuppliedSessionPages {
+    pending_entry_layout: Option<(FrozenWordPressPageLayout, Vec<EvidenceId>)>,
+    frozen_layout: Option<FrozenWordPressPageLayout>,
+    policy_reference: Option<String>,
+    application_reference: Option<String>,
+    principal_reference: Option<String>,
+    credential_mechanism: Option<WordPressSuppliedSessionCredentialMechanism>,
+    pages: BTreeMap<u8, WordPressSuppliedSessionPageAudit>,
+    pending: BTreeMap<u8, PendingSuppliedSessionInterpretation>,
+    failed: bool,
+}
+
+enum PendingSuppliedSessionInterpretation {
+    #[cfg(feature = "supplied-session-review")]
+    Parsed(Box<PendingWordPressPageObservation>),
+    #[cfg(feature = "supplied-session-review")]
+    UnsupportedContent,
+    #[cfg(feature = "supplied-session-review")]
+    InvalidUtf8,
+}
+
+impl CollectedSuppliedSessionPages {
+    fn new() -> Self {
+        Self {
+            pending_entry_layout: None,
+            frozen_layout: None,
+            policy_reference: None,
+            application_reference: None,
+            principal_reference: None,
+            credential_mechanism: None,
+            pages: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            failed: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -277,9 +328,14 @@ impl WordPressDiscoverySeedSelection {
 pub(super) struct WordPressSignalCollector(Arc<Mutex<CollectedSignals>>);
 
 impl WordPressSignalCollector {
-    fn new(page_scope: Option<WordPressPageScope>, application_url: &Url) -> Self {
+    fn new(
+        page_scope: Option<WordPressPageScope>,
+        application_url: &Url,
+        supplied_session_selected: bool,
+    ) -> Self {
         let state = CollectedSignals {
             page_scope: page_scope.map(|mode| CollectedPageScope::new(mode, application_url)),
+            supplied_session: supplied_session_selected.then(CollectedSuppliedSessionPages::new),
             ..CollectedSignals::default()
         };
         Self(Arc::new(Mutex::new(state)))
@@ -294,6 +350,16 @@ impl WordPressSignalCollector {
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = state.supplied_session.as_mut() {
+            if session.pending_entry_layout.is_some() || session.frozen_layout.is_some() {
+                session.failed = true;
+            } else {
+                session.pending_entry_layout = Some((
+                    observation.frozen_page_layout.clone(),
+                    parent_evidence_ids.clone(),
+                ));
+            }
+        }
         let Some(page_scope) = state.page_scope.as_mut() else {
             drop(state);
             self.record(
@@ -322,6 +388,39 @@ impl WordPressSignalCollector {
         expected_subject: &EntityId,
         expected_url: &Url,
     ) -> Result<(), WordPressReviewError> {
+        let session_pending = {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state
+                .supplied_session
+                .as_mut()
+                .and_then(|session| session.pending_entry_layout.take())
+        };
+        if let Some((frozen_layout, parent_evidence_ids)) = session_pending {
+            if !committed_parent_evidence_is_valid(
+                knowledge,
+                &parent_evidence_ids,
+                expected_subject,
+                expected_url,
+            ) {
+                self.fail_supplied_session_observation();
+                return Err(WordPressReviewError::SignalLimitExceeded);
+            }
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = state
+                .supplied_session
+                .as_mut()
+                .ok_or(WordPressReviewError::SignalLimitExceeded)?;
+            if session.frozen_layout.replace(frozen_layout).is_some() {
+                session.failed = true;
+                return Err(WordPressReviewError::SignalLimitExceeded);
+            }
+        }
         let (signals, mut discovery, evidence_ids, entry_reference) = {
             let mut state = self
                 .0
@@ -778,6 +877,351 @@ impl WordPressSignalCollector {
             .ok_or(WordPressReviewError::SignalLimitExceeded)
     }
 
+    #[cfg(feature = "supplied-session-review")]
+    fn supplied_session_observation_binding(
+        &self,
+        root_subject: EntityId,
+    ) -> Option<WordPressSuppliedSessionObservationBinding> {
+        let state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = state.supplied_session.as_ref()?;
+        (!session.failed).then_some(())?;
+        let frozen_layout = session.frozen_layout.clone()?;
+        Some(WordPressSuppliedSessionObservationBinding {
+            collector: self.clone(),
+            frozen_layout,
+            root_subject,
+        })
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    fn begin_supplied_session_observation(
+        &self,
+        policy: &SuppliedSessionPolicy,
+        resources: &[(SuppliedSessionRequestDescriptor, String)],
+    ) -> Result<(), ()> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = state.supplied_session.as_mut().ok_or(())?;
+        if session.failed
+            || session.frozen_layout.is_none()
+            || session.policy_reference.is_some()
+            || !session.pages.is_empty()
+            || !session.pending.is_empty()
+        {
+            session.failed = true;
+            return Err(());
+        }
+        session.policy_reference = Some(policy.policy_reference().to_owned());
+        session.application_reference = Some(policy.application_reference().to_owned());
+        session.principal_reference = Some(policy.principal_reference().to_owned());
+        session.credential_mechanism = Some(match policy.credential_mechanism() {
+            SuppliedSessionCredentialMechanism::AuthorizationHeader => {
+                WordPressSuppliedSessionCredentialMechanism::AuthorizationHeader
+            },
+            SuppliedSessionCredentialMechanism::CookieJar => {
+                WordPressSuppliedSessionCredentialMechanism::CookieJar
+            },
+        });
+        for (index, (descriptor, reference)) in resources.iter().enumerate() {
+            let sequence = u8::try_from(index).map_err(|_| ())?;
+            if !descriptor.validate()
+                || descriptor.target_reference() != reference
+                || session.pages.contains_key(&sequence)
+            {
+                session.failed = true;
+                return Err(());
+            }
+            session.pages.insert(
+                sequence,
+                WordPressSuppliedSessionPageAudit {
+                    context_page_reference: supplied_session_page_reference(
+                        policy,
+                        descriptor.target(),
+                        reference,
+                        sequence,
+                    ),
+                    resource_reference: reference.clone(),
+                    resource_evidence_reference: None,
+                    association: WordPressPageAssociation::NotEstablished,
+                    outcome: WordPressSuppliedSessionPageOutcome::NotEvaluated,
+                    interpreted_response_bytes: 0,
+                    evidence_ids: Vec::new(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    fn stage_supplied_session_response(
+        &self,
+        sequence: u8,
+        policy: &SuppliedSessionPolicy,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        response: &CollectedHttpResponse,
+    ) -> Result<(), ()> {
+        let (frozen, page) = {
+            let state = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = state.supplied_session.as_ref().ok_or(())?;
+            let row = session.pages.get(&sequence).ok_or(())?;
+            if session.failed
+                || session.policy_reference.as_deref() != Some(policy.policy_reference())
+                || session.application_reference.as_deref() != Some(policy.application_reference())
+                || row.resource_reference != descriptor.target_reference()
+                || session.pending.contains_key(&sequence)
+            {
+                return Err(());
+            }
+            (
+                session.frozen_layout.clone().ok_or(())?,
+                WordPressPageCandidate {
+                    url: descriptor.target().clone(),
+                    page_reference: row.context_page_reference.clone(),
+                },
+            )
+        };
+        let interpretation = if response.normalized_media_type().as_deref() != Some("text/html") {
+            PendingSuppliedSessionInterpretation::UnsupportedContent
+        } else {
+            match std::str::from_utf8(response.body()) {
+                Ok(html) => PendingSuppliedSessionInterpretation::Parsed(Box::new(
+                    extract_wordpress_page_observation_with_asset_fingerprints(
+                        page,
+                        &frozen,
+                        html,
+                        Vec::new(),
+                        false,
+                    ),
+                )),
+                Err(_) => PendingSuppliedSessionInterpretation::InvalidUtf8,
+            }
+        };
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = state.supplied_session.as_mut().ok_or(())?;
+        if session.pending.insert(sequence, interpretation).is_some() {
+            session.failed = true;
+            return Err(());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    fn commit_supplied_session_response(
+        &self,
+        sequence: u8,
+        policy: &SuppliedSessionPolicy,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        receipt: &CommittedSuppliedSessionResourceReceipt,
+        knowledge: &KnowledgeBase,
+        root_subject: &EntityId,
+    ) -> Result<(), ()> {
+        if !receipt.is_valid_for(sequence, policy, descriptor, knowledge)
+            || receipt.sequence() != sequence
+            || receipt.resource_reference() != descriptor.target_reference()
+        {
+            self.fail_supplied_session_observation();
+            return Err(());
+        }
+        let (interpretation, context_page_reference) = {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = state.supplied_session.as_mut().ok_or(())?;
+            if session.failed
+                || session.policy_reference.as_deref() != Some(policy.policy_reference())
+                || session.application_reference.as_deref() != Some(policy.application_reference())
+                || session.principal_reference.as_deref() != Some(policy.principal_reference())
+            {
+                session.failed = true;
+                return Err(());
+            }
+            let row = session.pages.get_mut(&sequence).ok_or(())?;
+            if row.resource_reference != descriptor.target_reference()
+                || row.resource_evidence_reference.is_some()
+            {
+                session.failed = true;
+                return Err(());
+            }
+            row.resource_evidence_reference = Some(receipt.evidence_reference().to_owned());
+            let context_page_reference = row.context_page_reference.clone();
+            let interpretation = session.pending.remove(&sequence).ok_or(())?;
+            (interpretation, context_page_reference)
+        };
+        let PendingSuppliedSessionInterpretation::Parsed(pending) = interpretation else {
+            let outcome = match interpretation {
+                PendingSuppliedSessionInterpretation::UnsupportedContent => {
+                    WordPressSuppliedSessionPageOutcome::UnsupportedContent
+                },
+                PendingSuppliedSessionInterpretation::InvalidUtf8 => {
+                    WordPressSuppliedSessionPageOutcome::InvalidUtf8
+                },
+                PendingSuppliedSessionInterpretation::Parsed(_) => unreachable!(),
+            };
+            self.update_supplied_session_page(sequence, outcome, 0, None)?;
+            return Ok(());
+        };
+        let mut pending = *pending;
+        if !pending.asset_fingerprint_candidates.is_empty()
+            || pending.asset_fingerprint_candidate_limit_exceeded
+        {
+            self.fail_supplied_session_observation();
+            return Err(());
+        }
+        let evidence = supplied_session_page_observation_evidence(
+            root_subject,
+            &context_page_reference,
+            policy,
+            descriptor.target_reference(),
+            receipt.evidence_reference(),
+        )?;
+        let evidence_id = evidence.id().clone();
+        knowledge
+            .insert_evidence_batch(vec![evidence])
+            .map_err(|_| ())?;
+        for seed in &mut pending.discovery.seeds {
+            *seed = seed
+                .clone()
+                .without_source_page_references()
+                .with_source_evidence(evidence_id.clone())
+                .with_source_supplied_session_page_reference(context_page_reference.clone());
+        }
+        let outcome = supplied_session_outcome(pending.outcome);
+        let interpreted_response_bytes = pending.interpreted_response_bytes;
+        let association = pending.association;
+        self.record(pending.signals, pending.discovery, [evidence_id.clone()]);
+        if association != outcome.association() {
+            self.fail_supplied_session_observation();
+            return Err(());
+        }
+        self.update_supplied_session_page(
+            sequence,
+            outcome,
+            interpreted_response_bytes,
+            Some(evidence_id),
+        )
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    fn update_supplied_session_page(
+        &self,
+        sequence: u8,
+        outcome: WordPressSuppliedSessionPageOutcome,
+        interpreted_response_bytes: u64,
+        evidence_id: Option<EvidenceId>,
+    ) -> Result<(), ()> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = state.supplied_session.as_mut().ok_or(())?;
+        let row = session.pages.get_mut(&sequence).ok_or(())?;
+        row.outcome = outcome;
+        row.association = outcome.association();
+        row.interpreted_response_bytes = interpreted_response_bytes;
+        row.evidence_ids = evidence_id.into_iter().collect();
+        Ok(())
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    fn discard_supplied_session_response(&self, sequence: u8) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = state.supplied_session.as_mut() {
+            session.pending.remove(&sequence);
+        }
+    }
+
+    fn fail_supplied_session_observation(&self) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = state.supplied_session.as_mut() {
+            session.failed = true;
+        }
+    }
+
+    fn finish_supplied_session_pages(
+        &self,
+    ) -> Result<Option<WordPressSuppliedSessionPageScopeAudit>, WordPressReviewError> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(session) = state.supplied_session.as_mut() else {
+            return Ok(None);
+        };
+        if session.failed
+            || session.pending_entry_layout.is_some()
+            || session.frozen_layout.is_none()
+            || !session.pending.is_empty()
+        {
+            return Err(WordPressReviewError::SignalLimitExceeded);
+        }
+        let pages = std::mem::take(&mut session.pages)
+            .into_values()
+            .collect::<Vec<_>>();
+        let count = |predicate: fn(&WordPressSuppliedSessionPageAudit) -> bool| {
+            u8::try_from(pages.iter().filter(|page| predicate(page)).count())
+                .map_err(|_| WordPressReviewError::SignalLimitExceeded)
+        };
+        let interpreted_response_bytes = pages.iter().try_fold(0_u64, |total, page| {
+            total.checked_add(page.interpreted_response_bytes)
+        });
+        Ok(Some(WordPressSuppliedSessionPageScopeAudit {
+            policy_reference: session
+                .policy_reference
+                .take()
+                .ok_or(WordPressReviewError::SignalLimitExceeded)?,
+            application_reference: session
+                .application_reference
+                .take()
+                .ok_or(WordPressReviewError::SignalLimitExceeded)?,
+            principal_reference: session
+                .principal_reference
+                .take()
+                .ok_or(WordPressReviewError::SignalLimitExceeded)?,
+            credential_mechanism: session
+                .credential_mechanism
+                .take()
+                .ok_or(WordPressReviewError::SignalLimitExceeded)?,
+            epoch: 1,
+            selected_count: u8::try_from(pages.len())
+                .map_err(|_| WordPressReviewError::SignalLimitExceeded)?,
+            committed_count: count(|page| page.resource_evidence_reference.is_some())?,
+            accepted_count: count(|page| page.association == WordPressPageAssociation::Accepted)?,
+            rejected_count: count(|page| page.association == WordPressPageAssociation::Rejected)?,
+            not_established_count: count(|page| {
+                page.association == WordPressPageAssociation::NotEstablished
+            })?,
+            not_evaluated_count: count(|page| {
+                matches!(
+                    page.outcome,
+                    WordPressSuppliedSessionPageOutcome::UnsupportedContent
+                        | WordPressSuppliedSessionPageOutcome::InvalidUtf8
+                        | WordPressSuppliedSessionPageOutcome::NotEvaluated
+                )
+            })?,
+            interpreted_response_bytes: interpreted_response_bytes
+                .ok_or(WordPressReviewError::SignalLimitExceeded)?,
+            pages,
+        }))
+    }
+
     fn record_discovery(&self, signals: impl IntoIterator<Item = WordPressComponentSignal>) {
         let mut state = self
             .0
@@ -794,6 +1238,163 @@ impl WordPressSignalCollector {
             state.signals.push(signal);
         }
     }
+}
+
+#[cfg(feature = "supplied-session-review")]
+pub(super) struct WordPressSuppliedSessionObservationBinding {
+    collector: WordPressSignalCollector,
+    frozen_layout: FrozenWordPressPageLayout,
+    root_subject: EntityId,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl SuppliedSessionCommittedResourceObserver for WordPressSuppliedSessionObservationBinding {
+    fn begin(
+        &self,
+        policy: &SuppliedSessionPolicy,
+        resources: &[(SuppliedSessionRequestDescriptor, String)],
+    ) -> Result<(), ()> {
+        let frozen_is_exact = self.frozen_layout.application_url.as_ref()
+            == Some(policy.application_url())
+            && (self.frozen_layout.themes.is_some() || self.frozen_layout.plugins.is_some());
+        if !frozen_is_exact {
+            self.collector.fail_supplied_session_observation();
+            return Err(());
+        }
+        self.collector
+            .begin_supplied_session_observation(policy, resources)
+    }
+
+    fn stage_response(
+        &self,
+        sequence: u8,
+        policy: &SuppliedSessionPolicy,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        response: &CollectedHttpResponse,
+    ) -> Result<(), ()> {
+        self.collector
+            .stage_supplied_session_response(sequence, policy, descriptor, response)
+    }
+
+    fn commit_response(
+        &self,
+        sequence: u8,
+        policy: &SuppliedSessionPolicy,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        receipt: &CommittedSuppliedSessionResourceReceipt,
+        knowledge: &KnowledgeBase,
+    ) -> Result<(), ()> {
+        self.collector.commit_supplied_session_response(
+            sequence,
+            policy,
+            descriptor,
+            receipt,
+            knowledge,
+            &self.root_subject,
+        )
+    }
+
+    fn discard_response(&self, sequence: u8) {
+        self.collector.discard_supplied_session_response(sequence);
+    }
+
+    fn fail(&self) {
+        self.collector.fail_supplied_session_observation();
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn supplied_session_page_reference(
+    policy: &SuppliedSessionPolicy,
+    target: &Url,
+    resource_reference: &str,
+    sequence: u8,
+) -> String {
+    let mut digest = sha2::Sha256::new();
+    for value in [
+        b"security.wordpress-supplied-session-page.v1".as_slice(),
+        policy.policy_reference().as_bytes(),
+        policy.application_reference().as_bytes(),
+        policy.principal_reference().as_bytes(),
+        target.as_str().as_bytes(),
+        resource_reference.as_bytes(),
+        &[sequence],
+    ] {
+        digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+        digest.update(value);
+    }
+    format!("sha256:{:x}", digest.finalize())
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn supplied_session_outcome(outcome: WordPressPageOutcome) -> WordPressSuppliedSessionPageOutcome {
+    match outcome {
+        WordPressPageOutcome::Accepted => WordPressSuppliedSessionPageOutcome::Accepted,
+        WordPressPageOutcome::NoComponentSignals => {
+            WordPressSuppliedSessionPageOutcome::NoComponentSignals
+        },
+        WordPressPageOutcome::IncompatibleApplication => {
+            WordPressSuppliedSessionPageOutcome::IncompatibleApplication
+        },
+        WordPressPageOutcome::Soft404 => WordPressSuppliedSessionPageOutcome::Soft404,
+        WordPressPageOutcome::LoginResponse => WordPressSuppliedSessionPageOutcome::LoginResponse,
+        WordPressPageOutcome::Truncated => WordPressSuppliedSessionPageOutcome::Truncated,
+        WordPressPageOutcome::UnsupportedContent
+        | WordPressPageOutcome::Malformed
+        | WordPressPageOutcome::NotObserved
+        | WordPressPageOutcome::RequestFailed
+        | WordPressPageOutcome::RateLimited
+        | WordPressPageOutcome::BudgetExhausted
+        | WordPressPageOutcome::Cancelled
+        | WordPressPageOutcome::DeadlineExceeded => {
+            WordPressSuppliedSessionPageOutcome::NotEvaluated
+        },
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn supplied_session_page_observation_evidence(
+    root_subject: &EntityId,
+    context_page_reference: &str,
+    policy: &SuppliedSessionPolicy,
+    resource_reference: &str,
+    resource_evidence_reference: &str,
+) -> Result<Evidence, ()> {
+    let predicate = KnowledgePredicate::new(
+        "web.wordpress-supplied-session-discovery",
+        "health-qualified-page-representation-observed",
+    )
+    .map_err(|_| ())?;
+    let source = EvidenceSource::new(
+        "wordpress.supplied-session-page-observation",
+        "committed-health-qualified-html-response",
+    )
+    .and_then(|source| source.with_correlation_id(context_page_reference.to_owned()))
+    .map_err(|_| ())?;
+    let mut digest = sha2::Sha256::new();
+    for value in [
+        context_page_reference.as_bytes(),
+        policy.policy_reference().as_bytes(),
+        policy.application_reference().as_bytes(),
+        policy.principal_reference().as_bytes(),
+        resource_reference.as_bytes(),
+        resource_evidence_reference.as_bytes(),
+        b"epoch=1",
+    ] {
+        digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+        digest.update(value);
+    }
+    Ok(Evidence::new(
+        root_subject.clone(),
+        EvidenceKind::Content,
+        predicate,
+        EvidenceValue::Text(format!(
+            "{context_page_reference}:sha256:{:x}",
+            digest.finalize()
+        )),
+        source,
+        ConfidenceScore::from_percent(70).map_err(|_| ())?,
+    ))
 }
 
 fn committed_parent_evidence_is_valid(
@@ -878,6 +1479,7 @@ pub(super) struct WordPressReviewBinding {
     page_scope: Option<WordPressPageScope>,
     asset_fingerprint_collector: Option<WordPressAssetFingerprintCollector>,
     asset_fingerprint_audit: Option<WordPressAssetFingerprintExecution>,
+    supplied_session_selected: bool,
 }
 
 #[derive(Debug)]
@@ -892,8 +1494,10 @@ impl WordPressReviewBinding {
         discovery_enabled: bool,
         page_scope: Option<WordPressPageScope>,
         application_url: Url,
+        supplied_session_selected: bool,
     ) -> Self {
-        let collector = WordPressSignalCollector::new(page_scope, &application_url);
+        let collector =
+            WordPressSignalCollector::new(page_scope, &application_url, supplied_session_selected);
         let asset_fingerprint_collector = inputs
             .shared_asset_fingerprint_catalog()
             .map(WordPressAssetFingerprintCollector::new);
@@ -908,6 +1512,7 @@ impl WordPressReviewBinding {
             page_scope,
             asset_fingerprint_collector,
             asset_fingerprint_audit: None,
+            supplied_session_selected,
         }
     }
 
@@ -933,6 +1538,19 @@ impl WordPressReviewBinding {
 
     pub(super) fn discovery_context(&self) -> WordPressDiscoveryContext {
         self.discovery_context.clone()
+    }
+
+    pub(super) const fn supplied_session_selected(&self) -> bool {
+        self.supplied_session_selected
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    pub(super) fn supplied_session_observation_binding(
+        &self,
+        root_subject: EntityId,
+    ) -> Option<WordPressSuppliedSessionObservationBinding> {
+        self.collector
+            .supplied_session_observation_binding(root_subject)
     }
 
     pub(super) async fn execute_discovery(
@@ -970,6 +1588,10 @@ impl WordPressReviewBinding {
         execution.audit.page_scope = self
             .collector
             .finish_page_scope()
+            .map_err(|_| WordPressDiscoveryExecutionError::EvidenceModel)?;
+        execution.audit.supplied_session_pages = self
+            .collector
+            .finish_supplied_session_pages()
             .map_err(|_| WordPressDiscoveryExecutionError::EvidenceModel)?;
         let stop = execution.stop;
         self.discovery_audit = Some(execution.audit);
@@ -1145,6 +1767,14 @@ pub(super) fn project_wordpress_item(
                 .flat_map(WordPressPageAudit::evidence_ids)
                 .cloned()
                 .collect::<Vec<_>>();
+            evidence_ids.extend(
+                discovery
+                    .supplied_session_pages()
+                    .into_iter()
+                    .flat_map(WordPressSuppliedSessionPageScopeAudit::pages)
+                    .flat_map(WordPressSuppliedSessionPageAudit::evidence_ids)
+                    .cloned(),
+            );
             evidence_ids.extend(
                 discovery
                     .sources()

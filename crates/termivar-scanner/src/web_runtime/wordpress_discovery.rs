@@ -38,6 +38,9 @@ pub const WORDPRESS_DISCOVERY_POLICY_ID: &str = WORDPRESS_METADATA_DISCOVERY_POL
 /// Page-scoped discovery policy emitted only for an explicit page-scope selection.
 pub const WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID: &str =
     "termivar.wordpress-page-scoped-metadata-discovery/v1";
+/// Supplied-session page observations feeding anonymous metadata discovery.
+pub const WORDPRESS_SUPPLIED_SESSION_DISCOVERY_POLICY_ID: &str =
+    "termivar.wordpress-supplied-session-metadata-discovery/v1";
 /// Maximum retained root-derived candidates before per-kind selection.
 pub const MAX_WORDPRESS_DISCOVERY_CANDIDATES: usize = 32;
 /// Maximum broker-owned wire attempts, including failed attempts.
@@ -173,6 +176,69 @@ impl WordPressPageOutcome {
     }
 }
 
+/// Credential mechanism attached to a redaction-safe supplied-session page ledger.
+///
+/// This mirrors the closed supplied-session vocabulary without making the
+/// WordPress-only build depend on credential-bearing runtime types.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WordPressSuppliedSessionCredentialMechanism {
+    AuthorizationHeader,
+    CookieJar,
+}
+
+impl WordPressSuppliedSessionCredentialMechanism {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthorizationHeader => "authorization_header",
+            Self::CookieJar => "cookie_jar",
+        }
+    }
+}
+
+/// WordPress interpretation state for one explicitly selected session resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WordPressSuppliedSessionPageOutcome {
+    Accepted,
+    NoComponentSignals,
+    IncompatibleApplication,
+    Soft404,
+    LoginResponse,
+    UnsupportedContent,
+    InvalidUtf8,
+    Truncated,
+    NotEvaluated,
+}
+
+impl WordPressSuppliedSessionPageOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::NoComponentSignals => "no_component_signals",
+            Self::IncompatibleApplication => "incompatible_application",
+            Self::Soft404 => "soft_404",
+            Self::LoginResponse => "login_response",
+            Self::UnsupportedContent => "unsupported_content",
+            Self::InvalidUtf8 => "invalid_utf8",
+            Self::Truncated => "truncated",
+            Self::NotEvaluated => "not_evaluated",
+        }
+    }
+
+    pub(super) const fn association(self) -> WordPressPageAssociation {
+        match self {
+            Self::Accepted => WordPressPageAssociation::Accepted,
+            Self::IncompatibleApplication
+            | Self::Soft404
+            | Self::LoginResponse
+            | Self::Truncated => WordPressPageAssociation::Rejected,
+            Self::NoComponentSignals
+            | Self::UnsupportedContent
+            | Self::InvalidUtf8
+            | Self::NotEvaluated => WordPressPageAssociation::NotEstablished,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::web_runtime) struct WordPressDiscoverySeed {
     url: Url,
@@ -185,6 +251,7 @@ pub(in crate::web_runtime) struct WordPressDiscoverySeed {
     preflight_outcome: Option<WordPressDiscoverySourceOutcome>,
     source_evidence_ids: Vec<EvidenceId>,
     source_page_references: Vec<String>,
+    source_supplied_session_page_references: Vec<String>,
 }
 
 impl WordPressDiscoverySeed {
@@ -202,6 +269,7 @@ impl WordPressDiscoverySeed {
             preflight_outcome: None,
             source_evidence_ids: Vec::new(),
             source_page_references: Vec::new(),
+            source_supplied_session_page_references: Vec::new(),
         }
     }
 
@@ -217,6 +285,7 @@ impl WordPressDiscoverySeed {
             preflight_outcome: Some(WordPressDiscoverySourceOutcome::InvalidAdvertisement),
             source_evidence_ids: Vec::new(),
             source_page_references: Vec::new(),
+            source_supplied_session_page_references: Vec::new(),
         }
     }
 
@@ -244,6 +313,7 @@ impl WordPressDiscoverySeed {
             preflight_outcome: None,
             source_evidence_ids: Vec::new(),
             source_page_references: Vec::new(),
+            source_supplied_session_page_references: Vec::new(),
         }
     }
 
@@ -264,6 +334,7 @@ impl WordPressDiscoverySeed {
             preflight_outcome: None,
             source_evidence_ids: Vec::new(),
             source_page_references: Vec::new(),
+            source_supplied_session_page_references: Vec::new(),
         }
     }
 
@@ -291,6 +362,7 @@ impl WordPressDiscoverySeed {
             preflight_outcome: None,
             source_evidence_ids: Vec::new(),
             source_page_references: Vec::new(),
+            source_supplied_session_page_references: Vec::new(),
         }
     }
 
@@ -456,6 +528,24 @@ impl WordPressDiscoverySeed {
         self
     }
 
+    #[cfg(feature = "supplied-session-review")]
+    pub(super) fn with_source_supplied_session_page_reference(mut self, reference: String) -> Self {
+        if !self
+            .source_supplied_session_page_references
+            .contains(&reference)
+        {
+            self.source_supplied_session_page_references.push(reference);
+            self.source_supplied_session_page_references.sort();
+        }
+        self
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    pub(super) fn without_source_page_references(mut self) -> Self {
+        self.source_page_references.clear();
+        self
+    }
+
     pub(super) fn merge_source_provenance(&mut self, other: &Self) {
         for evidence_id in &other.source_evidence_ids {
             if !self.source_evidence_ids.contains(evidence_id) {
@@ -469,10 +559,24 @@ impl WordPressDiscoverySeed {
             }
         }
         self.source_page_references.sort();
+        for reference in &other.source_supplied_session_page_references {
+            if !self
+                .source_supplied_session_page_references
+                .contains(reference)
+            {
+                self.source_supplied_session_page_references
+                    .push(reference.clone());
+            }
+        }
+        self.source_supplied_session_page_references.sort();
     }
 
     pub(super) fn source_page_references(&self) -> &[String] {
         &self.source_page_references
+    }
+
+    pub(super) fn source_supplied_session_page_references(&self) -> &[String] {
+        &self.source_supplied_session_page_references
     }
 
     fn source_evidence_ids<'a>(&'a self, root: &'a [EvidenceId]) -> &'a [EvidenceId] {
@@ -1093,6 +1197,109 @@ pub struct WordPressPageScopeAudit {
     pub(super) pages: Vec<WordPressPageAudit>,
 }
 
+/// Redaction-safe relationship between one supplied-session resource and the
+/// WordPress facts interpreted from its health-qualified HTML representation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordPressSuppliedSessionPageAudit {
+    pub(super) context_page_reference: String,
+    pub(super) resource_reference: String,
+    pub(super) resource_evidence_reference: Option<String>,
+    pub(super) association: WordPressPageAssociation,
+    pub(super) outcome: WordPressSuppliedSessionPageOutcome,
+    pub(super) interpreted_response_bytes: u64,
+    pub(super) evidence_ids: Vec<EvidenceId>,
+}
+
+impl WordPressSuppliedSessionPageAudit {
+    pub fn context_page_reference(&self) -> &str {
+        &self.context_page_reference
+    }
+    pub fn resource_reference(&self) -> &str {
+        &self.resource_reference
+    }
+    pub fn resource_evidence_reference(&self) -> Option<&str> {
+        self.resource_evidence_reference.as_deref()
+    }
+    pub const fn association(&self) -> WordPressPageAssociation {
+        self.association
+    }
+    pub const fn outcome(&self) -> WordPressSuppliedSessionPageOutcome {
+        self.outcome
+    }
+    pub const fn interpreted_response_bytes(&self) -> u64 {
+        self.interpreted_response_bytes
+    }
+    pub fn evidence_ids(&self) -> &[EvidenceId] {
+        &self.evidence_ids
+    }
+    pub const fn fingerprint_evaluation(&self) -> &'static str {
+        "not_selected_in_v1"
+    }
+}
+
+/// Separate bounded ledger for supplied-session page interpretation.
+///
+/// Metadata sources nominated by accepted rows are still retrieved anonymously;
+/// the credential mechanism describes only how the source HTML was obtained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WordPressSuppliedSessionPageScopeAudit {
+    pub(super) policy_reference: String,
+    pub(super) application_reference: String,
+    pub(super) principal_reference: String,
+    pub(super) credential_mechanism: WordPressSuppliedSessionCredentialMechanism,
+    pub(super) epoch: u8,
+    pub(super) selected_count: u8,
+    pub(super) committed_count: u8,
+    pub(super) accepted_count: u8,
+    pub(super) rejected_count: u8,
+    pub(super) not_established_count: u8,
+    pub(super) not_evaluated_count: u8,
+    pub(super) interpreted_response_bytes: u64,
+    pub(super) pages: Vec<WordPressSuppliedSessionPageAudit>,
+}
+
+impl WordPressSuppliedSessionPageScopeAudit {
+    pub fn policy_reference(&self) -> &str {
+        &self.policy_reference
+    }
+    pub fn application_reference(&self) -> &str {
+        &self.application_reference
+    }
+    pub fn principal_reference(&self) -> &str {
+        &self.principal_reference
+    }
+    pub const fn credential_mechanism(&self) -> WordPressSuppliedSessionCredentialMechanism {
+        self.credential_mechanism
+    }
+    pub const fn epoch(&self) -> u8 {
+        self.epoch
+    }
+    pub const fn selected_count(&self) -> u8 {
+        self.selected_count
+    }
+    pub const fn committed_count(&self) -> u8 {
+        self.committed_count
+    }
+    pub const fn accepted_count(&self) -> u8 {
+        self.accepted_count
+    }
+    pub const fn rejected_count(&self) -> u8 {
+        self.rejected_count
+    }
+    pub const fn not_established_count(&self) -> u8 {
+        self.not_established_count
+    }
+    pub const fn not_evaluated_count(&self) -> u8 {
+        self.not_evaluated_count
+    }
+    pub const fn interpreted_response_bytes(&self) -> u64 {
+        self.interpreted_response_bytes
+    }
+    pub fn pages(&self) -> &[WordPressSuppliedSessionPageAudit] {
+        &self.pages
+    }
+}
+
 impl WordPressPageScopeAudit {
     pub const fn mode(&self) -> WordPressPageScope {
         self.mode
@@ -1182,6 +1389,7 @@ pub struct WordPressDiscoverySourceAudit {
     pub(super) resource_reference: String,
     pub(super) role_reference: Option<String>,
     pub(super) source_page_references: Vec<String>,
+    pub(super) source_supplied_session_page_references: Vec<String>,
 }
 
 impl WordPressDiscoverySourceAudit {
@@ -1235,6 +1443,9 @@ impl WordPressDiscoverySourceAudit {
     pub fn source_page_references(&self) -> &[String] {
         &self.source_page_references
     }
+    pub fn source_supplied_session_page_references(&self) -> &[String] {
+        &self.source_supplied_session_page_references
+    }
 }
 
 /// Versioned, redaction-safe discovery audit retained beside the legacy
@@ -1252,11 +1463,14 @@ pub struct WebAssessmentWordPressDiscoveryAudit {
     pub(super) sources: Vec<WordPressDiscoverySourceAudit>,
     pub(super) layout: WordPressDiscoveryLayoutAudit,
     pub(super) page_scope: Option<WordPressPageScopeAudit>,
+    pub(super) supplied_session_pages: Option<WordPressSuppliedSessionPageScopeAudit>,
 }
 
 impl WebAssessmentWordPressDiscoveryAudit {
     pub const fn policy_id(&self) -> &'static str {
-        if self.page_scope.is_some() {
+        if self.supplied_session_pages.is_some() {
+            WORDPRESS_SUPPLIED_SESSION_DISCOVERY_POLICY_ID
+        } else if self.page_scope.is_some() {
             WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID
         } else {
             WORDPRESS_DISCOVERY_POLICY_ID
@@ -1301,6 +1515,9 @@ impl WebAssessmentWordPressDiscoveryAudit {
     }
     pub const fn page_scope(&self) -> Option<&WordPressPageScopeAudit> {
         self.page_scope.as_ref()
+    }
+    pub const fn supplied_session_pages(&self) -> Option<&WordPressSuppliedSessionPageScopeAudit> {
+        self.supplied_session_pages.as_ref()
     }
 
     pub(crate) fn is_internally_consistent(&self) -> bool {
@@ -1368,6 +1585,7 @@ impl WebAssessmentWordPressDiscoveryAudit {
             && evidence_references == Some(usize::from(self.committed_response_count))
             && discovery_layout_is_consistent(&self.layout, &self.sources)
             && page_scope_is_consistent(self)
+            && supplied_session_pages_are_consistent(self)
     }
 }
 
@@ -1514,6 +1732,124 @@ fn page_scope_is_consistent(audit: &WebAssessmentWordPressDiscoveryAudit) -> boo
         })
 }
 
+fn supplied_session_pages_are_consistent(audit: &WebAssessmentWordPressDiscoveryAudit) -> bool {
+    let Some(scope) = audit.supplied_session_pages.as_ref() else {
+        return audit
+            .sources
+            .iter()
+            .all(|source| source.source_supplied_session_page_references.is_empty());
+    };
+    let selected = scope.pages.len();
+    let committed = scope
+        .pages
+        .iter()
+        .filter(|page| page.resource_evidence_reference.is_some())
+        .count();
+    let accepted = scope
+        .pages
+        .iter()
+        .filter(|page| page.association == WordPressPageAssociation::Accepted)
+        .count();
+    let rejected = scope
+        .pages
+        .iter()
+        .filter(|page| page.association == WordPressPageAssociation::Rejected)
+        .count();
+    let not_established = scope
+        .pages
+        .iter()
+        .filter(|page| page.association == WordPressPageAssociation::NotEstablished)
+        .count();
+    let not_evaluated = scope
+        .pages
+        .iter()
+        .filter(|page| {
+            matches!(
+                page.outcome,
+                WordPressSuppliedSessionPageOutcome::UnsupportedContent
+                    | WordPressSuppliedSessionPageOutcome::InvalidUtf8
+                    | WordPressSuppliedSessionPageOutcome::NotEvaluated
+            )
+        })
+        .count();
+    let interpreted_bytes = scope.pages.iter().try_fold(0_u64, |total, page| {
+        total.checked_add(page.interpreted_response_bytes)
+    });
+    let references = scope
+        .pages
+        .iter()
+        .map(|page| page.context_page_reference.as_str())
+        .collect::<BTreeSet<_>>();
+    let resources = scope
+        .pages
+        .iter()
+        .map(|page| page.resource_reference.as_str())
+        .collect::<BTreeSet<_>>();
+    valid_prefixed_sha256(&scope.policy_reference, "supplied-session-policy-sha256:")
+        && valid_prefixed_sha256(
+            &scope.application_reference,
+            "supplied-session-application-sha256:",
+        )
+        && scope.principal_reference == "supplied-session-principal-0001"
+        && scope.epoch == 1
+        && selected == usize::from(scope.selected_count)
+        && committed == usize::from(scope.committed_count)
+        && accepted == usize::from(scope.accepted_count)
+        && rejected == usize::from(scope.rejected_count)
+        && not_established == usize::from(scope.not_established_count)
+        && not_evaluated == usize::from(scope.not_evaluated_count)
+        && selected
+            == accepted
+                .saturating_add(rejected)
+                .saturating_add(not_established)
+        && references.len() == selected
+        && resources.len() == selected
+        && interpreted_bytes == Some(scope.interpreted_response_bytes)
+        && scope.interpreted_response_bytes <= MAX_WORDPRESS_PAGE_INTERPRETED_BYTES
+        && scope.pages.iter().all(|page| {
+            let interpreted = !matches!(
+                page.outcome,
+                WordPressSuppliedSessionPageOutcome::UnsupportedContent
+                    | WordPressSuppliedSessionPageOutcome::InvalidUtf8
+                    | WordPressSuppliedSessionPageOutcome::NotEvaluated
+            );
+            valid_opaque_reference(&page.context_page_reference)
+                && valid_prefixed_sha256(
+                    &page.resource_reference,
+                    "supplied-session-resource-sha256:",
+                )
+                && page
+                    .resource_evidence_reference
+                    .as_deref()
+                    .is_none_or(|reference| {
+                        valid_prefixed_sha256(
+                            reference,
+                            "supplied-session-resource-evidence-sha256:",
+                        )
+                    })
+                && page.association == page.outcome.association()
+                && page.evidence_ids.len() == usize::from(interpreted)
+                && (!interpreted || page.resource_evidence_reference.is_some())
+                && page.interpreted_response_bytes
+                    <= u64::try_from(MAX_WORDPRESS_PAGE_RESPONSE_BYTES).unwrap_or(u64::MAX)
+        })
+        && audit.sources.iter().all(|source| {
+            source
+                .source_supplied_session_page_references
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+                && source
+                    .source_supplied_session_page_references
+                    .iter()
+                    .all(|reference| {
+                        scope.pages.iter().any(|page| {
+                            page.context_page_reference == *reference
+                                && page.association == WordPressPageAssociation::Accepted
+                        })
+                    })
+        })
+}
+
 fn discovery_layout_is_consistent(
     layout: &WordPressDiscoveryLayoutAudit,
     sources: &[WordPressDiscoverySourceAudit],
@@ -1624,6 +1960,10 @@ fn valid_sha256_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
+fn valid_prefixed_sha256(value: &str, prefix: &str) -> bool {
+    value.strip_prefix(prefix).is_some_and(valid_sha256_digest)
+}
+
 fn valid_opaque_reference(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|digest| {
         digest.len() == 64
@@ -1691,6 +2031,7 @@ pub(super) async fn execute_wordpress_discovery(
                 sources: Vec::new(),
                 layout,
                 page_scope: None,
+                supplied_session_pages: None,
             },
             signals: Vec::new(),
             stop: WordPressDiscoveryStop::Complete,
@@ -2003,6 +2344,9 @@ pub(super) async fn execute_wordpress_discovery(
             resource_reference: candidate.resource_reference(),
             role_reference: candidate.role_reference(),
             source_page_references: candidate.source_page_references().to_vec(),
+            source_supplied_session_page_references: candidate
+                .source_supplied_session_page_references()
+                .to_vec(),
         });
         if response_bytes >= MAX_WORDPRESS_DISCOVERY_RESPONSE_BYTES {
             stopped = WordPressDiscoveryStop::DiscoveryResponseLimit;
@@ -2053,6 +2397,7 @@ pub(super) async fn execute_wordpress_discovery(
             sources,
             layout,
             page_scope: None,
+            supplied_session_pages: None,
         },
         signals,
         stop: stopped,
@@ -2175,6 +2520,9 @@ fn empty_source(
         resource_reference: seed.resource_reference(),
         role_reference: seed.role_reference(),
         source_page_references: seed.source_page_references().to_vec(),
+        source_supplied_session_page_references: seed
+            .source_supplied_session_page_references()
+            .to_vec(),
     }
 }
 
@@ -3048,6 +3396,7 @@ mod tests {
             sources,
             layout,
             page_scope: None,
+            supplied_session_pages: None,
         }
     }
 

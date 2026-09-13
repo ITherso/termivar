@@ -136,6 +136,54 @@ Missing pages or signals do not establish component absence, and extra page
 sightings do not establish activation, execution, authenticity, exploitability,
 or remediation.
 
+### Reuse one supplied-session context without forwarding it
+
+An executable compiled with both review features exposes a separate initial
+integration for explicitly selected supplied-session resources:
+
+```bash
+termivar scan http://127.0.0.1:8088/ \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-discovery \
+  --wordpress-supplied-session \
+  --session-policy session-policy.toml \
+  --session-cookie-file session-cookies.tsv \
+  --report-dir assessment-wordpress-session
+```
+
+The loopback exception is for an owned fixture; real credentials require HTTPS,
+and `Secure` cookies still require HTTPS. Authorization-header policies use the
+existing env/file/stdin source instead of the cookie file. All selected resource
+GETs remain operator-authorized and application-defined GET handlers may have
+server-side effects.
+
+This option is valid only with the explicit review, discovery, supplied-session
+policy/credential and `web-review` profile. The runtime first commits the
+anonymous entry evidence and freezes its application/layout. It then reduces a
+complete selected session-resource HTML response while the response is owned,
+but publishes WordPress facts only if the immediately following health checkpoint
+and the exact S01 resource evidence both commit. Policy, application, principal,
+credential mechanism, epoch and opaque resource/page references stay linked in
+a separate audit. Login-shaped, incompatible, unsupported, truncated,
+health-unqualified and uncommitted responses cannot nominate metadata.
+
+Accepted component hints can nominate only the existing public metadata work.
+Those GETs are anonymous, exact-origin and broker-owned inside the same twelve
+WordPress-attempt allowance; neither Cookie nor Authorization is forwarded.
+The session traffic retains its separate S01 request/health accounting inside
+the same assessment parent budget. Authenticated-page JS/CSS does not authorize
+fingerprint acquisition in this initial slice, and the audit records that work
+as not selected. Existing anonymous entry, observed-page and fingerprint paths
+are unchanged when the option is absent.
+
+A component seen only in this context remains an observed identity. Plugin
+`Stable tag`, URL `ver`, catalogue candidates and any separately supplied
+version keep their existing meanings; none becomes an authenticated installed
+version. Different principals or epochs are explicit context/methodology or
+coverage changes in Compare, not plugin removal, vulnerability introduction or
+remediation.
+
 ### Finite observed-asset fingerprint catalogues
 
 An explicitly supplied development catalogue can compare complete observed

@@ -584,9 +584,10 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "--session-policy FILE",
                 "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
                 "V2: --session-cookie-file FILE",
+                "optional --wordpress-supplied-session when also compiled with wordpress-review",
                 "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
             ],
-            "One explicitly supplied principal and strict local V1 authorization_header or V2 cookie_jar policy authorize bounded bodyless application GETs through a context-isolated, no-proxy child of the existing assessment broker. Structured health checks qualify bounded checkpoint coverage rather than authenticate the principal. Session loss, a selected response-cookie update, or an unusable response-cookie classification stops later session work without anonymous fallback. No response cookie update is applied, no refresh occurs, and the session epoch stays fixed. Cookie host/domain/path/Secure/expiry applicability is intersected with operator application authority; Domain never expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. The client sends no request body or non-GET method, but application-defined GET handling can still have server-side effects; the operator must authorize every selected resource. No browser-profile import, login, automatic refresh, OAuth, MFA, exploit, or impact validation occurs in this slice.",
+            "One explicitly supplied principal and strict local V1 authorization_header or V2 cookie_jar policy authorize bounded bodyless application GETs through a context-isolated, no-proxy child of the existing assessment broker. Structured health checks qualify bounded checkpoint coverage rather than authenticate the principal. When both review features and --wordpress-supplied-session are selected, complete health-qualified session-resource HTML may nominate public WordPress metadata that the WordPress broker retrieves anonymously; the credential is not sent to metadata or fingerprint requests, and authenticated-page fingerprint acquisition is not selected in this slice. Session loss, a selected response-cookie update, or an unusable response-cookie classification stops later session work without anonymous fallback. No response cookie update is applied, no refresh occurs, and the session epoch stays fixed. Cookie host/domain/path/Secure/expiry applicability is intersected with operator application authority; Domain never expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. The client sends no request body or non-GET method, but application-defined GET handling can still have server-side effects; the operator must authorize every selected resource. No browser-profile import, login, automatic refresh, OAuth, MFA, exploit, or impact validation occurs in this slice.",
             "docs/internals/supplied-session-review.md",
         ),
         surface!(
@@ -628,8 +629,9 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "optional --wordpress-page-scope observed",
                 "optional --wordpress-layout FILE",
                 "optional --wordpress-fingerprints FILE",
+                "optional --wordpress-supplied-session when also compiled with supplied-session-review",
             ],
-            "Explicitly performs at most 12 anonymous same-origin WordPress-owned GET requests through the existing assessment broker in entry-only mode. It is never enabled by --wordpress-review alone. Without --wordpress-page-scope it remains entry-only; observed reuses eligible committed page responses without retrieving pages. Reused pages may nominate metadata within the same shared limit. An optional bounded fingerprint catalogue can compare exact complete bytes of already observed JS/CSS resources against a finite listed release set; it cannot nominate unseen resources or establish an installed version. Discovered metadata and supplied catalogue provenance remain unauthenticated evidence, URL ver remain hints, plugin Stable tag is not treated as an installed version, and no exploit or impact validation is performed.",
+            "Explicitly performs at most 12 anonymous same-origin WordPress-owned GET requests through the existing assessment broker in entry-only mode. It is never enabled by --wordpress-review alone. Without --wordpress-page-scope it remains entry-only; observed reuses eligible committed page responses without retrieving pages. Reused pages may nominate metadata within the same shared limit. With both review features and explicit --wordpress-supplied-session, complete health-qualified session-resource HTML may nominate public metadata within that same limit, but its credential is never forwarded to WordPress metadata or fingerprint requests and authenticated-page fingerprint acquisition is not selected in this slice. An optional bounded fingerprint catalogue can compare exact complete bytes of already observed JS/CSS resources against a finite listed release set; it cannot nominate unseen resources or establish an installed version. Discovered metadata and supplied catalogue provenance remain unauthenticated evidence, URL ver remain hints, plugin Stable tag is not treated as an installed version, and no exploit or impact validation is performed.",
             "docs/wordpress-review.md",
         ),
         surface!(
@@ -1120,7 +1122,8 @@ mod tests {
                 "--wordpress-discovery",
                 "optional --wordpress-page-scope observed",
                 "optional --wordpress-layout FILE",
-                "optional --wordpress-fingerprints FILE"
+                "optional --wordpress-fingerprints FILE",
+                "optional --wordpress-supplied-session when also compiled with supplied-session-review"
             ]
         );
         assert!(matches!(wordpress_discovery.group, SurfaceGroup::Optional));
@@ -1154,6 +1157,16 @@ mod tests {
         assert!(wordpress_discovery
             .limitation
             .contains("Stable tag is not treated as an installed version"));
+        for required in [
+            "health-qualified session-resource HTML may nominate public metadata",
+            "credential is never forwarded to WordPress metadata or fingerprint requests",
+            "authenticated-page fingerprint acquisition is not selected",
+        ] {
+            assert!(
+                wordpress_discovery.limitation.contains(required),
+                "missing WordPress supplied-session limitation `{required}`"
+            );
+        }
 
         assert_eq!(
             find("output.assessment-reports").prerequisites,
@@ -1194,6 +1207,7 @@ mod tests {
                 "--session-policy FILE",
                 "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
                 "V2: --session-cookie-file FILE",
+                "optional --wordpress-supplied-session when also compiled with wordpress-review",
                 "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
             ]
         );
@@ -1218,6 +1232,9 @@ mod tests {
             "Domain never expands it",
             "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
             "No browser-profile import, login, automatic refresh, OAuth, MFA",
+            "health-qualified session-resource HTML may nominate public WordPress metadata",
+            "credential is not sent to metadata or fingerprint requests",
+            "authenticated-page fingerprint acquisition is not selected",
         ] {
             assert!(
                 session.limitation.contains(required),

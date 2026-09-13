@@ -741,6 +741,7 @@ impl ComparisonVisitor<'_> {
                     "super::MAX_LEGACY_AUDIT_TEXT_BYTES",
                     "super::super::ImportedWordPressAudit",
                     "super::super::ImportedSuppliedSessionAudit",
+                    "super::super::SuppliedSessionResourceBinding",
                     "super::super::ImportedWordPressAssetFingerprintAudit",
                     "super::super::WordPressAdvisoryKey",
                     "super::super::WordPressAssetFingerprintComponentKey",
@@ -1097,6 +1098,7 @@ mod tests {
         for addition in [
             "use super::super::ImportedWordPressAssetFingerprintAudit;",
             "use super::super::WordPressAssetFingerprintResourceKey;",
+            "use super::super::SuppliedSessionResourceBinding;",
         ] {
             let violations =
                 source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
@@ -1110,6 +1112,7 @@ mod tests {
             "use super::super::WordPressAssetFingerprintExecution;",
             "use super::super::WordPressAssetFingerprintCatalogue;",
             "use super::super::WordPressAssetFingerprintObservation;",
+            "use super::super::SuppliedSessionCredential;",
             "use crate::wordpress_review::WordPressAssetFingerprintCatalogue;",
         ] {
             let violations =

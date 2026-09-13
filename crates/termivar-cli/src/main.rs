@@ -269,6 +269,27 @@ fn scan_wordpress_review_flags_conflict(
     }
 }
 
+#[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+fn scan_wordpress_supplied_session_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+    wordpress_review: bool,
+    wordpress_discovery: bool,
+    supplied_session_selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--wordpress-supplied-session` requires `--profile web-review`")
+    } else if selected && !wordpress_review {
+        Some("`--wordpress-supplied-session` requires `--wordpress-review`")
+    } else if selected && !wordpress_discovery {
+        Some("`--wordpress-supplied-session` requires `--wordpress-discovery`")
+    } else if selected && !supplied_session_selected {
+        Some("`--wordpress-supplied-session` requires a supplied-session policy and credential")
+    } else {
+        None
+    }
+}
+
 #[cfg(feature = "wordpress-review")]
 fn wordpress_review_target_conflict(
     wordpress_review: bool,
@@ -494,6 +515,21 @@ struct ScanArgs {
         requires_all = ["profile", "wordpress_review", "wordpress_discovery"]
     )]
     wordpress_page_scope: Option<CliWordPressPageScope>,
+    /// Interpret complete supplied-session resource HTML as WordPress component
+    /// evidence only after its immediately following health checkpoint commits.
+    /// Public metadata requests remain anonymous; authenticated-page asset
+    /// fingerprint acquisition is not selected by this initial integration.
+    #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+    #[arg(
+        long,
+        requires_all = [
+            "profile",
+            "wordpress_review",
+            "wordpress_discovery",
+            "session_policy"
+        ]
+    )]
+    wordpress_supplied_session: bool,
     /// Read one bounded `security.wordpress-layout/v1` operator declaration.
     /// The declaration can associate observed same-origin assets with custom
     /// role roots, but grants no network authority on its own.
@@ -1005,6 +1041,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_discovery,
         #[cfg(feature = "wordpress-review")]
         wordpress_page_scope,
+        #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+        wordpress_supplied_session,
         #[cfg(feature = "wordpress-review")]
         wordpress_layout,
         #[cfg(feature = "wordpress-review")]
@@ -1153,6 +1191,19 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         || session_auth_file.is_some()
         || session_auth_stdin
         || session_cookie_file.is_some();
+    #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+    if let Some(message) = scan_wordpress_supplied_session_flags_conflict(
+        profile,
+        wordpress_supplied_session,
+        wordpress_review,
+        wordpress_discovery,
+        supplied_session_selected,
+    ) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(message) =
         wordpress_review_target_conflict(wordpress_review, wordpress_discovery, &target.url)
@@ -1415,6 +1466,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 wordpress_discovery: wordpress_discovery.into(),
                 #[cfg(feature = "wordpress-review")]
                 wordpress_page_scope: wordpress_page_scope.map(Into::into),
+                #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+                wordpress_supplied_session,
             },
         )
         .await
@@ -1937,6 +1990,8 @@ mod tests {
             assert_eq!(args.wordpress_themes_json, None);
             assert_eq!(args.wordpress_core_version_file, None);
         }
+        #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+        assert!(!args.wordpress_supplied_session);
         #[cfg(feature = "ssrf-oast-review")]
         {
             assert!(!args.ssrf_oast_review);
@@ -3684,6 +3739,8 @@ mod tests {
         ] {
             assert!(help.contains(flag), "missing feature-gated flag {flag}");
         }
+        #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+        assert!(help.contains("--wordpress-supplied-session"));
         assert!(!help.contains("--session-auth-value"));
         for forbidden in [
             "--session-cookie-value",
@@ -3774,6 +3831,72 @@ mod tests {
         assert_eq!(cookie_review.profile, Some(CliScanProfile::WebReview));
         assert!(cookie_review.session_policy.is_some());
         assert!(cookie_review.session_cookie_file.is_some());
+    }
+
+    #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+    #[test]
+    fn wordpress_supplied_session_requires_the_complete_explicit_composition() {
+        let incomplete = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-supplied-session",
+            "https://example.test/",
+        ]);
+        assert!(incomplete.is_err(), "a session policy is mandatory");
+
+        let parsed = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-supplied-session",
+            "--session-policy",
+            "PRIVATE-SESSION-POLICY",
+            "--session-cookie-file",
+            "PRIVATE-SESSION-COOKIE",
+            "https://example.test/",
+        ])
+        .expect("the full explicit composition parses without opening inputs");
+        let parsed = parsed_scan_args(&parsed);
+        assert!(parsed.wordpress_supplied_session);
+        assert_eq!(
+            scan_wordpress_supplied_session_flags_conflict(
+                parsed.profile,
+                parsed.wordpress_supplied_session,
+                parsed.wordpress_review,
+                parsed.wordpress_discovery,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            scan_wordpress_supplied_session_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                true,
+                false,
+                true,
+            ),
+            Some("`--wordpress-supplied-session` requires `--wordpress-discovery`")
+        );
+        assert_eq!(
+            scan_wordpress_supplied_session_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                true,
+                true,
+                false,
+            ),
+            Some(
+                "`--wordpress-supplied-session` requires a supplied-session policy and credential"
+            )
+        );
     }
 
     #[cfg(feature = "supplied-session-review")]

@@ -22,6 +22,10 @@ path = "src/main.rs"
 name = "supplied_session_cli"
 required-features = ["supplied-session-review"]
 
+[[test]]
+name = "wordpress_supplied_session_cli"
+required-features = ["wordpress-review", "supplied-session-review"]
+
 [features]
 default = []
 legacy-scanner = ["dep:reqwest", "termivar-scanner/legacy-scanner"]

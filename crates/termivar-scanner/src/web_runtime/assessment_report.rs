@@ -487,12 +487,22 @@ fn validate_wordpress_audit(
             let page_committed_response_count = discovery
                 .page_scope()
                 .map_or(0, |pages| pages.committed_response_count());
+            let supplied_session_page_evidence_count = discovery
+                .supplied_session_pages()
+                .into_iter()
+                .flat_map(|pages| pages.pages())
+                .flat_map(|page| page.evidence_ids())
+                .try_fold(0_usize, |count, _| count.checked_add(1));
             let total_attempted_request_count = discovery
                 .attempted_request_count()
                 .checked_add(page_attempted_request_count)
                 .and_then(|count| count.checked_add(fingerprint_attempted_request_count));
             let total_committed_evidence_count = usize::from(discovery.committed_response_count())
                 .checked_add(usize::from(page_committed_response_count))
+                .and_then(|count| {
+                    supplied_session_page_evidence_count
+                        .and_then(|session_pages| count.checked_add(session_pages))
+                })
                 .and_then(|count| count.checked_add(fingerprint_evidence_reference_count));
             let expected_item = total_committed_evidence_count.is_some_and(|count| count > 0);
             discovery.is_internally_consistent()

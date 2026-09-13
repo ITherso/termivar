@@ -30,6 +30,7 @@ pub(super) const SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V3: &str = "termivar-wordpress-review-comparison/v3";
+pub(super) const WORDPRESS_COMPARISON_SCHEMA_V4: &str = "termivar-wordpress-review-comparison/v4";
 const WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY: &str =
     "technology.wordpress-metadata-source-response-observed@1";
 /// Each input is bounded by the existing renderer's byte ceiling.
@@ -325,6 +326,17 @@ pub(super) struct ImportedSuppliedSessionAudit {
     pub(super) context: Value,
     pub(super) health_and_coverage: Value,
     pub(super) accounting: Value,
+    /// Exact value-safe resource/evidence bindings retained only so another
+    /// strict saved-audit reader can prove it refers to the same committed
+    /// supplied-session resources. These values never become runtime authority.
+    pub(super) resources: BTreeMap<String, SuppliedSessionResourceBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SuppliedSessionResourceBinding {
+    pub(super) evidence_reference: Option<String>,
+    pub(super) response_bytes: u64,
+    pub(super) epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,6 +348,9 @@ pub(super) struct ImportedWordPressAudit {
     pub(super) methodology: Value,
     pub(super) provenance: Value,
     pub(super) discovery_source_content: Option<Value>,
+    /// Present only for discovery audit v4 after its references have been
+    /// cross-linked to the root supplied-session audit.
+    pub(super) supplied_session_context: Option<Value>,
     pub(super) asset_fingerprints: Option<ImportedWordPressAssetFingerprintAudit>,
     pub(super) components: BTreeMap<WordPressComponentKey, BTreeMap<String, Value>>,
     pub(super) advisories: BTreeMap<WordPressAdvisoryKey, BTreeMap<String, Value>>,
@@ -660,7 +675,11 @@ fn compare_wordpress_reviews(
             )
         };
     Some(WordPressReviewComparison {
-        schema: if asset_fingerprints.is_some() {
+        schema: if before.is_some_and(|audit| audit.supplied_session_context.is_some())
+            || after.is_some_and(|audit| audit.supplied_session_context.is_some())
+        {
+            WORDPRESS_COMPARISON_SCHEMA_V4
+        } else if asset_fingerprints.is_some() {
             WORDPRESS_COMPARISON_SCHEMA_V3
         } else if discovery_source_content.is_some() {
             WORDPRESS_COMPARISON_SCHEMA_V2
@@ -801,14 +820,34 @@ fn wordpress_comparison_scope(
         };
     };
 
-    match (
+    let application_scope = match (
         before.application_reference.as_deref(),
         after.application_reference.as_deref(),
     ) {
+        (Some(before), Some(after)) if before == after => None,
+        (Some(_), Some(_)) => Some("application_scope_mismatch"),
+        (None, None) => None,
+        _ => Some("application_scope_unknown"),
+    };
+    if let Some(reason) = application_scope {
+        return ("not_compared", Some(reason), false);
+    }
+    match (
+        before.supplied_session_context.as_ref(),
+        after.supplied_session_context.as_ref(),
+    ) {
         (Some(before), Some(after)) if before == after => ("compared", None, true),
-        (Some(_), Some(_)) => ("not_compared", Some("application_scope_mismatch"), false),
+        (Some(_), Some(_)) => (
+            "not_compared",
+            Some("supplied_session_context_mismatch"),
+            false,
+        ),
         (None, None) => ("compared", None, true),
-        _ => ("not_compared", Some("application_scope_unknown"), false),
+        _ => (
+            "not_compared",
+            Some("supplied_session_context_unknown"),
+            false,
+        ),
     }
 }
 

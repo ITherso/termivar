@@ -807,6 +807,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) wordpress_discovery: WordPressDiscoverySelection,
     #[cfg(feature = "wordpress-review")]
     pub(crate) wordpress_page_scope: Option<WordPressPageScope>,
+    #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+    pub(crate) wordpress_supplied_session: bool,
 }
 
 /// Runs an explicitly selected profile and builds the additive output entirely
@@ -840,6 +842,8 @@ pub(crate) async fn run_profile_scan(
         wordpress_discovery,
         #[cfg(feature = "wordpress-review")]
         wordpress_page_scope,
+        #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+        wordpress_supplied_session,
     } = runtime_options;
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
@@ -927,6 +931,14 @@ pub(crate) async fn run_profile_scan(
                 )
                 .into());
             }
+            #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+            if wordpress_supplied_session {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WordPress supplied-session integration requires the web-review profile",
+                )
+                .into());
+            }
             if !output.baseline_compatible() || root_authorization_context.is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -962,6 +974,8 @@ pub(crate) async fn run_profile_scan(
                     wordpress_discovery,
                     #[cfg(feature = "wordpress-review")]
                     wordpress_page_scope,
+                    #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+                    wordpress_supplied_session,
                 },
             )
             .await
@@ -1023,6 +1037,8 @@ struct WebReviewRunOptions {
     wordpress_discovery: WordPressDiscoverySelection,
     #[cfg(feature = "wordpress-review")]
     wordpress_page_scope: Option<WordPressPageScope>,
+    #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+    wordpress_supplied_session: bool,
 }
 
 async fn run_web_review(
@@ -1051,6 +1067,8 @@ async fn run_web_review(
         wordpress_discovery,
         #[cfg(feature = "wordpress-review")]
         wordpress_page_scope,
+        #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+        wordpress_supplied_session,
     } = options;
     if rest_review && !openapi_review {
         return Err(std::io::Error::new(
@@ -1148,6 +1166,10 @@ async fn run_web_review(
     #[cfg(feature = "wordpress-review")]
     if let Some(page_scope) = wordpress_page_scope {
         builder = builder.with_wordpress_page_scope(page_scope);
+    }
+    #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+    if wordpress_supplied_session {
+        builder = builder.with_wordpress_supplied_session();
     }
     // Keep the composed runtime and its analysis future off the executable's
     // main-thread stack. Windows reserves a smaller main stack than the other

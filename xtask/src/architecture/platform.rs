@@ -5308,7 +5308,47 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("source_count", "usize"),
             ("layout", "WordPressDiscoveryLayoutDocument"),
             ("page_collection", "Option<WordPressPageCollectionDocument>"),
+            (
+                "supplied_session_pages",
+                "Option<WordPressSuppliedSessionPageCollectionDocument>",
+            ),
             ("sources", "Vec<WordPressDiscoverySourceDocument>"),
+        ],
+    ),
+    (
+        "WordPressSuppliedSessionPageCollectionDocument",
+        &[],
+        &[
+            ("mode", "&'static str"),
+            ("policy_reference", "String"),
+            ("application_reference", "String"),
+            ("principal_reference", "String"),
+            ("credential_mechanism", "&'static str"),
+            ("session_epoch", "u8"),
+            ("selected_count", "u8"),
+            ("committed_count", "u8"),
+            ("accepted_association_count", "u8"),
+            ("rejected_association_count", "u8"),
+            ("not_established_association_count", "u8"),
+            ("not_evaluated_count", "u8"),
+            ("interpreted_response_bytes", "u64"),
+            ("pages", "Vec<WordPressSuppliedSessionPageDocument>"),
+        ],
+    ),
+    (
+        "WordPressSuppliedSessionPageDocument",
+        &[],
+        &[
+            ("page_reference", "String"),
+            ("resource_reference", "String"),
+            ("resource_evidence_reference", "Option<String>"),
+            ("acquisition", "&'static str"),
+            ("association", "&'static str"),
+            ("outcome", "&'static str"),
+            ("interpreted_response_bytes", "u64"),
+            ("evidence_reference_count", "usize"),
+            ("evidence_references", "Vec<String>"),
+            ("fingerprint_evaluation", "&'static str"),
         ],
     ),
     (
@@ -5570,6 +5610,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("evidence_reference_count", "usize"),
             ("evidence_references", "Vec<String>"),
             ("source_page_references", "Vec<String>"),
+            (
+                "source_supplied_session_page_references",
+                "Option<Vec<String>>",
+            ),
             ("namespaces", "Vec<String>"),
             ("theme", "Option<WordPressThemeDiscoveryDocument>"),
             ("plugin", "Option<WordPressPluginDiscoveryDocument>"),
@@ -6196,6 +6240,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentRestAuditDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
+                | "WordPressSuppliedSessionPageCollectionDocument"
+                | "WordPressSuppliedSessionPageDocument"
                 | "AssessmentWordPressAssetFingerprintAuditDocument"
                 | "WordPressAssetFingerprintCatalogueDocument"
                 | "WordPressAssetFingerprintProvenanceDocument"
@@ -6295,6 +6341,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
+                | "WordPressSuppliedSessionPageCollectionDocument"
+                | "WordPressSuppliedSessionPageDocument"
                 | "AssessmentWordPressAssetFingerprintAuditDocument"
                 | "WordPressAssetFingerprintCatalogueDocument"
                 | "WordPressAssetFingerprintProvenanceDocument"
@@ -6430,10 +6478,17 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         || (name == "WordPressDiscoverySourceDocument"
                             && matches!(
                                 field_name.as_str(),
-                                "role_reference" | "component" | "theme" | "plugin"
+                                "role_reference"
+                                    | "component"
+                                    | "source_supplied_session_page_references"
+                                    | "theme"
+                                    | "plugin"
                             ))
                         || (name == "AssessmentWordPressDiscoveryAuditDocument"
-                            && field_name == "page_collection")
+                            && matches!(
+                                field_name.as_str(),
+                                "page_collection" | "supplied_session_pages"
+                            ))
                         || (name == "WordPressAssetFingerprintResourceDocument"
                             && field_name == "observation")
                         || (name == "WordPressAssetFingerprintReleaseRelationDocument"
@@ -8873,8 +8928,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 356_360;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x34f5_b2e5_fadc_d58e_8b8d_0733_ef9d_edca;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 375_240;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x5503_7be7_3831_367f_11d7_3419_0790_32c0;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -9086,6 +9141,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "WordPressPageCollectionDocument::validate",
+    "WordPressSuppliedSessionPageCollectionDocument::validate",
     "AssessmentWordPressAuditDocument::from_audit",
     "AssessmentRestAuditDocument::from_audit",
     "AssessmentOpenApiAuditDocument::from_audit",
@@ -9604,6 +9660,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentAuthorizationAuditDocument::from_audit",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "WordPressPageCollectionDocument::validate",
+    "WordPressSuppliedSessionPageCollectionDocument::validate",
     "Err",
     "Ok",
     "RawJsonWriter::new",
@@ -9700,6 +9757,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "valid_wordfence_raw_source_identity",
     "valid_wordfence_source_identity",
     "valid_wordpress_discovery_reference",
+    "valid_wordpress_supplied_session_reference",
     "valid_lowercase_sha256",
     "valid_lowercase_uuid",
     "valid_prefixed_lowercase_sha256",
@@ -10272,6 +10330,19 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "unresolved_identity_associations",
     "projected_identity_limitations",
     "unprojected_identity_limitations",
+    "accepted_count",
+    "committed_count",
+    "context_page_reference",
+    "fingerprint_evaluation",
+    "is_ascii_hexdigit",
+    "is_ascii_uppercase",
+    "not_established_count",
+    "not_evaluated_count",
+    "rejected_count",
+    "resource_evidence_reference",
+    "source_supplied_session_page_references",
+    "supplied_session_pages",
+    "validate_against_supplied_session",
 ];
 
 const ALLOWED_REPORTING_MACROS: &[&str] = &["format", "format_args", "matches", "vec"];
@@ -10536,6 +10607,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
                     | Some("feature=\"supplied-session-review\"")
+                    | Some("not(feature=\"supplied-session-review\")")
                     | Some("feature=\"wordpress-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
@@ -14680,7 +14752,41 @@ mod tests {
                 layout: WordPressDiscoveryLayoutDocument,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 page_collection: Option<WordPressPageCollectionDocument>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                supplied_session_pages: Option<WordPressSuppliedSessionPageCollectionDocument>,
                 sources: Vec<WordPressDiscoverySourceDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressSuppliedSessionPageCollectionDocument {
+                mode: &'static str,
+                policy_reference: String,
+                application_reference: String,
+                principal_reference: String,
+                credential_mechanism: &'static str,
+                session_epoch: u8,
+                selected_count: u8,
+                committed_count: u8,
+                accepted_association_count: u8,
+                rejected_association_count: u8,
+                not_established_association_count: u8,
+                not_evaluated_count: u8,
+                interpreted_response_bytes: u64,
+                pages: Vec<WordPressSuppliedSessionPageDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+            #[derive(Serialize)]
+            struct WordPressSuppliedSessionPageDocument {
+                page_reference: String,
+                resource_reference: String,
+                resource_evidence_reference: Option<String>,
+                acquisition: &'static str,
+                association: &'static str,
+                outcome: &'static str,
+                interpreted_response_bytes: u64,
+                evidence_reference_count: usize,
+                evidence_references: Vec<String>,
+                fingerprint_evaluation: &'static str,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
@@ -14897,6 +15003,8 @@ mod tests {
                 evidence_references: Vec<String>,
                 #[serde(skip_serializing_if = "Vec::is_empty")]
                 source_page_references: Vec<String>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                source_supplied_session_page_references: Option<Vec<String>>,
                 #[serde(skip_serializing_if = "Vec::is_empty")]
                 namespaces: Vec<String>,
                 #[serde(skip_serializing_if = "Option::is_none")]
@@ -15454,6 +15562,36 @@ mod tests {
             "{violations}"
         );
 
+        let serialized_null_supplied_session_pages = source.replace(
+            "                #[serde(skip_serializing_if = \"Option::is_none\")]\n                supplied_session_pages: Option<WordPressSuppliedSessionPageCollectionDocument>,",
+            "                supplied_session_pages: Option<WordPressSuppliedSessionPageCollectionDocument>,",
+        );
+        assert_ne!(serialized_null_supplied_session_pages, source);
+        let violations =
+            reporting_document_contract_violations(&serialized_null_supplied_session_pages)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("AssessmentWordPressDiscoveryAuditDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let public_supplied_session_page_reference = source.replace(
+            "                page_reference: String,\n                resource_reference: String,\n                resource_evidence_reference: Option<String>,",
+            "                pub page_reference: String,\n                resource_reference: String,\n                resource_evidence_reference: Option<String>,",
+        );
+        assert_ne!(public_supplied_session_page_reference, source);
+        let violations =
+            reporting_document_contract_violations(&public_supplied_session_page_reference)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("WordPressSuppliedSessionPageDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
         let public_wordpress_audit = source.replace(
             "                wordpress_review: Option<AssessmentWordPressAuditDocument>,",
             "                pub wordpress_review: Option<AssessmentWordPressAuditDocument>,",
@@ -15550,6 +15688,22 @@ mod tests {
             reporting_document_contract_violations(&serialized_empty_discovery_namespaces)
                 .unwrap()
                 .join("\n");
+        assert!(
+            violations.contains("WordPressDiscoverySourceDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let serialized_null_supplied_session_source_references = source.replace(
+            "                #[serde(skip_serializing_if = \"Option::is_none\")]\n                source_supplied_session_page_references: Option<Vec<String>>,",
+            "                source_supplied_session_page_references: Option<Vec<String>>,",
+        );
+        assert_ne!(serialized_null_supplied_session_source_references, source);
+        let violations = reporting_document_contract_violations(
+            &serialized_null_supplied_session_source_references,
+        )
+        .unwrap()
+        .join("\n");
         assert!(
             violations.contains("WordPressDiscoverySourceDocument")
                 && violations.contains("fields must remain exactly"),

@@ -47,6 +47,7 @@ pub enum WordPressComparisonProfile {
 }
 
 impl WordPressComparisonProfile {
+    #[cfg(feature = "wordpress-review")]
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
@@ -97,6 +98,7 @@ impl NumericDottedVersion {
         Ok(Self { components })
     }
 
+    #[cfg(feature = "wordpress-review")]
     #[must_use]
     pub fn components(&self) -> &[u32] {
         &self.components

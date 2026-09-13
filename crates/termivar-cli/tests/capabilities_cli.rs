@@ -180,6 +180,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "--session-policy FILE",
             "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
             "V2: --session-cookie-file FILE",
+            "optional --wordpress-supplied-session when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS"
         ])
     );
@@ -202,6 +203,9 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
         "No browser-profile import, login, automatic refresh, OAuth, MFA",
         "exploit, or impact validation",
+        "health-qualified session-resource HTML may nominate public WordPress metadata",
+        "credential is not sent to metadata or fingerprint requests",
+        "authenticated-page fingerprint acquisition is not selected",
     ] {
         assert!(
             session_limit.contains(required),
@@ -265,7 +269,8 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "--wordpress-discovery",
             "optional --wordpress-page-scope observed",
             "optional --wordpress-layout FILE",
-            "optional --wordpress-fingerprints FILE"
+            "optional --wordpress-fingerprints FILE",
+            "optional --wordpress-supplied-session when also compiled with supplied-session-review"
         ])
     );
     let discovery_limit = wordpress_discovery["limitation"]
@@ -282,6 +287,9 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "URL ver remain hints",
         "plugin Stable tag is not treated as an installed version",
         "no exploit or impact validation",
+        "health-qualified session-resource HTML may nominate public metadata",
+        "credential is never forwarded to WordPress metadata or fingerprint requests",
+        "authenticated-page fingerprint acquisition is not selected",
     ] {
         assert!(
             discovery_limit.contains(required),
@@ -394,6 +402,13 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         surface_state(&document, "option.supplied-session-review") == "compiled",
         scan.contains("--session-cookie-file"),
         "supplied-session cookie source/help drift"
+    );
+    let feature_states = feature_states(&document);
+    assert_eq!(
+        feature_states["supplied-session-review"] == "compiled"
+            && feature_states["wordpress-review"] == "compiled",
+        scan.contains("--wordpress-supplied-session"),
+        "combined WordPress supplied-session help must require both compiled features"
     );
     for (key, command) in [
         ("command.artifact", "artifact"),

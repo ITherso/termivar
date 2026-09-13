@@ -145,7 +145,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         let wordpress = wordpress_review
             .as_mut()
             .ok_or(ComparisonError::InvalidDocument)?;
-        audits::attach_wordpress_discovery(wordpress, &discovery.document)?;
+        audits::attach_wordpress_discovery(wordpress, discovery, supplied_session.as_ref())?;
     }
     if let Some(fingerprints) = wordpress_asset_fingerprints {
         let discovery = wordpress_discovery

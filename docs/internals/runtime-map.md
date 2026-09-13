@@ -35,8 +35,10 @@ checkpoint/resource accounting. V2 adds only aggregate declared-cookie metadata
 and value-free update counts. It emits no vulnerability item and does not
 claim continuous authentication between checkpoints, principal authentication,
 server authorization, exploit execution or impact validation. Browser import,
-login, automatic renewal, OAuth, MFA and credentialed WordPress integration are
-not part of this slice.
+login, automatic renewal, OAuth and MFA are not part of this slice. A separately
+explicit WordPress composition can interpret health-qualified resource HTML as
+context-bound component evidence, but sends no credential to WordPress metadata
+or fingerprint requests.
 
 ## OpenAPI surface review
 
@@ -94,6 +96,19 @@ observation may retain references to committed REST-index, theme-stylesheet, or
 plugin-readme response outcomes, including cases where usable metadata was not
 present.
 Plugin Stable tags remain distribution hints, not installed versions.
+
+When both review features are compiled, the additional
+`--wordpress-supplied-session` flag requires the supplied-session policy and
+credential plus the explicit WordPress review/discovery composition. Only a
+complete selected resource response whose following health checkpoint and S01
+resource evidence committed can contribute component hints. The frozen entry
+application/layout remains authoritative. Public metadata is fetched anonymously
+through the existing WordPress broker and shared twelve-attempt allowance; the
+session credential is never forwarded. Authenticated-page asset fingerprinting
+is deliberately not selected in this first integration. Its separate audit keeps
+policy/application/principal/mechanism/epoch identity and health-qualified page
+coverage, so a principal or session-loss difference is not presented as plugin
+removal or remediation.
 
 Version ranges, prerequisites, catalogue coverage, discovery limits, and
 uncertainty are kept in the same final report audit. They do not authenticate a
@@ -628,11 +643,11 @@ The following matrix separates build availability from actual execution:
 | normalization-resilience review | scanner and CLI opt-in (`normalization-resilience`) plus explicit runtime flag | one eligible `web-review` parent may produce one transformed candidate/replay child under the shared broker | no | Preview; max one transform/depth one, three child requests/one active verification, `NeedsReview` / `KnowledgeOnly` only |
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
 | REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
-| WordPress evidence review and metadata discovery | scanner and CLI opt-in (`wordpress-review`), compiled by the current untagged alpha.3 `release-bundle`, plus optional bounded local context/catalogue | review-only interprets complete exact-root HTML and supplied declarations with zero added requests; explicit `--wordpress-discovery` may issue at most twelve anonymous, bodyless, same-origin metadata GET attempts through the same broker/budget; optional observed page scope reuses up to three eligible committed secondary-page responses without fetching pages and can nominate metadata within that same allowance | no | Preview, development-only; absent from the default build and published alpha.2 archives; zero active verifications, at most one root-surface item plus one distinct metadata-source response-outcome item; advisory decisions are audit-only and no exploit/impact validation occurs |
+| WordPress evidence review and metadata discovery | scanner and CLI opt-in (`wordpress-review`), compiled by the current untagged alpha.3 `release-bundle`, plus optional bounded local context/catalogue; the session consumer additionally requires `supplied-session-review` and `--wordpress-supplied-session` | review-only interprets complete exact-root HTML and supplied declarations with zero added requests; explicit `--wordpress-discovery` may issue at most twelve anonymous, bodyless, same-origin metadata GET attempts through the same broker/budget; optional observed page scope reuses up to three eligible committed anonymous secondary-page responses without fetching pages; the session consumer may nominate public metadata only from health-qualified committed resource HTML and never forwards credentials or selects authenticated-page fingerprints | no | Preview, development-only; absent from the default build and published alpha.2 archives; zero active verifications, at most one root-surface item plus one distinct metadata-source response-outcome item; advisory decisions are audit-only and no exploit/impact validation occurs |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
 | Resource authorization review | scanner and CLI opt-in (`authorization-review`) plus explicit policy and two out-of-band credentials | one exact-origin JSON resource receives primary/peer candidate and independent replay legs through the assessment's shared broker | no | Preview; max one resource, four requests/one active verification, one `NeedsReview` / `KnowledgeOnly` item at most |
-| Supplied-session authenticated assessment | scanner and CLI opt-in (`supplied-session-review`) plus explicit V1 authorization-header or V2 supplied-cookie policy and one matching out-of-band credential source | one context-isolated no-proxy child performs structured health checkpoints and bounded bodyless same-application GETs for one operator-declared principal; V2 applies declared cookie scope only inside the operator application and stops without applying selected/unusable response updates | no | Preview, development-only; maximum nine requests, no browser import/login/automatic renewal/OAuth/MFA, no vulnerability item, and excluded from `release-bundle` |
+| Supplied-session authenticated assessment | scanner and CLI opt-in (`supplied-session-review`) plus explicit V1 authorization-header or V2 supplied-cookie policy and one matching out-of-band credential source | one context-isolated no-proxy child performs structured health checkpoints and bounded bodyless same-application GETs for one operator-declared principal; V2 applies declared cookie scope only inside the operator application and stops without applying selected/unusable response updates; the explicit WordPress consumer binds qualified HTML to the same application/principal/epoch while its metadata remains anonymous | no | Preview, development-only; maximum nine session requests, no browser import/login/automatic renewal/OAuth/MFA, no credentialed WordPress metadata/fingerprint request, no vulnerability item, and excluded from `release-bundle` |
 | `oast` correlation foundation | scanner library opt-in (`oast-correlation`) | host-owned, transport-free registration and caller-driven poll state only; no provider transport dependency or runtime caller | no | Preview library contract; host-minted move-only tokens, exact case binding, bounded DNS/HTTP event receipts, replay suppression, and no target probe or vulnerability claim |
 | `termivar-oast` native provider | independent unpublished workspace crate; separate non-default `server` and `client` features | optional self-hosted loopback auxiliary service plus exact-origin HTTPS client for the fixed management protocol and raw-free HTTP callback mailbox | no | Preview infrastructure; one sealed scanner host-library adapter uses the client under narrowing authority; no public provider, target authority, scanner action, report projection, Interactsh compatibility, or `release-bundle` inclusion |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | Legacy runtime / `ScannerSdk` facade; whole-run accounting remains `Unmetered` |

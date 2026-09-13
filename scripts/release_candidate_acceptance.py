@@ -83,6 +83,7 @@ SUPPLIED_SESSION_PREREQUISITES = (
     "--session-policy FILE",
     "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
     "V2: --session-cookie-file FILE",
+    "optional --wordpress-supplied-session when also compiled with wordpress-review",
     "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
 )
 SUPPLIED_SESSION_LIMITATION = (
@@ -90,7 +91,12 @@ SUPPLIED_SESSION_LIMITATION = (
     "cookie_jar policy authorize bounded bodyless application GETs through a "
     "context-isolated, no-proxy child of the existing assessment broker. Structured "
     "health checks qualify bounded checkpoint coverage rather than authenticate the "
-    "principal. Session loss, a selected response-cookie update, or an unusable "
+    "principal. When both review features and --wordpress-supplied-session are selected, "
+    "complete health-qualified session-resource HTML may nominate public WordPress "
+    "metadata that the WordPress broker retrieves anonymously; the credential is not "
+    "sent to metadata or fingerprint requests, and authenticated-page fingerprint "
+    "acquisition is not selected in this slice. Session loss, a selected response-cookie "
+    "update, or an unusable "
     "response-cookie classification stops later session work without anonymous fallback. "
     "No response cookie update is applied, no refresh occurs, and the session epoch stays "
     "fixed. Cookie host/domain/path/Secure/expiry applicability is intersected with "
@@ -134,13 +140,18 @@ WORDPRESS_DISCOVERY_PREREQUISITES = (
     "optional --wordpress-page-scope observed",
     "optional --wordpress-layout FILE",
     "optional --wordpress-fingerprints FILE",
+    "optional --wordpress-supplied-session when also compiled with supplied-session-review",
 )
 WORDPRESS_DISCOVERY_LIMITATION = (
     "Explicitly performs at most 12 anonymous same-origin WordPress-owned GET requests "
     "through the existing assessment broker in entry-only mode. It is never enabled by "
     "--wordpress-review alone. Without --wordpress-page-scope it remains entry-only; "
     "observed reuses eligible committed page responses without retrieving pages. Reused "
-    "pages may nominate metadata within the same shared limit. An optional bounded "
+    "pages may nominate metadata within the same shared limit. With both review features "
+    "and explicit --wordpress-supplied-session, complete health-qualified session-resource "
+    "HTML may nominate public metadata within that same limit, but its credential is never "
+    "forwarded to WordPress metadata or fingerprint requests and authenticated-page "
+    "fingerprint acquisition is not selected in this slice. An optional bounded "
     "fingerprint catalogue can compare exact complete bytes of already observed JS/CSS "
     "resources against a finite listed release set; it cannot nominate unseen resources "
     "or establish an installed version. Discovered metadata and supplied catalogue "
