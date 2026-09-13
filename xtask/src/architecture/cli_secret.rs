@@ -134,7 +134,10 @@ fn protected_type_cross_source_violations(
                 "AuthorizationReviewInputError",
                 "AuthorizationSourceOptions",
                 "SuppliedSessionInput",
+                "PreparedSuppliedSessionInput",
                 "SuppliedSessionInputError",
+                "SsrfOastReviewInput",
+                "PreparedSsrfOastReviewInput",
             ][..],
         ),
         (
@@ -556,6 +559,26 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
             "AuthorizationReviewInput",
             &["load", "select"][..],
             "formatter.debug_struct(\"AuthorizationReviewInput\").field(\"policy_file\",&\"<redacted>\").field(\"primary\",&\"<redacted>\").field(\"peer\",&\"<redacted>\").finish()",
+        ),
+        (
+            "SuppliedSessionInput",
+            &["prepare", "select"][..],
+            "formatter.debug_struct(\"SuppliedSessionInput\").field(\"policy_file\",&\"<redacted>\").field(\"authorization\",&\"<redacted>\").finish()",
+        ),
+        (
+            "PreparedSuppliedSessionInput",
+            &["load"][..],
+            "formatter.debug_struct(\"PreparedSuppliedSessionInput\").field(\"policy\",&\"<validated>\").field(\"authorization\",&\"<redacted>\").finish()",
+        ),
+        (
+            "SsrfOastReviewInput",
+            &["prepare", "select"][..],
+            "formatter.debug_struct(\"SsrfOastReviewInput\").field(\"policy_file\",&\"<redacted>\").field(\"administrator\",&\"<redacted>\").finish()",
+        ),
+        (
+            "PreparedSsrfOastReviewInput",
+            &["load"][..],
+            "formatter.debug_struct(\"PreparedSsrfOastReviewInput\").field(\"policy\",&\"<validated>\").field(\"administrator\",&\"<redacted>\").finish()",
         ),
     ] {
         let item = syntax.items.iter().find_map(|item| match item {
@@ -1094,6 +1117,16 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
+    if !compact.contains("letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?")
+        || !compact.contains("letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?")
+        || !compact.contains(".map(auth_input::PreparedSuppliedSessionInput::load)")
+        || !compact.contains(".map(auth_input::PreparedSsrfOastReviewInput::load)")
+    {
+        violations.push(
+            "CLI must validate supplied-session and OAST non-secret policies before opening any compatible credential source"
+                .to_owned(),
+        );
+    }
     if !compact.contains("preflight_report_output(report_output.as_deref())?")
         || compact
             .matches("preflight_report_output(report_output.as_deref())?")
@@ -1156,6 +1189,8 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "for_builtin",
         "with_defense_enforcement_enabled",
         "load",
+        "prepare",
+        "prepare",
         "preflight_report_output",
         "reserve_report_bundle",
         "load",
@@ -1176,6 +1211,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .filter(|name| name.as_str() == "load")
             .count()
             != 5
+        || ordered
+            .iter()
+            .filter(|name| name.as_str() == "prepare")
+            .count()
+            != 2
         || ordered
             .iter()
             .filter(|name| name.as_str() == "select")
@@ -1941,6 +1981,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "authorization_context_transport_is_allowed",
         "for_builtin",
         "with_defense_enforcement_enabled",
+        "prepare",
         "preflight_report_output",
         "reserve_report_bundle",
         "load",
@@ -2437,6 +2478,11 @@ mod tests {
                 "preflight the selected report output",
             ),
             (
+                "        let prepared_ssrf_oast_review = ssrf_oast_review_input\n            .map(|input| input.prepare(&target))\n            .transpose()?;",
+                "        let prepared_ssrf_oast_review = ssrf_oast_review_input;",
+                "validate supplied-session and OAST non-secret policies",
+            ),
+            (
                 "        let wordpress_review = wordpress_review_input\n            .map(|input| input.load(&target))\n            .transpose()?;",
                 "        let wordpress_review = None;",
                 "WordPress local inputs must be selected without I/O and loaded exactly once",
@@ -2526,6 +2572,26 @@ mod tests {
                 "AuthorizationPrincipalPair::new(primary, peer)",
                 "AuthorizationPrincipalPair::from_unchecked(primary, peer)",
                 "distinct role construction",
+            ),
+            (
+                "pub(crate) struct PreparedSsrfOastReviewInput {",
+                "#[derive(Clone)]\npub(crate) struct PreparedSsrfOastReviewInput {",
+                "underived",
+            ),
+            (
+                ".debug_struct(\"PreparedSsrfOastReviewInput\")\n            .field(\"policy\", &\"<validated>\")\n            .field(\"administrator\", &\"<redacted>\")",
+                ".debug_struct(\"PreparedSsrfOastReviewInput\")\n            .field(\"policy\", &self.policy)\n            .field(\"administrator\", &self.administrator)",
+                "value-free redacted Debug",
+            ),
+            (
+                "pub(crate) struct PreparedSuppliedSessionInput {",
+                "#[derive(Clone)]\npub(crate) struct PreparedSuppliedSessionInput {",
+                "underived",
+            ),
+            (
+                ".debug_struct(\"PreparedSuppliedSessionInput\")\n            .field(\"policy\", &\"<validated>\")\n            .field(\"authorization\", &\"<redacted>\")",
+                ".debug_struct(\"PreparedSuppliedSessionInput\")\n            .field(\"policy\", &self.policy)\n            .field(\"authorization\", &self.authorization)",
+                "value-free redacted Debug",
             ),
         ] {
             assert_mutation_fails(

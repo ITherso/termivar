@@ -585,7 +585,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
                 "HTTPS, except numeric-loopback HTTP fixtures",
             ],
-            "One explicitly supplied principal and strict local policy authorize bounded read-oriented application GETs through a context-isolated, no-proxy child of the existing assessment broker. Structured health checks qualify bounded checkpoint coverage rather than authenticate the principal. Session loss stops later session work without anonymous fallback. No cookies, login, refresh, OAuth, MFA, mutation, exploit, or impact validation occurs in this first slice.",
+            "One explicitly supplied principal and strict local policy authorize bounded bodyless application GETs through a context-isolated, no-proxy child of the existing assessment broker. Structured health checks qualify bounded checkpoint coverage rather than authenticate the principal. Session loss stops later session work without anonymous fallback. The client sends no request body or non-GET method, but application-defined GET handling can still have server-side effects; the operator must authorize every selected resource. No cookies, login, refresh, OAuth, MFA, exploit, or impact validation occurs in this first slice.",
             "docs/internals/supplied-session-review.md",
         ),
         surface!(
@@ -1198,6 +1198,15 @@ mod tests {
         assert!(session.limitation.contains("context-isolated, no-proxy"));
         assert!(session.limitation.contains("health checks qualify"));
         assert!(session.limitation.contains("without anonymous fallback"));
+        assert!(session
+            .limitation
+            .contains("no request body or non-GET method"));
+        assert!(session
+            .limitation
+            .contains("GET handling can still have server-side effects"));
+        assert!(session
+            .limitation
+            .contains("operator must authorize every selected resource"));
         assert!(session
             .limitation
             .contains("No cookies, login, refresh, OAuth, MFA"));

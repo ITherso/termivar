@@ -366,12 +366,32 @@ pub(crate) struct SsrfOastReviewInput {
     administrator: AuthorizationInputSource,
 }
 
+/// Validated non-secret SSRF/OAST policy paired with an unread administrator
+/// token source. This prevents another selected credential from being acquired
+/// before every compatible local policy has completed preflight.
+#[cfg(feature = "ssrf-oast-review")]
+pub(crate) struct PreparedSsrfOastReviewInput {
+    policy: SsrfOastReviewPolicy,
+    administrator: AuthorizationInputSource,
+}
+
 #[cfg(feature = "ssrf-oast-review")]
 impl fmt::Debug for SsrfOastReviewInput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SsrfOastReviewInput")
             .field("policy_file", &"<redacted>")
+            .field("administrator", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+impl fmt::Debug for PreparedSsrfOastReviewInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedSsrfOastReviewInput")
+            .field("policy", &"<validated>")
             .field("administrator", &"<redacted>")
             .finish()
     }
@@ -411,12 +431,13 @@ impl SsrfOastReviewInput {
         }))
     }
 
-    /// Reads a bounded UTF-8 policy and administrator token exactly once,
-    /// immediately converting the secret bytes into the scanner-owned wrapper.
-    pub(crate) fn load(
+    /// Reads and validates only the bounded UTF-8 policy. The administrator
+    /// source remains unread until all compatible non-secret preflight and
+    /// report-output reservation have succeeded.
+    pub(crate) fn prepare(
         self,
         target: &url::Url,
-    ) -> Result<(SsrfOastReviewPolicy, SsrfOastAdminToken), SsrfOastReviewInputError> {
+    ) -> Result<PreparedSsrfOastReviewInput, SsrfOastReviewInputError> {
         let policy_source =
             read_bounded_regular_file(self.policy_file, MAX_SSRF_OAST_REVIEW_POLICY_BYTES)
                 .map_err(SsrfOastReviewInputError::PolicySource)?;
@@ -424,6 +445,19 @@ impl SsrfOastReviewInput {
             .map_err(|_| SsrfOastReviewInputError::InvalidPolicyEncoding)?;
         let policy = SsrfOastReviewPolicy::parse_toml(target, policy_source.as_bytes())
             .map_err(|_| SsrfOastReviewInputError::InvalidPolicy)?;
+        Ok(PreparedSsrfOastReviewInput {
+            policy,
+            administrator: self.administrator,
+        })
+    }
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+impl PreparedSsrfOastReviewInput {
+    /// Reads the administrator token exactly once after non-secret preflight.
+    pub(crate) fn load(
+        self,
+    ) -> Result<(SsrfOastReviewPolicy, SsrfOastAdminToken), SsrfOastReviewInputError> {
         let administrator = self
             .administrator
             .read_bytes()
@@ -432,7 +466,7 @@ impl SsrfOastReviewInput {
                 SsrfOastAdminToken::new(bytes.into_owned())
                     .map_err(|_| SsrfOastReviewInputError::InvalidAdministratorValue)
             })?;
-        Ok((policy, administrator))
+        Ok((self.policy, administrator))
     }
 }
 
@@ -1576,10 +1610,12 @@ lifetime_ms = 5000
         )
         .unwrap()
         .unwrap();
-        let (policy, administrator) = input
-            .load(&url::Url::parse("https://authorized.example.test/").unwrap())
+        let prepared = input
+            .prepare(&url::Url::parse("https://authorized.example.test/").unwrap())
             .unwrap();
-        let rendered = format!("{policy:?} {administrator:?}");
+        let prepared_debug = format!("{prepared:?}");
+        let (policy, administrator) = prepared.load().unwrap();
+        let rendered = format!("{prepared_debug} {policy:?} {administrator:?}");
         assert!(!rendered.contains(ADMIN_SECRET));
         assert!(!rendered.contains("PRIVATE-policy.toml"));
         assert!(!rendered.contains("PRIVATE-administrator.txt"));
@@ -1593,7 +1629,7 @@ lifetime_ms = 5000
         let directory = tempfile::tempdir().unwrap();
         let administrator_path = directory.path().join("administrator.txt");
         std::fs::write(&administrator_path, ADMIN_SECRET).unwrap();
-        let load_error = |policy_path: PathBuf| {
+        let prepare_error = |policy_path: PathBuf| {
             SsrfOastReviewInput::select(
                 true,
                 Some(policy_path),
@@ -1601,18 +1637,18 @@ lifetime_ms = 5000
             )
             .unwrap()
             .unwrap()
-            .load(&url::Url::parse("https://authorized.example.test/").unwrap())
+            .prepare(&url::Url::parse("https://authorized.example.test/").unwrap())
             .unwrap_err()
         };
 
         assert_eq!(
-            load_error(directory.path().to_path_buf()),
+            prepare_error(directory.path().to_path_buf()),
             SsrfOastReviewInputError::PolicySource(AuthorizationInputError::SourceNotRegularFile)
         );
         let invalid_utf8 = directory.path().join("invalid-utf8.toml");
         std::fs::write(&invalid_utf8, [0xff, 0xfe]).unwrap();
         assert_eq!(
-            load_error(invalid_utf8),
+            prepare_error(invalid_utf8),
             SsrfOastReviewInputError::InvalidPolicyEncoding
         );
         let oversized = directory.path().join("oversized.toml");
@@ -1622,7 +1658,7 @@ lifetime_ms = 5000
         )
         .unwrap();
         assert_eq!(
-            load_error(oversized),
+            prepare_error(oversized),
             SsrfOastReviewInputError::PolicySource(AuthorizationInputError::ValueTooLarge)
         );
         let secret_field = directory.path().join("secret-field.toml");
@@ -1635,8 +1671,44 @@ lifetime_ms = 5000
         )
         .unwrap();
         assert_eq!(
-            load_error(secret_field),
+            prepare_error(secret_field),
             SsrfOastReviewInputError::InvalidPolicy
+        );
+    }
+
+    #[cfg(feature = "ssrf-oast-review")]
+    #[test]
+    fn ssrf_oast_prepare_validates_policy_before_opening_administrator_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let valid_policy = directory.path().join("valid-policy.toml");
+        let invalid_policy = directory.path().join("invalid-policy.toml");
+        let missing_administrator = directory.path().join("PRIVATE-MISSING-OAST-ADMINISTRATOR");
+        std::fs::write(&valid_policy, valid_ssrf_oast_policy()).unwrap();
+        std::fs::write(&invalid_policy, [0xff, 0xfe]).unwrap();
+        let target = url::Url::parse("https://authorized.example.test/").unwrap();
+
+        let select = |policy| {
+            SsrfOastReviewInput::select(
+                true,
+                Some(policy),
+                AuthorizationSourceOptions::new(None, Some(missing_administrator.clone()), false),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        assert_eq!(
+            select(invalid_policy).prepare(&target).unwrap_err(),
+            SsrfOastReviewInputError::InvalidPolicyEncoding
+        );
+        let prepared = select(valid_policy).prepare(&target).unwrap();
+        let debug = format!("{prepared:?}");
+        assert!(!debug.contains("PRIVATE-MISSING-OAST-ADMINISTRATOR"));
+        assert_eq!(
+            prepared.load().unwrap_err(),
+            SsrfOastReviewInputError::AdministratorSource(
+                AuthorizationInputError::SourceUnavailable
+            )
         );
     }
 
@@ -1667,15 +1739,17 @@ lifetime_ms = 5000
             )
             .unwrap()
             .unwrap()
-            .load(&url::Url::parse("https://authorized.example.test/").unwrap())
-            .unwrap_err()
+            .prepare(&url::Url::parse("https://authorized.example.test/").unwrap())
         };
         assert_eq!(
-            load(policy_link, administrator_target),
+            load(policy_link, administrator_target).unwrap_err(),
             SsrfOastReviewInputError::PolicySource(AuthorizationInputError::SourceNotRegularFile)
         );
         assert_eq!(
-            load(policy_target, administrator_link),
+            load(policy_target, administrator_link)
+                .unwrap()
+                .load()
+                .unwrap_err(),
             SsrfOastReviewInputError::AdministratorSource(
                 AuthorizationInputError::SourceNotRegularFile
             )

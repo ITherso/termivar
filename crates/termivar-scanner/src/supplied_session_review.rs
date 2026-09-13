@@ -1,7 +1,8 @@
 //! Transport-neutral contracts for one explicitly supplied authorization session.
 //!
 //! The policy is non-secret and grants only a small ordered set of bodyless,
-//! read-oriented GET requests beneath one already selected application. The
+//! operator-selected GET requests beneath one already selected application.
+//! Application-defined GET handling can still have server-side effects. The
 //! authorization value is move-only, zeroized on drop, never serialized, and
 //! exposed only to the crate-owned request-composition boundary.
 

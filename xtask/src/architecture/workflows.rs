@@ -251,6 +251,8 @@ const WORDPRESS_DISCOVERY_SMOKE_GATE: &str = r#"      - name: Exercise opt-in Wo
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture"#;
 const SUPPLIED_SESSION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in supplied-session review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture"#;
+const SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE: &str = r#"      - name: Exercise supplied-session and OAST preflight composition
+        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,supplied-session-review,ssrf-oast-review --test supplied_session_cli oast_policy_precedes_every_compatible_secret_and_output_acquisition -- --exact --nocapture"#;
 const WORDPRESS_RESOURCE_ACCEPTANCE_JOB: &str = r#"  wordpress-resource-acceptance:
     name: WordPress Resource Acceptance
     runs-on: ubuntu-latest
@@ -782,6 +784,16 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed CLI capabilities integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise supplied-session and OAST preflight composition",
+        SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact supplied-session CLI and OAST preflight composition regression"
         ));
     }
     if !job_has_exact_step(
@@ -3088,6 +3100,19 @@ mod tests {
             valid.replacen(
                 SUPPLIED_SESSION_SMOKE_GATE,
                 &format!("{SUPPLIED_SESSION_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+            valid.replacen(SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE, "", 1),
+            valid.replacen(
+                SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE,
+                "      - name: Exercise supplied-session and OAST preflight composition\n        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,supplied-session-review --test supplied_session_cli oast_policy_precedes_every_compatible_secret_and_output_acquisition -- --exact --nocapture",
+                1,
+            ),
+            valid.replacen(
+                SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE,
+                &format!(
+                    "{SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE}\n        continue-on-error: true"
+                ),
                 1,
             ),
         ] {

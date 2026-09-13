@@ -10,8 +10,10 @@ authenticated child inside the existing assessment. The target must use HTTPS;
 numeric-loopback HTTP is accepted only for owned development fixtures.
 
 V1 performs one structured startup health GET, then at most four explicitly
-listed read-oriented same-application GETs, each followed by another health
-checkpoint. Its no-proxy client, evidence and reuse state are private to the
+listed bodyless, operator-selected same-application GETs, each followed by
+another health checkpoint. Application-defined GET handling can still have
+server-side effects, so every selected resource requires operator authorization.
+Its no-proxy client, evidence and reuse state are private to the
 operator-declared principal/context. Redirects and retries are disabled. At
 most nine child requests are permitted, and the policy's response/body/time
 ceilings narrow the shared parent authority. Session loss stops later

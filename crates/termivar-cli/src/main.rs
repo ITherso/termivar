@@ -644,9 +644,9 @@ struct ScanArgs {
     )]
     oast_admin_token_stdin: bool,
     /// Read one strict bounded `security.supplied-session-policy/v1` policy.
-    /// The policy selects a small exact set of read-only application resources
-    /// and a structured session-health oracle. It is inert without exactly one
-    /// out-of-band Authorization source.
+    /// The policy selects a small exact set of operator-authorized application
+    /// resources for bodyless GETs and a structured session-health oracle. It
+    /// is inert without exactly one out-of-band Authorization source.
     #[cfg(feature = "supplied-session-review")]
     #[arg(
         long,
@@ -1337,10 +1337,17 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         let prepared_supplied_session_review = supplied_session_input
             .map(|input| input.prepare(&target))
             .transpose()?;
+        // OAST provider policy is also non-secret. Validate it before any
+        // compatible root, authorization-review, supplied-session, or provider
+        // credential source is opened.
+        #[cfg(feature = "ssrf-oast-review")]
+        let prepared_ssrf_oast_review = ssrf_oast_review_input
+            .map(|input| input.prepare(&target))
+            .transpose()?;
         preflight_report_output(report_output.as_deref())?;
         let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;
         // All flag, profile, target, and obvious report-output checks above
-        // precede the only secret source read in the CLI.
+        // precede every selected secret-source read in the CLI.
         let root_authorization_context = authorization_source
             .map(auth_input::AuthorizationInputSource::load)
             .transpose()
@@ -1362,8 +1369,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 abort_report_bundle_after_failure(&mut report_bundle);
             })?;
         #[cfg(feature = "ssrf-oast-review")]
-        let ssrf_oast_review = ssrf_oast_review_input
-            .map(|input| input.load(&target))
+        let ssrf_oast_review = prepared_ssrf_oast_review
+            .map(auth_input::PreparedSsrfOastReviewInput::load)
             .transpose()
             .inspect_err(|_| {
                 abort_report_bundle_after_failure(&mut report_bundle);

@@ -189,6 +189,9 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "context-isolated, no-proxy",
         "health checks qualify",
         "without anonymous fallback",
+        "no request body or non-GET method",
+        "GET handling can still have server-side effects",
+        "operator must authorize every selected resource",
         "No cookies, login, refresh, OAuth, MFA",
         "exploit, or impact validation",
     ] {

@@ -85,11 +85,13 @@ EXPECTED_SUPPLIED_SESSION_PREREQUISITES = (
 )
 EXPECTED_SUPPLIED_SESSION_LIMITATION = (
     "One explicitly supplied principal and strict local policy authorize bounded "
-    "read-oriented application GETs through a context-isolated, no-proxy child of "
+    "bodyless application GETs through a context-isolated, no-proxy child of "
     "the existing assessment broker. Structured health checks qualify bounded "
     "checkpoint coverage rather than authenticate the principal. Session loss stops "
-    "later session work without anonymous fallback. No cookies, login, refresh, "
-    "OAuth, MFA, mutation, exploit, or impact validation occurs in this first slice."
+    "later session work without anonymous fallback. The client sends no request body "
+    "or non-GET method, but application-defined GET handling can still have server-side "
+    "effects; the operator must authorize every selected resource. No cookies, login, "
+    "refresh, OAuth, MFA, exploit, or impact validation occurs in this first slice."
 )
 EXPECTED_WORDPRESS_OPTIONS = (
     "--wordpress-review",
@@ -1812,6 +1814,14 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("documentation", "docs/session.md"),
             ("prerequisites", ["--profile web-review"]),
             ("limitation", "Confirms the supplied principal and session."),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "application-defined GET handling can still have server-side effects; "
+                    "the operator must authorize every selected resource",
+                    "GET requests are side-effect-free",
+                ),
+            ),
         )
         for field, wrong in mutations:
             with self.subTest(field=field):

@@ -302,6 +302,8 @@ jobs:
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture
       - name: Exercise opt-in supplied-session review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture
+      - name: Exercise supplied-session and OAST preflight composition
+        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,supplied-session-review,ssrf-oast-review --test supplied_session_cli oast_policy_precedes_every_compatible_secret_and_output_acquisition -- --exact --nocapture
       - name: Test first-use fixture and checked-in sample contracts
         run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
       - name: Test release archive verification contracts

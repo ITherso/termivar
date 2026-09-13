@@ -8,10 +8,11 @@ Authorization value.
 
 This first slice supports one operator-declared principal and one complete
 `Authorization` header value. It does not load a browser profile, discover a
-login form, manage cookies, refresh a token, perform OAuth or MFA, submit a
-mutation, or enable an existing active vulnerability family under the supplied
-credential. A principal alias is an operator assertion, not authenticated
-identity.
+login form, manage cookies, refresh a token, perform OAuth or MFA, send a request
+body or non-GET method, or enable an existing active vulnerability family under
+the supplied credential. Application-defined `GET` handling can still have
+server-side effects, so the operator must authorize every selected resource. A
+principal alias is an operator assertion, not authenticated identity.
 
 ## Build and invoke
 
@@ -64,8 +65,9 @@ The selected target supplies the immutable scheme, host, effective port and
 application directory. V1 accepts one to four resource paths. Paths and the
 health endpoint must remain inside that application, be query- and
 fragment-free, and pass the raw-reference safety checks. Login, logout, action,
-download and administration-style paths are not read-oriented resources for
-this contract. A discovered link cannot extend the policy.
+download and administration-style paths are rejected by V1. This bounded
+denylist narrows accidental selection; it does not prove that an admitted `GET`
+is side-effect-free. A discovered link cannot extend the policy.
 
 The policy may allow at most nine supplied-session requests. It must budget one
 startup health check plus one resource request and one following health check

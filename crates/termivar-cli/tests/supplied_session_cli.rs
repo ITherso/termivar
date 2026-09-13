@@ -313,6 +313,161 @@ fn invalid_policy_precedes_output_reservation_and_secret_acquisition() {
     );
 }
 
+#[cfg(feature = "ssrf-oast-review")]
+fn assert_oast_policy_precedes_selected_secret(output: Output, private_markers: &[&str]) {
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("bounded UTF-8 diagnostic");
+    assert!(
+        stderr.contains("InvalidPolicyEncoding"),
+        "OAST policy validation did not precede secret acquisition: {stderr}"
+    );
+    assert!(!stderr.contains("AuthorizationSource"));
+    for private in private_markers {
+        assert!(
+            !stderr.contains(private),
+            "diagnostic retained private source"
+        );
+    }
+}
+
+#[cfg(feature = "ssrf-oast-review")]
+#[test]
+fn oast_policy_precedes_every_compatible_secret_and_output_acquisition() {
+    let directory = tempfile::tempdir().expect("create private fixture directory");
+    let session_policy = directory.path().join("valid-session-policy.toml");
+    let invalid_oast_policy = directory.path().join("invalid-oast-policy.toml");
+    let missing_session_secret = directory.path().join("PRIVATE-MISSING-SESSION-SECRET");
+    let missing_oast_secret = directory.path().join("PRIVATE-MISSING-OAST-SECRET");
+    let missing_root_secret = directory.path().join("PRIVATE-MISSING-ROOT-SECRET");
+    #[cfg(feature = "authorization-review")]
+    let missing_authz_policy = directory.path().join("PRIVATE-MISSING-AUTHZ-POLICY");
+    #[cfg(feature = "authorization-review")]
+    let missing_authz_primary = directory.path().join("PRIVATE-MISSING-AUTHZ-PRIMARY");
+    #[cfg(feature = "authorization-review")]
+    let missing_authz_peer = directory.path().join("PRIVATE-MISSING-AUTHZ-PEER");
+    let blocked_destination = directory.path().join("blocked-report-destination");
+    fs::write(&session_policy, policy()).expect("write valid session policy");
+    fs::write(&invalid_oast_policy, [0xff, 0xfe]).expect("write invalid OAST policy");
+    fs::write(&blocked_destination, b"existing sentinel").expect("reserve sentinel path");
+
+    let mut command = termivar();
+    command
+        .args([
+            "scan",
+            "http://127.0.0.1:9/app/",
+            "--profile",
+            "web-review",
+            "--session-policy",
+        ])
+        .arg(&session_policy)
+        .arg("--session-auth-file")
+        .arg(&missing_session_secret)
+        .arg("--ssrf-oast-review")
+        .arg("--ssrf-oast-policy")
+        .arg(&invalid_oast_policy)
+        .arg("--oast-admin-token-file")
+        .arg(&missing_oast_secret);
+    let output = command
+        .output()
+        .expect("run combined secret-precedence refusal");
+    assert_oast_policy_precedes_selected_secret(
+        output,
+        &[
+            "PRIVATE-MISSING-SESSION-SECRET",
+            "PRIVATE-MISSING-OAST-SECRET",
+            "invalid-oast-policy.toml",
+        ],
+    );
+
+    let output = termivar()
+        .args([
+            "scan",
+            "http://127.0.0.1:9/",
+            "--profile",
+            "web-review",
+            "--auth-file",
+        ])
+        .arg(&missing_root_secret)
+        .arg("--ssrf-oast-review")
+        .arg("--ssrf-oast-policy")
+        .arg(&invalid_oast_policy)
+        .arg("--oast-admin-token-file")
+        .arg(&missing_oast_secret)
+        .output()
+        .expect("run root-authorization secret-precedence refusal");
+    assert_oast_policy_precedes_selected_secret(
+        output,
+        &["PRIVATE-MISSING-ROOT-SECRET", "PRIVATE-MISSING-OAST-SECRET"],
+    );
+
+    #[cfg(feature = "authorization-review")]
+    {
+        let output = termivar()
+            .args([
+                "scan",
+                "http://127.0.0.1:9/app/",
+                "--profile",
+                "web-review",
+                "--authorization-review-policy",
+            ])
+            .arg(&missing_authz_policy)
+            .arg("--authz-primary-file")
+            .arg(&missing_authz_primary)
+            .arg("--authz-peer-file")
+            .arg(&missing_authz_peer)
+            .arg("--ssrf-oast-review")
+            .arg("--ssrf-oast-policy")
+            .arg(&invalid_oast_policy)
+            .arg("--oast-admin-token-file")
+            .arg(&missing_oast_secret)
+            .output()
+            .expect("run authorization-review secret-precedence refusal");
+        assert_oast_policy_precedes_selected_secret(
+            output,
+            &[
+                "PRIVATE-MISSING-AUTHZ-POLICY",
+                "PRIVATE-MISSING-AUTHZ-PRIMARY",
+                "PRIVATE-MISSING-AUTHZ-PEER",
+                "PRIVATE-MISSING-OAST-SECRET",
+            ],
+        );
+    }
+
+    let output = termivar()
+        .args([
+            "scan",
+            "http://127.0.0.1:9/app/",
+            "--profile",
+            "web-review",
+            "--session-policy",
+        ])
+        .arg(&session_policy)
+        .arg("--session-auth-file")
+        .arg(&missing_session_secret)
+        .arg("--ssrf-oast-review")
+        .arg("--ssrf-oast-policy")
+        .arg(&invalid_oast_policy)
+        .arg("--oast-admin-token-file")
+        .arg(&missing_oast_secret)
+        .arg("--report-dir")
+        .arg(&blocked_destination)
+        .output()
+        .expect("run combined output-precedence refusal");
+    assert_oast_policy_precedes_selected_secret(
+        output,
+        &[
+            "PRIVATE-MISSING-SESSION-SECRET",
+            "PRIVATE-MISSING-OAST-SECRET",
+            "invalid-oast-policy.toml",
+        ],
+    );
+    assert_eq!(
+        fs::read(&blocked_destination).expect("read unchanged sentinel"),
+        b"existing sentinel"
+    );
+}
+
 fn assert_typed_evidence_reference(value: &Value, prefix: &str) {
     let reference = value
         .as_str()
