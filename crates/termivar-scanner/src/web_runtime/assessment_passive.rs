@@ -1233,7 +1233,10 @@ fn selected_application_stable_subject_id(
         .supplied_session
         .map(|audit| audit.application_reference());
     #[cfg(not(feature = "supplied-session-review"))]
-    let application_reference = None;
+    let application_reference = {
+        let _ = reviews;
+        None
+    };
     StableAssessmentSubjectId::new(selected_application_stable_subject_identity(
         application_reference,
     ))

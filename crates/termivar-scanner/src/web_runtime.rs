@@ -86,9 +86,11 @@ pub(crate) use assessment_defense::{
     AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
 };
 pub(crate) use assessment_review::AssessmentReviewObserverSet;
+#[cfg(feature = "supplied-session-review")]
+pub(crate) use authority::authenticated_transport_is_allowed;
 #[cfg(feature = "oast-native-provider")]
 pub(crate) use authority::NativeOastProviderMintToken;
-pub(crate) use authority::{authenticated_transport_is_allowed, SharedWebRuntimeAuthority};
+pub(crate) use authority::SharedWebRuntimeAuthority;
 pub(crate) use web_assessment::AssessmentDiscoveryObserver;
 use web_review_decision::NativeWebReviewDecisionProfile;
 use web_review_execution::{
