@@ -602,6 +602,15 @@ def parse_json(raw: bytes, label: str) -> Any:
         raise AcceptanceError(f"{label} is not strict UTF-8 JSON") from error
 
 
+def parse_wp_cli_porcelain_id(raw: bytes, label: str) -> int:
+    """Parse the documented `--porcelain` wire form without retaining output."""
+    require(
+        re.fullmatch(rb"[1-9][0-9]{0,18}(?:\r?\n)?", raw) is not None,
+        f"{label} ground truth is unavailable",
+    )
+    return int(raw.rstrip(b"\r\n"))
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -1501,33 +1510,19 @@ class DockerWordPressLab:
         self.wp("plugin", "activate", "termivar-fingerprint-lab",
                 label="fingerprint plugin activation")
         for login in (principal[0] for principal in SESSION_PRINCIPALS):
-            program = (
-                "<?php\n"
-                f"$login = {json.dumps(login)};\n"
-                "$existing = get_user_by( 'login', $login );\n"
-                "if ( $existing ) { fwrite( STDERR, 'duplicate fixture user' ); exit( 2 ); }\n"
-                "$id = wp_create_user( $login, wp_generate_password( 32, true, true ), "
-                "$login . '@example.invalid' );\n"
-                "if ( is_wp_error( $id ) ) { fwrite( STDERR, 'fixture user creation failed' ); "
-                "exit( 3 ); }\n"
-                "$user = get_user_by( 'id', $id );\n"
-                "$user->set_role( 'subscriber' );\n"
-                "echo (string) $id;\n"
-            ).encode("utf-8")
             created = self.wp(
-                "eval-file", "/dev/stdin", label=f"{login} fixture user creation",
-                input_bytes=program,
-            ).stdout.decode("ascii", "strict").strip()
-            require(created.isdigit() and int(created) > 0,
-                    f"{login} fixture user ground truth is unavailable")
+                "user", "create", login, f"{login}@example.invalid",
+                "--role=subscriber", "--porcelain",
+                label=f"{login} fixture user creation",
+            ).stdout
+            parse_wp_cli_porcelain_id(created, login)
         for slug, title in (("contact", "Contact"), ("gallery", "Gallery")):
             post_id = self.wp(
                 "post", "create", "--post_type=page", "--post_status=publish",
                 f"--post_name={slug}", f"--post_title={title}", "--porcelain",
                 label=f"{slug} page creation",
-            ).stdout.decode("utf-8", "strict").strip()
-            require(post_id.isdigit() and int(post_id) > 0,
-                    f"{slug} page ground truth is unavailable")
+            ).stdout
+            parse_wp_cli_porcelain_id(post_id, slug)
         self.wp("option", "update", "permalink_structure", "/%postname%/",
                 label="pretty permalink selection")
         self.wp("rewrite", "flush", "--hard", label="pretty permalink flush")
@@ -1576,7 +1571,7 @@ class DockerWordPressLab:
             "fwrite( STDERR, 'fixture principal ground truth failed' ); exit( 2 ); }\n"
         ).encode("utf-8")
         self.wp(
-            f"--path={path}", "eval-file", "/dev/stdin",
+            f"--path={path}", "eval-file", "-",
             label="supplied-session fixture policy selection",
             input_bytes=configured,
         )
@@ -1595,7 +1590,7 @@ class DockerWordPressLab:
             "echo (string) $expiration, \"\\t\", LOGGED_IN_COOKIE, \"\\t\", $cookie;\n"
         ).encode("utf-8")
         encoded = self.wp(
-            f"--path={path}", "eval-file", "/dev/stdin",
+            f"--path={path}", "eval-file", "-",
             label="supplied-session fixture cookie generation",
             input_bytes=cookie_program,
         ).stdout

@@ -1941,10 +1941,75 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
 
             calls.clear()
             lab.wp(
-                "eval-file", "/dev/stdin", label="synthetic stdin WP-CLI",
+                "eval-file", "-", label="synthetic stdin WP-CLI",
                 input_bytes=b"<?php echo 'ok';\n",
             )
             self.assertIn("--interactive", calls[0][0])
+
+    def test_wp_cli_porcelain_id_parser_is_strict_and_value_free(self):
+        self.assertEqual(runner.parse_wp_cli_porcelain_id(b"42\n", "fixture"), 42)
+        self.assertEqual(runner.parse_wp_cli_porcelain_id(b"7", "fixture"), 7)
+
+        for malformed in (
+            b"0\n",
+            b" 42\n",
+            b"42 \n",
+            b"42\nwarning",
+            b"Success: Created user 42.\n",
+            b"\xff",
+            b"1" * 20,
+        ):
+            with self.subTest(malformed=malformed[:24]):
+                with self.assertRaisesRegex(
+                    runner.AcceptanceError,
+                    "fixture ground truth is unavailable",
+                ) as raised:
+                    runner.parse_wp_cli_porcelain_id(malformed, "fixture")
+                self.assertNotIn(repr(malformed), str(raised.exception))
+
+    def test_install_uses_documented_porcelain_user_creation_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            lab.origin = "http://127.0.0.1:8080/"
+            calls = []
+            user_ids = iter((b"7\n", b"8\n"))
+            post_ids = iter((b"11\n", b"12\n"))
+
+            def fake_wp(*arguments, **kwargs):
+                calls.append((arguments, kwargs))
+                if arguments[:2] == ("user", "create"):
+                    return runner.CommandResult(next(user_ids), b"", 0)
+                if arguments[:2] == ("post", "create"):
+                    return runner.CommandResult(next(post_ids), b"", 0)
+                return runner.CommandResult(b"", b"", 0)
+
+            lab.wp = fake_wp
+            lab._install_wordpress()
+
+            user_calls = [call for call in calls if call[0][:2] == ("user", "create")]
+            self.assertEqual(
+                [call[0] for call in user_calls],
+                [
+                    (
+                        "user", "create", "termivar-lab-alice",
+                        "termivar-lab-alice@example.invalid",
+                        "--role=subscriber", "--porcelain",
+                    ),
+                    (
+                        "user", "create", "termivar-lab-bob",
+                        "termivar-lab-bob@example.invalid",
+                        "--role=subscriber", "--porcelain",
+                    ),
+                ],
+            )
+            self.assertTrue(all(call[1].get("input_bytes") is None for call in user_calls))
+            self.assertFalse(any(
+                call[0] and call[0][0] == "eval-file"
+                and call[1]["label"].endswith("fixture user creation")
+                for call in calls
+            ))
 
     def test_pretty_rewrite_ground_truth_uses_each_effective_home(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -5543,6 +5608,12 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             cookie_program = lab.wp.call_args_list[1].kwargs["input_bytes"]
             self.assertIn(b"WP_Session_Tokens::get_instance", cookie_program)
             self.assertIn(b"wp_generate_auth_cookie", cookie_program)
+            self.assertEqual(
+                lab.wp.call_args_list[0].args[1:], ("eval-file", "-")
+            )
+            self.assertEqual(
+                lab.wp.call_args_list[1].args[1:], ("eval-file", "-")
+            )
 
             session = runner._write_supplied_session_inputs(
                 Path(temporary),

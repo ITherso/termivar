@@ -351,7 +351,7 @@ const WORDPRESS_DISCOVERY_LAB_JOB: &str = r#"  wordpress-discovery-lab:
         run: |
           set -euo pipefail
           test ! -e "$CARGO_TARGET_DIR"
-          cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review
+          cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review
       - name: Accept discovery against pinned disposable WordPress
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-discovery-target-${{ github.run_id }}-${{ github.run_attempt }}
@@ -2794,8 +2794,16 @@ mod tests {
                 "          true",
             ),
             (
-                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review",
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review",
                 "cargo +1.88.0 build --release --locked -p termivar-cli --all-features",
+            ),
+            (
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review",
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review",
+            ),
+            (
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review",
+                "cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review,authorization-review",
             ),
             (
                 "      - name: Accept discovery against pinned disposable WordPress\n        env:",
