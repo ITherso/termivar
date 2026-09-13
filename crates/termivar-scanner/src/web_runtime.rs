@@ -86,7 +86,7 @@ pub(crate) use assessment_defense::{
     AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
 };
 pub(crate) use assessment_review::AssessmentReviewObserverSet;
-#[cfg(feature = "supplied-session-review")]
+#[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
 pub(crate) use authority::authenticated_transport_is_allowed;
 #[cfg(feature = "oast-native-provider")]
 pub(crate) use authority::NativeOastProviderMintToken;

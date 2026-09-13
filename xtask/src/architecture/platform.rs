@@ -1945,19 +1945,28 @@ fn supplied_session_runtime_module_gate_violations(
             _ => None,
         })
         .collect::<Vec<_>>();
-    match matches.as_slice() {
+    let mut violations = match matches.as_slice() {
         [module]
             if matches!(module.vis, Visibility::Inherited)
                 && module.content.is_none()
                 && cfg_predicates(module) == ["feature=\"supplied-session-review\"".to_owned()] =>
         {
-            Ok(Vec::new())
+            Vec::new()
         },
-        _ => Ok(vec![
+        _ => vec![
             "supplied-session runtime must remain one private out-of-line module behind exact cfg(feature=\"supplied-session-review\")"
                 .to_owned(),
-        ]),
+        ],
+    };
+    let compact = squash_ascii_whitespace(source);
+    let shared_transport_gate = "#[cfg(any(feature=\"authorization-review\",feature=\"supplied-session-review\"))]pub(crate)useauthority::authenticated_transport_is_allowed;";
+    if compact.matches(shared_transport_gate).count() != 1 {
+        violations.push(
+            "authenticated transport validation must be re-exported exactly for authorization-review or supplied-session-review"
+                .to_owned(),
+        );
     }
+    Ok(violations)
 }
 
 #[derive(Clone, Copy)]
@@ -2061,6 +2070,7 @@ fn supplied_session_review_source_contract_violations(
         &mut violations,
         &compact_assessment,
         &[
+            "#[cfg(any(feature=\"authorization-review\",feature=\"supplied-session-review\"))]usesuper::authenticated_transport_is_allowed;",
             "#[cfg(feature=\"supplied-session-review\")]supplied_session:Option<WebAssessmentSuppliedSessionAudit>",
             "supplied_session:self.supplied_session_audit.as_ref(),",
             "self.supplied_session,",
@@ -11649,6 +11659,34 @@ mod tests {
         assert!(!supplied_session_runtime_module_gate_violations(&ungated)
             .unwrap()
             .is_empty());
+
+        let narrowed_transport_export = web_runtime.replace(
+            "#[cfg(any(feature = \"authorization-review\", feature = \"supplied-session-review\"))]\npub(crate) use authority::authenticated_transport_is_allowed;",
+            "#[cfg(feature = \"supplied-session-review\")]\npub(crate) use authority::authenticated_transport_is_allowed;",
+        );
+        assert_ne!(narrowed_transport_export, web_runtime);
+        assert!(
+            supplied_session_runtime_module_gate_violations(&narrowed_transport_export)
+                .unwrap()
+                .iter()
+                .any(|violation| violation
+                    .contains("authorization-review or supplied-session-review"))
+        );
+
+        let narrowed_transport_import = assessment.replace(
+            "#[cfg(any(feature = \"authorization-review\", feature = \"supplied-session-review\"))]\nuse super::authenticated_transport_is_allowed;",
+            "#[cfg(feature = \"supplied-session-review\")]\nuse super::authenticated_transport_is_allowed;",
+        );
+        assert_ne!(narrowed_transport_import, assessment);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                assessment: &narrowed_transport_import,
+                ..sources
+            });
+        assert!(violations.iter().any(|violation| {
+            violation.contains("web assessment must own and forward")
+                && violation.contains("authenticated_transport_is_allowed")
+        }));
     }
 
     #[test]
