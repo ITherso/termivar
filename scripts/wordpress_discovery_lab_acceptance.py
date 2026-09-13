@@ -257,6 +257,19 @@ EXPECTED_DISCOVERY_PATHS = {
 }
 LAYOUT_ROLES = ("core", "themes", "plugins", "rest_index")
 OPAQUE_REFERENCE_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+ASSESSMENT_EVIDENCE_REFERENCE_RE = re.compile(
+    r"evidence-(?:[0-9]{4}|[1-9][0-9]{4,9})\Z"
+)
+
+
+def _is_assessment_evidence_reference(value: Any) -> bool:
+    """Match the writer shape and the feature-independent reader's u32 bound."""
+    if (
+        not isinstance(value, str)
+        or ASSESSMENT_EVIDENCE_REFERENCE_RE.fullmatch(value) is None
+    ):
+        return False
+    return int(value.removeprefix("evidence-")) <= 0xFFFF_FFFF
 
 
 @dataclasses.dataclass(frozen=True)
@@ -417,6 +430,153 @@ def _bounded_fields(
     return {
         field: _bounded_integer_field(value.get(field), field in value)
         for field in integer_fields
+    }
+
+
+def _bounded_assessment_reference_list(value: Any) -> dict[str, Any]:
+    """Describe reference shape without retaining any report-controlled value."""
+    if not isinstance(value, list):
+        return {"status": "wrong_type", "json_type": _json_type(value)}
+    sample = value[:16]
+    strings = [item for item in sample if isinstance(item, str)]
+    return {
+        "status": "present",
+        "length": _bounded_integer_field(len(value), True),
+        "sampled_length": len(sample),
+        "string_count": len(strings),
+        "valid_reference_count": sum(
+            _is_assessment_evidence_reference(item) for item in strings
+        ),
+        "unique_string_count": len(set(strings)),
+        "truncated": len(value) > len(sample),
+    }
+
+
+def _bounded_session_wordpress_evidence_diagnostic(
+    document: Any,
+    *,
+    expected_source_count: int,
+    expected_page_evidence_count: int,
+) -> dict[str, Any]:
+    """Return bounded type/count evidence context with no paths or references."""
+    discovery = document.get("wordpress_discovery") if isinstance(document, dict) else None
+    session = document.get("supplied_session") if isinstance(document, dict) else None
+    page_scope = discovery.get("supplied_session_pages") if isinstance(discovery, dict) else None
+    page_rows = page_scope.get("pages") if isinstance(page_scope, dict) else None
+    page = (
+        page_rows[0]
+        if isinstance(page_rows, list) and len(page_rows) == 1
+        and isinstance(page_rows[0], dict)
+        else None
+    )
+    resources = session.get("resources") if isinstance(session, dict) else None
+    session_resource = (
+        resources[0]
+        if isinstance(resources, list) and len(resources) == 1
+        and isinstance(resources[0], dict)
+        else None
+    )
+    receipt = (
+        session_resource.get("evidence_reference")
+        if isinstance(session_resource, dict)
+        else None
+    )
+    sources = discovery.get("sources") if isinstance(discovery, dict) else None
+    source_sample = []
+    if isinstance(sources, list):
+        for source in sources[:8]:
+            if not isinstance(source, dict):
+                source_sample.append({"status": "wrong_type", "json_type": _json_type(source)})
+                continue
+            source_sample.append({
+                "evidence_reference_count": _bounded_integer_field(
+                    source.get("evidence_reference_count"),
+                    "evidence_reference_count" in source,
+                ),
+                "evidence_references": _bounded_assessment_reference_list(
+                    source.get("evidence_references")
+                ),
+            })
+    items = document.get("items") if isinstance(document, dict) else None
+    matching_items = []
+    if isinstance(items, list):
+        matching_items = [
+            item for item in items[:16]
+            if isinstance(item, dict)
+            and item.get("capability_id")
+            == "technology.wordpress-metadata-source-response-observed@1"
+        ]
+    item = matching_items[0] if len(matching_items) == 1 else None
+    return {
+        "expected": {
+            "source_count": expected_source_count,
+            "page_evidence_count": expected_page_evidence_count,
+            "item_evidence_count": expected_source_count + expected_page_evidence_count,
+        },
+        "actual": {
+            "page_scope": _bounded_fields(
+                page_scope,
+                (
+                    "selected_count",
+                    "committed_count",
+                    "accepted_association_count",
+                    "rejected_association_count",
+                    "not_established_association_count",
+                    "not_evaluated_count",
+                ),
+            ),
+            "page": {
+                "status": "present" if isinstance(page, dict) else "unavailable",
+                "association": _bounded_closed_text_field(
+                    page.get("association") if isinstance(page, dict) else None,
+                    isinstance(page, dict) and "association" in page,
+                    frozenset({"accepted", "rejected", "not_established"}),
+                ),
+                "outcome": _bounded_closed_text_field(
+                    page.get("outcome") if isinstance(page, dict) else None,
+                    isinstance(page, dict) and "outcome" in page,
+                    frozenset({"accepted", "not_evaluated"}),
+                ),
+                "resource_receipt_present": isinstance(
+                    page.get("resource_evidence_reference") if isinstance(page, dict) else None,
+                    str,
+                ),
+                "resource_receipt_matches_session": (
+                    isinstance(page, dict)
+                    and isinstance(receipt, str)
+                    and page.get("resource_evidence_reference") == receipt
+                ),
+                "evidence_reference_count": _bounded_integer_field(
+                    page.get("evidence_reference_count") if isinstance(page, dict) else None,
+                    isinstance(page, dict) and "evidence_reference_count" in page,
+                ),
+                "evidence_references": _bounded_assessment_reference_list(
+                    page.get("evidence_references") if isinstance(page, dict) else None
+                ),
+            },
+            "sources": {
+                "container_type": _json_type(sources),
+                "length": (
+                    _bounded_integer_field(len(sources), True)
+                    if isinstance(sources, list)
+                    else {"status": "unavailable"}
+                ),
+                "sample": source_sample,
+                "truncated": isinstance(sources, list) and len(sources) > len(source_sample),
+            },
+            "items_container_type": _json_type(items),
+            "sampled_matching_item_count": len(matching_items),
+            "items_truncated": isinstance(items, list) and len(items) > 16,
+            "item": {
+                "evidence_count": _bounded_integer_field(
+                    item.get("evidence_count") if isinstance(item, dict) else None,
+                    isinstance(item, dict) and "evidence_count" in item,
+                ),
+                "evidence_references": _bounded_assessment_reference_list(
+                    item.get("evidence_references") if isinstance(item, dict) else None
+                ),
+            },
+        },
     }
 
 
@@ -7002,6 +7162,12 @@ def _validate_supplied_session_wordpress_document(
         "supplied-session WordPress page accounting differs",
     )
     page = page_rows[0]
+    resource_evidence_reference = session["resources"][0].get("evidence_reference")
+    evidence_diagnostic = _bounded_session_wordpress_evidence_diagnostic(
+        document,
+        expected_source_count=expected_count,
+        expected_page_evidence_count=int(committed),
+    )
     require(
         page.get("page_reference") == page_reference
         and page.get("resource_reference")
@@ -7009,11 +7175,17 @@ def _validate_supplied_session_wordpress_document(
         and page.get("acquisition") == "reused_supplied_session_response"
         and page.get("fingerprint_evaluation") == "not_selected_in_v1",
         "supplied-session WordPress page identity differs",
+        evidence_diagnostic,
     )
     if committed:
         require(
-            page.get("resource_evidence_reference")
-            == session["resources"][0]["evidence_reference"]
+            isinstance(resource_evidence_reference, str)
+            and re.fullmatch(
+                r"supplied-session-resource-evidence-sha256:[0-9a-f]{64}",
+                resource_evidence_reference,
+            ) is not None
+            and page.get("resource_evidence_reference")
+            == resource_evidence_reference
             and page.get("association") == "accepted"
             and page.get("outcome") == "accepted"
             and _is_exact_nonnegative_integer(
@@ -7023,11 +7195,19 @@ def _validate_supplied_session_wordpress_document(
             and _is_exact_nonnegative_integer(
                 pages.get("interpreted_response_bytes"),
                 session["resources"][0]["response_bytes"],
-            )
-            and _is_exact_nonnegative_integer(page.get("evidence_reference_count"), 1)
-            and page.get("evidence_references")
-            == [session["resources"][0]["evidence_reference"]],
+            ),
             "healthy supplied-session page was not committed to WordPress",
+            evidence_diagnostic,
+        )
+        page_evidence_references = page.get("evidence_references")
+        require(
+            _is_exact_nonnegative_integer(page.get("evidence_reference_count"), 1)
+            and isinstance(page_evidence_references, list)
+            and len(page_evidence_references) == 1
+            and _is_assessment_evidence_reference(page_evidence_references[0])
+            and page_evidence_references[0] != resource_evidence_reference,
+            "healthy supplied-session page evidence is not a distinct assessment reference",
+            evidence_diagnostic,
         )
     else:
         require(
@@ -7039,15 +7219,19 @@ def _validate_supplied_session_wordpress_document(
             and _is_exact_nonnegative_integer(page.get("evidence_reference_count"), 0)
             and page.get("evidence_references") == [],
             "unqualified supplied-session page influenced WordPress evidence",
+            evidence_diagnostic,
         )
+        page_evidence_references = []
 
     sources = discovery.get("sources")
     require(
         isinstance(sources, list) and len(sources) == expected_count
         and all(isinstance(source, dict) for source in sources),
         "supplied-session discovery source rows differ",
+        evidence_diagnostic,
     )
     identities = []
+    source_evidence_references = []
     for source in sources:
         require(
             "source_supplied_session_page_references" in source
@@ -7071,11 +7255,52 @@ def _validate_supplied_session_wordpress_document(
             "source_page_references" not in source,
             "session discovery source unexpectedly mixed observed-page provenance",
         )
+        evidence_references = source.get("evidence_references")
+        require(
+            _is_exact_nonnegative_integer(source.get("evidence_reference_count"), 1)
+            and isinstance(evidence_references, list)
+            and len(evidence_references) == 1
+            and _is_assessment_evidence_reference(evidence_references[0]),
+            "session discovery source evidence is malformed",
+            evidence_diagnostic,
+        )
+        source_evidence_references.extend(evidence_references)
         reduced = dict(source)
         reduced.pop("source_supplied_session_page_references")
         _validate_discovery_source_shape(reduced)
     require(identities == expected_sources and len(set(identities)) == len(identities),
             "session scenario lost, duplicated, or substituted metadata sources")
+    items = document.get("items")
+    require(
+        isinstance(items, list),
+        "supplied-session assessment item inventory is malformed",
+        evidence_diagnostic,
+    )
+    discovery_items = [
+        item for item in items
+        if isinstance(item, dict)
+        and item.get("capability_id")
+        == "technology.wordpress-metadata-source-response-observed@1"
+    ]
+    expected_evidence_references = [
+        *source_evidence_references,
+        *page_evidence_references,
+    ]
+    require(
+        len(discovery_items) == 1
+        and len(expected_evidence_references) == expected_count + int(committed)
+        and resource_evidence_reference not in expected_evidence_references
+        and _is_exact_nonnegative_integer(
+            discovery_items[0].get("evidence_count"),
+            len(expected_evidence_references),
+        )
+        and _same_unique_reference_members(
+            expected_evidence_references,
+            discovery_items[0].get("evidence_references"),
+        ),
+        "supplied-session WordPress source, page, and item evidence conservation differs",
+        evidence_diagnostic,
+    )
     if committed:
         conditional_sources = [
             source for source in sources

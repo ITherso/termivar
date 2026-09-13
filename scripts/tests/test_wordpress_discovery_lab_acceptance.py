@@ -5209,7 +5209,8 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             audit, resource_url
         )
         resource = audit["resources"][0]
-        evidence_reference = resource["evidence_reference"]
+        resource_evidence_reference = resource["evidence_reference"]
+        page_evidence_reference = "evidence-0006"
         interpreted_bytes = resource["response_bytes"] if committed else 0
         discovery["supplied_session_pages"] = {
             "mode": "committed_supplied_session_resources",
@@ -5228,14 +5229,16 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             "pages": [{
                 "page_reference": page_reference,
                 "resource_reference": resource["resource_reference"],
-                "resource_evidence_reference": evidence_reference if committed else None,
+                "resource_evidence_reference": (
+                    resource_evidence_reference if committed else None
+                ),
                 "acquisition": "reused_supplied_session_response",
                 "association": "accepted" if committed else "not_established",
                 "outcome": "accepted" if committed else "not_evaluated",
                 "fingerprint_evaluation": "not_selected_in_v1",
                 "interpreted_response_bytes": interpreted_bytes,
                 "evidence_reference_count": int(committed),
-                "evidence_references": [evidence_reference] if committed else [],
+                "evidence_references": [page_evidence_reference] if committed else [],
             }],
         }
         if committed:
@@ -5271,6 +5274,15 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                 "identity_sources": ["same_origin_asset_path"],
                 "versions": [],
             })
+            document["items"][0]["evidence_count"] = 6
+            document["items"][0]["evidence_references"] = [
+                "evidence-0001",
+                "evidence-0002",
+                "evidence-0003",
+                "evidence-0004",
+                "evidence-0005",
+                page_evidence_reference,
+            ]
         document["wordpress_review"]["component_count"] = 5 if committed else 4
         document["wordpress_review"]["additional_request_count"] = 5 if committed else 4
         if fingerprints:
@@ -5313,6 +5325,7 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                 ("complete", False, False, "security.wordpress-discovery-audit/v2"),
                 ("complete", True, False, "security.wordpress-discovery-audit/v4"),
                 ("session_lost", True, False, "security.wordpress-discovery-audit/v4"),
+                ("startup_unhealthy", True, False, "security.wordpress-discovery-audit/v4"),
                 ("complete", True, True, "security.wordpress-discovery-audit/v4"),
             )
             for outcome, integration, fingerprints, expected_schema in cases:
@@ -5341,6 +5354,75 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                     if fingerprints:
                         self.assertEqual(fingerprint["resource_count"], 0)
                         self.assertEqual(fingerprint["component_count"], 0)
+
+    def test_session_wordpress_v4_separates_receipt_and_page_observation_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            document, session_input, oracle = self.session_wordpress_document(temporary)
+            page = document["wordpress_discovery"]["supplied_session_pages"]["pages"][0]
+            resource_evidence_reference = document["supplied_session"]["resources"][0][
+                "evidence_reference"
+            ]
+            self.assertEqual(
+                page["resource_evidence_reference"], resource_evidence_reference
+            )
+            self.assertEqual(page["evidence_references"], ["evidence-0006"])
+            self.assertNotEqual(
+                page["evidence_references"], [resource_evidence_reference]
+            )
+
+            source_references = [
+                source["evidence_references"][0]
+                for source in document["wordpress_discovery"]["sources"]
+            ]
+            self.assertEqual(
+                source_references,
+                [
+                    "evidence-0001",
+                    "evidence-0002",
+                    "evidence-0003",
+                    "evidence-0005",
+                    "evidence-0004",
+                ],
+            )
+            item = document["items"][0]
+            self.assertEqual(item["evidence_count"], 6)
+            self.assertEqual(
+                set(item["evidence_references"]),
+                {*source_references, "evidence-0006"},
+            )
+            self.validate_wordpress_document(
+                document,
+                session_input,
+                oracle,
+                outcome="complete",
+                integration=True,
+                fingerprints=False,
+            )
+
+            lost, session_input, oracle = self.session_wordpress_document(
+                temporary, outcome="session_lost"
+            )
+            lost_page = lost["wordpress_discovery"]["supplied_session_pages"]["pages"][0]
+            self.assertIsNone(lost_page["resource_evidence_reference"])
+            self.assertEqual(lost_page["evidence_references"], [])
+            self.assertEqual(lost["items"][0]["evidence_count"], 4)
+            self.assertEqual(
+                lost["items"][0]["evidence_references"],
+                [
+                    "evidence-0001",
+                    "evidence-0002",
+                    "evidence-0003",
+                    "evidence-0004",
+                ],
+            )
+            self.validate_wordpress_document(
+                lost,
+                session_input,
+                oracle,
+                outcome="session_lost",
+                integration=True,
+                fingerprints=False,
+            )
 
     def test_session_wordpress_v4_uses_global_order_and_exact_conditional_source(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -5425,7 +5507,10 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             document, session_input, oracle = self.session_wordpress_document(temporary)
             pages = document["wordpress_discovery"]["supplied_session_pages"]
             page_reference = pages["pages"][0]["page_reference"]
-            evidence_reference = pages["pages"][0]["resource_evidence_reference"]
+            resource_evidence_reference = pages["pages"][0][
+                "resource_evidence_reference"
+            ]
+            page_evidence_reference = pages["pages"][0]["evidence_references"][0]
             mutations = []
             alice_body = runner._expected_session_private_body(
                 oracle.plugins_base_url, "termivar-lab-alice"
@@ -5463,7 +5548,7 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             changed = copy.deepcopy(document)
             changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
                 "evidence_references"
-            ] = [evidence_reference, evidence_reference]
+            ] = [page_evidence_reference, page_evidence_reference]
             mutations.append(changed)
             changed = copy.deepcopy(document)
             changed["wordpress_discovery"]["sources"][0][
@@ -5505,6 +5590,180 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                             integration=True,
                             fingerprints=False,
                         )
+
+            evidence_mutations = []
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0].pop(
+                "evidence_references"
+            )
+            evidence_mutations.append(("missing-page-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                "evidence_references"
+            ] = None
+            evidence_mutations.append(("null-page-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                "evidence_references"
+            ] = page_evidence_reference
+            evidence_mutations.append(("wrong-type-page-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                "evidence_references"
+            ] = [resource_evidence_reference]
+            evidence_mutations.append(("receipt-used-as-page-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                "evidence_references"
+            ] = ["evidence-substituted"]
+            evidence_mutations.append(("substituted-page-evidence", changed))
+
+            for invalid_reference in (
+                "evidence-substituted",
+                "evidence-123",
+                "evidence-01234",
+                "evidence-4294967296",
+                "evidence-10000000000",
+            ):
+                changed = copy.deepcopy(document)
+                changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                    "evidence_references"
+                ] = [invalid_reference]
+                changed["items"][0]["evidence_references"][-1] = invalid_reference
+                evidence_mutations.append(
+                    (f"self-consistent-invalid-page-item-{invalid_reference}", changed)
+                )
+
+            self.assertTrue(
+                runner._is_assessment_evidence_reference("evidence-4294967295")
+            )
+            self.assertFalse(
+                runner._is_assessment_evidence_reference("evidence-4294967296")
+            )
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                "evidence_reference_count"
+            ] = 2
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                "evidence_references"
+            ] = [page_evidence_reference, page_evidence_reference]
+            evidence_mutations.append(("duplicated-page-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                "resource_evidence_reference"
+            ] = "supplied-session-resource-evidence-sha256:" + "f" * 64
+            evidence_mutations.append(("substituted-resource-receipt", changed))
+
+            changed = copy.deepcopy(document)
+            changed["items"][0]["evidence_count"] = 5
+            changed["items"][0]["evidence_references"].remove(
+                page_evidence_reference
+            )
+            evidence_mutations.append(("page-evidence-absent-from-item", changed))
+
+            changed = copy.deepcopy(document)
+            changed["items"][0]["evidence_references"] = None
+            evidence_mutations.append(("wrong-type-item-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            changed["items"] = None
+            evidence_mutations.append(("wrong-type-item-inventory", changed))
+
+            changed = copy.deepcopy(document)
+            changed.pop("items")
+            evidence_mutations.append(("missing-item-inventory", changed))
+
+            changed = copy.deepcopy(document)
+            changed["items"][0]["evidence_count"] = 7
+            changed["items"][0]["evidence_references"].append(
+                page_evidence_reference
+            )
+            evidence_mutations.append(("duplicated-item-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["sources"][1]["evidence_references"] = [
+                changed["wordpress_discovery"]["sources"][0]["evidence_references"][0]
+            ]
+            evidence_mutations.append(("duplicated-source-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["sources"][0]["evidence_references"] = [""]
+            evidence_mutations.append(("empty-source-evidence", changed))
+
+            changed = copy.deepcopy(document)
+            source_evidence_reference = changed["wordpress_discovery"]["sources"][0][
+                "evidence_references"
+            ][0]
+            changed["wordpress_discovery"]["sources"][0]["evidence_references"] = [
+                "evidence-substituted"
+            ]
+            changed["items"][0]["evidence_references"][0] = "evidence-substituted"
+            self.assertEqual(source_evidence_reference, "evidence-0001")
+            evidence_mutations.append(
+                ("self-consistent-invalid-source-and-item-evidence", changed)
+            )
+
+            for mutation_name, changed in evidence_mutations:
+                with self.subTest(evidence_mutation=mutation_name):
+                    with self.assertRaises(runner.AcceptanceError):
+                        self.validate_wordpress_document(
+                            changed,
+                            session_input,
+                            oracle,
+                            outcome="complete",
+                            integration=True,
+                            fingerprints=False,
+                        )
+
+            diagnostic_case = copy.deepcopy(document)
+            diagnostic_case["items"][0]["evidence_count"] = True
+            with self.assertRaises(runner.AcceptanceError) as raised:
+                self.validate_wordpress_document(
+                    diagnostic_case,
+                    session_input,
+                    oracle,
+                    outcome="complete",
+                    integration=True,
+                    fingerprints=False,
+                )
+            diagnostic = raised.exception.diagnostic
+            self.assertEqual(
+                diagnostic["expected"],
+                {
+                    "source_count": 5,
+                    "page_evidence_count": 1,
+                    "item_evidence_count": 6,
+                },
+            )
+            self.assertTrue(
+                diagnostic["actual"]["page"]["resource_receipt_matches_session"]
+            )
+            self.assertEqual(
+                diagnostic["actual"]["page"]["evidence_references"][
+                    "valid_reference_count"
+                ],
+                1,
+            )
+            self.assertEqual(
+                diagnostic["actual"]["item"]["evidence_count"],
+                {"status": "wrong_type", "json_type": "boolean"},
+            )
+            encoded_diagnostic = json.dumps(diagnostic, sort_keys=True)
+            self.assertLess(len(encoded_diagnostic.encode("utf-8")), 8 * 1024)
+            for private_value in (
+                resource_evidence_reference,
+                page_evidence_reference,
+                page_reference,
+                oracle.application_url,
+            ):
+                self.assertNotIn(private_value, encoded_diagnostic)
 
             option_off, session_input, oracle = self.session_wordpress_document(
                 temporary, integration=False
