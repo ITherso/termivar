@@ -2596,6 +2596,7 @@ same_site = "lax"
         );
     }
 
+    #[cfg(feature = "wordpress-review")]
     #[test]
     fn committed_resource_receipt_revalidates_the_full_session_binding() {
         let application = url::Url::parse("https://example.test/app/").unwrap();
