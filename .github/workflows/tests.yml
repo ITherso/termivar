@@ -473,7 +473,7 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e "$CARGO_TARGET_DIR"
-          cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review
+          cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review
       - name: Accept discovery against pinned disposable WordPress
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-wordpress-discovery-target-${{ github.run_id }}-${{ github.run_attempt }}

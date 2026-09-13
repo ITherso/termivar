@@ -42,6 +42,25 @@ SYNTHETIC_FINGERPRINT_COMPARISON_LIMITS = [
     "A one-sided or failed resource observation does not establish component installation, removal, or remediation.",
     "Source labels and digests identify supplied data; they do not authenticate its publisher or completeness.",
 ]
+SYNTHETIC_SESSION_CAPABILITY = {
+    "key": "option.supplied-session-review",
+    "build_state": "compiled",
+    "compile_feature": "supplied-session-review",
+    "implementation_status": "implemented",
+    "prerequisites": [
+        "--profile web-review",
+        "--session-policy FILE",
+        "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+        "V2: --session-cookie-file FILE",
+        "optional --wordpress-supplied-session when also compiled with wordpress-review",
+        "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
+    ],
+    "limitation": (
+        "complete health-qualified session-resource HTML may nominate public WordPress "
+        "metadata; the credential is not sent to metadata or fingerprint requests; "
+        "authenticated-page fingerprint acquisition is not selected"
+    ),
+}
 DISCOVERY_METHOD = {
     "schema": "security.wordpress-discovery-audit/v2",
     "capability_id": "technology.wordpress-metadata-discovery@1",
@@ -865,6 +884,20 @@ def expected_offline_arguments(scenarios):
         binary, "report", "compare", "--before", str(before / "assessment.json"),
         "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
     ]
+    if {"session-root-healthy", "session-root-loss-after-resource"} <= scenarios.keys():
+        before = Path(scenarios["session-root-healthy"]["_bundle"])
+        after = Path(scenarios["session-root-loss-after-resource"]["_bundle"])
+        expected["offline supplied-session health-loss comparison"] = [
+            binary, "report", "compare", "--before", str(before / "assessment.json"),
+            "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
+        ]
+    if {"session-root-healthy", "session-root-bob-healthy"} <= scenarios.keys():
+        before = Path(scenarios["session-root-healthy"]["_bundle"])
+        after = Path(scenarios["session-root-bob-healthy"]["_bundle"])
+        expected["offline supplied-session principal-context comparison"] = [
+            binary, "report", "compare", "--before", str(before / "assessment.json"),
+            "--after", str(after / "assessment.json"), "--same-scope", "--format", "json",
+        ]
     if {"custom-no-layout-discovery", "custom-layout-discovery"} <= scenarios.keys():
         before = Path(scenarios["custom-no-layout-discovery"]["_bundle"])
         after = Path(scenarios["custom-layout-discovery"]["_bundle"])
@@ -1416,6 +1449,159 @@ def layout_offline_fixture(root):
     return scenarios, responses, originals
 
 
+def synthetic_supplied_session_audit(
+    *, outcome="complete", principal_alias="termivar-lab-alice",
+    policy_declares_expiry=True,
+):
+    """Literal S01 v2 audit fixture; independent of the lab validator."""
+    if outcome not in {"complete", "startup_unhealthy", "session_lost"}:
+        raise AssertionError(f"unsupported synthetic session outcome: {outcome}")
+    checkpoint_specs = (
+        [("startup", 0, "unhealthy", "not_matched", "7", 17)]
+        if outcome == "startup_unhealthy" else
+        [
+            ("startup", 0, "healthy", "matched", "7", 17),
+            (
+                "terminal", 1,
+                "unhealthy" if outcome == "session_lost" else "healthy",
+                "not_matched" if outcome == "session_lost" else "matched",
+                "8", 19,
+            ),
+        ]
+    )
+    checkpoints = [
+        {
+            "sequence": sequence,
+            "phase": phase,
+            "after_subject_count": after_subject_count,
+            "evidence_reference": (
+                "supplied-session-checkpoint-evidence-sha256:" + character * 64
+            ),
+            "outcome": checkpoint_outcome,
+            "status": 200,
+            "body_state": "complete",
+            "predicate": predicate,
+            "response_bytes": byte_length,
+        }
+        for sequence, (
+            phase, after_subject_count, checkpoint_outcome, predicate,
+            character, byte_length,
+        ) in enumerate(checkpoint_specs)
+    ]
+    committed = outcome == "complete"
+    dispatched = outcome != "startup_unhealthy"
+    resource_bytes = 23 if dispatched else 0
+    resource = {
+        "sequence": 0,
+        "resource_reference": "supplied-session-resource-sha256:" + "5" * 64,
+        "evidence_reference": (
+            "supplied-session-resource-evidence-sha256:"
+            + ("9" if principal_alias == "termivar-lab-bob" else "6") * 64
+            if dispatched else None
+        ),
+        "outcome": (
+            "committed" if committed
+            else "health_unqualified" if dispatched
+            else "not_dispatched"
+        ),
+        "status": 200 if dispatched else None,
+        "response_bytes": resource_bytes,
+        "epoch": 1,
+    }
+    return {
+        "schema": "security.supplied-session-audit/v2",
+        "capability_id": "session.supplied-context-assessment@1",
+        "policy_reference": "supplied-session-policy-sha256:" + "1" * 64,
+        "application_reference": "supplied-session-application-sha256:" + "2" * 64,
+        "principal_reference": "supplied-session-principal-0001",
+        "principal_alias": principal_alias,
+        "principal_assurance": "operator_declared",
+        "credential_mechanism": "cookie_jar",
+        "cookie_policy": {
+            "declared_count": 1,
+            "host_only_count": 1,
+            "domain_count": 0,
+            "secure_count": 0,
+            "http_only_count": 1,
+            "session_count": int(not policy_declares_expiry),
+            "persistent_count": int(policy_declares_expiry),
+            "same_site_missing_count": 1,
+            "same_site_strict_count": 0,
+            "same_site_lax_count": 0,
+            "same_site_none_count": 0,
+            "update_policy": "stop_on_selected_cookie",
+            "browser_semantics": "attributes_preserved_not_browser_csrf_emulation",
+        },
+        "cookie_lifecycle": {
+            "initial_epoch": 1,
+            "final_epoch": 1,
+            "selected_update_response_count": 0,
+            "unselected_update_response_count": 0,
+            "update_classification_failure_count": 0,
+            "updates_applied": 0,
+        },
+        "health_oracle": {
+            "kind": "json_boolean_true",
+            "field_reference": "supplied-session-health-field-sha256:" + "4" * 64,
+        },
+        "outcome": outcome,
+        "coverage": "complete" if committed else "none",
+        "checkpoints": checkpoints,
+        "resources": [resource],
+        "selected_resource_count": 1,
+        "dispatched_resource_count": int(dispatched),
+        "committed_resource_count": int(committed),
+        "dispatched_request_count": len(checkpoints) + int(dispatched),
+        "response_bytes": sum(row["response_bytes"] for row in checkpoints)
+        + resource_bytes,
+        "response_byte_limit": 196_608,
+        "response_byte_limit_exceeded": False,
+        "refresh_performed": False,
+        "anonymous_fallback_performed": False,
+        "continuous_authentication_established": False,
+        "exploit_execution": "not_performed",
+        "impact_validation": "not_performed",
+    }
+
+
+def attach_supplied_session_comparison(
+    comparison, *, before_audit, after_audit, context_status,
+    health_status, accounting_status, status, reason,
+):
+    """Attach the literal comparison wire shape without calling production code."""
+    def facet(facet_status):
+        return {
+            "status": facet_status,
+            "changed_fields": [],
+            "before": {},
+            "after": {},
+            "note": "Synthetic supplied-session comparison fixture.",
+        }
+
+    comparison["supplied_session_comparison"] = {
+        "schema": "termivar-supplied-session-comparison/v1",
+        "status": status,
+        "reason": reason,
+        "scope_assurance": "operator_declared",
+        "context": facet(context_status),
+        "health_and_coverage": facet(health_status),
+        "accounting": facet(accounting_status),
+        "interpretation_limits": [],
+    }
+    comparison["supplied_session_comparison"]["context"]["before"] = {
+        "principal_alias": before_audit["principal_alias"]
+    }
+    comparison["supplied_session_comparison"]["context"]["after"] = {
+        "principal_alias": after_audit["principal_alias"]
+    }
+    comparison["supplied_session_comparison"]["context"]["changed_fields"] = (
+        []
+        if before_audit["principal_alias"] == after_audit["principal_alias"]
+        else ["principal_alias"]
+    )
+    return comparison
+
+
 class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
     def test_discovery_capability_uses_the_real_prerequisites_wire_field(self):
         document = {
@@ -1434,7 +1620,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                     "optional --wordpress-fingerprints FILE",
                     "optional --wordpress-supplied-session when also compiled with supplied-session-review",
                 ],
-            }]
+            }, copy.deepcopy(SYNTHETIC_SESSION_CAPABILITY)]
         }
 
         runner._validate_discovery_capability(document)
@@ -1744,6 +1930,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
 
             lab.wp("rewrite", "flush", "--hard", label="synthetic hard flush")
             run_arguments = calls[0][0]
+            self.assertNotIn("--interactive", run_arguments)
             self.assertIn("--volumes-from", run_arguments)
             self.assertIn("33:33", run_arguments)
             self.assertIn(
@@ -1751,6 +1938,13 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 run_arguments,
             )
             self.assertNotIn("--mount", run_arguments)
+
+            calls.clear()
+            lab.wp(
+                "eval-file", "/dev/stdin", label="synthetic stdin WP-CLI",
+                input_bytes=b"<?php echo 'ok';\n",
+            )
+            self.assertIn("--interactive", calls[0][0])
 
     def test_pretty_rewrite_ground_truth_uses_each_effective_home(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2881,7 +3075,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         self.assertIn('super().__init__(("127.0.0.1", 0)', source)
         self.assertIn('"build", "--network=none", "--pull=false"', source)
         self.assertIn('"--env-file", str(self.wordpress_env)', source)
-        self.assertEqual(source.count('"run", "--pull=never"'), 3)
+        self.assertEqual(source.count('"--pull=never"'), 3)
         self.assertNotIn('"--user", "0:0"', source)
         dockerfile = (runner.FIXTURE_ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("Listen 8080", dockerfile)
@@ -3528,6 +3722,9 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
                 "schema": "security.wordpress-review-audit/v7",
                 "review_basis_schema": "security.wordpress-review-audit/v1",
                 "additional_request_count": 4,
+                "component_count": 4,
+                "advisory_count": 0,
+                "advisories": [],
                 "components": [
                     {
                         "identity": {"kind": "core", "slug": "wordpress"},
@@ -4711,6 +4908,1599 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             ):
                 lab.wp("core", "version", label="synthetic WP-CLI command")
             self.assertEqual(lab._wp_cli_containers, {observed_name})
+
+
+class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
+    @staticmethod
+    def session_input(root, *, credential_alias="termivar-lab-alice"):
+        cookie_value = (
+            f"{credential_alias}|4102444800|" + "T" * 43 + "|" + "b" * 64
+        ).encode("ascii")
+        return runner.LabSessionInput(
+            policy_path=Path(root) / "session-policy.toml",
+            cookie_path=Path(root) / "session-cookie.tsv",
+            cookie_value=cookie_value,
+            principal_alias="termivar-lab-alice",
+            health_path="/termivar-session-health/",
+            resource_path="/termivar-session-member/",
+            application_path="/",
+            policy_identity={"byte_length": 1, "sha256": "0" * 64},
+            cookie_byte_length=len(cookie_value),
+            policy_declares_expiry=True,
+            credential_principal_alias=credential_alias,
+            server_expired=False,
+            lose_after_resource=False,
+        )
+
+    @classmethod
+    def session_wordpress_document(
+        cls, root, *, outcome="complete", integration=True, fingerprints=False,
+        credential_alias="termivar-lab-alice",
+    ):
+        origin = "http://127.0.0.1:8080/"
+        oracle = runner.DiscoveryOracle(
+            application_url=origin,
+            request_paths=runner.EXPECTED_DISCOVERY_PATHS["pretty"],
+            core_base_url=origin,
+            themes_base_url=origin + "wp-content/themes/",
+            plugins_base_url=origin + "wp-content/plugins/",
+            rest_base_url=origin,
+        )
+        session_input = cls.session_input(root, credential_alias=credential_alias)
+        audit = synthetic_supplied_session_audit(
+            outcome=outcome, principal_alias=credential_alias
+        )
+        audit["application_reference"] = runner._supplied_session_literal_reference(
+            b"security.supplied-session-application.reference.v1\0",
+            origin,
+            "supplied-session-application-sha256",
+        )
+        audit["health_oracle"]["field_reference"] = (
+            runner._supplied_session_literal_reference(
+                b"security.supplied-session-health-field.reference.v1\0",
+                "authenticated",
+                "supplied-session-health-field-sha256",
+            )
+        )
+        audit["resources"][0]["resource_reference"] = (
+            runner._supplied_session_literal_reference(
+                b"security.supplied-session-resource.reference.v1\0",
+                origin.rstrip("/") + session_input.resource_path,
+                "supplied-session-resource-sha256",
+            )
+        )
+        resource_bytes = (
+            len(runner._expected_session_private_body(
+                oracle.plugins_base_url, session_input.credential_principal_alias
+            ))
+            if outcome != "startup_unhealthy" else 0
+        )
+        audit["resources"][0]["response_bytes"] = resource_bytes
+        audit["response_bytes"] = (
+            sum(row["response_bytes"] for row in audit["checkpoints"])
+            + resource_bytes
+        )
+        document = WordPressDiscoveryLabAcceptanceTests.discovery_document()
+        document["supplied_session"] = audit
+        document["wordpress_review"].update({
+            "capability_id": BASE_CAPABILITY,
+            "catalog_status": "catalogue_not_supplied",
+            "signal_count": 1,
+            "evidence_reference_count": 1,
+            "item_projected": True,
+        })
+        layout = document["wordpress_discovery"]["layout"]
+        layout["application_reference"] = runner._framed_reference(
+            "wordpress-selected-application", oracle.application_url
+        )
+        role_urls = {
+            "core": oracle.core_base_url,
+            "themes": oracle.themes_base_url,
+            "plugins": oracle.plugins_base_url,
+            "rest_index": oracle.rest_base_url,
+        }
+        for role in layout["roles"]:
+            role["reference"] = runner._framed_reference(
+                "wordpress-discovery-role", role_urls[role["role"]]
+            )
+        for source, request_path in zip(
+            document["wordpress_discovery"]["sources"],
+            oracle.request_paths,
+            strict=True,
+        ):
+            source["role_reference"] = runner._framed_reference(
+                "wordpress-discovery-role",
+                role_urls[
+                    "rest_index" if source["kind"] == "rest_index"
+                    else "themes" if source["kind"] == "theme_stylesheet"
+                    else "plugins"
+                ],
+            )
+            source["resource_reference"] = runner._framed_reference(
+                "wordpress-discovery-resource",
+                origin.rstrip("/") + request_path,
+            )
+        if not integration:
+            return document, session_input, oracle
+
+        committed = outcome == "complete"
+        discovery = document["wordpress_discovery"]
+        discovery["schema"] = "security.wordpress-discovery-audit/v4"
+        discovery["policy_id"] = (
+            "termivar.wordpress-supplied-session-metadata-discovery/v1"
+        )
+        discovery["seed_count"] = 4 if committed else 3
+        discovery["candidate_count"] = 5 if committed else 4
+        discovery["attempted_request_count"] = 5 if committed else 4
+        discovery["completed_response_count"] = 5 if committed else 4
+        discovery["committed_response_count"] = 5 if committed else 4
+        discovery["source_count"] = 5 if committed else 4
+        for source in discovery["sources"]:
+            source["source_supplied_session_page_references"] = []
+        resource_url = origin.rstrip("/") + session_input.resource_path
+        page_reference = runner._framed_supplied_session_page_reference(
+            audit, resource_url
+        )
+        resource = audit["resources"][0]
+        evidence_reference = resource["evidence_reference"]
+        interpreted_bytes = resource["response_bytes"] if committed else 0
+        discovery["supplied_session_pages"] = {
+            "mode": "committed_supplied_session_resources",
+            "policy_reference": audit["policy_reference"],
+            "application_reference": audit["application_reference"],
+            "principal_reference": audit["principal_reference"],
+            "credential_mechanism": "cookie_jar",
+            "session_epoch": 1,
+            "selected_count": 1,
+            "committed_count": int(committed),
+            "accepted_association_count": int(committed),
+            "rejected_association_count": 0,
+            "not_established_association_count": int(not committed),
+            "not_evaluated_count": int(not committed),
+            "interpreted_response_bytes": interpreted_bytes,
+            "pages": [{
+                "page_reference": page_reference,
+                "resource_reference": resource["resource_reference"],
+                "resource_evidence_reference": evidence_reference if committed else None,
+                "acquisition": "reused_supplied_session_response",
+                "association": "accepted" if committed else "not_established",
+                "outcome": "accepted" if committed else "not_evaluated",
+                "fingerprint_evaluation": "not_selected_in_v1",
+                "interpreted_response_bytes": interpreted_bytes,
+                "evidence_reference_count": int(committed),
+                "evidence_references": [evidence_reference] if committed else [],
+            }],
+        }
+        if committed:
+            plugin_role = runner._framed_reference(
+                "wordpress-discovery-role", oracle.plugins_base_url
+            )
+            discovery["sources"].append({
+                "kind": "plugin_readme",
+                "association": "observed_conventional",
+                "resource_reference": "sha256:" + "8" * 64,
+                "role_reference": plugin_role,
+                "component": {
+                    "kind": runner.FINGERPRINT_COMPONENT[0],
+                    "slug": runner.FINGERPRINT_COMPONENT[1],
+                },
+                "parent_depth": 0,
+                "outcome": "observed",
+                "request_attempted": True,
+                "response_bytes": 256,
+                "evidence_reference_count": 1,
+                "evidence_references": ["evidence-0005"],
+                "source_supplied_session_page_references": [page_reference],
+                "plugin": {
+                    "name": "Termivar Fingerprint Lab",
+                    "stable_tag": "9.9.9",
+                },
+            })
+            document["wordpress_review"]["components"].append({
+                "identity": {
+                    "kind": runner.FINGERPRINT_COMPONENT[0],
+                    "slug": runner.FINGERPRINT_COMPONENT[1],
+                },
+                "identity_sources": ["same_origin_asset_path"],
+                "versions": [],
+            })
+        document["wordpress_review"]["component_count"] = 5 if committed else 4
+        document["wordpress_review"]["additional_request_count"] = 5 if committed else 4
+        if fingerprints:
+            document["wordpress_review"]["schema"] = (
+                "security.wordpress-review-audit/v8"
+            )
+            fingerprint_audit = synthetic_fingerprint_audit(variant="empty")
+            fingerprint_audit["catalogue"].update({
+                "id": "termivar-wordpress-asset-matrix",
+                "revision": "v1",
+                "source_namespace": "termivar.synthetic.wordpress-asset-fingerprints",
+                "byte_length": runner.FINGERPRINT_CATALOGUE_PATH.stat().st_size,
+                "sha256": runner.sha256_file(runner.FINGERPRINT_CATALOGUE_PATH),
+                "component_count": 1,
+                "release_count": 3,
+                "file_count": 9,
+            })
+            document["wordpress_asset_fingerprints"] = fingerprint_audit
+        return document, session_input, oracle
+
+    def validate_wordpress_document(
+        self, document, session_input, oracle, *, outcome, integration, fingerprints
+    ):
+        return runner._validate_supplied_session_wordpress_document(
+            document,
+            session_input=session_input,
+            root_origin="http://127.0.0.1:8080/",
+            oracle=oracle,
+            expected_session_outcome=outcome,
+            integration_selected=integration,
+            expected_component_association="observed_conventional",
+            fingerprints_path=(
+                runner.FINGERPRINT_CATALOGUE_PATH if fingerprints else None
+            ),
+        )
+
+    def test_session_wordpress_v4_accepts_option_off_complete_loss_and_empty_audit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cases = (
+                ("complete", False, False, "security.wordpress-discovery-audit/v2"),
+                ("complete", True, False, "security.wordpress-discovery-audit/v4"),
+                ("session_lost", True, False, "security.wordpress-discovery-audit/v4"),
+                ("complete", True, True, "security.wordpress-discovery-audit/v4"),
+            )
+            for outcome, integration, fingerprints, expected_schema in cases:
+                with self.subTest(
+                    outcome=outcome, integration=integration, fingerprints=fingerprints
+                ):
+                    document, session_input, oracle = self.session_wordpress_document(
+                        temporary,
+                        outcome=outcome,
+                        integration=integration,
+                        fingerprints=fingerprints,
+                    )
+                    schema, summary, fingerprint = self.validate_wordpress_document(
+                        document,
+                        session_input,
+                        oracle,
+                        outcome=outcome,
+                        integration=integration,
+                        fingerprints=fingerprints,
+                    )
+                    self.assertEqual(schema, expected_schema)
+                    self.assertEqual(
+                        summary["committed_resource_count"], int(outcome == "complete")
+                    )
+                    self.assertEqual(fingerprint is not None, fingerprints)
+                    if fingerprints:
+                        self.assertEqual(fingerprint["resource_count"], 0)
+                        self.assertEqual(fingerprint["component_count"], 0)
+
+    def test_session_wordpress_v4_rejects_malformed_counts_provenance_and_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            document, session_input, oracle = self.session_wordpress_document(temporary)
+            pages = document["wordpress_discovery"]["supplied_session_pages"]
+            page_reference = pages["pages"][0]["page_reference"]
+            evidence_reference = pages["pages"][0]["resource_evidence_reference"]
+            mutations = []
+            alice_body = runner._expected_session_private_body(
+                oracle.plugins_base_url, "termivar-lab-alice"
+            )
+            bob_body = runner._expected_session_private_body(
+                oracle.plugins_base_url, "termivar-lab-bob"
+            )
+            self.assertNotEqual(alice_body, bob_body)
+            self.assertNotEqual(len(alice_body), len(bob_body))
+
+            changed = copy.deepcopy(document)
+            changed["supplied_session"]["resources"][0]["response_bytes"] = len(
+                bob_body
+            )
+            mutations.append(changed)
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["unexpected_count"] = 0
+            mutations.append(changed)
+
+            for container_path, field in (
+                (("wordpress_discovery", "supplied_session_pages"), "selected_count"),
+                (("wordpress_discovery", "supplied_session_pages", "pages", 0), "evidence_reference_count"),
+                (("wordpress_review",), "additional_request_count"),
+                (("wordpress_review",), "component_count"),
+                (("wordpress_review",), "advisory_count"),
+            ):
+                changed = copy.deepcopy(document)
+                cursor = changed
+                for key in container_path:
+                    cursor = cursor[key]
+                cursor[field] = True
+                mutations.append(changed)
+
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["supplied_session_pages"]["pages"][0][
+                "evidence_references"
+            ] = [evidence_reference, evidence_reference]
+            mutations.append(changed)
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["sources"][0][
+                "source_supplied_session_page_references"
+            ] = [page_reference]
+            mutations.append(changed)
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["sources"][0][
+                "source_page_references"
+            ] = []
+            mutations.append(changed)
+            changed = copy.deepcopy(document)
+            changed["wordpress_discovery"]["sources"].pop()
+            mutations.append(changed)
+            for field in ("component_count", "advisory_count"):
+                changed = copy.deepcopy(document)
+                changed["wordpress_review"][field] = 999
+                mutations.append(changed)
+            for audit_path, replacement in (
+                (("application_reference",), "supplied-session-application-sha256:" + "a" * 64),
+                (("health_oracle", "field_reference"), "supplied-session-health-field-sha256:" + "b" * 64),
+                (("resources", 0, "resource_reference"), "supplied-session-resource-sha256:" + "c" * 64),
+            ):
+                changed = copy.deepcopy(document)
+                cursor = changed["supplied_session"]
+                for key in audit_path[:-1]:
+                    cursor = cursor[key]
+                cursor[audit_path[-1]] = replacement
+                mutations.append(changed)
+
+            for index, changed in enumerate(mutations):
+                with self.subTest(mutation=index):
+                    with self.assertRaises(runner.AcceptanceError):
+                        self.validate_wordpress_document(
+                            changed,
+                            session_input,
+                            oracle,
+                            outcome="complete",
+                            integration=True,
+                            fingerprints=False,
+                        )
+
+            option_off, session_input, oracle = self.session_wordpress_document(
+                temporary, integration=False
+            )
+            option_off["wordpress_discovery"]["supplied_session_pages"] = {}
+            with self.assertRaises(runner.AcceptanceError):
+                self.validate_wordpress_document(
+                    option_off,
+                    session_input,
+                    oracle,
+                    outcome="complete",
+                    integration=False,
+                    fingerprints=False,
+                )
+            for path, value in (
+                (("wordpress_discovery", "omitted_candidate_count"), False),
+                (("wordpress_discovery", "layout", "skipped_foreign_origin_count"), False),
+                (("wordpress_discovery", "sources", 0, "evidence_reference_count"), True),
+                (("wordpress_discovery", "sources", 0, "response_bytes"), True),
+            ):
+                option_off, session_input, oracle = self.session_wordpress_document(
+                    temporary, integration=False
+                )
+                cursor = option_off
+                for key in path[:-1]:
+                    cursor = cursor[key]
+                cursor[path[-1]] = value
+                with self.subTest(option_off_bool_path=path):
+                    with self.assertRaises(runner.AcceptanceError):
+                        self.validate_wordpress_document(
+                            option_off,
+                            session_input,
+                            oracle,
+                            outcome="complete",
+                            integration=False,
+                            fingerprints=False,
+                        )
+            option_off, session_input, oracle = self.session_wordpress_document(
+                temporary, integration=False
+            )
+            option_off["supplied_session"]["application_reference"] = (
+                "supplied-session-application-sha256:" + "d" * 64
+            )
+            with self.assertRaises(runner.AcceptanceError):
+                self.validate_wordpress_document(
+                    option_off,
+                    session_input,
+                    oracle,
+                    outcome="complete",
+                    integration=False,
+                    fingerprints=False,
+                )
+
+    def test_supplied_session_audit_accepts_three_outcomes_and_rejects_bool_counts(self):
+        for outcome, declares_expiry in (
+            ("complete", True),
+            ("session_lost", True),
+            ("startup_unhealthy", False),
+        ):
+            with self.subTest(outcome=outcome):
+                document = {
+                    "supplied_session": synthetic_supplied_session_audit(
+                        outcome=outcome,
+                        policy_declares_expiry=declares_expiry,
+                    )
+                }
+                audit, committed = runner._validate_supplied_session_audit(
+                    document,
+                    expected_outcome=outcome,
+                    expected_principal_alias="termivar-lab-alice",
+                    policy_declares_expiry=declares_expiry,
+                )
+                self.assertEqual(committed, outcome == "complete")
+                self.assertEqual(audit["outcome"], outcome)
+
+        mutations = (
+            ("selected_resource_count",),
+            ("dispatched_request_count",),
+            ("response_byte_limit",),
+            ("cookie_policy", "declared_count"),
+            ("cookie_lifecycle", "initial_epoch"),
+            ("checkpoints", 0, "sequence"),
+            ("checkpoints", 0, "status"),
+            ("resources", 0, "epoch"),
+            ("resources", 0, "status"),
+        )
+        for path in mutations:
+            with self.subTest(path=path):
+                audit = synthetic_supplied_session_audit()
+                cursor = audit
+                for key in path[:-1]:
+                    cursor = cursor[key]
+                cursor[path[-1]] = True
+                with self.assertRaises(runner.AcceptanceError):
+                    runner._validate_supplied_session_audit(
+                        {"supplied_session": audit},
+                        expected_outcome="complete",
+                        expected_principal_alias="termivar-lab-alice",
+                        policy_declares_expiry=True,
+                    )
+
+        changed = synthetic_supplied_session_audit()
+        changed["checkpoints"][1]["predicate"] = "not_matched"
+        with self.assertRaisesRegex(runner.AcceptanceError, "checkpoint"):
+            runner._validate_supplied_session_audit(
+                {"supplied_session": changed},
+                expected_outcome="complete",
+                expected_principal_alias="termivar-lab-alice",
+                policy_declares_expiry=True,
+            )
+
+    def test_supplied_session_trace_is_exact_and_private_assets_are_never_requested(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            session = self.session_input(temporary)
+            metadata = ["/wp-json/", "/wp-content/plugins/example/readme.txt"]
+            trace = [
+                ("GET", "/", 200, ()),
+                ("GET", session.health_path, 200, ("cookie",)),
+                ("GET", session.resource_path, 200, ("cookie",)),
+                ("GET", session.health_path, 200, ("cookie",)),
+                ("GET", metadata[0], 200, ()),
+                ("GET", metadata[1], 200, ()),
+            ]
+            conditional_readme = "/wp-content/plugins/private/readme.txt"
+            counts = runner._assert_supplied_session_trace(
+                trace,
+                session=session,
+                expected_session_paths=[
+                    session.health_path, session.resource_path, session.health_path,
+                ],
+                expected_metadata_paths=metadata,
+                known_metadata_paths=(*metadata, conditional_readme),
+                forbidden_anonymous_paths=(
+                    "/wp-content/plugins/private/assets/fingerprint.js?ver=private-page",
+                    "/wp-content/plugins/private/assets/fingerprint.css?ver=private-page",
+                ),
+            )
+            self.assertEqual(counts["credentialed_request_count"], 3)
+            summary = runner._compact_session_trace_evidence(
+                trace, session, metadata_paths=metadata
+            )
+            self.assertEqual(summary["full_request_count"], 6)
+            self.assertEqual(summary["retained_request_count"], 5)
+            self.assertEqual(summary["omitted_anonymous_general_request_count"], 1)
+            self.assertRegex(summary["full_trace_sha256"], r"^[0-9a-f]{64}$")
+
+            mutations = (
+                trace + [("GET", session.health_path, 200, ())],
+                trace + [("HEAD", "/wp-content/plugins/private/assets/fingerprint.js?ver=private-page", 200, ())],
+                trace + [("GET", "/wp-content/plugins/private/assets/fingerprint.css", 200, ())],
+                trace + [("HEAD", metadata[0], 200, ())],
+                trace + [("GET", metadata[0], 500, ())],
+                trace + [("GET", metadata[0], 200, ())],
+                trace + [("GET", conditional_readme, 200, ())],
+                [
+                    row if row[1] != metadata[0]
+                    else (row[0], row[1], row[2], ("cookie",))
+                    for row in trace
+                ],
+            )
+            for mutated in mutations:
+                with self.subTest(mutated=mutated[-1]):
+                    with self.assertRaises(runner.AcceptanceError):
+                        runner._assert_supplied_session_trace(
+                            mutated,
+                            session=session,
+                            expected_session_paths=[
+                                session.health_path,
+                                session.resource_path,
+                                session.health_path,
+                            ],
+                            expected_metadata_paths=metadata,
+                            known_metadata_paths=(*metadata, conditional_readme),
+                            forbidden_anonymous_paths=(
+                                "/wp-content/plugins/private/assets/fingerprint.js?ver=private-page",
+                                "/wp-content/plugins/private/assets/fingerprint.css?ver=private-page",
+                            ),
+                        )
+
+    def test_sensitive_process_failures_withhold_cookie_and_child_output(self):
+        secret = b"alice|4102444800|" + b"T" * 43 + b"|" + b"b" * 64
+        completed = subprocess.CompletedProcess(
+            ["synthetic"], 7, stdout=b"", stderr=b"failure:" + secret
+        )
+        with mock.patch.object(runner.subprocess, "run", return_value=completed):
+            with self.assertRaises(runner.AcceptanceError) as raised:
+                runner.ProcessRunner().run_sensitive(
+                    ["synthetic"],
+                    sensitive_values=(secret,),
+                    label="synthetic sensitive command",
+                )
+        rendered = str(raised.exception).encode("utf-8")
+        self.assertNotIn(secret, rendered)
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"status": "sensitive_output_rejected"},
+        )
+
+        raw_log = subprocess.CompletedProcess(
+            ["docker", "logs"], 0,
+            stdout=b"unparsed php warning leaked=" + secret + b"\n",
+            stderr=b"",
+        )
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            runner.subprocess, "run", return_value=raw_log
+        ):
+            lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            with self.assertRaises(runner.AcceptanceError) as log_error:
+                lab.request_log(sensitive_values=(secret,))
+        self.assertNotIn(secret, str(log_error.exception).encode("utf-8"))
+
+    def test_session_trace_preserves_the_existing_anonymous_plan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            session = self.session_input(temporary)
+            baseline = [
+                ("GET", "/", 200, ()),
+                ("GET", "/wp-json/", 200, ()),
+                ("GET", "/wp-content/plugins/base/readme.txt", 200, ()),
+            ]
+            conditional = "/wp-content/plugins/private/readme.txt"
+            option_off = [
+                baseline[0],
+                ("GET", session.health_path, 200, ("cookie",)),
+                ("GET", session.resource_path, 200, ("cookie",)),
+                ("GET", session.health_path, 200, ("cookie",)),
+                *baseline[1:],
+            ]
+            healthy = [*option_off, ("GET", conditional, 200, ())]
+            runner._assert_session_preserves_anonymous_trace(
+                baseline,
+                option_off,
+                session=session,
+                conditional_metadata_path=None,
+            )
+            runner._assert_session_preserves_anonymous_trace(
+                baseline,
+                healthy,
+                session=session,
+                conditional_metadata_path=conditional,
+            )
+            for changed, conditional_path in (
+                (option_off[:-1], None),
+                (healthy + [("GET", "/unexpected/", 200, ())], conditional),
+            ):
+                with self.assertRaises(runner.AcceptanceError):
+                    runner._assert_session_preserves_anonymous_trace(
+                        baseline,
+                        changed,
+                        session=session,
+                        conditional_metadata_path=conditional_path,
+                    )
+
+    def test_real_wordpress_cookie_shape_private_inputs_and_cleanup(self):
+        expiration = 4_102_444_800
+        cookie = (
+            "termivar-lab-alice|4102444800|" + "T" * 43 + "|" + "b" * 64
+        )
+        encoded = (
+            f"{expiration}\twordpress_logged_in_{'a' * 32}\t{cookie}"
+        ).encode("ascii")
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = runner.DockerWordPressLab(runner.ProcessRunner(), Path(temporary))
+            lab.wp = mock.Mock(side_effect=[
+                runner.CommandResult(b"", b"", 0),
+                runner.CommandResult(encoded, b"", 0),
+            ])
+            credential = lab.configure_supplied_session(
+                path="/var/www/html",
+                application_path="/",
+                credential_login="termivar-lab-alice",
+                expiration_unix_seconds=expiration,
+            )
+            self.assertEqual(credential.principal_alias, "termivar-lab-alice")
+            self.assertFalse(credential.server_expired)
+            self.assertRegex(
+                credential.cookie_name, r"^wordpress_logged_in_[0-9a-f]{32}$"
+            )
+            self.assertNotIn(cookie, repr(credential))
+            cookie_program = lab.wp.call_args_list[1].kwargs["input_bytes"]
+            self.assertIn(b"WP_Session_Tokens::get_instance", cookie_program)
+            self.assertIn(b"wp_generate_auth_cookie", cookie_program)
+
+            session = runner._write_supplied_session_inputs(
+                Path(temporary),
+                name="session-root-healthy",
+                origin="http://127.0.0.1:8080/",
+                credential=credential,
+            )
+            policy = session.policy_path.read_text(encoding="utf-8")
+            self.assertIn('same_site = "missing"', policy)
+            self.assertIn(f"expires_unix_seconds = {expiration}", policy)
+            self.assertNotIn(cookie, policy)
+            self.assertEqual(
+                session.cookie_path.read_bytes(),
+                b"wordpress-lab-session\t" + cookie.encode("ascii") + b"\r\n",
+            )
+            self.assertEqual(session.credential_principal_alias, "termivar-lab-alice")
+            runner._remove_supplied_session_inputs(session)
+            self.assertFalse(session.policy_path.exists())
+            self.assertFalse(session.cookie_path.exists())
+
+            malformed_lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            malformed_lab.wp = mock.Mock(side_effect=[
+                runner.CommandResult(b"", b"", 0),
+                runner.CommandResult(
+                    encoded.replace(b"wordpress_logged_in_", b"wordpress_logged_in_X"),
+                    b"", 0,
+                ),
+            ])
+            with self.assertRaisesRegex(runner.AcceptanceError, "cookie output"):
+                malformed_lab.configure_supplied_session(
+                    path="/var/www/html",
+                    application_path="/",
+                    credential_login="termivar-lab-alice",
+                    expiration_unix_seconds=expiration,
+                )
+
+            non_ascii_lab = runner.DockerWordPressLab(
+                runner.ProcessRunner(), Path(temporary)
+            )
+            non_ascii_lab.wp = mock.Mock(side_effect=[
+                runner.CommandResult(b"", b"", 0),
+                runner.CommandResult(b"\xff", b"", 0),
+            ])
+            with self.assertRaisesRegex(runner.AcceptanceError, "cookie output"):
+                non_ascii_lab.configure_supplied_session(
+                    path="/var/www/html",
+                    application_path="/",
+                    credential_login="termivar-lab-alice",
+                    expiration_unix_seconds=expiration,
+                )
+
+    def test_fixed_expiry_makes_healthy_and_loss_policy_inputs_comparable(self):
+        expiration = 4_102_444_800
+        base = dict(
+            principal_alias="termivar-lab-alice",
+            cookie_name="wordpress_logged_in_" + "a" * 32,
+            application_path="/",
+            expires_unix_seconds=expiration,
+            server_expired=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            healthy = runner._write_supplied_session_inputs(
+                Path(temporary),
+                name="session-root-healthy",
+                origin="http://127.0.0.1:8080/",
+                credential=runner.LabSessionCredential(
+                    cookie_value=(
+                        "termivar-lab-alice|4102444800|" + "T" * 43 + "|" + "b" * 64
+                    ),
+                    lose_after_resource=False,
+                    **base,
+                ),
+            )
+            loss = runner._write_supplied_session_inputs(
+                Path(temporary),
+                name="session-root-loss-after-resource",
+                origin="http://127.0.0.1:8080/",
+                credential=runner.LabSessionCredential(
+                    cookie_value=(
+                        "termivar-lab-alice|4102444800|" + "U" * 43 + "|" + "c" * 64
+                    ),
+                    lose_after_resource=True,
+                    **base,
+                ),
+            )
+            self.assertEqual(healthy.policy_identity, loss.policy_identity)
+            self.assertNotEqual(healthy.cookie_value, loss.cookie_value)
+            runner._remove_supplied_session_inputs(healthy)
+            runner._remove_supplied_session_inputs(loss)
+
+    def test_private_input_io_failures_do_not_expose_paths(self):
+        expiration = 4_102_444_800
+        credential = runner.LabSessionCredential(
+            principal_alias="termivar-lab-alice",
+            cookie_name="wordpress_logged_in_" + "a" * 32,
+            cookie_value=(
+                "termivar-lab-alice|4102444800|" + "T" * 43 + "|" + "b" * 64
+            ),
+            application_path="/",
+            expires_unix_seconds=expiration,
+            server_expired=False,
+            lose_after_resource=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            session = runner._write_supplied_session_inputs(
+                Path(temporary),
+                name="session-root-healthy",
+                origin="http://127.0.0.1:8080/",
+                credential=credential,
+            )
+            private_paths = (
+                str(session.policy_path).encode(), str(session.cookie_path).encode()
+            )
+            path_type = type(session.policy_path)
+            with mock.patch.object(
+                path_type,
+                "read_bytes",
+                side_effect=OSError(str(session.policy_path)),
+            ):
+                with self.assertRaises(runner.AcceptanceError) as read_error:
+                    runner._run_scan(
+                        mock.Mock(),
+                        Path("synthetic-termivar"),
+                        "http://127.0.0.1:8080/",
+                        Path(temporary) / "unused-bundle",
+                        wordpress_review=True,
+                        discovery=True,
+                        supplied_session=session,
+                        wordpress_supplied_session=True,
+                        label="synthetic private input failure",
+                    )
+            for private_path in private_paths:
+                self.assertNotIn(private_path, str(read_error.exception).encode())
+
+            with mock.patch.object(
+                path_type,
+                "unlink",
+                side_effect=OSError(str(session.cookie_path)),
+            ):
+                with self.assertRaises(runner.AcceptanceError) as unlink_error:
+                    runner._remove_supplied_session_inputs(session)
+            for private_path in private_paths:
+                self.assertNotIn(private_path, str(unlink_error.exception).encode())
+            session.cookie_path.unlink(missing_ok=True)
+            session.policy_path.unlink(missing_ok=True)
+
+    def test_run_scan_uses_sensitive_process_path_and_keeps_private_inputs_out(self):
+        expiration = 4_102_444_800
+        cookie_value = (
+            "termivar-lab-alice|4102444800|" + "T" * 43 + "|" + "b" * 64
+        )
+        credential = runner.LabSessionCredential(
+            principal_alias="termivar-lab-alice",
+            cookie_name="wordpress_logged_in_" + "a" * 32,
+            cookie_value=cookie_value,
+            application_path="/",
+            expires_unix_seconds=expiration,
+            server_expired=False,
+            lose_after_resource=False,
+        )
+
+        class SensitiveOnlyRunner:
+            def __init__(self):
+                self.call = None
+
+            def run(self, *_args, **_kwargs):
+                raise AssertionError("session scan used the ordinary process path")
+
+            def run_sensitive(self, arguments, *, sensitive_values, **kwargs):
+                self.call = (list(arguments), tuple(sensitive_values), dict(kwargs))
+                bundle = Path(arguments[arguments.index("--report-dir") + 1])
+                write_synthetic_bundle(
+                    bundle.parent,
+                    bundle.name,
+                    [synthetic_assessment_item(
+                        BASE_FINGERPRINT,
+                        BASE_CAPABILITY,
+                        "Synthetic session process observation",
+                    )],
+                )
+                return runner.CommandResult(
+                    b"", b"", 0, 0.01,
+                    {"status": "not_measured", "reason": "synthetic"},
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = runner._write_supplied_session_inputs(
+                root,
+                name="session-root-healthy",
+                origin="http://127.0.0.1:8080/",
+                credential=credential,
+            )
+            process = SensitiveOnlyRunner()
+            bundle = root / "bundle"
+            document, identity, _, _, _ = runner._run_scan(
+                process,
+                Path("synthetic-termivar"),
+                "http://127.0.0.1:8080/",
+                bundle,
+                wordpress_review=True,
+                discovery=True,
+                supplied_session=session,
+                wordpress_supplied_session=True,
+                label="synthetic supplied-session scan",
+            )
+            arguments, sensitive, kwargs = process.call
+            self.assertIn("--wordpress-supplied-session", arguments)
+            self.assertIn("--session-policy", arguments)
+            self.assertIn("--session-cookie-file", arguments)
+            self.assertEqual(kwargs["label"], "synthetic supplied-session scan")
+            self.assertIn(cookie_value.encode("ascii"), sensitive)
+            self.assertIn(b"T" * 43, sensitive)
+            self.assertIn(b"b" * 64, sensitive)
+            self.assertIn(runner.SESSION_PRIVATE_BODY_CANARY, sensitive)
+            self.assertIn(str(session.policy_path).encode(), sensitive)
+            self.assertIn(str(session.cookie_path).encode(), sensitive)
+            self.assertEqual(document["schema"], "venom-rendered-assessment/v1")
+            self.assertEqual(identity, runner._report_identity(bundle))
+            runner._remove_supplied_session_inputs(session)
+
+    def test_selected_empty_fingerprint_audit_is_typed_and_rejects_bool(self):
+        audit = synthetic_fingerprint_audit(variant="empty")
+        catalogue = audit["catalogue"]
+        catalogue.update({
+            "id": "termivar-wordpress-asset-matrix",
+            "revision": "v1",
+            "source_namespace": "termivar.synthetic.wordpress-asset-fingerprints",
+            "byte_length": runner.FINGERPRINT_CATALOGUE_PATH.stat().st_size,
+            "sha256": runner.sha256_file(runner.FINGERPRINT_CATALOGUE_PATH),
+            "component_count": 1,
+            "release_count": 3,
+            "file_count": 9,
+        })
+        document = {"wordpress_asset_fingerprints": audit}
+        summary = runner._validate_selected_empty_fingerprint_audit(
+            document, runner.FINGERPRINT_CATALOGUE_PATH
+        )
+        self.assertEqual(summary["component_count"], 0)
+        for field in (
+            "candidate_count", "selected_resource_count", "attempted_request_count",
+            "resource_count", "component_count",
+        ):
+            with self.subTest(field=field):
+                mutated = copy.deepcopy(document)
+                mutated["wordpress_asset_fingerprints"][field] = False
+                with self.assertRaises(runner.AcceptanceError):
+                    runner._validate_selected_empty_fingerprint_audit(
+                        mutated, runner.FINGERPRINT_CATALOGUE_PATH
+                    )
+
+    def test_offline_acceptance_executes_session_self_health_and_principal_compares(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scenarios, responses, _ = offline_fixture(root)
+            surface_item = synthetic_assessment_item(
+                "sha256:" + "9" * 64,
+                "session.synthetic-health-observation@1",
+                "Synthetic supplied-session health observation",
+            )
+            discovery_complete = synthetic_discovery_item()
+            discovery_complete["evidence_count"] = 5
+            discovery_complete["evidence_references"] = [
+                f"evidence-{index:04d}" for index in range(1, 6)
+            ]
+            discovery_lost = copy.deepcopy(discovery_complete)
+            discovery_lost["evidence_count"] = 4
+            discovery_lost["evidence_references"] = [
+                f"evidence-{index:04d}" for index in range(1, 5)
+            ]
+            audits = {
+                "session-root-option-off": synthetic_supplied_session_audit(),
+                "session-root-healthy": synthetic_supplied_session_audit(),
+                "session-root-loss-after-resource": synthetic_supplied_session_audit(
+                    outcome="session_lost"
+                ),
+                "session-root-bob-healthy": synthetic_supplied_session_audit(
+                    principal_alias="termivar-lab-bob"
+                ),
+            }
+            raw_documents = {}
+            scenario_items = {}
+            for name, audit in audits.items():
+                integration_selected = name != "session-root-option-off"
+                items = [
+                    copy.deepcopy(surface_item),
+                    copy.deepcopy(
+                        discovery_complete
+                        if integration_selected and audit["outcome"] == "complete"
+                        else discovery_lost
+                    ),
+                ]
+                wordpress_document, _, _ = self.session_wordpress_document(
+                    root,
+                    outcome=audit["outcome"],
+                    integration=integration_selected,
+                    fingerprints=False,
+                    credential_alias=audit["principal_alias"],
+                )
+                audit = wordpress_document["supplied_session"]
+                audits[name] = audit
+                bundle, raw = write_synthetic_bundle(
+                    root,
+                    name,
+                    items,
+                    optional_audits={
+                        "supplied_session": audit,
+                        "wordpress_review": wordpress_document["wordpress_review"],
+                        "wordpress_discovery": wordpress_document[
+                            "wordpress_discovery"
+                        ],
+                    },
+                )
+                raw_documents[name] = raw
+                scenario_items[name] = items
+                scenarios[name] = {
+                    "bundle": runner._report_identity(bundle),
+                    "_bundle": str(bundle),
+                    "supplied_session": {
+                        "outcome": audit["outcome"],
+                        "wordpress_integration": (
+                            "selected" if integration_selected else "not_selected"
+                        ),
+                    },
+                }
+                responses[f"offline verification {name}"] = {
+                    "schema": "termivar-report-verification/v1",
+                    "status": "integrity_match",
+                }
+                self_compare = self_comparison(raw, items)
+                attach_supplied_session_comparison(
+                    self_compare,
+                    before_audit=audit,
+                    after_audit=audit,
+                    context_status="same_declared_context",
+                    health_status="unchanged",
+                    accounting_status="unchanged",
+                    status="compared_within_same_declared_context",
+                    reason=None,
+                )
+                wordpress_self = wordpress_comparison(
+                    discovery=True, controlled=False
+                )
+                wordpress_self["schema"] = (
+                    "termivar-wordpress-review-comparison/v4"
+                    if integration_selected
+                    else "termivar-wordpress-review-comparison/v2"
+                )
+                source_inventory = runner._read_assessment_inventory(
+                    bundle / "assessment.json",
+                    f"synthetic supplied-session self source {name}",
+                )
+                for facet_name, facet_status, projector in (
+                    (
+                        "methodology", "unchanged",
+                        runner._project_wordpress_methodology,
+                    ),
+                    (
+                        "coverage", "not_established",
+                        runner._project_wordpress_coverage,
+                    ),
+                    (
+                        "provenance", "unchanged",
+                        runner._project_wordpress_provenance,
+                    ),
+                    (
+                        "discovery_source_content", "unchanged",
+                        runner._project_wordpress_discovery_source_content,
+                    ),
+                ):
+                    projection = projector(
+                        source_inventory,
+                        f"synthetic supplied-session self {facet_name} {name}",
+                    )
+                    wordpress_self[facet_name] = {
+                        "status": facet_status,
+                        "changed_fields": [],
+                        "before": projection,
+                        "after": copy.deepcopy(projection),
+                        "note": "Synthetic acceptance facet.",
+                    }
+                wordpress_self["components"]["paired_unchanged_count"] = len(
+                    wordpress_document["wordpress_review"]["components"]
+                )
+                self_compare["wordpress_review_comparison"] = wordpress_self
+                responses[f"offline self comparison {name}"] = self_compare
+
+            healthy_raw = raw_documents["session-root-healthy"]
+            loss_raw = raw_documents["session-root-loss-after-resource"]
+            unchanged_projection = projection_from_item(surface_item)
+            changed_before_projection = projection_from_item(discovery_complete)
+            changed_after_projection = projection_from_item(discovery_lost)
+            health_loss = comparison_document(
+                healthy_raw, 2, loss_raw, 2,
+                groups={
+                    "only_in_after": [],
+                    "only_in_before": [],
+                    "changed": [comparison_item(
+                        discovery_complete["fingerprint"],
+                        discovery_complete["capability_id"],
+                        before=changed_before_projection,
+                        after=changed_after_projection,
+                        changed_fields=["evidence"],
+                    )],
+                    "unchanged": [comparison_item(
+                        surface_item["fingerprint"], surface_item["capability_id"],
+                        before=unchanged_projection,
+                        after=copy.deepcopy(unchanged_projection),
+                        changed_fields=[],
+                    )],
+                },
+            )
+            attach_supplied_session_comparison(
+                health_loss,
+                before_audit=audits["session-root-healthy"],
+                after_audit=audits["session-root-loss-after-resource"],
+                context_status="same_declared_context",
+                health_status="changed",
+                accounting_status="changed",
+                status="compared_within_same_declared_context",
+                reason=None,
+            )
+            health_wordpress = wordpress_comparison(discovery=True, controlled=False)
+            health_wordpress["schema"] = "termivar-wordpress-review-comparison/v4"
+            healthy_inventory = runner._read_assessment_inventory(
+                Path(scenarios["session-root-healthy"]["_bundle"])
+                / "assessment.json",
+                "synthetic healthy WordPress coverage source",
+            )
+            loss_inventory = runner._read_assessment_inventory(
+                Path(scenarios["session-root-loss-after-resource"]["_bundle"])
+                / "assessment.json",
+                "synthetic lost WordPress coverage source",
+            )
+            before_coverage = runner._project_wordpress_coverage(
+                healthy_inventory, "synthetic healthy WordPress coverage source"
+            )
+            after_coverage = runner._project_wordpress_coverage(
+                loss_inventory, "synthetic lost WordPress coverage source"
+            )
+            health_wordpress["coverage"].update({
+                "status": "changed",
+                "changed_fields": sorted(
+                    field
+                    for field in before_coverage.keys() | after_coverage.keys()
+                    if before_coverage.get(field) != after_coverage.get(field)
+                ),
+                "before": before_coverage,
+                "after": after_coverage,
+            })
+            for facet_name, projector in (
+                ("methodology", runner._project_wordpress_methodology),
+                ("provenance", runner._project_wordpress_provenance),
+            ):
+                before_facet = projector(
+                    healthy_inventory,
+                    f"synthetic healthy WordPress {facet_name} source",
+                )
+                after_facet = projector(
+                    loss_inventory,
+                    f"synthetic lost WordPress {facet_name} source",
+                )
+                health_wordpress[facet_name] = {
+                    "status": "unchanged",
+                    "changed_fields": [],
+                    "before": before_facet,
+                    "after": after_facet,
+                    "note": "Synthetic acceptance facet.",
+                }
+            def expected_source_content(source_document):
+                rest_source = next(
+                    source for source in source_document["wordpress_discovery"]["sources"]
+                    if source["kind"] == "rest_index"
+                )
+                rest_projection = {
+                    field: copy.deepcopy(rest_source[field])
+                    for field in (
+                        "kind", "namespaces", "association", "resource_reference",
+                        "role_reference", "source_supplied_session_page_references",
+                    )
+                    if field in rest_source
+                }
+                rest_projection["namespaces"] = sorted(rest_projection["namespaces"])
+                page = source_document["wordpress_discovery"][
+                    "supplied_session_pages"
+                ]["pages"][0]
+                return {
+                    "rest_indexes": [rest_projection],
+                    "supplied_session_pages": [{
+                        field: copy.deepcopy(page[field])
+                        for field in (
+                            "page_reference", "resource_reference",
+                            "resource_evidence_reference", "acquisition",
+                            "association", "outcome", "interpreted_response_bytes",
+                            "fingerprint_evaluation",
+                        )
+                    }],
+                }
+
+            before_source_content = expected_source_content(json.loads(healthy_raw))
+            after_source_content = expected_source_content(json.loads(loss_raw))
+            health_wordpress["discovery_source_content"] = {
+                "status": "changed",
+                "changed_fields": ["supplied_session_pages"],
+                "before": before_source_content,
+                "after": after_source_content,
+                "note": "Synthetic acceptance facet.",
+            }
+            health_wordpress["components"] = {
+                "paired_unchanged_count": 4,
+                "paired_changed": [],
+                "only_in_before": [{
+                    "key": {
+                        "kind": runner.FINGERPRINT_COMPONENT[0],
+                        "slug": runner.FINGERPRINT_COMPONENT[1],
+                    },
+                    "content": {"component_evidence": "synthetic"},
+                    "interpretation": (
+                        "present_only_in_the_supplied_before_audit_not_verified_remediation"
+                    ),
+                }],
+                "only_in_after": [],
+            }
+            health_loss["wordpress_review_comparison"] = health_wordpress
+            responses["offline supplied-session health-loss comparison"] = health_loss
+
+            bob_raw = raw_documents["session-root-bob-healthy"]
+            bob_items = scenario_items["session-root-bob-healthy"]
+            healthy_items = scenario_items["session-root-healthy"]
+            before_inventory = runner._read_assessment_inventory(
+                Path(scenarios["session-root-healthy"]["_bundle"])
+                / "assessment.json",
+                "synthetic cross-principal before source",
+            )
+            after_inventory = runner._read_assessment_inventory(
+                Path(scenarios["session-root-bob-healthy"]["_bundle"])
+                / "assessment.json",
+                "synthetic cross-principal after source",
+            )
+            principal_change = comparison_document(
+                healthy_raw, len(healthy_items), bob_raw, len(bob_items),
+                groups={
+                    "only_in_after": [
+                        comparison_item(
+                            item["fingerprint"], item["capability_id"],
+                            before=None,
+                            after=projection_from_item(item),
+                            changed_fields=[],
+                        )
+                        for item in bob_items
+                    ],
+                    "only_in_before": [
+                        comparison_item(
+                            item["fingerprint"], item["capability_id"],
+                            before=projection_from_item(item),
+                            after=None,
+                            changed_fields=[],
+                        )
+                        for item in healthy_items
+                    ],
+                    "changed": [],
+                    "unchanged": [],
+                },
+            )
+            attach_supplied_session_comparison(
+                principal_change,
+                before_audit=audits["session-root-healthy"],
+                after_audit=audits["session-root-bob-healthy"],
+                context_status="operator_declared_principal_changed",
+                health_status="not_comparable",
+                accounting_status="not_comparable",
+                status="not_compared",
+                reason="operator_declared_principal_changed",
+            )
+            principal_wordpress = wordpress_comparison(discovery=True, controlled=False)
+            principal_facet_sources = {
+                "methodology": runner._project_wordpress_methodology,
+                "coverage": runner._project_wordpress_coverage,
+                "provenance": runner._project_wordpress_provenance,
+                "discovery_source_content": (
+                    runner._project_wordpress_discovery_source_content
+                ),
+            }
+            for facet_name, projector in principal_facet_sources.items():
+                before_facet = projector(
+                    before_inventory, f"synthetic cross-principal before {facet_name}"
+                )
+                after_facet = projector(
+                    after_inventory, f"synthetic cross-principal after {facet_name}"
+                )
+                facet_status = (
+                    "not_established"
+                    if facet_name == "coverage" and before_facet == after_facet
+                    else "unchanged" if before_facet == after_facet
+                    else "changed"
+                )
+                principal_wordpress[facet_name] = {
+                    "status": facet_status,
+                    "changed_fields": sorted(
+                        field
+                        for field in before_facet.keys() | after_facet.keys()
+                        if before_facet.get(field) != after_facet.get(field)
+                    ),
+                    "before": before_facet,
+                    "after": after_facet,
+                    "note": "Synthetic acceptance facet.",
+                }
+            principal_wordpress.update({
+                "schema": "termivar-wordpress-review-comparison/v4",
+                "status": "not_compared",
+                "reason": "supplied_session_context_mismatch",
+                "components": {
+                    "paired_unchanged_count": 0,
+                    "paired_changed": [],
+                    "only_in_before": [],
+                    "only_in_after": [],
+                },
+                "advisories": {
+                    "paired_unchanged_count": 0,
+                    "paired_changed": [],
+                    "only_in_before": [],
+                    "only_in_after": [],
+                },
+            })
+            principal_change["wordpress_review_comparison"] = principal_wordpress
+            responses[
+                "offline supplied-session principal-context comparison"
+            ] = principal_change
+            counts, _ = runner._validate_comparison_partition(
+                principal_change,
+                before_inventory,
+                after_inventory,
+                "synthetic cross-principal partition",
+                context_blocks_item_pairing=True,
+            )
+            self.assertEqual(counts["only_in_before"], 2)
+            self.assertEqual(counts["only_in_after"], 2)
+            duplicated = copy.deepcopy(principal_change)
+            duplicated["only_in_before"].append(
+                copy.deepcopy(duplicated["only_in_before"][0])
+            )
+            with self.assertRaisesRegex(runner.AcceptanceError, "within comparison group"):
+                runner._validate_comparison_partition(
+                    duplicated,
+                    before_inventory,
+                    after_inventory,
+                    "synthetic duplicate cross-principal partition",
+                    context_blocks_item_pairing=True,
+                )
+            substituted = copy.deepcopy(principal_change)
+            substituted["only_in_after"][0]["fingerprint"] = "sha256:" + "e" * 64
+            with self.assertRaises(runner.AcceptanceError):
+                runner._validate_comparison_partition(
+                    substituted,
+                    before_inventory,
+                    after_inventory,
+                    "synthetic substituted cross-principal partition",
+                    context_blocks_item_pairing=True,
+                )
+
+            process = offline_process_runner(responses, scenarios)
+            result = runner._run_offline_acceptance(
+                process, Path("synthetic-termivar"), scenarios
+            )
+            self.assertEqual(
+                result["supplied_session_healthy_to_loss"]["health_and_coverage"],
+                "changed",
+            )
+            self.assertEqual(
+                result["supplied_session_healthy_to_loss"]
+                ["wordpress_provenance"],
+                "unchanged",
+            )
+            self.assertEqual(
+                result["supplied_session_healthy_to_loss"]
+                ["wordpress_discovery_source_content"],
+                "changed",
+            )
+            self.assertEqual(
+                result["supplied_session_healthy_to_loss"]["item_counts"],
+                {
+                    "only_in_after": 0,
+                    "only_in_before": 0,
+                    "changed": 1,
+                    "unchanged": 1,
+                },
+            )
+            self.assertEqual(
+                result["supplied_session_alice_to_bob"]["reason"],
+                "operator_declared_principal_changed",
+            )
+            self.assertEqual(
+                result["supplied_session_alice_to_bob"]["item_counts"],
+                {
+                    "only_in_after": 2,
+                    "only_in_before": 2,
+                    "changed": 0,
+                    "unchanged": 0,
+                },
+            )
+            self.assertIn(
+                "offline supplied-session health-loss comparison",
+                [label for label, _ in process.calls],
+            )
+            self.assertIn(
+                "offline supplied-session principal-context comparison",
+                [label for label, _ in process.calls],
+            )
+
+            invalid_self_responses = copy.deepcopy(responses)
+            invalid_self_facet = invalid_self_responses[
+                "offline self comparison session-root-healthy"
+            ]["wordpress_review_comparison"]["methodology"]
+            invalid_self_facet.update({
+                "changed_fields": [],
+                "before": {"equal_but_not_source_derived": True},
+                "after": {"equal_but_not_source_derived": True},
+            })
+            with self.assertRaises(runner.AcceptanceError):
+                runner._run_offline_acceptance(
+                    offline_process_runner(invalid_self_responses, scenarios),
+                    Path("synthetic-termivar"),
+                    scenarios,
+                )
+
+            def move_health_change_to_unchanged(response):
+                changed_item = response["changed"].pop()
+                changed_item["changed_fields"] = []
+                response["unchanged"].append(changed_item)
+
+            def move_health_change_to_one_sided(response):
+                changed_item = response["changed"].pop()
+                changed_item["after"] = None
+                changed_item["changed_fields"] = []
+                response["only_in_before"].append(changed_item)
+
+            for label, mutate in (
+                (
+                    "missing health-loss WordPress comparison",
+                    lambda response: response.pop("wordpress_review_comparison"),
+                ),
+                (
+                    "paired cross-principal WordPress component",
+                    lambda response: response["wordpress_review_comparison"][
+                        "components"
+                    ].update({"paired_unchanged_count": 1}),
+                ),
+                (
+                    "boolean cross-principal WordPress advisory count",
+                    lambda response: response["wordpress_review_comparison"][
+                        "advisories"
+                    ].update({"paired_unchanged_count": False}),
+                ),
+                (
+                    "cross-principal WordPress methodology projection",
+                    lambda response: response["wordpress_review_comparison"][
+                        "methodology"
+                    ]["before"]["wordpress_discovery"].update({
+                        "policy_id": "synthetic.invalid-policy",
+                    }),
+                ),
+                (
+                    "cross-principal WordPress canonical layout order",
+                    lambda response: response["wordpress_review_comparison"][
+                        "methodology"
+                    ]["before"]["wordpress_discovery"]["layout_roles"].reverse(),
+                ),
+                (
+                    "cross-principal WordPress coverage status",
+                    lambda response: response["wordpress_review_comparison"][
+                        "coverage"
+                    ].update({"status": "unchanged"}),
+                ),
+                (
+                    "cross-principal WordPress provenance projection",
+                    lambda response: response["wordpress_review_comparison"][
+                        "provenance"
+                    ]["after"]["wordpress_supplied_session"].update({
+                        "session_epoch": 2,
+                    }),
+                ),
+                (
+                    "cross-principal WordPress source-content status",
+                    lambda response: response["wordpress_review_comparison"][
+                        "discovery_source_content"
+                    ].update({"status": "unchanged", "changed_fields": []}),
+                ),
+                (
+                    "one-sided health-loss WordPress advisory",
+                    lambda response: response["wordpress_review_comparison"][
+                        "advisories"
+                    ]["only_in_before"].append({"synthetic": True}),
+                ),
+                (
+                    "unchanged health-loss WordPress source content",
+                    lambda response: response["wordpress_review_comparison"][
+                        "discovery_source_content"
+                    ].update({"status": "unchanged", "changed_fields": []}),
+                ),
+                (
+                    "wrong health-loss WordPress source projection",
+                    lambda response: response["wordpress_review_comparison"][
+                        "discovery_source_content"
+                    ]["after"]["supplied_session_pages"][0].update(
+                        {"association": "accepted"}
+                    ),
+                ),
+                (
+                    "wrong health-loss WordPress coverage fields",
+                    lambda response: response["wordpress_review_comparison"][
+                        "coverage"
+                    ].update({"changed_fields": ["wordpress_discovery"]}),
+                ),
+                (
+                    "changed health-loss WordPress provenance",
+                    lambda response: response["wordpress_review_comparison"][
+                        "provenance"
+                    ].update({
+                        "status": "changed",
+                        "changed_fields": ["supplied_session_context"],
+                    }),
+                ),
+                (
+                    "wrong equal-bogus health-loss methodology projection",
+                    lambda response: response["wordpress_review_comparison"][
+                        "methodology"
+                    ].update({
+                        "status": "unchanged",
+                        "changed_fields": [],
+                        "before": {"equal_but_not_source_derived": True},
+                        "after": {"equal_but_not_source_derived": True},
+                    }),
+                ),
+                (
+                    "wrong health-loss outer unchanged partition",
+                    move_health_change_to_unchanged,
+                ),
+                (
+                    "wrong health-loss outer capability",
+                    lambda response: response["changed"][0].update({
+                        "capability_id": BASE_CAPABILITY,
+                    }),
+                ),
+                (
+                    "wrong health-loss outer changed fields",
+                    lambda response: response["changed"][0].update({
+                        "changed_fields": ["title"],
+                    }),
+                ),
+                (
+                    "one-sided health-loss outer discovery item",
+                    move_health_change_to_one_sided,
+                ),
+            ):
+                with self.subTest(label=label):
+                    invalid_responses = copy.deepcopy(responses)
+                    target = (
+                        "offline supplied-session health-loss comparison"
+                        if label.startswith((
+                            "missing", "one-sided", "unchanged", "wrong", "changed"
+                        )) else
+                        "offline supplied-session principal-context comparison"
+                    )
+                    mutate(invalid_responses[target])
+                    with self.assertRaises(runner.AcceptanceError):
+                        runner._run_offline_acceptance(
+                            offline_process_runner(invalid_responses, scenarios),
+                            Path("synthetic-termivar"),
+                            scenarios,
+                        )
+
+    def test_scenario_registry_and_static_session_fixture_contract_are_exact(self):
+        expected_registry = (
+            "ordinary-web-review", "pretty-review-only", "pretty-discovery",
+            "suppressed-review-only", "suppressed-discovery", "plain-review-only",
+            "plain-discovery", "session-root-option-off", "session-root-healthy",
+            "session-root-fingerprint-selected-empty", "session-root-wrong-principal",
+            "session-root-loss-after-resource", "session-root-bob-healthy",
+            "session-root-expired-startup", "fingerprint-observed-option-off",
+            "fingerprint-one-file-observed-option-off",
+            "fingerprint-common-file-observed-option-off", "fingerprint-release-b",
+            "fingerprint-release-a", "fingerprint-release-c", "fingerprint-one-file",
+            "fingerprint-common-file", "fingerprint-mixed-artifacts",
+            "fingerprint-missing-reference", "blog-pretty-discovery",
+            "session-blog-healthy", "blog-fingerprint-observed-option-off",
+            "blog-fingerprint-sibling-rejected", "blog-plain-discovery",
+            "cms-review-only", "cms-discovery", "custom-review-only",
+            "custom-no-layout-discovery", "custom-layout-discovery",
+            "custom-fingerprint-observed-option-off", "custom-fingerprint-release-b",
+            "session-custom-fingerprint-selected-empty",
+        )
+        self.assertEqual(runner.EXPECTED_SCENARIOS, expected_registry)
+        self.assertEqual(len(runner.EXPECTED_SCENARIOS), 37)
+        self.assertEqual(len(set(runner.EXPECTED_SCENARIOS)), 37)
+        self.assertEqual(len(runner.SESSION_SCENARIOS), 9)
+        self.assertTrue(set(runner.SESSION_SCENARIOS) <= set(runner.EXPECTED_SCENARIOS))
+        fixture = runner.validate_fixture()
+        self.assertEqual(fixture["file_count"], 28)
+        workflow = (REPOSITORY_ROOT / ".github/workflows/tests.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "--features wordpress-review,supplied-session-review", workflow
+        )
+        php = (
+            runner.FIXTURE_ROOT / "plugins/termivar-fingerprint-lab/termivar-fingerprint-lab.php"
+        ).read_text(encoding="utf-8")
+        for literal in (
+            "is_user_logged_in()",
+            "termivar-session-health",
+            "termivar-session-member",
+            runner.SESSION_PRIVATE_BODY_CANARY.decode("ascii"),
+            runner.SESSION_PRIVATE_BODY_MARKERS["termivar-lab-alice"].decode("ascii"),
+            runner.SESSION_PRIVATE_BODY_MARKERS["termivar-lab-bob"].decode("ascii"),
+        ):
+            self.assertIn(literal, php)
+
+    def test_compact_evidence_serialization_preserves_the_fixed_boundary(self):
+        # Indentation alone would breach the historical 256-KiB ceiling for this
+        # synthetic 37-scenario-shaped record; the compact writer retains it.
+        evidence = {
+            "schema": runner.TASK_SCHEMA,
+            "status": "passed",
+            "scenarios": {
+                f"scenario-{index:02d}": {
+                    "requests": [
+                        {"sequence": sequence, "method": "GET", "status": 200}
+                        for sequence in range(90)
+                    ]
+                }
+                for index in range(37)
+            },
+        }
+        pretty = (
+            json.dumps(evidence, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        ).encode("utf-8")
+        compact = (
+            json.dumps(
+                evidence,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ) + "\n"
+        ).encode("utf-8")
+        self.assertGreater(len(pretty), runner.MAX_EVIDENCE_OUTPUT)
+        self.assertLessEqual(len(compact), runner.MAX_EVIDENCE_OUTPUT)
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "evidence"
+            with mock.patch.object(
+                runner, "render_markdown", return_value="# Synthetic bounded evidence\n"
+            ):
+                runner.write_evidence(destination, evidence)
+            self.assertEqual(
+                (destination / "wordpress-discovery-lab-acceptance.json").read_bytes(),
+                compact,
+            )
 
 
 if __name__ == "__main__":

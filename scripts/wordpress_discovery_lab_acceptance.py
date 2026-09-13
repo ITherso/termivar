@@ -3,9 +3,10 @@
 
 The controller pulls three digest-pinned upstream images, then performs all
 lab traffic on a Docker internal bridge. WordPress is exposed only on a random
-127.0.0.1 port. Termivar receives no lab credentials or inventory. Full report
-documents stay in a private temporary directory; the output is bounded summary
-evidence without local paths, credentials, or report text.
+127.0.0.1 port. Selected session scenarios give Termivar one task-owned cookie
+through private files; it receives no controller inventory. Full report documents
+stay in a private temporary directory; the output is bounded summary evidence
+without local paths, credentials, or report text.
 """
 
 from __future__ import annotations
@@ -36,6 +37,61 @@ from typing import Any, Iterable, Sequence
 
 
 TASK_SCHEMA = "termivar-test.wordpress-discovery-lab-acceptance/v1"
+SESSION_HEALTH_LEAF = "termivar-session-health"
+SESSION_RESOURCE_LEAF = "termivar-session-member"
+SESSION_PRIVATE_BODY_CANARY = b"TERMIVAR-PRIVATE-SESSION-BODY-CANARY"
+SESSION_PRIVATE_BODY_MARKERS = {
+    "termivar-lab-alice": SESSION_PRIVATE_BODY_CANARY + b"-ALICE",
+    "termivar-lab-bob": SESSION_PRIVATE_BODY_CANARY + b"-BOB-CONTEXT",
+}
+SESSION_PRINCIPALS = (
+    ("termivar-lab-alice", "subscriber"),
+    ("termivar-lab-bob", "subscriber"),
+)
+SESSION_SCENARIOS = (
+    "session-root-option-off",
+    "session-root-healthy",
+    "session-root-fingerprint-selected-empty",
+    "session-root-wrong-principal",
+    "session-root-loss-after-resource",
+    "session-root-bob-healthy",
+    "session-root-expired-startup",
+    "session-blog-healthy",
+    "session-custom-fingerprint-selected-empty",
+)
+EXPECTED_SCENARIOS = (
+    "ordinary-web-review",
+    "pretty-review-only",
+    "pretty-discovery",
+    "suppressed-review-only",
+    "suppressed-discovery",
+    "plain-review-only",
+    "plain-discovery",
+    *SESSION_SCENARIOS[:7],
+    "fingerprint-observed-option-off",
+    "fingerprint-one-file-observed-option-off",
+    "fingerprint-common-file-observed-option-off",
+    "fingerprint-release-b",
+    "fingerprint-release-a",
+    "fingerprint-release-c",
+    "fingerprint-one-file",
+    "fingerprint-common-file",
+    "fingerprint-mixed-artifacts",
+    "fingerprint-missing-reference",
+    "blog-pretty-discovery",
+    "session-blog-healthy",
+    "blog-fingerprint-observed-option-off",
+    "blog-fingerprint-sibling-rejected",
+    "blog-plain-discovery",
+    "cms-review-only",
+    "cms-discovery",
+    "custom-review-only",
+    "custom-no-layout-discovery",
+    "custom-layout-discovery",
+    "custom-fingerprint-observed-option-off",
+    "custom-fingerprint-release-b",
+    "session-custom-fingerprint-selected-empty",
+)
 WORDPRESS_IMAGE = (
     "wordpress@sha256:49801e46d08eb27ea68ed62e205bb35b1bb2dc962251bf2292a7d374f9637cee"
 )
@@ -149,6 +205,7 @@ OPTIONAL_AUDIT_FIELDS = (
     "wordpress_review",
     "wordpress_discovery",
     "wordpress_asset_fingerprints",
+    "supplied_session",
 )
 
 EXPECTED_COMPONENTS = {
@@ -220,6 +277,42 @@ class DiscoveryOracle:
     @property
     def attempted_request_count(self) -> int:
         return len(self.request_paths)
+
+
+@dataclasses.dataclass(frozen=True)
+class LabSessionCredential:
+    principal_alias: str
+    cookie_name: str
+    cookie_value: str = dataclasses.field(repr=False)
+    application_path: str
+    expires_unix_seconds: int
+    server_expired: bool
+    lose_after_resource: bool
+
+    @property
+    def health_path(self) -> str:
+        return self.application_path + SESSION_HEALTH_LEAF + "/"
+
+    @property
+    def resource_path(self) -> str:
+        return self.application_path + SESSION_RESOURCE_LEAF + "/"
+
+
+@dataclasses.dataclass(frozen=True)
+class LabSessionInput:
+    policy_path: Path
+    cookie_path: Path
+    cookie_value: bytes = dataclasses.field(repr=False)
+    principal_alias: str
+    health_path: str
+    resource_path: str
+    application_path: str
+    policy_identity: dict[str, Any]
+    cookie_byte_length: int
+    policy_declares_expiry: bool
+    credential_principal_alias: str
+    server_expired: bool
+    lose_after_resource: bool
 
 
 def _framed_reference(domain: str, value: str) -> str:
@@ -531,6 +624,12 @@ def tree_sha256(root: Path) -> str:
 
 
 def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
+    require(
+        len(EXPECTED_SCENARIOS) == 37
+        and len(set(EXPECTED_SCENARIOS)) == 37
+        and set(SESSION_SCENARIOS) <= set(EXPECTED_SCENARIOS),
+        "real-CMS scenario registry is not the reviewed 28-plus-9 matrix",
+    )
     require(root.is_dir() and not root.is_symlink(), "lab fixture directory is unavailable")
     expected = {
         "Dockerfile",
@@ -600,7 +699,14 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
     require(
         "Version: 4.0.0" in fingerprint_plugin
         and "is_page( array( 'contact', 'gallery' ) )" in fingerprint_plugin
-        and "'cache-42'" in fingerprint_plugin,
+        and "'cache-42'" in fingerprint_plugin
+        and "is_user_logged_in()" in fingerprint_plugin
+        and "termivar-session-health" in fingerprint_plugin
+        and "termivar-session-member" in fingerprint_plugin
+        and all(
+            marker.decode("ascii") in fingerprint_plugin
+            for marker in SESSION_PRIVATE_BODY_MARKERS.values()
+        ),
         "fingerprint plugin identity or page-conditional asset policy changed",
     )
     for release_id, files in FINGERPRINT_REFERENCE_ORACLE.items():
@@ -650,6 +756,28 @@ def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
             "pretty REST path oracle changed")
     require(truth["rest"]["plain_root_path"] == EXPECTED_DISCOVERY_PATHS["plain"][0],
             "plain REST path oracle changed")
+    require(
+        truth.get("supplied_session") == {
+            "principals": [
+                {"alias": alias, "role": role}
+                for alias, role in SESSION_PRINCIPALS
+            ],
+            "health_leaf": SESSION_HEALTH_LEAF,
+            "resource_leaf": SESSION_RESOURCE_LEAF,
+            "health_oracle": "json_boolean_true",
+            "health_field": "authenticated",
+            "session_request_limit": 3,
+            "credential_mechanism": "wordpress_logged_in_cookie",
+            "metadata_credential_mode": "anonymous",
+            "private_response_variants": {
+                "termivar-lab-alice": "principal_alice",
+                "termivar-lab-bob": "principal_bob",
+                "byte_lengths_are_distinct": True,
+                "raw_markers_saved": False,
+            },
+        },
+        "lab supplied-session ground truth changed",
+    )
     layouts = truth.get("layouts")
     require(isinstance(layouts, dict), "lab layout ground truth is unavailable")
     require(layouts == {
@@ -724,65 +852,139 @@ class ProcessRunner:
         label: str,
         measure_peak_memory: bool = False,
     ) -> CommandResult:
+        return self._run(
+            arguments,
+            input_bytes=input_bytes,
+            expected=expected,
+            timeout=timeout,
+            label=label,
+            measure_peak_memory=measure_peak_memory,
+            sensitive_values=(),
+        )
+
+    def run_sensitive(
+        self,
+        arguments: Sequence[str | os.PathLike[str]],
+        *,
+        sensitive_values: Sequence[bytes],
+        input_bytes: bytes | None = None,
+        expected: int | Iterable[int] = 0,
+        timeout: int = COMMAND_TIMEOUT_SECONDS,
+        label: str,
+        measure_peak_memory: bool = False,
+    ) -> CommandResult:
+        """Execute without ever copying child output into a failure message."""
+        fragments = tuple(
+            value for value in sensitive_values
+            if isinstance(value, bytes) and len(value) >= 16
+        )
+        require(fragments, "sensitive process invocation has no bounded canary")
+        return self._run(
+            arguments,
+            input_bytes=input_bytes,
+            expected=expected,
+            timeout=timeout,
+            label=label,
+            measure_peak_memory=measure_peak_memory,
+            sensitive_values=fragments,
+        )
+
+    def _run(
+        self,
+        arguments: Sequence[str | os.PathLike[str]],
+        *,
+        input_bytes: bytes | None,
+        expected: int | Iterable[int],
+        timeout: int,
+        label: str,
+        measure_peak_memory: bool,
+        sensitive_values: Sequence[bytes],
+    ) -> CommandResult:
         argv = [os.fspath(argument) for argument in arguments]
         peak_memory: dict[str, Any] = {
             "status": "not_measured",
             "reason": "measurement_not_requested",
         }
         started = time.monotonic()
-        if measure_peak_memory and platform.system() == "Linux" and Path("/usr/bin/time").is_file():
-            with tempfile.TemporaryDirectory(prefix="termivar-process-metric-") as metric_dir:
-                metric_path = Path(metric_dir) / "gnu-time.txt"
+        try:
+            if (measure_peak_memory and platform.system() == "Linux"
+                    and Path("/usr/bin/time").is_file()):
+                with tempfile.TemporaryDirectory(prefix="termivar-process-metric-") as metric_dir:
+                    metric_path = Path(metric_dir) / "gnu-time.txt"
+                    completed = subprocess.run(
+                        [
+                            "/usr/bin/time",
+                            "--quiet",
+                            "-f",
+                            "maximum_resident_set_kib=%M",
+                            "-o",
+                            str(metric_path),
+                            "--",
+                            *argv,
+                        ],
+                        input=input_bytes,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=timeout,
+                        check=False,
+                    )
+                    raw_metric = metric_path.read_bytes() if metric_path.is_file() else b""
+                    require(len(raw_metric) <= 4096, f"{label} memory metric is oversized")
+                    match = re.fullmatch(
+                        rb"maximum_resident_set_kib=([1-9][0-9]*)\s*", raw_metric
+                    )
+                    require(match is not None, f"{label} GNU time memory metric is malformed")
+                    peak_memory = {
+                        "status": "measured",
+                        "metric": "maximum_resident_set_size",
+                        "value": int(match.group(1)),
+                        "unit": "KiB",
+                        "scope": "command_process_high_water_mark_reported_by_gnu_time",
+                        "mechanism": "GNU time %M",
+                    }
+            else:
                 completed = subprocess.run(
-                    [
-                        "/usr/bin/time",
-                        "--quiet",
-                        "-f",
-                        "maximum_resident_set_kib=%M",
-                        "-o",
-                        str(metric_path),
-                        "--",
-                        *argv,
-                    ],
+                    argv,
                     input=input_bytes,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     timeout=timeout,
                     check=False,
                 )
-                raw_metric = metric_path.read_bytes() if metric_path.is_file() else b""
-                require(len(raw_metric) <= 4096, f"{label} memory metric is oversized")
-                match = re.fullmatch(
-                    rb"maximum_resident_set_kib=([1-9][0-9]*)\s*", raw_metric
-                )
-                require(match is not None, f"{label} GNU time memory metric is malformed")
-                peak_memory = {
-                    "status": "measured",
-                    "metric": "maximum_resident_set_size",
-                    "value": int(match.group(1)),
-                    "unit": "KiB",
-                    "scope": "command_process_high_water_mark_reported_by_gnu_time",
-                    "mechanism": "GNU time %M",
-                }
-        else:
-            completed = subprocess.run(
-                argv,
-                input=input_bytes,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout,
-                check=False,
-            )
-            if measure_peak_memory:
-                peak_memory = {
-                    "status": "not_measured",
-                    "reason": "gnu_time_unavailable_on_this_platform",
-                }
+                if measure_peak_memory:
+                    peak_memory = {
+                        "status": "not_measured",
+                        "reason": "gnu_time_unavailable_on_this_platform",
+                    }
+        except (OSError, subprocess.SubprocessError) as error:
+            if sensitive_values:
+                stdout = getattr(error, "stdout", b"") or b""
+                stderr = getattr(error, "stderr", b"") or b""
+                leaked = any(value in stdout or value in stderr for value in sensitive_values)
+                raise AcceptanceError(
+                    f"{label} sensitive process execution failed; child output withheld",
+                    {"status": "sensitive_process_failure", "secret_material_detected": leaked},
+                ) from None
+            raise
         elapsed_seconds = time.monotonic() - started
         require(len(completed.stdout) <= MAX_COMMAND_OUTPUT, f"{label} stdout is oversized")
         require(len(completed.stderr) <= MAX_COMMAND_OUTPUT, f"{label} stderr is oversized")
+        if sensitive_values:
+            require(
+                not any(
+                    value in completed.stdout or value in completed.stderr
+                    for value in sensitive_values
+                ),
+                f"{label} exposed supplied-session secret material",
+                {"status": "sensitive_output_rejected"},
+            )
         statuses = {expected} if isinstance(expected, int) else set(expected)
         if completed.returncode not in statuses:
+            if sensitive_values:
+                raise AcceptanceError(
+                    f"{label} exited {completed.returncode}; child output withheld",
+                    {"status": "sensitive_process_bad_exit", "returncode": completed.returncode},
+                )
             stderr = completed.stderr.decode("utf-8", "replace")[-4000:]
             raise AcceptanceError(
                 f"{label} exited {completed.returncode}; bounded diagnostic: {stderr}"
@@ -1240,8 +1442,9 @@ class DockerWordPressLab:
         self._wp_cli_containers.add(name)
         command_failed = False
         try:
+            input_arguments = ["--interactive"] if input_bytes is not None else []
             return self.docker(
-                "run", "--pull=never", "--rm", "--name", name,
+                "run", *input_arguments, "--pull=never", "--rm", "--name", name,
                 "--label", f"org.termivar.acceptance={self.label}",
                 "--network", self.network, "--volumes-from", self.wordpress,
                 "--env-file", str(self.wordpress_env),
@@ -1297,6 +1500,26 @@ class DockerWordPressLab:
                 label="metadata plugin activation")
         self.wp("plugin", "activate", "termivar-fingerprint-lab",
                 label="fingerprint plugin activation")
+        for login in (principal[0] for principal in SESSION_PRINCIPALS):
+            program = (
+                "<?php\n"
+                f"$login = {json.dumps(login)};\n"
+                "$existing = get_user_by( 'login', $login );\n"
+                "if ( $existing ) { fwrite( STDERR, 'duplicate fixture user' ); exit( 2 ); }\n"
+                "$id = wp_create_user( $login, wp_generate_password( 32, true, true ), "
+                "$login . '@example.invalid' );\n"
+                "if ( is_wp_error( $id ) ) { fwrite( STDERR, 'fixture user creation failed' ); "
+                "exit( 3 ); }\n"
+                "$user = get_user_by( 'id', $id );\n"
+                "$user->set_role( 'subscriber' );\n"
+                "echo (string) $id;\n"
+            ).encode("utf-8")
+            created = self.wp(
+                "eval-file", "/dev/stdin", label=f"{login} fixture user creation",
+                input_bytes=program,
+            ).stdout.decode("ascii", "strict").strip()
+            require(created.isdigit() and int(created) > 0,
+                    f"{login} fixture user ground truth is unavailable")
         for slug, title in (("contact", "Contact"), ("gallery", "Gallery")):
             post_id = self.wp(
                 "post", "create", "--post_type=page", "--post_status=publish",
@@ -1308,6 +1531,110 @@ class DockerWordPressLab:
         self.wp("option", "update", "permalink_structure", "/%postname%/",
                 label="pretty permalink selection")
         self.wp("rewrite", "flush", "--hard", label="pretty permalink flush")
+
+    def configure_supplied_session(
+        self,
+        *,
+        path: str,
+        application_path: str,
+        credential_login: str,
+        expected_login: str = "termivar-lab-alice",
+        lose_after_resource: bool = False,
+        expired: bool = False,
+        expiration_unix_seconds: int | None = None,
+    ) -> LabSessionCredential:
+        """Create one private real-WordPress logged-in cookie for a lab run."""
+        aliases = {alias for alias, _ in SESSION_PRINCIPALS}
+        require(
+            credential_login in aliases and expected_login in aliases,
+            "unknown supplied-session fixture principal",
+        )
+        require(
+            application_path.startswith("/") and application_path.endswith("/")
+            and "//" not in application_path,
+            "supplied-session fixture application path is invalid",
+        )
+        require(
+            (expired and expiration_unix_seconds is None)
+            or (
+                not expired
+                and isinstance(expiration_unix_seconds, int)
+                and not isinstance(expiration_unix_seconds, bool)
+                and expiration_unix_seconds > int(time.time()) + 3600
+            ),
+            "supplied-session fixture expiration oracle is invalid",
+        )
+        configured = (
+            "<?php\n"
+            f"$expected = {json.dumps(expected_login)};\n"
+            "update_option( 'termivar_session_expected_login', $expected, false );\n"
+            "update_option( 'termivar_session_forced_loss', '0', false );\n"
+            "update_option( 'termivar_session_lose_after_resource', "
+            f"{json.dumps('1' if lose_after_resource else '0')}, false );\n"
+            "$user = get_user_by( 'login', $expected );\n"
+            "if ( ! $user || ! in_array( 'subscriber', $user->roles, true ) ) { "
+            "fwrite( STDERR, 'fixture principal ground truth failed' ); exit( 2 ); }\n"
+        ).encode("utf-8")
+        self.wp(
+            f"--path={path}", "eval-file", "/dev/stdin",
+            label="supplied-session fixture policy selection",
+            input_bytes=configured,
+        )
+
+        cookie_program = (
+            "<?php\n"
+            f"$login = {json.dumps(credential_login)};\n"
+            "$user = get_user_by( 'login', $login );\n"
+            "if ( ! $user || ! in_array( 'subscriber', $user->roles, true ) ) { "
+            "fwrite( STDERR, 'fixture credential principal failed' ); exit( 2 ); }\n"
+            f"$expiration = {'time() - 7200' if expired else expiration_unix_seconds};\n"
+            "$token = WP_Session_Tokens::get_instance( $user->ID )->create( $expiration );\n"
+            "$cookie = wp_generate_auth_cookie( $user->ID, $expiration, 'logged_in', $token );\n"
+            "if ( ! is_string( $cookie ) || '' === $cookie ) { "
+            "fwrite( STDERR, 'fixture cookie generation failed' ); exit( 3 ); }\n"
+            "echo (string) $expiration, \"\\t\", LOGGED_IN_COOKIE, \"\\t\", $cookie;\n"
+        ).encode("utf-8")
+        encoded = self.wp(
+            f"--path={path}", "eval-file", "/dev/stdin",
+            label="supplied-session fixture cookie generation",
+            input_bytes=cookie_program,
+        ).stdout
+        require(0 < len(encoded) <= 4096 and b"\r" not in encoded and b"\n" not in encoded,
+                "fixture cookie output is malformed")
+        try:
+            decoded = encoded.decode("ascii", "strict")
+        except UnicodeDecodeError:
+            raise AcceptanceError("fixture cookie output is malformed") from None
+        pieces = decoded.split("\t")
+        cookie_octet = re.compile(r'[!#-+\--:<-\[\]-~]+\Z')
+        value_parts = pieces[2].split("|") if len(pieces) == 3 else []
+        require(
+            len(pieces) == 3
+            and pieces[0].isdigit()
+            and re.fullmatch(r"wordpress_logged_in_[0-9a-f]{32}", pieces[1]) is not None
+            and 1 <= len(pieces[2]) <= 3072
+            and cookie_octet.fullmatch(pieces[2]) is not None
+            and len(value_parts) == 4
+            and value_parts[0] == credential_login
+            and value_parts[1] == pieces[0]
+            and re.fullmatch(r"[A-Za-z0-9]{43}", value_parts[2]) is not None
+            and re.fullmatch(r"[0-9a-f]{64}", value_parts[3]) is not None,
+            "fixture cookie output is malformed",
+        )
+        expiration = int(pieces[0])
+        require(
+            (expiration < int(time.time())) if expired else (expiration > int(time.time())),
+            "fixture cookie expiration differs from the scenario oracle",
+        )
+        return LabSessionCredential(
+            principal_alias=credential_login,
+            cookie_name=pieces[1],
+            cookie_value=pieces[2],
+            application_path=application_path,
+            expires_unix_seconds=expiration,
+            server_expired=expired,
+            lose_after_resource=lose_after_resource,
+        )
 
     def configure_fingerprint_assets(
         self,
@@ -1539,6 +1866,18 @@ class DockerWordPressLab:
                 "hidden plugin WP-CLI ground truth differs")
         require(plugin_map.get("termivar-fingerprint-lab") == ("4.0.0", "active"),
                 "fingerprint plugin WP-CLI ground truth differs")
+        session_principals: dict[str, dict[str, str]] = {}
+        for login, expected_role in SESSION_PRINCIPALS:
+            role = self.wp(
+                path_argument, "user", "get", login, "--field=roles",
+                label=f"{login} role ground truth",
+            ).stdout.decode("utf-8", "strict").strip()
+            require(role == expected_role,
+                    f"{login} role ground truth differs from the fixture contract")
+            session_principals[login] = {
+                "role": role,
+                "identity_source": "wordpress_cli_controller",
+            }
         return {
             "core_version": core,
             "active_stylesheet": stylesheet,
@@ -1563,6 +1902,7 @@ class DockerWordPressLab:
                 "url_version_hint": "cache-42",
                 "readme_stable_tag": "9.9.9",
             },
+            "supplied_session_principals": session_principals,
         }
 
     def deployment_ground_truth(
@@ -1596,8 +1936,19 @@ class DockerWordPressLab:
                 "custom directory ground truth differs from the declared layout")
         return values
 
-    def request_log(self) -> list[tuple[str, str, int, tuple[str, ...]]]:
-        result = self.docker("logs", self.wordpress, label="WordPress request log")
+    def request_log(
+        self, *, sensitive_values: Sequence[bytes] = ()
+    ) -> list[tuple[str, str, int, tuple[str, ...]]]:
+        arguments = ["docker", "logs", self.wordpress]
+        result = (
+            self.runner.run_sensitive(
+                arguments,
+                sensitive_values=sensitive_values,
+                label="WordPress request log",
+            )
+            if sensitive_values else
+            self.runner.run(arguments, label="WordPress request log")
+        )
         requests: list[tuple[str, str, int, tuple[str, ...]]] = []
         for line in result.stdout.decode("utf-8", "replace").splitlines():
             match = REQUEST_RE.search(line)
@@ -1624,8 +1975,10 @@ class DockerWordPressLab:
     def trace(
         self,
         before: list[tuple[str, str, int, tuple[str, ...]]],
+        *,
+        sensitive_values: Sequence[bytes] = (),
     ) -> list[tuple[str, str, int, tuple[str, ...]]]:
-        after = self.request_log()
+        after = self.request_log(sensitive_values=sensitive_values)
         require(after[: len(before)] == before, "Apache request log changed non-append-only")
         return after[len(before):]
 
@@ -1923,6 +2276,8 @@ def _validate_discovery_document(
             }, "discovery report has an unexpected top-level shape")
     require(audit.get("schema") == "security.wordpress-review-audit/v7"
             and audit.get("review_basis_schema") == "security.wordpress-review-audit/v1"
+            and isinstance(audit.get("additional_request_count"), int)
+            and not isinstance(audit.get("additional_request_count"), bool)
             and audit.get("additional_request_count")
             == discovery.get("attempted_request_count"),
             "discovery-influenced review schema or request accounting changed")
@@ -1937,14 +2292,28 @@ def _validate_discovery_document(
             "discovery report changed its closed authority policy")
     expected_count = oracle.attempted_request_count if oracle is not None else 4
     expected_seed_count = 3 if expected_count == 4 else expected_count
-    require(discovery.get("seed_count") == expected_seed_count
-            and discovery.get("candidate_count") == expected_count
+    require(_is_exact_nonnegative_integer(
+                discovery.get("seed_count"), expected_seed_count
+            )
+            and _is_exact_nonnegative_integer(
+                discovery.get("candidate_count"), expected_count
+            )
             and discovery.get("candidate_limit_reached") is False
-            and discovery.get("omitted_candidate_count") == 0
-            and discovery.get("attempted_request_count") == expected_count
-            and discovery.get("completed_response_count") == expected_count
-            and discovery.get("committed_response_count") == expected_count
-            and discovery.get("source_count") == expected_count,
+            and _is_exact_nonnegative_integer(
+                discovery.get("omitted_candidate_count"), 0
+            )
+            and _is_exact_nonnegative_integer(
+                discovery.get("attempted_request_count"), expected_count
+            )
+            and _is_exact_nonnegative_integer(
+                discovery.get("completed_response_count"), expected_count
+            )
+            and _is_exact_nonnegative_integer(
+                discovery.get("committed_response_count"), expected_count
+            )
+            and _is_exact_nonnegative_integer(
+                discovery.get("source_count"), expected_count
+            ),
             "real-CMS discovery did not reconcile its expected sources")
     sources = discovery.get("sources")
     require(isinstance(sources, list) and len(sources) == expected_count,
@@ -2032,10 +2401,16 @@ def _validate_discovery_document(
                         ),
                         "candidate_count": 1,
                     }, f"discovery {role_name} layout differs from the literal oracle")
-        require(layout.get("skipped_foreign_origin_count") == 0
-                and layout.get("skipped_sibling_application_count")
-                == oracle.skipped_sibling_application_count
-                and layout.get("conflicting_association_count") == 0,
+        require(_is_exact_nonnegative_integer(
+                    layout.get("skipped_foreign_origin_count"), 0
+                )
+                and _is_exact_nonnegative_integer(
+                    layout.get("skipped_sibling_application_count"),
+                    oracle.skipped_sibling_application_count,
+                )
+                and _is_exact_nonnegative_integer(
+                    layout.get("conflicting_association_count"), 0
+                ),
                 "discovery layout exclusion accounting differs from the oracle")
     discovery_items = [
         item for item in document.get("items", [])
@@ -2052,7 +2427,9 @@ def _validate_discovery_document(
             and item.get("claim_basis") == "observation"
             and item.get("severity") is None and item.get("cwe") is None
             and item.get("confidence_ppm") == 550_000
-            and item.get("evidence_count") == discovery["committed_response_count"]
+            and _is_exact_nonnegative_integer(
+                item.get("evidence_count"), discovery["committed_response_count"]
+            )
             and len(item.get("evidence_references", []))
             == discovery["committed_response_count"]
             and item.get("control_evidence_references") == []
@@ -2086,10 +2463,16 @@ def _validate_discovery_document(
                 and isinstance(source.get("role_reference"), str)
                 and OPAQUE_REFERENCE_RE.fullmatch(source["role_reference"]) is not None
                 and source.get("request_attempted") is True
-                and source.get("evidence_reference_count") == 1
+                and isinstance(source.get("parent_depth"), int)
+                and not isinstance(source.get("parent_depth"), bool)
+                and source.get("parent_depth") >= 0
+                and _is_exact_nonnegative_integer(
+                    source.get("evidence_reference_count"), 1
+                )
                 and isinstance(source.get("evidence_references"), list)
                 and len(source["evidence_references"]) == 1
                 and isinstance(source.get("response_bytes"), int)
+                and not isinstance(source.get("response_bytes"), bool)
                 and source["response_bytes"] > 0
                 for source in sources),
             "discovery source outcome, evidence, or byte accounting differs")
@@ -2457,6 +2840,127 @@ def _assert_fingerprint_option_off_trace(
     )
 
 
+def _write_supplied_session_inputs(
+    work: Path,
+    *,
+    name: str,
+    origin: str,
+    credential: LabSessionCredential,
+    expected_principal_alias: str = "termivar-lab-alice",
+    omit_policy_expiry: bool = False,
+) -> LabSessionInput:
+    """Write bounded private S01 inputs without retaining a public secret digest."""
+    require(re.fullmatch(r"[a-z0-9-]{1,64}", name) is not None,
+            "supplied-session scenario name is invalid")
+    match = re.fullmatch(r"http://(127\.0\.0\.1):([1-9][0-9]{0,4})/", origin)
+    require(match is not None and 1 <= int(match.group(2)) <= 65535,
+            "supplied-session lab requires the numeric-loopback exception")
+    require(credential.application_path in {"/", "/blog/"},
+            "supplied-session fixture application path is unsupported")
+    require(not omit_policy_expiry or credential.server_expired,
+            "policy expiry may be omitted only for the expired-server fixture")
+    expiry = (
+        ""
+        if omit_policy_expiry
+        else f"expires_unix_seconds = {credential.expires_unix_seconds}\n"
+    )
+    policy = (
+        'schema = "security.supplied-session-policy/v2"\n'
+        f'principal_alias = {json.dumps(expected_principal_alias)}\n'
+        'credential_mechanism = "cookie_jar"\n'
+        'cookie_update_policy = "stop_on_selected_cookie"\n'
+        f'health_path = {json.dumps(credential.health_path)}\n'
+        'health_json_field = "authenticated"\n'
+        f'resources = [{json.dumps(credential.resource_path)}]\n'
+        'max_session_requests = 3\n'
+        'max_total_response_bytes = 196608\n'
+        'max_response_body_bytes = 65536\n'
+        'max_wall_time_ms = 10000\n\n'
+        '[[cookies]]\n'
+        'id = "wordpress-lab-session"\n'
+        f'name = {json.dumps(credential.cookie_name)}\n'
+        f'domain = {json.dumps(match.group(1))}\n'
+        'host_only = true\n'
+        f'path = {json.dumps(credential.application_path)}\n'
+        'secure = false\n'
+        'http_only = true\n'
+        'same_site = "missing"\n'
+        f'{expiry}'
+    ).encode("utf-8")
+    cookie_value = credential.cookie_value.encode("ascii", "strict")
+    cookie = b"wordpress-lab-session\t" + cookie_value + b"\r\n"
+    policy_path = work / f"{name}-session-policy.toml"
+    cookie_path = work / f"{name}-session-cookie.tsv"
+    require(not policy_path.exists() and not cookie_path.exists(),
+            "supplied-session private input already exists")
+    try:
+        policy_path.write_bytes(policy)
+        cookie_path.write_bytes(cookie)
+        os.chmod(policy_path, 0o600)
+        os.chmod(cookie_path, 0o600)
+    except OSError as error:
+        raise AcceptanceError(
+            "supplied-session private input creation failed",
+            {"error_kind": type(error).__name__},
+        ) from None
+    return LabSessionInput(
+        policy_path=policy_path,
+        cookie_path=cookie_path,
+        cookie_value=cookie_value,
+        principal_alias=expected_principal_alias,
+        health_path=credential.health_path,
+        resource_path=credential.resource_path,
+        application_path=credential.application_path,
+        policy_identity={
+            "byte_length": len(policy),
+            "sha256": hashlib.sha256(policy).hexdigest(),
+        },
+        cookie_byte_length=len(cookie_value),
+        policy_declares_expiry=not omit_policy_expiry,
+        credential_principal_alias=credential.principal_alias,
+        server_expired=credential.server_expired,
+        lose_after_resource=credential.lose_after_resource,
+    )
+
+
+def _remove_supplied_session_inputs(session: LabSessionInput) -> None:
+    """Remove only the two exact task-owned per-scenario private inputs."""
+    require(
+        session.policy_path.parent == session.cookie_path.parent
+        and session.policy_path.name.endswith("-session-policy.toml")
+        and session.cookie_path.name.endswith("-session-cookie.tsv"),
+        "supplied-session cleanup target identity is invalid",
+    )
+    try:
+        for path in (session.cookie_path, session.policy_path):
+            require(path.is_file() and not path.is_symlink(),
+                    "supplied-session cleanup target is not an owned regular file")
+            path.unlink()
+            require(not path.exists(), "supplied-session private input cleanup is unconfirmed")
+    except OSError as error:
+        raise AcceptanceError(
+            "supplied-session private input cleanup failed",
+            {"error_kind": type(error).__name__},
+        ) from None
+
+
+def _supplied_session_sensitive_values(session: LabSessionInput) -> tuple[bytes, ...]:
+    parts = session.cookie_value.split(b"|")
+    require(
+        len(parts) == 4 and len(parts[2]) >= 16 and len(parts[3]) >= 16,
+        "supplied-session private cookie structure changed before execution",
+    )
+    return (
+        session.cookie_value,
+        parts[2],
+        parts[3],
+        SESSION_PRIVATE_BODY_CANARY,
+        *SESSION_PRIVATE_BODY_MARKERS.values(),
+        os.fsencode(session.policy_path),
+        os.fsencode(session.cookie_path),
+    )
+
+
 def _run_scan(
     runner: ProcessRunner,
     binary: Path,
@@ -2468,6 +2972,8 @@ def _run_scan(
     layout_path: Path | None = None,
     page_scope: str | None = None,
     fingerprints_path: Path | None = None,
+    supplied_session: LabSessionInput | None = None,
+    wordpress_supplied_session: bool = False,
     label: str,
 ) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes, dict[str, Any]]:
     arguments: list[str | os.PathLike[str]] = [
@@ -2484,18 +2990,61 @@ def _run_scan(
         arguments.extend(["--wordpress-page-scope", page_scope])
     if fingerprints_path is not None:
         arguments.extend(["--wordpress-fingerprints", fingerprints_path])
-    result = runner.run(
-        arguments,
-        label=label,
-        timeout=300,
-        measure_peak_memory=True,
+    if supplied_session is not None:
+        if wordpress_supplied_session:
+            arguments.append("--wordpress-supplied-session")
+        arguments.extend(["--session-policy", supplied_session.policy_path])
+        arguments.extend(["--session-cookie-file", supplied_session.cookie_path])
+    else:
+        require(not wordpress_supplied_session,
+                "WordPress supplied-session selection has no private input")
+    session_sensitive = (
+        _supplied_session_sensitive_values(supplied_session)
+        if supplied_session is not None else ()
     )
+    if supplied_session is not None:
+        try:
+            policy_before = supplied_session.policy_path.read_bytes()
+            cookie_before = supplied_session.cookie_path.read_bytes()
+        except OSError as error:
+            raise AcceptanceError(
+                "supplied-session private input inspection failed",
+                {"error_kind": type(error).__name__},
+            ) from None
+        require(
+            len(policy_before) == supplied_session.policy_identity["byte_length"]
+            and hashlib.sha256(policy_before).hexdigest()
+            == supplied_session.policy_identity["sha256"]
+            and cookie_before
+            == b"wordpress-lab-session\t" + supplied_session.cookie_value + b"\r\n",
+            "supplied-session private input identity changed before execution",
+        )
+    if supplied_session is None:
+        result = runner.run(
+            arguments,
+            label=label,
+            timeout=300,
+            measure_peak_memory=True,
+        )
+    else:
+        result = runner.run_sensitive(
+            arguments,
+            sensitive_values=session_sensitive,
+            label=label,
+            timeout=300,
+            measure_peak_memory=True,
+        )
     require(result.stdout == b"", f"{label} wrote a report document to stdout")
     require(b"Authorization" not in result.stderr and b"Cookie" not in result.stderr,
             f"{label} diagnostic exposed a forbidden credential-header name")
     identity = _report_identity(bundle)
     assessment_bytes = (bundle / "assessment.json").read_bytes()
-    for private_input in (layout_path, fingerprints_path):
+    for private_input in (
+        layout_path,
+        fingerprints_path,
+        supplied_session.policy_path if supplied_session is not None else None,
+        supplied_session.cookie_path if supplied_session is not None else None,
+    ):
         if private_input is None:
             continue
         private_path = os.fsencode(private_input)
@@ -2503,6 +3052,28 @@ def _run_scan(
                 and all(private_path not in (bundle / name).read_bytes()
                         for name in ("assessment.html", "assessment.json", "manifest.json")),
                 f"{label} exposed a private local input path")
+    if supplied_session is not None:
+        for payload in session_sensitive:
+            require(
+                payload not in result.stdout
+                and payload not in result.stderr
+                and all(
+                    payload not in (bundle / name).read_bytes()
+                    for name in ("assessment.html", "assessment.json", "manifest.json")
+                ),
+                f"{label} exposed supplied-session private content",
+            )
+        try:
+            inputs_unchanged = (
+                supplied_session.policy_path.read_bytes() == policy_before
+                and supplied_session.cookie_path.read_bytes() == cookie_before
+            )
+        except OSError as error:
+            raise AcceptanceError(
+                "supplied-session private input reinspection failed",
+                {"error_kind": type(error).__name__},
+            ) from None
+        require(inputs_unchanged, f"{label} modified supplied-session private input bytes")
     document = parse_json(assessment_bytes, f"{label} assessment")
     require(document.get("schema") == "venom-rendered-assessment/v1",
             f"{label} assessment schema changed")
@@ -2679,6 +3250,8 @@ def _validate_comparison_partition(
     before: AssessmentInventory,
     after: AssessmentInventory,
     label: str,
+    *,
+    context_blocks_item_pairing: bool = False,
 ) -> tuple[dict[str, int], dict[str, dict[str, str]]]:
     groups = _comparison_group_arrays(document, label)
     for side, source in (("before", before), ("after", after)):
@@ -2701,7 +3274,6 @@ def _validate_comparison_partition(
                 f"{label} source capability identities conflict for one fingerprint")
 
     identities: dict[str, dict[str, str]] = {}
-    seen: set[str] = set()
     for group, items in groups.items():
         group_identities: dict[str, str] = {}
         for index, item in enumerate(items):
@@ -2716,8 +3288,8 @@ def _validate_comparison_partition(
             require(isinstance(capability_id, str)
                     and CAPABILITY_ID_RE.fullmatch(capability_id) is not None,
                     f"{label} {group} item {index} has an invalid capability identity")
-            require(fingerprint not in seen,
-                    f"{label} repeats a fingerprint across comparison groups")
+            require(fingerprint not in group_identities,
+                    f"{label} repeats a fingerprint within comparison group {group}")
             require(isinstance(changed_fields, list)
                     and all(isinstance(field, str) for field in changed_fields),
                     f"{label} {group} item {index} has invalid changed_fields")
@@ -2756,21 +3328,39 @@ def _validate_comparison_partition(
                                and not changed_fields)
             require(valid_shape, f"{label} {group} item {index} has an invalid group shape")
             group_identities[fingerprint] = capability_id
-            seen.add(fingerprint)
         identities[group] = group_identities
 
-    expected_only_before = {
-        fingerprint: before.identities[fingerprint]
-        for fingerprint in before.identities.keys() - after.identities.keys()
-    }
-    expected_only_after = {
-        fingerprint: after.identities[fingerprint]
-        for fingerprint in after.identities.keys() - before.identities.keys()
-    }
-    expected_shared = {
-        fingerprint: before.identities[fingerprint]
-        for fingerprint in shared
-    }
+    if context_blocks_item_pairing:
+        expected_only_before = dict(before.identities)
+        expected_only_after = dict(after.identities)
+        expected_shared: dict[str, str] = {}
+    else:
+        expected_only_before = {
+            fingerprint: before.identities[fingerprint]
+            for fingerprint in before.identities.keys() - after.identities.keys()
+        }
+        expected_only_after = {
+            fingerprint: after.identities[fingerprint]
+            for fingerprint in after.identities.keys() - before.identities.keys()
+        }
+        expected_shared = {
+            fingerprint: before.identities[fingerprint]
+            for fingerprint in shared
+        }
+    paired_keys = identities["changed"].keys() | identities["unchanged"].keys()
+    require(
+        not (identities["changed"].keys() & identities["unchanged"].keys())
+        and not (paired_keys & identities["only_in_before"].keys())
+        and not (paired_keys & identities["only_in_after"].keys())
+        and (
+            context_blocks_item_pairing
+            or not (
+                identities["only_in_before"].keys()
+                & identities["only_in_after"].keys()
+            )
+        ),
+        f"{label} repeats a fingerprint across incompatible comparison groups",
+    )
     actual_shared = {**identities["changed"], **identities["unchanged"]}
     require(identities["only_in_before"] == expected_only_before,
             f"{label} only_in_before identities do not match the before source")
@@ -2808,15 +3398,557 @@ def _require_changed_wordpress_facet(document: dict[str, Any], name: str) -> Non
             f"offline WordPress comparison {name} has inconsistent changed fields")
 
 
+def _require_wordpress_facet_projection(
+    document: dict[str, Any],
+    name: str,
+    *,
+    expected_status: str,
+    expected_before: dict[str, Any],
+    expected_after: dict[str, Any],
+    label: str,
+) -> None:
+    facet = document.get(name)
+    expected_changed_fields = sorted(
+        field
+        for field in expected_before.keys() | expected_after.keys()
+        if expected_before.get(field) != expected_after.get(field)
+    )
+    require(
+        isinstance(facet, dict)
+        and (
+            (expected_status == "changed" and bool(expected_changed_fields))
+            or (expected_status != "changed" and not expected_changed_fields)
+        )
+        and facet.get("status") == expected_status
+        and facet.get("changed_fields") == expected_changed_fields
+        and facet.get("before") == expected_before
+        and facet.get("after") == expected_after,
+        f"{label} {name} projection differs from the source audits",
+    )
+
+
 def _require_empty_wordpress_entities(document: dict[str, Any], label: str) -> None:
     for name in ("components", "advisories"):
         entities = document.get(name)
         require(isinstance(entities, dict)
-                and entities.get("paired_unchanged_count") == 0
+                and _is_exact_nonnegative_integer(
+                    entities.get("paired_unchanged_count"), 0
+                )
                 and entities.get("paired_changed") == []
                 and entities.get("only_in_before") == []
                 and entities.get("only_in_after") == [],
                 f"{label} unexpectedly paired WordPress {name}")
+
+
+def _canonical_comparison_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _canonical_comparison_value(nested)
+            for key, nested in value.items()
+        }
+    if isinstance(value, list):
+        values = [_canonical_comparison_value(nested) for nested in value]
+        return sorted(
+            values,
+            key=lambda nested: json.dumps(
+                nested,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    return value
+
+
+def _project_wordpress_discovery_source_content(
+    source: AssessmentInventory, label: str
+) -> dict[str, Any]:
+    """Independently reproduce the strict saved-reader source-content projection."""
+    discovery = source.optional_audits.get("wordpress_discovery")
+    require(isinstance(discovery, dict), f"{label} omits WordPress discovery")
+    sources = discovery.get("sources")
+    require(isinstance(sources, list), f"{label} discovery sources are malformed")
+
+    rest_indexes: list[dict[str, Any]] = []
+    for index, source in enumerate(sources):
+        require(
+            isinstance(source, dict),
+            f"{label} discovery source {index} is malformed",
+        )
+        if source.get("kind") != "rest_index":
+            continue
+        projected: dict[str, Any] = {"kind": "rest_index"}
+        for field in (
+            "namespaces",
+            "association",
+            "resource_reference",
+            "role_reference",
+            "source_page_references",
+            "source_supplied_session_page_references",
+        ):
+            if field in source:
+                projected[field] = _canonical_comparison_value(source[field])
+        if "namespaces" in projected:
+            require(
+                isinstance(projected["namespaces"], list)
+                and all(
+                    isinstance(namespace, str)
+                    for namespace in projected["namespaces"]
+                ),
+                f"{label} REST namespaces are malformed",
+            )
+            projected["namespaces"] = sorted(projected["namespaces"])
+        rest_indexes.append(projected)
+
+    sort_key = lambda value: json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+    rest_indexes.sort(key=sort_key)
+    result: dict[str, Any] = {"rest_indexes": rest_indexes}
+
+    page_specs = (
+        (
+            "page_collection",
+            "pages",
+            (
+                "page_reference",
+                "acquisition",
+                "association",
+                "outcome",
+                "request_attempted",
+                "interpreted_response_bytes",
+                "response_bytes",
+            ),
+        ),
+        (
+            "supplied_session_pages",
+            "supplied_session_pages",
+            (
+                "page_reference",
+                "resource_reference",
+                "resource_evidence_reference",
+                "acquisition",
+                "association",
+                "outcome",
+                "interpreted_response_bytes",
+                "fingerprint_evaluation",
+            ),
+        ),
+    )
+    for source_field, projected_field, fields in page_specs:
+        if source_field not in discovery:
+            continue
+        collection = discovery[source_field]
+        require(
+            isinstance(collection, dict) and isinstance(collection.get("pages"), list),
+            f"{label} {source_field} is malformed",
+        )
+        projected_pages: list[dict[str, Any]] = []
+        for index, page in enumerate(collection["pages"]):
+            require(
+                isinstance(page, dict) and all(field in page for field in fields),
+                f"{label} {source_field} page {index} is malformed",
+            )
+            projected_pages.append({
+                field: _canonical_comparison_value(page[field])
+                for field in fields
+            })
+        projected_pages.sort(key=sort_key)
+        result[projected_field] = projected_pages
+    return result
+
+
+def _project_wordpress_coverage(
+    source: AssessmentInventory, label: str
+) -> dict[str, Any]:
+    """Build the saved reader's WordPress coverage projection from source audits."""
+    review = source.optional_audits.get("wordpress_review")
+    discovery = source.optional_audits.get("wordpress_discovery")
+    require(
+        isinstance(review, dict) and isinstance(discovery, dict),
+        f"{label} omits WordPress coverage inputs",
+    )
+
+    def selected(
+        row: dict[str, Any],
+        required_fields: tuple[str, ...],
+        optional_fields: tuple[str, ...] = (),
+        *,
+        field_label: str,
+    ) -> dict[str, Any]:
+        require(
+            all(field in row for field in required_fields),
+            f"{label} {field_label} omits a projected field",
+        )
+        return {
+            field: _canonical_comparison_value(row[field])
+            for field in (*required_fields, *optional_fields)
+            if field in row
+        }
+
+    coverage = selected(
+        review,
+        (
+            "catalog_status",
+            "signal_count",
+            "evidence_reference_count",
+            "item_projected",
+            "component_count",
+            "advisory_count",
+        ),
+        (
+            "additional_request_count",
+            "inventory_coverage",
+            "inventory_limitations",
+            "external_counts",
+        ),
+        field_label="review coverage",
+    )
+    discovery_coverage = selected(
+        discovery,
+        (
+            "seed_count",
+            "candidate_count",
+            "candidate_limit_reached",
+            "omitted_candidate_count",
+            "attempted_request_count",
+            "completed_response_count",
+            "committed_response_count",
+            "response_bytes",
+            "source_count",
+        ),
+        field_label="discovery coverage",
+    )
+    layout = discovery.get("layout")
+    if layout is not None:
+        require(
+            isinstance(layout, dict) and isinstance(layout.get("roles"), list),
+            f"{label} discovery layout is malformed",
+        )
+        discovery_coverage["layout_roles"] = _canonical_comparison_value([
+            selected(
+                role,
+                ("role", "status", "candidate_count"),
+                field_label=f"layout role {index}",
+            )
+            for index, role in enumerate(layout["roles"])
+            if isinstance(role, dict)
+        ])
+        require(
+            len(discovery_coverage["layout_roles"]) == len(layout["roles"]),
+            f"{label} discovery layout role is malformed",
+        )
+        for field in (
+            "skipped_foreign_origin_count",
+            "skipped_sibling_application_count",
+            "conflicting_association_count",
+        ):
+            require(field in layout, f"{label} discovery layout omits {field}")
+            discovery_coverage[field] = layout[field]
+
+    page_collection = discovery.get("page_collection")
+    if page_collection is not None:
+        require(
+            isinstance(page_collection, dict),
+            f"{label} page collection is malformed",
+        )
+        discovery_coverage["page_scope"] = selected(
+            page_collection,
+            (
+                "candidate_count",
+                "selected_count",
+                "omitted_candidate_count",
+                "reused_response_count",
+                "fetched_response_count",
+                "not_observed_count",
+                "rejected_response_count",
+                "accepted_association_count",
+                "rejected_association_count",
+                "attempted_request_count",
+                "completed_response_count",
+                "committed_response_count",
+                "interpreted_response_bytes",
+                "response_bytes",
+            ),
+            field_label="page-scope coverage",
+        )
+
+    session_pages = discovery.get("supplied_session_pages")
+    if session_pages is not None:
+        require(
+            isinstance(session_pages, dict),
+            f"{label} supplied-session pages are malformed",
+        )
+        discovery_coverage["supplied_session_pages"] = selected(
+            session_pages,
+            (
+                "selected_count",
+                "committed_count",
+                "accepted_association_count",
+                "rejected_association_count",
+                "not_established_association_count",
+                "not_evaluated_count",
+                "interpreted_response_bytes",
+            ),
+            field_label="supplied-session page coverage",
+        )
+
+    sources = discovery.get("sources")
+    require(isinstance(sources, list), f"{label} discovery sources are malformed")
+    source_outcomes: list[dict[str, Any]] = []
+    for index, source_row in enumerate(sources):
+        require(
+            isinstance(source_row, dict),
+            f"{label} discovery source {index} is malformed",
+        )
+        source_outcomes.append(selected(
+            source_row,
+            (
+                "kind",
+                "parent_depth",
+                "outcome",
+                "request_attempted",
+                "response_bytes",
+                "evidence_reference_count",
+            ),
+            (
+                "component",
+                "association",
+                "resource_reference",
+                "role_reference",
+                "source_page_references",
+                "source_supplied_session_page_references",
+            ),
+            field_label=f"discovery source {index}",
+        ))
+    source_outcomes.sort(key=lambda value: json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ))
+    discovery_coverage["source_outcomes"] = source_outcomes
+    coverage["wordpress_discovery"] = discovery_coverage
+    return coverage
+
+
+def _project_wordpress_methodology(
+    source: AssessmentInventory, label: str
+) -> dict[str, Any]:
+    review = source.optional_audits.get("wordpress_review")
+    discovery = source.optional_audits.get("wordpress_discovery")
+    require(
+        isinstance(review, dict) and isinstance(discovery, dict),
+        f"{label} omits WordPress methodology inputs",
+    )
+    methodology = {
+        field: _canonical_comparison_value(review[field])
+        for field in ("schema", "review_basis_schema", "catalog_schema")
+        if field in review
+    }
+    discovery_methodology = {
+        field: _canonical_comparison_value(discovery[field])
+        for field in (
+            "schema", "capability_id", "policy_id", "selected", "method",
+            "credential_mode",
+        )
+        if field in discovery
+    }
+    layout = discovery.get("layout")
+    if layout is not None:
+        require(
+            isinstance(layout, dict) and isinstance(layout.get("roles"), list),
+            f"{label} discovery layout is malformed",
+        )
+        roles = []
+        for index, role in enumerate(layout["roles"]):
+            require(isinstance(role, dict), f"{label} layout role {index} is malformed")
+            roles.append({
+                field: _canonical_comparison_value(role[field])
+                for field in ("role", "basis")
+                if field in role
+            })
+        discovery_methodology["layout_roles"] = _canonical_comparison_value(roles)
+    page_collection = discovery.get("page_collection")
+    if page_collection is not None:
+        require(
+            isinstance(page_collection, dict) and "mode" in page_collection,
+            f"{label} page-scope methodology is malformed",
+        )
+        discovery_methodology["page_scope"] = {
+            "mode": page_collection["mode"]
+        }
+    session_pages = discovery.get("supplied_session_pages")
+    if session_pages is not None:
+        require(isinstance(session_pages, dict), f"{label} session pages are malformed")
+        context_fields = (
+            "policy_reference", "application_reference", "principal_reference",
+            "credential_mechanism", "session_epoch",
+        )
+        require(
+            all(field in session_pages for field in context_fields),
+            f"{label} session page context is incomplete",
+        )
+        discovery_methodology["supplied_session_context"] = {
+            field: _canonical_comparison_value(session_pages[field])
+            for field in context_fields
+        }
+    methodology["wordpress_discovery"] = discovery_methodology
+    return methodology
+
+
+def _project_wordpress_provenance(
+    source: AssessmentInventory, label: str
+) -> dict[str, Any]:
+    review = source.optional_audits.get("wordpress_review")
+    discovery = source.optional_audits.get("wordpress_discovery")
+    require(
+        isinstance(review, dict) and isinstance(discovery, dict),
+        f"{label} omits WordPress provenance inputs",
+    )
+    provenance: dict[str, Any] = {}
+    if "catalog" in review:
+        provenance["catalog"] = _canonical_comparison_value(review["catalog"])
+    layout = discovery.get("layout")
+    if layout is not None:
+        require(
+            isinstance(layout, dict) and "application_reference" in layout,
+            f"{label} discovery layout provenance is malformed",
+        )
+        layout_projection = {
+            "application_reference": layout["application_reference"]
+        }
+        if "declaration" in layout:
+            layout_projection["declaration"] = _canonical_comparison_value(
+                layout["declaration"]
+            )
+        provenance["wordpress_layout"] = layout_projection
+    page_collection = discovery.get("page_collection")
+    if page_collection is not None:
+        require(
+            isinstance(page_collection, dict)
+            and "entry_page_reference" in page_collection,
+            f"{label} page-scope provenance is malformed",
+        )
+        provenance["wordpress_page_scope"] = {
+            "entry_page_reference": page_collection["entry_page_reference"]
+        }
+    session_pages = discovery.get("supplied_session_pages")
+    if session_pages is not None:
+        require(isinstance(session_pages, dict), f"{label} session pages are malformed")
+        context_fields = (
+            "policy_reference", "application_reference", "principal_reference",
+            "credential_mechanism", "session_epoch",
+        )
+        require(
+            all(field in session_pages for field in context_fields),
+            f"{label} session page provenance is incomplete",
+        )
+        provenance["wordpress_supplied_session"] = {
+            field: _canonical_comparison_value(session_pages[field])
+            for field in context_fields
+        }
+    return provenance
+
+
+def _validate_wordpress_self_comparison_for_session(
+    comparison: Any,
+    source: AssessmentInventory,
+    session_summary: dict[str, Any],
+    label: str,
+) -> None:
+    wordpress_source = source.optional_audits.get("wordpress_review")
+    discovery_source = source.optional_audits.get("wordpress_discovery")
+    require(
+        isinstance(wordpress_source, dict) and isinstance(discovery_source, dict),
+        f"{label} source omits WordPress audits",
+    )
+    integrated = session_summary.get("wordpress_integration") == "selected"
+    require(
+        integrated
+        or session_summary.get("wordpress_integration") == "not_selected",
+        f"{label} has an invalid integration expectation",
+    )
+    wordpress = comparison.get("wordpress_review_comparison")
+    require(
+        isinstance(wordpress, dict)
+        and wordpress.get("schema")
+        == (
+            "termivar-wordpress-review-comparison/v4"
+            if integrated else "termivar-wordpress-review-comparison/v2"
+        )
+        and wordpress.get("status") == "compared"
+        and wordpress.get("reason") is None,
+        f"{label} WordPress self comparison is unavailable",
+    )
+    projectors = {
+        "methodology": ("unchanged", _project_wordpress_methodology),
+        "coverage": (
+            (
+                "same_declared_projection"
+                if isinstance(wordpress_source.get("inventory_import"), dict)
+                and wordpress_source["inventory_import"].get("coverage") is not None
+                else "not_established"
+            ),
+            _project_wordpress_coverage,
+        ),
+        "provenance": ("unchanged", _project_wordpress_provenance),
+        "discovery_source_content": (
+            "unchanged",
+            _project_wordpress_discovery_source_content,
+        ),
+    }
+    for facet_name, (facet_status, projector) in projectors.items():
+        expected_projection = projector(source, f"{label} source")
+        _require_wordpress_facet_projection(
+            wordpress,
+            facet_name,
+            expected_status=facet_status,
+            expected_before=expected_projection,
+            expected_after=expected_projection,
+            label=label,
+        )
+    components = wordpress_source.get("components")
+    advisories_source = wordpress_source.get("advisories")
+    require(
+        isinstance(components, list)
+        and all(isinstance(component, dict) for component in components)
+        and _is_exact_nonnegative_integer(
+            wordpress_source.get("component_count"), len(components)
+        )
+        and isinstance(advisories_source, list)
+        and all(isinstance(advisory, dict) for advisory in advisories_source)
+        and _is_exact_nonnegative_integer(
+            wordpress_source.get("advisory_count"), len(advisories_source)
+        ),
+        f"{label} source component inventory is malformed",
+    )
+    component_keys = [
+        json.dumps(
+            component.get("identity"),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for component in components
+    ]
+    require(
+        len(component_keys) == len(set(component_keys)),
+        f"{label} source component inventory repeats an identity",
+    )
+    for entity_name, expected_count in (
+        ("components", len(component_keys)),
+        ("advisories", len(advisories_source)),
+    ):
+        entity = wordpress.get(entity_name)
+        paired_unchanged = (
+            entity.get("paired_unchanged_count") if isinstance(entity, dict) else None
+        )
+        require(
+            isinstance(entity, dict)
+            and _is_exact_nonnegative_integer(paired_unchanged, expected_count)
+            and entity.get("paired_changed") == []
+            and entity.get("only_in_before") == []
+            and entity.get("only_in_after") == [],
+            f"{label} changed WordPress {entity_name}",
+        )
 
 
 def _required_nonnegative_integer(
@@ -3118,6 +4250,33 @@ def _run_offline_acceptance(
                 and counts["changed"] == 0
                 and counts["unchanged"] == source.item_count,
                 f"offline self comparison changed {name}")
+        supplied_session_summary = scenario.get("supplied_session")
+        if supplied_session_summary is not None:
+            session_comparison = compared.get("supplied_session_comparison")
+            require(
+                isinstance(supplied_session_summary, dict)
+                and isinstance(session_comparison, dict)
+                and session_comparison.get("schema")
+                == "termivar-supplied-session-comparison/v1"
+                and session_comparison.get("status")
+                == "compared_within_same_declared_context"
+                and session_comparison.get("reason") is None
+                and isinstance(session_comparison.get("context"), dict)
+                and session_comparison["context"].get("status")
+                == "same_declared_context"
+                and isinstance(session_comparison.get("health_and_coverage"), dict)
+                and session_comparison["health_and_coverage"].get("status")
+                == "unchanged"
+                and isinstance(session_comparison.get("accounting"), dict)
+                and session_comparison["accounting"].get("status") == "unchanged",
+                f"offline supplied-session self comparison changed {name}",
+            )
+            _validate_wordpress_self_comparison_for_session(
+                compared,
+                source,
+                supplied_session_summary,
+                f"offline supplied-session self comparison {name}",
+            )
         fingerprint_entity_counts = None
         if scenario.get("fingerprints") is not None:
             expected_entity_counts = _scenario_fingerprint_entity_counts(
@@ -3139,7 +4298,11 @@ def _run_offline_acceptance(
             require(
                 isinstance(wordpress, dict)
                 and wordpress.get("schema")
-                == "termivar-wordpress-review-comparison/v3"
+                == (
+                    "termivar-wordpress-review-comparison/v4"
+                    if supplied_session_summary is not None else
+                    "termivar-wordpress-review-comparison/v3"
+                )
                 and wordpress.get("status") == "compared"
                 and isinstance(fingerprints, dict)
                 and fingerprints.get("status") == "compared"
@@ -3238,6 +4401,357 @@ def _run_offline_acceptance(
         "coverage": wordpress["coverage"]["status"],
         "item_counts": counts,
     }
+
+    session_names = {
+        "session-root-healthy",
+        "session-root-loss-after-resource",
+    }
+    if session_names <= scenarios.keys():
+        before = Path(scenarios["session-root-healthy"]["_bundle"])
+        after = Path(scenarios["session-root-loss-after-resource"]["_bundle"])
+        controlled = runner.run(
+            [
+                binary, "report", "compare",
+                "--before", before / "assessment.json",
+                "--after", after / "assessment.json",
+                "--same-scope", "--format", "json",
+            ],
+            label="offline supplied-session health-loss comparison",
+        )
+        comparison = parse_json(
+            controlled.stdout, "offline supplied-session health-loss comparison"
+        )
+        before_document = _read_assessment_inventory(
+            before / "assessment.json",
+            "offline supplied-session health-loss before assessment",
+        )
+        after_document = _read_assessment_inventory(
+            after / "assessment.json",
+            "offline supplied-session health-loss after assessment",
+        )
+        counts, identities = _validate_comparison_partition(
+            comparison,
+            before_document,
+            after_document,
+            "offline supplied-session health-loss comparison",
+        )
+        expected_changed_fingerprints = {
+            fingerprint
+            for fingerprint, capability_id in before_document.identities.items()
+            if capability_id
+            == "technology.wordpress-metadata-source-response-observed@1"
+            and after_document.identities.get(fingerprint) == capability_id
+        }
+        changed_items = comparison["changed"]
+        changed_item = (
+            changed_items[0]
+            if isinstance(changed_items, list) and len(changed_items) == 1
+            else None
+        )
+        require(
+            before_document.item_count == after_document.item_count
+            and len(expected_changed_fingerprints) == 1
+            and counts["only_in_before"] == 0
+            and counts["only_in_after"] == 0
+            and counts["changed"] == 1
+            and counts["unchanged"] == before_document.item_count - 1
+            and identities["changed"]
+            == {
+                fingerprint:
+                "technology.wordpress-metadata-source-response-observed@1"
+                for fingerprint in expected_changed_fingerprints
+            }
+            and identities["unchanged"]
+            == {
+                fingerprint: capability_id
+                for fingerprint, capability_id in before_document.identities.items()
+                if fingerprint not in expected_changed_fingerprints
+            }
+            and isinstance(changed_item, dict)
+            and changed_item.get("fingerprint")
+            == next(iter(expected_changed_fingerprints))
+            and changed_item.get("capability_id")
+            == "technology.wordpress-metadata-source-response-observed@1"
+            and changed_item.get("changed_fields") == ["evidence"],
+            "offline supplied-session health loss has an invalid item partition",
+        )
+        supplied = comparison.get("supplied_session_comparison")
+        require(
+            isinstance(supplied, dict)
+            and supplied.get("schema") == "termivar-supplied-session-comparison/v1"
+            and supplied.get("status") == "compared_within_same_declared_context"
+            and supplied.get("reason") is None
+            and isinstance(supplied.get("context"), dict)
+            and supplied["context"].get("status") == "same_declared_context"
+            and isinstance(supplied.get("health_and_coverage"), dict)
+            and supplied["health_and_coverage"].get("status") == "changed"
+            and isinstance(supplied.get("accounting"), dict)
+            and supplied["accounting"].get("status") == "changed",
+            "offline supplied-session health loss was not a same-context change",
+        )
+        wordpress = comparison.get("wordpress_review_comparison")
+        wordpress_components = (
+            wordpress.get("components") if isinstance(wordpress, dict) else None
+        )
+        wordpress_advisories = (
+            wordpress.get("advisories") if isinstance(wordpress, dict) else None
+        )
+        discovery_source_content = (
+            wordpress.get("discovery_source_content")
+            if isinstance(wordpress, dict) else None
+        )
+        expected_before_source_content = _project_wordpress_discovery_source_content(
+            before_document,
+            "offline supplied-session health-loss before assessment",
+        )
+        expected_after_source_content = _project_wordpress_discovery_source_content(
+            after_document,
+            "offline supplied-session health-loss after assessment",
+        )
+        expected_before_coverage = _project_wordpress_coverage(
+            before_document,
+            "offline supplied-session health-loss before assessment",
+        )
+        expected_after_coverage = _project_wordpress_coverage(
+            after_document,
+            "offline supplied-session health-loss after assessment",
+        )
+        expected_before_methodology = _project_wordpress_methodology(
+            before_document,
+            "offline supplied-session health-loss before assessment",
+        )
+        expected_after_methodology = _project_wordpress_methodology(
+            after_document,
+            "offline supplied-session health-loss after assessment",
+        )
+        expected_before_provenance = _project_wordpress_provenance(
+            before_document,
+            "offline supplied-session health-loss before assessment",
+        )
+        expected_after_provenance = _project_wordpress_provenance(
+            after_document,
+            "offline supplied-session health-loss after assessment",
+        )
+        if isinstance(wordpress, dict):
+            for facet_name, facet_status, facet_before, facet_after in (
+                (
+                    "methodology", "unchanged",
+                    expected_before_methodology, expected_after_methodology,
+                ),
+                (
+                    "coverage", "changed",
+                    expected_before_coverage, expected_after_coverage,
+                ),
+                (
+                    "provenance", "unchanged",
+                    expected_before_provenance, expected_after_provenance,
+                ),
+                (
+                    "discovery_source_content", "changed",
+                    expected_before_source_content, expected_after_source_content,
+                ),
+            ):
+                _require_wordpress_facet_projection(
+                    wordpress,
+                    facet_name,
+                    expected_status=facet_status,
+                    expected_before=facet_before,
+                    expected_after=facet_after,
+                    label="offline supplied-session health-loss comparison",
+                )
+        coverage = wordpress.get("coverage") if isinstance(wordpress, dict) else None
+        expected_coverage_changed_fields = sorted(
+            field
+            for field in expected_before_coverage.keys()
+            | expected_after_coverage.keys()
+            if expected_before_coverage.get(field)
+            != expected_after_coverage.get(field)
+        )
+        lost_components = (
+            wordpress_components.get("only_in_before")
+            if isinstance(wordpress_components, dict) else None
+        )
+        lost_component = (
+            lost_components[0]
+            if isinstance(lost_components, list) and len(lost_components) == 1
+            else None
+        )
+        require(
+            isinstance(wordpress, dict)
+            and wordpress.get("schema") == "termivar-wordpress-review-comparison/v4"
+            and wordpress.get("status") == "compared"
+            and wordpress.get("reason") is None
+            and wordpress.get("methodology", {}).get("status") == "unchanged"
+            and isinstance(coverage, dict)
+            and coverage.get("before") == expected_before_coverage
+            and coverage.get("after") == expected_after_coverage
+            and coverage.get("changed_fields") == expected_coverage_changed_fields
+            and bool(expected_coverage_changed_fields)
+            and wordpress.get("provenance", {}).get("status") == "unchanged"
+            and wordpress.get("provenance", {}).get("changed_fields") == []
+            and wordpress.get("provenance", {}).get("before")
+            == wordpress.get("provenance", {}).get("after")
+            and isinstance(discovery_source_content, dict)
+            and discovery_source_content.get("status") == "changed"
+            and discovery_source_content.get("changed_fields")
+            == ["supplied_session_pages"]
+            and discovery_source_content.get("before")
+            == expected_before_source_content
+            and discovery_source_content.get("after")
+            == expected_after_source_content
+            and expected_before_source_content.get("rest_indexes")
+            == expected_after_source_content.get("rest_indexes")
+            and expected_before_source_content.get("supplied_session_pages")
+            != expected_after_source_content.get("supplied_session_pages")
+            and isinstance(wordpress_components, dict)
+            and _is_exact_nonnegative_integer(
+                wordpress_components.get("paired_unchanged_count"), 4
+            )
+            and wordpress_components.get("paired_changed") == []
+            and wordpress_components.get("only_in_after") == []
+            and isinstance(lost_component, dict)
+            and lost_component.get("key")
+            == {"kind": FINGERPRINT_COMPONENT[0], "slug": FINGERPRINT_COMPONENT[1]}
+            and lost_component.get("interpretation")
+            == "present_only_in_the_supplied_before_audit_not_verified_remediation"
+            and isinstance(wordpress_advisories, dict)
+            and _is_exact_nonnegative_integer(
+                wordpress_advisories.get("paired_unchanged_count"), 0
+            )
+            and wordpress_advisories.get("paired_changed") == []
+            and wordpress_advisories.get("only_in_before") == []
+            and wordpress_advisories.get("only_in_after") == [],
+            "offline health-loss comparison misclassified WordPress session coverage",
+        )
+        results["supplied_session_healthy_to_loss"] = {
+            "status": supplied["status"],
+            "context": supplied["context"]["status"],
+            "health_and_coverage": supplied["health_and_coverage"]["status"],
+            "accounting": supplied["accounting"]["status"],
+            "wordpress_provenance": wordpress["provenance"]["status"],
+            "wordpress_discovery_source_content": discovery_source_content["status"],
+            "item_counts": counts,
+        }
+
+    principal_names = {
+        "session-root-healthy",
+        "session-root-bob-healthy",
+    }
+    if principal_names <= scenarios.keys():
+        before = Path(scenarios["session-root-healthy"]["_bundle"])
+        after = Path(scenarios["session-root-bob-healthy"]["_bundle"])
+        controlled = runner.run(
+            [
+                binary, "report", "compare",
+                "--before", before / "assessment.json",
+                "--after", after / "assessment.json",
+                "--same-scope", "--format", "json",
+            ],
+            label="offline supplied-session principal-context comparison",
+        )
+        comparison = parse_json(
+            controlled.stdout,
+            "offline supplied-session principal-context comparison",
+        )
+        before_document = _read_assessment_inventory(
+            before / "assessment.json",
+            "offline supplied-session principal-context before assessment",
+        )
+        after_document = _read_assessment_inventory(
+            after / "assessment.json",
+            "offline supplied-session principal-context after assessment",
+        )
+        supplied = comparison.get("supplied_session_comparison")
+        require(
+            isinstance(supplied, dict)
+            and supplied.get("schema") == "termivar-supplied-session-comparison/v1"
+            and supplied.get("status") == "not_compared"
+            and supplied.get("reason") == "operator_declared_principal_changed"
+            and isinstance(supplied.get("context"), dict)
+            and supplied["context"].get("status")
+            == "operator_declared_principal_changed"
+            and supplied["context"].get("changed_fields")
+            == ["principal_alias"]
+            and isinstance(supplied.get("health_and_coverage"), dict)
+            and supplied["health_and_coverage"].get("status") == "not_comparable"
+            and isinstance(supplied.get("accounting"), dict)
+            and supplied["accounting"].get("status") == "not_comparable",
+            "offline cross-principal session evidence was paired as a target change",
+        )
+        wordpress = comparison.get("wordpress_review_comparison")
+        require(
+            isinstance(wordpress, dict)
+            and wordpress.get("schema") == "termivar-wordpress-review-comparison/v4"
+            and wordpress.get("status") == "not_compared"
+            and wordpress.get("reason") == "supplied_session_context_mismatch",
+            "offline cross-principal WordPress evidence was treated as comparable",
+        )
+        facet_projectors = {
+            "methodology": _project_wordpress_methodology,
+            "coverage": _project_wordpress_coverage,
+            "provenance": _project_wordpress_provenance,
+            "discovery_source_content": _project_wordpress_discovery_source_content,
+        }
+        expected_wordpress_facets = {}
+        for facet_name, projector in facet_projectors.items():
+            facet_before = projector(
+                before_document,
+                f"offline supplied-session principal-context before {facet_name}",
+            )
+            facet_after = projector(
+                after_document,
+                f"offline supplied-session principal-context after {facet_name}",
+            )
+            if facet_name == "coverage" and facet_before == facet_after:
+                wordpress_source = before_document.optional_audits.get("wordpress_review")
+                facet_status = (
+                    "same_declared_projection"
+                    if isinstance(wordpress_source, dict)
+                    and isinstance(wordpress_source.get("inventory_import"), dict)
+                    and wordpress_source["inventory_import"].get("coverage") is not None
+                    else "not_established"
+                )
+            else:
+                facet_status = "unchanged" if facet_before == facet_after else "changed"
+            expected_wordpress_facets[facet_name] = (
+                facet_status, facet_before, facet_after
+            )
+        for facet_name, (facet_status, facet_before, facet_after) in (
+            expected_wordpress_facets.items()
+        ):
+            _require_wordpress_facet_projection(
+                wordpress,
+                facet_name,
+                expected_status=facet_status,
+                expected_before=facet_before,
+                expected_after=facet_after,
+                label="offline cross-principal WordPress comparison",
+            )
+        _require_empty_wordpress_entities(
+            wordpress, "offline cross-principal WordPress comparison"
+        )
+        counts, _ = _validate_comparison_partition(
+            comparison,
+            before_document,
+            after_document,
+            "offline supplied-session principal-context comparison",
+            context_blocks_item_pairing=True,
+        )
+        require(
+            counts["only_in_before"] == before_document.item_count
+            and counts["only_in_after"] == after_document.item_count
+            and counts["changed"] == 0
+            and counts["unchanged"] == 0,
+            "offline cross-principal items were not kept one-sided",
+        )
+        results["supplied_session_alice_to_bob"] = {
+            "status": supplied["status"],
+            "reason": supplied["reason"],
+            "context": supplied["context"]["status"],
+            "health_and_coverage": supplied["health_and_coverage"]["status"],
+            "accounting": supplied["accounting"]["status"],
+            "item_counts": counts,
+        }
 
     custom_names = {"custom-no-layout-discovery", "custom-layout-discovery"}
     if custom_names <= scenarios.keys():
@@ -3566,6 +5080,181 @@ def _trace_json(
         }
         for index, (method, target, status, forbidden_headers) in enumerate(trace)
     ]
+
+
+def _session_trace_json(
+    trace: list[tuple[str, str, int, tuple[str, ...]]],
+    session: LabSessionInput,
+) -> list[dict[str, Any]]:
+    admitted = {session.health_path, session.resource_path}
+    rows = []
+    for index, (method, target, status, header_names) in enumerate(trace):
+        cookie_admitted = target in admitted and header_names == ("cookie",)
+        forbidden = [] if cookie_admitted else list(header_names)
+        rows.append({
+            "sequence": index + 1,
+            "method": method,
+            "target": target,
+            "status": status,
+            "supplied_session_cookie": "admitted" if cookie_admitted else "absent",
+            "forbidden_credential_headers": forbidden,
+        })
+    return rows
+
+
+def _compact_session_trace_evidence(
+    trace: list[tuple[str, str, int, tuple[str, ...]]],
+    session: LabSessionInput,
+    *,
+    metadata_paths: Sequence[str],
+) -> dict[str, Any]:
+    """Retain the authority-sensitive trace rows and bind the omitted remainder."""
+    rows = _session_trace_json(trace, session)
+    retained_targets = {session.health_path, session.resource_path, *metadata_paths}
+    retained = [row for row in rows if row["target"] in retained_targets]
+    omitted = len(rows) - len(retained)
+    require(omitted >= 0, "session trace compaction accounting underflowed")
+    encoded = json.dumps(
+        rows, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("ascii")
+    return {
+        "schema": "termivar-test.redacted-request-trace-summary/v1",
+        "full_request_count": len(rows),
+        "full_trace_sha256": hashlib.sha256(encoded).hexdigest(),
+        "retained_request_count": len(retained),
+        "omitted_anonymous_general_request_count": omitted,
+        "requests": retained,
+    }
+
+
+def _compact_layout_evidence(document: dict[str, Any]) -> dict[str, Any] | None:
+    discovery = document.get("wordpress_discovery")
+    layout = discovery.get("layout") if isinstance(discovery, dict) else None
+    if not isinstance(layout, dict):
+        return None
+    roles = layout.get("roles")
+    return {
+        "application_reference": layout.get("application_reference"),
+        "roles": [
+            {
+                "role": row.get("role"),
+                "status": row.get("status"),
+                "basis": row.get("basis"),
+                "candidate_count": row.get("candidate_count"),
+            }
+            for row in roles or []
+            if isinstance(row, dict)
+        ],
+        "skipped_foreign_origin_count": layout.get("skipped_foreign_origin_count"),
+        "skipped_sibling_application_count": layout.get(
+            "skipped_sibling_application_count"
+        ),
+        "conflicting_association_count": layout.get(
+            "conflicting_association_count"
+        ),
+    }
+
+
+def _assert_supplied_session_trace(
+    trace: list[tuple[str, str, int, tuple[str, ...]]],
+    *,
+    session: LabSessionInput,
+    expected_session_paths: Sequence[str],
+    expected_metadata_paths: Sequence[str],
+    known_metadata_paths: Sequence[str] | None = None,
+    forbidden_anonymous_paths: Sequence[str] = (),
+) -> dict[str, int]:
+    forbidden_asset_paths = {path.partition("?")[0] for path in forbidden_anonymous_paths}
+    expected_credentialed = [
+        ("GET", path, 200, ("cookie",)) for path in expected_session_paths
+    ]
+    session_targets = {session.health_path, session.resource_path}
+    actual_session_requests = [row for row in trace if row[1] in session_targets]
+    actual_credentialed = [row for row in trace if row[3]]
+    require(
+        actual_session_requests == expected_credentialed
+        and actual_credentialed == expected_credentialed,
+        "supplied-session target sequence or credential presence differs from the oracle",
+    )
+    require(
+        all(
+            names in {(), ("cookie",)}
+            and (names != ("cookie",) or target in session_targets)
+            for _, target, _, names in trace
+        ),
+        "credential material crossed the supplied-session child authority",
+    )
+    metadata_targets = set(
+        expected_metadata_paths if known_metadata_paths is None else known_metadata_paths
+    )
+    require(
+        len(metadata_targets) == len(
+            expected_metadata_paths if known_metadata_paths is None else known_metadata_paths
+        )
+        and set(expected_metadata_paths) <= metadata_targets,
+        "supplied-session metadata oracle is malformed",
+    )
+    actual_metadata = [
+        (method, target, status, names)
+        for method, target, status, names in trace
+        if target in metadata_targets
+    ]
+    expected_metadata = [
+        ("GET", target, 200, ()) for target in expected_metadata_paths
+    ]
+    require(
+        actual_metadata == expected_metadata,
+        "anonymous WordPress metadata trace differs from the session oracle",
+    )
+    if actual_metadata:
+        last_session_index = max(
+            index for index, row in enumerate(trace) if row[1] in session_targets
+        )
+        require(
+            all(trace.index(row) > last_session_index for row in actual_metadata),
+            "WordPress metadata ran before supplied-session commit qualification",
+        )
+    require(
+        not any(
+            names
+            for _, target, _, names in trace
+            if target in metadata_targets
+        ),
+        "a supplied-session credential was forwarded to WordPress metadata",
+    )
+    require(
+        not any(
+            target.partition("?")[0] in forbidden_asset_paths
+            for _, target, _, _ in trace
+        ),
+        "an authenticated-page-only asset received an unauthorized request",
+    )
+    return {
+        "credentialed_request_count": len(actual_credentialed),
+        "anonymous_metadata_request_count": len(actual_metadata),
+        "forbidden_credential_header_count": sum(
+            bool(row["forbidden_credential_headers"])
+            for row in _session_trace_json(trace, session)
+        ),
+    }
+
+
+def _assert_session_preserves_anonymous_trace(
+    baseline: Sequence[tuple[str, str, int, tuple[str, ...]]],
+    observed: Sequence[tuple[str, str, int, tuple[str, ...]]],
+    *,
+    session: LabSessionInput,
+    conditional_metadata_path: str | None,
+) -> None:
+    """Remove only the explicitly new S01/S02 requests and compare the old plan."""
+    removed_targets = {session.health_path, session.resource_path}
+    if conditional_metadata_path is not None:
+        removed_targets.add(conditional_metadata_path)
+    retained = [row for row in observed if row[1] not in removed_targets]
+    require(
+        retained == list(baseline),
+        "supplied-session selection changed the existing anonymous request trace",
+    )
 
 
 def _bounded_observed_page_accounting_diagnostic(
@@ -4604,6 +6293,700 @@ def _validate_fingerprint_document(
     }
 
 
+def _framed_supplied_session_page_reference(
+    session: dict[str, Any], resource_url: str
+) -> str:
+    resources = session.get("resources")
+    require(isinstance(resources, list) and len(resources) == 1,
+            "supplied-session source resource inventory changed")
+    resource_reference = resources[0].get("resource_reference")
+    parts = (
+        "security.wordpress-supplied-session-page.v1",
+        session.get("policy_reference"),
+        session.get("application_reference"),
+        session.get("principal_reference"),
+        resource_url,
+        resource_reference,
+    )
+    require(all(isinstance(part, str) for part in parts),
+            "supplied-session page-reference inputs are malformed")
+    digest = hashlib.sha256()
+    for part in parts:
+        encoded = part.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    digest.update((1).to_bytes(8, "big"))
+    digest.update(b"\x00")
+    return "sha256:" + digest.hexdigest()
+
+
+def _expected_session_private_body(
+    plugin_base_url: str, principal_alias: str
+) -> bytes:
+    marker = SESSION_PRIVATE_BODY_MARKERS.get(principal_alias)
+    require(marker is not None, "unknown private-page principal oracle")
+    component_base = plugin_base_url + "termivar-fingerprint-lab/"
+    return (
+        '<!doctype html><html><head><script src="'
+        + component_base + 'assets/fingerprint.js?ver=private-page"></script>'
+        + '<link rel="stylesheet" href="'
+        + component_base + 'assets/fingerprint.css?ver=private-page">'
+        + "</head><body>" + marker.decode("ascii") + "</body></html>"
+    ).encode("utf-8")
+
+
+def _supplied_session_literal_reference(
+    domain: bytes, value: str, prefix: str
+) -> str:
+    """Reproduce the small public reference framing as an independent lab oracle."""
+    encoded = value.encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(domain)
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+    return prefix + ":" + digest.hexdigest()
+
+
+def _validate_supplied_session_audit(
+    document: dict[str, Any],
+    *,
+    expected_outcome: str,
+    expected_principal_alias: str,
+    policy_declares_expiry: bool,
+) -> tuple[dict[str, Any], bool]:
+    audit = document.get("supplied_session")
+    require(isinstance(audit, dict), "assessment omits the supplied-session audit")
+    expected = {
+        "complete": {
+            "coverage": "complete", "dispatched_resources": 1,
+            "committed_resources": 1, "requests": 3, "checkpoints": 2,
+            "resource_outcome": "committed",
+        },
+        "startup_unhealthy": {
+            "coverage": "none", "dispatched_resources": 0,
+            "committed_resources": 0, "requests": 1, "checkpoints": 1,
+            "resource_outcome": "not_dispatched",
+        },
+        "session_lost": {
+            "coverage": "none", "dispatched_resources": 1,
+            "committed_resources": 0, "requests": 3, "checkpoints": 2,
+            "resource_outcome": "health_unqualified",
+        },
+    }
+    oracle = expected.get(expected_outcome)
+    require(oracle is not None, "unsupported supplied-session acceptance outcome")
+    cookie_policy = audit.get("cookie_policy")
+    lifecycle = audit.get("cookie_lifecycle")
+    health = audit.get("health_oracle")
+    checkpoints = audit.get("checkpoints")
+    resources = audit.get("resources")
+    require(
+        audit.get("schema") == "security.supplied-session-audit/v2"
+        and audit.get("capability_id") == "session.supplied-context-assessment@1"
+        and isinstance(audit.get("policy_reference"), str)
+        and re.fullmatch(
+            r"supplied-session-policy-sha256:[0-9a-f]{64}",
+            audit["policy_reference"],
+        ) is not None
+        and isinstance(audit.get("application_reference"), str)
+        and re.fullmatch(
+            r"supplied-session-application-sha256:[0-9a-f]{64}",
+            audit["application_reference"],
+        ) is not None
+        and audit.get("principal_reference") == "supplied-session-principal-0001"
+        and audit.get("principal_alias") == expected_principal_alias
+        and audit.get("principal_assurance") == "operator_declared"
+        and audit.get("credential_mechanism") == "cookie_jar"
+        and audit.get("outcome") == expected_outcome
+        and audit.get("coverage") == oracle["coverage"]
+        and _is_exact_nonnegative_integer(audit.get("selected_resource_count"), 1)
+        and _is_exact_nonnegative_integer(
+            audit.get("dispatched_resource_count"), oracle["dispatched_resources"]
+        )
+        and _is_exact_nonnegative_integer(
+            audit.get("committed_resource_count"), oracle["committed_resources"]
+        )
+        and _is_exact_nonnegative_integer(
+            audit.get("dispatched_request_count"), oracle["requests"]
+        )
+        and audit.get("refresh_performed") is False
+        and audit.get("anonymous_fallback_performed") is False
+        and audit.get("continuous_authentication_established") is False
+        and audit.get("exploit_execution") == "not_performed"
+        and audit.get("impact_validation") == "not_performed",
+        "supplied-session outcome or authority accounting differs from the oracle",
+    )
+    require(
+        isinstance(cookie_policy, dict)
+        and _is_exact_nonnegative_integer(cookie_policy.get("declared_count"), 1)
+        and _is_exact_nonnegative_integer(cookie_policy.get("host_only_count"), 1)
+        and _is_exact_nonnegative_integer(cookie_policy.get("domain_count"), 0)
+        and _is_exact_nonnegative_integer(cookie_policy.get("secure_count"), 0)
+        and _is_exact_nonnegative_integer(cookie_policy.get("http_only_count"), 1)
+        and _is_exact_nonnegative_integer(
+            cookie_policy.get("session_count"), int(not policy_declares_expiry)
+        )
+        and _is_exact_nonnegative_integer(
+            cookie_policy.get("persistent_count"), int(policy_declares_expiry)
+        )
+        and _is_exact_nonnegative_integer(
+            cookie_policy.get("same_site_missing_count"), 1
+        )
+        and _is_exact_nonnegative_integer(
+            cookie_policy.get("same_site_strict_count"), 0
+        )
+        and _is_exact_nonnegative_integer(cookie_policy.get("same_site_lax_count"), 0)
+        and _is_exact_nonnegative_integer(cookie_policy.get("same_site_none_count"), 0)
+        and cookie_policy.get("update_policy") == "stop_on_selected_cookie"
+        and cookie_policy.get("browser_semantics")
+        == "attributes_preserved_not_browser_csrf_emulation",
+        "supplied-session cookie policy accounting differs",
+    )
+    require(
+        isinstance(lifecycle, dict)
+        and _is_exact_nonnegative_integer(lifecycle.get("initial_epoch"), 1)
+        and _is_exact_nonnegative_integer(lifecycle.get("final_epoch"), 1)
+        and _is_exact_nonnegative_integer(
+            lifecycle.get("selected_update_response_count"), 0
+        )
+        and _is_exact_nonnegative_integer(
+            lifecycle.get("unselected_update_response_count"), 0
+        )
+        and _is_exact_nonnegative_integer(
+            lifecycle.get("update_classification_failure_count"), 0
+        )
+        and _is_exact_nonnegative_integer(lifecycle.get("updates_applied"), 0),
+        "supplied-session cookie lifecycle changed unexpectedly",
+    )
+    require(
+        isinstance(health, dict)
+        and health.get("kind") == "json_boolean_true"
+        and isinstance(health.get("field_reference"), str)
+        and re.fullmatch(
+            r"supplied-session-health-field-sha256:[0-9a-f]{64}",
+            health["field_reference"],
+        ) is not None,
+        "supplied-session health oracle is malformed",
+    )
+    require(
+        isinstance(checkpoints, list) and len(checkpoints) == oracle["checkpoints"]
+        and isinstance(resources, list) and len(resources) == 1
+        and all(isinstance(row, dict) for row in checkpoints + resources),
+        "supplied-session checkpoint/resource inventory differs",
+    )
+    expected_checkpoint_outcomes = (
+        [("startup", 0, "unhealthy", "not_matched")]
+        if expected_outcome == "startup_unhealthy" else
+        [
+            ("startup", 0, "healthy", "matched"),
+            (
+                "terminal", 1,
+                "unhealthy" if expected_outcome == "session_lost" else "healthy",
+                "not_matched" if expected_outcome == "session_lost" else "matched",
+            ),
+        ]
+    )
+    for sequence, (checkpoint, checkpoint_oracle) in enumerate(
+        zip(checkpoints, expected_checkpoint_outcomes)
+    ):
+        phase, after_subject_count, outcome, predicate = checkpoint_oracle
+        require(
+            _is_exact_nonnegative_integer(checkpoint.get("sequence"), sequence)
+            and checkpoint.get("phase") == phase
+            and _is_exact_nonnegative_integer(
+                checkpoint.get("after_subject_count"), after_subject_count
+            )
+            and isinstance(checkpoint.get("evidence_reference"), str)
+            and re.fullmatch(
+                r"supplied-session-checkpoint-evidence-sha256:[0-9a-f]{64}",
+                checkpoint["evidence_reference"],
+            ) is not None
+            and checkpoint.get("outcome") == outcome
+            and _is_exact_nonnegative_integer(checkpoint.get("status"), 200)
+            and checkpoint.get("body_state") == "complete"
+            and checkpoint.get("predicate") == predicate
+            and isinstance(checkpoint.get("response_bytes"), int)
+            and not isinstance(checkpoint.get("response_bytes"), bool)
+            and 0 < checkpoint["response_bytes"] <= 65_536,
+            "supplied-session health checkpoint differs from the literal oracle",
+        )
+    resource = resources[0]
+    require(
+        _is_exact_nonnegative_integer(resource.get("sequence"), 0)
+        and resource.get("outcome") == oracle["resource_outcome"]
+        and _is_exact_nonnegative_integer(resource.get("epoch"), 1)
+        and isinstance(resource.get("resource_reference"), str)
+        and re.fullmatch(
+            r"supplied-session-resource-sha256:[0-9a-f]{64}",
+            resource["resource_reference"],
+        ) is not None,
+        "supplied-session resource outcome differs",
+    )
+    if expected_outcome == "complete":
+        require(
+            _is_exact_nonnegative_integer(resource.get("status"), 200)
+            and isinstance(resource.get("evidence_reference"), str)
+            and re.fullmatch(
+                r"supplied-session-resource-evidence-sha256:[0-9a-f]{64}",
+                resource["evidence_reference"],
+            ) is not None
+            and isinstance(resource.get("response_bytes"), int)
+            and not isinstance(resource.get("response_bytes"), bool)
+            and 0 < resource["response_bytes"] <= 65_536,
+            "healthy supplied-session resource was not completely committed",
+        )
+    elif expected_outcome == "startup_unhealthy":
+        require(
+            resource.get("status") is None
+            and resource.get("evidence_reference") is None
+            and _is_exact_nonnegative_integer(resource.get("response_bytes"), 0),
+            "startup-unhealthy resource was unexpectedly dispatched",
+        )
+    else:
+        require(
+            _is_exact_nonnegative_integer(resource.get("status"), 200)
+            and isinstance(resource.get("evidence_reference"), str)
+            and re.fullmatch(
+                r"supplied-session-resource-evidence-sha256:[0-9a-f]{64}",
+                resource["evidence_reference"],
+            ) is not None
+            and isinstance(resource.get("response_bytes"), int)
+            and not isinstance(resource.get("response_bytes"), bool)
+            and 0 < resource["response_bytes"] <= 65_536,
+            "session-loss resource evidence is incomplete",
+        )
+    accounted_response_bytes = sum(
+        checkpoint["response_bytes"] for checkpoint in checkpoints
+    ) + resource["response_bytes"]
+    require(
+        isinstance(audit.get("response_bytes"), int)
+        and not isinstance(audit.get("response_bytes"), bool)
+        and audit.get("response_bytes") == accounted_response_bytes
+        and _is_exact_nonnegative_integer(audit.get("response_byte_limit"), 196_608)
+        and audit.get("response_byte_limit_exceeded") is False,
+        "supplied-session response-byte accounting differs",
+    )
+    return audit, expected_outcome == "complete"
+
+
+def _validate_selected_empty_fingerprint_audit(
+    document: dict[str, Any], catalogue_path: Path
+) -> dict[str, Any]:
+    audit = document.get("wordpress_asset_fingerprints")
+    require(isinstance(audit, dict), "selected-empty fingerprint audit is unavailable")
+    catalogue = audit.get("catalogue")
+    require(
+        audit.get("schema") == "security.wordpress-asset-fingerprint-audit/v1"
+        and audit.get("capability_id")
+        == "technology.wordpress-asset-fingerprint-candidate@1"
+        and audit.get("policy_id")
+        == "termivar.wordpress-observed-asset-fingerprint/v1"
+        and audit.get("selected") is True
+        and audit.get("representation_profile") == "identity-content-bytes/v1"
+        and audit.get("finite_reference_scope") == "listed_releases_only"
+        and audit.get("same_release_assumption")
+        == "considered_paths_share_one_listed_release_artifact_set"
+        and audit.get("installed_version_assurance")
+        == "not_established_by_asset_fingerprints"
+        and audit.get("source_authenticity") == "not_established"
+        and _is_exact_nonnegative_integer(audit.get("candidate_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("selected_resource_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("omitted_resource_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("attempted_request_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("reused_response_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("fetched_response_count"), 0)
+        and _is_exact_nonnegative_integer(audit.get("response_bytes"), 0)
+        and audit.get("stop") == "complete"
+        and _is_exact_nonnegative_integer(audit.get("resource_count"), 0)
+        and audit.get("resources") == []
+        and _is_exact_nonnegative_integer(audit.get("component_count"), 0)
+        and audit.get("components") == [],
+        "selected-empty fingerprint audit performed or retained unexpected work",
+    )
+    require(
+        isinstance(catalogue, dict)
+        and catalogue.get("schema") == "security.wordpress-asset-fingerprint-catalog/v1"
+        and catalogue.get("id") == "termivar-wordpress-asset-matrix"
+        and catalogue.get("revision") == "v1"
+        and catalogue.get("source_namespace")
+        == "termivar.synthetic.wordpress-asset-fingerprints"
+        and _is_exact_nonnegative_integer(
+            catalogue.get("byte_length"), catalogue_path.stat().st_size
+        )
+        and catalogue.get("sha256") == sha256_file(catalogue_path)
+        and isinstance(catalogue.get("semantic_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", catalogue["semantic_sha256"]) is not None
+        and _is_exact_nonnegative_integer(catalogue.get("component_count"), 1)
+        and _is_exact_nonnegative_integer(catalogue.get("release_count"), 3)
+        and _is_exact_nonnegative_integer(catalogue.get("file_count"), 9),
+        "selected-empty fingerprint catalogue identity differs",
+    )
+    return {
+        "state": "no_eligible_fingerprint_resources_from_supplied_session_v1",
+        "candidate_count": 0,
+        "attempted_request_count": 0,
+        "reused_response_count": 0,
+        "fetched_response_count": 0,
+        "resource_count": 0,
+        "component_count": 0,
+        "catalogue_sha256": catalogue["sha256"],
+        "catalogue_semantic_sha256": catalogue["semantic_sha256"],
+    }
+
+
+def _validate_supplied_session_wordpress_document(
+    document: dict[str, Any],
+    *,
+    session_input: LabSessionInput,
+    root_origin: str,
+    oracle: DiscoveryOracle,
+    expected_session_outcome: str,
+    integration_selected: bool,
+    expected_component_association: str,
+    fingerprints_path: Path | None,
+) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+    session, committed = _validate_supplied_session_audit(
+        document,
+        expected_outcome=expected_session_outcome,
+        expected_principal_alias=session_input.principal_alias,
+        policy_declares_expiry=session_input.policy_declares_expiry,
+    )
+    discovery = document.get("wordpress_discovery")
+    require(isinstance(discovery, dict), "session scenario omits WordPress discovery")
+    application_url = root_origin.rstrip("/") + session_input.application_path
+    resource_url = root_origin.rstrip("/") + session_input.resource_path
+    plugin_base_url = oracle.plugins_base_url
+    require(
+        isinstance(plugin_base_url, str) and plugin_base_url.endswith("/"),
+        "supplied-session scenario has no bounded plugin-base oracle",
+    )
+    expected_private_body = _expected_session_private_body(
+        plugin_base_url, session_input.credential_principal_alias
+    )
+    resource_was_dispatched = expected_session_outcome != "startup_unhealthy"
+    require(
+        session.get("application_reference")
+        == _supplied_session_literal_reference(
+            b"security.supplied-session-application.reference.v1\0",
+            application_url,
+            "supplied-session-application-sha256",
+        )
+        and session.get("health_oracle", {}).get("field_reference")
+        == _supplied_session_literal_reference(
+            b"security.supplied-session-health-field.reference.v1\0",
+            "authenticated",
+            "supplied-session-health-field-sha256",
+        )
+        and session["resources"][0].get("resource_reference")
+        == _supplied_session_literal_reference(
+            b"security.supplied-session-resource.reference.v1\0",
+            resource_url,
+            "supplied-session-resource-sha256",
+        )
+        and _is_exact_nonnegative_integer(
+            session["resources"][0].get("response_bytes"),
+            len(expected_private_body) if resource_was_dispatched else 0,
+        ),
+        "supplied-session report references differ from controller-known inputs",
+    )
+    if not integration_selected:
+        require(expected_session_outcome == "complete" and fingerprints_path is None,
+                "option-off session oracle is inconsistent")
+        schema = _validate_discovery_document(
+            document, generator_visible=True, oracle=oracle
+        )
+        require(
+            "supplied_session_pages" not in discovery
+            and all(
+                "source_supplied_session_page_references" not in source
+                for source in discovery.get("sources", [])
+                if isinstance(source, dict)
+            ),
+            "option-off discovery retained supplied-session integration provenance",
+        )
+        return schema, {
+            "outcome": expected_session_outcome,
+            "coverage": session["coverage"],
+            "selected_resource_count": 1,
+            "committed_resource_count": 1,
+            "dispatched_request_count": 3,
+            "wordpress_integration": "not_selected",
+            "private_response_variant": (
+                "principal_alice" if session_input.credential_principal_alias.endswith("alice")
+                else "principal_bob"
+            ),
+            "private_response_bytes": len(expected_private_body),
+        }, None
+
+    expected_base_sources = [
+        ("rest_index", None),
+        ("theme_stylesheet", ("theme", "termivar-child")),
+        ("theme_stylesheet", ("theme", "termivar-parent")),
+        ("plugin_readme", ("plugin", "termivar-metadata-lab")),
+    ]
+    expected_sources = list(expected_base_sources)
+    if committed:
+        expected_sources.append(("plugin_readme", FINGERPRINT_COMPONENT))
+    expected_count = len(expected_sources)
+    expected_seed_count = 3 + int(committed)
+    require(
+        set(discovery) == {
+            "schema", "capability_id", "policy_id", "selected", "method",
+            "credential_mode", "seed_count", "candidate_count",
+            "candidate_limit_reached", "omitted_candidate_count",
+            "attempted_request_count", "completed_response_count",
+            "committed_response_count", "response_bytes", "source_count",
+            "layout", "supplied_session_pages", "sources",
+        }
+        and discovery.get("schema") == "security.wordpress-discovery-audit/v4"
+        and discovery.get("capability_id") == "technology.wordpress-metadata-discovery@1"
+        and discovery.get("policy_id")
+        == "termivar.wordpress-supplied-session-metadata-discovery/v1"
+        and discovery.get("selected") is True
+        and discovery.get("method") == "get"
+        and discovery.get("credential_mode") == "anonymous"
+        and _is_exact_nonnegative_integer(
+            discovery.get("seed_count"), expected_seed_count
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("candidate_count"), expected_count
+        )
+        and discovery.get("candidate_limit_reached") is False
+        and _is_exact_nonnegative_integer(discovery.get("omitted_candidate_count"), 0)
+        and _is_exact_nonnegative_integer(
+            discovery.get("attempted_request_count"), expected_count
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("completed_response_count"), expected_count
+        )
+        and _is_exact_nonnegative_integer(
+            discovery.get("committed_response_count"), expected_count
+        )
+        and _is_exact_nonnegative_integer(discovery.get("source_count"), expected_count),
+        "supplied-session WordPress request/source accounting differs",
+    )
+    layout = discovery.get("layout")
+    require(
+        isinstance(layout, dict)
+        and layout.get("application_reference")
+        == _framed_reference("wordpress-selected-application", oracle.application_url),
+        "supplied-session WordPress application identity differs",
+    )
+    roles = layout.get("roles")
+    require(
+        isinstance(roles, list)
+        and [role.get("role") for role in roles if isinstance(role, dict)]
+        == list(LAYOUT_ROLES),
+        "supplied-session WordPress frozen layout is malformed",
+    )
+    role_urls = {
+        "core": oracle.core_base_url,
+        "themes": oracle.themes_base_url,
+        "plugins": oracle.plugins_base_url,
+        "rest_index": oracle.rest_base_url,
+    }
+    for role in roles:
+        role_name = role["role"]
+        base_url = role_urls[role_name]
+        expected_basis = (
+            "structured_advertisement" if role_name == "rest_index"
+            else "operator_declaration" if oracle.declaration_bytes is not None
+            else "conventional_asset"
+        )
+        require(
+            base_url is not None
+            and _is_exact_nonnegative_integer(role.get("candidate_count"), 1)
+            and role == {
+                "role": role_name,
+                "status": "exact",
+                "basis": expected_basis,
+                "reference": _framed_reference("wordpress-discovery-role", base_url),
+                "candidate_count": 1,
+            },
+            f"supplied-session frozen {role_name} role differs from the oracle",
+        )
+    pages = discovery.get("supplied_session_pages")
+    require(isinstance(pages, dict), "v4 discovery omits supplied-session pages")
+    page_reference = _framed_supplied_session_page_reference(session, resource_url)
+    page_rows = pages.get("pages")
+    require(
+        pages.get("mode") == "committed_supplied_session_resources"
+        and pages.get("policy_reference") == session.get("policy_reference")
+        and pages.get("application_reference") == session.get("application_reference")
+        and pages.get("principal_reference") == session.get("principal_reference")
+        and pages.get("credential_mechanism") == "cookie_jar"
+        and _is_exact_nonnegative_integer(pages.get("session_epoch"), 1)
+        and _is_exact_nonnegative_integer(pages.get("selected_count"), 1)
+        and _is_exact_nonnegative_integer(pages.get("committed_count"), int(committed))
+        and _is_exact_nonnegative_integer(
+            pages.get("accepted_association_count"), int(committed)
+        )
+        and _is_exact_nonnegative_integer(pages.get("rejected_association_count"), 0)
+        and _is_exact_nonnegative_integer(
+            pages.get("not_established_association_count"), int(not committed)
+        )
+        and _is_exact_nonnegative_integer(
+            pages.get("not_evaluated_count"), int(not committed)
+        )
+        and isinstance(page_rows, list)
+        and len(page_rows) == 1
+        and isinstance(page_rows[0], dict),
+        "supplied-session WordPress page accounting differs",
+    )
+    page = page_rows[0]
+    require(
+        page.get("page_reference") == page_reference
+        and page.get("resource_reference")
+        == session["resources"][0]["resource_reference"]
+        and page.get("acquisition") == "reused_supplied_session_response"
+        and page.get("fingerprint_evaluation") == "not_selected_in_v1",
+        "supplied-session WordPress page identity differs",
+    )
+    if committed:
+        require(
+            page.get("resource_evidence_reference")
+            == session["resources"][0]["evidence_reference"]
+            and page.get("association") == "accepted"
+            and page.get("outcome") == "accepted"
+            and _is_exact_nonnegative_integer(
+                page.get("interpreted_response_bytes"),
+                session["resources"][0]["response_bytes"],
+            )
+            and _is_exact_nonnegative_integer(
+                pages.get("interpreted_response_bytes"),
+                session["resources"][0]["response_bytes"],
+            )
+            and _is_exact_nonnegative_integer(page.get("evidence_reference_count"), 1)
+            and page.get("evidence_references")
+            == [session["resources"][0]["evidence_reference"]],
+            "healthy supplied-session page was not committed to WordPress",
+        )
+    else:
+        require(
+            page.get("resource_evidence_reference") is None
+            and page.get("association") == "not_established"
+            and page.get("outcome") == "not_evaluated"
+            and _is_exact_nonnegative_integer(page.get("interpreted_response_bytes"), 0)
+            and _is_exact_nonnegative_integer(pages.get("interpreted_response_bytes"), 0)
+            and _is_exact_nonnegative_integer(page.get("evidence_reference_count"), 0)
+            and page.get("evidence_references") == [],
+            "unqualified supplied-session page influenced WordPress evidence",
+        )
+
+    sources = discovery.get("sources")
+    require(
+        isinstance(sources, list) and len(sources) == expected_count
+        and all(isinstance(source, dict) for source in sources),
+        "supplied-session discovery source rows differ",
+    )
+    identities = []
+    for source in sources:
+        require(
+            "source_supplied_session_page_references" in source
+            and isinstance(source["source_supplied_session_page_references"], list),
+            "v4 discovery source omits typed session provenance",
+        )
+        session_references = source["source_supplied_session_page_references"]
+        component = source.get("component")
+        identity = None
+        if isinstance(component, dict):
+            identity = (component.get("kind"), component.get("slug"))
+        identities.append((source.get("kind"), identity))
+        expected_references = (
+            [page_reference]
+            if identity == FINGERPRINT_COMPONENT and source.get("kind") == "plugin_readme"
+            else []
+        )
+        require(session_references == expected_references,
+                "session provenance was lost or attached to an entry source")
+        require(
+            "source_page_references" not in source,
+            "session discovery source unexpectedly mixed observed-page provenance",
+        )
+        reduced = dict(source)
+        reduced.pop("source_supplied_session_page_references")
+        _validate_discovery_source_shape(reduced)
+    require(identities == expected_sources and len(set(identities)) == len(identities),
+            "session scenario lost, duplicated, or substituted metadata sources")
+    if committed:
+        plugin = sources[-1]
+        require(
+            plugin.get("association") == expected_component_association
+            and plugin.get("plugin", {}).get("stable_tag") == "9.9.9",
+            "session-nominated plugin metadata meaning changed",
+        )
+    review = document.get("wordpress_review")
+    rows = review.get("components") if isinstance(review, dict) else None
+    advisories = review.get("advisories") if isinstance(review, dict) else None
+    expected_identities = {
+        ("core", "wordpress"),
+        ("theme", "termivar-child"),
+        ("theme", "termivar-parent"),
+        ("plugin", "termivar-metadata-lab"),
+    }
+    if committed:
+        expected_identities.add(FINGERPRINT_COMPONENT)
+    actual_identities = {
+        (row.get("identity", {}).get("kind"), row.get("identity", {}).get("slug"))
+        for row in rows or [] if isinstance(row, dict)
+    }
+    expected_review_schema = (
+        "security.wordpress-review-audit/v8"
+        if fingerprints_path is not None
+        else "security.wordpress-review-audit/v7"
+    )
+    require(
+        isinstance(review, dict) and review.get("schema") == expected_review_schema
+        and _is_exact_nonnegative_integer(
+            review.get("additional_request_count"), expected_count
+        )
+        and isinstance(rows, list) and actual_identities == expected_identities
+        and len(rows) == len(expected_identities)
+        and _is_exact_nonnegative_integer(
+            review.get("component_count"), len(expected_identities)
+        )
+        and isinstance(advisories, list)
+        and _is_exact_nonnegative_integer(
+            review.get("advisory_count"), len(advisories)
+        ),
+        "session scenario changed the WordPress review projection",
+    )
+    if committed:
+        fingerprint_component = next(
+            row for row in rows if (
+                row.get("identity", {}).get("kind"), row.get("identity", {}).get("slug")
+            ) == FINGERPRINT_COMPONENT
+        )
+        require(
+            fingerprint_component.get("versions") == []
+            and fingerprint_component.get("identity_sources") == ["same_origin_asset_path"],
+            "session asset or Stable tag became installed-version evidence",
+        )
+    fingerprint_summary = (
+        _validate_selected_empty_fingerprint_audit(document, fingerprints_path)
+        if fingerprints_path is not None
+        else None
+    )
+    return "security.wordpress-discovery-audit/v4", {
+        "outcome": expected_session_outcome,
+        "coverage": session["coverage"],
+        "selected_resource_count": 1,
+        "committed_resource_count": int(committed),
+        "dispatched_request_count": session["dispatched_request_count"],
+        "wordpress_integration": "selected",
+        "accepted_wordpress_page_count": int(committed),
+        "anonymous_metadata_request_count": expected_count,
+        "page_reference": page_reference,
+        "private_response_variant": (
+            "principal_alice" if session_input.credential_principal_alias.endswith("alice")
+            else "principal_bob"
+        ) if resource_was_dispatched else "not_dispatched",
+        "private_response_bytes": (
+            len(expected_private_body) if resource_was_dispatched else 0
+        ),
+    }, fingerprint_summary
+
+
 def _validate_discovery_capability(document: Any) -> None:
     require(isinstance(document, dict), "capabilities must be a JSON object")
     require(
@@ -4640,6 +7023,37 @@ def _validate_discovery_capability(document: Any) -> None:
         "capabilities do not report compiled WordPress discovery",
     )
 
+    session_surfaces = [
+        row for row in surfaces
+        if isinstance(row, dict) and row.get("key") == "option.supplied-session-review"
+    ]
+    require(len(session_surfaces) == 1,
+            "capabilities do not report exactly one supplied-session surface")
+    session = session_surfaces[0]
+    require(
+        session.get("build_state") == "compiled"
+        and session.get("compile_feature") == "supplied-session-review"
+        and session.get("implementation_status") == "implemented"
+        and session.get("prerequisites") == [
+            "--profile web-review",
+            "--session-policy FILE",
+            "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+            "V2: --session-cookie-file FILE",
+            "optional --wordpress-supplied-session when also compiled with wordpress-review",
+            "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
+        ],
+        "capabilities do not report compiled supplied-session review",
+    )
+    limitation = session.get("limitation")
+    require(
+        isinstance(limitation, str)
+        and "health-qualified session-resource HTML may nominate public WordPress metadata"
+        in limitation
+        and "credential is not sent to metadata or fingerprint requests" in limitation
+        and "authenticated-page fingerprint acquisition is not selected" in limitation,
+        "capabilities omit the supplied-session WordPress authority boundary",
+    )
+
 
 def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> dict[str, Any]:
     require(binary.is_file() and not binary.is_symlink(), "binary must be a regular non-link file")
@@ -4654,8 +7068,11 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             and "--wordpress-discovery" in scan_help
             and "--wordpress-page-scope" in scan_help
             and "--wordpress-layout" in scan_help
-            and "--wordpress-fingerprints" in scan_help,
-            "feature-enabled scan help omits WordPress discovery")
+            and "--wordpress-fingerprints" in scan_help
+            and "--wordpress-supplied-session" in scan_help
+            and "--session-policy" in scan_help
+            and "--session-cookie-file" in scan_help,
+            "feature-enabled scan help omits WordPress/session integration")
     capabilities = parse_json(
         runner.run([binary, "capabilities", "--format", "json"],
                    label="capabilities").stdout,
@@ -4709,6 +7126,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             bundles = work / "bundles"
             bundles.mkdir(mode=PRIVATE_DIRECTORY_MODE)
             scenarios: dict[str, dict[str, Any]] = {}
+            # One run-wide future expiration keeps otherwise identical session
+            # policies comparable without making credential bytes reusable.
+            positive_session_expiration = int(time.time()) + 24 * 60 * 60
 
             def absolute(path: str) -> str:
                 return (lab.origin or "").rstrip("/") + path
@@ -4735,6 +7155,36 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                     skipped_sibling_application_count=skipped_sibling,
                 )
 
+            def session_input(
+                name: str,
+                *,
+                wordpress_path: str,
+                application_path: str,
+                credential_login: str,
+                expected_login: str = "termivar-lab-alice",
+                lose_after_resource: bool = False,
+                expired: bool = False,
+            ) -> LabSessionInput:
+                credential = lab.configure_supplied_session(
+                    path=wordpress_path,
+                    application_path=application_path,
+                    credential_login=credential_login,
+                    expected_login=expected_login,
+                    lose_after_resource=lose_after_resource,
+                    expired=expired,
+                    expiration_unix_seconds=(
+                        None if expired else positive_session_expiration
+                    ),
+                )
+                return _write_supplied_session_inputs(
+                    work,
+                    name=name,
+                    origin=lab.origin or "",
+                    credential=credential,
+                    expected_principal_alias=expected_login,
+                    omit_policy_expiry=expired,
+                )
+
             def run_case(
                 name: str,
                 *,
@@ -4750,31 +7200,101 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 observed_discovery_request_count: int = 5,
                 observed_page_association: str = "accepted",
                 expected_component_association: str = "observed_conventional",
+                supplied_session: LabSessionInput | None = None,
+                wordpress_supplied_session: bool = False,
+                expected_session_outcome: str | None = None,
             ) -> list[tuple[str, str, int, tuple[str, ...]]]:
-                before = lab.request_log()
+                log_sensitive_values = (
+                    _supplied_session_sensitive_values(supplied_session)
+                    if supplied_session is not None else ()
+                )
+                before = lab.request_log(sensitive_values=log_sensitive_values)
                 bundle = bundles / name
+                scan_result = None
+                scan_error: BaseException | None = None
                 try:
-                    document, identity, _, _, process_metrics = _run_scan(
+                    scan_result = _run_scan(
                         runner, binary, target or lab.origin or "", bundle,
                         wordpress_review=review, discovery=discovery,
                         layout_path=layout_path, page_scope=page_scope,
-                        fingerprints_path=fingerprints_path, label=name,
+                        fingerprints_path=fingerprints_path,
+                        supplied_session=supplied_session,
+                        wordpress_supplied_session=wordpress_supplied_session,
+                        label=name,
                     )
-                except Exception:
-                    lab.assert_relay_healthy()
-                    raise
+                except BaseException as error:
+                    scan_error = error
+                cleanup_error: BaseException | None = None
+                if supplied_session is not None:
+                    try:
+                        _remove_supplied_session_inputs(supplied_session)
+                    except BaseException as error:
+                        cleanup_error = error
+                if scan_error is not None:
+                    relay_error: BaseException | None = None
+                    try:
+                        lab.assert_relay_healthy()
+                    except BaseException as error:
+                        relay_error = error
+                    if (cleanup_error is not None
+                            and isinstance(scan_error, AcceptanceError)):
+                        diagnostic = (
+                            dict(scan_error.diagnostic)
+                            if isinstance(scan_error.diagnostic, dict) else {}
+                        )
+                        diagnostic["private_input_cleanup"] = "failed"
+                        scan_error.diagnostic = diagnostic
+                    if relay_error is not None and isinstance(scan_error, AcceptanceError):
+                        diagnostic = (
+                            dict(scan_error.diagnostic)
+                            if isinstance(scan_error.diagnostic, dict) else {}
+                        )
+                        diagnostic["relay_health_after_failure"] = "failed"
+                        scan_error.diagnostic = diagnostic
+                    raise scan_error
+                if cleanup_error is not None:
+                    raise cleanup_error
+                require(scan_result is not None, "scan returned no process result")
+                document, identity, _, _, process_metrics = scan_result
                 lab.assert_relay_healthy()
-                trace = lab.trace(before)
+                trace = lab.trace(
+                    before, sensitive_values=log_sensitive_values
+                )
                 schema = None
                 quality = None
                 discovery_response_bytes = 0
                 fingerprint_summary = None
+                session_summary = None
+                scenario_expected_metadata_paths = (
+                    list(discovery_oracle.request_paths)
+                    if discovery_oracle is not None else []
+                )
                 if discovery:
                     _validate_wordpress_execution_boundary(
                         (bundle / "assessment.html").read_bytes()
                     )
                     try:
-                        if rejected_page_fingerprint_expectation:
+                        if supplied_session is not None:
+                            require(
+                                expected_session_outcome is not None
+                                and discovery_oracle is not None,
+                                "session scenario has no independent outcome/layout oracle",
+                            )
+                            schema, session_summary, fingerprint_summary = (
+                                _validate_supplied_session_wordpress_document(
+                                    document,
+                                    session_input=supplied_session,
+                                    root_origin=lab.origin or "",
+                                    oracle=discovery_oracle,
+                                    expected_session_outcome=expected_session_outcome,
+                                    integration_selected=wordpress_supplied_session,
+                                    expected_component_association=(
+                                        expected_component_association
+                                    ),
+                                    fingerprints_path=fingerprints_path,
+                                )
+                            )
+                        elif rejected_page_fingerprint_expectation:
                             require(
                                 fingerprints_path is not None,
                                 "rejected-page fingerprint expectation has no catalogue input",
@@ -4842,11 +7362,65 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                             diagnostic,
                         ) from error
                     discovery_response_bytes = document["wordpress_discovery"]["response_bytes"]
+                if supplied_session is not None:
+                    require(
+                        expected_session_outcome is not None
+                        and discovery_oracle is not None,
+                        "session trace has no independent oracle",
+                    )
+                    expected_session_paths = (
+                        [supplied_session.health_path]
+                        if expected_session_outcome == "startup_unhealthy"
+                        else [
+                            supplied_session.health_path,
+                            supplied_session.resource_path,
+                            supplied_session.health_path,
+                        ]
+                    )
+                    plugin_base = discovery_oracle.plugins_base_url
+                    require(
+                        isinstance(plugin_base, str)
+                        and plugin_base.startswith((lab.origin or "").rstrip("/")),
+                        "session plugin base is outside the loopback oracle",
+                    )
+                    private_assets = {
+                        plugin_base[len((lab.origin or "").rstrip("/")):]
+                        + f"termivar-fingerprint-lab/assets/fingerprint.{extension}"
+                        + "?ver=private-page"
+                        for extension in ("css", "js")
+                    }
+                    expected_metadata_paths = list(discovery_oracle.request_paths)
+                    conditional_readme_path = (
+                        plugin_base[len((lab.origin or "").rstrip("/")):]
+                        + "termivar-fingerprint-lab/readme.txt"
+                    )
+                    if (wordpress_supplied_session
+                            and expected_session_outcome == "complete"):
+                        expected_metadata_paths.append(conditional_readme_path)
+                    scenario_expected_metadata_paths = expected_metadata_paths
+                    session_trace = _assert_supplied_session_trace(
+                        trace,
+                        session=supplied_session,
+                        expected_session_paths=expected_session_paths,
+                        expected_metadata_paths=expected_metadata_paths,
+                        known_metadata_paths=(
+                            *discovery_oracle.request_paths,
+                            conditional_readme_path,
+                        ),
+                        forbidden_anonymous_paths=tuple(private_assets),
+                    )
                 scenarios[name] = {
                     "wordpress_review": review,
                     "wordpress_discovery": discovery,
                     "request_count": len(trace),
-                    "request_trace": _trace_json(trace),
+                    "request_trace": (
+                        _compact_session_trace_evidence(
+                            trace,
+                            supplied_session,
+                            metadata_paths=scenario_expected_metadata_paths,
+                        )
+                        if supplied_session is not None else _trace_json(trace)
+                    ),
                     "wordpress_audit_schema": schema,
                     "layout_application_reference": (
                         document.get("wordpress_discovery", {})
@@ -4854,7 +7428,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                         .get("application_reference")
                     ),
                     "layout": (
-                        document.get("wordpress_discovery", {}).get("layout")
+                        _compact_layout_evidence(document)
+                        if discovery and supplied_session is not None
+                        else document.get("wordpress_discovery", {}).get("layout")
                         if discovery else None
                     ),
                     "source_associations": ([
@@ -4863,8 +7439,15 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                             "component": source.get("component"),
                             "parent_depth": source.get("parent_depth"),
                             "association": source.get("association"),
-                            "resource_reference": source.get("resource_reference"),
-                            "role_reference": source.get("role_reference"),
+                            **(
+                                {
+                                    "resource_reference": source.get(
+                                        "resource_reference"
+                                    ),
+                                    "role_reference": source.get("role_reference"),
+                                }
+                                if supplied_session is None else {}
+                            ),
                         }
                         for source in document.get("wordpress_discovery", {}).get(
                             "sources", []
@@ -4872,11 +7455,35 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                         if isinstance(source, dict)
                     ] if discovery else []),
                     "expected_metadata_paths": (
-                        list(discovery_oracle.request_paths)
-                        if discovery_oracle is not None else []
+                        scenario_expected_metadata_paths
                     ),
                     "quality": quality,
                     "fingerprints": fingerprint_summary,
+                    "supplied_session": session_summary,
+                    "supplied_session_trace_accounting": (
+                        session_trace if supplied_session is not None else None
+                    ),
+                    "supplied_session_private_inputs": (
+                        {
+                            "policy": dict(supplied_session.policy_identity),
+                            "cookie_byte_length": supplied_session.cookie_byte_length,
+                            "policy_declares_expiry": (
+                                supplied_session.policy_declares_expiry
+                            ),
+                            "controller_oracle": {
+                                "credential_principal_alias": (
+                                    supplied_session.credential_principal_alias
+                                ),
+                                "expected_principal_alias": supplied_session.principal_alias,
+                                "server_expired": supplied_session.server_expired,
+                                "lose_after_resource": (
+                                    supplied_session.lose_after_resource
+                                ),
+                            },
+                            "cleanup_confirmed": True,
+                        }
+                        if supplied_session is not None else None
+                    ),
                     "discovery_response_bytes": discovery_response_bytes,
                     "process_metrics": process_metrics,
                     "bundle": identity,
@@ -4965,6 +7572,104 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 },
                 "missing_reference_mutation": missing_catalogue_identity,
             }
+
+            root_session_cases = (
+                {
+                    "name": "session-root-option-off",
+                    "credential": "termivar-lab-alice",
+                    "expected": "termivar-lab-alice",
+                    "integration": False,
+                    "outcome": "complete",
+                },
+                {
+                    "name": "session-root-healthy",
+                    "credential": "termivar-lab-alice",
+                    "expected": "termivar-lab-alice",
+                    "integration": True,
+                    "outcome": "complete",
+                },
+                {
+                    "name": "session-root-fingerprint-selected-empty",
+                    "credential": "termivar-lab-alice",
+                    "expected": "termivar-lab-alice",
+                    "integration": True,
+                    "outcome": "complete",
+                    "fingerprints": True,
+                },
+                {
+                    "name": "session-root-wrong-principal",
+                    "credential": "termivar-lab-bob",
+                    "expected": "termivar-lab-alice",
+                    "integration": True,
+                    "outcome": "startup_unhealthy",
+                },
+                {
+                    "name": "session-root-loss-after-resource",
+                    "credential": "termivar-lab-alice",
+                    "expected": "termivar-lab-alice",
+                    "integration": True,
+                    "outcome": "session_lost",
+                    "loss": True,
+                },
+                {
+                    "name": "session-root-bob-healthy",
+                    "credential": "termivar-lab-bob",
+                    "expected": "termivar-lab-bob",
+                    "integration": True,
+                    "outcome": "complete",
+                },
+                {
+                    "name": "session-root-expired-startup",
+                    "credential": "termivar-lab-alice",
+                    "expected": "termivar-lab-alice",
+                    "integration": True,
+                    "outcome": "startup_unhealthy",
+                    "expired": True,
+                },
+            )
+            root_session_traces: dict[
+                str,
+                tuple[list[tuple[str, str, int, tuple[str, ...]]], LabSessionInput],
+            ] = {}
+            for case in root_session_cases:
+                supplied = session_input(
+                    case["name"],
+                    wordpress_path="/var/www/html",
+                    application_path="/",
+                    credential_login=case["credential"],
+                    expected_login=case["expected"],
+                    lose_after_resource=case.get("loss", False),
+                    expired=case.get("expired", False),
+                )
+                session_case_trace = run_case(
+                    case["name"],
+                    review=True,
+                    discovery=True,
+                    discovery_oracle=root_pretty_oracle,
+                    fingerprints_path=(
+                        FINGERPRINT_CATALOGUE_PATH
+                        if case.get("fingerprints", False) else None
+                    ),
+                    supplied_session=supplied,
+                    wordpress_supplied_session=case["integration"],
+                    expected_session_outcome=case["outcome"],
+                )
+                root_session_traces[case["name"]] = (session_case_trace, supplied)
+
+            conditional_root_readme = (
+                "/wp-content/plugins/termivar-fingerprint-lab/readme.txt"
+            )
+            for name, conditional_path in (
+                ("session-root-option-off", None),
+                ("session-root-healthy", conditional_root_readme),
+            ):
+                session_case_trace, supplied = root_session_traces[name]
+                _assert_session_preserves_anonymous_trace(
+                    pretty_discovery,
+                    session_case_trace,
+                    session=supplied,
+                    conditional_metadata_path=conditional_path,
+                )
 
             observed_baselines: dict[
                 tuple[str, ...],
@@ -5163,6 +7868,31 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 "additional_requests_vs_ordinary_web_review"
             ] = (
                 len(blog_pretty_discovery) - len(blog_pretty_baseline)
+            )
+
+            blog_session = session_input(
+                "session-blog-healthy",
+                wordpress_path="/var/www/html/blog",
+                application_path="/blog/",
+                credential_login="termivar-lab-alice",
+            )
+            blog_session_trace = run_case(
+                "session-blog-healthy",
+                review=True,
+                discovery=True,
+                target=blog_target,
+                discovery_oracle=blog_pretty_oracle,
+                supplied_session=blog_session,
+                wordpress_supplied_session=True,
+                expected_session_outcome="complete",
+            )
+            _assert_session_preserves_anonymous_trace(
+                blog_pretty_discovery,
+                blog_session_trace,
+                session=blog_session,
+                conditional_metadata_path=(
+                    "/blog/wp-content/plugins/termivar-fingerprint-lab/readme.txt"
+                ),
             )
 
             lab.configure_fingerprint_assets(
@@ -5377,6 +8107,50 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 "fingerprint run modified the operator layout declaration",
             )
 
+            custom_session = session_input(
+                "session-custom-fingerprint-selected-empty",
+                wordpress_path="/var/www/html/cms",
+                application_path="/",
+                credential_login="termivar-lab-alice",
+            )
+            custom_session_trace = run_case(
+                "session-custom-fingerprint-selected-empty",
+                review=True,
+                discovery=True,
+                target=cms_target,
+                discovery_oracle=custom_layout_oracle,
+                layout_path=layout_path,
+                fingerprints_path=FINGERPRINT_CATALOGUE_PATH,
+                supplied_session=custom_session,
+                wordpress_supplied_session=True,
+                expected_session_outcome="complete",
+                expected_component_association="explicit_operator",
+            )
+            _assert_session_preserves_anonymous_trace(
+                custom_layout,
+                custom_session_trace,
+                session=custom_session,
+                conditional_metadata_path=(
+                    "/modules/termivar-fingerprint-lab/readme.txt"
+                ),
+            )
+            require(
+                layout_path.read_bytes() == declaration_bytes,
+                "session run modified the operator layout declaration",
+            )
+
+            require(
+                tuple(scenarios) == EXPECTED_SCENARIOS,
+                "real-CMS scenario registry differs from the reviewed 28-plus-9 matrix",
+                {
+                    "status": "scenario_registry_mismatch",
+                    "expected_count": len(EXPECTED_SCENARIOS),
+                    "actual_count": len(scenarios),
+                    "missing": sorted(set(EXPECTED_SCENARIOS) - set(scenarios)),
+                    "unexpected": sorted(set(scenarios) - set(EXPECTED_SCENARIOS)),
+                },
+            )
+
             measured = [
                 scenario["process_metrics"]["peak_memory"].get("status") == "measured"
                 for scenario in scenarios.values()
@@ -5398,7 +8172,19 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             result["offline"] = _run_offline_acceptance(runner, binary, scenarios)
         finally:
             if not shutdown:
-                lab.shutdown()
+                active_error = sys.exc_info()[1]
+                try:
+                    lab.shutdown()
+                except BaseException as cleanup_error:
+                    if active_error is None:
+                        raise
+                    if isinstance(active_error, AcceptanceError):
+                        diagnostic = (
+                            dict(active_error.diagnostic)
+                            if isinstance(active_error.diagnostic, dict) else {}
+                        )
+                        diagnostic["lab_cleanup_after_failure"] = "failed"
+                        active_error.diagnostic = diagnostic
 
     for scenario in result["scenarios"].values():
         scenario.pop("_bundle", None)
@@ -5413,7 +8199,11 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
     result["claims"] = {
         "real_wordpress_executed": True,
         "wordpress_cli_used_only_as_test_ground_truth": True,
-        "termivar_received_credentials": False,
+        "termivar_received_task_owned_supplied_session_cookie": True,
+        "supplied_session_cookie_use": "exact_child_health_and_resource_gets_only",
+        "supplied_session_raw_secret_in_evidence_or_logs": False,
+        "wordpress_metadata_credential_mode": "anonymous",
+        "authenticated_page_fingerprint_acquisition": "not_selected_in_v1",
         "termivar_sent_forbidden_credential_headers": False,
         "termivar_received_inventory": False,
         "termivar_received_custom_component_wordlist": False,
@@ -5468,10 +8258,21 @@ def render_markdown(evidence: dict[str, Any]) -> str:
             "undeclared custom-root case added only its advertised REST GET. All WordPress-"
             "owned metadata and asset requests were same-origin and loopback.",
             "",
-            "WP-CLI was used only inside the disposable lab for independent ground truth. "
-            "Termivar received no credentials or inventory. The Stable tag remained a "
+            "WP-CLI was used only inside the disposable lab for independent ground truth "
+            "and to mint per-scenario low-privilege WordPress cookies. Session scans received "
+            "one cookie through a private file for the exact health/resource/health child "
+            "sequence; WordPress metadata stayed anonymous and no raw cookie entered saved "
+            "evidence or diagnostics. Termivar received no controller inventory. The Stable "
+            "tag remained a "
             "distribution hint, not an installed plugin version. No exploit or impact "
             "validation was performed.",
+            "",
+            "Healthy Alice and Bob controls, wrong-principal, server-expired startup, and "
+            "post-resource loss exercised the real WordPress cookie oracle. Root, `/blog/`, "
+            "and declared custom layouts preserved their selected application. The supplied "
+            "session page could nominate one public plugin readme, but its private JS/CSS "
+            "references remained ineligible for fingerprint acquisition in V1; selected "
+            "fingerprint runs therefore retained a valid empty audit and zero asset GETs.",
             "",
             "Every fully resolved discovery scenario independently matched 4/4 observable component "
             "identities with zero false identity matches. Theme stylesheet versions "
@@ -5511,7 +8312,17 @@ def write_evidence(output_dir: Path, evidence: dict[str, Any]) -> None:
     require(parent.is_dir() and not parent.is_symlink(), "output parent must be an existing directory")
     require(output_dir.name not in {"", ".", ".."}, "output directory has an invalid final name")
     output_dir.mkdir(mode=PRIVATE_DIRECTORY_MODE, exist_ok=False)
-    json_bytes = (json.dumps(evidence, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
+    # The fixed private-evidence ceiling predates the S02 session matrix. Preserve
+    # the bounded task summary while avoiding indentation-only overhead.
+    json_bytes = (
+        json.dumps(
+            evidence,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
     markdown_bytes = render_markdown(evidence).encode("utf-8")
     require(len(json_bytes) <= MAX_EVIDENCE_OUTPUT, "JSON evidence exceeds its bound")
     require(len(markdown_bytes) <= MAX_EVIDENCE_OUTPUT, "Markdown evidence exceeds its bound")

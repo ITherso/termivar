@@ -10,8 +10,9 @@ It uses the task-owned files under
 [`scripts/fixtures/wordpress-discovery-lab`](https://github.com/ITherso/termivar/tree/main/scripts/fixtures/wordpress-discovery-lab)
 and checks the declarations in [`ground-truth.json`](ground-truth.json) against
 WP-CLI from inside the disposable lab before Termivar runs. Termivar itself
-never invokes WP-CLI and receives neither these declarations nor any lab
-credential.
+never invokes WP-CLI or receives these declarations. Selected session cases
+receive one controller-minted low-privilege WordPress cookie through a private
+bounded input file; raw cookie values never enter the saved acceptance summary.
 
 ## Pinned stack
 
@@ -113,6 +114,28 @@ deliberately excluded from the recall denominator and counted as an expected
 abstention; the readme Stable tag is another expected abstention from installed-
 version evidence. Unexpected component rows or a wrong source class fail the
 job instead of being hidden by aggregate counts.
+
+The same lab also runs a compact supplied-session matrix with a CLI compiled
+for both `wordpress-review` and `supplied-session-review`. Real WordPress
+`logged_in` cookies are minted independently for task-owned subscriber users
+after each deployment URL is fixed. Healthy Alice and Bob controls, a Bob cookie
+against the Alice oracle, a server-expired cookie, and post-resource session loss
+exercise the exact JSON health predicate. Alice and Bob receive distinct harmless
+protected-page response variants at the same URL, with the acceptance controller
+checking their independently constructed byte lengths while retaining neither raw
+variant in its evidence. Healthy runs send Cookie only on the
+bounded health/member/health sequence (three GETs); the public WordPress REST,
+stylesheet, and readme requests remain anonymous. Root, `/blog/`, and declared
+custom layouts are covered, and every private input is removed and confirmed
+after its scenario.
+
+With `--wordpress-supplied-session`, a complete health-qualified member page may
+nominate the plugin's public readme once. Its private-page JS/CSS references do
+not become fingerprint resources in this V1 integration. The fingerprint-
+selected root and custom cases therefore require a valid selected-empty audit,
+zero asset GETs, and no installed-version inference from either `Stable tag` or
+the URL `ver` hint. Wrong, expired, or terminally lost sessions contribute no
+WordPress page evidence or protected-page nominations.
 
 Each scan runs as a fresh process. On this Linux job the controller records GNU
 time's maximum-resident-set-size high-water mark in KiB, elapsed wall time,

@@ -77,6 +77,31 @@
     "pretty_root_path": "/wp-json/",
     "plain_root_path": "/index.php?rest_route=/"
   },
+  "supplied_session": {
+    "principals": [
+      {
+        "alias": "termivar-lab-alice",
+        "role": "subscriber"
+      },
+      {
+        "alias": "termivar-lab-bob",
+        "role": "subscriber"
+      }
+    ],
+    "health_leaf": "termivar-session-health",
+    "resource_leaf": "termivar-session-member",
+    "health_oracle": "json_boolean_true",
+    "health_field": "authenticated",
+    "session_request_limit": 3,
+    "credential_mechanism": "wordpress_logged_in_cookie",
+    "metadata_credential_mode": "anonymous",
+    "private_response_variants": {
+      "termivar-lab-alice": "principal_alice",
+      "termivar-lab-bob": "principal_bob",
+      "byte_lengths_are_distinct": true,
+      "raw_markers_saved": false
+    }
+  },
   "layouts": {
     "selected_blog": {
       "application_path": "/blog/",
