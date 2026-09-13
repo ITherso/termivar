@@ -5651,6 +5651,12 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                 *[("GET", target, 200, ()) for target in metadata],
                 ("HEAD", entry_metadata[1], 200, ()),
                 ("HEAD", entry_metadata[0], 200, ()),
+                (
+                    "HEAD",
+                    "/wp-content/plugins/private/assets/fingerprint.css",
+                    200,
+                    (),
+                ),
             ]
             unselected_readme = "/wp-content/plugins/unselected/readme.txt"
             counts = runner._assert_supplied_session_trace(
@@ -5671,15 +5677,15 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             summary = runner._compact_session_trace_evidence(
                 trace, session, metadata_paths=metadata
             )
-            self.assertEqual(summary["full_request_count"], 11)
+            self.assertEqual(summary["full_request_count"], 12)
             self.assertEqual(summary["retained_request_count"], 10)
-            self.assertEqual(summary["omitted_anonymous_general_request_count"], 1)
+            self.assertEqual(summary["omitted_anonymous_general_request_count"], 2)
             self.assertRegex(summary["full_trace_sha256"], r"^[0-9a-f]{64}$")
 
             mutations = (
                 trace + [("GET", session.health_path, 200, ())],
                 trace + [("HEAD", "/wp-content/plugins/private/assets/fingerprint.js?ver=private-page", 200, ())],
-                trace + [("GET", "/wp-content/plugins/private/assets/fingerprint.css", 200, ())],
+                trace + [("GET", "/wp-content/plugins/private/assets/fingerprint.css?ver=private-page", 200, ())],
                 trace + [("GET", metadata[0], 500, ())],
                 trace + [("GET", metadata[0], 200, ())],
                 trace + [("GET", unselected_readme, 200, ())],

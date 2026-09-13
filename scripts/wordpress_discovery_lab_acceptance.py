@@ -5248,7 +5248,11 @@ def _assert_supplied_session_trace(
         isinstance(scenario, str) and scenario in SESSION_SCENARIOS,
         "supplied-session trace scenario is not in the closed registry",
     )
-    forbidden_asset_paths = {path.partition("?")[0] for path in forbidden_anonymous_paths}
+    # The private page uses a distinct query-bearing representation of assets that
+    # are also visible on public fixture pages. Treat the exact admitted target as
+    # forbidden here; stripping its query would conflate it with the legitimate
+    # ordinary HEAD that the exact anonymous-baseline comparison preserves.
+    forbidden_asset_paths = set(forbidden_anonymous_paths)
     expected_credentialed = [
         ("GET", path, 200, ("cookie",)) for path in expected_session_paths
     ]
@@ -5372,7 +5376,7 @@ def _assert_supplied_session_trace(
     )
     require(
         not any(
-            target.partition("?")[0] in forbidden_asset_paths
+            target in forbidden_asset_paths
             for _, target, _, _ in trace
         ),
         "an authenticated-page-only asset received an unauthorized request",
