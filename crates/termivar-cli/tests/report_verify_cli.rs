@@ -103,6 +103,131 @@ fn rewrite_html_manifest(directory: &Path, html: &[u8]) {
     fs::write(manifest_path, bytes).expect("write modified manifest fixture");
 }
 
+fn rewrite_json_manifest(directory: &Path, json_bytes: &[u8]) {
+    fs::write(directory.join(JSON_NAME), json_bytes).expect("write modified JSON fixture");
+    let manifest_path = directory.join(MANIFEST_NAME);
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("read manifest"))
+            .expect("parse committed manifest");
+    let entry = manifest["files"]
+        .as_array_mut()
+        .expect("manifest files")
+        .iter_mut()
+        .find(|entry| entry["name"] == JSON_NAME)
+        .expect("JSON manifest entry");
+    entry["byte_length"] = json!(json_bytes.len() as u64);
+    entry["sha256"] = json!(sha256(json_bytes));
+    manifest["producer"]["version"] = json!(env!("CARGO_PKG_VERSION"));
+    let mut bytes = serde_json::to_vec_pretty(&manifest).expect("encode modified manifest");
+    bytes.push(b'\n');
+    fs::write(manifest_path, bytes).expect("write modified manifest fixture");
+}
+
+fn synthetic_cookie_supplied_session_audit_v2() -> Value {
+    json!({
+        "schema": "security.supplied-session-audit/v2",
+        "capability_id": "session.supplied-context-assessment@1",
+        "policy_reference": format!("supplied-session-policy-sha256:{}", "1".repeat(64)),
+        "application_reference": format!(
+            "supplied-session-application-sha256:{}",
+            "2".repeat(64)
+        ),
+        "principal_reference": "supplied-session-principal-0001",
+        "principal_alias": "synthetic-reader",
+        "principal_assurance": "operator_declared",
+        "credential_mechanism": "cookie_jar",
+        "cookie_policy": {
+            "declared_count": 2,
+            "host_only_count": 1,
+            "domain_count": 1,
+            "secure_count": 2,
+            "http_only_count": 1,
+            "session_count": 1,
+            "persistent_count": 1,
+            "same_site_missing_count": 0,
+            "same_site_strict_count": 1,
+            "same_site_lax_count": 0,
+            "same_site_none_count": 1,
+            "update_policy": "stop_on_selected_cookie",
+            "browser_semantics": "attributes_preserved_not_browser_csrf_emulation"
+        },
+        "cookie_lifecycle": {
+            "initial_epoch": 1,
+            "final_epoch": 1,
+            "selected_update_response_count": 0,
+            "unselected_update_response_count": 1,
+            "update_classification_failure_count": 0,
+            "updates_applied": 0
+        },
+        "health_oracle": {
+            "kind": "json_boolean_true",
+            "field_reference": format!(
+                "supplied-session-health-field-sha256:{}",
+                "3".repeat(64)
+            )
+        },
+        "outcome": "complete",
+        "coverage": "complete",
+        "checkpoints": [
+            {
+                "sequence": 0,
+                "phase": "startup",
+                "after_subject_count": 0,
+                "evidence_reference": format!(
+                    "supplied-session-checkpoint-evidence-sha256:{}",
+                    "4".repeat(64)
+                ),
+                "outcome": "healthy",
+                "status": 200,
+                "body_state": "complete",
+                "predicate": "matched",
+                "response_bytes": 17
+            },
+            {
+                "sequence": 1,
+                "phase": "terminal",
+                "after_subject_count": 1,
+                "evidence_reference": format!(
+                    "supplied-session-checkpoint-evidence-sha256:{}",
+                    "5".repeat(64)
+                ),
+                "outcome": "healthy",
+                "status": 200,
+                "body_state": "complete",
+                "predicate": "matched",
+                "response_bytes": 19
+            }
+        ],
+        "resources": [{
+            "sequence": 0,
+            "resource_reference": format!(
+                "supplied-session-resource-sha256:{}",
+                "6".repeat(64)
+            ),
+            "evidence_reference": format!(
+                "supplied-session-resource-evidence-sha256:{}",
+                "7".repeat(64)
+            ),
+            "outcome": "committed",
+            "status": 200,
+            "response_bytes": 23,
+            "epoch": 1
+        }],
+        "selected_resource_count": 1,
+        "dispatched_resource_count": 1,
+        "committed_resource_count": 1,
+        "dispatched_request_count": 3,
+        "response_bytes": 59,
+        "response_byte_limit": 65_536,
+        "response_byte_limit_exceeded": false,
+        "refresh_performed": false,
+        "anonymous_fallback_performed": false,
+        "continuous_authentication_established": false,
+        "exploit_execution": "not_performed",
+        "impact_validation": "not_performed"
+    })
+}
+
 #[test]
 fn reference_bundle_verifies_as_text_and_json_without_modification() {
     let temporary = tempfile::tempdir().expect("create private test directory");
@@ -365,4 +490,59 @@ fn verify_and_compare_remain_offline_and_comparison_compatible() {
         "offline report commands must not contact the configured proxy tripwire"
     );
     assert_eq!(snapshot(&bundle), before);
+}
+
+#[test]
+fn default_binary_verifies_a_cookie_v2_bundle_without_feature_or_network_authority() {
+    let temporary = tempfile::tempdir().expect("create private test directory");
+    let bundle = copy_reference_bundle(temporary.path(), "cookie-v2");
+    let json_path = bundle.join(JSON_NAME);
+    let mut assessment: Value =
+        serde_json::from_slice(&fs::read(&json_path).expect("read assessment fixture"))
+            .expect("parse assessment fixture");
+    assessment["supplied_session"] = synthetic_cookie_supplied_session_audit_v2();
+    let assessment_bytes = serde_json::to_vec(&assessment).expect("encode synthetic assessment");
+    rewrite_json_manifest(&bundle, &assessment_bytes);
+    let before = snapshot(&bundle);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind network tripwire");
+    listener
+        .set_nonblocking(true)
+        .expect("make network tripwire nonblocking");
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+
+    let mut command = termivar();
+    let output = command
+        .args(["report", "verify", "--dir"])
+        .arg(&bundle)
+        .args(["--format", "json"])
+        .env("HTTP_PROXY", &proxy)
+        .env("HTTPS_PROXY", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .output()
+        .expect("verify synthetic cookie-v2 bundle");
+    assert!(
+        output.status.success(),
+        "cookie-v2 verification failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let document = parse_single_json(&output.stdout, "cookie-v2 verification");
+    assert_eq!(document["schema"], "termivar-report-verification/v1");
+    assert_eq!(document["status"], "integrity_match");
+    assert_eq!(document["checks"]["assessment_document"], "checked_matched");
+    assert_eq!(document["checks"]["assessment_summary"], "checked_matched");
+    assert_eq!(document["manifest"]["item_count"], 4);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "feature-disabled report verification contacted the proxy tripwire"
+    );
+    assert_eq!(
+        snapshot(&bundle),
+        before,
+        "verification must remain read-only"
+    );
 }

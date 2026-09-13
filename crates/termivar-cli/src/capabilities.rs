@@ -582,10 +582,11 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             &[
                 "--profile web-review",
                 "--session-policy FILE",
-                "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
-                "HTTPS, except numeric-loopback HTTP fixtures",
+                "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+                "V2: --session-cookie-file FILE",
+                "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
             ],
-            "One explicitly supplied principal and strict local policy authorize bounded bodyless application GETs through a context-isolated, no-proxy child of the existing assessment broker. Structured health checks qualify bounded checkpoint coverage rather than authenticate the principal. Session loss stops later session work without anonymous fallback. The client sends no request body or non-GET method, but application-defined GET handling can still have server-side effects; the operator must authorize every selected resource. No cookies, login, refresh, OAuth, MFA, exploit, or impact validation occurs in this first slice.",
+            "One explicitly supplied principal and strict local V1 authorization_header or V2 cookie_jar policy authorize bounded bodyless application GETs through a context-isolated, no-proxy child of the existing assessment broker. Structured health checks qualify bounded checkpoint coverage rather than authenticate the principal. Session loss, a selected response-cookie update, or an unusable response-cookie classification stops later session work without anonymous fallback. No response cookie update is applied, no refresh occurs, and the session epoch stays fixed. Cookie host/domain/path/Secure/expiry applicability is intersected with operator application authority; Domain never expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. The client sends no request body or non-GET method, but application-defined GET handling can still have server-side effects; the operator must authorize every selected resource. No browser-profile import, login, automatic refresh, OAuth, MFA, exploit, or impact validation occurs in this slice.",
             "docs/internals/supplied-session-review.md",
         ),
         surface!(
@@ -1191,8 +1192,9 @@ mod tests {
             [
                 "--profile web-review",
                 "--session-policy FILE",
-                "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
-                "HTTPS, except numeric-loopback HTTP fixtures",
+                "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+                "V2: --session-cookie-file FILE",
+                "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
             ]
         );
         assert!(session.limitation.contains("context-isolated, no-proxy"));
@@ -1207,9 +1209,21 @@ mod tests {
         assert!(session
             .limitation
             .contains("operator must authorize every selected resource"));
-        assert!(session
-            .limitation
-            .contains("No cookies, login, refresh, OAuth, MFA"));
+        for required in [
+            "strict local V1 authorization_header or V2 cookie_jar policy",
+            "selected response-cookie update",
+            "unusable response-cookie classification",
+            "No response cookie update is applied, no refresh occurs",
+            "host/domain/path/Secure/expiry",
+            "Domain never expands it",
+            "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
+            "No browser-profile import, login, automatic refresh, OAuth, MFA",
+        ] {
+            assert!(
+                session.limitation.contains(required),
+                "missing supplied-session limitation `{required}`"
+            );
+        }
     }
 
     #[test]
@@ -1309,6 +1323,42 @@ mod tests {
                 "authorization.txt",
             ])
             .is_ok());
+            assert!(crate::Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "https://example.test/app/",
+                "--profile",
+                "web-review",
+                "--session-policy",
+                "cookie-session.toml",
+                "--session-cookie-file",
+                "cookies.secret.tsv",
+            ])
+            .is_ok());
+            assert!(crate::Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "https://example.test/app/",
+                "--profile",
+                "web-review",
+                "--session-cookie-file",
+                "cookies.secret.tsv",
+            ])
+            .is_err());
+            assert!(crate::Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "https://example.test/app/",
+                "--profile",
+                "web-review",
+                "--session-policy",
+                "cookie-session.toml",
+                "--session-auth-file",
+                "authorization.txt",
+                "--session-cookie-file",
+                "cookies.secret.tsv",
+            ])
+            .is_err());
             assert!(crate::Cli::try_parse_from([
                 "termivar",
                 "scan",

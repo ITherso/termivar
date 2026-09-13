@@ -2,7 +2,8 @@
 
 These guarantees describe the current development source, not the published
 prerelease binaries. They apply to the CLI's shared credential/policy-file
-loader—including the non-bundled supplied-session Preview—and the native
+loader—including the non-bundled supplied-session Preview's V1 authorization
+sources and V2 cookie file—and the native
 provider's administrator-token loader. Source selection, byte
 ceilings, validation, redacted errors and the absence of raw credential-value
 arguments remain unchanged.
@@ -39,13 +40,18 @@ values enter the guard before Unicode and size checks. File/stdin reads use
 fixed, initialized guarded storage, including bytes a reader writes before
 returning an error. The one-byte overflow probe and any removed terminal LF or
 CRLF are wiped while still owned. A successful handoff moves the existing
-allocation into the scanner constructor without an extra intake copy.
+allocation into the scanner constructor without an extra intake copy. The V2
+cookie source is one explicitly named, bounded regular file; its complete bytes
+move into one zeroizing backing allocation before row validation. It is not
+available from argv, environment, stdin, browser storage or directory search.
 
 This CLI erasure guarantee ends at constructor handoff. Existing downstream
 root/principal `PayloadSeed` or `String` copies and their lifetimes are unchanged;
 they are not covered by this intake guarantee. The supplied-session path moves
-its guarded Authorization allocation into its context-owned transport state;
-that does not establish erasure of transport-library copies. The provider
+its guarded V1 authorization allocation or V2 cookie backing allocation into its
+context-owned transport state. V2 transiently composes an applicable `Cookie`
+header for one exact admitted request; neither path establishes erasure of
+transport-library copies. The provider
 already guards its token input with `Zeroizing`; it also wipes a removed
 line-ending suffix before truncation and retains its existing token-ownership
 contract.

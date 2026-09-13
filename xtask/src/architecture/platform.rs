@@ -2017,29 +2017,70 @@ fn supplied_session_review_source_contract_violations(
             "pubconstMAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES:u64=256*1024;",
             "pubconstMAX_SUPPLIED_SESSION_RESPONSE_BODY_BYTES:usize=64*1024;",
             "pubconstMAX_SUPPLIED_SESSION_WALL_TIME_MS:u64=10_000;",
-            "AuthorizationHeader",
+            "pubconstSUPPLIED_SESSION_POLICY_SCHEMA:&str=\"security.supplied-session-policy/v1\";",
+            "pubconstSUPPLIED_SESSION_COOKIE_POLICY_SCHEMA:&str=\"security.supplied-session-policy/v2\";",
+            "pubconstHARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES:usize=16*1024;",
+            "pubconstMAX_SUPPLIED_SESSION_COOKIES:usize=8;",
+            "pubconstMAX_SUPPLIED_SESSION_COOKIE_HEADER_BYTES:usize=8*1024;",
+            "pubenumSuppliedSessionCredentialMechanism{",
+            "AuthorizationHeader,",
+            "CookieJar,",
             "SuppliedSessionAuthorization(<redacted>)",
+            "debug_struct(\"SuppliedSessionCookies\").field(\"values\",&\"<redacted>\")",
+            "SuppliedSessionCredential::Authorization(<redacted>)",
+            "SuppliedSessionCredential::SuppliedCookies(<redacted>)",
+            "fnfrom_v1_wire(",
+            "\"authorization_header\"=>SuppliedSessionCredentialMechanism::AuthorizationHeader",
+            "cookie_update_policy:None,cookies:Vec::new(),",
+            "fnfrom_v2_wire(",
+            "\"cookie_jar\"=>SuppliedSessionCredentialMechanism::CookieJar",
+            "\"stop_on_selected_cookie\"=>SuppliedSessionCookieUpdatePolicy::StopOnSelectedCookie",
+            "pubfnparse_tsv(",
+            "pub(crate)fnsensitive_header_for_target(",
+            "expires_unix_seconds.is_some_and(|expires|expires<=now_unix_seconds)",
+            "Self::CookieJar=>\"cookie_jar\"",
             "pub(crate)structSuppliedSessionRequestDescriptor",
+            "credential_mechanism:SuppliedSessionCredentialMechanism",
+            "policy_reference:String",
+            "pub(crate)fnvalidate_against(",
             "supplied-session-policy-sha256:",
             "supplied-session-application-sha256:",
             "supplied-session-principal-0001",
         ],
-        "supplied-session policy lost its bounded Authorization-only input and opaque-reference contract",
+        "supplied-session policy lost its bounded versioned Authorization/cookie input, mechanism binding, redaction, or opaque-reference contract",
     );
     reject_markers(
         &mut violations,
         &compact_core,
-        &["CookieJar", "QueryParameter"],
-        "supplied-session V1 must not grow cookie or query-secret authority",
+        &["QueryParameter", "cookie_store", "browser_profile"],
+        "supplied-session input must not grow query-secret, automatic-cookie-store, or browser-extraction authority",
     );
+    if compact_core
+        .matches("expires_unix_seconds.is_some_and(|expires|expires<=now_unix_seconds)")
+        .count()
+        != 2
+    {
+        violations.push(
+            "supplied-session cookies must fail closed on expiry both at intake and before every dispatch"
+                .to_owned(),
+        );
+    }
     require_markers(
         &mut violations,
         &compact_runtime,
         &[
             "security.supplied-session-audit/v1",
+            "security.supplied-session-audit/v2",
             "session.supplied-context-assessment@1",
             "authority.requests().isolated_supplied_session()",
-            "collect_supplied_session_authorization_get_for_runtime(",
+            "collect_supplied_session_get_for_runtime(",
+            "SuppliedSessionAuditOutcome::CredentialUpdateRequired",
+            "SuppliedSessionAuditOutcome::CredentialUpdateUnusable",
+            "cookie_update_stop_outcome(",
+            "selected_update_response_count:",
+            "unselected_update_response_count:",
+            "update_classification_failure_count:",
+            "updates_applied:0",
             "SuppliedSessionResourceOutcome::HealthUnqualified",
             "filter(|resource|resource.outcome==SuppliedSessionResourceOutcome::Committed)",
             "response_byte_limit_exceeded:self.response_bytes>response_byte_limit",
@@ -2061,10 +2102,24 @@ fn supplied_session_review_source_contract_violations(
         &mut violations,
         &compact_broker,
         &[
-            "collect_supplied_session_authorization_get_for_runtime(",
+            "collect_supplied_session_get_for_runtime(",
+            "!descriptor.validate_against(policy)",
+            "descriptor.credential_mechanism()!=policy.credential_mechanism()",
+            "descriptor.credential_mechanism()!=credential.mechanism()",
+            "ifletSome(authorization)=credential.authorization()",
+            "elseifletSome(cookies)=credential.cookies()",
+            "authorization.set_sensitive(true);",
+            "request=request.header(AUTHORIZATION,authorization);",
+            "request=request.header(COOKIE,cookie);",
             "SuppliedSessionRequestError::InvalidDescriptor",
         ],
-        "the existing broker must retain the private supplied-session dispatch seam",
+        "the existing broker must retain the private mechanism-bound supplied-session dispatch seam",
+    );
+    reject_markers(
+        &mut violations,
+        &compact_broker,
+        &[".cookie_store(", "reqwest::cookie"],
+        "the supplied-session broker must keep cookies scanner-owned and must not enable reqwest cookie state",
     );
     require_markers(
         &mut violations,
@@ -2101,7 +2156,15 @@ fn supplied_session_review_source_contract_violations(
             "#[cfg(feature=\"supplied-session-review\")]#[serde(skip_serializing_if=\"Option::is_none\")]supplied_session:Option<AssessmentSuppliedSessionAuditDocument>",
             "AssessmentSuppliedSessionAuditDocument::from_audit",
             "SUPPLIED_SESSION_AUDIT_SCHEMA",
+            "SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
             "SUPPLIED_SESSION_CAPABILITY_ID",
+            "SuppliedSessionCredentialMechanism::AuthorizationHeader=>\"authorization_header\"",
+            "SuppliedSessionCredentialMechanism::CookieJar=>\"cookie_jar\"",
+            "SuppliedSessionAuditOutcome::CredentialUpdateRequired=>\"credential_update_required\"",
+            "SuppliedSessionAuditOutcome::CredentialUpdateUnusable=>\"credential_update_unusable\"",
+            "cookie_policy:audit.cookie_policy().map(",
+            "cookie_lifecycle:audit.cookie_lifecycle().map(",
+            "updates_applied:lifecycle.updates_applied()",
             "SuppliedSessionResourceOutcome::HealthUnqualified=>\"health_unqualified\"",
             "self.response_byte_limit_exceeded!=(self.response_bytes>self.response_byte_limit)",
         ],
@@ -2120,22 +2183,22 @@ fn supplied_session_review_source_contract_violations(
         &mut violations,
         &compact_audit_import,
         &[
-            "constSUPPLIED_SESSION_AUDIT_SCHEMA:&str=\"security.supplied-session-audit/v1\";",
+            "constSUPPLIED_SESSION_AUDIT_SCHEMA_V1:&str=\"security.supplied-session-audit/v1\";",
+            "constSUPPLIED_SESSION_AUDIT_SCHEMA_V2:&str=\"security.supplied-session-audit/v2\";",
             "constSUPPLIED_SESSION_CAPABILITY:&str=\"session.supplied-context-assessment@1\";",
             "constMAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT:u64=256*1024;",
             "pub(super)fnvalidate_supplied_session(",
             "token(fields,\"credential_mechanism\",&[\"authorization_header\"])?",
+            "token(fields,\"credential_mechanism\",&[\"cookie_jar\"])?",
+            "validate_supplied_session_cookie_policy(required(fields,\"cookie_policy\")?)?;",
+            "validate_supplied_session_cookie_lifecycle(",
+            "token(fields,\"update_policy\",&[\"stop_on_selected_cookie\"])?",
+            "check(!boolean(fields,\"refresh_performed\")?)?;",
             "\"health_unqualified\"=>{check(status==Some(200))?;(true,false)}",
             "response_byte_limit_exceeded==(response_bytes>response_byte_limit)",
             "check(count(items,SUPPLIED_SESSION_CAPABILITY)==0)",
         ],
-        "strict supplied-session reader lost its exact schema, limits, vocabulary, or audit-only rule",
-    );
-    reject_markers(
-        &mut violations,
-        &compact_audit_import,
-        &["cookie_jar"],
-        "strict supplied-session reader must not accept unsupported cookies",
+        "strict supplied-session reader lost its exact versioned schemas, V1/V2 mechanism split, cookie lifecycle, limits, vocabulary, or audit-only rule",
     );
     violations
 }
@@ -5100,6 +5163,14 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("principal_assurance", "&'static str"),
             ("credential_mechanism", "&'static str"),
             (
+                "cookie_policy",
+                "Option<AssessmentSuppliedSessionCookiePolicyDocument>",
+            ),
+            (
+                "cookie_lifecycle",
+                "Option<AssessmentSuppliedSessionCookieLifecycleDocument>",
+            ),
+            (
                 "health_oracle",
                 "AssessmentSuppliedSessionHealthOracleDocument",
             ),
@@ -5125,6 +5196,37 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("continuous_authentication_established", "bool"),
             ("exploit_execution", "&'static str"),
             ("impact_validation", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentSuppliedSessionCookiePolicyDocument",
+        &[],
+        &[
+            ("declared_count", "u8"),
+            ("host_only_count", "u8"),
+            ("domain_count", "u8"),
+            ("secure_count", "u8"),
+            ("http_only_count", "u8"),
+            ("session_count", "u8"),
+            ("persistent_count", "u8"),
+            ("same_site_missing_count", "u8"),
+            ("same_site_strict_count", "u8"),
+            ("same_site_lax_count", "u8"),
+            ("same_site_none_count", "u8"),
+            ("update_policy", "&'static str"),
+            ("browser_semantics", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentSuppliedSessionCookieLifecycleDocument",
+        &[],
+        &[
+            ("initial_epoch", "u8"),
+            ("final_epoch", "u8"),
+            ("selected_update_response_count", "u8"),
+            ("unselected_update_response_count", "u8"),
+            ("update_classification_failure_count", "u8"),
+            ("updates_applied", "u8"),
         ],
     ),
     (
@@ -6084,6 +6186,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
             name.as_str(),
             "AssessmentDocument"
                 | "AssessmentSuppliedSessionAuditDocument"
+                | "AssessmentSuppliedSessionCookiePolicyDocument"
+                | "AssessmentSuppliedSessionCookieLifecycleDocument"
                 | "AssessmentSuppliedSessionHealthOracleDocument"
                 | "AssessmentSuppliedSessionCheckpointDocument"
                 | "AssessmentSuppliedSessionResourceDocument"
@@ -6173,6 +6277,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 .collect();
             let expected_cfg = match name.as_str() {
                 "AssessmentSuppliedSessionAuditDocument"
+                | "AssessmentSuppliedSessionCookiePolicyDocument"
+                | "AssessmentSuppliedSessionCookieLifecycleDocument"
                 | "AssessmentSuppliedSessionHealthOracleDocument"
                 | "AssessmentSuppliedSessionCheckpointDocument"
                 | "AssessmentSuppliedSessionResourceDocument" => {
@@ -6303,11 +6409,15 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         )
                     {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "wordpress-review")
-                    } else if (name == "AssessmentRestAuditDocument"
-                        && matches!(
-                            field_name.as_str(),
-                            "selected_operation_identity" | "documented_response" | "status_class"
-                        ))
+                    } else if (name == "AssessmentSuppliedSessionAuditDocument"
+                        && matches!(field_name.as_str(), "cookie_policy" | "cookie_lifecycle"))
+                        || (name == "AssessmentRestAuditDocument"
+                            && matches!(
+                                field_name.as_str(),
+                                "selected_operation_identity"
+                                    | "documented_response"
+                                    | "status_class"
+                            ))
                         || (name == "AssessmentWordPressAuditDocument"
                             && matches!(
                                 field_name.as_str(),
@@ -8763,8 +8873,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 349_282;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x9a88_3a30_9205_e3a7_f608_ee0f_7afc_5321;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 356_360;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x34f5_b2e5_fadc_d58e_8b8d_0733_ef9d_edca;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -8858,6 +8968,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "crate::rest_review::RestDocumentedResponseClass",
+    "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
     "crate::supplied_session_review::SuppliedSessionCredentialMechanism",
     "crate::web_runtime::AssessmentBasis",
@@ -8877,6 +8988,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
     "crate::web_runtime::SuppliedSessionBodyState",
@@ -9008,6 +9120,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AuthorizationReviewOutcome::UnsupportedMedia",
     "SuppliedSessionAuditOutcome::Cancelled",
     "SuppliedSessionAuditOutcome::Complete",
+    "SuppliedSessionAuditOutcome::CredentialUpdateRequired",
+    "SuppliedSessionAuditOutcome::CredentialUpdateUnusable",
     "SuppliedSessionAuditOutcome::ResourceUnavailable",
     "SuppliedSessionAuditOutcome::RuntimeLimit",
     "SuppliedSessionAuditOutcome::SessionLost",
@@ -9019,6 +9133,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionCoverage::None",
     "SuppliedSessionCoverage::Partial",
     "SuppliedSessionCredentialMechanism::AuthorizationHeader",
+    "SuppliedSessionCredentialMechanism::CookieJar",
     "SuppliedSessionHealthCheckpointPhase::Startup",
     "SuppliedSessionHealthCheckpointPhase::SubjectBoundary",
     "SuppliedSessionHealthCheckpointPhase::Terminal",
@@ -9306,6 +9421,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
     "crate::web_runtime::SuppliedSessionBodyState",
@@ -9331,6 +9447,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "crate::rest_review::RestDocumentedResponseClass",
+    "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
     "crate::supplied_session_review::SuppliedSessionCredentialMechanism",
     "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
@@ -9671,6 +9788,27 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accepted_association_count",
+    "browser_semantics",
+    "cookie_lifecycle",
+    "cookie_policy",
+    "declared_count",
+    "domain_count",
+    "final_epoch",
+    "host_only_count",
+    "http_only_count",
+    "initial_epoch",
+    "persistent_count",
+    "same_site_lax_count",
+    "same_site_missing_count",
+    "same_site_none_count",
+    "same_site_strict_count",
+    "secure_count",
+    "selected_update_response_count",
+    "session_count",
+    "unselected_update_response_count",
+    "update_classification_failure_count",
+    "update_policy",
+    "updates_applied",
     "acquisition",
     "after_subject_count",
     "anonymous_fallback_performed",
@@ -10200,25 +10338,27 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         let supplied_session_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
-                    path.as_str(),
-                    "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES"
-                        | "crate::supplied_session_review::SuppliedSessionCredentialMechanism"
-                        | "crate::web_runtime::MAX_SUPPLIED_SESSION_CHECKPOINTS"
-                        | "crate::web_runtime::MAX_SUPPLIED_SESSION_REQUESTS"
-                        | "crate::web_runtime::MAX_SUPPLIED_SESSION_RESOURCES"
-                        | "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA"
-                        | "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID"
-                        | "crate::web_runtime::SuppliedSessionAuditOutcome"
-                        | "crate::web_runtime::SuppliedSessionBodyState"
-                        | "crate::web_runtime::SuppliedSessionCoverage"
-                        | "crate::web_runtime::SuppliedSessionHealthCheckpointPhase"
-                        | "crate::web_runtime::SuppliedSessionHealthOracleKind"
-                        | "crate::web_runtime::SuppliedSessionHealthOutcome"
-                        | "crate::web_runtime::SuppliedSessionPredicateOutcome"
-                        | "crate::web_runtime::SuppliedSessionPrincipalAssurance"
-                        | "crate::web_runtime::SuppliedSessionResourceOutcome"
-                        | "crate::web_runtime::WebAssessmentSuppliedSessionAudit"
-                )
+                path.as_str(),
+                "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES"
+                    | "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES"
+                    | "crate::supplied_session_review::SuppliedSessionCredentialMechanism"
+                    | "crate::web_runtime::MAX_SUPPLIED_SESSION_CHECKPOINTS"
+                    | "crate::web_runtime::MAX_SUPPLIED_SESSION_REQUESTS"
+                    | "crate::web_runtime::MAX_SUPPLIED_SESSION_RESOURCES"
+                    | "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA"
+                    | "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA"
+                    | "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID"
+                    | "crate::web_runtime::SuppliedSessionAuditOutcome"
+                    | "crate::web_runtime::SuppliedSessionBodyState"
+                    | "crate::web_runtime::SuppliedSessionCoverage"
+                    | "crate::web_runtime::SuppliedSessionHealthCheckpointPhase"
+                    | "crate::web_runtime::SuppliedSessionHealthOracleKind"
+                    | "crate::web_runtime::SuppliedSessionHealthOutcome"
+                    | "crate::web_runtime::SuppliedSessionPredicateOutcome"
+                    | "crate::web_runtime::SuppliedSessionPrincipalAssurance"
+                    | "crate::web_runtime::SuppliedSessionResourceOutcome"
+                    | "crate::web_runtime::WebAssessmentSuppliedSessionAudit"
+            )
             });
         let wordpress_import = !paths.is_empty()
             && paths.iter().all(|path| {
@@ -11580,7 +11720,8 @@ mod tests {
             });
         assert!(violations.iter().any(|violation| {
             violation.contains("strict supplied-session reader")
-                && violation.contains("schema, limits")
+                && violation.contains("versioned schemas")
+                && violation.contains("limits")
         }));
 
         let promoted_unqualified = audit_import.replace(
@@ -11635,34 +11776,80 @@ mod tests {
             .iter()
             .any(|violation| violation.contains("isolated broker")));
 
-        let permissive_import = audit_import.replace(
-            "&[\"authorization_header\"]",
-            "&[\"authorization_header\", \"cookie_jar\"]",
+        let widened_v1_reader = audit_import.replacen(
+            "token(fields, \"credential_mechanism\", &[\"authorization_header\"])?",
+            "token(fields, \"credential_mechanism\", &[\"authorization_header\", \"cookie_jar\"])?",
+            1,
         );
+        assert_ne!(widened_v1_reader, audit_import);
         let violations =
             supplied_session_review_source_contract_violations(SuppliedSessionSources {
-                audit_import: &permissive_import,
+                audit_import: &widened_v1_reader,
+                ..sources
+            });
+        assert!(violations.iter().any(|violation| {
+            violation.contains("strict supplied-session reader")
+                && violation.contains("V1/V2 mechanism split")
+        }));
+
+        let widened_v1_policy = core.replacen(
+            "\"authorization_header\" => SuppliedSessionCredentialMechanism::AuthorizationHeader,",
+            "\"authorization_header\" | \"cookie_jar\" => SuppliedSessionCredentialMechanism::AuthorizationHeader,",
+            1,
+        );
+        assert_ne!(widened_v1_policy, core);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                core: &widened_v1_policy,
                 ..sources
             });
         assert!(violations
             .iter()
-            .any(|violation| violation.contains("unsupported cookies")));
+            .any(|violation| { violation.contains("versioned Authorization/cookie input") }));
+
+        let omitted_cookie_expiry = core.replace(
+            ".is_some_and(|expires| expires <= now_unix_seconds)",
+            ".is_some_and(|_| false)",
+        );
+        assert_ne!(omitted_cookie_expiry, core);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                core: &omitted_cookie_expiry,
+                ..sources
+            });
+        assert!(violations.iter().any(|violation| {
+            violation.contains("fail closed on expiry")
+                || violation.contains("versioned Authorization/cookie input")
+        }));
+
+        let automatic_cookie_store =
+            format!("{broker}\nfn escape() {{ client.cookie_store(true); }}");
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                broker: &automatic_cookie_store,
+                ..sources
+            });
+        assert!(violations.iter().any(|violation| {
+            violation.contains("scanner-owned") && violation.contains("cookie state")
+        }));
 
         let web_runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
         assert!(supplied_session_runtime_module_gate_violations(web_runtime)
             .unwrap()
             .is_empty());
-        let ungated = web_runtime.replace(
-            "#[cfg(feature = \"supplied-session-review\")]\nmod supplied_session_runtime;",
-            "mod supplied_session_runtime;",
+        let ungated = web_runtime.replacen(
+            "#[cfg(feature = \"supplied-session-review\")]",
+            "#[cfg(any())]",
+            1,
         );
+        assert_ne!(ungated, web_runtime);
         assert!(!supplied_session_runtime_module_gate_violations(&ungated)
             .unwrap()
             .is_empty());
 
         let narrowed_transport_export = web_runtime.replace(
-            "#[cfg(any(feature = \"authorization-review\", feature = \"supplied-session-review\"))]\npub(crate) use authority::authenticated_transport_is_allowed;",
-            "#[cfg(feature = \"supplied-session-review\")]\npub(crate) use authority::authenticated_transport_is_allowed;",
+            "#[cfg(any(feature = \"authorization-review\", feature = \"supplied-session-review\"))]",
+            "#[cfg(feature = \"supplied-session-review\")]",
         );
         assert_ne!(narrowed_transport_export, web_runtime);
         assert!(
@@ -11674,8 +11861,8 @@ mod tests {
         );
 
         let narrowed_transport_import = assessment.replace(
-            "#[cfg(any(feature = \"authorization-review\", feature = \"supplied-session-review\"))]\nuse super::authenticated_transport_is_allowed;",
-            "#[cfg(feature = \"supplied-session-review\")]\nuse super::authenticated_transport_is_allowed;",
+            "#[cfg(any(feature = \"authorization-review\", feature = \"supplied-session-review\"))]",
+            "#[cfg(feature = \"supplied-session-review\")]",
         );
         assert_ne!(narrowed_transport_import, assessment);
         let violations =
@@ -13847,7 +14034,7 @@ mod tests {
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             use crate::{
                 supplied_session_review::{
-                    SuppliedSessionCredentialMechanism,
+                    SuppliedSessionCredentialMechanism, MAX_SUPPLIED_SESSION_COOKIES,
                     MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
                 },
                 web_runtime::{
@@ -13858,7 +14045,7 @@ mod tests {
                     SuppliedSessionResourceOutcome, WebAssessmentSuppliedSessionAudit,
                     MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
                     MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
-                    SUPPLIED_SESSION_CAPABILITY_ID,
+                    SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
                 },
             };
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -14368,6 +14555,10 @@ mod tests {
                 principal_alias: String,
                 principal_assurance: &'static str,
                 credential_mechanism: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                cookie_policy: Option<AssessmentSuppliedSessionCookiePolicyDocument>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                cookie_lifecycle: Option<AssessmentSuppliedSessionCookieLifecycleDocument>,
                 health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
                 outcome: &'static str,
                 coverage: &'static str,
@@ -14385,6 +14576,33 @@ mod tests {
                 continuous_authentication_established: bool,
                 exploit_execution: &'static str,
                 impact_validation: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSuppliedSessionCookiePolicyDocument {
+                declared_count: u8,
+                host_only_count: u8,
+                domain_count: u8,
+                secure_count: u8,
+                http_only_count: u8,
+                session_count: u8,
+                persistent_count: u8,
+                same_site_missing_count: u8,
+                same_site_strict_count: u8,
+                same_site_lax_count: u8,
+                same_site_none_count: u8,
+                update_policy: &'static str,
+                browser_semantics: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSuppliedSessionCookieLifecycleDocument {
+                initial_epoch: u8,
+                final_epoch: u8,
+                selected_update_response_count: u8,
+                unselected_update_response_count: u8,
+                update_classification_failure_count: u8,
+                updates_applied: u8,
             }
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             #[derive(Serialize)]

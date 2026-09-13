@@ -54,6 +54,7 @@ const CLI_AUTH_FIELDS: &[&str] = &[
     "session_auth_env",
     "session_auth_file",
     "session_auth_stdin",
+    "session_cookie_file",
     "session_policy",
 ];
 const CLI_SCAN_FIELDS: &[&str] = &[
@@ -97,6 +98,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "session_auth_env",
     "session_auth_file",
     "session_auth_stdin",
+    "session_cookie_file",
     "session_policy",
     "ssrf_oast_policy",
     "ssrf_oast_review",
@@ -563,12 +565,12 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         (
             "SuppliedSessionInput",
             &["prepare", "select"][..],
-            "formatter.debug_struct(\"SuppliedSessionInput\").field(\"policy_file\",&\"<redacted>\").field(\"authorization\",&\"<redacted>\").finish()",
+            "formatter.debug_struct(\"SuppliedSessionInput\").field(\"policy_file\",&\"<redacted>\").field(\"secret\",&\"<redacted>\").finish()",
         ),
         (
             "PreparedSuppliedSessionInput",
             &["load"][..],
-            "formatter.debug_struct(\"PreparedSuppliedSessionInput\").field(\"policy\",&\"<validated>\").field(\"authorization\",&\"<redacted>\").finish()",
+            "formatter.debug_struct(\"PreparedSuppliedSessionInput\").field(\"policy\",&\"<validated>\").field(\"secret\",&\"<redacted>\").finish()",
         ),
         (
             "SsrfOastReviewInput",
@@ -748,6 +750,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("session_auth_env", "Option", Some("OsString")),
         ("session_auth_file", "Option", Some("PathBuf")),
         ("session_auth_stdin", "bool", None),
+        ("session_cookie_file", "Option", Some("PathBuf")),
         ("authz_primary_env", "Option", Some("OsString")),
         ("authz_primary_file", "Option", Some("PathBuf")),
         ("authz_primary_stdin", "bool", None),
@@ -792,6 +795,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             name.starts_with("auth")
                 || name.contains("authorization")
                 || name.starts_with("session_auth")
+                || name.as_str() == "session_cookie_file"
                 || name.as_str() == "session_policy"
         })
         .cloned()
@@ -2589,8 +2593,8 @@ mod tests {
                 "underived",
             ),
             (
-                ".debug_struct(\"PreparedSuppliedSessionInput\")\n            .field(\"policy\", &\"<validated>\")\n            .field(\"authorization\", &\"<redacted>\")",
-                ".debug_struct(\"PreparedSuppliedSessionInput\")\n            .field(\"policy\", &self.policy)\n            .field(\"authorization\", &self.authorization)",
+                ".debug_struct(\"PreparedSuppliedSessionInput\")\n            .field(\"policy\", &\"<validated>\")\n            .field(\"secret\", &\"<redacted>\")",
+                ".debug_struct(\"PreparedSuppliedSessionInput\")\n            .field(\"policy\", &self.policy)\n            .field(\"secret\", &self.secret)",
                 "value-free redacted Debug",
             ),
         ] {

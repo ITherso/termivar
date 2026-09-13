@@ -5,6 +5,8 @@
 //! logs one, and converts bounded bytes directly into scanner-owned root,
 //! role-bound two-principal, or OAST administrator-secret contracts.
 
+#[cfg(feature = "supplied-session-review")]
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     ffi::OsString,
     fmt,
@@ -25,7 +27,9 @@ use termivar_scanner::ssrf_oast_review::{
 };
 #[cfg(feature = "supplied-session-review")]
 use termivar_scanner::supplied_session_review::{
-    SuppliedSessionAuthorization, SuppliedSessionPolicy, HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES,
+    SuppliedSessionAuthorization, SuppliedSessionCookies, SuppliedSessionCredential,
+    SuppliedSessionCredentialMechanism, SuppliedSessionPolicy,
+    HARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES, HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES,
 };
 use termivar_scanner::{
     web_runtime::WebAssessmentRootAuthorizationContext, DEFAULT_MAX_PAYLOAD_ARTIFACT_BYTES,
@@ -170,7 +174,7 @@ pub(crate) struct AuthorizationReviewInput {
     peer: AuthorizationInputSource,
 }
 
-/// Complete, preflight-selected input for one supplied Authorization session.
+/// Complete, preflight-selected input for one supplied credential session.
 ///
 /// Selection performs no I/O. Policy and secret locations are never exposed
 /// through `Debug`, and the policy is validated before the credential source
@@ -178,7 +182,7 @@ pub(crate) struct AuthorizationReviewInput {
 #[cfg(feature = "supplied-session-review")]
 pub(crate) struct SuppliedSessionInput {
     policy_file: PathBuf,
-    authorization: AuthorizationInputSource,
+    secret: SuppliedSessionSecretSource,
 }
 
 /// Validated non-secret supplied-session policy paired with the still-unread
@@ -188,7 +192,38 @@ pub(crate) struct SuppliedSessionInput {
 #[cfg(feature = "supplied-session-review")]
 pub(crate) struct PreparedSuppliedSessionInput {
     policy: SuppliedSessionPolicy,
-    authorization: AuthorizationInputSource,
+    secret: SuppliedSessionSecretSource,
+}
+
+#[cfg(feature = "supplied-session-review")]
+enum SuppliedSessionSecretSource {
+    Authorization(AuthorizationInputSource),
+    Cookies(PathBuf),
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl SuppliedSessionSecretSource {
+    const fn mechanism(&self) -> SuppliedSessionCredentialMechanism {
+        match self {
+            Self::Authorization(_) => SuppliedSessionCredentialMechanism::AuthorizationHeader,
+            Self::Cookies(_) => SuppliedSessionCredentialMechanism::CookieJar,
+        }
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl fmt::Debug for SuppliedSessionSecretSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::Authorization(_) => "authorization",
+            Self::Cookies(_) => "cookies",
+        };
+        formatter
+            .debug_struct("SuppliedSessionSecretSource")
+            .field("kind", &kind)
+            .field("location", &"<redacted>")
+            .finish()
+    }
 }
 
 #[cfg(feature = "supplied-session-review")]
@@ -197,7 +232,7 @@ impl fmt::Debug for PreparedSuppliedSessionInput {
         formatter
             .debug_struct("PreparedSuppliedSessionInput")
             .field("policy", &"<validated>")
-            .field("authorization", &"<redacted>")
+            .field("secret", &"<redacted>")
             .finish()
     }
 }
@@ -208,22 +243,24 @@ impl fmt::Debug for SuppliedSessionInput {
         formatter
             .debug_struct("SuppliedSessionInput")
             .field("policy_file", &"<redacted>")
-            .field("authorization", &"<redacted>")
+            .field("secret", &"<redacted>")
             .finish()
     }
 }
 
 #[cfg(feature = "supplied-session-review")]
 impl SuppliedSessionInput {
-    /// Requires one policy and exactly one out-of-band Authorization source.
+    /// Requires one policy and exactly one matching out-of-band credential source.
     pub(crate) fn select(
         policy_file: Option<PathBuf>,
         authorization: AuthorizationSourceOptions,
+        cookie_file: Option<PathBuf>,
     ) -> Result<Option<Self>, SuppliedSessionInputError> {
         let any_selected = policy_file.is_some()
             || authorization.environment.is_some()
             || authorization.file.is_some()
-            || authorization.stdin;
+            || authorization.stdin
+            || cookie_file.is_some();
         if !any_selected {
             return Ok(None);
         }
@@ -233,11 +270,18 @@ impl SuppliedSessionInput {
             authorization.file,
             authorization.stdin,
         )
-        .map_err(|_| SuppliedSessionInputError::ConflictingAuthorizationSources)?
-        .ok_or(SuppliedSessionInputError::MissingAuthorizationSource)?;
+        .map_err(|_| SuppliedSessionInputError::ConflictingCredentialSources)?;
+        let secret = match (authorization, cookie_file) {
+            (Some(source), None) => SuppliedSessionSecretSource::Authorization(source),
+            (None, Some(path)) => SuppliedSessionSecretSource::Cookies(path),
+            (None, None) => return Err(SuppliedSessionInputError::MissingCredentialSource),
+            (Some(_), Some(_)) => {
+                return Err(SuppliedSessionInputError::ConflictingCredentialSources)
+            },
+        };
         Ok(Some(Self {
             policy_file,
-            authorization,
+            secret,
         }))
     }
 
@@ -252,9 +296,12 @@ impl SuppliedSessionInput {
                 .map_err(SuppliedSessionInputError::PolicySource)?;
         let policy = SuppliedSessionPolicy::parse_toml(target, policy_source.as_slice())
             .map_err(|_| SuppliedSessionInputError::InvalidPolicy)?;
+        if policy.credential_mechanism() != self.secret.mechanism() {
+            return Err(SuppliedSessionInputError::CredentialMechanismMismatch);
+        }
         Ok(PreparedSuppliedSessionInput {
             policy,
-            authorization: self.authorization,
+            secret: self.secret,
         })
     }
 }
@@ -265,17 +312,34 @@ impl PreparedSuppliedSessionInput {
     /// and output reservation have succeeded.
     pub(crate) fn load(
         self,
-    ) -> Result<(SuppliedSessionPolicy, SuppliedSessionAuthorization), SuppliedSessionInputError>
-    {
-        let authorization = self
-            .authorization
-            .read_bytes()
-            .map_err(SuppliedSessionInputError::AuthorizationSource)
-            .and_then(|bytes| {
-                SuppliedSessionAuthorization::new(bytes.into_owned())
-                    .map_err(|_| SuppliedSessionInputError::InvalidAuthorizationValue)
-            })?;
-        Ok((self.policy, authorization))
+    ) -> Result<(SuppliedSessionPolicy, SuppliedSessionCredential), SuppliedSessionInputError> {
+        let credential = match self.secret {
+            SuppliedSessionSecretSource::Authorization(source) => {
+                let authorization = source
+                    .read_bytes()
+                    .map_err(SuppliedSessionInputError::CredentialSource)
+                    .and_then(|bytes| {
+                        SuppliedSessionAuthorization::new(bytes.into_owned())
+                            .map_err(|_| SuppliedSessionInputError::InvalidCredentialValue)
+                    })?;
+                SuppliedSessionCredential::Authorization(authorization)
+            },
+            SuppliedSessionSecretSource::Cookies(path) => {
+                let bytes =
+                    read_bounded_regular_file(path, HARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES)
+                        .map_err(SuppliedSessionInputError::CredentialSource)?;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                    .ok_or(SuppliedSessionInputError::CredentialClockUnavailable)?;
+                let cookies =
+                    SuppliedSessionCookies::parse_tsv(&self.policy, bytes.into_owned(), now)
+                        .map_err(|_| SuppliedSessionInputError::InvalidCredentialValue)?;
+                SuppliedSessionCredential::SuppliedCookies(cookies)
+            },
+        };
+        Ok((self.policy, credential))
     }
 }
 
@@ -284,12 +348,14 @@ impl PreparedSuppliedSessionInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SuppliedSessionInputError {
     MissingPolicy,
-    MissingAuthorizationSource,
-    ConflictingAuthorizationSources,
+    MissingCredentialSource,
+    ConflictingCredentialSources,
     PolicySource(AuthorizationInputError),
     InvalidPolicy,
-    AuthorizationSource(AuthorizationInputError),
-    InvalidAuthorizationValue,
+    CredentialMechanismMismatch,
+    CredentialSource(AuthorizationInputError),
+    InvalidCredentialValue,
+    CredentialClockUnavailable,
 }
 
 #[cfg(feature = "supplied-session-review")]
@@ -297,15 +363,17 @@ impl fmt::Display for SuppliedSessionInputError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::MissingPolicy => "supplied-session review requires one policy file",
-            Self::MissingAuthorizationSource | Self::ConflictingAuthorizationSources => {
-                "supplied-session review requires exactly one Authorization source"
+            Self::MissingCredentialSource | Self::ConflictingCredentialSources => {
+                "supplied-session review requires exactly one credential source"
             },
             Self::PolicySource(_) => "supplied-session policy must be a bounded regular UTF-8 file",
             Self::InvalidPolicy => "supplied-session policy is invalid",
-            Self::AuthorizationSource(_) => {
-                "supplied-session Authorization source could not be loaded"
+            Self::CredentialMechanismMismatch => {
+                "supplied-session credential source does not match the selected policy mechanism"
             },
-            Self::InvalidAuthorizationValue => "supplied-session Authorization value is invalid",
+            Self::CredentialSource(_) => "supplied-session credential source could not be loaded",
+            Self::InvalidCredentialValue => "supplied-session credential value is invalid",
+            Self::CredentialClockUnavailable => "supplied-session credential clock is unavailable",
         })
     }
 }
@@ -1367,11 +1435,39 @@ max_wall_time_ms = 5000
     }
 
     #[cfg(feature = "supplied-session-review")]
+    fn valid_supplied_cookie_policy() -> &'static str {
+        r#"schema = "security.supplied-session-policy/v2"
+principal_alias = "fixture-cookie-reader"
+credential_mechanism = "cookie_jar"
+cookie_update_policy = "stop_on_selected_cookie"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private", "/app/private-2"]
+max_session_requests = 5
+max_total_response_bytes = 131072
+max_response_body_bytes = 32768
+max_wall_time_ms = 5000
+
+[[cookies]]
+id = "fixture-session"
+name = "session"
+domain = "127.0.0.1"
+host_only = true
+path = "/app/"
+secure = false
+http_only = true
+same_site = "lax"
+expires_unix_seconds = 4102444800
+"#
+    }
+
+    #[cfg(feature = "supplied-session-review")]
     #[test]
     fn supplied_session_selection_is_complete_and_redacted() {
         assert!(SuppliedSessionInput::select(
             None,
             AuthorizationSourceOptions::new(None, None, false),
+            None,
         )
         .unwrap()
         .is_none());
@@ -1379,9 +1475,10 @@ max_wall_time_ms = 5000
             SuppliedSessionInput::select(
                 Some(PathBuf::from("PRIVATE-POLICY-PATH")),
                 AuthorizationSourceOptions::new(None, None, false),
+                None,
             )
             .unwrap_err(),
-            SuppliedSessionInputError::MissingAuthorizationSource
+            SuppliedSessionInputError::MissingCredentialSource
         );
         assert_eq!(
             SuppliedSessionInput::select(
@@ -1391,6 +1488,7 @@ max_wall_time_ms = 5000
                     None,
                     false,
                 ),
+                None,
             )
             .unwrap_err(),
             SuppliedSessionInputError::MissingPolicy
@@ -1403,9 +1501,10 @@ max_wall_time_ms = 5000
                     Some(PathBuf::from("PRIVATE-SESSION-FILE")),
                     false,
                 ),
+                None,
             )
             .unwrap_err(),
-            SuppliedSessionInputError::ConflictingAuthorizationSources
+            SuppliedSessionInputError::ConflictingCredentialSources
         );
 
         let input = SuppliedSessionInput::select(
@@ -1415,6 +1514,7 @@ max_wall_time_ms = 5000
                 None,
                 false,
             ),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -1424,14 +1524,14 @@ max_wall_time_ms = 5000
         }
         for error in [
             SuppliedSessionInputError::MissingPolicy,
-            SuppliedSessionInputError::MissingAuthorizationSource,
-            SuppliedSessionInputError::ConflictingAuthorizationSources,
+            SuppliedSessionInputError::MissingCredentialSource,
+            SuppliedSessionInputError::ConflictingCredentialSources,
             SuppliedSessionInputError::PolicySource(AuthorizationInputError::SourceUnavailable),
             SuppliedSessionInputError::InvalidPolicy,
-            SuppliedSessionInputError::AuthorizationSource(
-                AuthorizationInputError::SourceUnavailable,
-            ),
-            SuppliedSessionInputError::InvalidAuthorizationValue,
+            SuppliedSessionInputError::CredentialMechanismMismatch,
+            SuppliedSessionInputError::CredentialSource(AuthorizationInputError::SourceUnavailable),
+            SuppliedSessionInputError::InvalidCredentialValue,
+            SuppliedSessionInputError::CredentialClockUnavailable,
         ] {
             let rendered = error.to_string();
             assert!(!rendered.contains("PRIVATE"));
@@ -1452,6 +1552,7 @@ max_wall_time_ms = 5000
         let input = SuppliedSessionInput::select(
             Some(policy_path),
             AuthorizationSourceOptions::new(None, Some(secret_path), false),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -1473,6 +1574,7 @@ max_wall_time_ms = 5000
                 Some(directory.path().join("SECRET-MUST-NOT-BE-OPENED")),
                 false,
             ),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -1481,6 +1583,76 @@ max_wall_time_ms = 5000
                 .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
                 .unwrap_err(),
             SuppliedSessionInputError::InvalidPolicy
+        );
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_cookie_selection_loads_one_redacted_jar_and_checks_mechanism_first() {
+        const COOKIE: &str = "COOKIE-INPUT-CANARY-MUST-NOT-LEAK";
+        let directory = tempfile::tempdir().unwrap();
+        let policy_path = directory.path().join("cookie-policy.toml");
+        let cookie_path = directory.path().join("cookies.secret.tsv");
+        std::fs::write(&policy_path, valid_supplied_cookie_policy()).unwrap();
+        std::fs::write(&cookie_path, format!("fixture-session\t{COOKIE}\r\n")).unwrap();
+
+        let input = SuppliedSessionInput::select(
+            Some(policy_path.clone()),
+            AuthorizationSourceOptions::new(None, None, false),
+            Some(cookie_path),
+        )
+        .unwrap()
+        .unwrap();
+        let debug = format!("{input:?}");
+        assert!(!debug.contains("cookie-policy.toml"));
+        assert!(!debug.contains("cookies.secret.tsv"));
+        let prepared = input
+            .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+            .unwrap();
+        assert_eq!(
+            format!("{prepared:?}"),
+            "PreparedSuppliedSessionInput { policy: \"<validated>\", secret: \"<redacted>\" }"
+        );
+        let (policy, credential) = prepared.load().unwrap();
+        assert_eq!(
+            policy.credential_mechanism(),
+            SuppliedSessionCredentialMechanism::CookieJar
+        );
+        assert_eq!(
+            credential.mechanism(),
+            SuppliedSessionCredentialMechanism::CookieJar
+        );
+        let rendered = format!("{policy:?} {credential:?}");
+        assert!(!rendered.contains(COOKIE));
+        assert!(!rendered.contains("COOKIE-INPUT-CANARY"));
+
+        let missing_authorization = directory.path().join("PRIVATE-AUTH-MUST-NOT-BE-OPENED");
+        let mismatch = SuppliedSessionInput::select(
+            Some(policy_path),
+            AuthorizationSourceOptions::new(None, Some(missing_authorization), false),
+            None,
+        )
+        .unwrap()
+        .unwrap()
+        .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+        .unwrap_err();
+        assert_eq!(
+            mismatch,
+            SuppliedSessionInputError::CredentialMechanismMismatch
+        );
+
+        assert_eq!(
+            SuppliedSessionInput::select(
+                Some(PathBuf::from("PRIVATE-POLICY")),
+                AuthorizationSourceOptions::new(
+                    None,
+                    Some(PathBuf::from("PRIVATE-AUTHORIZATION")),
+                    false,
+                ),
+                Some(PathBuf::from("PRIVATE-COOKIE")),
+            )
+            .unwrap_err(),
+            SuppliedSessionInputError::ConflictingCredentialSources
         );
     }
 

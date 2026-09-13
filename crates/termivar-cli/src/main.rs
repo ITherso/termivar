@@ -643,10 +643,10 @@ struct ScanArgs {
         arg(conflicts_with_all = ["authz_primary_stdin", "authz_peer_stdin"])
     )]
     oast_admin_token_stdin: bool,
-    /// Read one strict bounded `security.supplied-session-policy/v1` policy.
+    /// Read one strict bounded supplied-session policy (Authorization V1 or cookie V2).
     /// The policy selects a small exact set of operator-authorized application
     /// resources for bodyless GETs and a structured session-health oracle. It
-    /// is inert without exactly one out-of-band Authorization source.
+    /// is inert without exactly one matching out-of-band credential source.
     #[cfg(feature = "supplied-session-review")]
     #[arg(
         long,
@@ -699,6 +699,17 @@ struct ScanArgs {
         arg(conflicts_with = "oast_admin_token_stdin")
     )]
     session_auth_stdin: bool,
+    /// Read the V2 supplied session's bounded cookie-id/value rows from a
+    /// regular file. The path and values are redacted; browser profiles are
+    /// never searched or imported.
+    #[cfg(feature = "supplied-session-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "session_policy",
+        conflicts_with_all = ["session_auth_env", "session_auth_file", "session_auth_stdin"]
+    )]
+    session_cookie_file: Option<PathBuf>,
     /// Select the centralized typed assessment renderer. Valid only with
     /// `--profile web-review`. Without this option, text maps to Markdown
     /// and JSON maps to JSON for completed web-review reports.
@@ -1030,6 +1041,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         session_auth_file,
         #[cfg(feature = "supplied-session-review")]
         session_auth_stdin,
+        #[cfg(feature = "supplied-session-review")]
+        session_cookie_file,
         report_format,
         report_output,
         report_dir,
@@ -1138,7 +1151,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     let supplied_session_selected = session_policy.is_some()
         || session_auth_env.is_some()
         || session_auth_file.is_some()
-        || session_auth_stdin;
+        || session_auth_stdin
+        || session_cookie_file.is_some();
     #[cfg(feature = "wordpress-review")]
     if let Some(message) =
         wordpress_review_target_conflict(wordpress_review, wordpress_discovery, &target.url)
@@ -1252,6 +1266,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             session_auth_file,
             session_auth_stdin,
         ),
+        session_cookie_file,
     )?;
     #[cfg(feature = "ssrf-oast-review")]
     let ssrf_oast_review_input = auth_input::SsrfOastReviewInput::select(
@@ -1951,6 +1966,7 @@ mod tests {
             assert_eq!(args.session_auth_env, None);
             assert_eq!(args.session_auth_file, None);
             assert!(!args.session_auth_stdin);
+            assert_eq!(args.session_cookie_file, None);
         }
         assert!(DETERMINISTIC_SCAN_WARNING.contains("bounded deterministic"));
     }
@@ -3664,11 +3680,22 @@ mod tests {
             "--session-auth-env",
             "--session-auth-file",
             "--session-auth-stdin",
+            "--session-cookie-file",
         ] {
             assert!(help.contains(flag), "missing feature-gated flag {flag}");
         }
         assert!(!help.contains("--session-auth-value"));
-        assert!(!help.contains("--session-cookie"));
+        for forbidden in [
+            "--session-cookie-value",
+            "--session-cookie-env",
+            "--session-cookie-stdin",
+            "--session-browser-profile",
+        ] {
+            assert!(
+                !help.contains(forbidden),
+                "unexpected supplied-session secret source {forbidden}"
+            );
+        }
 
         assert!(Cli::try_parse_from([
             "termivar",
@@ -3730,6 +3757,23 @@ mod tests {
             ),
             None
         );
+
+        let cookie_review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--session-policy",
+            "cookie-policy.toml",
+            "--session-cookie-file",
+            "private-cookies.tsv",
+            "https://example.test/app/",
+        ])
+        .unwrap();
+        let cookie_review = parsed_scan_args(&cookie_review);
+        assert_eq!(cookie_review.profile, Some(CliScanProfile::WebReview));
+        assert!(cookie_review.session_policy.is_some());
+        assert!(cookie_review.session_cookie_file.is_some());
     }
 
     #[cfg(feature = "supplied-session-review")]
@@ -3746,6 +3790,20 @@ mod tests {
             "private-policy.toml",
             "--session-auth-env",
             "SESSION_PRIVATE_ENV",
+            "https://example.test/app/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--session-policy",
+            "private-policy.toml",
+            "--session-auth-file",
+            "private-authorization",
+            "--session-cookie-file",
+            "private-cookies.tsv",
             "https://example.test/app/",
         ])
         .is_err());
@@ -3799,6 +3857,7 @@ mod tests {
             "--session-auth-env",
             "--session-auth-file",
             "--session-auth-stdin",
+            "--session-cookie-file",
         ] {
             assert!(!help.contains(flag), "default CLI exposed {flag}");
         }

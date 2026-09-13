@@ -26,6 +26,8 @@ use reqwest::Method;
 use reqwest::header::AUTHORIZATION;
 #[cfg(feature = "graphql-review")]
 use reqwest::header::CONTENT_TYPE;
+#[cfg(feature = "supplied-session-review")]
+use reqwest::header::COOKIE;
 
 #[cfg(feature = "graphql-review")]
 use crate::graphql_review::MAX_GRAPHQL_REQUEST_JSON_BYTES;
@@ -35,10 +37,13 @@ use crate::wordpress_review::{
     WordPressComponentKind,
 };
 
+#[cfg(all(test, feature = "supplied-session-review"))]
+use crate::supplied_session_review::SuppliedSessionAuthorization;
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{
-    SuppliedSessionRequestDescriptor, SuppliedSessionRequestPurpose,
-    SUPPLIED_SESSION_HEALTH_ACTION_ID, SUPPLIED_SESSION_RESOURCE_ACTION_ID,
+    SuppliedSessionCredential, SuppliedSessionPolicy, SuppliedSessionRequestDescriptor,
+    SuppliedSessionRequestPurpose, SUPPLIED_SESSION_HEALTH_ACTION_ID,
+    SUPPLIED_SESSION_RESOURCE_ACTION_ID,
 };
 #[cfg(feature = "supplied-session-review")]
 use crate::web_runtime::authenticated_transport_is_allowed;
@@ -921,57 +926,73 @@ impl HttpRequestBroker {
 
     /// Dispatches one descriptor-bound, bodyless supplied-session GET.
     ///
-    /// The only caller-provided request value is the already validated complete
-    /// Authorization header. The descriptor is revalidated immediately before
-    /// request construction and the dedicated client cannot use ambient proxies,
-    /// redirects, retries, cookies, bodies, or caller-controlled headers.
+    /// The only caller-provided request value is an already validated complete
+    /// Authorization header or bounded supplied-cookie jar. The descriptor,
+    /// policy, and mechanism are revalidated immediately before request
+    /// construction. The dedicated client cannot use ambient proxies, redirects,
+    /// retries, automatic cookie state, bodies, or caller-controlled headers.
     #[cfg(feature = "supplied-session-review")]
-    pub(crate) async fn collect_supplied_session_authorization_get_for_runtime(
+    pub(crate) async fn collect_supplied_session_get_for_runtime(
         &self,
-        action_id: &str,
         stage: DecisionExecutionStage,
         origin: Option<DecisionActionOrigin>,
         limits: DecisionExecutionLimits,
         descriptor: &SuppliedSessionRequestDescriptor,
-        authorization: &str,
+        policy: &SuppliedSessionPolicy,
+        credential: &SuppliedSessionCredential,
     ) -> Result<CollectedHttpResponse, SuppliedSessionRequestError> {
-        let purpose_contract_valid = match descriptor.purpose() {
-            SuppliedSessionRequestPurpose::Health => {
-                action_id == SUPPLIED_SESSION_HEALTH_ACTION_ID
-                    && matches!(
-                        origin,
-                        Some(DecisionActionOrigin::Bootstrap | DecisionActionOrigin::Planned)
-                    )
-            },
-            SuppliedSessionRequestPurpose::Resource => {
-                action_id == SUPPLIED_SESSION_RESOURCE_ACTION_ID
-                    && origin == Some(DecisionActionOrigin::Planned)
-            },
+        let (action_id, purpose_contract_valid) = match descriptor.purpose() {
+            SuppliedSessionRequestPurpose::Health => (
+                SUPPLIED_SESSION_HEALTH_ACTION_ID,
+                matches!(
+                    origin,
+                    Some(DecisionActionOrigin::Bootstrap | DecisionActionOrigin::Planned)
+                ),
+            ),
+            SuppliedSessionRequestPurpose::Resource => (
+                SUPPLIED_SESSION_RESOURCE_ACTION_ID,
+                origin == Some(DecisionActionOrigin::Planned),
+            ),
         };
         let target = descriptor.target();
-        if !descriptor.validate()
+        if !descriptor.validate_against(policy)
             || stage != DecisionExecutionStage::Passive
             || !purpose_contract_valid
             || !authenticated_transport_is_allowed(target)
+            || descriptor.credential_mechanism() != policy.credential_mechanism()
+            || descriptor.credential_mechanism() != credential.mechanism()
         {
             return Err(SuppliedSessionRequestError::InvalidDescriptor);
         }
         self.validate_target(target)?;
-        let mut authorization = HeaderValue::from_str(authorization).map_err(|_| {
-            HttpEvidenceError::InvalidHeaderValue {
-                name: "authorization".to_owned(),
-            }
-        })?;
-        authorization.set_sensitive(true);
         let client = self
             .supplied_session_no_proxy_client
             .as_ref()
             .ok_or(SuppliedSessionRequestError::InvalidDescriptor)?;
-        let request = client
-            .request(Method::GET, target.clone())
-            .header(AUTHORIZATION, authorization)
-            .build()
-            .map_err(HttpEvidenceError::Request)?;
+        let mut request = client.request(Method::GET, target.clone());
+        if let Some(authorization) = credential.authorization() {
+            let mut authorization =
+                HeaderValue::from_str(authorization.as_str()).map_err(|_| {
+                    HttpEvidenceError::InvalidHeaderValue {
+                        name: "authorization".to_owned(),
+                    }
+                })?;
+            authorization.set_sensitive(true);
+            request = request.header(AUTHORIZATION, authorization);
+        } else if let Some(cookies) = credential.cookies() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                .ok_or(SuppliedSessionRequestError::InvalidDescriptor)?;
+            let cookie = cookies
+                .sensitive_header_for_target(policy, target, now)
+                .map_err(|_| SuppliedSessionRequestError::InvalidDescriptor)?;
+            request = request.header(COOKIE, cookie);
+        } else {
+            return Err(SuppliedSessionRequestError::InvalidDescriptor);
+        }
+        let request = request.build().map_err(HttpEvidenceError::Request)?;
         self.collect_built_request(client, action_id, stage, origin, limits, request)
             .await
             .map_err(Into::into)
@@ -1318,7 +1339,7 @@ mod tests {
 
     #[cfg(feature = "supplied-session-review")]
     #[tokio::test]
-    async fn supplied_session_broker_rejects_a_purpose_action_substitution_before_dispatch() {
+    async fn supplied_session_broker_rejects_an_origin_or_policy_substitution_before_dispatch() {
         let application = url::Url::parse("http://127.0.0.1:9/app/").unwrap();
         let source = format!(
             r#"schema = "{SUPPLIED_SESSION_POLICY_SCHEMA}"
@@ -1337,21 +1358,43 @@ max_wall_time_ms = 1000
         let health = SuppliedSessionRequestDescriptor::health(&policy);
         let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
         let broker = HttpRequestBroker::new_metered(
-            HttpEvidencePolicy::for_origin(application).unwrap(),
+            HttpEvidencePolicy::for_origin(application.clone()).unwrap(),
             accounting.clone(),
         )
         .unwrap()
         .isolated_supplied_session()
         .unwrap();
+        let credential = SuppliedSessionCredential::Authorization(
+            SuppliedSessionAuthorization::new("Bearer SYNTHETIC-CANARY").unwrap(),
+        );
 
         let result = broker
-            .collect_supplied_session_authorization_get_for_runtime(
-                SUPPLIED_SESSION_RESOURCE_ACTION_ID,
+            .collect_supplied_session_get_for_runtime(
                 DecisionExecutionStage::Passive,
-                Some(DecisionActionOrigin::Planned),
+                Some(DecisionActionOrigin::Adaptive),
                 DecisionExecutionLimits::new(),
                 &health,
-                "Bearer SYNTHETIC-CANARY",
+                &policy,
+                &credential,
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(SuppliedSessionRequestError::InvalidDescriptor)
+        ));
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+
+        let changed_source = source.replace("max_wall_time_ms = 1000", "max_wall_time_ms = 999");
+        let changed_policy =
+            SuppliedSessionPolicy::parse_toml(&application, changed_source.as_bytes()).unwrap();
+        let result = broker
+            .collect_supplied_session_get_for_runtime(
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Bootstrap),
+                DecisionExecutionLimits::new(),
+                &health,
+                &changed_policy,
+                &credential,
             )
             .await;
         assert!(matches!(
@@ -1388,15 +1431,18 @@ max_wall_time_ms = 1000
         .unwrap()
         .isolated_supplied_session()
         .unwrap();
+        let credential = SuppliedSessionCredential::Authorization(
+            SuppliedSessionAuthorization::new("Bearer SYNTHETIC-CANARY").unwrap(),
+        );
 
         let result = broker
-            .collect_supplied_session_authorization_get_for_runtime(
-                SUPPLIED_SESSION_HEALTH_ACTION_ID,
+            .collect_supplied_session_get_for_runtime(
                 DecisionExecutionStage::Passive,
                 Some(DecisionActionOrigin::Bootstrap),
                 DecisionExecutionLimits::new(),
                 &health,
-                "Bearer SYNTHETIC-CANARY",
+                &policy,
+                &credential,
             )
             .await;
         assert!(matches!(

@@ -1001,6 +1001,8 @@ fn inspect_assessment_passive_markers(
     http_evidence: &str,
 ) -> Vec<String> {
     let mut violations = Vec::new();
+    let normalized_committed_projection = committed_projection.replace("\r\n", "\n");
+    let committed_projection = normalized_committed_projection.as_str();
     for (marker, boundary) in [
         (
             "MAX_PASSIVE_HEADER_OCCURRENCES: usize = 8",
@@ -1526,6 +1528,25 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             "assessment HTTP policy must clear every raw captured response header".to_owned(),
         );
     }
+    if !http_evidence.contains("const MAX_SUPPLIED_SESSION_SET_COOKIE_FIELDS: usize = 16;")
+        || !http_evidence
+            .contains("const MAX_SUPPLIED_SESSION_SET_COOKIE_FIELD_BYTES: usize = 4 * 1024;")
+        || !http_evidence
+            .contains("const MAX_SUPPLIED_SESSION_SET_COOKIE_TOTAL_BYTES: usize = 16 * 1024;")
+        || !http_evidence.contains("total_bytes > MAX_SUPPLIED_SESSION_SET_COOKIE_TOTAL_BYTES")
+        || !http_evidence.contains("pub(crate) enum SuppliedSessionCookieUpdateClassification")
+        || !http_evidence.contains("if !self.body_complete()")
+        || !http_evidence.contains("let Some(name) = valid_set_cookie_name(bytes)")
+        || !http_evidence.contains("if policy.is_selected_cookie_name(name)")
+        || !http_evidence.contains("SuppliedSessionCookieUpdateClassification::Unusable")
+        || !http_evidence.contains("SuppliedSessionCookieUpdateClassification::Selected")
+        || !http_evidence.contains("SuppliedSessionCookieUpdateClassification::UnselectedOnly")
+    {
+        violations.push(
+            "supplied-session Set-Cookie handling must remain bounded, value-free, complete-body-only, policy-selected, and fail closed"
+                .to_owned(),
+        );
+    }
     if broker.matches("Client::builder()").count() != 3
         || broker.matches(".redirect(RedirectPolicy::none())").count() != 3
         || broker.matches(".retry(reqwest::retry::never())").count() != 3
@@ -1551,7 +1572,10 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
                 .to_owned(),
         );
     }
-    if broker.matches("supplied_session_no_proxy_client: Option<Client>").count() != 1
+    if broker
+        .matches("supplied_session_no_proxy_client: Option<Client>")
+        .count()
+        != 1
         || broker
             .matches("supplied_session_no_proxy_client: None")
             .count()
@@ -1565,10 +1589,23 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             .count()
             != 1
         || !broker.contains("!authenticated_transport_is_allowed(target)")
-        || !broker.contains(".request(Method::GET, target.clone())\n            .header(AUTHORIZATION, authorization)")
+        || broker
+            .matches("pub(crate) async fn collect_supplied_session_get_for_runtime(")
+            .count()
+            != 1
+        || !broker.contains("!descriptor.validate_against(policy)")
+        || !broker.contains("descriptor.credential_mechanism() != policy.credential_mechanism()")
+        || !broker.contains("descriptor.credential_mechanism() != credential.mechanism()")
+        || !broker.contains("if let Some(authorization) = credential.authorization()")
+        || !broker.contains("else if let Some(cookies) = credential.cookies()")
+        || !broker.contains("authorization.set_sensitive(true);")
+        || !broker.contains("request = request.header(AUTHORIZATION, authorization);")
+        || !broker.contains("request = request.header(COOKIE, cookie);")
+        || broker.contains(".cookie_store(")
+        || broker.contains("reqwest::cookie")
     {
         violations.push(
-            "the shared broker's supplied-session client must remain an opt-in isolated Authorization-only GET no-proxy pool with dispatch-time protected-transport validation"
+            "the shared broker's supplied-session client must remain an opt-in isolated, scanner-owned Authorization-or-cookie GET no-proxy pool with mechanism binding, sensitive headers, no automatic cookie store, and dispatch-time protected-transport validation"
                 .to_owned(),
         );
     }
@@ -13699,7 +13736,7 @@ mod tests {
                 "wordpress_rest_index_advertisement: &'a WordPressRestIndexAdvertisement",
                 "wordpress_rest_index_advertisement: &'a foreign::WordPressRestIndexAdvertisement",
             ),
-            seam.replace(
+            seam.replace("\r\n", "\n").replace(
                 "    #[cfg(feature = \"wordpress-review\")]\n    wordpress_rest_index_advertisement: &'a WordPressRestIndexAdvertisement,",
                 "    wordpress_rest_index_advertisement: &'a WordPressRestIndexAdvertisement,",
             ),
@@ -13726,7 +13763,7 @@ mod tests {
                 "WordPress discovery feature boundary unexpectedly passed: {source}: {violations}"
             );
         }
-        let ungated_wordpress_accessor = seam.replace(
+        let ungated_wordpress_accessor = seam.replace("\r\n", "\n").replace(
             "    #[cfg(feature = \"wordpress-review\")]\n    pub(crate) const fn wordpress_rest_index_advertisement(",
             "    pub(crate) const fn wordpress_rest_index_advertisement(",
         );
@@ -13753,7 +13790,11 @@ mod tests {
         }
         let broker =
             include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
-        assert!(inspect_assessment_transport_markers(&http, broker).is_empty());
+        let checked_in_transport_violations = inspect_assessment_transport_markers(&http, broker);
+        assert!(
+            checked_in_transport_violations.is_empty(),
+            "{checked_in_transport_violations:#?}"
+        );
         for (mutated_http, mutated_broker, needle) in [
             (
                 http.replace("restricted.captured_headers.clear();", ""),
@@ -13764,6 +13805,22 @@ mod tests {
                 http.clone(),
                 broker.replace("body_complete = true;", ""),
                 "observed response-stream EOF",
+            ),
+            (
+                http.replace(
+                    "if policy.is_selected_cookie_name(name)",
+                    "if false",
+                ),
+                broker.to_owned(),
+                "Set-Cookie handling",
+            ),
+            (
+                http.replace(
+                    "total_bytes > MAX_SUPPLIED_SESSION_SET_COOKIE_TOTAL_BYTES",
+                    "false",
+                ),
+                broker.to_owned(),
+                "Set-Cookie handling",
             ),
             (
                 http.clone(),
@@ -13781,6 +13838,36 @@ mod tests {
                 "protected-transport validation",
             ),
             (
+                http.clone(),
+                broker.replace("!descriptor.validate_against(policy)", "false"),
+                "mechanism binding",
+            ),
+            (
+                http.clone(),
+                broker.replace(
+                    "descriptor.credential_mechanism() != credential.mechanism()",
+                    "false",
+                ),
+                "mechanism binding",
+            ),
+            (
+                http.clone(),
+                broker.replace(
+                    "else if let Some(cookies) = credential.cookies()",
+                    "else if let Some(cookies) = credential.cookies_unchecked()",
+                ),
+                "scanner-owned Authorization-or-cookie",
+            ),
+            (
+                http.clone(),
+                broker.replace("\r\n", "\n").replacen(
+                    ".redirect(RedirectPolicy::none())\n                .retry(reqwest::retry::never())\n                .no_proxy()\n                .build()",
+                    ".redirect(RedirectPolicy::none())\n                .retry(reqwest::retry::never())\n                .no_proxy()\n                .cookie_store(true)\n                .build()",
+                    1,
+                ),
+                "no automatic cookie store",
+            ),
+            (
                 http,
                 broker.replacen(
                     "let client = Client::builder()",
@@ -13792,7 +13879,7 @@ mod tests {
         ] {
             let violations =
                 inspect_assessment_transport_markers(&mutated_http, &mutated_broker).join("\n");
-            assert!(violations.contains(needle), "{violations}");
+            assert!(violations.contains(needle), "{needle}: {violations}");
         }
     }
 }

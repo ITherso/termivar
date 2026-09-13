@@ -178,8 +178,9 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         serde_json::json!([
             "--profile web-review",
             "--session-policy FILE",
-            "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
-            "HTTPS, except numeric-loopback HTTP fixtures"
+            "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+            "V2: --session-cookie-file FILE",
+            "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS"
         ])
     );
     let session_limit = supplied_session["limitation"]
@@ -192,7 +193,14 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "no request body or non-GET method",
         "GET handling can still have server-side effects",
         "operator must authorize every selected resource",
-        "No cookies, login, refresh, OAuth, MFA",
+        "strict local V1 authorization_header or V2 cookie_jar policy",
+        "selected response-cookie update",
+        "unusable response-cookie classification",
+        "No response cookie update is applied, no refresh occurs",
+        "host/domain/path/Secure/expiry",
+        "Domain never expands it",
+        "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
+        "No browser-profile import, login, automatic refresh, OAuth, MFA",
         "exploit, or impact validation",
     ] {
         assert!(
@@ -382,6 +390,11 @@ fn compiled_inventory_matches_the_actual_binary_help() {
             "{key}"
         );
     }
+    assert_eq!(
+        surface_state(&document, "option.supplied-session-review") == "compiled",
+        scan.contains("--session-cookie-file"),
+        "supplied-session cookie source/help drift"
+    );
     for (key, command) in [
         ("command.artifact", "artifact"),
         ("command.legacy-scan", "legacy-scan"),

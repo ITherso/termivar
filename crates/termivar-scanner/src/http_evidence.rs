@@ -73,6 +73,10 @@ pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 #[cfg(feature = "authorization-review")]
 pub(crate) use response::AuthorizationResponseDefense;
 pub(crate) use response::CollectedHttpResponse;
+#[cfg(feature = "supplied-session-review")]
+pub(crate) use response::{
+    SuppliedSessionCookieUpdateClassification, SuppliedSessionCookieUpdateObservation,
+};
 #[cfg(test)]
 pub(crate) use review_response::{
     project_review_response, ReviewResponseProjection, EMPTY_REVIEW_RESPONSE_PROJECTION,

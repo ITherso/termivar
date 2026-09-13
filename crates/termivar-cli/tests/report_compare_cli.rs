@@ -86,6 +86,129 @@ fn synthetic_report(items: Vec<Value>) -> Vec<u8> {
     .unwrap()
 }
 
+fn synthetic_supplied_session_audit_v1() -> Value {
+    json!({
+        "schema": "security.supplied-session-audit/v1",
+        "capability_id": "session.supplied-context-assessment@1",
+        "policy_reference": format!("supplied-session-policy-sha256:{}", "1".repeat(64)),
+        "application_reference": format!(
+            "supplied-session-application-sha256:{}",
+            "2".repeat(64)
+        ),
+        "principal_reference": "supplied-session-principal-0001",
+        "principal_alias": "synthetic-reader",
+        "principal_assurance": "operator_declared",
+        "credential_mechanism": "authorization_header",
+        "health_oracle": {
+            "kind": "json_boolean_true",
+            "field_reference": format!(
+                "supplied-session-health-field-sha256:{}",
+                "3".repeat(64)
+            )
+        },
+        "outcome": "complete",
+        "coverage": "complete",
+        "checkpoints": [
+            {
+                "sequence": 0,
+                "phase": "startup",
+                "after_subject_count": 0,
+                "evidence_reference": format!(
+                    "supplied-session-checkpoint-evidence-sha256:{}",
+                    "4".repeat(64)
+                ),
+                "outcome": "healthy",
+                "status": 200,
+                "body_state": "complete",
+                "predicate": "matched",
+                "response_bytes": 17
+            },
+            {
+                "sequence": 1,
+                "phase": "terminal",
+                "after_subject_count": 1,
+                "evidence_reference": format!(
+                    "supplied-session-checkpoint-evidence-sha256:{}",
+                    "5".repeat(64)
+                ),
+                "outcome": "healthy",
+                "status": 200,
+                "body_state": "complete",
+                "predicate": "matched",
+                "response_bytes": 19
+            }
+        ],
+        "resources": [{
+            "sequence": 0,
+            "resource_reference": format!(
+                "supplied-session-resource-sha256:{}",
+                "6".repeat(64)
+            ),
+            "evidence_reference": format!(
+                "supplied-session-resource-evidence-sha256:{}",
+                "7".repeat(64)
+            ),
+            "outcome": "committed",
+            "status": 200,
+            "response_bytes": 23,
+            "epoch": 1
+        }],
+        "selected_resource_count": 1,
+        "dispatched_resource_count": 1,
+        "committed_resource_count": 1,
+        "dispatched_request_count": 3,
+        "response_bytes": 59,
+        "response_byte_limit": 65_536,
+        "response_byte_limit_exceeded": false,
+        "refresh_performed": false,
+        "anonymous_fallback_performed": false,
+        "continuous_authentication_established": false,
+        "exploit_execution": "not_performed",
+        "impact_validation": "not_performed"
+    })
+}
+
+fn synthetic_supplied_session_audit_v2() -> Value {
+    let mut audit = synthetic_supplied_session_audit_v1();
+    audit["schema"] = json!("security.supplied-session-audit/v2");
+    audit["credential_mechanism"] = json!("cookie_jar");
+    audit["cookie_policy"] = json!({
+        "declared_count": 2,
+        "host_only_count": 1,
+        "domain_count": 1,
+        "secure_count": 2,
+        "http_only_count": 1,
+        "session_count": 1,
+        "persistent_count": 1,
+        "same_site_missing_count": 0,
+        "same_site_strict_count": 1,
+        "same_site_lax_count": 0,
+        "same_site_none_count": 1,
+        "update_policy": "stop_on_selected_cookie",
+        "browser_semantics": "attributes_preserved_not_browser_csrf_emulation"
+    });
+    audit["cookie_lifecycle"] = json!({
+        "initial_epoch": 1,
+        "final_epoch": 1,
+        "selected_update_response_count": 0,
+        "unselected_update_response_count": 1,
+        "update_classification_failure_count": 0,
+        "updates_applied": 0
+    });
+    audit
+}
+
+fn synthetic_supplied_session_report(audit: Value) -> Vec<u8> {
+    let mut report: Value = serde_json::from_slice(&synthetic_report(vec![synthetic_item(
+        '8',
+        "Synthetic context-stable observation",
+        "evidence-0008",
+    )]))
+    .unwrap();
+    report["supplied_session"] = audit;
+    serde_json::to_vec(&report).unwrap()
+}
+
 fn synthetic_pair(directory: &Path) -> (PathBuf, PathBuf, Vec<u8>, Vec<u8>) {
     let before = synthetic_report(vec![
         synthetic_item('1', "Same display", "evidence-0000"),
@@ -207,6 +330,127 @@ fn actual_cli_same_file_accepts_genuine_capture_without_modifying_it() {
     }
     assert_eq!(document["before"]["sha256"], document["after"]["sha256"]);
     assert_eq!(fs::read(input).unwrap(), GENUINE_REPORT);
+}
+
+#[test]
+fn default_binary_compares_cookie_v2_and_keeps_v1_v2_contexts_unpaired_offline() {
+    let directory = tempfile::tempdir().unwrap();
+    let v1_bytes = synthetic_supplied_session_report(synthetic_supplied_session_audit_v1());
+    let v2_bytes = synthetic_supplied_session_report(synthetic_supplied_session_audit_v2());
+    let v1 = directory.path().join("synthetic-v1.json");
+    let v2 = directory.path().join("synthetic-v2.json");
+    fs::write(&v1, &v1_bytes).unwrap();
+    fs::write(&v2, &v2_bytes).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+
+    let mut self_compare = termivar();
+    let self_compare = self_compare
+        .args(["report", "compare", "--before"])
+        .arg(&v2)
+        .arg("--after")
+        .arg(&v2)
+        .args(["--same-scope", "--format", "json"])
+        .env("HTTP_PROXY", &proxy)
+        .env("HTTPS_PROXY", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .output()
+        .unwrap();
+    assert!(
+        self_compare.status.success(),
+        "{}",
+        String::from_utf8_lossy(&self_compare.stderr)
+    );
+    assert!(self_compare.stderr.is_empty());
+    let self_document: Value = serde_json::from_slice(&self_compare.stdout).unwrap();
+    assert_eq!(
+        self_document["before"]["optional_audits"]["supplied_session"]["schema"],
+        "security.supplied-session-audit/v2"
+    );
+    assert_eq!(
+        self_document["before"]["optional_audits"]["supplied_session"]["cookie_policy"]
+            ["declared_count"],
+        2
+    );
+    assert_eq!(
+        self_document["supplied_session_comparison"]["status"],
+        "compared_within_same_declared_context"
+    );
+    assert_eq!(
+        self_document["supplied_session_comparison"]["context"]["status"],
+        "same_declared_context"
+    );
+    assert_eq!(
+        self_document["supplied_session_comparison"]["health_and_coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(self_document["unchanged"].as_array().unwrap().len(), 1);
+    for group in ["only_in_after", "only_in_before", "changed"] {
+        assert!(self_document[group].as_array().unwrap().is_empty());
+    }
+
+    let mut cross_version = termivar();
+    let cross_version = cross_version
+        .args(["report", "compare", "--before"])
+        .arg(&v1)
+        .arg("--after")
+        .arg(&v2)
+        .args(["--same-scope", "--format", "json"])
+        .env("HTTP_PROXY", &proxy)
+        .env("HTTPS_PROXY", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .output()
+        .unwrap();
+    assert!(
+        cross_version.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cross_version.stderr)
+    );
+    assert!(cross_version.stderr.is_empty());
+    let cross_document: Value = serde_json::from_slice(&cross_version.stdout).unwrap();
+    assert_eq!(
+        cross_document["supplied_session_comparison"]["status"],
+        "not_compared"
+    );
+    assert_eq!(
+        cross_document["supplied_session_comparison"]["reason"],
+        "declared_session_context_changed"
+    );
+    assert_eq!(
+        cross_document["supplied_session_comparison"]["context"]["changed_fields"],
+        json!(["cookie_policy", "credential_mechanism", "schema"])
+    );
+    for facet in ["health_and_coverage", "accounting"] {
+        assert_eq!(
+            cross_document["supplied_session_comparison"][facet]["status"],
+            "not_comparable"
+        );
+    }
+    assert_eq!(
+        cross_document["only_in_before"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(cross_document["only_in_after"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        cross_document["only_in_before"][0]["fingerprint"],
+        cross_document["only_in_after"][0]["fingerprint"]
+    );
+    for group in ["changed", "unchanged"] {
+        assert!(cross_document[group].as_array().unwrap().is_empty());
+    }
+
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "feature-disabled offline comparison contacted the proxy tripwire"
+    );
+    assert_eq!(fs::read(&v1).unwrap(), v1_bytes);
+    assert_eq!(fs::read(&v2).unwrap(), v2_bytes);
 }
 
 #[test]

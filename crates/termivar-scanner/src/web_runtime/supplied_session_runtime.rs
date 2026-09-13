@@ -14,18 +14,23 @@ use termivar_core::{
 
 use super::{authority::SharedWebRuntimeAuthority, RuntimeExecution};
 use crate::{
-    http_evidence::{CollectedHttpResponse, HttpRequestBroker, SuppliedSessionRequestError},
+    http_evidence::{
+        CollectedHttpResponse, HttpRequestBroker, SuppliedSessionCookieUpdateClassification,
+        SuppliedSessionCookieUpdateObservation, SuppliedSessionRequestError,
+    },
     supplied_session_review::{
-        SuppliedSessionAuthorization, SuppliedSessionCredentialMechanism, SuppliedSessionPolicy,
+        SuppliedSessionCookieSummary, SuppliedSessionCookieUpdatePolicy, SuppliedSessionCredential,
+        SuppliedSessionCredentialMechanism, SuppliedSessionPolicy, SuppliedSessionPolicyVersion,
         SuppliedSessionRequestDescriptor, SuppliedSessionRequestPurpose,
         MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_RESOURCES,
-        SUPPLIED_SESSION_HEALTH_ACTION_ID, SUPPLIED_SESSION_RESOURCE_ACTION_ID,
     },
     DecisionActionOrigin, DecisionExecutionLimits, DecisionExecutionStage, KnowledgeBase,
 };
 
 /// Stable saved-audit schema for the supplied-session child.
 pub const SUPPLIED_SESSION_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v1";
+/// Strict saved-audit schema for supplied-cookie sessions.
+pub const SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v2";
 /// Stable capability identity. This audit-only V1 emits no assessment item.
 pub const SUPPLIED_SESSION_CAPABILITY_ID: &str = "session.supplied-context-assessment@1";
 
@@ -42,8 +47,12 @@ const RESOURCE_HEALTH_UNQUALIFIED_EVIDENCE_PREDICATE: &str =
     "protected-resource-response-health-unqualified";
 const HEALTH_COMMIT_EVIDENCE_PREDICATE: &str = "health-checkpoint-observation-committed";
 const RESOURCE_COMMIT_EVIDENCE_COMPONENT: &str = "supplied-session.runtime";
-const RESOURCE_COMMIT_EVIDENCE_METHOD: &str = "descriptor-bound-complete-authorization-get";
-const HEALTH_COMMIT_EVIDENCE_METHOD: &str = "descriptor-bound-health-authorization-get";
+const RESOURCE_COMMIT_EVIDENCE_METHOD_V1: &str = "descriptor-bound-complete-authorization-get";
+const HEALTH_COMMIT_EVIDENCE_METHOD_V1: &str = "descriptor-bound-health-authorization-get";
+const RESOURCE_COMMIT_EVIDENCE_METHOD_V2: &str = "descriptor-bound-complete-supplied-cookie-get";
+const HEALTH_COMMIT_EVIDENCE_METHOD_V2: &str = "descriptor-bound-health-supplied-cookie-get";
+const SUPPLIED_SESSION_NON_BROWSER_COOKIE_SEMANTICS: &str =
+    "attributes_preserved_not_browser_csrf_emulation";
 
 /// Assurance attached to the principal label used for this run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -91,6 +100,10 @@ pub enum SuppliedSessionAuditOutcome {
     ResourceUnavailable,
     RuntimeLimit,
     Cancelled,
+    /// A selected cookie was reissued; V2 stopped without applying it.
+    CredentialUpdateRequired,
+    /// A response cookie update could not be classified within V2's bounds.
+    CredentialUpdateUnusable,
 }
 
 /// Authenticated resource coverage established by committed resource responses and checkpoints.
@@ -171,6 +184,8 @@ pub struct WebAssessmentSuppliedSessionCheckpointAudit {
     body_state: SuppliedSessionBodyState,
     predicate: SuppliedSessionPredicateOutcome,
     response_bytes: u64,
+    #[serde(skip)]
+    cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
 }
 
 impl WebAssessmentSuppliedSessionCheckpointAudit {
@@ -213,6 +228,8 @@ pub struct WebAssessmentSuppliedSessionResourceAudit {
     status: Option<u16>,
     response_bytes: u64,
     epoch: u8,
+    #[serde(skip)]
+    cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
 }
 
 impl WebAssessmentSuppliedSessionResourceAudit {
@@ -236,6 +253,112 @@ impl WebAssessmentSuppliedSessionResourceAudit {
     }
     pub const fn epoch(&self) -> u8 {
         self.epoch
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuppliedSessionResponseCookieUpdateKind {
+    None,
+    UnselectedOnly,
+    Selected,
+    Unusable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SuppliedSessionResponseCookieUpdate {
+    kind: SuppliedSessionResponseCookieUpdateKind,
+    selected_count: u8,
+    unselected_count: u8,
+}
+
+/// Redaction-safe static cookie-policy aggregate for audit V2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SuppliedSessionCookiePolicyAudit {
+    declared_count: u8,
+    host_only_count: u8,
+    domain_count: u8,
+    secure_count: u8,
+    http_only_count: u8,
+    session_count: u8,
+    persistent_count: u8,
+    same_site_missing_count: u8,
+    same_site_strict_count: u8,
+    same_site_lax_count: u8,
+    same_site_none_count: u8,
+    update_policy: SuppliedSessionCookieUpdatePolicy,
+}
+
+impl SuppliedSessionCookiePolicyAudit {
+    pub const fn declared_count(&self) -> u8 {
+        self.declared_count
+    }
+    pub const fn host_only_count(&self) -> u8 {
+        self.host_only_count
+    }
+    pub const fn domain_count(&self) -> u8 {
+        self.domain_count
+    }
+    pub const fn secure_count(&self) -> u8 {
+        self.secure_count
+    }
+    pub const fn http_only_count(&self) -> u8 {
+        self.http_only_count
+    }
+    pub const fn session_count(&self) -> u8 {
+        self.session_count
+    }
+    pub const fn persistent_count(&self) -> u8 {
+        self.persistent_count
+    }
+    pub const fn same_site_missing_count(&self) -> u8 {
+        self.same_site_missing_count
+    }
+    pub const fn same_site_strict_count(&self) -> u8 {
+        self.same_site_strict_count
+    }
+    pub const fn same_site_lax_count(&self) -> u8 {
+        self.same_site_lax_count
+    }
+    pub const fn same_site_none_count(&self) -> u8 {
+        self.same_site_none_count
+    }
+    pub const fn update_policy(&self) -> SuppliedSessionCookieUpdatePolicy {
+        self.update_policy
+    }
+    pub const fn browser_semantics(&self) -> &'static str {
+        SUPPLIED_SESSION_NON_BROWSER_COOKIE_SEMANTICS
+    }
+}
+
+/// Redaction-safe dynamic cookie lifecycle aggregate for audit V2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SuppliedSessionCookieLifecycleAudit {
+    initial_epoch: u8,
+    final_epoch: u8,
+    selected_update_response_count: u8,
+    unselected_update_response_count: u8,
+    update_classification_failure_count: u8,
+    updates_applied: u8,
+}
+
+impl SuppliedSessionCookieLifecycleAudit {
+    pub const fn initial_epoch(&self) -> u8 {
+        self.initial_epoch
+    }
+    pub const fn final_epoch(&self) -> u8 {
+        self.final_epoch
+    }
+    pub const fn selected_update_response_count(&self) -> u8 {
+        self.selected_update_response_count
+    }
+    pub const fn unselected_update_response_count(&self) -> u8 {
+        self.unselected_update_response_count
+    }
+    pub const fn update_classification_failure_count(&self) -> u8 {
+        self.update_classification_failure_count
+    }
+    pub const fn updates_applied(&self) -> u8 {
+        self.updates_applied
     }
 }
 
@@ -267,6 +390,10 @@ pub struct WebAssessmentSuppliedSessionAudit {
     continuous_authentication_established: bool,
     exploit_execution_performed: bool,
     impact_validation_performed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cookie_policy: Option<SuppliedSessionCookiePolicyAudit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cookie_lifecycle: Option<SuppliedSessionCookieLifecycleAudit>,
 }
 
 impl WebAssessmentSuppliedSessionAudit {
@@ -348,22 +475,35 @@ impl WebAssessmentSuppliedSessionAudit {
     pub const fn impact_validation_performed(&self) -> bool {
         self.impact_validation_performed
     }
+    pub const fn cookie_policy(&self) -> Option<&SuppliedSessionCookiePolicyAudit> {
+        self.cookie_policy.as_ref()
+    }
+    pub const fn cookie_lifecycle(&self) -> Option<&SuppliedSessionCookieLifecycleAudit> {
+        self.cookie_lifecycle.as_ref()
+    }
 }
 
 pub(super) struct SuppliedSessionRuntimeConfig {
     policy: SuppliedSessionPolicy,
-    authorization: SuppliedSessionAuthorization,
+    credential: SuppliedSessionCredential,
     requests: HttpRequestBroker,
     health: SuppliedSessionRequestDescriptor,
     resources: Vec<(SuppliedSessionRequestDescriptor, String)>,
 }
 
 impl SuppliedSessionRuntimeConfig {
-    pub(super) fn new(
+    pub(super) fn new<C>(
         policy: SuppliedSessionPolicy,
-        authorization: SuppliedSessionAuthorization,
+        credential: C,
         authority: &SharedWebRuntimeAuthority,
-    ) -> Result<Self, ()> {
+    ) -> Result<Self, ()>
+    where
+        C: Into<SuppliedSessionCredential>,
+    {
+        let credential = credential.into();
+        if policy.credential_mechanism() != credential.mechanism() {
+            return Err(());
+        }
         let requests = authority
             .requests()
             .isolated_supplied_session()
@@ -379,7 +519,7 @@ impl SuppliedSessionRuntimeConfig {
             .ok_or(())?;
         Ok(Self {
             policy,
-            authorization,
+            credential,
             requests,
             health,
             resources,
@@ -399,7 +539,7 @@ impl SuppliedSessionRuntimeConfig {
         let dispatch_context = DispatchContext {
             authority,
             requests: &self.requests,
-            authorization: &self.authorization,
+            credential: &self.credential,
             policy: &self.policy,
             deadline,
         };
@@ -574,14 +714,18 @@ impl ExecutionState {
                 response,
                 bytes,
                 exact_target,
+                cookie_update,
             } => {
                 let mut record = classify_health(
                     *response,
                     bytes,
                     exact_target,
-                    sequence,
-                    phase,
-                    after_subject_count,
+                    cookie_update,
+                    HealthCheckpointPosition {
+                        sequence,
+                        phase,
+                        after_subject_count,
+                    },
                     policy,
                 );
                 bind_health_evidence(
@@ -591,7 +735,8 @@ impl ExecutionState {
                     Some(exact_target),
                     knowledge,
                 );
-                let stop = health_stop_outcome(record.outcome, is_startup);
+                let stop = cookie_update_stop_outcome(record.cookie_update)
+                    .or_else(|| health_stop_outcome(record.outcome, is_startup));
                 (Some(record), stop)
             },
             DispatchResult::Transport { bytes, dispatched } => {
@@ -664,8 +809,17 @@ impl ExecutionState {
                 response,
                 bytes,
                 exact_target,
+                cookie_update,
             } => {
-                let staged = stage_resource_response(*response, bytes, exact_target);
+                let staged = stage_resource_response(*response, bytes, exact_target, cookie_update);
+                if let Some(outcome) = cookie_update_stop_outcome(staged.cookie_update) {
+                    let record = commit_health_unqualified_resource(
+                        sequence, descriptor, reference, policy, knowledge, staged, None,
+                    );
+                    self.response_bytes = self.response_bytes.saturating_add(record.response_bytes);
+                    self.resources.push(record);
+                    return ResourceContinuation::No(outcome);
+                }
                 if staged_resource_can_await_health(descriptor, reference, staged) {
                     return ResourceContinuation::AwaitingHealth(staged);
                 }
@@ -794,6 +948,12 @@ impl ExecutionState {
 
     fn finish(self, policy: SuppliedSessionPolicy) -> WebAssessmentSuppliedSessionAudit {
         let response_byte_limit = policy.max_total_response_bytes();
+        let cookie_policy = policy
+            .cookie_summary()
+            .map(|summary| cookie_policy_audit(summary, &policy));
+        let cookie_lifecycle = cookie_policy
+            .is_some()
+            .then(|| cookie_lifecycle_audit(&self.checkpoints, &self.resources));
         let dispatched_resource_count = u8::try_from(
             self.resources
                 .iter()
@@ -863,7 +1023,10 @@ impl ExecutionState {
                 )
         );
         WebAssessmentSuppliedSessionAudit {
-            schema: SUPPLIED_SESSION_AUDIT_SCHEMA,
+            schema: match policy.version() {
+                SuppliedSessionPolicyVersion::V1 => SUPPLIED_SESSION_AUDIT_SCHEMA,
+                SuppliedSessionPolicyVersion::V2 => SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+            },
             capability_id: SUPPLIED_SESSION_CAPABILITY_ID,
             policy_reference: policy.policy_reference().to_owned(),
             application_reference: policy.application_reference().to_owned(),
@@ -891,7 +1054,64 @@ impl ExecutionState {
             continuous_authentication_established: false,
             exploit_execution_performed: false,
             impact_validation_performed: false,
+            cookie_policy,
+            cookie_lifecycle,
         }
+    }
+}
+
+fn cookie_policy_audit(
+    summary: SuppliedSessionCookieSummary,
+    policy: &SuppliedSessionPolicy,
+) -> SuppliedSessionCookiePolicyAudit {
+    SuppliedSessionCookiePolicyAudit {
+        declared_count: u8::try_from(summary.cookie_count()).unwrap_or(u8::MAX),
+        host_only_count: u8::try_from(summary.host_only_count()).unwrap_or(u8::MAX),
+        domain_count: u8::try_from(summary.domain_count()).unwrap_or(u8::MAX),
+        secure_count: u8::try_from(summary.secure_count()).unwrap_or(u8::MAX),
+        http_only_count: u8::try_from(summary.http_only_count()).unwrap_or(u8::MAX),
+        session_count: u8::try_from(summary.session_count()).unwrap_or(u8::MAX),
+        persistent_count: u8::try_from(summary.persistent_count()).unwrap_or(u8::MAX),
+        same_site_missing_count: u8::try_from(summary.same_site_missing_count()).unwrap_or(u8::MAX),
+        same_site_strict_count: u8::try_from(summary.same_site_strict_count()).unwrap_or(u8::MAX),
+        same_site_lax_count: u8::try_from(summary.same_site_lax_count()).unwrap_or(u8::MAX),
+        same_site_none_count: u8::try_from(summary.same_site_none_count()).unwrap_or(u8::MAX),
+        update_policy: policy
+            .cookie_update_policy()
+            .expect("cookie policy summary requires an update policy"),
+    }
+}
+
+fn cookie_lifecycle_audit(
+    checkpoints: &[WebAssessmentSuppliedSessionCheckpointAudit],
+    resources: &[WebAssessmentSuppliedSessionResourceAudit],
+) -> SuppliedSessionCookieLifecycleAudit {
+    let updates = checkpoints
+        .iter()
+        .filter_map(|record| record.cookie_update)
+        .chain(resources.iter().filter_map(|record| record.cookie_update));
+    let mut selected_update_response_count = 0_u8;
+    let mut unselected_update_response_count = 0_u8;
+    let mut update_classification_failure_count = 0_u8;
+    for update in updates {
+        if update.selected_count > 0 {
+            selected_update_response_count = selected_update_response_count.saturating_add(1);
+        }
+        if update.unselected_count > 0 {
+            unselected_update_response_count = unselected_update_response_count.saturating_add(1);
+        }
+        if update.kind == SuppliedSessionResponseCookieUpdateKind::Unusable {
+            update_classification_failure_count =
+                update_classification_failure_count.saturating_add(1);
+        }
+    }
+    SuppliedSessionCookieLifecycleAudit {
+        initial_epoch: 1,
+        final_epoch: 1,
+        selected_update_response_count,
+        unselected_update_response_count,
+        update_classification_failure_count,
+        updates_applied: 0,
     }
 }
 
@@ -926,6 +1146,7 @@ enum DispatchResult {
         response: Box<CollectedHttpResponse>,
         bytes: u64,
         exact_target: bool,
+        cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
     },
     Transport {
         bytes: u64,
@@ -945,7 +1166,7 @@ enum DispatchResult {
 struct DispatchContext<'a> {
     authority: &'a SharedWebRuntimeAuthority,
     requests: &'a HttpRequestBroker,
-    authorization: &'a SuppliedSessionAuthorization,
+    credential: &'a SuppliedSessionCredential,
     policy: &'a SuppliedSessionPolicy,
     deadline: Option<tokio::time::Instant>,
 }
@@ -956,6 +1177,13 @@ struct DispatchBudget {
     dispatched_requests: u8,
 }
 
+#[derive(Clone, Copy)]
+struct HealthCheckpointPosition {
+    sequence: u8,
+    phase: SuppliedSessionHealthCheckpointPhase,
+    after_subject_count: u8,
+}
+
 async fn dispatch(
     context: &DispatchContext<'_>,
     descriptor: &SuppliedSessionRequestDescriptor,
@@ -963,10 +1191,6 @@ async fn dispatch(
     origin: DecisionActionOrigin,
     expected_purpose: SuppliedSessionRequestPurpose,
 ) -> DispatchResult {
-    let action_id = match expected_purpose {
-        SuppliedSessionRequestPurpose::Health => SUPPLIED_SESSION_HEALTH_ACTION_ID,
-        SuppliedSessionRequestPurpose::Resource => SUPPLIED_SESSION_RESOURCE_ACTION_ID,
-    };
     if descriptor.purpose() != expected_purpose {
         return DispatchResult::InvalidDescriptor;
     }
@@ -1001,16 +1225,14 @@ async fn dispatch(
     }
     let limits = DecisionExecutionLimits::new().with_max_response_body_bytes(response_limit);
     let before = context.authority.request_accounting().snapshot();
-    let execution = context
-        .requests
-        .collect_supplied_session_authorization_get_for_runtime(
-            action_id,
-            DecisionExecutionStage::Passive,
-            Some(origin),
-            limits,
-            descriptor,
-            context.authorization.as_str(),
-        );
+    let execution = context.requests.collect_supplied_session_get_for_runtime(
+        DecisionExecutionStage::Passive,
+        Some(origin),
+        limits,
+        descriptor,
+        context.policy,
+        context.credential,
+    );
     let result = super::await_execution(
         context.authority.cancellation(),
         context.deadline,
@@ -1025,10 +1247,12 @@ async fn dispatch(
     match result {
         RuntimeExecution::Completed(Ok(response)) => {
             let exact_target = response.final_url() == descriptor.target();
+            let cookie_update = response_cookie_update(context.policy, &response, exact_target);
             DispatchResult::Response {
                 response: Box::new(response),
                 bytes,
                 exact_target,
+                cookie_update,
             }
         },
         RuntimeExecution::Completed(Err(SuppliedSessionRequestError::RuntimeLimit)) => {
@@ -1042,6 +1266,64 @@ async fn dispatch(
         },
         RuntimeExecution::Cancelled => DispatchResult::Cancelled { bytes, dispatched },
         RuntimeExecution::WallTimeExceeded => DispatchResult::RuntimeLimit { bytes, dispatched },
+    }
+}
+
+fn cookie_update_stop_outcome(
+    update: Option<SuppliedSessionResponseCookieUpdate>,
+) -> Option<SuppliedSessionAuditOutcome> {
+    match update.map(|value| value.kind) {
+        Some(SuppliedSessionResponseCookieUpdateKind::Selected) => {
+            Some(SuppliedSessionAuditOutcome::CredentialUpdateRequired)
+        },
+        Some(SuppliedSessionResponseCookieUpdateKind::Unusable) => {
+            Some(SuppliedSessionAuditOutcome::CredentialUpdateUnusable)
+        },
+        None
+        | Some(SuppliedSessionResponseCookieUpdateKind::None)
+        | Some(SuppliedSessionResponseCookieUpdateKind::UnselectedOnly) => None,
+    }
+}
+
+fn response_cookie_update(
+    policy: &SuppliedSessionPolicy,
+    response: &CollectedHttpResponse,
+    exact_target: bool,
+) -> Option<SuppliedSessionResponseCookieUpdate> {
+    if policy.version() != SuppliedSessionPolicyVersion::V2 {
+        return None;
+    }
+    if !exact_target {
+        return Some(SuppliedSessionResponseCookieUpdate {
+            kind: SuppliedSessionResponseCookieUpdateKind::Unusable,
+            selected_count: 0,
+            unselected_count: 0,
+        });
+    }
+    Some(response.supplied_session_cookie_updates(policy).into())
+}
+
+impl From<SuppliedSessionCookieUpdateObservation> for SuppliedSessionResponseCookieUpdate {
+    fn from(observation: SuppliedSessionCookieUpdateObservation) -> Self {
+        let kind = match observation.classification() {
+            SuppliedSessionCookieUpdateClassification::None => {
+                SuppliedSessionResponseCookieUpdateKind::None
+            },
+            SuppliedSessionCookieUpdateClassification::UnselectedOnly => {
+                SuppliedSessionResponseCookieUpdateKind::UnselectedOnly
+            },
+            SuppliedSessionCookieUpdateClassification::Selected => {
+                SuppliedSessionResponseCookieUpdateKind::Selected
+            },
+            SuppliedSessionCookieUpdateClassification::Unusable => {
+                SuppliedSessionResponseCookieUpdateKind::Unusable
+            },
+        };
+        Self {
+            kind,
+            selected_count: observation.selected_count(),
+            unselected_count: observation.unselected_count(),
+        }
     }
 }
 
@@ -1061,9 +1343,8 @@ fn classify_health(
     response: CollectedHttpResponse,
     bytes: u64,
     exact_target: bool,
-    sequence: u8,
-    phase: SuppliedSessionHealthCheckpointPhase,
-    after_subject_count: u8,
+    cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
+    position: HealthCheckpointPosition,
     policy: &SuppliedSessionPolicy,
 ) -> WebAssessmentSuppliedSessionCheckpointAudit {
     let status = response.status();
@@ -1091,15 +1372,16 @@ fn classify_health(
         SuppliedSessionHealthOutcome::Indeterminate
     };
     WebAssessmentSuppliedSessionCheckpointAudit {
-        sequence,
+        sequence: position.sequence,
         evidence_reference: None,
-        phase,
-        after_subject_count,
+        phase: position.phase,
+        after_subject_count: position.after_subject_count,
         outcome,
         status: Some(status),
         body_state,
         predicate,
         response_bytes: bytes,
+        cookie_update,
     }
 }
 
@@ -1119,6 +1401,7 @@ fn health_unavailable(
         body_state: SuppliedSessionBodyState::Unavailable,
         predicate: SuppliedSessionPredicateOutcome::NotEvaluated,
         response_bytes: bytes,
+        cookie_update: None,
     }
 }
 
@@ -1180,7 +1463,7 @@ fn commit_health_evidence(
     } else {
         "unavailable"
     };
-    let binding = format!(
+    let mut binding = format!(
         "policy={};application={};health_field={};purpose=health;sequence={};phase={};after_subject_count={};target={target_state};status={status};body_state={};predicate={};outcome={};response_bytes={}",
         policy.policy_reference(),
         policy.application_reference(),
@@ -1193,13 +1476,14 @@ fn commit_health_evidence(
         health_outcome_token(checkpoint.outcome),
         checkpoint.response_bytes,
     );
+    append_cookie_update_binding(policy, &mut binding, checkpoint.cookie_update);
     commit_value_safe_evidence(
         policy,
         policy.health_field_reference(),
         HEALTH_COMMIT_EVIDENCE_DOMAIN,
         HEALTH_COMMIT_EVIDENCE_PREFIX,
         HEALTH_COMMIT_EVIDENCE_PREDICATE,
-        HEALTH_COMMIT_EVIDENCE_METHOD,
+        health_commit_evidence_method(policy),
         binding,
         knowledge,
     )
@@ -1249,18 +1533,21 @@ struct StagedSuppliedSessionResource {
     response_bytes: u64,
     exact_target: bool,
     body_complete: bool,
+    cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
 }
 
 fn stage_resource_response(
     response: CollectedHttpResponse,
     response_bytes: u64,
     exact_target: bool,
+    cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
 ) -> StagedSuppliedSessionResource {
     StagedSuppliedSessionResource {
         status: response.status(),
         response_bytes,
         exact_target,
         body_complete: response.body_complete(),
+        cookie_update,
     }
 }
 
@@ -1300,6 +1587,7 @@ fn commit_staged_resource(
                 descriptor,
                 expected_reference,
                 staged.response_bytes,
+                staged.cookie_update,
                 checkpoint_reference,
                 knowledge,
             )
@@ -1318,6 +1606,7 @@ fn commit_staged_resource(
         status: Some(staged.status),
         response_bytes: staged.response_bytes,
         epoch: 1,
+        cookie_update: staged.cookie_update,
     }
 }
 
@@ -1338,6 +1627,7 @@ fn commit_health_unqualified_resource(
                     descriptor,
                     expected_reference,
                     staged.response_bytes,
+                    staged.cookie_update,
                     checkpoint_reference,
                     knowledge,
                 )
@@ -1355,6 +1645,7 @@ fn commit_health_unqualified_resource(
         status: Some(staged.status),
         response_bytes: staged.response_bytes,
         epoch: 1,
+        cookie_update: staged.cookie_update,
     }
 }
 
@@ -1367,6 +1658,7 @@ fn commit_resource_evidence(
     descriptor: &SuppliedSessionRequestDescriptor,
     resource_reference: &str,
     response_bytes: u64,
+    cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
     qualifying_checkpoint_reference: &str,
     knowledge: &KnowledgeBase,
 ) -> Option<String> {
@@ -1377,18 +1669,19 @@ fn commit_resource_evidence(
         return None;
     }
     require_committed_health_evidence(qualifying_checkpoint_reference, knowledge)?;
-    let binding = format!(
+    let mut binding = format!(
         "policy={};application={};resource={resource_reference};purpose=resource;status=200;response_bytes={response_bytes};qualifying_checkpoint={qualifying_checkpoint_reference};outcome=committed",
         policy.policy_reference(),
         policy.application_reference(),
     );
+    append_cookie_update_binding(policy, &mut binding, cookie_update);
     commit_value_safe_evidence(
         policy,
         resource_reference,
         RESOURCE_COMMIT_EVIDENCE_DOMAIN,
         RESOURCE_COMMIT_EVIDENCE_PREFIX,
         RESOURCE_COMMIT_EVIDENCE_PREDICATE,
-        RESOURCE_COMMIT_EVIDENCE_METHOD,
+        resource_commit_evidence_method(policy),
         binding,
         knowledge,
     )
@@ -1399,6 +1692,7 @@ fn commit_health_unqualified_resource_evidence(
     descriptor: &SuppliedSessionRequestDescriptor,
     resource_reference: &str,
     response_bytes: u64,
+    cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
     checkpoint_reference: Option<&str>,
     knowledge: &KnowledgeBase,
 ) -> Option<String> {
@@ -1412,21 +1706,68 @@ fn commit_health_unqualified_resource_evidence(
         require_committed_health_evidence(reference, knowledge)?;
     }
     let checkpoint = checkpoint_reference.unwrap_or("unavailable");
-    let binding = format!(
+    let mut binding = format!(
         "policy={};application={};resource={resource_reference};purpose=resource;status=200;response_bytes={response_bytes};qualifying_checkpoint={checkpoint};outcome=health_unqualified",
         policy.policy_reference(),
         policy.application_reference(),
     );
+    append_cookie_update_binding(policy, &mut binding, cookie_update);
     commit_value_safe_evidence(
         policy,
         resource_reference,
         RESOURCE_COMMIT_EVIDENCE_DOMAIN,
         RESOURCE_COMMIT_EVIDENCE_PREFIX,
         RESOURCE_HEALTH_UNQUALIFIED_EVIDENCE_PREDICATE,
-        RESOURCE_COMMIT_EVIDENCE_METHOD,
+        resource_commit_evidence_method(policy),
         binding,
         knowledge,
     )
+}
+
+fn health_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static str {
+    match policy.version() {
+        SuppliedSessionPolicyVersion::V1 => HEALTH_COMMIT_EVIDENCE_METHOD_V1,
+        SuppliedSessionPolicyVersion::V2 => HEALTH_COMMIT_EVIDENCE_METHOD_V2,
+    }
+}
+
+fn resource_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static str {
+    match policy.version() {
+        SuppliedSessionPolicyVersion::V1 => RESOURCE_COMMIT_EVIDENCE_METHOD_V1,
+        SuppliedSessionPolicyVersion::V2 => RESOURCE_COMMIT_EVIDENCE_METHOD_V2,
+    }
+}
+
+fn append_cookie_update_binding(
+    policy: &SuppliedSessionPolicy,
+    binding: &mut String,
+    update: Option<SuppliedSessionResponseCookieUpdate>,
+) {
+    if policy.version() != SuppliedSessionPolicyVersion::V2 {
+        return;
+    }
+    let update = update.unwrap_or(SuppliedSessionResponseCookieUpdate {
+        kind: SuppliedSessionResponseCookieUpdateKind::None,
+        selected_count: 0,
+        unselected_count: 0,
+    });
+    use std::fmt::Write as _;
+    let _ = write!(
+        binding,
+        ";cookie_update={};selected_update_count={};unselected_update_count={}",
+        cookie_update_token(update.kind),
+        update.selected_count,
+        update.unselected_count,
+    );
+}
+
+fn cookie_update_token(kind: SuppliedSessionResponseCookieUpdateKind) -> &'static str {
+    match kind {
+        SuppliedSessionResponseCookieUpdateKind::None => "none",
+        SuppliedSessionResponseCookieUpdateKind::UnselectedOnly => "unselected_only",
+        SuppliedSessionResponseCookieUpdateKind::Selected => "selected",
+        SuppliedSessionResponseCookieUpdateKind::Unusable => "unusable",
+    }
 }
 
 fn require_committed_health_evidence(reference: &str, knowledge: &KnowledgeBase) -> Option<()> {
@@ -1489,6 +1830,7 @@ fn resource_transport_failure(
         status: None,
         response_bytes: bytes,
         epoch: 1,
+        cookie_update: None,
     }
 }
 
@@ -1504,6 +1846,7 @@ fn resource_not_dispatched(
         status: None,
         response_bytes: 0,
         epoch: 1,
+        cookie_update: None,
     }
 }
 
@@ -1672,6 +2015,7 @@ fn strict_top_level_boolean(bytes: &[u8], field: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::supplied_session_review::{SuppliedSessionAuthorization, SuppliedSessionCookies};
     use crate::web_runtime::{WebAssessmentRuntimeBuilder, WebAssessmentRuntimeError};
     use std::sync::Arc;
     use tokio::{
@@ -1698,6 +2042,44 @@ max_wall_time_ms = 5000
         .unwrap()
     }
 
+    fn cookie_policy(application: &url::Url) -> SuppliedSessionPolicy {
+        let bytes = format!(
+            r#"schema = "security.supplied-session-policy/v2"
+principal_alias = "cookie-fixture-principal"
+credential_mechanism = "cookie_jar"
+cookie_update_policy = "stop_on_selected_cookie"
+health_path = "/app/session-health"
+health_json_field = "authenticated"
+resources = ["/app/private"]
+max_session_requests = 3
+max_total_response_bytes = 65536
+max_response_body_bytes = 16384
+max_wall_time_ms = 5000
+
+[[cookies]]
+id = "session-secret"
+name = "session"
+domain = "{}"
+host_only = true
+path = "/app/"
+secure = false
+http_only = true
+same_site = "lax"
+"#,
+            application.host_str().unwrap()
+        );
+        SuppliedSessionPolicy::parse_toml(application, bytes.as_bytes()).unwrap()
+    }
+
+    fn cookie_credential(policy: &SuppliedSessionPolicy) -> SuppliedSessionCookies {
+        SuppliedSessionCookies::parse_tsv(
+            policy,
+            b"session-secret\tCOOKIE-RUNTIME-CANARY\n".to_vec(),
+            1,
+        )
+        .unwrap()
+    }
+
     fn committed_health_qualification(
         policy: &SuppliedSessionPolicy,
         knowledge: &KnowledgeBase,
@@ -1713,6 +2095,7 @@ max_wall_time_ms = 5000
             body_state: SuppliedSessionBodyState::Complete,
             predicate: SuppliedSessionPredicateOutcome::Matched,
             response_bytes: 22,
+            cookie_update: None,
         };
         bind_health_evidence(&mut checkpoint, policy, &descriptor, Some(true), knowledge);
         checkpoint
@@ -1786,6 +2169,7 @@ max_wall_time_ms = 5000
             body_state: SuppliedSessionBodyState::Complete,
             predicate: SuppliedSessionPredicateOutcome::Matched,
             response_bytes: 22,
+            cookie_update: None,
         };
 
         let committed_knowledge = KnowledgeBase::new();
@@ -1859,6 +2243,7 @@ max_wall_time_ms = 5000
             response_bytes: 17,
             exact_target: true,
             body_complete: true,
+            cookie_update: None,
         };
         let knowledge = KnowledgeBase::new();
         assert_eq!(
@@ -2204,6 +2589,218 @@ max_wall_time_ms = 5000
         assert_eq!(observed[2], ("/app/session-health".to_owned(), true, false));
         assert_eq!(observed[3], ("/app/".to_owned(), false, false));
         server.abort();
+    }
+
+    async fn run_cookie_update_fixture(
+        set_cookie: &'static str,
+        update_path: &'static str,
+    ) -> (WebAssessmentSuppliedSessionAudit, Vec<(String, bool, bool)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<(String, bool, bool)>::new()));
+        let server_observed = observed.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 1024];
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n")
+                        || request.len() > 16 * 1024
+                    {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_ascii_whitespace().nth(1))
+                    .unwrap_or("")
+                    .to_owned();
+                let exact_cookie = text
+                    .lines()
+                    .any(|line| line.eq_ignore_ascii_case("cookie: session=COOKIE-RUNTIME-CANARY"));
+                let has_authorization = text
+                    .lines()
+                    .any(|line| line.to_ascii_lowercase().starts_with("authorization:"));
+                server_observed
+                    .lock()
+                    .await
+                    .push((path.clone(), exact_cookie, has_authorization));
+                let (media_type, body) = match path.as_str() {
+                    "/app/session-health" => ("application/json", r#"{"authenticated":true}"#),
+                    "/app/private" => ("text/html", "COOKIE-PRIVATE-BODY-MUST-NOT-BE-RETAINED"),
+                    _ => ("text/html", "<title>public root</title>"),
+                };
+                let update = if path == update_path { set_cookie } else { "" };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {media_type}\r\n{update}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let application = url::Url::parse(&format!("http://{address}/app/")).unwrap();
+        let policy = cookie_policy(&application);
+        let cookies = cookie_credential(&policy);
+        let mut runtime = WebAssessmentRuntimeBuilder::new(application)
+            .with_supplied_session_review(policy, cookies)
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.supplied_session_audit().unwrap().clone();
+        let observed = observed.lock().await.clone();
+        server.abort();
+        (audit, observed)
+    }
+
+    #[tokio::test]
+    async fn selected_cookie_update_stops_before_following_health_and_is_value_free() {
+        let (audit, observed) = run_cookie_update_fixture(
+            "Set-Cookie: session=ROTATED-SECRET; Path=/app/\r\n",
+            "/app/private",
+        )
+        .await;
+        assert_eq!(audit.schema(), SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA);
+        assert_eq!(
+            audit.outcome(),
+            SuppliedSessionAuditOutcome::CredentialUpdateRequired
+        );
+        assert_eq!(audit.coverage(), SuppliedSessionCoverage::None);
+        assert_eq!(audit.dispatched_request_count(), 2);
+        assert_eq!(audit.checkpoints().len(), 1);
+        assert_eq!(audit.resources().len(), 1);
+        assert_eq!(
+            audit.resources()[0].outcome(),
+            SuppliedSessionResourceOutcome::HealthUnqualified
+        );
+        let lifecycle = audit.cookie_lifecycle().unwrap();
+        assert_eq!(lifecycle.selected_update_response_count(), 1);
+        assert_eq!(lifecycle.unselected_update_response_count(), 0);
+        assert_eq!(lifecycle.update_classification_failure_count(), 0);
+        assert_eq!(lifecycle.initial_epoch(), 1);
+        assert_eq!(lifecycle.final_epoch(), 1);
+        assert_eq!(lifecycle.updates_applied(), 0);
+        assert_eq!(observed[0], ("/app/session-health".to_owned(), true, false));
+        assert_eq!(observed[1], ("/app/private".to_owned(), true, false));
+        assert!(observed
+            .iter()
+            .skip(2)
+            .all(|(_, has_cookie, _)| !has_cookie));
+        let saved = serde_json::to_string(&audit).unwrap();
+        for forbidden in [
+            "COOKIE-RUNTIME-CANARY",
+            "ROTATED-SECRET",
+            "COOKIE-PRIVATE-BODY-MUST-NOT-BE-RETAINED",
+        ] {
+            assert!(!saved.contains(forbidden));
+        }
+    }
+
+    #[tokio::test]
+    async fn unselected_cookie_update_does_not_mutate_or_stop_the_session() {
+        let (audit, observed) =
+            run_cookie_update_fixture("Set-Cookie: analytics=OPAQUE; Path=/\r\n", "/app/private")
+                .await;
+        assert_eq!(audit.outcome(), SuppliedSessionAuditOutcome::Complete);
+        assert_eq!(audit.coverage(), SuppliedSessionCoverage::Complete);
+        assert_eq!(audit.dispatched_request_count(), 3);
+        assert_eq!(audit.checkpoints().len(), 2);
+        assert_eq!(audit.committed_resource_count(), 1);
+        let lifecycle = audit.cookie_lifecycle().unwrap();
+        assert_eq!(lifecycle.selected_update_response_count(), 0);
+        assert_eq!(lifecycle.unselected_update_response_count(), 1);
+        assert_eq!(lifecycle.update_classification_failure_count(), 0);
+        assert_eq!(lifecycle.updates_applied(), 0);
+        assert_eq!(
+            &observed[..3],
+            &[
+                ("/app/session-health".to_owned(), true, false),
+                ("/app/private".to_owned(), true, false),
+                ("/app/session-health".to_owned(), true, false),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_startup_cookie_update_stops_before_any_resource() {
+        let (audit, observed) = run_cookie_update_fixture(
+            "Set-Cookie: session=ROTATED-AT-STARTUP; Path=/app/\r\n",
+            "/app/session-health",
+        )
+        .await;
+        assert_eq!(
+            audit.outcome(),
+            SuppliedSessionAuditOutcome::CredentialUpdateRequired
+        );
+        assert_eq!(audit.coverage(), SuppliedSessionCoverage::None);
+        assert_eq!(audit.dispatched_request_count(), 1);
+        assert_eq!(audit.dispatched_resource_count(), 0);
+        assert_eq!(audit.committed_resource_count(), 0);
+        assert_eq!(audit.checkpoints().len(), 1);
+        assert!(audit
+            .resources()
+            .iter()
+            .all(|resource| resource.outcome() == SuppliedSessionResourceOutcome::NotDispatched));
+        let lifecycle = audit.cookie_lifecycle().unwrap();
+        assert_eq!(lifecycle.selected_update_response_count(), 1);
+        assert_eq!(lifecycle.update_classification_failure_count(), 0);
+        assert_eq!(lifecycle.updates_applied(), 0);
+        assert_eq!(observed[0], ("/app/session-health".to_owned(), true, false));
+        assert!(observed
+            .iter()
+            .skip(1)
+            .all(|(_, has_cookie, has_authorization)| !has_cookie && !has_authorization));
+        assert!(observed.iter().any(|(path, _, _)| path == "/app/"));
+        assert!(!serde_json::to_string(&audit)
+            .unwrap()
+            .contains("ROTATED-AT-STARTUP"));
+    }
+
+    #[tokio::test]
+    async fn unusable_cookie_update_stops_without_guessing_selected_names() {
+        let (audit, observed) = run_cookie_update_fixture(
+            "Set-Cookie: bad name=UNUSABLE-COOKIE-CANARY; Path=/app/\r\n",
+            "/app/private",
+        )
+        .await;
+        assert_eq!(
+            audit.outcome(),
+            SuppliedSessionAuditOutcome::CredentialUpdateUnusable
+        );
+        assert_eq!(audit.coverage(), SuppliedSessionCoverage::None);
+        assert_eq!(audit.dispatched_request_count(), 2);
+        assert_eq!(audit.dispatched_resource_count(), 1);
+        assert_eq!(audit.committed_resource_count(), 0);
+        assert_eq!(
+            audit.resources()[0].outcome(),
+            SuppliedSessionResourceOutcome::HealthUnqualified
+        );
+        let lifecycle = audit.cookie_lifecycle().unwrap();
+        assert_eq!(lifecycle.selected_update_response_count(), 0);
+        assert_eq!(lifecycle.unselected_update_response_count(), 0);
+        assert_eq!(lifecycle.update_classification_failure_count(), 1);
+        assert_eq!(lifecycle.updates_applied(), 0);
+        assert_eq!(
+            &observed[..2],
+            &[
+                ("/app/session-health".to_owned(), true, false),
+                ("/app/private".to_owned(), true, false),
+            ]
+        );
+        assert!(!serde_json::to_string(&audit)
+            .unwrap()
+            .contains("UNUSABLE-COOKIE-CANARY"));
     }
 
     #[tokio::test]

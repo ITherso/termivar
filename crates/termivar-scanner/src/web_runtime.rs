@@ -162,13 +162,14 @@ pub use ssrf_oast_runtime::{
 };
 #[cfg(feature = "supplied-session-review")]
 pub use supplied_session_runtime::{
-    SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCoverage,
+    SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCookieLifecycleAudit,
+    SuppliedSessionCookiePolicyAudit, SuppliedSessionCoverage,
     SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleAudit,
     SuppliedSessionHealthOracleKind, SuppliedSessionHealthOutcome, SuppliedSessionPredicateOutcome,
     SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
     WebAssessmentSuppliedSessionAudit, WebAssessmentSuppliedSessionCheckpointAudit,
     WebAssessmentSuppliedSessionResourceAudit, SUPPLIED_SESSION_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_CAPABILITY_ID,
+    SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
 };
 pub use web_assessment::{
     WebAssessmentCompletion, WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage,

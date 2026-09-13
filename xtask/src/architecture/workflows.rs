@@ -237,6 +237,8 @@ const WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY: &str = r#"          - target: wordp
             max_len: 524288
             input_timeout: 5"#;
 const FIRST_USE_TEMP_PREFIX: &str = "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}";
+const PLATFORM_RUNTIME_OS_MATRIX: &str =
+    "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]";
 const REPORT_BUNDLE_SMOKE_GATE: &str = r#"      - name: Exercise single-run report bundle CLI
         run: cargo test --locked -p termivar-cli --test report_bundle_cli"#;
 const REPORT_VERIFICATION_SMOKE_GATE: &str = r#"      - name: Exercise offline report bundle verification CLI
@@ -730,7 +732,7 @@ fn report_bundle_workflow_policy_violations(files: &[(String, String)]) -> Vec<S
         Vec::new()
     } else {
         vec![format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed report-bundle CLI integration test"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must run the exact unsuppressed report-bundle CLI integration test"
         )]
     }
 }
@@ -763,7 +765,7 @@ fn report_verification_workflow_policy_violations(files: &[(String, String)]) ->
         Vec::new()
     } else {
         vec![format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed report-verification CLI integration test"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must run the exact unsuppressed report-verification CLI integration test"
         )]
     }
 }
@@ -776,6 +778,12 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     };
     let normalized = contents.replace("\r\n", "\n");
     let mut violations = Vec::new();
+    let runtime_jobs = named_job_blocks(&normalized, "platform-runtime-smoke");
+    if runtime_jobs.len() != 1 || runtime_jobs[0].matches(PLATFORM_RUNTIME_OS_MATRIX).count() != 1 {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: supplied-session CLI requires the exact four-platform native runtime-smoke matrix"
+        ));
+    }
     if !job_has_exact_step(
         &normalized,
         "platform-runtime-smoke",
@@ -783,7 +791,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
         CAPABILITIES_SMOKE_GATE,
     ) {
         violations.push(format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed CLI capabilities integration test"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must run the exact unsuppressed CLI capabilities integration test"
         ));
     }
     if !job_has_exact_step(
@@ -793,7 +801,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
         SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE,
     ) {
         violations.push(format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact supplied-session CLI and OAST preflight composition regression"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must run the exact supplied-session CLI and OAST preflight composition regression"
         ));
     }
     if !job_has_exact_step(
@@ -803,7 +811,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
         SUPPLIED_SESSION_SMOKE_GATE,
     ) {
         violations.push(format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must compile and run the exact feature-minimal supplied-session CLI integration test"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact feature-minimal supplied-session CLI integration test"
         ));
     }
     if !job_has_exact_step(
@@ -855,7 +863,7 @@ fn progress_workflow_policy_violations(files: &[(String, String)]) -> Vec<String
         Vec::new()
     } else {
         vec![format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed live-progress CLI integration test"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must run the exact unsuppressed live-progress CLI integration test"
         )]
     }
 }
@@ -876,7 +884,7 @@ fn wordpress_review_workflow_policy_violations(files: &[(String, String)]) -> Ve
         Vec::new()
     } else {
         vec![format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must compile and run the exact feature-minimal WordPress-review CLI integration test"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact feature-minimal WordPress-review CLI integration test"
         )]
     }
 }
@@ -897,7 +905,7 @@ fn wordpress_discovery_workflow_policy_violations(files: &[(String, String)]) ->
         Vec::new()
     } else {
         vec![format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must compile and run the exact feature-minimal WordPress-discovery CLI integration test"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact feature-minimal WordPress-discovery CLI integration test"
         )]
     }
 }
@@ -1051,7 +1059,7 @@ fn release_acceptance_test_workflow_policy_violations(files: &[(String, String)]
         Vec::new()
     } else {
         vec![format!(
-            "{TESTS_WORKFLOW}: three-platform runtime smoke must run the exact unsuppressed packaged release acceptance contract tests"
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must run the exact unsuppressed packaged release acceptance contract tests"
         )]
     }
 }
@@ -3088,9 +3096,19 @@ mod tests {
     }
 
     #[test]
-    fn supplied_session_runtime_smoke_rejects_omission_widening_and_suppression() {
+    fn supplied_session_runtime_smoke_rejects_omission_substitution_and_suppression() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         for mutation in [
+            valid.replacen(
+                PLATFORM_RUNTIME_OS_MATRIX,
+                "        os: [ubuntu-latest, windows-latest, macos-latest]",
+                1,
+            ),
+            valid.replacen(
+                PLATFORM_RUNTIME_OS_MATRIX,
+                "        os: [ubuntu-latest, windows-latest, macos-15, macos-15-intel]",
+                1,
+            ),
             valid.replacen(SUPPLIED_SESSION_SMOKE_GATE, "", 1),
             valid.replacen(
                 SUPPLIED_SESSION_SMOKE_GATE,

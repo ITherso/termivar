@@ -4,10 +4,14 @@
 
 The non-default `supplied-session-review` scanner/CLI feature adds no work by
 itself and remains outside `release-bundle`. Explicit `--profile web-review`, a
-strict `security.supplied-session-policy/v1` file and exactly one Authorization
-value from environment, regular file or stdin select one context-isolated
-authenticated child inside the existing assessment. The target must use HTTPS;
-numeric-loopback HTTP is accepted only for owned development fixtures.
+strict local policy, and exactly one matching credential source select one
+context-isolated authenticated child inside the existing assessment. V1
+`security.supplied-session-policy/v1` accepts one authorization-header value
+from environment, regular file or stdin. V2
+`security.supplied-session-policy/v2` accepts a bounded explicit cookie TSV file
+through `--session-cookie-file`. The target must use HTTPS; numeric-loopback HTTP
+is accepted only for owned development fixtures, and `Secure` cookies still
+require HTTPS.
 
 V1 performs one structured startup health GET, then at most four explicitly
 listed bodyless, operator-selected same-application GETs, each followed by
@@ -17,14 +21,22 @@ Its no-proxy client, evidence and reuse state are private to the
 operator-declared principal/context. Redirects and retries are disabled. At
 most nine child requests are permitted, and the policy's response/body/time
 ceilings narrow the shared parent authority. Session loss stops later
-credentialed work without refresh or anonymous fallback.
+credentialed work without refresh or anonymous fallback. V2 preserves declared
+host/domain/path/Secure/expiry, HttpOnly and SameSite facts while intersecting
+protocol applicability with the narrower application authority. It does not
+emulate browser CSRF behavior or enable the HTTP client's automatic cookie jar.
+A selected or unusable response-cookie update stops later session work; no
+response update is applied and the session epoch remains fixed.
 
 The completed report may contain one strict
-`security.supplied-session-audit/v1` with opaque references and reconciled
-checkpoint/resource accounting. It emits no vulnerability item and does not
+`security.supplied-session-audit/v1` or V2
+`security.supplied-session-audit/v2` with opaque references and reconciled
+checkpoint/resource accounting. V2 adds only aggregate declared-cookie metadata
+and value-free update counts. It emits no vulnerability item and does not
 claim continuous authentication between checkpoints, principal authentication,
-server authorization, exploit execution or impact validation. Cookies, login,
-OAuth, MFA and credentialed WordPress integration are not part of this slice.
+server authorization, exploit execution or impact validation. Browser import,
+login, automatic renewal, OAuth, MFA and credentialed WordPress integration are
+not part of this slice.
 
 ## OpenAPI surface review
 
@@ -620,6 +632,7 @@ The following matrix separates build availability from actual execution:
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
 | Resource authorization review | scanner and CLI opt-in (`authorization-review`) plus explicit policy and two out-of-band credentials | one exact-origin JSON resource receives primary/peer candidate and independent replay legs through the assessment's shared broker | no | Preview; max one resource, four requests/one active verification, one `NeedsReview` / `KnowledgeOnly` item at most |
+| Supplied-session authenticated assessment | scanner and CLI opt-in (`supplied-session-review`) plus explicit V1 authorization-header or V2 supplied-cookie policy and one matching out-of-band credential source | one context-isolated no-proxy child performs structured health checkpoints and bounded bodyless same-application GETs for one operator-declared principal; V2 applies declared cookie scope only inside the operator application and stops without applying selected/unusable response updates | no | Preview, development-only; maximum nine requests, no browser import/login/automatic renewal/OAuth/MFA, no vulnerability item, and excluded from `release-bundle` |
 | `oast` correlation foundation | scanner library opt-in (`oast-correlation`) | host-owned, transport-free registration and caller-driven poll state only; no provider transport dependency or runtime caller | no | Preview library contract; host-minted move-only tokens, exact case binding, bounded DNS/HTTP event receipts, replay suppression, and no target probe or vulnerability claim |
 | `termivar-oast` native provider | independent unpublished workspace crate; separate non-default `server` and `client` features | optional self-hosted loopback auxiliary service plus exact-origin HTTPS client for the fixed management protocol and raw-free HTTP callback mailbox | no | Preview infrastructure; one sealed scanner host-library adapter uses the client under narrowing authority; no public provider, target authority, scanner action, report projection, Interactsh compatibility, or `release-bundle` inclusion |
 | `phases/*`, `legacy_discovery`, `runner`, `context`, `sdk` | opt-in (`legacy-scanner`) | Surface A; phases 2–4 use bounded passive discovery, phases 5–9 use separate bounded active verification, and phase-one/custom raw I/O remains possible | no | Legacy runtime / `ScannerSdk` facade; whole-run accounting remains `Unmetered` |

@@ -113,7 +113,7 @@ use crate::ssrf_oast_review::{
     SsrfOastTerminalState,
 };
 #[cfg(feature = "supplied-session-review")]
-use crate::supplied_session_review::{SuppliedSessionAuthorization, SuppliedSessionPolicy};
+use crate::supplied_session_review::{SuppliedSessionCredential, SuppliedSessionPolicy};
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::WordPressReviewInputs;
 use crate::{
@@ -1921,7 +1921,7 @@ pub struct WebAssessmentRuntimeBuilder {
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "supplied-session-review")]
-    supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionAuthorization)>,
+    supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionCredential)>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewInputs>,
     #[cfg(feature = "wordpress-review")]
@@ -2036,18 +2036,21 @@ impl WebAssessmentRuntimeBuilder {
         self.ssrf_oast_review = Some((policy, administrator));
         self
     }
-    /// Enables one bounded, explicitly supplied Authorization session child.
+    /// Enables one bounded, explicitly supplied credential session child.
     ///
     /// The non-secret policy and move-only credential are consumed by the
     /// assessment. Construction still rejects an application mismatch or
     /// unprotected non-loopback transport before any credentialed dispatch.
     #[cfg(feature = "supplied-session-review")]
-    pub fn with_supplied_session_review(
+    pub fn with_supplied_session_review<C>(
         mut self,
         policy: SuppliedSessionPolicy,
-        authorization: SuppliedSessionAuthorization,
-    ) -> Self {
-        self.supplied_session_review = Some((policy, authorization));
+        credential: C,
+    ) -> Self
+    where
+        C: Into<SuppliedSessionCredential>,
+    {
+        self.supplied_session_review = Some((policy, credential.into()));
         self
     }
     /// Enables transport-free WordPress interpretation over the already
@@ -2307,8 +2310,8 @@ impl WebAssessmentRuntimeBuilder {
         #[cfg(feature = "supplied-session-review")]
         let supplied_session_review = self
             .supplied_session_review
-            .map(|(policy, authorization)| {
-                SuppliedSessionRuntimeConfig::new(policy, authorization, &authority)
+            .map(|(policy, credential)| {
+                SuppliedSessionRuntimeConfig::new(policy, credential, &authority)
                     .map_err(|()| WebAssessmentRuntimeError::SuppliedSessionComposition)
             })
             .transpose()?;

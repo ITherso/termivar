@@ -76,22 +76,30 @@ EXPECTED_SUPPLIED_SESSION_OPTIONS = (
     "--session-auth-env",
     "--session-auth-file",
     "--session-auth-stdin",
+    "--session-cookie-file",
 )
 EXPECTED_SUPPLIED_SESSION_PREREQUISITES = (
     "--profile web-review",
     "--session-policy FILE",
-    "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
-    "HTTPS, except numeric-loopback HTTP fixtures",
+    "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+    "V2: --session-cookie-file FILE",
+    "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
 )
 EXPECTED_SUPPLIED_SESSION_LIMITATION = (
-    "One explicitly supplied principal and strict local policy authorize bounded "
-    "bodyless application GETs through a context-isolated, no-proxy child of "
-    "the existing assessment broker. Structured health checks qualify bounded "
-    "checkpoint coverage rather than authenticate the principal. Session loss stops "
-    "later session work without anonymous fallback. The client sends no request body "
-    "or non-GET method, but application-defined GET handling can still have server-side "
-    "effects; the operator must authorize every selected resource. No cookies, login, "
-    "refresh, OAuth, MFA, exploit, or impact validation occurs in this first slice."
+    "One explicitly supplied principal and strict local V1 authorization_header or V2 "
+    "cookie_jar policy authorize bounded bodyless application GETs through a "
+    "context-isolated, no-proxy child of the existing assessment broker. Structured "
+    "health checks qualify bounded checkpoint coverage rather than authenticate the "
+    "principal. Session loss, a selected response-cookie update, or an unusable "
+    "response-cookie classification stops later session work without anonymous fallback. "
+    "No response cookie update is applied, no refresh occurs, and the session epoch stays "
+    "fixed. Cookie host/domain/path/Secure/expiry applicability is intersected with "
+    "operator application authority; Domain never expands it. HttpOnly and SameSite are "
+    "preserved facts, not browser CSRF emulation. The client sends no request body or "
+    "non-GET method, but application-defined GET handling can still have server-side "
+    "effects; the operator must authorize every selected resource. No browser-profile "
+    "import, login, automatic refresh, OAuth, MFA, exploit, or impact validation occurs "
+    "in this slice."
 )
 EXPECTED_WORDPRESS_OPTIONS = (
     "--wordpress-review",
@@ -1813,6 +1821,17 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("alias", "session"),
             ("documentation", "docs/session.md"),
             ("prerequisites", ["--profile web-review"]),
+            (
+                "prerequisites",
+                [value for value in EXPECTED_SUPPLIED_SESSION_PREREQUISITES
+                 if value != "V2: --session-cookie-file FILE"],
+            ),
+            (
+                "prerequisites",
+                [value.replace("Secure cookies still require HTTPS",
+                               "Secure cookies may use HTTP")
+                 for value in EXPECTED_SUPPLIED_SESSION_PREREQUISITES],
+            ),
             ("limitation", "Confirms the supplied principal and session."),
             (
                 "limitation",
@@ -1820,6 +1839,37 @@ class CapabilityInventoryContractTests(unittest.TestCase):
                     "application-defined GET handling can still have server-side effects; "
                     "the operator must authorize every selected resource",
                     "GET requests are side-effect-free",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "Session loss, a selected response-cookie update, or an unusable "
+                    "response-cookie classification stops later session work without "
+                    "anonymous fallback.",
+                    "Session loss stops later session work.",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "No response cookie update is applied, no refresh occurs, and the "
+                    "session epoch stays fixed.",
+                    "Response cookie updates are applied automatically.",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "Domain never expands it.",
+                    "Domain may expand the target authority.",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "HttpOnly and SameSite are preserved facts, not browser CSRF emulation.",
+                    "HttpOnly and SameSite reproduce browser CSRF behavior.",
                 ),
             ),
         )

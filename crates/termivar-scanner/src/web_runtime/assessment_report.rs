@@ -65,10 +65,11 @@ use super::{
 };
 #[cfg(feature = "supplied-session-review")]
 use super::{
-    SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOutcome,
-    SuppliedSessionResourceOutcome, WebAssessmentSuppliedSessionAudit,
-    MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
-    MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
+    SuppliedSessionAuditOutcome, SuppliedSessionHealthCheckpointPhase,
+    SuppliedSessionHealthOutcome, SuppliedSessionResourceOutcome,
+    WebAssessmentSuppliedSessionAudit, MAX_SUPPLIED_SESSION_CHECKPOINTS,
+    MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
 };
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
@@ -76,7 +77,10 @@ use crate::authorization_review::{
     HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS,
 };
 #[cfg(feature = "supplied-session-review")]
-use crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES;
+use crate::supplied_session_review::{
+    SuppliedSessionCredentialMechanism, MAX_SUPPLIED_SESSION_COOKIES,
+    MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
+};
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::{
     WordPressCatalogStatus, MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_RESULT_COMPONENTS,
@@ -713,6 +717,44 @@ impl fmt::Debug for AssessmentRunReport {
 }
 
 #[cfg(feature = "supplied-session-review")]
+const fn valid_v1_supplied_session_outcome(outcome: SuppliedSessionAuditOutcome) -> bool {
+    !matches!(
+        outcome,
+        SuppliedSessionAuditOutcome::CredentialUpdateRequired
+            | SuppliedSessionAuditOutcome::CredentialUpdateUnusable
+    )
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn valid_v2_cookie_lifecycle_outcome(
+    outcome: SuppliedSessionAuditOutcome,
+    selected_update_response_count: u8,
+    update_classification_failure_count: u8,
+) -> bool {
+    match outcome {
+        SuppliedSessionAuditOutcome::CredentialUpdateRequired => {
+            selected_update_response_count == 1 && update_classification_failure_count == 0
+        },
+        SuppliedSessionAuditOutcome::CredentialUpdateUnusable => {
+            selected_update_response_count == 0 && update_classification_failure_count == 1
+        },
+        _ => selected_update_response_count == 0 && update_classification_failure_count == 0,
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn valid_v2_cookie_lifecycle_accounting(
+    selected_update_response_count: u8,
+    unselected_update_response_count: u8,
+    update_classification_failure_count: u8,
+    dispatched_request_count: u8,
+) -> bool {
+    selected_update_response_count <= dispatched_request_count
+        && (unselected_update_response_count as u16 + update_classification_failure_count as u16)
+            <= dispatched_request_count as u16
+}
+
+#[cfg(feature = "supplied-session-review")]
 fn validate_supplied_session_audit(
     audit: Option<&WebAssessmentSuppliedSessionAudit>,
     items: &[AssessmentItem],
@@ -752,7 +794,60 @@ fn validate_supplied_session_audit(
                 .map(|resource| resource.response_bytes()),
         )
         .try_fold(0_u64, u64::checked_add);
-    if audit.schema() != SUPPLIED_SESSION_AUDIT_SCHEMA
+    let cookie_contract_is_valid = match (
+        audit.schema(),
+        audit.credential_mechanism(),
+        audit.cookie_policy(),
+        audit.cookie_lifecycle(),
+    ) {
+        (
+            SUPPLIED_SESSION_AUDIT_SCHEMA,
+            SuppliedSessionCredentialMechanism::AuthorizationHeader,
+            None,
+            None,
+        ) => valid_v1_supplied_session_outcome(audit.outcome()),
+        (
+            SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+            SuppliedSessionCredentialMechanism::CookieJar,
+            Some(policy),
+            Some(lifecycle),
+        ) => {
+            let declared = usize::from(policy.declared_count());
+            (1..=MAX_SUPPLIED_SESSION_COOKIES).contains(&declared)
+                && usize::from(policy.host_only_count())
+                    .checked_add(usize::from(policy.domain_count()))
+                    == Some(declared)
+                && usize::from(policy.secure_count()) <= declared
+                && usize::from(policy.same_site_none_count()) <= usize::from(policy.secure_count())
+                && usize::from(policy.http_only_count()) <= declared
+                && usize::from(policy.session_count())
+                    .checked_add(usize::from(policy.persistent_count()))
+                    == Some(declared)
+                && usize::from(policy.same_site_missing_count())
+                    .checked_add(usize::from(policy.same_site_strict_count()))
+                    .and_then(|count| count.checked_add(usize::from(policy.same_site_lax_count())))
+                    .and_then(|count| count.checked_add(usize::from(policy.same_site_none_count())))
+                    == Some(declared)
+                && policy.update_policy().as_str() == "stop_on_selected_cookie"
+                && policy.browser_semantics() == "attributes_preserved_not_browser_csrf_emulation"
+                && lifecycle.initial_epoch() == 1
+                && lifecycle.final_epoch() == 1
+                && valid_v2_cookie_lifecycle_accounting(
+                    lifecycle.selected_update_response_count(),
+                    lifecycle.unselected_update_response_count(),
+                    lifecycle.update_classification_failure_count(),
+                    audit.dispatched_request_count(),
+                )
+                && lifecycle.updates_applied() == 0
+                && valid_v2_cookie_lifecycle_outcome(
+                    audit.outcome(),
+                    lifecycle.selected_update_response_count(),
+                    lifecycle.update_classification_failure_count(),
+                )
+        },
+        _ => false,
+    };
+    if !cookie_contract_is_valid
         || audit.capability_id() != SUPPLIED_SESSION_CAPABILITY_ID
         || !valid_supplied_session_principal_alias(audit.principal_alias())
         || audit.resources().is_empty()
@@ -829,6 +924,11 @@ fn validate_supplied_session_audit(
         || audit.refresh_performed()
         || audit.anonymous_fallback_performed()
         || audit.continuous_authentication_established()
+        || (matches!(
+            audit.outcome(),
+            SuppliedSessionAuditOutcome::CredentialUpdateRequired
+                | SuppliedSessionAuditOutcome::CredentialUpdateUnusable
+        ) && audit.coverage() == super::SuppliedSessionCoverage::Complete)
         || audit.exploit_execution_performed()
         || audit.impact_validation_performed()
     {
@@ -1518,6 +1618,33 @@ mod tests {
                 outcome
             ));
         }
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_versioned_outcomes_reject_v1_mutations_and_keep_v2_stops() {
+        for outcome in [
+            SuppliedSessionAuditOutcome::CredentialUpdateRequired,
+            SuppliedSessionAuditOutcome::CredentialUpdateUnusable,
+        ] {
+            assert!(!valid_v1_supplied_session_outcome(outcome));
+        }
+
+        assert!(valid_v1_supplied_session_outcome(
+            SuppliedSessionAuditOutcome::Complete
+        ));
+        assert!(valid_v2_cookie_lifecycle_outcome(
+            SuppliedSessionAuditOutcome::CredentialUpdateRequired,
+            1,
+            0,
+        ));
+        assert!(valid_v2_cookie_lifecycle_outcome(
+            SuppliedSessionAuditOutcome::CredentialUpdateUnusable,
+            0,
+            1,
+        ));
+        assert!(valid_v2_cookie_lifecycle_accounting(1, 1, 0, 1));
+        assert!(!valid_v2_cookie_lifecycle_accounting(0, 1, 1, 1));
     }
 
     #[test]

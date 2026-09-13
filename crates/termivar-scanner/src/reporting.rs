@@ -27,7 +27,8 @@ use crate::{
 #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
 use crate::{
     supplied_session_review::{
-        SuppliedSessionCredentialMechanism, MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
+        SuppliedSessionCredentialMechanism, MAX_SUPPLIED_SESSION_COOKIES,
+        MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
     },
     web_runtime::{
         SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCoverage,
@@ -37,6 +38,7 @@ use crate::{
         WebAssessmentSuppliedSessionAudit, MAX_SUPPLIED_SESSION_CHECKPOINTS,
         MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES,
         SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
+        SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
     },
 };
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -4013,6 +4015,10 @@ struct AssessmentSuppliedSessionAuditDocument {
     principal_alias: String,
     principal_assurance: &'static str,
     credential_mechanism: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cookie_policy: Option<AssessmentSuppliedSessionCookiePolicyDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cookie_lifecycle: Option<AssessmentSuppliedSessionCookieLifecycleDocument>,
     health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
     outcome: &'static str,
     coverage: &'static str,
@@ -4030,6 +4036,35 @@ struct AssessmentSuppliedSessionAuditDocument {
     continuous_authentication_established: bool,
     exploit_execution: &'static str,
     impact_validation: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+#[derive(Serialize)]
+struct AssessmentSuppliedSessionCookiePolicyDocument {
+    declared_count: u8,
+    host_only_count: u8,
+    domain_count: u8,
+    secure_count: u8,
+    http_only_count: u8,
+    session_count: u8,
+    persistent_count: u8,
+    same_site_missing_count: u8,
+    same_site_strict_count: u8,
+    same_site_lax_count: u8,
+    same_site_none_count: u8,
+    update_policy: &'static str,
+    browser_semantics: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+#[derive(Serialize)]
+struct AssessmentSuppliedSessionCookieLifecycleDocument {
+    initial_epoch: u8,
+    final_epoch: u8,
+    selected_update_response_count: u8,
+    unselected_update_response_count: u8,
+    update_classification_failure_count: u8,
+    updates_applied: u8,
 }
 
 #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
@@ -4084,6 +4119,34 @@ impl AssessmentSuppliedSessionAuditDocument {
             credential_mechanism: supplied_session_credential_mechanism_token(
                 audit.credential_mechanism(),
             ),
+            cookie_policy: audit.cookie_policy().map(|policy| {
+                AssessmentSuppliedSessionCookiePolicyDocument {
+                    declared_count: policy.declared_count(),
+                    host_only_count: policy.host_only_count(),
+                    domain_count: policy.domain_count(),
+                    secure_count: policy.secure_count(),
+                    http_only_count: policy.http_only_count(),
+                    session_count: policy.session_count(),
+                    persistent_count: policy.persistent_count(),
+                    same_site_missing_count: policy.same_site_missing_count(),
+                    same_site_strict_count: policy.same_site_strict_count(),
+                    same_site_lax_count: policy.same_site_lax_count(),
+                    same_site_none_count: policy.same_site_none_count(),
+                    update_policy: policy.update_policy().as_str(),
+                    browser_semantics: policy.browser_semantics(),
+                }
+            }),
+            cookie_lifecycle: audit.cookie_lifecycle().map(|lifecycle| {
+                AssessmentSuppliedSessionCookieLifecycleDocument {
+                    initial_epoch: lifecycle.initial_epoch(),
+                    final_epoch: lifecycle.final_epoch(),
+                    selected_update_response_count: lifecycle.selected_update_response_count(),
+                    unselected_update_response_count: lifecycle.unselected_update_response_count(),
+                    update_classification_failure_count: lifecycle
+                        .update_classification_failure_count(),
+                    updates_applied: lifecycle.updates_applied(),
+                }
+            }),
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: supplied_session_health_oracle_kind_token(audit.health_oracle().kind()),
                 field_reference: audit.health_oracle().field_reference().to_owned(),
@@ -4184,7 +4247,65 @@ impl AssessmentSuppliedSessionAuditDocument {
         let response_bytes = checkpoint_response_bytes
             .zip(resource_response_bytes)
             .and_then(|(checkpoints, resources)| checkpoints.checked_add(resources));
-        if self.schema != SUPPLIED_SESSION_AUDIT_SCHEMA
+        let cookie_contract_is_valid = match (
+            self.schema,
+            self.credential_mechanism,
+            self.cookie_policy.as_ref(),
+            self.cookie_lifecycle.as_ref(),
+        ) {
+            (SUPPLIED_SESSION_AUDIT_SCHEMA, "authorization_header", None, None) => !matches!(
+                self.outcome,
+                "credential_update_required" | "credential_update_unusable"
+            ),
+            (SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, "cookie_jar", Some(policy), Some(lifecycle)) => {
+                let declared = usize::from(policy.declared_count);
+                let dispatched_requests = usize::from(self.dispatched_request_count);
+                (1..=MAX_SUPPLIED_SESSION_COOKIES).contains(&declared)
+                    && usize::from(policy.host_only_count)
+                        .checked_add(usize::from(policy.domain_count))
+                        == Some(declared)
+                    && usize::from(policy.secure_count) <= declared
+                    && usize::from(policy.same_site_none_count) <= usize::from(policy.secure_count)
+                    && usize::from(policy.http_only_count) <= declared
+                    && usize::from(policy.session_count)
+                        .checked_add(usize::from(policy.persistent_count))
+                        == Some(declared)
+                    && usize::from(policy.same_site_missing_count)
+                        .checked_add(usize::from(policy.same_site_strict_count))
+                        .and_then(|count| {
+                            count.checked_add(usize::from(policy.same_site_lax_count))
+                        })
+                        .and_then(|count| {
+                            count.checked_add(usize::from(policy.same_site_none_count))
+                        })
+                        == Some(declared)
+                    && policy.update_policy == "stop_on_selected_cookie"
+                    && policy.browser_semantics == "attributes_preserved_not_browser_csrf_emulation"
+                    && lifecycle.initial_epoch == 1
+                    && lifecycle.final_epoch == 1
+                    && usize::from(lifecycle.selected_update_response_count) <= dispatched_requests
+                    && usize::from(lifecycle.unselected_update_response_count)
+                        .checked_add(usize::from(lifecycle.update_classification_failure_count))
+                        .is_some_and(|count| count <= dispatched_requests)
+                    && lifecycle.updates_applied == 0
+                    && match self.outcome {
+                        "credential_update_required" => {
+                            lifecycle.selected_update_response_count == 1
+                                && lifecycle.update_classification_failure_count == 0
+                        },
+                        "credential_update_unusable" => {
+                            lifecycle.selected_update_response_count == 0
+                                && lifecycle.update_classification_failure_count == 1
+                        },
+                        _ => {
+                            lifecycle.selected_update_response_count == 0
+                                && lifecycle.update_classification_failure_count == 0
+                        },
+                    }
+            },
+            _ => false,
+        };
+        if !cookie_contract_is_valid
             || self.capability_id != SUPPLIED_SESSION_CAPABILITY_ID
             || !valid_supplied_session_reference(
                 &self.policy_reference,
@@ -4197,7 +4318,6 @@ impl AssessmentSuppliedSessionAuditDocument {
             || self.principal_reference != "supplied-session-principal-0001"
             || !valid_supplied_session_principal_alias(&self.principal_alias)
             || self.principal_assurance != "operator_declared"
-            || self.credential_mechanism != "authorization_header"
             || self.health_oracle.kind != "json_boolean_true"
             || !valid_supplied_session_reference(
                 &self.health_oracle.field_reference,
@@ -4223,6 +4343,23 @@ impl AssessmentSuppliedSessionAuditDocument {
             || self.refresh_performed
             || self.anonymous_fallback_performed
             || self.continuous_authentication_established
+            || !matches!(
+                self.outcome,
+                "complete"
+                    | "startup_unhealthy"
+                    | "session_lost"
+                    | "resource_unavailable"
+                    | "runtime_limit"
+                    | "cancelled"
+                    | "credential_update_required"
+                    | "credential_update_unusable"
+            )
+            || !matches!(self.coverage, "complete" | "partial" | "none")
+            || (self.coverage == "complete" && self.outcome != "complete")
+            || (matches!(
+                self.outcome,
+                "credential_update_required" | "credential_update_unusable"
+            ) && self.coverage == "complete")
             || self.exploit_execution != "not_performed"
             || self.impact_validation != "not_performed"
             || items
@@ -4282,7 +4419,7 @@ impl AssessmentSuppliedSessionAuditDocument {
     }
 
     fn metadata(&self) -> Vec<(&'static str, String)> {
-        vec![
+        let mut metadata = vec![
             ("Audit schema", self.schema.to_owned()),
             ("Capability", self.capability_id.to_owned()),
             ("Policy reference", self.policy_reference.clone()),
@@ -4331,7 +4468,59 @@ impl AssessmentSuppliedSessionAuditDocument {
             ),
             ("Exploit execution", self.exploit_execution.to_owned()),
             ("Impact validation", self.impact_validation.to_owned()),
-        ]
+        ];
+        if let Some(policy) = self.cookie_policy.as_ref() {
+            metadata.extend([
+                ("Declared cookies", policy.declared_count.to_string()),
+                ("Host-only cookies", policy.host_only_count.to_string()),
+                ("Domain cookies", policy.domain_count.to_string()),
+                ("Secure cookies", policy.secure_count.to_string()),
+                ("HttpOnly cookies", policy.http_only_count.to_string()),
+                ("Session cookies", policy.session_count.to_string()),
+                ("Persistent cookies", policy.persistent_count.to_string()),
+                (
+                    "SameSite missing cookies",
+                    policy.same_site_missing_count.to_string(),
+                ),
+                (
+                    "SameSite strict cookies",
+                    policy.same_site_strict_count.to_string(),
+                ),
+                (
+                    "SameSite lax cookies",
+                    policy.same_site_lax_count.to_string(),
+                ),
+                (
+                    "SameSite none cookies",
+                    policy.same_site_none_count.to_string(),
+                ),
+                ("Cookie update policy", policy.update_policy.to_owned()),
+                ("Browser semantics", policy.browser_semantics.to_owned()),
+            ]);
+        }
+        if let Some(lifecycle) = self.cookie_lifecycle.as_ref() {
+            metadata.extend([
+                ("Initial session epoch", lifecycle.initial_epoch.to_string()),
+                ("Final session epoch", lifecycle.final_epoch.to_string()),
+                (
+                    "Selected cookie-update responses",
+                    lifecycle.selected_update_response_count.to_string(),
+                ),
+                (
+                    "Unselected cookie-update responses",
+                    lifecycle.unselected_update_response_count.to_string(),
+                ),
+                (
+                    "Cookie-update classification failures",
+                    lifecycle.update_classification_failure_count.to_string(),
+                ),
+                (
+                    "Cookie updates applied",
+                    lifecycle.updates_applied.to_string(),
+                ),
+            ]);
+        }
+        metadata
     }
 
     fn wire_json(&self) -> Result<String, ReportError> {
@@ -4372,6 +4561,7 @@ const fn supplied_session_credential_mechanism_token(
 ) -> &'static str {
     match value {
         SuppliedSessionCredentialMechanism::AuthorizationHeader => "authorization_header",
+        SuppliedSessionCredentialMechanism::CookieJar => "cookie_jar",
     }
 }
 
@@ -4393,6 +4583,8 @@ const fn supplied_session_audit_outcome_token(value: SuppliedSessionAuditOutcome
         SuppliedSessionAuditOutcome::ResourceUnavailable => "resource_unavailable",
         SuppliedSessionAuditOutcome::RuntimeLimit => "runtime_limit",
         SuppliedSessionAuditOutcome::Cancelled => "cancelled",
+        SuppliedSessionAuditOutcome::CredentialUpdateRequired => "credential_update_required",
+        SuppliedSessionAuditOutcome::CredentialUpdateUnusable => "credential_update_unusable",
     }
 }
 
@@ -10465,6 +10657,8 @@ mod tests {
             principal_alias: "fixture-user".to_owned(),
             principal_assurance: "operator_declared",
             credential_mechanism: "authorization_header",
+            cookie_policy: None,
+            cookie_lifecycle: None,
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: "json_boolean_true",
                 field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),
@@ -10526,6 +10720,76 @@ mod tests {
             exploit_execution: "not_performed",
             impact_validation: "not_performed",
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    fn complete_cookie_supplied_session_audit_document() -> AssessmentSuppliedSessionAuditDocument {
+        let mut document = complete_supplied_session_audit_document();
+        document.schema = SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA;
+        document.credential_mechanism = "cookie_jar";
+        document.cookie_policy = Some(AssessmentSuppliedSessionCookiePolicyDocument {
+            declared_count: 2,
+            host_only_count: 1,
+            domain_count: 1,
+            secure_count: 2,
+            http_only_count: 1,
+            session_count: 1,
+            persistent_count: 1,
+            same_site_missing_count: 0,
+            same_site_strict_count: 1,
+            same_site_lax_count: 0,
+            same_site_none_count: 1,
+            update_policy: "stop_on_selected_cookie",
+            browser_semantics: "attributes_preserved_not_browser_csrf_emulation",
+        });
+        document.cookie_lifecycle = Some(AssessmentSuppliedSessionCookieLifecycleDocument {
+            initial_epoch: 1,
+            final_epoch: 1,
+            selected_update_response_count: 0,
+            unselected_update_response_count: 1,
+            update_classification_failure_count: 0,
+            updates_applied: 0,
+        });
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    fn stopped_cookie_supplied_session_audit_document(
+        outcome: &'static str,
+    ) -> AssessmentSuppliedSessionAuditDocument {
+        let mut document = complete_cookie_supplied_session_audit_document();
+        document.outcome = outcome;
+        document.coverage = "none";
+        document.checkpoints.truncate(1);
+        document.resources[0].evidence_reference = None;
+        document.resources[0].outcome = "not_dispatched";
+        document.resources[0].status = None;
+        document.resources[0].response_bytes = 0;
+        document.dispatched_resource_count = 0;
+        document.committed_resource_count = 0;
+        document.dispatched_request_count = 1;
+        document.response_bytes = document.checkpoints[0].response_bytes;
+        document
+            .cookie_lifecycle
+            .as_mut()
+            .unwrap()
+            .unselected_update_response_count = 0;
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn supplied_session_v1_wire_bytes_remain_frozen() {
+        let expected = concat!(
+            r#"{"schema":"security.supplied-session-audit/v1","capability_id":"session.supplied-context-assessment@1","policy_reference":"supplied-session-policy-sha256:1111111111111111111111111111111111111111111111111111111111111111","application_reference":"supplied-session-application-sha256:2222222222222222222222222222222222222222222222222222222222222222","principal_reference":"supplied-session-principal-0001","principal_alias":"fixture-user","principal_assurance":"operator_declared","credential_mechanism":"authorization_header","health_oracle":{"kind":"json_boolean_true","field_reference":"supplied-session-health-field-sha256:3333333333333333333333333333333333333333333333333333333333333333"},"outcome":"complete","coverage":"complete","checkpoints":[{"sequence":0,"phase":"startup","after_subject_count":0,"evidence_reference":"supplied-session-checkpoint-evidence-sha256:6666666666666666666666666666666666666666666666666666666666666666","outcome":"healthy","status":200,"body_state":"complete","predicate":"matched","response_bytes":17},"#,
+            r#"{"sequence":1,"phase":"terminal","after_subject_count":1,"evidence_reference":"supplied-session-checkpoint-evidence-sha256:7777777777777777777777777777777777777777777777777777777777777777","outcome":"healthy","status":200,"body_state":"complete","predicate":"matched","response_bytes":19}],"resources":[{"sequence":0,"resource_reference":"supplied-session-resource-sha256:4444444444444444444444444444444444444444444444444444444444444444","evidence_reference":"supplied-session-resource-evidence-sha256:5555555555555555555555555555555555555555555555555555555555555555","outcome":"committed","status":200,"response_bytes":23,"epoch":1}],"selected_resource_count":1,"dispatched_resource_count":1,"committed_resource_count":1,"dispatched_request_count":3,"response_bytes":59,"response_byte_limit":65536,"response_byte_limit_exceeded":false,"refresh_performed":false,"anonymous_fallback_performed":false,"continuous_authentication_established":false,"exploit_execution":"not_performed","impact_validation":"not_performed"}"#,
+        );
+        assert_eq!(
+            complete_supplied_session_audit_document()
+                .wire_json()
+                .unwrap(),
+            expected
+        );
     }
 
     #[cfg(feature = "scanning")]
@@ -11558,6 +11822,149 @@ mod tests {
         assert!(markdown.contains("### Protected resources"));
         assert!(markdown.contains("supplied-session-resource-evidence-sha256:"));
         assert!(markdown.contains("supplied-session-checkpoint-evidence-sha256:"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn cookie_supplied_session_audit_is_strict_value_free_and_visible_in_every_format() {
+        let mut document = observation_assessment_document("test.observation@1");
+        document.supplied_session = Some(complete_cookie_supplied_session_audit_document());
+        document
+            .supplied_session
+            .as_ref()
+            .unwrap()
+            .validate(&document.items)
+            .unwrap();
+        document.validate().unwrap();
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &parsed["supplied_session"];
+        assert_eq!(audit["schema"], SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA);
+        assert_eq!(audit["credential_mechanism"], "cookie_jar");
+        assert_eq!(audit["cookie_policy"]["declared_count"], 2);
+        assert_eq!(audit["cookie_policy"]["host_only_count"], 1);
+        assert_eq!(audit["cookie_policy"]["domain_count"], 1);
+        assert_eq!(
+            audit["cookie_policy"]["browser_semantics"],
+            "attributes_preserved_not_browser_csrf_emulation"
+        );
+        assert_eq!(
+            audit["cookie_lifecycle"]["unselected_update_response_count"],
+            1
+        );
+        assert_eq!(audit["cookie_lifecycle"]["updates_applied"], 0);
+        for forbidden in [
+            "cookie-session-secret-canary",
+            "selected-cookie-name",
+            "example.test/private",
+            "session-cookie.tsv",
+        ] {
+            assert!(!json.contains(forbidden));
+        }
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(csv.contains("attributes_preserved_not_browser_csrf_emulation"));
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        assert!(html.contains("Declared cookies"));
+        assert!(html.contains("Cookie updates applied"));
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        assert!(markdown.contains("Declared cookies"));
+        assert!(markdown.contains("Cookie updates applied"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn supplied_session_writer_keeps_v1_and_v2_cookie_contracts_disjoint() {
+        let mut v1_with_cookie_fields = complete_supplied_session_audit_document();
+        let v2 = complete_cookie_supplied_session_audit_document();
+        v1_with_cookie_fields.cookie_policy = v2.cookie_policy;
+        v1_with_cookie_fields.cookie_lifecycle = v2.cookie_lifecycle;
+        assert_eq!(
+            v1_with_cookie_fields.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+
+        let mut v2_missing_policy = complete_cookie_supplied_session_audit_document();
+        v2_missing_policy.cookie_policy = None;
+        assert_eq!(
+            v2_missing_policy.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+
+        let mut wrong_partition = complete_cookie_supplied_session_audit_document();
+        wrong_partition
+            .cookie_policy
+            .as_mut()
+            .unwrap()
+            .host_only_count = 2;
+        assert_eq!(
+            wrong_partition.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+
+        let mut insecure_same_site_none = complete_cookie_supplied_session_audit_document();
+        insecure_same_site_none
+            .cookie_policy
+            .as_mut()
+            .unwrap()
+            .secure_count = 0;
+        assert_eq!(
+            insecure_same_site_none.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+
+        let mut false_update_outcome = complete_cookie_supplied_session_audit_document();
+        false_update_outcome.outcome = "credential_update_required";
+        false_update_outcome.coverage = "partial";
+        assert_eq!(
+            false_update_outcome.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn supplied_session_writer_rejects_v1_cookie_stop_outcomes_but_accepts_v2_states() {
+        for (outcome, coverage) in [
+            ("credential_update_required", "partial"),
+            ("credential_update_unusable", "none"),
+        ] {
+            let mut v1 = complete_supplied_session_audit_document();
+            v1.outcome = outcome;
+            v1.coverage = coverage;
+            assert_eq!(
+                v1.validate(&[]),
+                Err(ReportError::Serialization),
+                "V1 accepted cookie-only outcome {outcome}"
+            );
+        }
+
+        let mut required =
+            stopped_cookie_supplied_session_audit_document("credential_update_required");
+        required
+            .cookie_lifecycle
+            .as_mut()
+            .unwrap()
+            .selected_update_response_count = 1;
+        required.validate(&[]).unwrap();
+
+        let mut unusable =
+            stopped_cookie_supplied_session_audit_document("credential_update_unusable");
+        unusable
+            .cookie_lifecycle
+            .as_mut()
+            .unwrap()
+            .update_classification_failure_count = 1;
+        unusable.validate(&[]).unwrap();
+
+        unusable
+            .cookie_lifecycle
+            .as_mut()
+            .unwrap()
+            .unselected_update_response_count = 1;
+        assert_eq!(unusable.validate(&[]), Err(ReportError::Serialization));
     }
 
     #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
