@@ -440,6 +440,53 @@ fn completed_web_review_uses_the_central_renderer_for_every_format() {
         assert!(stdout.contains("differential"));
         assert!(!stdout.contains(&server.url));
         assert!(!stdout.contains("decision-scan/v1"));
+        if matches!(format, "html" | "markdown") {
+            let headings = if format == "html" {
+                [
+                    "<h2>Decision overview</h2>",
+                    "<h2>Actionable items</h2>",
+                    "<h2>Technical audit appendix</h2>",
+                ]
+            } else {
+                [
+                    "## Decision overview",
+                    "## Actionable items",
+                    "## Technical audit appendix",
+                ]
+            };
+            let positions = headings.map(|heading| {
+                stdout
+                    .find(heading)
+                    .unwrap_or_else(|| panic!("{format} omitted {heading}"))
+            });
+            assert!(positions[0] < positions[1] && positions[1] < positions[2]);
+            for required in [
+                "These counts describe typed assessment items, not a count of confirmed vulnerabilities.",
+                "What was observed",
+                "Opaque assessment subject reference (not proof of affectedness or location)",
+                "What was not established",
+                "Recommended action (not a verified fix)",
+                "Safe verification guidance",
+                "report integrity does not establish target truth or remediation",
+            ] {
+                assert!(stdout.contains(required), "{format} omitted {required}");
+            }
+            assert!(!stdout.contains("Result: secure"));
+            assert!(!stdout.contains("Coverage: complete"));
+        } else {
+            for presentation_only in [
+                "Decision overview",
+                "Actionable items",
+                "What was not established",
+                "Safe verification guidance",
+                "Technical audit appendix",
+            ] {
+                assert!(
+                    !stdout.contains(presentation_only),
+                    "{format} changed its machine-readable contract"
+                );
+            }
+        }
     }
 }
 

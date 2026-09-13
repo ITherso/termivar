@@ -19,6 +19,42 @@ Both paths return `Result<String, ReportError>`, support the same
 rendering failure returns no partial document. Rendering itself performs no
 filesystem or network I/O and does not persist output.
 
+## Human assessment presentation
+
+Completed typed assessments use a three-part English presentation in HTML and
+Markdown:
+
+1. **Decision overview** reports independently derived counts for
+   verifier-bound confirmed items, needs-review candidates, and informational
+   observations. These are typed item counts, not a count of confirmed
+   vulnerabilities. An unassigned severity is not silently treated as low or
+   zero severity.
+2. **Actionable items** presents verifier-bound items, then review candidates,
+   then observations as an evidence-assurance order, not severity, impact, or
+   remediation priority. Each item retains its redacted observation, opaque
+   assessment-subject reference (not proof of affectedness or location), claim
+   basis, capability-owned recommendation and ID, evidence references and count,
+   explicit interpretation limit, and safe verification guidance. A
+   recommendation is not a verified fix, and report integrity does not verify
+   remediation. Active revalidation requires separately established exact
+   target/context/action authority; report references do not grant it.
+3. **Technical audit appendix** retains report metadata and available selected
+   capability/source audit details, including their local accounting when
+   present, source context, and collection limitations.
+
+The current general item contract does not bind each item to a principal. When
+a supplied-session audit is present, the human report therefore points to its
+run-level health and coverage records instead of inventing item-level principal
+attribution. The operator-declared principal alias is not identity
+authentication. An empty item list is reported as an empty bounded projection,
+not evidence that an application is secure or that coverage was exhaustive.
+
+This presentation is deliberately additive to the human formats. Assessment
+JSON remains `venom-rendered-assessment/v1`, CSV keeps its existing columns,
+and Verify and Compare continue to consume the existing machine-readable
+contracts. There is no locale-selection contract yet; changing narrative
+language must not be inferred from the host locale.
+
 The no-profile CLI path never calls the assessment composer and its
 [`decision-scan/v1`](internals/decision-scan-json-v1.md) contract remains
 unchanged. The explicit `baseline` profile likewise does not use the typed

@@ -282,19 +282,284 @@ def tar_bytes(name: str = "termivar", *, extra: bool = False) -> bytes:
     return output.getvalue()
 
 
+def actionable_assessment() -> dict:
+    """Hand-written synthetic assessment; it is not captured executable output."""
+    return {
+        "schema": runner.report_bundle_example.ASSESSMENT_SCHEMA,
+        "profile": "web-review",
+        "status": "complete",
+        "subject_count": 1,
+        "item_count": 2,
+        "items": [
+            {
+                "schema": "venom-assessment-item/v1",
+                "capability_id": "passive.header.hsts.missing@1",
+                "subject_reference": "subject-0000",
+                "title": "Strict transport policy was not observed",
+                "disposition": "informational",
+                "claim_basis": "observation",
+                "severity": None,
+                "confidence_ppm": 500_000,
+                "fingerprint": "assessment-fingerprint-v1:1001",
+                "evidence_count": 1,
+                "redacted_summary": (
+                    "Bounded response metadata did not include HSTS."
+                ),
+                "category": "transport-policy",
+                "cwe": None,
+                "remediation": {
+                    "id": "remediation.transport.hsts@1",
+                    "summary": "Review whether this HTTPS response should declare HSTS.",
+                },
+                "evidence_references": ["evidence-0001"],
+                "control_evidence_references": [],
+                "candidate_evidence_references": [],
+                "case_reference": None,
+                "outcome_reference": None,
+                "verification_stage": None,
+            },
+            {
+                "schema": "venom-assessment-item/v1",
+                "capability_id": "cors.policy.relationship@1",
+                "subject_reference": "subject-0000",
+                "title": "CORS policy relationship warrants review",
+                "disposition": "needs_review",
+                "claim_basis": "differential",
+                "severity": "low",
+                "confidence_ppm": 825_000,
+                "fingerprint": "assessment-fingerprint-v1:1002",
+                "evidence_count": 2,
+                "redacted_summary": (
+                    "A matched control and candidate differed under review policy."
+                ),
+                "category": "cross-origin-policy",
+                "cwe": "CWE-942",
+                "remediation": {
+                    "id": "remediation.cors.policy@1",
+                    "summary": "Review the intended origin and credential relationship.",
+                },
+                "evidence_references": [],
+                "control_evidence_references": ["evidence-0002"],
+                "candidate_evidence_references": ["evidence-0003"],
+                "case_reference": None,
+                "outcome_reference": None,
+                "verification_stage": None,
+            },
+        ],
+    }
+
+
+ACTIONABLE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Termivar assessment report</title><style>body{font-family:system-ui}</style></head><body><main>
+<h1>Termivar assessment report</h1>
+<section id="decision-overview"><h2>Decision overview</h2>
+<p>These counts describe typed assessment items, not a count of confirmed vulnerabilities. Unassigned or unknown severity is not low or zero severity.</p>
+<div class="decision-grid"><div class="decision-card"><strong>0</strong><span>Verifier-bound confirmed items</span></div><div class="decision-card"><strong>1</strong><span>Needs-review candidates</span></div><div class="decision-card"><strong>1</strong><span>Informational observations</span></div></div>
+<p><strong>Next decision:</strong> Presentation starts with unresolved differentials, then observations; no verifier-bound confirmed item was projected. This is evidence-assurance order, not severity, impact, or remediation priority.</p></section>
+<section id="actionable-items"><h2>Actionable items</h2>
+<article class="item"><h3>Actionable item 1: CORS policy relationship warrants review</h3><p class="disposition"><span>Disposition: </span><code>needs_review</code></p><dl>
+<dt>What was observed</dt><dd>A matched control and candidate differed under review policy.</dd>
+<dt>Opaque assessment subject reference (not proof of affectedness or location)</dt><dd><code>subject-0000</code></dd>
+<dt>Collection and principal context</dt><dd>No supplied-session audit is present. The current report contract does not assign a separate principal to this item.</dd>
+<dt>Interpretation</dt><dd>Needs review: a typed evidence relationship was committed; human interpretation is required and no verifier transition was established.</dd>
+<dt>What was not established</dt><dd>This review candidate is not a confirmed vulnerability; exploitability, impact, and remediation were not established.</dd>
+<dt>Recommended action (not a verified fix)</dt><dd>Review the intended origin and credential relationship.</dd>
+<dt>Safe verification guidance</dt><dd>Establish the exact target and principal/application context from authorized records. Reproduce the control and candidate relationship only under separate current authorization; if that context cannot be established, do not rerun it.</dd>
+<dt>Item schema</dt><dd><code>venom-assessment-item/v1</code></dd>
+<dt>Evidence reference count</dt><dd><code>2</code></dd>
+<dt>Recommendation ID</dt><dd><code>remediation.cors.policy@1</code></dd>
+<dt>Severity</dt><dd><code>low</code></dd>
+</dl></article>
+<article class="item"><h3>Actionable item 2: Strict transport policy was not observed</h3><p class="disposition"><span>Disposition: </span><code>informational</code></p><dl>
+<dt>What was observed</dt><dd>Bounded response metadata did not include HSTS.</dd>
+<dt>Opaque assessment subject reference (not proof of affectedness or location)</dt><dd><code>subject-0000</code></dd>
+<dt>Collection and principal context</dt><dd>No supplied-session audit is present. The current report contract does not assign a separate principal to this item.</dd>
+<dt>Interpretation</dt><dd>Informational: bounded observation evidence was committed; no differential or verifier transition was established.</dd>
+<dt>What was not established</dt><dd>This observation alone does not establish a vulnerability, exploitability, impact, or remediation.</dd>
+<dt>Recommended action (not a verified fix)</dt><dd>Review whether this HTTPS response should declare HSTS.</dd>
+<dt>Safe verification guidance</dt><dd>Review the cited evidence and capability-owned recommendation. Do not perform active confirmation unless the exact target, context, action, and current authorization are established separately.</dd>
+<dt>Item schema</dt><dd><code>venom-assessment-item/v1</code></dd>
+<dt>Evidence reference count</dt><dd><code>1</code></dd>
+<dt>Recommendation ID</dt><dd><code>remediation.transport.hsts@1</code></dd>
+<dt>Severity</dt><dd>not assigned <span>(unassigned does not mean low or zero)</span></dd>
+</dl></article></section>
+<div id="technical-audit-appendix"><h2>Technical audit appendix</h2><p>Available report metadata and selected capability/source audit details follow, including their local accounting when present. These records preserve stated context and limitations; report integrity does not establish target truth or remediation.</p></div>
+</main></body></html>"""
+
+ACTIONABLE_RECORD_REFERENCE = (
+    "https://example.invalid/termivar/package-acceptance/record"
+)
+ACTIONABLE_LICENSE_REFERENCE = (
+    "https://example.invalid/termivar/package-acceptance/license"
+)
+ACTIONABLE_RECORD_ANCHOR = (
+    '<a rel="noreferrer noopener" href="'
+    + ACTIONABLE_RECORD_REFERENCE
+    + '">Selected source reference</a>'
+)
+ACTIONABLE_LICENSE_ANCHOR = (
+    '<a rel="noreferrer noopener" href="'
+    + ACTIONABLE_LICENSE_REFERENCE
+    + '">License terms</a>'
+)
+ACTIONABLE_WORDPRESS_SOURCE_SECTION = (
+    '<section><h2>WordPress evidence review audit</h2>'
+    '<h3>External source attribution</h3><ul><li><code>synthetic-record</code> '
+    + ACTIONABLE_RECORD_ANCHOR
+    + '</li></ul><h3>Rights notices</h3><ul><li>'
+    + ACTIONABLE_LICENSE_ANCHOR
+    + '</li></ul></section>'
+)
+
+
+EMPTY_ACTIONABLE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Termivar assessment report</title><style>body{font-family:system-ui}</style></head><body><main>
+<h1>Termivar assessment report</h1>
+<section id="decision-overview"><h2>Decision overview</h2><p>These counts describe typed assessment items, not a count of confirmed vulnerabilities. Unassigned or unknown severity is not low or zero severity.</p><div class="decision-grid"><div class="decision-card"><strong>0</strong><span>Verifier-bound confirmed items</span></div><div class="decision-card"><strong>0</strong><span>Needs-review candidates</span></div><div class="decision-card"><strong>0</strong><span>Informational observations</span></div></div><p>No assessment item was projected. This does not establish that the application is secure or that coverage was exhaustive.</p></section>
+<section id="actionable-items"><h2>Actionable items</h2><p>No assessment items were projected. This is not evidence that the application is secure or that assessment coverage was complete.</p></section>
+<div id="technical-audit-appendix"><h2>Technical audit appendix</h2><p>Available report metadata and selected capability/source audit details follow, including their local accounting when present. These records preserve stated context and limitations; report integrity does not establish target truth or remediation.</p></div>
+</main></body></html>"""
+
+
+def empty_actionable_assessment() -> dict:
+    return {
+        "schema": runner.report_bundle_example.ASSESSMENT_SCHEMA,
+        "profile": "web-review",
+        "status": "complete",
+        "subject_count": 1,
+        "item_count": 0,
+        "items": [],
+    }
+
+
+def actionable_assessment_with_wordpress_sources() -> dict:
+    """Synthetic relevant wire subtree; it is not captured executable output."""
+    assessment = actionable_assessment()
+    assessment["wordpress_review"] = {
+        "schema": "security.wordpress-review-audit/v6",
+        "external_review": {
+            "evaluations": [
+                {
+                    "key": {
+                        "source_namespace": "termivar-fixture",
+                        "upstream_id": "synthetic-record",
+                    },
+                    "record_reference": ACTIONABLE_RECORD_REFERENCE,
+                },
+                {
+                    "key": {
+                        "source_namespace": "termivar-fixture",
+                        "upstream_id": "synthetic-record-without-reference",
+                    },
+                    "record_reference": None,
+                },
+            ],
+            "notices": [{
+                "id": "synthetic-notice",
+                "message": "Synthetic source attribution fixture.",
+                "party": "termivar_fixture_author",
+                "notice": "Synthetic test data.",
+                "license": "Synthetic fixture license.",
+                "license_url": ACTIONABLE_LICENSE_REFERENCE,
+            }],
+        },
+    }
+    return assessment
+
+
+def actionable_html_with_wordpress_sources() -> str:
+    anchor = "</p></div>\n</main>"
+    if anchor not in ACTIONABLE_HTML:
+        raise AssertionError("synthetic technical appendix anchor is missing")
+    return ACTIONABLE_HTML.replace(
+        anchor,
+        "</p>" + ACTIONABLE_WORDPRESS_SOURCE_SECTION + "</div>\n</main>",
+        1,
+    )
+
+
+def mutate_actionable_html(html: str, mutation: str | None) -> str:
+    if mutation is None:
+        return html
+    replacements = {
+        "missing_decision": (
+            "<h2>Decision overview</h2>", "<h2>Summary</h2>"),
+        "missing_actionable": (
+            "<h2>Actionable items</h2>", "<h2>Items</h2>"),
+        "missing_appendix": (
+            "<h2>Technical audit appendix</h2>", "<h2>Technical details</h2>"),
+        "wrong_count": (
+            "<strong>1</strong><span>Needs-review candidates</span>",
+            "<strong>2</strong><span>Needs-review candidates</span>"),
+        "priority_overclaim": (
+            "This is evidence-assurance order, not severity, impact, or remediation priority.",
+            "This is the highest severity and remediation priority."),
+        "duplicate_heading": (
+            "Actionable item 2: Strict transport policy was not observed",
+            "Actionable item 1: CORS policy relationship warrants review"),
+        "missing_limitation": (
+            "This observation alone does not establish a vulnerability, exploitability, "
+            "impact, or remediation.", "No limitation recorded."),
+        "context_overclaim": (
+            "No supplied-session audit is present. The current report contract does not "
+            "assign a separate principal to this item.",
+            "No supplied-session audit is present. The current report contract does not "
+            "assign a separate principal to this item. This item was observed by admin."),
+        "wrong_remediation": (
+            "Review whether this HTTPS response should declare HSTS.",
+            "No action required."),
+        "missing_guidance": (
+            "Review the cited evidence and capability-owned recommendation. Do not perform "
+            "active confirmation unless the exact target, context, action, and current "
+            "authorization are established separately.",
+            "Verification guidance unavailable."),
+        "wrong_item_schema": (
+            "<dt>Item schema</dt><dd><code>venom-assessment-item/v1</code></dd>",
+            "<dt>Item schema</dt><dd><code>unknown-item/v9</code></dd>"),
+        "wrong_evidence_count": (
+            "<dt>Evidence reference count</dt><dd><code>2</code></dd>",
+            "<dt>Evidence reference count</dt><dd><code>3</code></dd>"),
+        "wrong_recommendation_id": (
+            "<dt>Recommendation ID</dt><dd><code>remediation.cors.policy@1</code></dd>",
+            "<dt>Recommendation ID</dt><dd><code>remediation.other@1</code></dd>"),
+        "wrong_assigned_severity": (
+            "<dt>Severity</dt><dd><code>low</code></dd>",
+            "<dt>Severity</dt><dd><code>zero</code></dd>"),
+        "unknown_severity_low": (
+            "not assigned <span>(unassigned does not mean low or zero)</span>",
+            "low <span>(unassigned does not mean low or zero)</span>"),
+        "script": ("<main>", "<main><script>alert(1)</script>"),
+        "external_source": (
+            "<main>", "<main><img src=\"https://example.invalid/tracker.png\">"),
+        "external_style": (
+            "body{font-family:system-ui}",
+            "body{background:url(https://example.invalid/tracker.png)}"),
+        "unsafe_href": (
+            "<main>", "<main><a href=\"javascript:alert(1)\">unsafe</a>"),
+        "secret_marker": ("<main>", "<main>termivar-s03-secret-marker"),
+    }
+    before, after = replacements[mutation]
+    if before not in html:
+        raise AssertionError(f"synthetic mutation anchor is missing: {mutation}")
+    return html.replace(before, after, 1)
+
+
 def write_bundle(directory: Path, item_count: int = 2,
-                 assessment: dict | None = None) -> bytes:
+                 assessment: dict | None = None,
+                 actionable_mutation: str | None = None) -> bytes:
     directory.mkdir()
     if assessment is None:
-        items = [{"fixture": index} for index in range(item_count)]
-        assessment = {
-            "schema": runner.report_bundle_example.ASSESSMENT_SCHEMA,
-            "profile": "web-review",
-            "status": "complete",
-            "subject_count": 1,
-            "item_count": item_count,
-            "items": items,
-        }
+        assessment = actionable_assessment()
+        if item_count != assessment["item_count"]:
+            raise AssertionError("synthetic actionable item count changed")
+        html = mutate_actionable_html(
+            ACTIONABLE_HTML, actionable_mutation).encode("utf-8")
+    elif actionable_mutation is not None:
+        raise AssertionError("actionable mutation belongs to the generic fixture")
+    else:
+        html = b"<!doctype html><html><body>bounded release fixture</body></html>"
     external = assessment.get("wordpress_review", {}).get("external_review")
     if isinstance(external, dict):
         notice = EXPECTED_WORDPRESS_NOTICE
@@ -305,8 +570,6 @@ def write_bundle(directory: Path, item_count: int = 2,
             f"<a rel=\"noreferrer noopener\" href=\"{notice['license_url']}\">"
             "License terms</a></section></body></html>"
         ).encode("utf-8")
-    else:
-        html = b"<!doctype html><html><body>bounded release fixture</body></html>"
     item_count = assessment["item_count"]
     assessment_bytes = json.dumps(assessment, separators=(",", ":")).encode()
     manifest = {
@@ -1267,7 +1530,8 @@ class FakeCommands:
                  omitted_wordpress_option: str | None = None,
                  exposed_session_option: str | None = None,
                  progress_stderr: bytes | None = None,
-                 discovery_mutation: str | None = None) -> None:
+                 discovery_mutation: str | None = None,
+                 actionable_mutation: str | None = None) -> None:
         self.root = root
         self.include_ssrf = include_ssrf
         self.extra_incomplete_request = extra_incomplete_request
@@ -1276,6 +1540,7 @@ class FakeCommands:
         self.exposed_session_option = exposed_session_option
         self.progress_stderr = progress_stderr
         self.discovery_mutation = discovery_mutation
+        self.actionable_mutation = actionable_mutation
         self.arguments: list[list[str]] = []
 
     def __call__(self, argv, directory, record):
@@ -1315,7 +1580,8 @@ class FakeCommands:
                 assert fixture is not None and target == fixture.origin
                 assert "--progress" in arguments
                 fixture.server.counts["root"] += 3
-                write_bundle(destination)
+                write_bundle(
+                    destination, actionable_mutation=self.actionable_mutation)
                 progress = (VALID_PROGRESS if self.progress_stderr is None
                             else self.progress_stderr)
                 stderr = progress + b"Report bundle completed\n"
@@ -2256,7 +2522,8 @@ class CandidateOrchestrationTests(unittest.TestCase):
     def execute(self, *, include_ssrf=False, extra_incomplete_request=False,
                 omit_progress_help=False, omitted_wordpress_option=None,
                 exposed_session_option=None,
-                progress_stderr=None, discovery_mutation=None, path_suffix=""):
+                progress_stderr=None, discovery_mutation=None,
+                actionable_mutation=None, path_suffix=""):
         commands = FakeCommands(
             self.root,
             include_ssrf=include_ssrf,
@@ -2266,6 +2533,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
             exposed_session_option=exposed_session_option,
             progress_stderr=progress_stderr,
             discovery_mutation=discovery_mutation,
+            actionable_mutation=actionable_mutation,
         )
         with mock.patch.object(runner.platform, "system", return_value="Windows"), \
                 mock.patch.object(runner.platform, "machine", return_value="AMD64"), \
@@ -2278,6 +2546,350 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 inspect=self.inspect,
             )
         return result, commands
+
+    def test_actionable_html_validator_accepts_independent_positive_and_empty_documents(self):
+        positive = runner._validate_actionable_assessment_html(
+            actionable_assessment(), ACTIONABLE_HTML.encode("utf-8"))
+        self.assertEqual(positive, {
+            "item_count": 2,
+            "disposition_counts": {
+                "confirmed": 0,
+                "needs_review": 1,
+                "informational": 1,
+            },
+            "item_headings_exact": True,
+            "zero_item_limitations_present": False,
+            "active_content": "absent",
+            "external_resources": "absent",
+            "secret_markers": "absent",
+        })
+
+        empty = runner._validate_actionable_assessment_html(
+            empty_actionable_assessment(), EMPTY_ACTIONABLE_HTML.encode("utf-8"))
+        self.assertEqual(empty["item_count"], 0)
+        self.assertEqual(empty["disposition_counts"], {
+            "confirmed": 0,
+            "needs_review": 0,
+            "informational": 0,
+        })
+        self.assertTrue(empty["zero_item_limitations_present"])
+
+        linked_source = ACTIONABLE_HTML.replace(
+            "</main>",
+            '<a rel="noreferrer noopener" href="https://example.invalid/source">'
+            "Inert source reference</a></main>",
+            1,
+        )
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "typed source anchor multiset or section"):
+            runner._validate_actionable_assessment_html(
+                actionable_assessment(), linked_source.encode("utf-8"))
+
+    def test_actionable_source_anchors_require_exact_typed_urls_and_sections(self):
+        assessment = actionable_assessment_with_wordpress_sources()
+        html = actionable_html_with_wordpress_sources()
+        accepted = runner._validate_actionable_assessment_html(
+            assessment, html.encode("utf-8"))
+        self.assertEqual(
+            accepted["external_resources"], "typed_wordpress_attribution_only")
+
+        non_https_notice = copy.deepcopy(assessment)
+        non_https_notice["wordpress_review"]["external_review"]["notices"][0][
+            "license_url"
+        ] = "http://example.invalid/license"
+        notice_as_code = html.replace(
+            ACTIONABLE_LICENSE_ANCHOR,
+            "<br><strong>License URL:</strong> "
+            "<code>http://example.invalid/license</code>",
+            1,
+        )
+        non_https_accepted = runner._validate_actionable_assessment_html(
+            non_https_notice, notice_as_code.encode("utf-8"))
+        self.assertEqual(
+            non_https_accepted["external_resources"],
+            "typed_wordpress_attribution_only",
+        )
+
+        fallback = (
+            "<br><strong>License URL:</strong> "
+            "<code>http://example.invalid/license</code>"
+        )
+        fallback_mutations = {
+            "missing": notice_as_code.replace(fallback, "", 1),
+            "wrong_value": notice_as_code.replace(
+                "http://example.invalid/license",
+                "http://example.invalid/wrong-license",
+                1,
+            ),
+            "duplicate": notice_as_code.replace(fallback, fallback + fallback, 1),
+            "wrong_section": notice_as_code.replace(
+                "<h3>Rights notices</h3>",
+                "<h3>External source attribution</h3>",
+                1,
+            ),
+        }
+        for name, mutated in fallback_mutations.items():
+            with self.subTest(non_https_fallback=name), self.assertRaisesRegex(
+                    runner.AcceptanceError,
+                    "typed license fallback multiset or section"):
+                runner._validate_actionable_assessment_html(
+                    non_https_notice, mutated.encode("utf-8"))
+
+        fallback_transition_mutations = {
+            "split_by_tag": notice_as_code.replace(
+                "</strong> <code>http://example.invalid/license</code>",
+                "</strong> <span></span><code>http://example.invalid/license</code>",
+                1,
+            ),
+            "split_by_comment": notice_as_code.replace(
+                "</strong> <code>http://example.invalid/license</code>",
+                "</strong><!-- split --><code>http://example.invalid/license</code>",
+                1,
+            ),
+            "split_across_section_boundary": notice_as_code.replace(
+                fallback + "</li></ul></section>",
+                "<br><strong>License URL:</strong></li></ul></section>"
+                "<code>http://example.invalid/license</code>",
+                1,
+            ),
+        }
+        for name, mutated in fallback_transition_mutations.items():
+            with self.subTest(fallback_transition=name), self.assertRaisesRegex(
+                    runner.AcceptanceError, "active or external content"):
+                runner._validate_actionable_assessment_html(
+                    non_https_notice, mutated.encode("utf-8"))
+
+        https_as_fallback = html.replace(
+            ACTIONABLE_LICENSE_ANCHOR,
+            "<br><strong>License URL:</strong> "
+            f"<code>{ACTIONABLE_LICENSE_REFERENCE}</code>",
+            1,
+        )
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "typed source anchor multiset or section"):
+            runner._validate_actionable_assessment_html(
+                assessment, https_as_fallback.encode("utf-8"))
+
+        actionable_item_anchor = html.replace(ACTIONABLE_RECORD_ANCHOR, "", 1)
+        actionable_item_anchor = actionable_item_anchor.replace(
+            "</article>", ACTIONABLE_RECORD_ANCHOR + "</article>", 1)
+        wrong_section = html.replace(
+            "<h3>External source attribution</h3>",
+            "<h3>Rights notices</h3>",
+            1,
+        )
+        wrong_url = html.replace(
+            ACTIONABLE_RECORD_REFERENCE,
+            "https://example.invalid/termivar/package-acceptance/wrong-record",
+            1,
+        )
+        duplicate = html.replace(
+            ACTIONABLE_RECORD_ANCHOR,
+            ACTIONABLE_RECORD_ANCHOR + ACTIONABLE_RECORD_ANCHOR,
+            1,
+        )
+        missing = html.replace(ACTIONABLE_RECORD_ANCHOR, "", 1)
+        wrong_record_label = html.replace(
+            "Selected source reference", "Unqualified external source", 1)
+        empty_license_label = html.replace("License terms", "", 1)
+        for name, mutated in (
+                ("actionable_item", actionable_item_anchor),
+                ("wrong_section", wrong_section),
+                ("wrong_url", wrong_url),
+                ("duplicate", duplicate),
+                ("missing", missing),
+                ("wrong_record_label", wrong_record_label),
+                ("empty_license_label", empty_license_label)):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    runner.AcceptanceError,
+                    "typed source anchor multiset or section"):
+                runner._validate_actionable_assessment_html(
+                    assessment, mutated.encode("utf-8"))
+
+        nested_anchor_label = html.replace(
+            ">Selected source reference</a>",
+            "><span>Selected source reference</span></a>",
+            1,
+        )
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "active or external content"):
+            runner._validate_actionable_assessment_html(
+                assessment, nested_anchor_label.encode("utf-8"))
+
+        for name, attribute in (
+                ("ping", ' ping="https://example.invalid/ping"'),
+                ("target", ' target="_blank"'),
+                ("download", " download"),
+                ("referrerpolicy", ' referrerpolicy="no-referrer"'),
+                ("event_handler", ' onclick="return false"'),
+                ("extra_attribute", ' data-source="synthetic"')):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    runner.AcceptanceError, "active or external content"):
+                mutated = html.replace(
+                    '<a rel="noreferrer noopener"',
+                    '<a rel="noreferrer noopener"' + attribute,
+                    1,
+                )
+                runner._validate_actionable_assessment_html(
+                    assessment, mutated.encode("utf-8"))
+
+        for name, rel in (
+                ("rel_reordered", "noopener noreferrer"),
+                ("rel_extra", "noreferrer noopener external")):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    runner.AcceptanceError, "active or external content"):
+                mutated = html.replace("noreferrer noopener", rel, 1)
+                runner._validate_actionable_assessment_html(
+                    assessment, mutated.encode("utf-8"))
+
+        for name, reference in (
+                ("wrong_type", 7),
+                ("non_https", "http://example.invalid/source")):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    runner.AcceptanceError, "record reference is invalid"):
+                mutated_assessment = copy.deepcopy(assessment)
+                mutated_assessment["wordpress_review"]["external_review"][
+                    "evaluations"
+                ][0]["record_reference"] = reference
+                runner._validate_actionable_assessment_html(
+                    mutated_assessment, html.encode("utf-8"))
+
+    def test_actionable_source_records_require_the_exact_technical_appendix_div(self):
+        assessment = actionable_assessment_with_wordpress_sources()
+        html = actionable_html_with_wordpress_sources()
+        source_section = ACTIONABLE_WORDPRESS_SOURCE_SECTION
+        without_source = html.replace(source_section, "", 1)
+        outside_appendix = without_source.replace(
+            '<div id="technical-audit-appendix">',
+            source_section + '<div id="technical-audit-appendix">',
+            1,
+        )
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "typed source anchor multiset or section"):
+            runner._validate_actionable_assessment_html(
+                assessment, outside_appendix.encode("utf-8"))
+
+        wrapper_mutations = {
+            "missing_id": html.replace(
+                'id="technical-audit-appendix"',
+                'id="technical-audit-details"',
+                1,
+            ),
+            "duplicate_id": html.replace(
+                '<div id="technical-audit-appendix">',
+                '<div id="technical-audit-appendix"></div>'
+                '<div id="technical-audit-appendix">',
+                1,
+            ),
+            "wrong_wrapper": html.replace(
+                '<div id="technical-audit-appendix">',
+                '<section id="technical-audit-appendix">',
+                1,
+            ),
+            "hidden_attribute": html.replace(
+                '<div id="technical-audit-appendix">',
+                '<div id="technical-audit-appendix" hidden>',
+                1,
+            ),
+            "class_attribute": html.replace(
+                '<div id="technical-audit-appendix">',
+                '<div id="technical-audit-appendix" class="appendix">',
+                1,
+            ),
+            "duplicate_id_attribute": html.replace(
+                '<div id="technical-audit-appendix">',
+                '<div id="technical-audit-appendix" '
+                'id="technical-audit-appendix">',
+                1,
+            ),
+            "crossed_containers": html.replace(
+                "</section></div>\n</main>",
+                "</div></section>\n</main>",
+                1,
+            ),
+        }
+        for name, mutated in wrapper_mutations.items():
+            with self.subTest(wrapper=name), self.assertRaises(runner.AcceptanceError):
+                runner._validate_actionable_assessment_html(
+                    assessment, mutated.encode("utf-8"))
+
+    def test_actionable_html_contract_fails_closed_on_independent_mutations(self):
+        cases = (
+            ("missing_decision", "Decision overview heading changed"),
+            ("missing_actionable", "Actionable items heading changed"),
+            ("missing_appendix", "Technical audit appendix heading changed"),
+            ("wrong_count", "Needs-review candidates count changed"),
+            ("priority_overclaim", "evidence-assurance order changed"),
+            ("duplicate_heading", "item headings changed"),
+            ("missing_limitation", "item limitation changed"),
+            ("context_overclaim", "item context limitation changed"),
+            ("wrong_remediation", "item recommendation changed"),
+            ("missing_guidance", "item verification guidance changed"),
+            ("wrong_item_schema", "item schema changed"),
+            ("wrong_evidence_count", "item evidence count changed"),
+            ("wrong_recommendation_id", "item recommendation identity changed"),
+            ("wrong_assigned_severity", "assigned severity changed"),
+            ("unknown_severity_low", "unassigned severity changed"),
+            ("script", "active or external content"),
+            ("external_source", "active or external content"),
+            ("external_style", "active or external content"),
+            ("unsafe_href", "active or external content"),
+            ("secret_marker", "exposed a secret marker"),
+        )
+        for mutation, expected in cases:
+            with self.subTest(mutation=mutation):
+                html = mutate_actionable_html(ACTIONABLE_HTML, mutation)
+                with self.assertRaisesRegex(runner.AcceptanceError, expected):
+                    runner._validate_actionable_assessment_html(
+                        actionable_assessment(), html.encode("utf-8"))
+
+        overclaim = EMPTY_ACTIONABLE_HTML.replace(
+            "No assessment items were projected. This is not evidence that the "
+            "application is secure or that assessment coverage was complete.",
+            "No assessment items were projected. The application is secure.",
+            1,
+        )
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "overstates security or coverage"):
+            runner._validate_actionable_assessment_html(
+                empty_actionable_assessment(), overclaim.encode("utf-8"))
+
+        wrong_basis = actionable_assessment()
+        wrong_basis["items"][0]["claim_basis"] = "differential"
+        with self.assertRaisesRegex(runner.AcceptanceError, "claim basis changed"):
+            runner._validate_actionable_assessment_html(
+                wrong_basis, ACTIONABLE_HTML.encode("utf-8"))
+
+        bool_count = actionable_assessment()
+        bool_count["item_count"] = True
+        with self.assertRaisesRegex(runner.AcceptanceError, "item accounting changed"):
+            runner._validate_actionable_assessment_html(
+                bool_count, ACTIONABLE_HTML.encode("utf-8"))
+
+        bool_evidence_count = actionable_assessment()
+        bool_evidence_count["items"][0]["evidence_count"] = True
+        with self.assertRaisesRegex(runner.AcceptanceError, "evidence count is invalid"):
+            runner._validate_actionable_assessment_html(
+                bool_evidence_count, ACTIONABLE_HTML.encode("utf-8"))
+
+        missing_recommendation_id = actionable_assessment()
+        missing_recommendation_id["items"][0]["remediation"]["id"] = None
+        with self.assertRaisesRegex(runner.AcceptanceError, "remediation is invalid"):
+            runner._validate_actionable_assessment_html(
+                missing_recommendation_id, ACTIONABLE_HTML.encode("utf-8"))
+
+    def test_packaged_actionable_html_failure_is_reached_through_full_orchestration(self):
+        for index, (mutation, expected) in enumerate((
+                ("missing_decision", "Decision overview heading changed"),
+                ("wrong_count", "Needs-review candidates count changed"),
+                ("secret_marker", "exposed a secret marker"))):
+            with self.subTest(mutation=mutation):
+                result, _ = self.execute(
+                    actionable_mutation=mutation,
+                    path_suffix=f"-actionable-{index}",
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(expected, result["failure"])
 
     def test_full_packaged_acceptance_checks_interfaces_and_application_paths(self):
         result, commands = self.execute()
@@ -2307,6 +2919,19 @@ class CandidateOrchestrationTests(unittest.TestCase):
         )
         self.assertEqual(result["application"]["synthetic_comparison"]["counts"],
                          runner.SYNTHETIC_COUNTS)
+        self.assertEqual(result["application"]["actionable_human_report"], {
+            "item_count": 2,
+            "disposition_counts": {
+                "confirmed": 0,
+                "needs_review": 1,
+                "informational": 1,
+            },
+            "item_headings_exact": True,
+            "zero_item_limitations_present": False,
+            "active_content": "absent",
+            "external_resources": "absent",
+            "secret_markers": "absent",
+        })
         progress = result["application"]["live_progress"]
         self.assertEqual(progress["channel"], "stderr")
         self.assertEqual(progress["states"][0], "assessment_running")

@@ -145,6 +145,51 @@ fn assert_three_bundle_files(destination: &Path) {
     assert_eq!(names, [HTML_NAME, JSON_NAME, MANIFEST_NAME]);
 }
 
+fn assert_actionable_html_matches_assessment(html: &str, assessment: &Value) {
+    let items = assessment["items"]
+        .as_array()
+        .expect("assessment items must be an array");
+    assert_eq!(assessment["item_count"].as_u64(), Some(items.len() as u64));
+    let mut informational = 0_u64;
+    let mut needs_review = 0_u64;
+    let mut confirmed = 0_u64;
+    for item in items {
+        match item["disposition"].as_str() {
+            Some("informational") => informational += 1,
+            Some("needs_review") => needs_review += 1,
+            Some("confirmed") => confirmed += 1,
+            value => panic!("unexpected assessment disposition: {value:?}"),
+        }
+        let title = item["title"].as_str().expect("assessment item title");
+        assert_eq!(
+            html.matches(title).count(),
+            1,
+            "each safe fixture title must be rendered once"
+        );
+    }
+
+    let headings = [
+        "<h2>Decision overview</h2>",
+        "<h2>Actionable items</h2>",
+        "<h2>Technical audit appendix</h2>",
+    ];
+    let positions = headings.map(|heading| html.find(heading).expect("human report section"));
+    assert!(positions[0] < positions[1] && positions[1] < positions[2]);
+    for (label, count) in [
+        ("Verifier-bound confirmed items", confirmed),
+        ("Needs-review candidates", needs_review),
+        ("Informational observations", informational),
+    ] {
+        assert!(html.contains(&format!("<strong>{count}</strong><span>{label}</span>")));
+    }
+    assert!(html.contains(
+        "These counts describe typed assessment items, not a count of confirmed vulnerabilities."
+    ));
+    assert!(html.contains("report integrity does not establish target truth or remediation"));
+    assert!(!html.contains("Result: secure"));
+    assert!(!html.contains("Coverage: complete"));
+}
+
 #[test]
 fn actual_cli_one_scan_writes_two_reports_and_a_matching_manifest() {
     let server = serve_html("<main>bounded fixture</main>");
@@ -181,6 +226,7 @@ fn actual_cli_one_scan_writes_two_reports_and_a_matching_manifest() {
     assert!(html_text.starts_with("<!doctype html>"));
     assert!(html_text.contains("Content-Security-Policy"));
     assert!(!html_text.contains("<script"));
+    assert_actionable_html_matches_assessment(html_text, &assessment);
     assert_eq!(manifest["schema"], "termivar-report-bundle/v1");
     assert_eq!(manifest["producer"]["product"], "Termivar");
     assert_eq!(manifest["producer"]["version"], env!("CARGO_PKG_VERSION"));
@@ -476,6 +522,14 @@ fn empty_complete_bundle_self_compares_without_a_security_claim() {
     let assessment = parse_json(&assessment_bytes, "empty bundled assessment");
     assert_eq!(assessment["status"], "complete");
     assert_eq!(assessment["item_count"], 0);
+    let html = fs::read_to_string(destination.join(HTML_NAME)).expect("read empty bundled HTML");
+    assert_actionable_html_matches_assessment(&html, &assessment);
+    assert!(html.contains(
+        "No assessment item was projected. This does not establish that the application is secure or that coverage was exhaustive."
+    ));
+    assert!(html.contains(
+        "No assessment items were projected. This is not evidence that the application is secure or that assessment coverage was complete."
+    ));
     let requests_after_scan = server.requests.lock().unwrap().clone();
     assert_eq!(requests_after_scan, ["/", "/", "/"]);
 

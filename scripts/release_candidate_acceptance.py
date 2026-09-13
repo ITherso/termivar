@@ -10,8 +10,10 @@ authenticating source, tag, or release provenance.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from contextlib import contextmanager
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -21,6 +23,7 @@ import shutil
 import stat
 import sys
 from typing import Callable
+from urllib.parse import urlsplit
 
 import first_use
 import report_bundle_example
@@ -179,6 +182,105 @@ SYNTHETIC_COUNTS = {
     "changed": 1,
     "unchanged": 1,
 }
+
+ACTIONABLE_DISPOSITION_ORDER = ("confirmed", "needs_review", "informational")
+ACTIONABLE_HEADINGS = (
+    "Decision overview",
+    "Actionable items",
+    "Technical audit appendix",
+)
+ACTIONABLE_INTERPRETATIONS = {
+    "informational": (
+        "Informational: bounded observation evidence was committed; no differential or "
+        "verifier transition was established."
+    ),
+    "needs_review": (
+        "Needs review: a typed evidence relationship was committed; human interpretation "
+        "is required and no verifier transition was established."
+    ),
+    "confirmed": (
+        "Confirmed is limited to the cited verifier case and outcome; the label does not "
+        "widen assessment scope or establish broader impact."
+    ),
+}
+ACTIONABLE_LIMITATIONS = {
+    "informational": (
+        "This observation alone does not establish a vulnerability, exploitability, impact, "
+        "or remediation."
+    ),
+    "needs_review": (
+        "This review candidate is not a confirmed vulnerability; exploitability, impact, "
+        "and remediation were not established."
+    ),
+    "confirmed": (
+        "Confirmation applies only to the cited verifier transition; broader impact, root "
+        "cause, and remediation remain unestablished unless separately evidenced."
+    ),
+}
+ACTIONABLE_GUIDANCE = {
+    "informational": (
+        "Review the cited evidence and capability-owned recommendation. Do not perform "
+        "active confirmation unless the exact target, context, action, and current "
+        "authorization are established separately."
+    ),
+    "needs_review": (
+        "Establish the exact target and principal/application context from authorized "
+        "records. Reproduce the control and candidate relationship only under separate "
+        "current authorization; if that context cannot be established, do not rerun it."
+    ),
+    "confirmed": (
+        "Confirmation is bound to the cited case and outcome. After a change, rerun only "
+        "if the exact target, context, case, and separate current authorization are "
+        "established; report integrity alone does not verify remediation."
+    ),
+}
+ACTIONABLE_PRIORITY_STATEMENTS = {
+    "confirmed": (
+        "Presentation starts with verifier-bound confirmed items, then unresolved "
+        "differentials and observations. This is evidence-assurance order, not severity, "
+        "impact, or remediation priority."
+    ),
+    "needs_review": (
+        "Presentation starts with unresolved differentials, then observations; no "
+        "verifier-bound confirmed item was projected. This is evidence-assurance order, "
+        "not severity, impact, or remediation priority."
+    ),
+    "informational": (
+        "Presentation contains bounded observations only; no review candidate or "
+        "verifier-bound confirmed item was projected. This is not a severity, impact, or "
+        "remediation priority."
+    ),
+    "empty": (
+        "No assessment item was projected. This does not establish that the application "
+        "is secure or that coverage was exhaustive."
+    ),
+}
+ACTIONABLE_CONTEXTS = {
+    "anonymous_or_unbound": (
+        "No supplied-session audit is present. The current report contract does not assign "
+        "a separate principal to this item."
+    ),
+    "supplied_session_run": (
+        "The run includes a supplied-session audit, but this item is not assigned to a "
+        "principal by the current report contract. Consult the technical audit appendix "
+        "for operator-declared context, health checkpoints, and coverage."
+    ),
+}
+ACTIONABLE_CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; "
+    "form-action 'none'"
+)
+ACTIONABLE_SECRET_MARKERS = (
+    "termivar-s03-secret-marker",
+    "bearer synthetic-secret",
+    "session=synthetic-secret",
+)
+ACTIONABLE_WORDPRESS_AUDIT_HEADING = "WordPress evidence review audit"
+ACTIONABLE_WORDPRESS_ATTRIBUTION_HEADING = "External source attribution"
+ACTIONABLE_WORDPRESS_RIGHTS_HEADING = "Rights notices"
+ACTIONABLE_SOURCE_LINK_REL = "noreferrer noopener"
+ACTIONABLE_TECHNICAL_APPENDIX_ID = "technical-audit-appendix"
+ACTIONABLE_LICENSE_FALLBACK_LABEL = "License URL:"
 HEX_SHA = re.compile(r"[0-9a-f]{40}", re.ASCII)
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
 VERSION = re.compile(
@@ -603,6 +705,665 @@ def _validate_verification(document: dict, status: str) -> None:
     require(document.get("schema") == VERIFICATION_SCHEMA
             and document.get("status") == status,
             "Report Verify result does not match its expected status")
+
+
+def _normalized_html_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+class _ActionableAssessmentHtmlParser(HTMLParser):
+    """Reduce the bounded report to the structural facts this acceptance needs."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.headings: list[tuple[str, str]] = []
+        self.articles: list[dict] = []
+        self.csp_values: list[str] = []
+        self.unsafe_features: list[str] = []
+        self.anchors: list[dict] = []
+        self.license_fallbacks: list[dict] = []
+        self.all_text: list[str] = []
+        self._anchor: dict | None = None
+        self._anchor_text: list[str] | None = None
+        self._heading_tag: str | None = None
+        self._heading_text: list[str] = []
+        self._article: dict | None = None
+        self._field_kind: str | None = None
+        self._field_text: list[str] = []
+        self._pending_field_label: str | None = None
+        self._style_depth = 0
+        self._containers: list[dict] = []
+        self.technical_appendix_count = 0
+        self._strong_text: list[str] | None = None
+        self._license_fallback: dict | None = None
+        self._license_fallback_text: list[str] | None = None
+
+    def _in_technical_appendix(self) -> bool:
+        return any(container["technical_appendix"]
+                   for container in self._containers)
+
+    def _source_context(self) -> dict:
+        section = next(
+            (container for container in reversed(self._containers)
+             if container["tag"] == "section"),
+            {},
+        )
+        return {
+            "technical_appendix": self._in_technical_appendix(),
+            "section_heading": section.get("h2"),
+            "subsection_heading": section.get("h3"),
+        }
+
+    def handle_starttag(self, tag: str,
+                        attributes: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        normalized_attributes = [
+            (name.lower(), value) for name, value in attributes
+        ]
+        attribute_names = [name for name, _ in normalized_attributes]
+        attributes_by_name = dict(normalized_attributes)
+        appendix_ids = [
+            value for name, value in normalized_attributes
+            if name == "id" and value == ACTIONABLE_TECHNICAL_APPENDIX_ID
+        ]
+        appendix_id = len(appendix_ids) == 1
+        if appendix_ids and (
+                tag != "div"
+                or normalized_attributes != [
+                    ("id", ACTIONABLE_TECHNICAL_APPENDIX_ID)]):
+            self.unsafe_features.append("structure:invalid-technical-appendix-wrapper")
+        if tag == "div":
+            is_appendix = appendix_id
+            self._containers.append({
+                "tag": "div",
+                "h2": None,
+                "h3": None,
+                "technical_appendix": is_appendix,
+            })
+            if is_appendix:
+                self.technical_appendix_count += 1
+        elif tag == "section":
+            self._containers.append({
+                "tag": "section",
+                "h2": None,
+                "h3": None,
+                "technical_appendix": False,
+            })
+        if tag in {
+                "script", "iframe", "object", "embed", "form", "link", "base",
+                "audio", "video", "source", "track"}:
+            self.unsafe_features.append(f"element:{tag}")
+        for name, value in normalized_attributes:
+            lowered = (value or "").lower()
+            if name.startswith("on"):
+                self.unsafe_features.append(f"attribute:{name}")
+            if name in {"src", "srcset", "action", "formaction", "poster", "data"}:
+                self.unsafe_features.append(f"attribute:{name}")
+            if name == "href" and tag != "a":
+                self.unsafe_features.append("attribute:unsafe-href")
+            if name == "style" and ("url(" in lowered or "@import" in lowered):
+                self.unsafe_features.append("attribute:external-style")
+        if tag == "a":
+            if self._anchor is not None:
+                self.unsafe_features.append("structure:nested-anchor")
+            else:
+                self._anchor = {
+                    **self._source_context(),
+                    "href": attributes_by_name.get("href"),
+                    "attributes": tuple(normalized_attributes),
+                }
+                self._anchor_text = []
+            if (len(attribute_names) != len(set(attribute_names))
+                    or set(attribute_names) != {"href", "rel"}
+                    or attributes_by_name.get("rel") != ACTIONABLE_SOURCE_LINK_REL
+                    or not _is_strict_actionable_https_reference(
+                        attributes_by_name.get("href"))):
+                self.unsafe_features.append("element:unsafe-anchor")
+        elif self._anchor is not None:
+            self.unsafe_features.append("structure:nested-anchor-content")
+        if self._license_fallback_text is not None:
+            self.unsafe_features.append("structure:nested-license-fallback")
+        elif self._license_fallback is not None and tag != "code":
+            self.unsafe_features.append("structure:interrupted-license-fallback")
+        if tag == "strong":
+            if self._strong_text is not None:
+                self.unsafe_features.append("structure:nested-strong")
+            if self._license_fallback is not None:
+                self.unsafe_features.append("structure:incomplete-license-fallback")
+            self._strong_text = []
+        elif self._license_fallback is not None and tag == "code":
+            if self._license_fallback_text is not None:
+                self.unsafe_features.append("structure:nested-license-fallback")
+            if self._source_context() != {
+                    key: self._license_fallback[key]
+                    for key in (
+                        "technical_appendix", "section_heading",
+                        "subsection_heading")
+            }:
+                self.unsafe_features.append("structure:license-fallback-context-changed")
+            self._license_fallback_text = []
+        if tag == "style":
+            self._style_depth += 1
+            if self._style_depth != 1:
+                self.unsafe_features.append("structure:nested-style")
+        if (tag == "meta"
+                and (attributes_by_name.get("http-equiv") or "").lower()
+                == "content-security-policy"):
+            self.csp_values.append(attributes_by_name.get("content") or "")
+        elif (tag == "meta"
+              and (attributes_by_name.get("http-equiv") or "").lower() == "refresh"):
+            self.unsafe_features.append("element:meta-refresh")
+
+        if tag in {"h2", "h3"}:
+            if self._heading_tag is not None:
+                self.unsafe_features.append("structure:nested-heading")
+            self._heading_tag = tag
+            self._heading_text = []
+
+        classes = (attributes_by_name.get("class") or "").split()
+        if tag == "article" and "item" in classes:
+            if self._article is not None:
+                self.unsafe_features.append("structure:nested-item")
+            self._article = {"heading": None, "fields": [], "text": []}
+            self._pending_field_label = None
+        elif self._article is not None and tag in {"dt", "dd"}:
+            if self._field_kind is not None:
+                self.unsafe_features.append("structure:nested-field")
+            self._field_kind = tag
+            self._field_text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._anchor is not None and tag != "a":
+            self.unsafe_features.append("structure:interrupted-anchor")
+        if self._license_fallback_text is not None and tag != "code":
+            self.unsafe_features.append("structure:interrupted-license-fallback")
+        elif (self._license_fallback is not None
+              and self._license_fallback_text is None):
+            self.unsafe_features.append("structure:interrupted-license-fallback")
+        if tag == "style":
+            if self._style_depth != 1:
+                self.unsafe_features.append("structure:unmatched-style")
+            self._style_depth = max(0, self._style_depth - 1)
+        if tag == "strong" and self._strong_text is not None:
+            label = _normalized_html_text("".join(self._strong_text))
+            if label == ACTIONABLE_LICENSE_FALLBACK_LABEL:
+                self._license_fallback = {
+                    **self._source_context(),
+                    "label": label,
+                }
+            self._strong_text = None
+        if tag == "code" and self._license_fallback_text is not None:
+            fallback = self._license_fallback
+            if fallback is None:
+                self.unsafe_features.append("structure:orphan-license-fallback")
+            else:
+                self.license_fallbacks.append({
+                    **fallback,
+                    "value": "".join(self._license_fallback_text),
+                })
+            self._license_fallback = None
+            self._license_fallback_text = None
+        if tag == "a":
+            if self._anchor is None or self._anchor_text is None:
+                self.unsafe_features.append("structure:unmatched-anchor")
+            else:
+                self.anchors.append({
+                    **self._anchor,
+                    "label": _normalized_html_text("".join(self._anchor_text)),
+                })
+            self._anchor = None
+            self._anchor_text = None
+        if self._heading_tag == tag:
+            heading = _normalized_html_text("".join(self._heading_text))
+            self.headings.append((tag, heading))
+            section = next(
+                (container for container in reversed(self._containers)
+                 if container["tag"] == "section"),
+                None,
+            )
+            if section is not None:
+                section[tag] = heading
+            if tag == "h3" and self._article is not None:
+                if self._article["heading"] is not None:
+                    self.unsafe_features.append("structure:duplicate-item-heading")
+                self._article["heading"] = heading
+            self._heading_tag = None
+            self._heading_text = []
+
+        if tag in {"section", "div"}:
+            if self._containers and self._containers[-1]["tag"] == tag:
+                self._containers.pop()
+            else:
+                self.unsafe_features.append("structure:mismatched-container")
+
+        if self._article is not None and self._field_kind == tag:
+            value = _normalized_html_text("".join(self._field_text))
+            if tag == "dt":
+                if self._pending_field_label is not None:
+                    self.unsafe_features.append("structure:field-without-value")
+                self._pending_field_label = value
+            else:
+                if self._pending_field_label is None:
+                    self.unsafe_features.append("structure:value-without-field")
+                else:
+                    self._article["fields"].append(
+                        (self._pending_field_label, value))
+                self._pending_field_label = None
+            self._field_kind = None
+            self._field_text = []
+
+        if tag == "article" and self._article is not None:
+            if self._field_kind is not None or self._pending_field_label is not None:
+                self.unsafe_features.append("structure:incomplete-field")
+            self._article["text"] = _normalized_html_text(
+                "".join(self._article["text"]))
+            self.articles.append(self._article)
+            self._article = None
+
+    def handle_data(self, data: str) -> None:
+        self.all_text.append(data)
+        lowered = data.lower()
+        if self._style_depth and ("url(" in lowered or "@import" in lowered):
+            self.unsafe_features.append("element:external-style")
+        if self._heading_tag is not None:
+            self._heading_text.append(data)
+        if self._anchor_text is not None:
+            self._anchor_text.append(data)
+        if self._strong_text is not None:
+            self._strong_text.append(data)
+        if self._license_fallback_text is not None:
+            self._license_fallback_text.append(data)
+        elif self._license_fallback is not None and data.strip():
+            self.unsafe_features.append("structure:interrupted-license-fallback")
+        if self._article is not None:
+            self._article["text"].append(data)
+            if self._field_kind is not None:
+                self._field_text.append(data)
+
+    def finish(self) -> None:
+        self.close()
+        if (self._heading_tag is not None or self._article is not None
+                or self._field_kind is not None
+                or self._pending_field_label is not None
+                or self._style_depth != 0
+                or self._containers
+                or self._anchor is not None
+                or self._anchor_text is not None
+                or self._strong_text is not None
+                or self._license_fallback is not None
+                or self._license_fallback_text is not None):
+            self.unsafe_features.append("structure:unclosed-actionable-content")
+
+    def _interrupt_source_presentation(self) -> None:
+        if (self._anchor is not None or self._license_fallback is not None
+                or self._license_fallback_text is not None):
+            self.unsafe_features.append("structure:interrupted-source-presentation")
+
+    def handle_comment(self, _data: str) -> None:
+        self._interrupt_source_presentation()
+
+    def handle_decl(self, _decl: str) -> None:
+        self._interrupt_source_presentation()
+
+    def handle_pi(self, _data: str) -> None:
+        self._interrupt_source_presentation()
+
+    def unknown_decl(self, _data: str) -> None:
+        self._interrupt_source_presentation()
+
+
+def _is_strict_actionable_https_reference(value: object) -> bool:
+    if not isinstance(value, str) or not value or value != value.strip():
+        return False
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and port is None
+        and parsed.geturl() == value
+    )
+
+
+def _expected_actionable_source_anchors(assessment: dict) -> list[dict]:
+    wordpress = assessment.get("wordpress_review")
+    if wordpress is None:
+        return []
+    require(isinstance(wordpress, dict),
+            "packaged actionable WordPress audit is invalid")
+    external = wordpress.get("external_review")
+    if external is None:
+        return []
+    require(isinstance(external, dict),
+            "packaged actionable WordPress external review is invalid")
+    evaluations = external.get("evaluations")
+    notices = external.get("notices")
+    require(isinstance(evaluations, list) and isinstance(notices, list),
+            "packaged actionable WordPress external source lists are invalid")
+
+    expected = []
+    for evaluation in evaluations:
+        require(isinstance(evaluation, dict),
+                "packaged actionable WordPress evaluation is invalid")
+        if "record_reference" not in evaluation:
+            continue
+        reference = evaluation["record_reference"]
+        if reference is None:
+            continue
+        require(_is_strict_actionable_https_reference(reference),
+                "packaged actionable WordPress record reference is invalid")
+        expected.append({
+            "technical_appendix": True,
+            "section_heading": ACTIONABLE_WORDPRESS_AUDIT_HEADING,
+            "subsection_heading": ACTIONABLE_WORDPRESS_ATTRIBUTION_HEADING,
+            "href": reference,
+            "attributes": (("rel", ACTIONABLE_SOURCE_LINK_REL),
+                           ("href", reference)),
+            "label": "Selected source reference",
+        })
+
+    for notice in notices:
+        require(isinstance(notice, dict),
+                "packaged actionable WordPress notice is invalid")
+        license_url = notice.get("license_url")
+        require(isinstance(license_url, str) and license_url,
+                "packaged actionable WordPress license URL is invalid")
+        if _is_strict_actionable_https_reference(license_url):
+            expected.append({
+                "technical_appendix": True,
+                "section_heading": ACTIONABLE_WORDPRESS_AUDIT_HEADING,
+                "subsection_heading": ACTIONABLE_WORDPRESS_RIGHTS_HEADING,
+                "href": license_url,
+                "attributes": (("rel", ACTIONABLE_SOURCE_LINK_REL),
+                               ("href", license_url)),
+                "label": "License terms",
+            })
+    return expected
+
+
+def _expected_actionable_license_fallbacks(assessment: dict) -> list[dict]:
+    wordpress = assessment.get("wordpress_review")
+    if wordpress is None:
+        return []
+    require(isinstance(wordpress, dict),
+            "packaged actionable WordPress audit is invalid")
+    external = wordpress.get("external_review")
+    if external is None:
+        return []
+    require(isinstance(external, dict),
+            "packaged actionable WordPress external review is invalid")
+    notices = external.get("notices")
+    require(isinstance(notices, list),
+            "packaged actionable WordPress external source lists are invalid")
+
+    expected = []
+    for notice in notices:
+        require(isinstance(notice, dict),
+                "packaged actionable WordPress notice is invalid")
+        license_url = notice.get("license_url")
+        require(isinstance(license_url, str) and license_url,
+                "packaged actionable WordPress license URL is invalid")
+        if not _is_strict_actionable_https_reference(license_url):
+            expected.append({
+                "technical_appendix": True,
+                "section_heading": ACTIONABLE_WORDPRESS_AUDIT_HEADING,
+                "subsection_heading": ACTIONABLE_WORDPRESS_RIGHTS_HEADING,
+                "label": ACTIONABLE_LICENSE_FALLBACK_LABEL,
+                "value": license_url,
+            })
+    return expected
+
+
+def _actionable_anchor_identity(anchor: dict) -> tuple:
+    return (
+        anchor["technical_appendix"],
+        anchor["section_heading"],
+        anchor["subsection_heading"],
+        anchor["href"],
+        tuple(sorted(anchor["attributes"])),
+        anchor["label"],
+    )
+
+
+def _actionable_license_fallback_identity(fallback: dict) -> tuple:
+    return (
+        fallback["technical_appendix"],
+        fallback["section_heading"],
+        fallback["subsection_heading"],
+        fallback["label"],
+        fallback["value"],
+    )
+
+
+def _actionable_item_rows(assessment: dict) -> tuple[list[dict], dict[str, int]]:
+    require(isinstance(assessment, dict)
+            and assessment.get("schema") == report_bundle_example.ASSESSMENT_SCHEMA
+            and assessment.get("status") == "complete",
+            "packaged actionable assessment root changed")
+    item_count = assessment.get("item_count")
+    items = assessment.get("items")
+    require(isinstance(item_count, int) and not isinstance(item_count, bool)
+            and item_count >= 0 and isinstance(items, list)
+            and item_count == len(items),
+            "packaged actionable assessment item accounting changed")
+    counts = {disposition: 0 for disposition in ACTIONABLE_DISPOSITION_ORDER}
+    for item in items:
+        require(isinstance(item, dict),
+                "packaged actionable assessment item is invalid")
+        for field in (
+                "schema", "title", "disposition", "claim_basis", "subject_reference",
+                "redacted_summary"):
+            require(isinstance(item.get(field), str) and item[field],
+                    f"packaged actionable assessment {field} is invalid")
+        disposition = item["disposition"]
+        require(disposition in counts,
+                "packaged actionable assessment disposition changed")
+        expected_basis = {
+            "informational": "observation",
+            "needs_review": "differential",
+            "confirmed": "verifier_transition",
+        }[disposition]
+        require(item["claim_basis"] == expected_basis,
+                "packaged actionable assessment claim basis changed")
+        counts[disposition] += 1
+        evidence_count = item.get("evidence_count")
+        require(isinstance(evidence_count, int)
+                and not isinstance(evidence_count, bool)
+                and evidence_count >= 0,
+                "packaged actionable assessment evidence count is invalid")
+        severity = item.get("severity")
+        require(severity is None or (isinstance(severity, str) and severity),
+                "packaged actionable assessment severity is invalid")
+        remediation = item.get("remediation")
+        require(isinstance(remediation, dict)
+                and isinstance(remediation.get("id"), str)
+                and remediation["id"]
+                and isinstance(remediation.get("summary"), str)
+                and remediation["summary"],
+                "packaged actionable assessment remediation is invalid")
+    return items, counts
+
+
+def _one_actionable_field(article: dict, label: str) -> str:
+    values = [value for field, value in article["fields"] if field == label]
+    require(len(values) == 1,
+            f"packaged actionable item {label} field changed")
+    return values[0]
+
+
+def _validate_actionable_assessment_html(assessment: dict, encoded: bytes) -> dict:
+    require(len(encoded) <= report_bundle_example.REPORT_LIMIT,
+            "packaged actionable HTML exceeds the report limit")
+    try:
+        html = encoded.decode("utf-8")
+    except UnicodeError as error:
+        raise AcceptanceError("packaged actionable HTML is not UTF-8") from error
+    lowered = html.lower()
+    require(all(marker not in lowered for marker in ACTIONABLE_SECRET_MARKERS),
+            "packaged actionable HTML exposed a secret marker")
+
+    parser = _ActionableAssessmentHtmlParser()
+    try:
+        parser.feed(html)
+        parser.finish()
+    except (AssertionError, UnicodeError, ValueError) as error:
+        raise AcceptanceError("packaged actionable HTML could not be parsed") from error
+    require(not parser.unsafe_features,
+            "packaged actionable HTML contains active or external content")
+    require(parser.technical_appendix_count == 1,
+            "packaged actionable HTML technical appendix wrapper changed")
+    require(parser.csp_values == [ACTIONABLE_CSP],
+            "packaged actionable HTML content security policy changed")
+
+    h2 = [text for tag, text in parser.headings if tag == "h2"]
+    positions = []
+    for heading in ACTIONABLE_HEADINGS:
+        require(h2.count(heading) == 1,
+                f"packaged actionable HTML {heading} heading changed")
+        positions.append(h2.index(heading))
+    require(positions == sorted(positions) and len(set(positions)) == len(positions),
+            "packaged actionable HTML section order changed")
+
+    items, counts = _actionable_item_rows(assessment)
+    expected_anchors = _expected_actionable_source_anchors(assessment)
+    expected_fallbacks = _expected_actionable_license_fallbacks(assessment)
+    require(
+        Counter(_actionable_anchor_identity(anchor) for anchor in parser.anchors)
+        == Counter(_actionable_anchor_identity(anchor) for anchor in expected_anchors),
+        "packaged actionable HTML typed source anchor multiset or section changed",
+    )
+    require(
+        Counter(_actionable_license_fallback_identity(fallback)
+                for fallback in parser.license_fallbacks)
+        == Counter(_actionable_license_fallback_identity(fallback)
+                   for fallback in expected_fallbacks),
+        "packaged actionable HTML typed license fallback multiset or section changed",
+    )
+    ordered_items = [
+        item for disposition in ACTIONABLE_DISPOSITION_ORDER
+        for item in items if item["disposition"] == disposition
+    ]
+    expected_headings = [
+        f"Actionable item {index}: {_normalized_html_text(item['title'])}"
+        for index, item in enumerate(ordered_items, start=1)
+    ]
+    actual_headings = [article["heading"] for article in parser.articles]
+    require(actual_headings == expected_headings,
+            "packaged actionable HTML item headings changed")
+
+    overview_labels = {
+        "confirmed": "Verifier-bound confirmed items",
+        "needs_review": "Needs-review candidates",
+        "informational": "Informational observations",
+    }
+    for disposition, label in overview_labels.items():
+        card = f"<strong>{counts[disposition]}</strong><span>{label}</span>"
+        require(html.count(card) == 1,
+                f"packaged actionable HTML {label} count changed")
+
+    for item, article in zip(ordered_items, parser.articles, strict=True):
+        disposition = item["disposition"]
+        require(f"Disposition: {disposition}" in article["text"],
+                "packaged actionable item disposition changed")
+        require(_one_actionable_field(article, "What was observed")
+                == _normalized_html_text(item["redacted_summary"]),
+                "packaged actionable item observation changed")
+        require(_one_actionable_field(
+                    article,
+                    "Opaque assessment subject reference (not proof of affectedness or location)")
+                == _normalized_html_text(item["subject_reference"]),
+                "packaged actionable item resource reference changed")
+        context = _one_actionable_field(article, "Collection and principal context")
+        expected_context = ACTIONABLE_CONTEXTS[
+            "supplied_session_run"
+            if assessment.get("supplied_session") is not None
+            else "anonymous_or_unbound"
+        ]
+        require(context == expected_context,
+                "packaged actionable item context limitation changed")
+        require(_one_actionable_field(article, "Interpretation")
+                == ACTIONABLE_INTERPRETATIONS[disposition],
+                "packaged actionable item interpretation changed")
+        require(_one_actionable_field(article, "What was not established")
+                == ACTIONABLE_LIMITATIONS[disposition],
+                "packaged actionable item limitation changed")
+        require(_one_actionable_field(article, "Recommended action (not a verified fix)")
+                == _normalized_html_text(item["remediation"]["summary"]),
+                "packaged actionable item recommendation changed")
+        require(_one_actionable_field(article, "Safe verification guidance")
+                == ACTIONABLE_GUIDANCE[disposition],
+                "packaged actionable item verification guidance changed")
+        require(_one_actionable_field(article, "Item schema")
+                == _normalized_html_text(item["schema"]),
+                "packaged actionable item schema changed")
+        require(_one_actionable_field(article, "Evidence reference count")
+                == str(item["evidence_count"]),
+                "packaged actionable item evidence count changed")
+        require(_one_actionable_field(article, "Recommendation ID")
+                == _normalized_html_text(item["remediation"]["id"]),
+                "packaged actionable item recommendation identity changed")
+        severity = _one_actionable_field(article, "Severity")
+        if item.get("severity") is None:
+            require(severity == "not assigned (unassigned does not mean low or zero)",
+                    "packaged actionable item unassigned severity changed")
+        else:
+            require(severity == _normalized_html_text(item["severity"]),
+                "packaged actionable item assigned severity changed")
+
+    visible_text = _normalized_html_text("".join(parser.all_text))
+    require(all(marker not in visible_text.lower()
+                for marker in ACTIONABLE_SECRET_MARKERS),
+            "packaged actionable HTML exposed a secret marker")
+    require("Available report metadata and selected capability/source audit details follow, "
+            "including their local accounting when present." in visible_text,
+            "packaged actionable HTML technical appendix limitation changed")
+    require(
+        "These counts describe typed assessment items, not a count of confirmed "
+        "vulnerabilities. Unassigned or unknown severity is not low or zero severity."
+        in visible_text,
+        "packaged actionable HTML decision limitation changed",
+    )
+    priority_kind = (
+        "confirmed" if counts["confirmed"]
+        else "needs_review" if counts["needs_review"]
+        else "informational" if counts["informational"]
+        else "empty"
+    )
+    require(ACTIONABLE_PRIORITY_STATEMENTS[priority_kind] in visible_text,
+            "packaged actionable HTML evidence-assurance order changed")
+    if not items:
+        require(
+            "No assessment item was projected. This does not establish that the "
+            "application is secure or that coverage was exhaustive." in visible_text
+            and "No assessment items were projected. This is not evidence that the "
+            "application is secure or that assessment coverage was complete."
+            in visible_text,
+            "packaged empty actionable HTML overstates security or coverage",
+        )
+    for overclaim in (
+            "Result: secure", "Assessment result: secure",
+            "No assessment items means secure", "Assessment coverage: complete"):
+        require(overclaim not in visible_text,
+                "packaged actionable HTML overstates security or coverage")
+
+    return {
+        "item_count": len(items),
+        "disposition_counts": counts,
+        "item_headings_exact": True,
+        "zero_item_limitations_present": not items,
+        "active_content": "absent",
+        "external_resources": (
+            "typed_wordpress_attribution_only" if parser.anchors else "absent"
+        ),
+        "secret_markers": "absent",
+    }
 
 
 def _validate_progress(stderr: bytes, forbidden_values: tuple[bytes, ...]) -> dict:
@@ -3309,6 +4070,16 @@ def _run_fixture_acceptance(
     bundle = report_bundle_example.validate_bundle(bundle_path)
     require(bundle["producer"] == {"product": "Termivar", "version": expected_version},
             "bundle producer identity changed")
+    assessment_bytes = report_bundle_example.read_regular_file(
+        bundle_path / "assessment.json", report_bundle_example.REPORT_LIMIT,
+        "packaged actionable assessment")
+    assessment = _parse_json(
+        assessment_bytes, "packaged actionable assessment")
+    actionable_html = report_bundle_example.read_regular_file(
+        bundle_path / "assessment.html", report_bundle_example.REPORT_LIMIT,
+        "packaged actionable HTML")
+    human_report = _validate_actionable_assessment_html(
+        assessment, actionable_html)
     bundle_snapshot = _snapshot_files(bundle_path)
 
     runner.run("bundle-no-overwrite", [
@@ -3416,6 +4187,7 @@ def _run_fixture_acceptance(
             "assessment": bundle["assessment"],
             "files": bundle["files"],
         },
+        "actionable_human_report": human_report,
         "live_progress": progress,
         "verification": {
             "status": verification["status"],

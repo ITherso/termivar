@@ -1271,6 +1271,300 @@ fn write_assessment_csv_row(
 }
 
 #[cfg(feature = "scanning")]
+const ACTIONABLE_ITEM_DISPOSITION_ORDER: [&str; 3] = ["confirmed", "needs_review", "informational"];
+
+#[cfg(feature = "scanning")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AssessmentDecisionOverview {
+    informational: usize,
+    needs_review: usize,
+    confirmed: usize,
+}
+
+#[cfg(feature = "scanning")]
+impl AssessmentDecisionOverview {
+    fn from_document(document: &AssessmentDocument<'_>) -> Result<Self, ReportError> {
+        let mut overview = Self {
+            informational: 0,
+            needs_review: 0,
+            confirmed: 0,
+        };
+        for item in &document.items {
+            let count = match item.disposition {
+                "informational" => &mut overview.informational,
+                "needs_review" => &mut overview.needs_review,
+                "confirmed" => &mut overview.confirmed,
+                _ => return Err(ReportError::Serialization),
+            };
+            *count = count.checked_add(1).ok_or(ReportError::Serialization)?;
+        }
+        let total = overview
+            .informational
+            .checked_add(overview.needs_review)
+            .and_then(|value| value.checked_add(overview.confirmed))
+            .ok_or(ReportError::Serialization)?;
+        if total != document.items.len()
+            || u64::try_from(total).map_err(|_| ReportError::Serialization)? != document.item_count
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(overview)
+    }
+
+    const fn priority_statement(self) -> &'static str {
+        if self.confirmed != 0 {
+            "Presentation starts with verifier-bound confirmed items, then unresolved differentials and observations. This is evidence-assurance order, not severity, impact, or remediation priority."
+        } else if self.needs_review != 0 {
+            "Presentation starts with unresolved differentials, then observations; no verifier-bound confirmed item was projected. This is evidence-assurance order, not severity, impact, or remediation priority."
+        } else if self.informational != 0 {
+            "Presentation contains bounded observations only; no review candidate or verifier-bound confirmed item was projected. This is not a severity, impact, or remediation priority."
+        } else {
+            "No assessment item was projected. This does not establish that the application is secure or that coverage was exhaustive."
+        }
+    }
+}
+
+#[cfg(feature = "scanning")]
+fn assessment_item_interpretation(
+    item: &AssessmentItemDocument<'_>,
+) -> Result<&'static str, ReportError> {
+    match (item.disposition, item.claim_basis) {
+        ("informational", "observation") => Ok(
+            "Informational: bounded observation evidence was committed; no differential or verifier transition was established.",
+        ),
+        ("needs_review", "differential") => Ok(
+            "Needs review: a typed evidence relationship was committed; human interpretation is required and no verifier transition was established.",
+        ),
+        ("confirmed", "verifier_transition") => Ok(
+            "Confirmed is limited to the cited verifier case and outcome; the label does not widen assessment scope or establish broader impact.",
+        ),
+        _ => Err(ReportError::Serialization),
+    }
+}
+
+#[cfg(feature = "scanning")]
+fn assessment_item_unestablished(
+    item: &AssessmentItemDocument<'_>,
+) -> Result<&'static str, ReportError> {
+    match item.disposition {
+        "informational" => Ok(
+            "This observation alone does not establish a vulnerability, exploitability, impact, or remediation.",
+        ),
+        "needs_review" => Ok(
+            "This review candidate is not a confirmed vulnerability; exploitability, impact, and remediation were not established.",
+        ),
+        "confirmed" => Ok(
+            "Confirmation applies only to the cited verifier transition; broader impact, root cause, and remediation remain unestablished unless separately evidenced.",
+        ),
+        _ => Err(ReportError::Serialization),
+    }
+}
+
+#[cfg(feature = "scanning")]
+fn assessment_item_verification_guidance(
+    item: &AssessmentItemDocument<'_>,
+) -> Result<&'static str, ReportError> {
+    match item.disposition {
+        "informational" => Ok(
+            "Review the cited evidence and capability-owned recommendation. Do not perform active confirmation unless the exact target, context, action, and current authorization are established separately.",
+        ),
+        "needs_review" => Ok(
+            "Establish the exact target and principal/application context from authorized records. Reproduce the control and candidate relationship only under separate current authorization; if that context cannot be established, do not rerun it.",
+        ),
+        "confirmed" => Ok(
+            "Confirmation is bound to the cited case and outcome. After a change, rerun only if the exact target, context, case, and separate current authorization are established; report integrity alone does not verify remediation.",
+        ),
+        _ => Err(ReportError::Serialization),
+    }
+}
+
+#[cfg(feature = "scanning")]
+fn assessment_item_collection_context(_document: &AssessmentDocument<'_>) -> &'static str {
+    #[cfg(feature = "supplied-session-review")]
+    if _document.supplied_session.is_some() {
+        return "The run includes a supplied-session audit, but this item is not assigned to a principal by the current report contract. Consult the technical audit appendix for operator-declared context, health checkpoints, and coverage.";
+    }
+    "No supplied-session audit is present. The current report contract does not assign a separate principal to this item."
+}
+
+#[cfg(feature = "scanning")]
+fn write_html_actionable_text_field(
+    output: &mut RenderBuffer,
+    label: &'static str,
+    value: &str,
+) -> Result<(), ReportError> {
+    output.push_str("<dt>")?;
+    write_html_text(output, label)?;
+    output.push_str("</dt><dd>")?;
+    write_html_text(output, value)?;
+    output.push_str("</dd>")
+}
+
+#[cfg(feature = "scanning")]
+fn write_html_actionable_code_field(
+    output: &mut RenderBuffer,
+    label: &'static str,
+    value: &str,
+) -> Result<(), ReportError> {
+    output.push_str("<dt>")?;
+    write_html_text(output, label)?;
+    output.push_str("</dt><dd><code>")?;
+    write_html_text(output, value)?;
+    output.push_str("</code></dd>")
+}
+
+#[cfg(feature = "scanning")]
+fn write_assessment_decision_overview_html(
+    output: &mut RenderBuffer,
+    document: &AssessmentDocument<'_>,
+) -> Result<(), ReportError> {
+    let overview = AssessmentDecisionOverview::from_document(document)?;
+    output.push_str(
+        "<section id=\"decision-overview\"><h2>Decision overview</h2>\
+<p>These counts describe typed assessment items, not a count of confirmed vulnerabilities. Unassigned or unknown severity is not low or zero severity.</p>\
+<div class=\"decision-grid\">",
+    )?;
+    for (label, count) in [
+        ("Verifier-bound confirmed items", overview.confirmed),
+        ("Needs-review candidates", overview.needs_review),
+        ("Informational observations", overview.informational),
+    ] {
+        output.push_str("<div class=\"decision-card\"><strong>")?;
+        output.push_fmt(format_args!("{count}"))?;
+        output.push_str("</strong><span>")?;
+        write_html_text(output, label)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div><p><strong>Next decision:</strong> ")?;
+    write_html_text(output, overview.priority_statement())?;
+    output.push_str("</p></section>")
+}
+
+#[cfg(feature = "scanning")]
+fn write_assessment_actionable_items_html(
+    output: &mut RenderBuffer,
+    document: &AssessmentDocument<'_>,
+) -> Result<(), ReportError> {
+    output.push_str("<section id=\"actionable-items\"><h2>Actionable items</h2>")?;
+    if document.items.is_empty() {
+        output.push_str(
+            "<p class=\"empty\">No assessment items were projected. This is not evidence that the application is secure or that assessment coverage was complete.</p></section>",
+        )?;
+        return Ok(());
+    }
+    let collection_context = assessment_item_collection_context(document);
+    let mut index = 0usize;
+    for disposition in ACTIONABLE_ITEM_DISPOSITION_ORDER {
+        for item in document
+            .items
+            .iter()
+            .filter(|item| item.disposition == disposition)
+        {
+            index = index.checked_add(1).ok_or(ReportError::Serialization)?;
+            output.push_fmt(format_args!(
+                "<article class=\"item\"><h3>Actionable item {index}: "
+            ))?;
+            write_html_text(output, item.title)?;
+            output.push_str("</h3><p class=\"disposition\"><span>Disposition: </span><code>")?;
+            write_html_text(output, item.disposition)?;
+            output.push_str("</code></p><dl>")?;
+            write_html_actionable_text_field(output, "What was observed", item.redacted_summary)?;
+            write_html_actionable_code_field(
+                output,
+                "Opaque assessment subject reference (not proof of affectedness or location)",
+                &item.subject_reference,
+            )?;
+            write_html_actionable_text_field(
+                output,
+                "Collection and principal context",
+                collection_context,
+            )?;
+            write_html_actionable_text_field(
+                output,
+                "Interpretation",
+                assessment_item_interpretation(item)?,
+            )?;
+            write_html_actionable_text_field(
+                output,
+                "What was not established",
+                assessment_item_unestablished(item)?,
+            )?;
+            write_html_actionable_text_field(
+                output,
+                "Recommended action (not a verified fix)",
+                item.remediation.summary,
+            )?;
+            write_html_actionable_text_field(
+                output,
+                "Safe verification guidance",
+                assessment_item_verification_guidance(item)?,
+            )?;
+            output.push_str("<dt>Severity</dt><dd>")?;
+            write_html_optional_assessment_text(output, item.severity, "not assigned")?;
+            if item.severity.is_none() {
+                output.push_str(" <span>(unassigned does not mean low or zero)</span>")?;
+            }
+            output.push_str("</dd><dt>Confidence</dt><dd><code>")?;
+            output.push_fmt(format_args!("{} ppm", item.confidence_ppm))?;
+            output.push_str(
+                "</code> <span>(evidence-specific; not CVSS, impact, or exploit probability)</span></dd>",
+            )?;
+            write_html_actionable_code_field(output, "Claim basis", item.claim_basis)?;
+            write_html_actionable_code_field(output, "Item schema", item.schema)?;
+            write_html_actionable_code_field(output, "Capability", item.capability_id)?;
+            write_html_actionable_code_field(output, "Category", item.category)?;
+            output.push_str("<dt>CWE</dt><dd>")?;
+            write_html_optional_assessment_text(output, item.cwe, "not applicable")?;
+            output.push_str("</dd>")?;
+            write_html_actionable_code_field(output, "Item fingerprint", item.fingerprint)?;
+            write_html_actionable_code_field(
+                output,
+                "Evidence reference count",
+                &item.evidence_count.to_string(),
+            )?;
+            write_html_actionable_code_field(output, "Recommendation ID", item.remediation.id)?;
+            write_html_actionable_code_field(
+                output,
+                "Direct evidence references",
+                &assessment_reference_list(&item.evidence_references),
+            )?;
+            write_html_actionable_code_field(
+                output,
+                "Control evidence references",
+                &assessment_reference_list(&item.control_evidence_references),
+            )?;
+            write_html_actionable_code_field(
+                output,
+                "Candidate evidence references",
+                &assessment_reference_list(&item.candidate_evidence_references),
+            )?;
+            write_html_actionable_code_field(
+                output,
+                "Verifier case reference",
+                item.case_reference.as_deref().unwrap_or("not applicable"),
+            )?;
+            write_html_actionable_code_field(
+                output,
+                "Verifier outcome reference",
+                item.outcome_reference
+                    .as_deref()
+                    .unwrap_or("not applicable"),
+            )?;
+            write_html_actionable_code_field(
+                output,
+                "Verification stage",
+                item.verification_stage.unwrap_or("not applicable"),
+            )?;
+            output.push_str("</dl></article>")?;
+        }
+    }
+    if index != document.items.len() {
+        return Err(ReportError::Serialization);
+    }
+    output.push_str("</section>")
+}
+
+#[cfg(feature = "scanning")]
 fn render_assessment_html(
     document: &AssessmentDocument<'_>,
     limit: usize,
@@ -1285,11 +1579,20 @@ fn render_assessment_html(
 h1,h2,h3{line-height:1.2}.meta{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem}\
 .item,.wp-detail{border:1px solid currentColor;padding:1rem;margin-block:1rem}.item dl,.wp-detail dl{display:grid;grid-template-columns:max-content 1fr;gap:.3rem 1rem}\
 .disposition{border:2px solid currentColor;display:inline-block;font-weight:700;padding:.15rem .4rem}\
+.decision-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));gap:.75rem;margin-block:1rem}\
+.decision-card{border:1px solid currentColor;padding:.75rem}.decision-card strong{display:block;font-size:1.4rem}\
 .wp-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:.75rem;margin-block:1rem}\
 .wp-card{border:1px solid currentColor;padding:.75rem}.wp-card strong{display:block;font-size:1.4rem}\
 .wp-note{border-inline-start:.3rem solid currentColor;padding:.5rem .75rem}.wp-detail summary{cursor:pointer;font-weight:700}\
 code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:italic}@media print{.wp-detail>*{display:block!important}}</style></head><body><main>\
-<h1>Termivar assessment report</h1><p><strong>Lifecycle status:</strong> completed typed assessment.</p><dl class=\"meta\">",
+<h1>Termivar assessment report</h1><p><strong>Lifecycle status:</strong> completed typed assessment.</p>",
+    )?;
+    write_assessment_decision_overview_html(&mut output, document)?;
+    write_assessment_actionable_items_html(&mut output, document)?;
+    output.push_str(
+        "<div id=\"technical-audit-appendix\"><h2>Technical audit appendix</h2>\
+<p>Available report metadata and selected capability/source audit details follow, including their local accounting when present. These records preserve stated context and limitations; report integrity does not establish target truth or remediation.</p>\
+<h3>Report metadata</h3><dl class=\"meta\">",
     )?;
     for (label, value) in document.metadata() {
         output.push_str("<dt>")?;
@@ -1454,33 +1757,7 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
         )?;
         output.push_str("</section>")?;
     }
-    output.push_str("<section><h2>Assessment items</h2>")?;
-    if document.items.is_empty() {
-        output.push_str("<p class=\"empty\">No assessment items.</p>")?;
-    } else {
-        for (index, item) in document.items.iter().enumerate() {
-            output.push_fmt(format_args!(
-                "<article class=\"item\"><h2>Item {}</h2>",
-                index + 1
-            ))?;
-            output.push_str("<p class=\"disposition\"><span>Disposition: </span><code>")?;
-            write_html_text(&mut output, item.disposition)?;
-            output.push_str("</code></p><dl>")?;
-            for (label, value) in item.required_metadata() {
-                output.push_str("<dt>")?;
-                write_html_text(&mut output, label)?;
-                output.push_str("</dt><dd><code>")?;
-                write_html_text(&mut output, &value)?;
-                output.push_str("</code></dd>")?;
-            }
-            output.push_str("<dt>Severity</dt><dd>")?;
-            write_html_optional_assessment_text(&mut output, item.severity, "not assigned")?;
-            output.push_str("</dd><dt>CWE</dt><dd>")?;
-            write_html_optional_assessment_text(&mut output, item.cwe, "not applicable")?;
-            output.push_str("</dd></dl></article>")?;
-        }
-    }
-    output.push_str("</section></main></body></html>")?;
+    output.push_str("</div></main></body></html>")?;
     Ok(output.finish())
 }
 
@@ -3127,7 +3404,7 @@ impl WordPressPresentationEmitter<'_> {
                 output.push_str("</h3>")
             },
             Self::Markdown(output) => {
-                output.push_str("\n### ")?;
+                output.push_str("\n#### ")?;
                 output.push_str(title)?;
                 output.push_str("\n\n")
             },
@@ -3330,12 +3607,190 @@ fn write_html_wordpress_external_attribution(
 }
 
 #[cfg(feature = "scanning")]
+fn write_markdown_actionable_code_field(
+    output: &mut RenderBuffer,
+    label: &'static str,
+    value: &str,
+) -> Result<(), ReportError> {
+    output.push_fmt(format_args!("- {label}: "))?;
+    write_markdown_code_span(output, value)?;
+    output.push_char('\n')
+}
+
+#[cfg(feature = "scanning")]
+fn write_markdown_actionable_text_field(
+    output: &mut RenderBuffer,
+    label: &'static str,
+    value: &str,
+) -> Result<(), ReportError> {
+    output.push_fmt(format_args!("- {label}: "))?;
+    write_markdown_code_span(output, value)?;
+    output.push_char('\n')
+}
+
+#[cfg(feature = "scanning")]
+fn write_assessment_decision_overview_markdown(
+    output: &mut RenderBuffer,
+    document: &AssessmentDocument<'_>,
+) -> Result<(), ReportError> {
+    let overview = AssessmentDecisionOverview::from_document(document)?;
+    output.push_str(
+        "\n## Decision overview\n\nThese counts describe typed assessment items, not a count of confirmed vulnerabilities. Unassigned or unknown severity is not low or zero severity.\n\n",
+    )?;
+    output.push_fmt(format_args!(
+        "- Verifier-bound confirmed items: `{}`\n- Needs-review candidates: `{}`\n- Informational observations: `{}`\n\n",
+        overview.confirmed, overview.needs_review, overview.informational
+    ))?;
+    output.push_str("**Next decision:** ")?;
+    output.push_str(overview.priority_statement())?;
+    output.push_char('\n')
+}
+
+#[cfg(feature = "scanning")]
+fn write_assessment_actionable_items_markdown(
+    output: &mut RenderBuffer,
+    document: &AssessmentDocument<'_>,
+) -> Result<(), ReportError> {
+    output.push_str("\n## Actionable items\n\n")?;
+    if document.items.is_empty() {
+        output.push_str(
+            "No assessment items were projected. This is not evidence that the application is secure or that assessment coverage was complete.\n",
+        )?;
+        return Ok(());
+    }
+    let collection_context = assessment_item_collection_context(document);
+    let mut index = 0usize;
+    for disposition in ACTIONABLE_ITEM_DISPOSITION_ORDER {
+        for item in document
+            .items
+            .iter()
+            .filter(|item| item.disposition == disposition)
+        {
+            index = index.checked_add(1).ok_or(ReportError::Serialization)?;
+            output.push_fmt(format_args!("### Actionable item {index}: "))?;
+            write_markdown_code_span(output, item.title)?;
+            output.push_str("\n\n")?;
+            write_markdown_actionable_code_field(output, "Disposition", item.disposition)?;
+            write_markdown_actionable_text_field(
+                output,
+                "What was observed",
+                item.redacted_summary,
+            )?;
+            write_markdown_actionable_code_field(
+                output,
+                "Opaque assessment subject reference (not proof of affectedness or location)",
+                &item.subject_reference,
+            )?;
+            write_markdown_actionable_text_field(
+                output,
+                "Collection and principal context",
+                collection_context,
+            )?;
+            write_markdown_actionable_text_field(
+                output,
+                "Interpretation",
+                assessment_item_interpretation(item)?,
+            )?;
+            write_markdown_actionable_text_field(
+                output,
+                "What was not established",
+                assessment_item_unestablished(item)?,
+            )?;
+            write_markdown_actionable_text_field(
+                output,
+                "Recommended action (not a verified fix)",
+                item.remediation.summary,
+            )?;
+            write_markdown_actionable_text_field(
+                output,
+                "Safe verification guidance",
+                assessment_item_verification_guidance(item)?,
+            )?;
+            write_markdown_actionable_code_field(
+                output,
+                "Severity",
+                item.severity.unwrap_or("not assigned"),
+            )?;
+            if item.severity.is_none() {
+                output.push_str("  Unassigned severity does not mean low or zero.\n")?;
+            }
+            write_markdown_actionable_code_field(
+                output,
+                "Confidence",
+                &format!("{} ppm", item.confidence_ppm),
+            )?;
+            output.push_str(
+                "  Confidence is evidence-specific; it is not CVSS, impact, or exploit probability.\n",
+            )?;
+            write_markdown_actionable_code_field(output, "Claim basis", item.claim_basis)?;
+            write_markdown_actionable_code_field(output, "Item schema", item.schema)?;
+            write_markdown_actionable_code_field(output, "Capability", item.capability_id)?;
+            write_markdown_actionable_code_field(output, "Category", item.category)?;
+            write_markdown_actionable_code_field(
+                output,
+                "CWE",
+                item.cwe.unwrap_or("not applicable"),
+            )?;
+            write_markdown_actionable_code_field(output, "Item fingerprint", item.fingerprint)?;
+            write_markdown_actionable_code_field(
+                output,
+                "Evidence reference count",
+                &item.evidence_count.to_string(),
+            )?;
+            write_markdown_actionable_code_field(output, "Recommendation ID", item.remediation.id)?;
+            write_markdown_actionable_code_field(
+                output,
+                "Direct evidence references",
+                &assessment_reference_list(&item.evidence_references),
+            )?;
+            write_markdown_actionable_code_field(
+                output,
+                "Control evidence references",
+                &assessment_reference_list(&item.control_evidence_references),
+            )?;
+            write_markdown_actionable_code_field(
+                output,
+                "Candidate evidence references",
+                &assessment_reference_list(&item.candidate_evidence_references),
+            )?;
+            write_markdown_actionable_code_field(
+                output,
+                "Verifier case reference",
+                item.case_reference.as_deref().unwrap_or("not applicable"),
+            )?;
+            write_markdown_actionable_code_field(
+                output,
+                "Verifier outcome reference",
+                item.outcome_reference
+                    .as_deref()
+                    .unwrap_or("not applicable"),
+            )?;
+            write_markdown_actionable_code_field(
+                output,
+                "Verification stage",
+                item.verification_stage.unwrap_or("not applicable"),
+            )?;
+            output.push_char('\n')?;
+        }
+    }
+    if index != document.items.len() {
+        return Err(ReportError::Serialization);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scanning")]
 fn render_assessment_markdown(
     document: &AssessmentDocument<'_>,
     limit: usize,
 ) -> Result<String, ReportError> {
     let mut output = RenderBuffer::new(limit);
     output.push_str("# Termivar assessment report\n\n")?;
+    write_assessment_decision_overview_markdown(&mut output, document)?;
+    write_assessment_actionable_items_markdown(&mut output, document)?;
+    output.push_str(
+        "\n## Technical audit appendix\n\nAvailable report metadata and selected capability/source audit details follow, including their local accounting when present. These records preserve stated context and limitations; report integrity does not establish target truth or remediation.\n\n### Report metadata\n\n",
+    )?;
     for (label, value) in document.metadata() {
         output.push_fmt(format_args!("- {label}: "))?;
         write_markdown_code_span(&mut output, &value)?;
@@ -3343,13 +3798,13 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "supplied-session-review")]
     if let Some(audit) = &document.supplied_session {
-        output.push_str("\n## Supplied session assessment audit\n\n")?;
+        output.push_str("\n### Supplied session assessment audit\n\n")?;
         for (label, value) in audit.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
             output.push_char('\n')?;
         }
-        output.push_str("\n### Health checkpoints\n\n")?;
+        output.push_str("\n#### Health checkpoints\n\n")?;
         for checkpoint in &audit.checkpoints {
             let status = checkpoint
                 .status
@@ -3376,7 +3831,7 @@ fn render_assessment_markdown(
             )?;
             output.push_char('\n')?;
         }
-        output.push_str("\n### Protected resources\n\n")?;
+        output.push_str("\n#### Protected resources\n\n")?;
         for resource in &audit.resources {
             let status = resource
                 .status
@@ -3404,7 +3859,7 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "authorization-review")]
     if let Some(audit) = &document.authorization_review {
-        output.push_str("\n## Resource authorization review audit\n\n")?;
+        output.push_str("\n### Resource authorization review audit\n\n")?;
         for (label, value) in audit.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
@@ -3413,7 +3868,7 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "openapi-review")]
     if let Some(audit) = &document.openapi_review {
-        output.push_str("\n## OpenAPI review audit\n\n")?;
+        output.push_str("\n### OpenAPI review audit\n\n")?;
         for (label, value) in audit.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
@@ -3422,7 +3877,7 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "rest-review")]
     if let Some(audit) = &document.rest_review {
-        output.push_str("\n## REST read-only review audit\n\n")?;
+        output.push_str("\n### REST read-only review audit\n\n")?;
         for (label, value) in audit.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
@@ -3431,7 +3886,7 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
-        output.push_str("\n## WordPress evidence review audit\n\n")?;
+        output.push_str("\n### WordPress evidence review audit\n\n")?;
         for (label, value) in audit.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
@@ -3445,7 +3900,7 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(fingerprints) = &document.wordpress_asset_fingerprints {
-        output.push_str("\n## WordPress observed asset fingerprint candidates\n\n")?;
+        output.push_str("\n### WordPress observed asset fingerprint candidates\n\n")?;
         for (label, value) in fingerprints.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
@@ -3458,7 +3913,7 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(discovery) = &document.wordpress_discovery {
-        output.push_str("\n## WordPress public metadata discovery audit\n\n")?;
+        output.push_str("\n### WordPress public metadata discovery audit\n\n")?;
         for (label, value) in discovery.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
@@ -3469,34 +3924,7 @@ fn render_assessment_markdown(
             discovery,
         )?;
     }
-    output.push_str("\n## Assessment items\n\n")?;
-    if document.items.is_empty() {
-        output.push_str("No assessment items.\n")?;
-    } else {
-        for (index, item) in document.items.iter().enumerate() {
-            output.push_fmt(format_args!("### Item {}\n\n- Disposition: ", index + 1))?;
-            write_markdown_code_span(&mut output, item.disposition)?;
-            for (label, value) in item.required_metadata() {
-                output.push_fmt(format_args!("\n- {label}: "))?;
-                write_markdown_code_span(&mut output, &value)?;
-            }
-            output.push_str("\n- Severity: ")?;
-            write_markdown_optional_assessment_text(&mut output, item.severity, "not assigned")?;
-            output.push_str("\n- CWE: ")?;
-            write_markdown_optional_assessment_text(&mut output, item.cwe, "not applicable")?;
-            output.push_str("\n\n")?;
-        }
-    }
     Ok(output.finish())
-}
-
-#[cfg(feature = "scanning")]
-fn write_markdown_optional_assessment_text(
-    output: &mut RenderBuffer,
-    value: Option<&str>,
-    absent: &'static str,
-) -> Result<(), ReportError> {
-    write_markdown_code_span(output, value.unwrap_or(absent))
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -3507,7 +3935,7 @@ fn write_markdown_wordpress_external_attribution(
     let Some(external) = &audit.external_review else {
         return Ok(());
     };
-    output.push_str("\n### External source attribution\n\n")?;
+    output.push_str("\n#### External source attribution\n\n")?;
     for evaluation in &external.evaluations {
         let Some(reference) = &evaluation.record_reference else {
             continue;
@@ -3518,7 +3946,7 @@ fn write_markdown_wordpress_external_attribution(
         output.push_str(reference)?;
         output.push_str(">)\n")?;
     }
-    output.push_str("\n#### Rights notices\n\n")?;
+    output.push_str("\n##### Rights notices\n\n")?;
     for notice in &external.notices {
         output.push_str("- Party: ")?;
         write_markdown_code_span(output, &notice.party)?;
@@ -10493,53 +10921,6 @@ impl<'a> AssessmentItemDocument<'a> {
         })
     }
 
-    fn required_metadata(&self) -> [(&'static str, String); 18] {
-        [
-            ("Item schema", self.schema.to_owned()),
-            ("Capability", self.capability_id.to_owned()),
-            ("Subject", self.subject_reference.clone()),
-            ("Title", self.title.to_owned()),
-            ("Claim basis", self.claim_basis.to_owned()),
-            ("Confidence (ppm)", self.confidence_ppm.to_string()),
-            ("Fingerprint", self.fingerprint.to_owned()),
-            ("Evidence count", self.evidence_count.to_string()),
-            ("Redacted summary", self.redacted_summary.to_owned()),
-            ("Category", self.category.to_owned()),
-            ("Remediation ID", self.remediation.id.to_owned()),
-            ("Remediation summary", self.remediation.summary.to_owned()),
-            (
-                "Evidence references",
-                assessment_reference_list(&self.evidence_references),
-            ),
-            (
-                "Control evidence references",
-                assessment_reference_list(&self.control_evidence_references),
-            ),
-            (
-                "Candidate evidence references",
-                assessment_reference_list(&self.candidate_evidence_references),
-            ),
-            (
-                "Case reference",
-                self.case_reference
-                    .clone()
-                    .unwrap_or_else(|| "not applicable".to_owned()),
-            ),
-            (
-                "Outcome reference",
-                self.outcome_reference
-                    .clone()
-                    .unwrap_or_else(|| "not applicable".to_owned()),
-            ),
-            (
-                "Verification stage",
-                self.verification_stage
-                    .unwrap_or("not applicable")
-                    .to_owned(),
-            ),
-        ]
-    }
-
     fn validate(&self) -> Result<(), ReportError> {
         if !valid_opaque_assessment_reference(&self.subject_reference, "subject") {
             return Err(ReportError::Serialization);
@@ -12341,6 +12722,163 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "scanning")]
+    #[test]
+    fn assessment_human_reports_lead_with_bounded_decisions_and_actionable_items() {
+        let document = complete_assessment_document();
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap(),
+            html
+        );
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap(),
+            markdown
+        );
+
+        for (rendered, headings) in [
+            (
+                html.as_str(),
+                [
+                    "<h2>Decision overview</h2>",
+                    "<h2>Actionable items</h2>",
+                    "<h2>Technical audit appendix</h2>",
+                ],
+            ),
+            (
+                markdown.as_str(),
+                [
+                    "## Decision overview",
+                    "## Actionable items",
+                    "## Technical audit appendix",
+                ],
+            ),
+        ] {
+            let positions = headings.map(|heading| {
+                rendered
+                    .find(heading)
+                    .unwrap_or_else(|| panic!("missing human-report heading {heading}"))
+            });
+            assert!(positions[0] < positions[1] && positions[1] < positions[2]);
+            for literal in [
+                "These counts describe typed assessment items, not a count of confirmed vulnerabilities.",
+                "Verifier-bound confirmed items",
+                "Needs-review candidates",
+                "Informational observations",
+                "What was observed",
+                "Opaque assessment subject reference (not proof of affectedness or location)",
+                "Collection and principal context",
+                "What was not established",
+                "Recommended action (not a verified fix)",
+                "Safe verification guidance",
+                "Item schema",
+                "Evidence reference count",
+                "Recommendation ID",
+                "report integrity does not establish target truth or remediation",
+            ] {
+                assert!(rendered.contains(literal), "human report omitted {literal}");
+            }
+            for title in [
+                "Verifier-authorized transition",
+                "CORS policy relationship warrants review",
+                "Strict transport policy was not observed",
+            ] {
+                assert_eq!(rendered.matches(title).count(), 1, "{title}");
+            }
+            let confirmed = rendered.find("Verifier-authorized transition").unwrap();
+            let needs_review = rendered
+                .find("CORS policy relationship warrants review")
+                .unwrap();
+            let informational = rendered
+                .find("Strict transport policy was not observed")
+                .unwrap();
+            assert!(confirmed < needs_review && needs_review < informational);
+            assert!(rendered.contains(
+                "This observation alone does not establish a vulnerability, exploitability, impact, or remediation."
+            ));
+            assert!(rendered.contains(
+                "This review candidate is not a confirmed vulnerability; exploitability, impact, and remediation were not established."
+            ));
+            assert!(rendered.contains(
+                "Confirmation applies only to the cited verifier transition; broader impact, root cause, and remediation remain unestablished unless separately evidenced."
+            ));
+            assert!(rendered.contains("report integrity alone does not verify remediation"));
+            assert!(rendered.contains(
+                "only if the exact target, context, case, and separate current authorization are established"
+            ));
+            assert!(rendered.contains(
+                "This is evidence-assurance order, not severity, impact, or remediation priority."
+            ));
+            assert!(
+                rendered.contains("Unassigned severity does not mean low or zero")
+                    || rendered.contains("unassigned does not mean low or zero")
+            );
+        }
+
+        for (label, count) in [
+            ("Verifier-bound confirmed items", 1),
+            ("Needs-review candidates", 1),
+            ("Informational observations", 1),
+        ] {
+            assert!(html.contains(&format!("<strong>{count}</strong><span>{label}</span>")));
+            assert!(markdown.contains(&format!("- {label}: `{count}`")));
+        }
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        for machine in [&json, &csv] {
+            for presentation_only in [
+                "Decision overview",
+                "Actionable items",
+                "What was not established",
+                "Safe verification guidance",
+                "Technical audit appendix",
+            ] {
+                assert!(!machine.contains(presentation_only));
+            }
+        }
+    }
+
+    #[cfg(feature = "scanning")]
+    #[test]
+    fn empty_assessment_human_reports_do_not_claim_security_or_complete_coverage() {
+        let mut document = observation_assessment_document("test.observation@1");
+        document.items.clear();
+        document.item_count = 0;
+        for format in [ReportFormat::Html, ReportFormat::Markdown] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains(
+                "No assessment item was projected. This does not establish that the application is secure or that coverage was exhaustive."
+            ));
+            assert!(rendered.contains(
+                "No assessment items were projected. This is not evidence that the application is secure or that assessment coverage was complete."
+            ));
+            assert!(rendered.contains("Verifier-bound confirmed items"));
+            assert!(rendered.contains("Needs-review candidates"));
+            assert!(rendered.contains("Informational observations"));
+            assert!(!rendered.contains("Result: secure"));
+            assert!(!rendered.contains("Coverage: complete"));
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn actionable_items_do_not_invent_item_level_principal_attribution() {
+        let mut document = complete_assessment_document();
+        document.supplied_session = Some(complete_supplied_session_audit_document());
+        for format in [ReportFormat::Html, ReportFormat::Markdown] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            let limitation = "The run includes a supplied-session audit, but this item is not assigned to a principal by the current report contract.";
+            assert_eq!(rendered.matches(limitation).count(), 3);
+            assert!(rendered.contains("operator_declared"));
+            assert!(rendered.contains("Continuous authentication established"));
+            assert!(!rendered.contains("observed by fixture-user"));
+            assert!(!rendered.contains("authenticated finding"));
+        }
+    }
+
     #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
     #[test]
     fn absent_supplied_session_audit_preserves_every_rendered_contract() {
@@ -12421,12 +12959,15 @@ mod tests {
 
         let markdown =
             render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
-        assert!(markdown.contains("## Supplied session assessment audit"));
+        assert!(markdown.contains("\n### Supplied session assessment audit\n"));
+        assert!(!markdown.contains("\n## Supplied session assessment audit\n"));
         assert!(markdown.contains("Health oracle"));
         assert!(markdown.contains("json_boolean_true"));
         assert!(markdown.contains("supplied-session-health-field-sha256:"));
-        assert!(markdown.contains("### Health checkpoints"));
-        assert!(markdown.contains("### Protected resources"));
+        assert!(markdown.contains("\n#### Health checkpoints\n"));
+        assert!(markdown.contains("\n#### Protected resources\n"));
+        assert!(!markdown.contains("\n### Health checkpoints\n"));
+        assert!(!markdown.contains("\n### Protected resources\n"));
         assert!(markdown.contains("supplied-session-resource-evidence-sha256:"));
         assert!(markdown.contains("supplied-session-checkpoint-evidence-sha256:"));
     }
@@ -14504,11 +15045,13 @@ mod tests {
 
         let markdown =
             render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
-        assert!(markdown.contains("### External source attribution"));
+        assert!(markdown.contains("\n#### External source attribution\n"));
+        assert!(!markdown.contains("\n### External source attribution\n"));
         assert!(markdown.contains(
             "[Selected source reference](<https://example.invalid/termivar/wordfence-v3/fixture-advisory-1>)"
         ));
-        assert!(markdown.contains("#### Rights notices"));
+        assert!(markdown.contains("\n##### Rights notices\n"));
+        assert!(!markdown.contains("\n#### Rights notices\n"));
         assert!(markdown.contains(
             "[License terms](<https://example.invalid/termivar/wordfence-v3/synthetic-fixture-terms>)"
         ));
