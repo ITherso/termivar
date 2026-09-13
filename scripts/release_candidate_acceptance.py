@@ -189,6 +189,31 @@ ACTIONABLE_HEADINGS = (
     "Actionable items",
     "Technical audit appendix",
 )
+ACTIONABLE_ITEM_FIELD_ORDER = (
+    "What was observed",
+    "Opaque assessment subject reference (not proof of affectedness or location)",
+    "Collection and principal context",
+    "Interpretation",
+    "What was not established",
+    "Recommended action (not a verified fix)",
+    "Safe verification guidance",
+    "Severity",
+    "Confidence",
+    "Claim basis",
+    "Item schema",
+    "Capability",
+    "Category",
+    "CWE",
+    "Item fingerprint",
+    "Evidence reference count",
+    "Recommendation ID",
+    "Direct evidence references",
+    "Control evidence references",
+    "Candidate evidence references",
+    "Verifier case reference",
+    "Verifier outcome reference",
+    "Verification stage",
+)
 ACTIONABLE_INTERPRETATIONS = {
     "informational": (
         "Informational: bounded observation evidence was committed; no differential or "
@@ -728,6 +753,7 @@ class _ActionableAssessmentHtmlParser(HTMLParser):
         self._heading_tag: str | None = None
         self._heading_text: list[str] = []
         self._article: dict | None = None
+        self._disposition: dict | None = None
         self._field_kind: str | None = None
         self._field_text: list[str] = []
         self._pending_field_label: str | None = None
@@ -854,17 +880,41 @@ class _ActionableAssessmentHtmlParser(HTMLParser):
               and (attributes_by_name.get("http-equiv") or "").lower() == "refresh"):
             self.unsafe_features.append("element:meta-refresh")
 
+        classes = (attributes_by_name.get("class") or "").split()
+        if tag == "p" and "disposition" in classes:
+            if (self._article is None or self._disposition is not None
+                    or normalized_attributes != [("class", "disposition")]):
+                self.unsafe_features.append("structure:invalid-item-disposition")
+            if self._article is not None and self._disposition is None:
+                self._disposition = {
+                    "phase": "expect_span",
+                    "label": [],
+                    "value": [],
+                }
+        elif self._disposition is not None:
+            phase = self._disposition["phase"]
+            if tag == "span" and phase == "expect_span" and not normalized_attributes:
+                self._disposition["phase"] = "span"
+            elif tag == "code" and phase == "expect_code" and not normalized_attributes:
+                self._disposition["phase"] = "code"
+            else:
+                self.unsafe_features.append("structure:invalid-item-disposition")
+
         if tag in {"h2", "h3"}:
             if self._heading_tag is not None:
                 self.unsafe_features.append("structure:nested-heading")
             self._heading_tag = tag
             self._heading_text = []
 
-        classes = (attributes_by_name.get("class") or "").split()
         if tag == "article" and "item" in classes:
             if self._article is not None:
                 self.unsafe_features.append("structure:nested-item")
-            self._article = {"heading": None, "fields": [], "text": []}
+            self._article = {
+                "heading": None,
+                "dispositions": [],
+                "fields": [],
+                "text": [],
+            }
             self._pending_field_label = None
         elif self._article is not None and tag in {"dt", "dd"}:
             if self._field_kind is not None:
@@ -874,6 +924,29 @@ class _ActionableAssessmentHtmlParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if self._disposition is not None:
+            phase = self._disposition["phase"]
+            if tag == "span" and phase == "span":
+                label = _normalized_html_text("".join(self._disposition["label"]))
+                if label != "Disposition:":
+                    self.unsafe_features.append("structure:invalid-item-disposition")
+                self._disposition["phase"] = "expect_code"
+            elif tag == "code" and phase == "code":
+                value = _normalized_html_text("".join(self._disposition["value"]))
+                if not value:
+                    self.unsafe_features.append("structure:invalid-item-disposition")
+                self._disposition["value"] = value
+                self._disposition["phase"] = "expect_p"
+            elif tag == "p":
+                if phase != "expect_p" or self._article is None:
+                    self.unsafe_features.append("structure:invalid-item-disposition")
+                elif isinstance(self._disposition["value"], str):
+                    self._article["dispositions"].append(self._disposition["value"])
+                else:
+                    self.unsafe_features.append("structure:invalid-item-disposition")
+                self._disposition = None
+            elif tag not in {"span", "code"}:
+                self.unsafe_features.append("structure:interrupted-item-disposition")
         if self._anchor is not None and tag != "a":
             self.unsafe_features.append("structure:interrupted-anchor")
         if self._license_fallback_text is not None and tag != "code":
@@ -980,10 +1053,19 @@ class _ActionableAssessmentHtmlParser(HTMLParser):
             self._article["text"].append(data)
             if self._field_kind is not None:
                 self._field_text.append(data)
+        if self._disposition is not None:
+            phase = self._disposition["phase"]
+            if phase == "span":
+                self._disposition["label"].append(data)
+            elif phase == "code":
+                self._disposition["value"].append(data)
+            elif data.strip():
+                self.unsafe_features.append("structure:invalid-item-disposition")
 
     def finish(self) -> None:
         self.close()
         if (self._heading_tag is not None or self._article is not None
+                or self._disposition is not None
                 or self._field_kind is not None
                 or self._pending_field_label is not None
                 or self._style_depth != 0
@@ -1158,8 +1240,8 @@ def _actionable_item_rows(assessment: dict) -> tuple[list[dict], dict[str, int]]
         require(isinstance(item, dict),
                 "packaged actionable assessment item is invalid")
         for field in (
-                "schema", "title", "disposition", "claim_basis", "subject_reference",
-                "redacted_summary"):
+                "schema", "capability_id", "title", "disposition", "claim_basis",
+                "subject_reference", "fingerprint", "redacted_summary", "category"):
             require(isinstance(item.get(field), str) and item[field],
                     f"packaged actionable assessment {field} is invalid")
         disposition = item["disposition"]
@@ -1178,9 +1260,70 @@ def _actionable_item_rows(assessment: dict) -> tuple[list[dict], dict[str, int]]
                 and not isinstance(evidence_count, bool)
                 and evidence_count >= 0,
                 "packaged actionable assessment evidence count is invalid")
-        severity = item.get("severity")
+        confidence_ppm = item.get("confidence_ppm")
+        require(isinstance(confidence_ppm, int)
+                and not isinstance(confidence_ppm, bool)
+                and 0 <= confidence_ppm <= 1_000_000,
+                "packaged actionable assessment confidence is invalid")
+        require("severity" in item,
+                "packaged actionable assessment severity is missing")
+        severity = item["severity"]
         require(severity is None or (isinstance(severity, str) and severity),
                 "packaged actionable assessment severity is invalid")
+        require("cwe" in item, "packaged actionable assessment CWE is missing")
+        cwe = item["cwe"]
+        require(cwe is None or (isinstance(cwe, str) and cwe),
+                "packaged actionable assessment CWE is invalid")
+        references = []
+        for field in (
+                "evidence_references", "control_evidence_references",
+                "candidate_evidence_references"):
+            require(field in item and isinstance(item[field], list),
+                    f"packaged actionable assessment {field} is invalid")
+            for reference in item[field]:
+                require(isinstance(reference, str) and reference
+                        and _normalized_html_text(reference) == reference,
+                        f"packaged actionable assessment {field} row is invalid")
+                references.append(reference)
+        require(len(references) == len(set(references)),
+                "packaged actionable assessment evidence references are duplicated")
+        require(evidence_count == len(references),
+                "packaged actionable assessment evidence reference accounting changed")
+        for field in ("case_reference", "outcome_reference", "verification_stage"):
+            require(field in item,
+                    f"packaged actionable assessment {field} is missing")
+            value = item[field]
+            require(value is None or (isinstance(value, str) and value
+                                      and _normalized_html_text(value) == value),
+                    f"packaged actionable assessment {field} is invalid")
+        direct = item["evidence_references"]
+        control = item["control_evidence_references"]
+        candidate = item["candidate_evidence_references"]
+        if item["claim_basis"] == "observation":
+            linkage_valid = (
+                bool(direct) and not control and not candidate
+                and item["case_reference"] is None
+                and item["outcome_reference"] is None
+                and item["verification_stage"] is None
+            )
+        elif item["claim_basis"] == "differential":
+            atomic_pair = len(direct) == 1 and not control and not candidate
+            matched_pair = not direct and bool(control) and bool(candidate)
+            linkage_valid = (
+                (atomic_pair or matched_pair)
+                and item["case_reference"] is None
+                and item["outcome_reference"] is None
+                and item["verification_stage"] is None
+            )
+        else:
+            linkage_valid = (
+                bool(direct) and not control and not candidate
+                and item["case_reference"] is not None
+                and item["outcome_reference"] is not None
+                and item["verification_stage"] in {"passive", "active"}
+            )
+        require(linkage_valid,
+                "packaged actionable assessment evidence linkage changed")
         remediation = item.get("remediation")
         require(isinstance(remediation, dict)
                 and isinstance(remediation.get("id"), str)
@@ -1270,8 +1413,13 @@ def _validate_actionable_assessment_html(assessment: dict, encoded: bytes) -> di
 
     for item, article in zip(ordered_items, parser.articles, strict=True):
         disposition = item["disposition"]
-        require(f"Disposition: {disposition}" in article["text"],
+        require(article["dispositions"] == [disposition],
                 "packaged actionable item disposition changed")
+        require(
+            tuple(field for field, _ in article["fields"])
+            == ACTIONABLE_ITEM_FIELD_ORDER,
+            "packaged actionable item field structure changed",
+        )
         require(_one_actionable_field(article, "What was observed")
                 == _normalized_html_text(item["redacted_summary"]),
                 "packaged actionable item observation changed")
@@ -1300,22 +1448,59 @@ def _validate_actionable_assessment_html(assessment: dict, encoded: bytes) -> di
         require(_one_actionable_field(article, "Safe verification guidance")
                 == ACTIONABLE_GUIDANCE[disposition],
                 "packaged actionable item verification guidance changed")
+        severity = _one_actionable_field(article, "Severity")
+        if item["severity"] is None:
+            require(severity == "not assigned (unassigned does not mean low or zero)",
+                    "packaged actionable item unassigned severity changed")
+        else:
+            require(severity == _normalized_html_text(item["severity"]),
+                    "packaged actionable item assigned severity changed")
+        require(
+            _one_actionable_field(article, "Confidence")
+            == (f"{item['confidence_ppm']} ppm (evidence-specific; not CVSS, impact, "
+                "or exploit probability)"),
+            "packaged actionable item confidence changed",
+        )
+        require(_one_actionable_field(article, "Claim basis")
+                == _normalized_html_text(item["claim_basis"]),
+                "packaged actionable item rendered claim basis changed")
         require(_one_actionable_field(article, "Item schema")
                 == _normalized_html_text(item["schema"]),
                 "packaged actionable item schema changed")
+        require(_one_actionable_field(article, "Capability")
+                == _normalized_html_text(item["capability_id"]),
+                "packaged actionable item capability changed")
+        require(_one_actionable_field(article, "Category")
+                == _normalized_html_text(item["category"]),
+                "packaged actionable item category changed")
+        require(_one_actionable_field(article, "CWE")
+                == ("not applicable" if item["cwe"] is None
+                    else _normalized_html_text(item["cwe"])),
+                "packaged actionable item CWE changed")
+        require(_one_actionable_field(article, "Item fingerprint")
+                == _normalized_html_text(item["fingerprint"]),
+                "packaged actionable item fingerprint changed")
         require(_one_actionable_field(article, "Evidence reference count")
                 == str(item["evidence_count"]),
                 "packaged actionable item evidence count changed")
         require(_one_actionable_field(article, "Recommendation ID")
                 == _normalized_html_text(item["remediation"]["id"]),
                 "packaged actionable item recommendation identity changed")
-        severity = _one_actionable_field(article, "Severity")
-        if item.get("severity") is None:
-            require(severity == "not assigned (unassigned does not mean low or zero)",
-                    "packaged actionable item unassigned severity changed")
-        else:
-            require(severity == _normalized_html_text(item["severity"]),
-                "packaged actionable item assigned severity changed")
+        for label, field in (
+                ("Direct evidence references", "evidence_references"),
+                ("Control evidence references", "control_evidence_references"),
+                ("Candidate evidence references", "candidate_evidence_references")):
+            expected = ", ".join(item[field]) if item[field] else "not applicable"
+            require(_one_actionable_field(article, label) == expected,
+                    f"packaged actionable item {label.lower()} changed")
+        for label, field in (
+                ("Verifier case reference", "case_reference"),
+                ("Verifier outcome reference", "outcome_reference"),
+                ("Verification stage", "verification_stage")):
+            expected = ("not applicable" if item[field] is None
+                        else _normalized_html_text(item[field]))
+            require(_one_actionable_field(article, label) == expected,
+                    f"packaged actionable item {label.lower()} changed")
 
     visible_text = _normalized_html_text("".join(parser.all_text))
     require(all(marker not in visible_text.lower()

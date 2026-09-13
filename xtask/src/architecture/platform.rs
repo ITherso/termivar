@@ -8928,8 +8928,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 375_240;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x5503_7be7_3831_367f_11d7_3419_0790_32c0;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 389_681;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x8628_bb06_84d3_c49f_6d60_af9c_3d05_91bd;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -9137,6 +9137,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentDecisionOverview::from_document",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
@@ -9651,6 +9652,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AccountingDimension::from_accounting",
     "AccountingDocument::from_report",
     "AssessmentBasisLinkageDocument::from_basis",
+    "AssessmentDecisionOverview::from_document",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
@@ -9680,6 +9682,10 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "WordPressPresentationInline::Literal",
     "accounting_mode_token",
     "advisory_has_source_guidance",
+    "assessment_item_collection_context",
+    "assessment_item_interpretation",
+    "assessment_item_unestablished",
+    "assessment_item_verification_guidance",
     "assessment_basis_token",
     "assessment_reference_list",
     "authorization_review_outcome_token",
@@ -9713,6 +9719,10 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "reporting_external_range_endpoint",
     "push_visible_codepoint",
     "render_csv",
+    "write_assessment_actionable_items_html",
+    "write_assessment_actionable_items_markdown",
+    "write_assessment_decision_overview_html",
+    "write_assessment_decision_overview_markdown",
     "render_assessment_csv",
     "render_assessment_html",
     "render_assessment_markdown",
@@ -9768,11 +9778,15 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "write_assessment_csv_row",
     "write_csv_cell",
     "write_csv_row",
+    "write_html_actionable_code_field",
+    "write_html_actionable_text_field",
     "write_html_optional_decimal",
     "write_html_optional_assessment_text",
     "write_html_text",
     "write_html_wordpress_external_attribution",
     "write_json_codepoint",
+    "write_markdown_actionable_code_field",
+    "write_markdown_actionable_text_field",
     "write_markdown_code_span",
     "write_markdown_optional_assessment_text",
     "write_markdown_optional_decimal",
@@ -9919,6 +9933,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "principal_assurance",
     "principal_alias",
     "principal_reference",
+    "priority_statement",
     "page_reference",
     "page_scope",
     "pages",

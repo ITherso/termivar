@@ -366,10 +366,22 @@ ACTIONABLE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <dt>What was not established</dt><dd>This review candidate is not a confirmed vulnerability; exploitability, impact, and remediation were not established.</dd>
 <dt>Recommended action (not a verified fix)</dt><dd>Review the intended origin and credential relationship.</dd>
 <dt>Safe verification guidance</dt><dd>Establish the exact target and principal/application context from authorized records. Reproduce the control and candidate relationship only under separate current authorization; if that context cannot be established, do not rerun it.</dd>
+<dt>Severity</dt><dd><code>low</code></dd>
+<dt>Confidence</dt><dd><code>825000 ppm</code> <span>(evidence-specific; not CVSS, impact, or exploit probability)</span></dd>
+<dt>Claim basis</dt><dd><code>differential</code></dd>
 <dt>Item schema</dt><dd><code>venom-assessment-item/v1</code></dd>
+<dt>Capability</dt><dd><code>cors.policy.relationship@1</code></dd>
+<dt>Category</dt><dd><code>cross-origin-policy</code></dd>
+<dt>CWE</dt><dd><code>CWE-942</code></dd>
+<dt>Item fingerprint</dt><dd><code>assessment-fingerprint-v1:1002</code></dd>
 <dt>Evidence reference count</dt><dd><code>2</code></dd>
 <dt>Recommendation ID</dt><dd><code>remediation.cors.policy@1</code></dd>
-<dt>Severity</dt><dd><code>low</code></dd>
+<dt>Direct evidence references</dt><dd><code>not applicable</code></dd>
+<dt>Control evidence references</dt><dd><code>evidence-0002</code></dd>
+<dt>Candidate evidence references</dt><dd><code>evidence-0003</code></dd>
+<dt>Verifier case reference</dt><dd><code>not applicable</code></dd>
+<dt>Verifier outcome reference</dt><dd><code>not applicable</code></dd>
+<dt>Verification stage</dt><dd><code>not applicable</code></dd>
 </dl></article>
 <article class="item"><h3>Actionable item 2: Strict transport policy was not observed</h3><p class="disposition"><span>Disposition: </span><code>informational</code></p><dl>
 <dt>What was observed</dt><dd>Bounded response metadata did not include HSTS.</dd>
@@ -379,13 +391,113 @@ ACTIONABLE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <dt>What was not established</dt><dd>This observation alone does not establish a vulnerability, exploitability, impact, or remediation.</dd>
 <dt>Recommended action (not a verified fix)</dt><dd>Review whether this HTTPS response should declare HSTS.</dd>
 <dt>Safe verification guidance</dt><dd>Review the cited evidence and capability-owned recommendation. Do not perform active confirmation unless the exact target, context, action, and current authorization are established separately.</dd>
+<dt>Severity</dt><dd>not assigned <span>(unassigned does not mean low or zero)</span></dd>
+<dt>Confidence</dt><dd><code>500000 ppm</code> <span>(evidence-specific; not CVSS, impact, or exploit probability)</span></dd>
+<dt>Claim basis</dt><dd><code>observation</code></dd>
 <dt>Item schema</dt><dd><code>venom-assessment-item/v1</code></dd>
+<dt>Capability</dt><dd><code>passive.header.hsts.missing@1</code></dd>
+<dt>Category</dt><dd><code>transport-policy</code></dd>
+<dt>CWE</dt><dd><span class="empty">not applicable</span></dd>
+<dt>Item fingerprint</dt><dd><code>assessment-fingerprint-v1:1001</code></dd>
 <dt>Evidence reference count</dt><dd><code>1</code></dd>
 <dt>Recommendation ID</dt><dd><code>remediation.transport.hsts@1</code></dd>
-<dt>Severity</dt><dd>not assigned <span>(unassigned does not mean low or zero)</span></dd>
+<dt>Direct evidence references</dt><dd><code>evidence-0001</code></dd>
+<dt>Control evidence references</dt><dd><code>not applicable</code></dd>
+<dt>Candidate evidence references</dt><dd><code>not applicable</code></dd>
+<dt>Verifier case reference</dt><dd><code>not applicable</code></dd>
+<dt>Verifier outcome reference</dt><dd><code>not applicable</code></dd>
+<dt>Verification stage</dt><dd><code>not applicable</code></dd>
 </dl></article></section>
 <div id="technical-audit-appendix"><h2>Technical audit appendix</h2><p>Available report metadata and selected capability/source audit details follow, including their local accounting when present. These records preserve stated context and limitations; report integrity does not establish target truth or remediation.</p></div>
 </main></body></html>"""
+
+
+def confirmed_actionable_assessment_and_html() -> tuple[dict, str]:
+    """Independent synthetic verifier-linkage case; not executable output."""
+    assessment = actionable_assessment()
+    item = assessment["items"][1]
+    item["disposition"] = "confirmed"
+    item["claim_basis"] = "verifier_transition"
+    item["evidence_references"] = ["evidence-0002", "evidence-0003"]
+    item["control_evidence_references"] = []
+    item["candidate_evidence_references"] = []
+    item["case_reference"] = "case-0001"
+    item["outcome_reference"] = "outcome-0001"
+    item["verification_stage"] = "active"
+
+    replacements = (
+        (
+            "<strong>0</strong><span>Verifier-bound confirmed items</span>",
+            "<strong>1</strong><span>Verifier-bound confirmed items</span>",
+        ),
+        (
+            "<strong>1</strong><span>Needs-review candidates</span>",
+            "<strong>0</strong><span>Needs-review candidates</span>",
+        ),
+        (
+            "Presentation starts with unresolved differentials, then observations; no "
+            "verifier-bound confirmed item was projected. This is evidence-assurance order, "
+            "not severity, impact, or remediation priority.",
+            "Presentation starts with verifier-bound confirmed items, then unresolved "
+            "differentials and observations. This is evidence-assurance order, not severity, "
+            "impact, or remediation priority.",
+        ),
+        ("<code>needs_review</code></p>", "<code>confirmed</code></p>"),
+        (
+            "Needs review: a typed evidence relationship was committed; human interpretation "
+            "is required and no verifier transition was established.",
+            "Confirmed is limited to the cited verifier case and outcome; the label does not "
+            "widen assessment scope or establish broader impact.",
+        ),
+        (
+            "This review candidate is not a confirmed vulnerability; exploitability, impact, "
+            "and remediation were not established.",
+            "Confirmation applies only to the cited verifier transition; broader impact, root "
+            "cause, and remediation remain unestablished unless separately evidenced.",
+        ),
+        (
+            "Establish the exact target and principal/application context from authorized "
+            "records. Reproduce the control and candidate relationship only under separate "
+            "current authorization; if that context cannot be established, do not rerun it.",
+            "Confirmation is bound to the cited case and outcome. After a change, rerun only "
+            "if the exact target, context, case, and separate current authorization are "
+            "established; report integrity alone does not verify remediation.",
+        ),
+        ("<code>differential</code></dd>", "<code>verifier_transition</code></dd>"),
+        (
+            "<dt>Direct evidence references</dt><dd><code>not applicable</code></dd>",
+            "<dt>Direct evidence references</dt><dd><code>evidence-0002, evidence-0003</code></dd>",
+        ),
+        (
+            "<dt>Control evidence references</dt><dd><code>evidence-0002</code></dd>",
+            "<dt>Control evidence references</dt><dd><code>not applicable</code></dd>",
+        ),
+        (
+            "<dt>Candidate evidence references</dt><dd><code>evidence-0003</code></dd>",
+            "<dt>Candidate evidence references</dt><dd><code>not applicable</code></dd>",
+        ),
+        (
+            "<dt>Direct evidence references</dt><dd><code>evidence-0002, evidence-0003</code></dd>\n"
+            "<dt>Control evidence references</dt><dd><code>not applicable</code></dd>\n"
+            "<dt>Candidate evidence references</dt><dd><code>not applicable</code></dd>\n"
+            "<dt>Verifier case reference</dt><dd><code>not applicable</code></dd>\n"
+            "<dt>Verifier outcome reference</dt><dd><code>not applicable</code></dd>\n"
+            "<dt>Verification stage</dt><dd><code>not applicable</code></dd>",
+            "<dt>Direct evidence references</dt><dd><code>evidence-0002, evidence-0003</code></dd>\n"
+            "<dt>Control evidence references</dt><dd><code>not applicable</code></dd>\n"
+            "<dt>Candidate evidence references</dt><dd><code>not applicable</code></dd>\n"
+            "<dt>Verifier case reference</dt><dd><code>case-0001</code></dd>\n"
+            "<dt>Verifier outcome reference</dt><dd><code>outcome-0001</code></dd>\n"
+            "<dt>Verification stage</dt><dd><code>active</code></dd>",
+        ),
+    )
+    html = ACTIONABLE_HTML
+    for before, after in replacements:
+        if html.count(before) != 1:
+            raise AssertionError(f"synthetic confirmed mutation anchor changed: {before}")
+        html = html.replace(before, after, 1)
+    return assessment, html
+
 
 ACTIONABLE_RECORD_REFERENCE = (
     "https://example.invalid/termivar/package-acceptance/record"
@@ -499,6 +611,16 @@ def mutate_actionable_html(html: str, mutation: str | None) -> str:
         "duplicate_heading": (
             "Actionable item 2: Strict transport policy was not observed",
             "Actionable item 1: CORS policy relationship warrants review"),
+        "wrong_disposition": (
+            "<code>needs_review</code></p>",
+            "<code>confirmed</code></p>"),
+        "missing_disposition_class": (
+            '<p class="disposition"><span>Disposition: </span><code>needs_review</code></p>',
+            '<p class="status"><span>Disposition: </span><code>needs_review</code></p>'),
+        "duplicate_disposition": (
+            '<p class="disposition"><span>Disposition: </span><code>needs_review</code></p>',
+            '<p class="disposition"><span>Disposition: </span><code>needs_review</code></p>'
+            '<p class="disposition"><span>Disposition: </span><code>needs_review</code></p>'),
         "missing_limitation": (
             "This observation alone does not establish a vulnerability, exploitability, "
             "impact, or remediation.", "No limitation recorded."),
@@ -524,6 +646,50 @@ def mutate_actionable_html(html: str, mutation: str | None) -> str:
         "wrong_recommendation_id": (
             "<dt>Recommendation ID</dt><dd><code>remediation.cors.policy@1</code></dd>",
             "<dt>Recommendation ID</dt><dd><code>remediation.other@1</code></dd>"),
+        "missing_traceability_field": (
+            "<dt>Capability</dt><dd><code>cors.policy.relationship@1</code></dd>", ""),
+        "duplicate_traceability_field": (
+            "<dt>Claim basis</dt><dd><code>differential</code></dd>",
+            "<dt>Claim basis</dt><dd><code>differential</code></dd>"
+            "<dt>Claim basis</dt><dd><code>differential</code></dd>"),
+        "wrong_confidence": (
+            "<dt>Confidence</dt><dd><code>825000 ppm</code> <span>(evidence-specific; "
+            "not CVSS, impact, or exploit probability)</span></dd>",
+            "<dt>Confidence</dt><dd><code>1000000 ppm</code> <span>(evidence-specific; "
+            "not CVSS, impact, or exploit probability)</span></dd>"),
+        "wrong_rendered_claim_basis": (
+            "<dt>Claim basis</dt><dd><code>differential</code></dd>",
+            "<dt>Claim basis</dt><dd><code>observation</code></dd>"),
+        "wrong_capability": (
+            "<dt>Capability</dt><dd><code>cors.policy.relationship@1</code></dd>",
+            "<dt>Capability</dt><dd><code>other.capability@1</code></dd>"),
+        "wrong_category": (
+            "<dt>Category</dt><dd><code>cross-origin-policy</code></dd>",
+            "<dt>Category</dt><dd><code>other-category</code></dd>"),
+        "wrong_cwe": (
+            "<dt>CWE</dt><dd><code>CWE-942</code></dd>",
+            "<dt>CWE</dt><dd><code>CWE-0</code></dd>"),
+        "wrong_fingerprint": (
+            "<dt>Item fingerprint</dt><dd><code>assessment-fingerprint-v1:1002</code></dd>",
+            "<dt>Item fingerprint</dt><dd><code>assessment-fingerprint-v1:wrong</code></dd>"),
+        "wrong_direct_references": (
+            "<dt>Direct evidence references</dt><dd><code>not applicable</code></dd>",
+            "<dt>Direct evidence references</dt><dd><code>evidence-9999</code></dd>"),
+        "wrong_control_references": (
+            "<dt>Control evidence references</dt><dd><code>evidence-0002</code></dd>",
+            "<dt>Control evidence references</dt><dd><code>evidence-9999</code></dd>"),
+        "wrong_candidate_references": (
+            "<dt>Candidate evidence references</dt><dd><code>evidence-0003</code></dd>",
+            "<dt>Candidate evidence references</dt><dd><code>evidence-9999</code></dd>"),
+        "wrong_case_reference": (
+            "<dt>Verifier case reference</dt><dd><code>not applicable</code></dd>",
+            "<dt>Verifier case reference</dt><dd><code>case:unexpected</code></dd>"),
+        "wrong_outcome_reference": (
+            "<dt>Verifier outcome reference</dt><dd><code>not applicable</code></dd>",
+            "<dt>Verifier outcome reference</dt><dd><code>outcome:unexpected</code></dd>"),
+        "wrong_verification_stage": (
+            "<dt>Verification stage</dt><dd><code>not applicable</code></dd>",
+            "<dt>Verification stage</dt><dd><code>candidate</code></dd>"),
         "wrong_assigned_severity": (
             "<dt>Severity</dt><dd><code>low</code></dd>",
             "<dt>Severity</dt><dd><code>zero</code></dd>"),
@@ -2564,6 +2730,16 @@ class CandidateOrchestrationTests(unittest.TestCase):
             "secret_markers": "absent",
         })
 
+        confirmed_assessment, confirmed_html = confirmed_actionable_assessment_and_html()
+        confirmed = runner._validate_actionable_assessment_html(
+            confirmed_assessment, confirmed_html.encode("utf-8"))
+        self.assertEqual(confirmed["item_count"], 2)
+        self.assertEqual(confirmed["disposition_counts"], {
+            "confirmed": 1,
+            "needs_review": 0,
+            "informational": 1,
+        })
+
         empty = runner._validate_actionable_assessment_html(
             empty_actionable_assessment(), EMPTY_ACTIONABLE_HTML.encode("utf-8"))
         self.assertEqual(empty["item_count"], 0)
@@ -2821,13 +2997,30 @@ class CandidateOrchestrationTests(unittest.TestCase):
             ("wrong_count", "Needs-review candidates count changed"),
             ("priority_overclaim", "evidence-assurance order changed"),
             ("duplicate_heading", "item headings changed"),
+            ("wrong_disposition", "item disposition changed"),
+            ("missing_disposition_class", "item disposition changed"),
+            ("duplicate_disposition", "item disposition changed"),
             ("missing_limitation", "item limitation changed"),
             ("context_overclaim", "item context limitation changed"),
             ("wrong_remediation", "item recommendation changed"),
             ("missing_guidance", "item verification guidance changed"),
+            ("missing_traceability_field", "item field structure changed"),
+            ("duplicate_traceability_field", "item field structure changed"),
+            ("wrong_confidence", "item confidence changed"),
+            ("wrong_rendered_claim_basis", "rendered claim basis changed"),
             ("wrong_item_schema", "item schema changed"),
+            ("wrong_capability", "item capability changed"),
+            ("wrong_category", "item category changed"),
+            ("wrong_cwe", "item CWE changed"),
+            ("wrong_fingerprint", "item fingerprint changed"),
             ("wrong_evidence_count", "item evidence count changed"),
             ("wrong_recommendation_id", "item recommendation identity changed"),
+            ("wrong_direct_references", "direct evidence references changed"),
+            ("wrong_control_references", "control evidence references changed"),
+            ("wrong_candidate_references", "candidate evidence references changed"),
+            ("wrong_case_reference", "verifier case reference changed"),
+            ("wrong_outcome_reference", "verifier outcome reference changed"),
+            ("wrong_verification_stage", "verification stage changed"),
             ("wrong_assigned_severity", "assigned severity changed"),
             ("unknown_severity_low", "unassigned severity changed"),
             ("script", "active or external content"),
@@ -2877,6 +3070,136 @@ class CandidateOrchestrationTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.AcceptanceError, "remediation is invalid"):
             runner._validate_actionable_assessment_html(
                 missing_recommendation_id, ACTIONABLE_HTML.encode("utf-8"))
+
+        reference_fields = (
+            "evidence_references",
+            "control_evidence_references",
+            "candidate_evidence_references",
+        )
+        for field in reference_fields:
+            missing = actionable_assessment()
+            del missing["items"][0][field]
+            with self.subTest(json_field=field, mutation="missing"), \
+                    self.assertRaisesRegex(
+                        runner.AcceptanceError, f"{field} is invalid"):
+                runner._validate_actionable_assessment_html(
+                    missing, ACTIONABLE_HTML.encode("utf-8"))
+            for value in (None, "evidence-0001", {}, 1, True):
+                wrong_type = actionable_assessment()
+                wrong_type["items"][0][field] = value
+                with self.subTest(json_field=field, wrong_type=type(value).__name__), \
+                        self.assertRaisesRegex(
+                            runner.AcceptanceError, f"{field} is invalid"):
+                    runner._validate_actionable_assessment_html(
+                        wrong_type, ACTIONABLE_HTML.encode("utf-8"))
+
+        for value in (None, 1, True, {}, []):
+            invalid_row = actionable_assessment()
+            invalid_row["items"][0]["evidence_references"] = [value]
+            with self.subTest(reference_row_type=type(value).__name__), \
+                    self.assertRaisesRegex(
+                        runner.AcceptanceError,
+                        "evidence_references row is invalid"):
+                runner._validate_actionable_assessment_html(
+                    invalid_row, ACTIONABLE_HTML.encode("utf-8"))
+
+        duplicate_reference = actionable_assessment()
+        duplicate_reference["items"][0]["evidence_references"] = [
+            "evidence-0001", "evidence-0001"]
+        duplicate_reference["items"][0]["evidence_count"] = 2
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "evidence references are duplicated"):
+            runner._validate_actionable_assessment_html(
+                duplicate_reference, ACTIONABLE_HTML.encode("utf-8"))
+
+        cross_group_duplicate = actionable_assessment()
+        cross_group_duplicate["items"][1]["evidence_references"] = [
+            "evidence-0002"]
+        cross_group_duplicate["items"][1]["evidence_count"] = 3
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "evidence references are duplicated"):
+            runner._validate_actionable_assessment_html(
+                cross_group_duplicate, ACTIONABLE_HTML.encode("utf-8"))
+
+        count_disagreement = actionable_assessment()
+        count_disagreement["items"][0]["evidence_count"] = 2
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "evidence reference accounting changed"):
+            runner._validate_actionable_assessment_html(
+                count_disagreement, ACTIONABLE_HTML.encode("utf-8"))
+
+        for value in (None, "825000", True, -1, 1_000_001):
+            invalid_confidence = actionable_assessment()
+            invalid_confidence["items"][1]["confidence_ppm"] = value
+            with self.subTest(confidence=value), self.assertRaisesRegex(
+                    runner.AcceptanceError, "confidence is invalid"):
+                runner._validate_actionable_assessment_html(
+                    invalid_confidence, ACTIONABLE_HTML.encode("utf-8"))
+
+        for field in ("case_reference", "outcome_reference", "verification_stage"):
+            missing = actionable_assessment()
+            del missing["items"][0][field]
+            with self.subTest(json_field=field, mutation="missing"), \
+                    self.assertRaisesRegex(
+                        runner.AcceptanceError, f"{field} is missing"):
+                runner._validate_actionable_assessment_html(
+                    missing, ACTIONABLE_HTML.encode("utf-8"))
+            for value in (True, 1, {}, []):
+                wrong_type = actionable_assessment()
+                wrong_type["items"][0][field] = value
+                with self.subTest(json_field=field, wrong_type=type(value).__name__), \
+                        self.assertRaisesRegex(
+                            runner.AcceptanceError, f"{field} is invalid"):
+                    runner._validate_actionable_assessment_html(
+                        wrong_type, ACTIONABLE_HTML.encode("utf-8"))
+
+        for field in ("severity", "cwe"):
+            missing = actionable_assessment()
+            del missing["items"][0][field]
+            with self.subTest(json_field=field, mutation="missing"), \
+                    self.assertRaisesRegex(
+                        runner.AcceptanceError, f"{field.upper() if field == 'cwe' else field} is missing"):
+                runner._validate_actionable_assessment_html(
+                    missing, ACTIONABLE_HTML.encode("utf-8"))
+            wrong_type = actionable_assessment()
+            wrong_type["items"][0][field] = True
+            with self.subTest(json_field=field, mutation="wrong_type"), \
+                    self.assertRaisesRegex(
+                        runner.AcceptanceError, f"{field.upper() if field == 'cwe' else field} is invalid"):
+                runner._validate_actionable_assessment_html(
+                    wrong_type, ACTIONABLE_HTML.encode("utf-8"))
+
+        for field in (
+                "schema", "capability_id", "subject_reference", "fingerprint", "category"):
+            wrong_type = actionable_assessment()
+            wrong_type["items"][0][field] = True
+            with self.subTest(json_field=field, mutation="wrong_type"), \
+                    self.assertRaisesRegex(
+                        runner.AcceptanceError, f"{field} is invalid"):
+                runner._validate_actionable_assessment_html(
+                    wrong_type, ACTIONABLE_HTML.encode("utf-8"))
+
+        invalid_observation_linkage = actionable_assessment()
+        invalid_observation_linkage["items"][0]["control_evidence_references"] = [
+            "evidence-0004"]
+        invalid_observation_linkage["items"][0]["evidence_count"] = 2
+        with self.assertRaisesRegex(runner.AcceptanceError, "evidence linkage changed"):
+            runner._validate_actionable_assessment_html(
+                invalid_observation_linkage, ACTIONABLE_HTML.encode("utf-8"))
+
+        invalid_differential_linkage = actionable_assessment()
+        invalid_differential_linkage["items"][1]["control_evidence_references"] = []
+        invalid_differential_linkage["items"][1]["candidate_evidence_references"] = []
+        invalid_differential_linkage["items"][1]["evidence_count"] = 0
+        with self.assertRaisesRegex(runner.AcceptanceError, "evidence linkage changed"):
+            runner._validate_actionable_assessment_html(
+                invalid_differential_linkage, ACTIONABLE_HTML.encode("utf-8"))
+
+        confirmed_assessment, confirmed_html = confirmed_actionable_assessment_and_html()
+        confirmed_assessment["items"][1]["case_reference"] = None
+        with self.assertRaisesRegex(runner.AcceptanceError, "evidence linkage changed"):
+            runner._validate_actionable_assessment_html(
+                confirmed_assessment, confirmed_html.encode("utf-8"))
 
     def test_packaged_actionable_html_failure_is_reached_through_full_orchestration(self):
         for index, (mutation, expected) in enumerate((

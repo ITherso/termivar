@@ -82,6 +82,125 @@ use crate::{
 #[cfg(feature = "reporting")]
 use crate::{ReportFormat, ReportGenerator};
 
+#[cfg(feature = "reporting")]
+fn parse_assessment_csv_row(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    let mut cells = Vec::new();
+    while index < bytes.len() {
+        assert_eq!(bytes[index], b'"', "assessment CSV cell is not quoted");
+        index += 1;
+        let mut cell = Vec::new();
+        loop {
+            assert!(index < bytes.len(), "assessment CSV cell is unterminated");
+            if bytes[index] == b'"' {
+                if bytes.get(index + 1) == Some(&b'"') {
+                    cell.push(b'"');
+                    index += 2;
+                    continue;
+                }
+                index += 1;
+                break;
+            }
+            cell.push(bytes[index]);
+            index += 1;
+        }
+        cells.push(String::from_utf8(cell).expect("assessment CSV cell is UTF-8"));
+        if index == bytes.len() {
+            break;
+        }
+        assert_eq!(bytes[index], b',', "assessment CSV delimiter changed");
+        index += 1;
+    }
+    cells
+}
+
+#[cfg(feature = "reporting")]
+#[track_caller]
+fn assert_no_confirmed_assessment_item(rendered: &str, format: ReportFormat) {
+    match format {
+        ReportFormat::Json => {
+            let document: serde_json::Value =
+                serde_json::from_str(rendered).expect("assessment JSON is valid");
+            let items = document["items"]
+                .as_array()
+                .expect("assessment JSON items remain an array");
+            for item in items {
+                let disposition = item["disposition"]
+                    .as_str()
+                    .expect("assessment JSON item disposition remains a string");
+                assert_ne!(
+                    disposition, "confirmed",
+                    "assessment JSON contains a confirmed item"
+                );
+            }
+        },
+        ReportFormat::Csv => {
+            let rows = rendered
+                .lines()
+                .map(parse_assessment_csv_row)
+                .collect::<Vec<_>>();
+            let headers = rows.first().expect("assessment CSV has a header");
+            let record_type = headers
+                .iter()
+                .position(|header| header == "record_type")
+                .expect("assessment CSV record_type column changed");
+            let disposition = headers
+                .iter()
+                .position(|header| header == "disposition")
+                .expect("assessment CSV disposition column changed");
+            assert_eq!(
+                headers
+                    .iter()
+                    .filter(|header| *header == "record_type")
+                    .count(),
+                1,
+                "assessment CSV record_type column is not unique"
+            );
+            assert_eq!(
+                headers
+                    .iter()
+                    .filter(|header| *header == "disposition")
+                    .count(),
+                1,
+                "assessment CSV disposition column is not unique"
+            );
+            assert!(rows.iter().all(|row| row.len() == headers.len()));
+            for row in rows.iter().skip(1).filter(|row| row[record_type] == "item") {
+                assert_ne!(
+                    row[disposition], "confirmed",
+                    "assessment CSV contains a confirmed item"
+                );
+            }
+        },
+        ReportFormat::Html => {
+            assert!(!rendered.contains(
+                "<p class=\"disposition\"><span>Disposition: </span><code>confirmed</code></p>"
+            ));
+            assert_eq!(
+                rendered
+                    .matches("<strong>0</strong><span>Verifier-bound confirmed items</span>",)
+                    .count(),
+                1,
+                "assessment HTML confirmed overview count changed"
+            );
+        },
+        ReportFormat::Markdown => {
+            assert!(!rendered
+                .lines()
+                .any(|line| line == "- Disposition: `confirmed`"));
+            assert_eq!(
+                rendered
+                    .lines()
+                    .filter(|line| *line == "- Verifier-bound confirmed items: `0`")
+                    .count(),
+                1,
+                "assessment Markdown confirmed overview count changed"
+            );
+        },
+    }
+}
+
 #[test]
 fn defense_mode_is_explicit_and_defaults_to_observation_only() {
     let target = Url::parse("https://example.test/").unwrap();
@@ -6041,7 +6160,7 @@ async fn ssti_review_requires_two_exact_evaluations_and_redacts_every_renderer()
         let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
         assert!(!rendered.contains(SECRET));
         assert!(rendered.contains("web.review.ssti.structural-evaluation@1"));
-        assert!(!rendered.contains("confirmed"));
+        assert_no_confirmed_assessment_item(&rendered, format);
     }
 }
 
@@ -6150,7 +6269,7 @@ async fn html_text_boundary_is_needs_review_deterministic_and_report_safe() {
         assert!(rendered.contains("web.review.xss.structural-boundary@1"));
         assert!(!rendered.contains("venom-xss-boundary"));
         assert!(!rendered.contains("data-venom-xss-boundary-token"));
-        assert!(!rendered.contains("confirmed"));
+        assert_no_confirmed_assessment_item(&rendered, format);
     }
 }
 
@@ -6268,7 +6387,7 @@ async fn quote_aware_attribute_boundaries_are_bounded_needs_review_only() {
                 assert!(!rendered.contains("data-venom-xss-boundary-token"));
                 assert!(!rendered.contains("data-venom-xss-tail-token"));
                 assert!(!rendered.contains("venom-reflection-candidate-"));
-                assert!(!rendered.contains("confirmed"));
+                assert_no_confirmed_assessment_item(&rendered, format);
             }
         }
     }
@@ -6437,7 +6556,7 @@ async fn single_quoted_script_boundary_is_bounded_needs_review_and_report_safe()
             assert!(!rendered.contains("venom-xss-js-control-"));
             assert!(!rendered.contains("venom-xss-js-boundary-"));
             assert!(!rendered.contains("venom-xss-js-tail-"));
-            assert!(!rendered.contains("confirmed"));
+            assert_no_confirmed_assessment_item(&rendered, format);
         }
     }
 }
@@ -7087,7 +7206,7 @@ async fn atomic_api_visibility_basis_is_distinct_and_redacted_in_every_renderer(
         let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
         assert!(!rendered.contains(PRIVATE_AUTHORIZATION_SENTINEL));
         assert!(rendered.contains("needs_review"));
-        assert!(!rendered.contains("confirmed"));
+        assert_no_confirmed_assessment_item(&rendered, format);
     }
 }
 
