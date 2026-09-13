@@ -1,5 +1,29 @@
 # Runtime map (what actually runs)
 
+## Supplied-session authenticated assessment
+
+The non-default `supplied-session-review` scanner/CLI feature adds no work by
+itself and remains outside `release-bundle`. Explicit `--profile web-review`, a
+strict `security.supplied-session-policy/v1` file and exactly one Authorization
+value from environment, regular file or stdin select one context-isolated
+authenticated child inside the existing assessment. The target must use HTTPS;
+numeric-loopback HTTP is accepted only for owned development fixtures.
+
+V1 performs one structured startup health GET, then at most four explicitly
+listed read-oriented same-application GETs, each followed by another health
+checkpoint. Its no-proxy client, evidence and reuse state are private to the
+operator-declared principal/context. Redirects and retries are disabled. At
+most nine child requests are permitted, and the policy's response/body/time
+ceilings narrow the shared parent authority. Session loss stops later
+credentialed work without refresh or anonymous fallback.
+
+The completed report may contain one strict
+`security.supplied-session-audit/v1` with opaque references and reconciled
+checkpoint/resource accounting. It emits no vulnerability item and does not
+claim continuous authentication between checkpoints, principal authentication,
+server authorization, exploit execution or impact validation. Cookies, login,
+OAuth, MFA and credentialed WordPress integration are not part of this slice.
+
 ## OpenAPI surface review
 
 The non-default `openapi-review` scanner/CLI feature adds no work by itself.

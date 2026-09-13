@@ -71,6 +71,8 @@ pub mod rules;
 pub mod semantic;
 #[cfg(feature = "ssrf-oast-review")]
 pub mod ssrf_oast_review;
+#[cfg(feature = "supplied-session-review")]
+pub mod supplied_session_review;
 pub mod verification;
 pub mod web_actions;
 pub mod web_planning;

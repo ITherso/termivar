@@ -24,6 +24,21 @@ use crate::{
     },
     web_runtime::{MAX_AUTHORIZATION_REVIEW_REQUESTS, RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID},
 };
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+use crate::{
+    supplied_session_review::{
+        SuppliedSessionCredentialMechanism, MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
+    },
+    web_runtime::{
+        SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCoverage,
+        SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleKind,
+        SuppliedSessionHealthOutcome, SuppliedSessionPredicateOutcome,
+        SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
+        WebAssessmentSuppliedSessionAudit, MAX_SUPPLIED_SESSION_CHECKPOINTS,
+        MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES,
+        SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
+    },
+};
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 use crate::{
     web_runtime::{
@@ -861,6 +876,46 @@ fn render_assessment_csv(
             "",
         ],
     )?;
+    #[cfg(feature = "supplied-session-review")]
+    if let Some(audit) = &document.supplied_session {
+        let committed_count = audit.committed_resource_count.to_string();
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "supplied_session_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                audit.outcome,
+                "",
+                "",
+                "",
+                audit.capability_id,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &committed_count,
+                &summary,
+                "supplied-session",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     #[cfg(feature = "authorization-review")]
     if let Some(audit) = &document.authorization_review {
         let request_count = audit.request_count.to_string();
@@ -1235,6 +1290,71 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
         output.push_str("</code></dd>")?;
     }
     output.push_str("</dl>")?;
+    #[cfg(feature = "supplied-session-review")]
+    if let Some(audit) = &document.supplied_session {
+        output
+            .push_str("<section><h2>Supplied session assessment audit</h2><dl class=\"meta\">")?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Health checkpoints</h3><ol>")?;
+        for checkpoint in &audit.checkpoints {
+            let status = checkpoint
+                .status
+                .map_or_else(|| "not_available".to_owned(), |status| status.to_string());
+            let evidence_reference = checkpoint
+                .evidence_reference
+                .as_deref()
+                .unwrap_or("not_available");
+            output.push_str("<li><code>")?;
+            write_html_text(
+                &mut output,
+                &format!(
+                    "sequence={};phase={};after_subject_count={};evidence_reference={};outcome={};status={};body_state={};predicate={};response_bytes={}",
+                    checkpoint.sequence,
+                    checkpoint.phase,
+                    checkpoint.after_subject_count,
+                    evidence_reference,
+                    checkpoint.outcome,
+                    status,
+                    checkpoint.body_state,
+                    checkpoint.predicate,
+                    checkpoint.response_bytes,
+                ),
+            )?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ol><h3>Protected resources</h3><ol>")?;
+        for resource in &audit.resources {
+            let status = resource
+                .status
+                .map_or_else(|| "not_available".to_owned(), |status| status.to_string());
+            let evidence_reference = resource
+                .evidence_reference
+                .as_deref()
+                .unwrap_or("not_available");
+            output.push_str("<li><code>")?;
+            write_html_text(
+                &mut output,
+                &format!(
+                    "sequence={};resource_reference={};evidence_reference={};outcome={};status={};response_bytes={};epoch={}",
+                    resource.sequence,
+                    resource.resource_reference,
+                    evidence_reference,
+                    resource.outcome,
+                    status,
+                    resource.response_bytes,
+                    resource.epoch,
+                ),
+            )?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ol></section>")?;
+    }
     #[cfg(feature = "authorization-review")]
     if let Some(audit) = &document.authorization_review {
         output
@@ -3102,6 +3222,67 @@ fn render_assessment_markdown(
         write_markdown_code_span(&mut output, &value)?;
         output.push_char('\n')?;
     }
+    #[cfg(feature = "supplied-session-review")]
+    if let Some(audit) = &document.supplied_session {
+        output.push_str("\n## Supplied session assessment audit\n\n")?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n### Health checkpoints\n\n")?;
+        for checkpoint in &audit.checkpoints {
+            let status = checkpoint
+                .status
+                .map_or_else(|| "not_available".to_owned(), |status| status.to_string());
+            let evidence_reference = checkpoint
+                .evidence_reference
+                .as_deref()
+                .unwrap_or("not_available");
+            output.push_str("- ")?;
+            write_markdown_code_span(
+                &mut output,
+                &format!(
+                    "sequence={};phase={};after_subject_count={};evidence_reference={};outcome={};status={};body_state={};predicate={};response_bytes={}",
+                    checkpoint.sequence,
+                    checkpoint.phase,
+                    checkpoint.after_subject_count,
+                    evidence_reference,
+                    checkpoint.outcome,
+                    status,
+                    checkpoint.body_state,
+                    checkpoint.predicate,
+                    checkpoint.response_bytes,
+                ),
+            )?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n### Protected resources\n\n")?;
+        for resource in &audit.resources {
+            let status = resource
+                .status
+                .map_or_else(|| "not_available".to_owned(), |status| status.to_string());
+            let evidence_reference = resource
+                .evidence_reference
+                .as_deref()
+                .unwrap_or("not_available");
+            output.push_str("- ")?;
+            write_markdown_code_span(
+                &mut output,
+                &format!(
+                    "sequence={};resource_reference={};evidence_reference={};outcome={};status={};response_bytes={};epoch={}",
+                    resource.sequence,
+                    resource.resource_reference,
+                    evidence_reference,
+                    resource.outcome,
+                    status,
+                    resource.response_bytes,
+                    resource.epoch,
+                ),
+            )?;
+            output.push_char('\n')?;
+        }
+    }
     #[cfg(feature = "authorization-review")]
     if let Some(audit) = &document.authorization_review {
         output.push_str("\n## Resource authorization review audit\n\n")?;
@@ -3252,6 +3433,9 @@ struct AssessmentDocument<'a> {
     status: &'static str,
     subject_count: u64,
     item_count: u64,
+    #[cfg(feature = "supplied-session-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supplied_session: Option<AssessmentSuppliedSessionAuditDocument>,
     #[cfg(feature = "authorization-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization_review: Option<AssessmentAuthorizationAuditDocument>,
@@ -3352,6 +3536,11 @@ impl<'a> AssessmentDocument<'a> {
                 .map_err(|_| ReportError::Serialization)?,
             item_count: u64::try_from(report.item_count())
                 .map_err(|_| ReportError::Serialization)?,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session: report
+                .supplied_session_audit()
+                .map(AssessmentSuppliedSessionAuditDocument::from_audit)
+                .transpose()?,
             #[cfg(feature = "authorization-review")]
             authorization_review: report
                 .authorization_review_audit()
@@ -3393,6 +3582,16 @@ impl<'a> AssessmentDocument<'a> {
         if self.schema != ASSESSMENT_REPORT_DOCUMENT_SCHEMA
             || self.item_count
                 != u64::try_from(self.items.len()).map_err(|_| ReportError::Serialization)?
+        {
+            return Err(ReportError::Serialization);
+        }
+        #[cfg(feature = "supplied-session-review")]
+        if let Some(audit) = &self.supplied_session {
+            audit.validate(&self.items)?;
+        } else if self
+            .items
+            .iter()
+            .any(|item| item.capability_id == SUPPLIED_SESSION_CAPABILITY_ID)
         {
             return Err(ReportError::Serialization);
         }
@@ -3800,6 +3999,466 @@ const fn rest_outcome(outcome: RestRuntimeOutcome) -> &'static str {
         RestRuntimeOutcome::Incomplete => "incomplete",
         RestRuntimeOutcome::Cancelled => "cancelled",
         RestRuntimeOutcome::BudgetExhausted => "budget_exhausted",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+#[derive(Serialize)]
+struct AssessmentSuppliedSessionAuditDocument {
+    schema: &'static str,
+    capability_id: &'static str,
+    policy_reference: String,
+    application_reference: String,
+    principal_reference: String,
+    principal_alias: String,
+    principal_assurance: &'static str,
+    credential_mechanism: &'static str,
+    health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
+    outcome: &'static str,
+    coverage: &'static str,
+    checkpoints: Vec<AssessmentSuppliedSessionCheckpointDocument>,
+    resources: Vec<AssessmentSuppliedSessionResourceDocument>,
+    selected_resource_count: u8,
+    dispatched_resource_count: u8,
+    committed_resource_count: u8,
+    dispatched_request_count: u8,
+    response_bytes: u64,
+    response_byte_limit: u64,
+    response_byte_limit_exceeded: bool,
+    refresh_performed: bool,
+    anonymous_fallback_performed: bool,
+    continuous_authentication_established: bool,
+    exploit_execution: &'static str,
+    impact_validation: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+#[derive(Serialize)]
+struct AssessmentSuppliedSessionHealthOracleDocument {
+    kind: &'static str,
+    field_reference: String,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+#[derive(Serialize)]
+struct AssessmentSuppliedSessionCheckpointDocument {
+    sequence: u8,
+    phase: &'static str,
+    after_subject_count: u8,
+    evidence_reference: Option<String>,
+    outcome: &'static str,
+    status: Option<u16>,
+    body_state: &'static str,
+    predicate: &'static str,
+    response_bytes: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+#[derive(Serialize)]
+struct AssessmentSuppliedSessionResourceDocument {
+    sequence: u8,
+    resource_reference: String,
+    evidence_reference: Option<String>,
+    outcome: &'static str,
+    status: Option<u16>,
+    response_bytes: u64,
+    epoch: u8,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+impl AssessmentSuppliedSessionAuditDocument {
+    fn from_audit(audit: &WebAssessmentSuppliedSessionAudit) -> Result<Self, ReportError> {
+        if audit.exploit_execution_performed() || audit.impact_validation_performed() {
+            return Err(ReportError::Serialization);
+        }
+        let document = Self {
+            schema: audit.schema(),
+            capability_id: audit.capability_id(),
+            policy_reference: audit.policy_reference().to_owned(),
+            application_reference: audit.application_reference().to_owned(),
+            principal_reference: audit.principal_reference().to_owned(),
+            principal_alias: audit.principal_alias().to_owned(),
+            principal_assurance: supplied_session_principal_assurance_token(
+                audit.principal_assurance(),
+            ),
+            credential_mechanism: supplied_session_credential_mechanism_token(
+                audit.credential_mechanism(),
+            ),
+            health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
+                kind: supplied_session_health_oracle_kind_token(audit.health_oracle().kind()),
+                field_reference: audit.health_oracle().field_reference().to_owned(),
+            },
+            outcome: supplied_session_audit_outcome_token(audit.outcome()),
+            coverage: supplied_session_coverage_token(audit.coverage()),
+            checkpoints: audit
+                .checkpoints()
+                .iter()
+                .map(|checkpoint| AssessmentSuppliedSessionCheckpointDocument {
+                    sequence: checkpoint.sequence(),
+                    phase: supplied_session_checkpoint_phase_token(checkpoint.phase()),
+                    after_subject_count: checkpoint.after_subject_count(),
+                    evidence_reference: checkpoint.evidence_reference().map(str::to_owned),
+                    outcome: supplied_session_health_outcome_token(checkpoint.outcome()),
+                    status: checkpoint.status(),
+                    body_state: supplied_session_body_state_token(checkpoint.body_state()),
+                    predicate: supplied_session_predicate_outcome_token(checkpoint.predicate()),
+                    response_bytes: checkpoint.response_bytes(),
+                })
+                .collect(),
+            resources: audit
+                .resources()
+                .iter()
+                .map(|resource| AssessmentSuppliedSessionResourceDocument {
+                    sequence: resource.sequence(),
+                    resource_reference: resource.resource_reference().to_owned(),
+                    evidence_reference: resource.evidence_reference().map(str::to_owned),
+                    outcome: supplied_session_resource_outcome_token(resource.outcome()),
+                    status: resource.status(),
+                    response_bytes: resource.response_bytes(),
+                    epoch: resource.epoch(),
+                })
+                .collect(),
+            selected_resource_count: audit.selected_resource_count(),
+            dispatched_resource_count: audit.dispatched_resource_count(),
+            committed_resource_count: audit.committed_resource_count(),
+            dispatched_request_count: audit.dispatched_request_count(),
+            response_bytes: audit.response_bytes(),
+            response_byte_limit: audit.response_byte_limit(),
+            response_byte_limit_exceeded: audit.response_byte_limit_exceeded(),
+            refresh_performed: audit.refresh_performed(),
+            anonymous_fallback_performed: audit.anonymous_fallback_performed(),
+            continuous_authentication_established: audit.continuous_authentication_established(),
+            exploit_execution: "not_performed",
+            impact_validation: "not_performed",
+        };
+        document.validate(&[])?;
+        Ok(document)
+    }
+
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        let resource_response_bytes = self
+            .resources
+            .iter()
+            .map(|resource| resource.response_bytes)
+            .try_fold(0_u64, u64::checked_add);
+        let checkpoint_response_bytes = self
+            .checkpoints
+            .iter()
+            .map(|checkpoint| checkpoint.response_bytes)
+            .try_fold(0_u64, u64::checked_add);
+        let dispatched_resources = self
+            .resources
+            .iter()
+            .filter(|resource| resource.outcome != "not_dispatched")
+            .count();
+        let committed_resources = self
+            .resources
+            .iter()
+            .filter(|resource| resource.outcome == "committed")
+            .count();
+        let unique_resource_references = self
+            .resources
+            .iter()
+            .map(|resource| resource.resource_reference.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let checkpoint_evidence_reference_count = self
+            .checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.evidence_reference.is_some())
+            .count();
+        let unique_checkpoint_evidence_references = self
+            .checkpoints
+            .iter()
+            .filter_map(|checkpoint| checkpoint.evidence_reference.as_deref())
+            .collect::<std::collections::BTreeSet<_>>();
+        let resource_evidence_reference_count = self
+            .resources
+            .iter()
+            .filter(|resource| resource.evidence_reference.is_some())
+            .count();
+        let unique_resource_evidence_references = self
+            .resources
+            .iter()
+            .filter_map(|resource| resource.evidence_reference.as_deref())
+            .collect::<std::collections::BTreeSet<_>>();
+        let response_bytes = checkpoint_response_bytes
+            .zip(resource_response_bytes)
+            .and_then(|(checkpoints, resources)| checkpoints.checked_add(resources));
+        if self.schema != SUPPLIED_SESSION_AUDIT_SCHEMA
+            || self.capability_id != SUPPLIED_SESSION_CAPABILITY_ID
+            || !valid_supplied_session_reference(
+                &self.policy_reference,
+                "supplied-session-policy-sha256:",
+            )
+            || !valid_supplied_session_reference(
+                &self.application_reference,
+                "supplied-session-application-sha256:",
+            )
+            || self.principal_reference != "supplied-session-principal-0001"
+            || !valid_supplied_session_principal_alias(&self.principal_alias)
+            || self.principal_assurance != "operator_declared"
+            || self.credential_mechanism != "authorization_header"
+            || self.health_oracle.kind != "json_boolean_true"
+            || !valid_supplied_session_reference(
+                &self.health_oracle.field_reference,
+                "supplied-session-health-field-sha256:",
+            )
+            || self.resources.is_empty()
+            || self.resources.len() > MAX_SUPPLIED_SESSION_RESOURCES
+            || self.checkpoints.len() > MAX_SUPPLIED_SESSION_CHECKPOINTS
+            || usize::from(self.selected_resource_count) != self.resources.len()
+            || usize::from(self.dispatched_resource_count) != dispatched_resources
+            || usize::from(self.committed_resource_count) != committed_resources
+            || usize::from(self.dispatched_request_count)
+                > usize::from(MAX_SUPPLIED_SESSION_REQUESTS)
+            || self.response_byte_limit == 0
+            || self.response_byte_limit > MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES
+            || self.response_byte_limit_exceeded != (self.response_bytes > self.response_byte_limit)
+            || usize::from(self.dispatched_request_count)
+                != self.checkpoints.len().saturating_add(dispatched_resources)
+            || response_bytes != Some(self.response_bytes)
+            || unique_resource_references.len() != self.resources.len()
+            || unique_checkpoint_evidence_references.len() != checkpoint_evidence_reference_count
+            || unique_resource_evidence_references.len() != resource_evidence_reference_count
+            || self.refresh_performed
+            || self.anonymous_fallback_performed
+            || self.continuous_authentication_established
+            || self.exploit_execution != "not_performed"
+            || self.impact_validation != "not_performed"
+            || items
+                .iter()
+                .any(|item| item.capability_id == SUPPLIED_SESSION_CAPABILITY_ID)
+        {
+            return Err(ReportError::Serialization);
+        }
+        for (index, checkpoint) in self.checkpoints.iter().enumerate() {
+            let expected_phase = if index == 0 {
+                "startup"
+            } else if index == usize::from(self.selected_resource_count) {
+                "terminal"
+            } else {
+                "subject_boundary"
+            };
+            if usize::from(checkpoint.sequence) != index
+                || usize::from(checkpoint.after_subject_count) != index
+                || checkpoint.phase != expected_phase
+                || checkpoint
+                    .evidence_reference
+                    .as_deref()
+                    .is_some_and(|reference| {
+                        !valid_supplied_session_reference(
+                            reference,
+                            "supplied-session-checkpoint-evidence-sha256:",
+                        )
+                    })
+                || (checkpoint.outcome != "indeterminate"
+                    && checkpoint.evidence_reference.is_none())
+            {
+                return Err(ReportError::Serialization);
+            }
+        }
+        for (index, resource) in self.resources.iter().enumerate() {
+            if usize::from(resource.sequence) != index
+                || resource.epoch != 1
+                || !valid_supplied_session_reference(
+                    &resource.resource_reference,
+                    "supplied-session-resource-sha256:",
+                )
+                || (matches!(resource.outcome, "committed" | "health_unqualified")
+                    != resource
+                        .evidence_reference
+                        .as_deref()
+                        .is_some_and(|reference| {
+                            valid_supplied_session_reference(
+                                reference,
+                                "supplied-session-resource-evidence-sha256:",
+                            )
+                        }))
+            {
+                return Err(ReportError::Serialization);
+            }
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Audit schema", self.schema.to_owned()),
+            ("Capability", self.capability_id.to_owned()),
+            ("Policy reference", self.policy_reference.clone()),
+            ("Application reference", self.application_reference.clone()),
+            ("Principal reference", self.principal_reference.clone()),
+            ("Principal alias", self.principal_alias.clone()),
+            ("Principal assurance", self.principal_assurance.to_owned()),
+            ("Credential mechanism", self.credential_mechanism.to_owned()),
+            ("Health oracle", self.health_oracle.kind.to_owned()),
+            (
+                "Health field reference",
+                self.health_oracle.field_reference.clone(),
+            ),
+            ("Outcome", self.outcome.to_owned()),
+            ("Coverage", self.coverage.to_owned()),
+            (
+                "Selected resources",
+                self.selected_resource_count.to_string(),
+            ),
+            (
+                "Dispatched resources",
+                self.dispatched_resource_count.to_string(),
+            ),
+            (
+                "Committed resources",
+                self.committed_resource_count.to_string(),
+            ),
+            (
+                "Dispatched requests",
+                self.dispatched_request_count.to_string(),
+            ),
+            ("Response bytes", self.response_bytes.to_string()),
+            ("Response byte limit", self.response_byte_limit.to_string()),
+            (
+                "Response byte limit exceeded",
+                self.response_byte_limit_exceeded.to_string(),
+            ),
+            ("Refresh performed", self.refresh_performed.to_string()),
+            (
+                "Anonymous fallback performed",
+                self.anonymous_fallback_performed.to_string(),
+            ),
+            (
+                "Continuous authentication established",
+                self.continuous_authentication_established.to_string(),
+            ),
+            ("Exploit execution", self.exploit_execution.to_owned()),
+            ("Impact validation", self.impact_validation.to_owned()),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+fn valid_supplied_session_reference(value: &str, prefix: &str) -> bool {
+    value.len() == prefix.len() + 64
+        && value.starts_with(prefix)
+        && value[prefix.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+fn valid_supplied_session_principal_alias(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
+        })
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_principal_assurance_token(
+    value: SuppliedSessionPrincipalAssurance,
+) -> &'static str {
+    match value {
+        SuppliedSessionPrincipalAssurance::OperatorDeclared => "operator_declared",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_credential_mechanism_token(
+    value: SuppliedSessionCredentialMechanism,
+) -> &'static str {
+    match value {
+        SuppliedSessionCredentialMechanism::AuthorizationHeader => "authorization_header",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_health_oracle_kind_token(
+    value: SuppliedSessionHealthOracleKind,
+) -> &'static str {
+    match value {
+        SuppliedSessionHealthOracleKind::JsonBooleanTrue => "json_boolean_true",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_audit_outcome_token(value: SuppliedSessionAuditOutcome) -> &'static str {
+    match value {
+        SuppliedSessionAuditOutcome::Complete => "complete",
+        SuppliedSessionAuditOutcome::StartupUnhealthy => "startup_unhealthy",
+        SuppliedSessionAuditOutcome::SessionLost => "session_lost",
+        SuppliedSessionAuditOutcome::ResourceUnavailable => "resource_unavailable",
+        SuppliedSessionAuditOutcome::RuntimeLimit => "runtime_limit",
+        SuppliedSessionAuditOutcome::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_coverage_token(value: SuppliedSessionCoverage) -> &'static str {
+    match value {
+        SuppliedSessionCoverage::Complete => "complete",
+        SuppliedSessionCoverage::Partial => "partial",
+        SuppliedSessionCoverage::None => "none",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_checkpoint_phase_token(
+    value: SuppliedSessionHealthCheckpointPhase,
+) -> &'static str {
+    match value {
+        SuppliedSessionHealthCheckpointPhase::Startup => "startup",
+        SuppliedSessionHealthCheckpointPhase::SubjectBoundary => "subject_boundary",
+        SuppliedSessionHealthCheckpointPhase::Terminal => "terminal",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_health_outcome_token(
+    value: SuppliedSessionHealthOutcome,
+) -> &'static str {
+    match value {
+        SuppliedSessionHealthOutcome::Healthy => "healthy",
+        SuppliedSessionHealthOutcome::Unhealthy => "unhealthy",
+        SuppliedSessionHealthOutcome::Indeterminate => "indeterminate",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_body_state_token(value: SuppliedSessionBodyState) -> &'static str {
+    match value {
+        SuppliedSessionBodyState::Complete => "complete",
+        SuppliedSessionBodyState::Incomplete => "incomplete",
+        SuppliedSessionBodyState::Unavailable => "unavailable",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_predicate_outcome_token(
+    value: SuppliedSessionPredicateOutcome,
+) -> &'static str {
+    match value {
+        SuppliedSessionPredicateOutcome::Matched => "matched",
+        SuppliedSessionPredicateOutcome::NotMatched => "not_matched",
+        SuppliedSessionPredicateOutcome::NotEvaluated => "not_evaluated",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_resource_outcome_token(
+    value: SuppliedSessionResourceOutcome,
+) -> &'static str {
+    match value {
+        SuppliedSessionResourceOutcome::Committed => "committed",
+        SuppliedSessionResourceOutcome::HealthUnqualified => "health_unqualified",
+        SuppliedSessionResourceOutcome::HttpError => "http_error",
+        SuppliedSessionResourceOutcome::RedirectRefused => "redirect_refused",
+        SuppliedSessionResourceOutcome::Incomplete => "incomplete",
+        SuppliedSessionResourceOutcome::TransportFailed => "transport_failed",
+        SuppliedSessionResourceOutcome::NotDispatched => "not_dispatched",
     }
 }
 
@@ -9750,6 +10409,8 @@ mod tests {
             status: "complete",
             subject_count: 1,
             item_count: 1,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session: None,
             #[cfg(feature = "authorization-review")]
             authorization_review: None,
             #[cfg(feature = "openapi-review")]
@@ -9787,6 +10448,83 @@ mod tests {
                 outcome_reference: None,
                 verification_stage: None,
             }],
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    fn complete_supplied_session_audit_document() -> AssessmentSuppliedSessionAuditDocument {
+        AssessmentSuppliedSessionAuditDocument {
+            schema: SUPPLIED_SESSION_AUDIT_SCHEMA,
+            capability_id: SUPPLIED_SESSION_CAPABILITY_ID,
+            policy_reference: format!("supplied-session-policy-sha256:{}", "1".repeat(64)),
+            application_reference: format!(
+                "supplied-session-application-sha256:{}",
+                "2".repeat(64)
+            ),
+            principal_reference: "supplied-session-principal-0001".to_owned(),
+            principal_alias: "fixture-user".to_owned(),
+            principal_assurance: "operator_declared",
+            credential_mechanism: "authorization_header",
+            health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
+                kind: "json_boolean_true",
+                field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),
+            },
+            outcome: "complete",
+            coverage: "complete",
+            checkpoints: vec![
+                AssessmentSuppliedSessionCheckpointDocument {
+                    sequence: 0,
+                    phase: "startup",
+                    after_subject_count: 0,
+                    evidence_reference: Some(format!(
+                        "supplied-session-checkpoint-evidence-sha256:{}",
+                        "6".repeat(64)
+                    )),
+                    outcome: "healthy",
+                    status: Some(200),
+                    body_state: "complete",
+                    predicate: "matched",
+                    response_bytes: 17,
+                },
+                AssessmentSuppliedSessionCheckpointDocument {
+                    sequence: 1,
+                    phase: "terminal",
+                    after_subject_count: 1,
+                    evidence_reference: Some(format!(
+                        "supplied-session-checkpoint-evidence-sha256:{}",
+                        "7".repeat(64)
+                    )),
+                    outcome: "healthy",
+                    status: Some(200),
+                    body_state: "complete",
+                    predicate: "matched",
+                    response_bytes: 19,
+                },
+            ],
+            resources: vec![AssessmentSuppliedSessionResourceDocument {
+                sequence: 0,
+                resource_reference: format!("supplied-session-resource-sha256:{}", "4".repeat(64)),
+                evidence_reference: Some(format!(
+                    "supplied-session-resource-evidence-sha256:{}",
+                    "5".repeat(64)
+                )),
+                outcome: "committed",
+                status: Some(200),
+                response_bytes: 23,
+                epoch: 1,
+            }],
+            selected_resource_count: 1,
+            dispatched_resource_count: 1,
+            committed_resource_count: 1,
+            dispatched_request_count: 3,
+            response_bytes: 59,
+            response_byte_limit: 65_536,
+            response_byte_limit_exceeded: false,
+            refresh_performed: false,
+            anonymous_fallback_performed: false,
+            continuous_authentication_established: false,
+            exploit_execution: "not_performed",
+            impact_validation: "not_performed",
         }
     }
 
@@ -10730,6 +11468,167 @@ mod tests {
                 assert!(rendered.contains(token), "{format:?} omitted {token}");
             }
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn absent_supplied_session_audit_preserves_every_rendered_contract() {
+        let document = complete_assessment_document();
+        assert!(document.supplied_session.is_none());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("supplied_session").is_none());
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(!csv.contains("supplied_session_audit"));
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        assert!(!html.contains("Supplied session assessment audit"));
+
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        assert!(!markdown.contains("Supplied session assessment audit"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn supplied_session_audit_is_value_free_audit_only_and_visible_in_every_format() {
+        let mut document = observation_assessment_document("test.observation@1");
+        document.supplied_session = Some(complete_supplied_session_audit_document());
+        document.validate().unwrap();
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &parsed["supplied_session"];
+        assert_eq!(audit["schema"], SUPPLIED_SESSION_AUDIT_SCHEMA);
+        assert_eq!(audit["capability_id"], SUPPLIED_SESSION_CAPABILITY_ID);
+        assert_eq!(
+            audit["principal_reference"],
+            "supplied-session-principal-0001"
+        );
+        assert_eq!(audit["principal_alias"], "fixture-user");
+        assert_eq!(audit["principal_assurance"], "operator_declared");
+        assert_eq!(audit["credential_mechanism"], "authorization_header");
+        assert_eq!(audit["outcome"], "complete");
+        assert_eq!(audit["coverage"], "complete");
+        assert_eq!(audit["response_byte_limit"], 65_536);
+        assert_eq!(audit["response_byte_limit_exceeded"], false);
+        assert_eq!(audit["checkpoints"].as_array().unwrap().len(), 2);
+        assert!(audit["checkpoints"][0]["evidence_reference"]
+            .as_str()
+            .unwrap()
+            .starts_with("supplied-session-checkpoint-evidence-sha256:"));
+        assert_eq!(audit["resources"].as_array().unwrap().len(), 1);
+        assert!(audit["resources"][0]["evidence_reference"]
+            .as_str()
+            .unwrap()
+            .starts_with("supplied-session-resource-evidence-sha256:"));
+        assert_eq!(audit["exploit_execution"], "not_performed");
+        assert_eq!(audit["impact_validation"], "not_performed");
+        assert!(json.contains("supplied-session-resource-sha256:"));
+        for forbidden in ["Authorization", "Bearer ", "https://", "cookie"] {
+            assert!(!json.contains(forbidden));
+        }
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(csv.contains("supplied_session_audit"));
+        assert!(csv.contains("subject_boundary") || csv.contains("terminal"));
+        assert!(csv.contains("supplied-session-resource-sha256:"));
+        assert!(csv.contains("supplied-session-resource-evidence-sha256:"));
+        assert!(csv.contains("supplied-session-checkpoint-evidence-sha256:"));
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        assert!(html.contains("Supplied session assessment audit"));
+        assert!(html.contains("Health oracle"));
+        assert!(html.contains("json_boolean_true"));
+        assert!(html.contains("supplied-session-health-field-sha256:"));
+        assert!(html.contains("Health checkpoints"));
+        assert!(html.contains("Protected resources"));
+        assert!(html.contains("supplied-session-resource-evidence-sha256:"));
+        assert!(html.contains("supplied-session-checkpoint-evidence-sha256:"));
+
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        assert!(markdown.contains("## Supplied session assessment audit"));
+        assert!(markdown.contains("Health oracle"));
+        assert!(markdown.contains("json_boolean_true"));
+        assert!(markdown.contains("supplied-session-health-field-sha256:"));
+        assert!(markdown.contains("### Health checkpoints"));
+        assert!(markdown.contains("### Protected resources"));
+        assert!(markdown.contains("supplied-session-resource-evidence-sha256:"));
+        assert!(markdown.contains("supplied-session-checkpoint-evidence-sha256:"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn supplied_session_writer_rejects_duplicate_activity_evidence_references() {
+        let mut duplicate_checkpoint = complete_supplied_session_audit_document();
+        duplicate_checkpoint.checkpoints[1].evidence_reference = duplicate_checkpoint.checkpoints
+            [0]
+        .evidence_reference
+        .clone();
+        assert_eq!(
+            duplicate_checkpoint.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+
+        let mut duplicate_resource = complete_supplied_session_audit_document();
+        duplicate_resource.checkpoints[1].phase = "subject_boundary";
+        duplicate_resource
+            .checkpoints
+            .push(AssessmentSuppliedSessionCheckpointDocument {
+                sequence: 2,
+                phase: "terminal",
+                after_subject_count: 2,
+                evidence_reference: Some(format!(
+                    "supplied-session-checkpoint-evidence-sha256:{}",
+                    "8".repeat(64)
+                )),
+                outcome: "healthy",
+                status: Some(200),
+                body_state: "complete",
+                predicate: "matched",
+                response_bytes: 31,
+            });
+        duplicate_resource
+            .resources
+            .push(AssessmentSuppliedSessionResourceDocument {
+                sequence: 1,
+                resource_reference: format!("supplied-session-resource-sha256:{}", "9".repeat(64)),
+                evidence_reference: duplicate_resource.resources[0].evidence_reference.clone(),
+                outcome: "committed",
+                status: Some(200),
+                response_bytes: 29,
+                epoch: 1,
+            });
+        duplicate_resource.selected_resource_count = 2;
+        duplicate_resource.dispatched_resource_count = 2;
+        duplicate_resource.committed_resource_count = 2;
+        duplicate_resource.dispatched_request_count = 5;
+        duplicate_resource.response_bytes = 119;
+        assert_eq!(
+            duplicate_resource.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn supplied_session_writer_preserves_an_honest_single_chunk_byte_overrun() {
+        let mut overrun = complete_supplied_session_audit_document();
+        overrun.resources[0].response_bytes = MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES + 1;
+        overrun.response_bytes = MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES + 37;
+        overrun.response_byte_limit = MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES;
+        overrun.response_byte_limit_exceeded = true;
+        assert!(overrun.validate(&[]).is_ok());
+
+        overrun.response_byte_limit_exceeded = false;
+        assert_eq!(overrun.validate(&[]), Err(ReportError::Serialization));
+
+        overrun.response_byte_limit = 0;
+        overrun.response_byte_limit_exceeded = true;
+        assert_eq!(overrun.validate(&[]), Err(ReportError::Serialization));
     }
 
     #[cfg(all(feature = "scanning", feature = "authorization-review"))]

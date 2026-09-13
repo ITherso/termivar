@@ -35,6 +35,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "openapi-review",
     "rest-review",
     "ssrf-oast-review",
+    "supplied-session-review",
     "wordpress-review",
     "platform-models",
     "plugins",
@@ -62,6 +63,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "openapi-review",
     "rest-review",
     "ssrf-oast-review",
+    "supplied-session-review",
     "wordpress-review",
     "platform-models",
     "plugins",
@@ -90,6 +92,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "plugins",
     "reporting",
     "scanning",
+    "supplied-session-review",
     "wordpress-review",
     "threat-intel",
 ];
@@ -113,6 +116,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "plugins",
     "reporting",
     "scanning",
+    "supplied-session-review",
     "wordpress-review",
 ];
 
@@ -170,6 +174,22 @@ const OPTIONAL_CLI_DEPENDENCIES: &[&str] = &[
     "termivar-artifact",
     "termivar-proxy",
 ];
+const EXACT_CLI_FEATURES: &[&str] = &[
+    "api-adapter",
+    "artifact-adapter",
+    "authorization-review",
+    "default",
+    "graphql-review",
+    "legacy-scanner",
+    "normalization-resilience",
+    "openapi-review",
+    "proxy-adapter",
+    "release-bundle",
+    "rest-review",
+    "ssrf-oast-review",
+    "supplied-session-review",
+    "wordpress-review",
+];
 const REQUIRED_API_DEPENDENCIES: &[&str] = &["axum"];
 const REQUIRED_PROXY_DEPENDENCIES: &[&str] = &["tokio"];
 
@@ -220,6 +240,10 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("oast", "feature=\"oast-correlation\""),
     ("native_oast_provider", "feature=\"oast-native-provider\""),
     ("ssrf_oast_review", "feature=\"ssrf-oast-review\""),
+    (
+        "supplied_session_review",
+        "feature=\"supplied-session-review\"",
+    ),
     ("wordpress_review", "feature=\"wordpress-review\""),
     ("persistence", "feature=\"platform-models\""),
     ("plugin", "feature=\"plugins\""),
@@ -249,6 +273,12 @@ const GRAPHQL_REVIEW_BROKER_SOURCE: &str =
     "crates/termivar-scanner/src/http_evidence/request_broker.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
+const SUPPLIED_SESSION_CORE_SOURCE: &str = "crates/termivar-scanner/src/supplied_session_review.rs";
+const SUPPLIED_SESSION_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs";
+const REPORTING_IMPORT_SOURCE: &str = "crates/termivar-scanner/src/reporting/comparison/import.rs";
+const REPORTING_AUDIT_IMPORT_SOURCE: &str =
+    "crates/termivar-scanner/src/reporting/comparison/import/audits.rs";
 const NATIVE_WEB_REVIEW_ACTION_SOURCE: &str =
     "crates/termivar-scanner/src/web_actions/native_review.rs";
 const WEB_REVIEW_DECISION_SOURCE: &str =
@@ -1010,6 +1040,10 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         workspace_root,
         &web_runtime_source,
     )?);
+    violations.extend(supplied_session_review_contract_violations(
+        workspace_root,
+        &web_runtime_source,
+    )?);
     violations.extend(private_natural_child_module_violations(
         &web_runtime_source,
         "scan_profile",
@@ -1241,6 +1275,13 @@ fn cli_feature_violations(
     dependencies: &BTreeMap<String, DependencyContract>,
 ) -> Vec<String> {
     let mut violations = Vec::new();
+    let actual_feature_names: BTreeSet<_> = features.keys().map(String::as_str).collect();
+    let expected_feature_names: BTreeSet<_> = EXACT_CLI_FEATURES.iter().copied().collect();
+    if actual_feature_names != expected_feature_names {
+        violations.push(format!(
+            "termivar-cli feature names must be exactly {expected_feature_names:?}, found {actual_feature_names:?}"
+        ));
+    }
     if features
         .get("default")
         .is_none_or(|features| !features.is_empty())
@@ -1267,6 +1308,10 @@ fn cli_feature_violations(
         (
             "ssrf-oast-review",
             &["termivar-scanner/ssrf-oast-review"][..],
+        ),
+        (
+            "supplied-session-review",
+            &["termivar-scanner/supplied-session-review"][..],
         ),
         (
             "wordpress-review",
@@ -1507,6 +1552,22 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "authorization-review",
                 "scanning",
                 "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "supplied-session-review",
+            &[
+                "supplied-session-review",
+                "scanning",
+                "core",
+                "dep:zeroize",
                 "dep:async-trait",
                 "dep:html5ever",
                 "dep:markup5ever_rcdom",
@@ -1840,6 +1901,233 @@ fn resource_authorization_review_contract_violations(
         web_runtime_source,
     )?);
     Ok(violations)
+}
+
+fn supplied_session_review_contract_violations(
+    workspace_root: &Path,
+    web_runtime_source: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let core = fs::read_to_string(workspace_root.join(SUPPLIED_SESSION_CORE_SOURCE))?;
+    let runtime = fs::read_to_string(workspace_root.join(SUPPLIED_SESSION_RUNTIME_SOURCE))?;
+    let broker = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_BROKER_SOURCE))?;
+    let assessment = fs::read_to_string(workspace_root.join(WEB_ASSESSMENT_RUNTIME_SOURCE))?;
+    let report = fs::read_to_string(workspace_root.join(ASSESSMENT_REPORT_SOURCE))?;
+    let reporting =
+        fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/reporting.rs"))?;
+    let import = fs::read_to_string(workspace_root.join(REPORTING_IMPORT_SOURCE))?;
+    let audit_import = fs::read_to_string(workspace_root.join(REPORTING_AUDIT_IMPORT_SOURCE))?;
+    let mut violations =
+        supplied_session_review_source_contract_violations(SuppliedSessionSources {
+            core: &core,
+            runtime: &runtime,
+            broker: &broker,
+            assessment: &assessment,
+            report: &report,
+            reporting: &reporting,
+            import: &import,
+            audit_import: &audit_import,
+        });
+    violations.extend(supplied_session_runtime_module_gate_violations(
+        web_runtime_source,
+    )?);
+    Ok(violations)
+}
+
+fn supplied_session_runtime_module_gate_violations(
+    source: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let matches = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.ident == "supplied_session_runtime" => Some(module),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [module]
+            if matches!(module.vis, Visibility::Inherited)
+                && module.content.is_none()
+                && cfg_predicates(module) == ["feature=\"supplied-session-review\"".to_owned()] =>
+        {
+            Ok(Vec::new())
+        },
+        _ => Ok(vec![
+            "supplied-session runtime must remain one private out-of-line module behind exact cfg(feature=\"supplied-session-review\")"
+                .to_owned(),
+        ]),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SuppliedSessionSources<'a> {
+    core: &'a str,
+    runtime: &'a str,
+    broker: &'a str,
+    assessment: &'a str,
+    report: &'a str,
+    reporting: &'a str,
+    import: &'a str,
+    audit_import: &'a str,
+}
+
+fn supplied_session_review_source_contract_violations(
+    sources: SuppliedSessionSources<'_>,
+) -> Vec<String> {
+    let SuppliedSessionSources {
+        core,
+        runtime,
+        broker,
+        assessment,
+        report,
+        reporting,
+        import,
+        audit_import,
+    } = sources;
+    let mut violations = Vec::new();
+    let compact_core = squash_ascii_whitespace(core);
+    let compact_runtime = squash_ascii_whitespace(runtime);
+    let compact_runtime_production = compact_runtime
+        .split_once("#[cfg(test)]")
+        .map_or(compact_runtime.as_str(), |(production, _)| production);
+    let compact_broker = squash_ascii_whitespace(broker);
+    let compact_assessment = squash_ascii_whitespace(assessment);
+    let compact_report = squash_ascii_whitespace(report);
+    let compact_reporting = squash_ascii_whitespace(reporting);
+    let compact_import = squash_ascii_whitespace(import);
+    let compact_audit_import = squash_ascii_whitespace(audit_import);
+
+    require_markers(
+        &mut violations,
+        &compact_core,
+        &[
+            "pubconstMAX_SUPPLIED_SESSION_RESOURCES:usize=4;",
+            "pubconstMAX_SUPPLIED_SESSION_CHECKPOINTS:usize=MAX_SUPPLIED_SESSION_RESOURCES+1;",
+            "pubconstMAX_SUPPLIED_SESSION_REQUESTS:u8=9;",
+            "pubconstMAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES:u64=256*1024;",
+            "pubconstMAX_SUPPLIED_SESSION_RESPONSE_BODY_BYTES:usize=64*1024;",
+            "pubconstMAX_SUPPLIED_SESSION_WALL_TIME_MS:u64=10_000;",
+            "AuthorizationHeader",
+            "SuppliedSessionAuthorization(<redacted>)",
+            "pub(crate)structSuppliedSessionRequestDescriptor",
+            "supplied-session-policy-sha256:",
+            "supplied-session-application-sha256:",
+            "supplied-session-principal-0001",
+        ],
+        "supplied-session policy lost its bounded Authorization-only input and opaque-reference contract",
+    );
+    reject_markers(
+        &mut violations,
+        &compact_core,
+        &["CookieJar", "QueryParameter"],
+        "supplied-session V1 must not grow cookie or query-secret authority",
+    );
+    require_markers(
+        &mut violations,
+        &compact_runtime,
+        &[
+            "security.supplied-session-audit/v1",
+            "session.supplied-context-assessment@1",
+            "authority.requests().isolated_supplied_session()",
+            "collect_supplied_session_authorization_get_for_runtime(",
+            "SuppliedSessionResourceOutcome::HealthUnqualified",
+            "filter(|resource|resource.outcome==SuppliedSessionResourceOutcome::Committed)",
+            "response_byte_limit_exceeded:self.response_bytes>response_byte_limit",
+            "anonymous_fallback_performed:false",
+            "refresh_performed:false",
+            "continuous_authentication_established:false",
+            "exploit_execution_performed:false",
+            "impact_validation_performed:false",
+        ],
+        "supplied-session runtime lost its isolated broker, audit-only claim, or no-fallback boundary",
+    );
+    reject_markers(
+        &mut violations,
+        compact_runtime_production,
+        &["reqwest::Client", "tokio::spawn"],
+        "supplied-session runtime must not create an unmanaged client or detached work",
+    );
+    require_markers(
+        &mut violations,
+        &compact_broker,
+        &[
+            "collect_supplied_session_authorization_get_for_runtime(",
+            "SuppliedSessionRequestError::InvalidDescriptor",
+        ],
+        "the existing broker must retain the private supplied-session dispatch seam",
+    );
+    require_markers(
+        &mut violations,
+        &compact_assessment,
+        &[
+            "#[cfg(feature=\"supplied-session-review\")]supplied_session:Option<WebAssessmentSuppliedSessionAudit>",
+            "supplied_session:self.supplied_session_audit.as_ref(),",
+            "self.supplied_session,",
+            "pubconstfnsupplied_session_audit(&self)->Option<&WebAssessmentSuppliedSessionAudit>",
+        ],
+        "web assessment must own and forward the committed supplied-session audit",
+    );
+    require_markers(
+        &mut violations,
+        &compact_report,
+        &[
+            "#[cfg(feature=\"supplied-session-review\")]supplied_session:Option<WebAssessmentSuppliedSessionAudit>",
+            "validate_supplied_session_audit(supplied_session.as_ref(),&items)?;",
+            "selected_application_stable_subject_identity(supplied_session_application_reference)",
+            "items.contains_stable_subject(&expected_root_subject)",
+            "SuppliedSessionResourceOutcome::HealthUnqualified",
+            "response_byte_limit_exceeded==(response_bytes>response_byte_limit)",
+            "pubconstfnsupplied_session_audit(&self)->Option<&WebAssessmentSuppliedSessionAudit>",
+            "filter(|item|item.capability_id()==SUPPLIED_SESSION_CAPABILITY_ID).count();",
+            "ifprojected_count!=0",
+        ],
+        "completed report truth must preserve the supplied-session audit without minting an item",
+    );
+    require_markers(
+        &mut violations,
+        &compact_reporting,
+        &[
+            "#[cfg(feature=\"supplied-session-review\")]#[serde(skip_serializing_if=\"Option::is_none\")]supplied_session:Option<AssessmentSuppliedSessionAuditDocument>",
+            "AssessmentSuppliedSessionAuditDocument::from_audit",
+            "SUPPLIED_SESSION_AUDIT_SCHEMA",
+            "SUPPLIED_SESSION_CAPABILITY_ID",
+            "SuppliedSessionResourceOutcome::HealthUnqualified=>\"health_unqualified\"",
+            "self.response_byte_limit_exceeded!=(self.response_bytes>self.response_byte_limit)",
+        ],
+        "central reporting must render the supplied-session audit behind its exact feature gate",
+    );
+    require_markers(
+        &mut violations,
+        &compact_import,
+        &[
+            "\"supplied_session\"",
+            "supplied_session=Some(audits::validate_supplied_session(value,&items)?);",
+        ],
+        "strict saved-report import must recognize and validate the supplied-session section",
+    );
+    require_markers(
+        &mut violations,
+        &compact_audit_import,
+        &[
+            "constSUPPLIED_SESSION_AUDIT_SCHEMA:&str=\"security.supplied-session-audit/v1\";",
+            "constSUPPLIED_SESSION_CAPABILITY:&str=\"session.supplied-context-assessment@1\";",
+            "constMAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT:u64=256*1024;",
+            "pub(super)fnvalidate_supplied_session(",
+            "token(fields,\"credential_mechanism\",&[\"authorization_header\"])?",
+            "\"health_unqualified\"=>{check(status==Some(200))?;(true,false)}",
+            "response_byte_limit_exceeded==(response_bytes>response_byte_limit)",
+            "check(count(items,SUPPLIED_SESSION_CAPABILITY)==0)",
+        ],
+        "strict supplied-session reader lost its exact schema, limits, vocabulary, or audit-only rule",
+    );
+    reject_markers(
+        &mut violations,
+        &compact_audit_import,
+        &["cookie_jar"],
+        "strict supplied-session reader must not accept unsupported cookies",
+    );
+    violations
 }
 
 fn resource_authorization_runtime_module_gate_violations(
@@ -4487,7 +4775,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 7
+        || report_call.args.len() != 8
     {
         return false;
     }
@@ -4497,6 +4785,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         .is_some_and(|argument| assessment_bridge_self_field(argument, "assessment_items"))
         && reporting_expression_path_key(arguments.next().expect("checked length")).as_deref()
             == Some("truth")
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(argument, "supplied_session", "supplied-session-review")
+        })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_authorization_field(argument, "authorization_review")
         })
@@ -4762,6 +5053,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("subject_count", "u64"),
             ("item_count", "u64"),
             (
+                "supplied_session",
+                "Option<AssessmentSuppliedSessionAuditDocument>",
+            ),
+            (
                 "authorization_review",
                 "Option<AssessmentAuthorizationAuditDocument>",
             ),
@@ -4780,6 +5075,79 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentWordPressAssetFingerprintAuditDocument>",
             ),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
+        ],
+    ),
+    (
+        "AssessmentSuppliedSessionAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("policy_reference", "String"),
+            ("application_reference", "String"),
+            ("principal_reference", "String"),
+            ("principal_alias", "String"),
+            ("principal_assurance", "&'static str"),
+            ("credential_mechanism", "&'static str"),
+            (
+                "health_oracle",
+                "AssessmentSuppliedSessionHealthOracleDocument",
+            ),
+            ("outcome", "&'static str"),
+            ("coverage", "&'static str"),
+            (
+                "checkpoints",
+                "Vec<AssessmentSuppliedSessionCheckpointDocument>",
+            ),
+            (
+                "resources",
+                "Vec<AssessmentSuppliedSessionResourceDocument>",
+            ),
+            ("selected_resource_count", "u8"),
+            ("dispatched_resource_count", "u8"),
+            ("committed_resource_count", "u8"),
+            ("dispatched_request_count", "u8"),
+            ("response_bytes", "u64"),
+            ("response_byte_limit", "u64"),
+            ("response_byte_limit_exceeded", "bool"),
+            ("refresh_performed", "bool"),
+            ("anonymous_fallback_performed", "bool"),
+            ("continuous_authentication_established", "bool"),
+            ("exploit_execution", "&'static str"),
+            ("impact_validation", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentSuppliedSessionHealthOracleDocument",
+        &[],
+        &[("kind", "&'static str"), ("field_reference", "String")],
+    ),
+    (
+        "AssessmentSuppliedSessionCheckpointDocument",
+        &[],
+        &[
+            ("sequence", "u8"),
+            ("phase", "&'static str"),
+            ("after_subject_count", "u8"),
+            ("evidence_reference", "Option<String>"),
+            ("outcome", "&'static str"),
+            ("status", "Option<u16>"),
+            ("body_state", "&'static str"),
+            ("predicate", "&'static str"),
+            ("response_bytes", "u64"),
+        ],
+    ),
+    (
+        "AssessmentSuppliedSessionResourceDocument",
+        &[],
+        &[
+            ("sequence", "u8"),
+            ("resource_reference", "String"),
+            ("evidence_reference", "Option<String>"),
+            ("outcome", "&'static str"),
+            ("status", "Option<u16>"),
+            ("response_bytes", "u64"),
+            ("epoch", "u8"),
         ],
     ),
     (
@@ -5673,6 +6041,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "openapi-review" => "feature=\"openapi-review\"",
         "rest-review" => "feature=\"rest-review\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
+        "supplied-session-review" => "feature=\"supplied-session-review\"",
         _ => return false,
     };
     attributes.len() == 2
@@ -5704,6 +6073,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
         let assessment_document = matches!(
             name.as_str(),
             "AssessmentDocument"
+                | "AssessmentSuppliedSessionAuditDocument"
+                | "AssessmentSuppliedSessionHealthOracleDocument"
+                | "AssessmentSuppliedSessionCheckpointDocument"
+                | "AssessmentSuppliedSessionResourceDocument"
                 | "AssessmentAuthorizationAuditDocument"
                 | "AssessmentOpenApiAuditDocument"
                 | "AssessmentRestAuditDocument"
@@ -5789,6 +6162,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 })
                 .collect();
             let expected_cfg = match name.as_str() {
+                "AssessmentSuppliedSessionAuditDocument"
+                | "AssessmentSuppliedSessionHealthOracleDocument"
+                | "AssessmentSuppliedSessionCheckpointDocument"
+                | "AssessmentSuppliedSessionResourceDocument" => {
+                    "all(feature=\"scanning\",feature=\"supplied-session-review\")"
+                },
                 "AssessmentAuthorizationAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"authorization-review\")"
                 },
@@ -5890,8 +6269,13 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 .map(|field| {
                     let field_name = field.ident.as_ref()?.to_string();
                     let attributes_are_exact = if name == "AssessmentDocument"
-                        && field_name == "authorization_review"
+                        && field_name == "supplied_session"
                     {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "supplied-session-review",
+                        )
+                    } else if name == "AssessmentDocument" && field_name == "authorization_review" {
                         reporting_audit_field_attributes_are_exact(
                             &field.attrs,
                             "authorization-review",
@@ -8369,8 +8753,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 326_637;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xe275_f7c1_afc8_b34e_b693_0d82_a420_6ae4;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 349_282;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x9a88_3a30_9205_e3a7_f608_ee0f_7afc_5321;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -8464,12 +8848,17 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "crate::rest_review::RestDocumentedResponseClass",
+    "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
+    "crate::supplied_session_review::SuppliedSessionCredentialMechanism",
     "crate::web_runtime::AssessmentBasis",
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
     "crate::web_runtime::MAX_REST_REVIEW_ACTIVE_VERIFICATIONS",
     "crate::web_runtime::MAX_REST_REVIEW_REQUESTS",
+    "crate::web_runtime::MAX_SUPPLIED_SESSION_CHECKPOINTS",
+    "crate::web_runtime::MAX_SUPPLIED_SESSION_REQUESTS",
+    "crate::web_runtime::MAX_SUPPLIED_SESSION_RESOURCES",
     "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::OpenApiRuntimeOutcome",
     "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID",
@@ -8477,7 +8866,19 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::RestObservedMediaClass",
     "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
+    "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
+    "crate::web_runtime::SuppliedSessionAuditOutcome",
+    "crate::web_runtime::SuppliedSessionBodyState",
+    "crate::web_runtime::SuppliedSessionCoverage",
+    "crate::web_runtime::SuppliedSessionHealthCheckpointPhase",
+    "crate::web_runtime::SuppliedSessionHealthOracleKind",
+    "crate::web_runtime::SuppliedSessionHealthOutcome",
+    "crate::web_runtime::SuppliedSessionPredicateOutcome",
+    "crate::web_runtime::SuppliedSessionPrincipalAssurance",
+    "crate::web_runtime::SuppliedSessionResourceOutcome",
     "crate::web_runtime::WebAssessmentRunReport",
+    "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
     "crate::web_runtime::WordPressAssetFingerprintExecution",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
@@ -8560,6 +8961,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
+    "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "WordPressPageCollectionDocument::validate",
     "AssessmentWordPressAuditDocument::from_audit",
@@ -8594,6 +8996,37 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AuthorizationReviewOutcome::StableCrossPrincipalEquivalence",
     "AuthorizationReviewOutcome::Truncated",
     "AuthorizationReviewOutcome::UnsupportedMedia",
+    "SuppliedSessionAuditOutcome::Cancelled",
+    "SuppliedSessionAuditOutcome::Complete",
+    "SuppliedSessionAuditOutcome::ResourceUnavailable",
+    "SuppliedSessionAuditOutcome::RuntimeLimit",
+    "SuppliedSessionAuditOutcome::SessionLost",
+    "SuppliedSessionAuditOutcome::StartupUnhealthy",
+    "SuppliedSessionBodyState::Complete",
+    "SuppliedSessionBodyState::Incomplete",
+    "SuppliedSessionBodyState::Unavailable",
+    "SuppliedSessionCoverage::Complete",
+    "SuppliedSessionCoverage::None",
+    "SuppliedSessionCoverage::Partial",
+    "SuppliedSessionCredentialMechanism::AuthorizationHeader",
+    "SuppliedSessionHealthCheckpointPhase::Startup",
+    "SuppliedSessionHealthCheckpointPhase::SubjectBoundary",
+    "SuppliedSessionHealthCheckpointPhase::Terminal",
+    "SuppliedSessionHealthOracleKind::JsonBooleanTrue",
+    "SuppliedSessionHealthOutcome::Healthy",
+    "SuppliedSessionHealthOutcome::Indeterminate",
+    "SuppliedSessionHealthOutcome::Unhealthy",
+    "SuppliedSessionPredicateOutcome::Matched",
+    "SuppliedSessionPredicateOutcome::NotEvaluated",
+    "SuppliedSessionPredicateOutcome::NotMatched",
+    "SuppliedSessionPrincipalAssurance::OperatorDeclared",
+    "SuppliedSessionResourceOutcome::Committed",
+    "SuppliedSessionResourceOutcome::HealthUnqualified",
+    "SuppliedSessionResourceOutcome::HttpError",
+    "SuppliedSessionResourceOutcome::Incomplete",
+    "SuppliedSessionResourceOutcome::NotDispatched",
+    "SuppliedSessionResourceOutcome::RedirectRefused",
+    "SuppliedSessionResourceOutcome::TransportFailed",
     "WordPressActivationState::Active",
     "WordPressActivationState::Inactive",
     "WordPressActivationState::NetworkActive",
@@ -8851,6 +9284,9 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
     "crate::web_runtime::MAX_REST_REVIEW_ACTIVE_VERIFICATIONS",
     "crate::web_runtime::MAX_REST_REVIEW_REQUESTS",
+    "crate::web_runtime::MAX_SUPPLIED_SESSION_CHECKPOINTS",
+    "crate::web_runtime::MAX_SUPPLIED_SESSION_REQUESTS",
+    "crate::web_runtime::MAX_SUPPLIED_SESSION_RESOURCES",
     "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::OpenApiCandidateSource",
     "crate::web_runtime::OpenApiRuntimeOutcome",
@@ -8859,10 +9295,22 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::RestObservedMediaClass",
     "crate::web_runtime::RestRuntimeOutcome",
     "crate::web_runtime::ScanProfileV1",
+    "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
+    "crate::web_runtime::SuppliedSessionAuditOutcome",
+    "crate::web_runtime::SuppliedSessionBodyState",
+    "crate::web_runtime::SuppliedSessionCoverage",
+    "crate::web_runtime::SuppliedSessionHealthCheckpointPhase",
+    "crate::web_runtime::SuppliedSessionHealthOracleKind",
+    "crate::web_runtime::SuppliedSessionHealthOutcome",
+    "crate::web_runtime::SuppliedSessionPredicateOutcome",
+    "crate::web_runtime::SuppliedSessionPrincipalAssurance",
+    "crate::web_runtime::SuppliedSessionResourceOutcome",
     "crate::web_runtime::WebAssessmentRunReport",
     "crate::web_runtime::WebAssessmentAuthorizationAudit",
     "crate::web_runtime::WebAssessmentOpenApiAudit",
     "crate::web_runtime::WebAssessmentRestAudit",
+    "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::WebAssessmentWordPressAudit",
@@ -8873,6 +9321,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
     "crate::rest_review::RestDocumentedResponseClass",
+    "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
+    "crate::supplied_session_review::SuppliedSessionCredentialMechanism",
     "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
     "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES",
     "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_CATALOG_BYTES",
@@ -8993,6 +9443,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "u32::from",
     "u16::from",
     "u64::from",
+    "u64::checked_add",
     "u64::try_from",
     "u8::MAX",
     "u8::try_from",
@@ -9019,6 +9470,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentBasisLinkageDocument::from_basis",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
+    "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentOpenApiAuditDocument::from_audit",
     "AssessmentRestAuditDocument::from_audit",
@@ -9096,6 +9548,16 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "std::collections::BTreeMap::new",
     "step_status_token",
     "stop_code_token",
+    "supplied_session_audit_outcome_token",
+    "supplied_session_body_state_token",
+    "supplied_session_checkpoint_phase_token",
+    "supplied_session_coverage_token",
+    "supplied_session_credential_mechanism_token",
+    "supplied_session_health_oracle_kind_token",
+    "supplied_session_health_outcome_token",
+    "supplied_session_predicate_outcome_token",
+    "supplied_session_principal_assurance_token",
+    "supplied_session_resource_outcome_token",
     "supplied",
     "u16::from",
     "u32::from",
@@ -9114,6 +9576,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "valid_lowercase_sha256",
     "valid_lowercase_uuid",
     "valid_prefixed_lowercase_sha256",
+    "valid_supplied_session_principal_alias",
+    "valid_supplied_session_reference",
     "valid_wordpress_discovery_namespace",
     "valid_wordpress_discovery_text",
     "write_assessment_csv_row",
@@ -9198,6 +9662,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accepted_association_count",
     "acquisition",
+    "after_subject_count",
+    "anonymous_fallback_performed",
     "application_reference",
     "asset_fingerprints",
     "association",
@@ -9209,6 +9675,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "catalog",
     "catalogue_component_listed",
     "committed_response_count",
+    "committed_resource_count",
     "completed_response_count",
     "completely_interpreted_resource_count",
     "component_kind",
@@ -9217,6 +9684,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "conflicting_association_count",
     "cloned",
     "discovery",
+    "dispatched_request_count",
+    "dispatched_resource_count",
     "declaration",
     "exact_role",
     "exact_role_reference",
@@ -9225,9 +9694,11 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "first",
     "flat_map",
     "fetched_response_count",
+    "field_reference",
     "file_count",
     "informative_resource_count",
     "interpreted_response_bytes",
+    "impact_validation_performed",
     "is_exact_role_bound_component",
     "is_exact_theme_role_bound",
     "layout",
@@ -9236,6 +9707,12 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "omitted_candidate_count",
     "omitted_resource_count",
     "parent_depth",
+    "phase",
+    "policy_reference",
+    "predicate",
+    "principal_assurance",
+    "principal_alias",
+    "principal_reference",
     "page_reference",
     "page_scope",
     "pages",
@@ -9243,6 +9720,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "request_attempted",
     "rejected_association_count",
     "rejected_response_count",
+    "refresh_performed",
     "resource_reference",
     "relative_path",
     "release_count",
@@ -9256,6 +9734,9 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "requires_php",
     "requires_wordpress",
     "response_bytes",
+    "response_byte_limit",
+    "response_byte_limit_exceeded",
+    "sequence",
     "seed_count",
     "selected",
     "selected_count",
@@ -9263,6 +9744,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "skipped_foreign_origin_count",
     "skipped_sibling_application_count",
     "sources",
+    "supplied_session_audit",
     "source_page_references",
     "stable_tag",
     "state",
@@ -9293,6 +9775,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "begin_list_field",
     "begin_list_item",
     "begin_record",
+    "body_state",
     "byte_length",
     "bytes",
     "candidate",
@@ -9310,7 +9793,9 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "code",
     "collect",
     "completed_at",
+    "checkpoints",
     "component_count",
+    "continuous_authentication_established",
     "compatible_release_ids",
     "confidence",
     "contains",
@@ -9319,6 +9804,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "control",
     "core",
     "coverage",
+    "credential_mechanism",
     "cwe",
     "cross_resources_equivalent",
     "dimensions",
@@ -9330,6 +9816,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "documented_response",
     "duration_ms",
     "empty",
+    "evidence_reference",
     "end_field",
     "end_fields",
     "end_list_field",
@@ -9343,10 +9830,12 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "evidence_count",
     "evidence_reference_for",
     "evidence_row_count",
+    "epoch",
     "explicit_auth_operation_count",
     "extend_from_slice",
     "find",
     "filter",
+    "filter_map",
     "fingerprint",
     "finish",
     "flatten",
@@ -9392,6 +9881,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "local_input_provenance",
     "map",
     "map_err",
+    "map_or_else",
     "max",
     "metadata",
     "mode",
@@ -9507,10 +9997,12 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "evidence_class",
     "evidence_reference_count",
     "exploit_execution",
+    "exploit_execution_performed",
     "fixed_versions",
     "identity",
     "identity_sources",
     "impact_validation",
+    "health_oracle",
     "inclusive",
     "kind",
     "lower",
@@ -9695,6 +10187,29 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::RestRuntimeOutcome"
                 )
             });
+        let supplied_session_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES"
+                        | "crate::supplied_session_review::SuppliedSessionCredentialMechanism"
+                        | "crate::web_runtime::MAX_SUPPLIED_SESSION_CHECKPOINTS"
+                        | "crate::web_runtime::MAX_SUPPLIED_SESSION_REQUESTS"
+                        | "crate::web_runtime::MAX_SUPPLIED_SESSION_RESOURCES"
+                        | "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA"
+                        | "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID"
+                        | "crate::web_runtime::SuppliedSessionAuditOutcome"
+                        | "crate::web_runtime::SuppliedSessionBodyState"
+                        | "crate::web_runtime::SuppliedSessionCoverage"
+                        | "crate::web_runtime::SuppliedSessionHealthCheckpointPhase"
+                        | "crate::web_runtime::SuppliedSessionHealthOracleKind"
+                        | "crate::web_runtime::SuppliedSessionHealthOutcome"
+                        | "crate::web_runtime::SuppliedSessionPredicateOutcome"
+                        | "crate::web_runtime::SuppliedSessionPrincipalAssurance"
+                        | "crate::web_runtime::SuppliedSessionResourceOutcome"
+                        | "crate::web_runtime::WebAssessmentSuppliedSessionAudit"
+                )
+            });
         let wordpress_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -9785,6 +10300,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"rest-review\")")
+        } else if supplied_session_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
         } else if wordpress_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -9795,7 +10315,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated authorization, OpenAPI, REST, and WordPress audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, OpenAPI, REST, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -9865,15 +10385,17 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"authorization-review\"")
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
+                    | Some("feature=\"supplied-session-review\"")
                     | Some("feature=\"wordpress-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, authorization, OpenAPI, REST, and WordPress audit feature gates"
+                "reporting production source may contain only the exact scanning, supplied-session, authorization, OpenAPI, REST, and WordPress audit feature gates"
                     .to_owned(),
             );
         }
@@ -10152,6 +10674,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
         && (key.starts_with("crate::web_runtime::")
             || key.starts_with("crate::authorization_review::")
             || key.starts_with("crate::rest_review::")
+            || key.starts_with("crate::supplied_session_review::")
             || key.starts_with("crate::wordpress_review::")
             || key.starts_with("crate::wordpress_version::"));
     if (root == "crate" || root == "super" || (root == "self" && segments.len() > 1))
@@ -10610,6 +11133,10 @@ mod tests {
             "authorization-review".to_owned(),
             vec!["scanning".to_owned()],
         );
+        features.insert(
+            "supplied-session-review".to_owned(),
+            vec!["scanning".to_owned(), "dep:zeroize".to_owned()],
+        );
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("openapi-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("rest-review".to_owned(), vec!["openapi-review".to_owned()]);
@@ -10954,6 +11481,174 @@ mod tests {
                 .any(|violation| violation.contains("release-bundle")
                     && violation.contains("exactly"))
         );
+    }
+
+    #[test]
+    fn supplied_session_review_is_isolated_non_bundled_and_in_compatibility_aggregates() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("supplied-session-review").unwrap(),
+            &["scanning".to_owned(), "dep:zeroize".to_owned()]
+        );
+        assert!(!raw_feature_closure(&features, "default").contains("supplied-session-review"));
+        for aggregate in ["full", "enterprise"] {
+            assert!(features
+                .get(aggregate)
+                .unwrap()
+                .iter()
+                .any(|member| member == "supplied-session-review"));
+        }
+
+        features
+            .get_mut("supplied-session-review")
+            .unwrap()
+            .retain(|member| member != "dep:zeroize");
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`supplied-session-review` raw feature closure")
+                && violation.contains("dep:zeroize")
+        }));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert!(cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .all(|member| member != "supplied-session-review"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("supplied-session-review".to_owned());
+        assert!(
+            cli_feature_violations(&cli_features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
+    }
+
+    #[test]
+    fn supplied_session_source_chain_is_exact_and_mutations_fail_closed() {
+        let core = include_str!("../../../crates/termivar-scanner/src/supplied_session_review.rs");
+        let runtime = include_str!(
+            "../../../crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs"
+        );
+        let broker =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
+        let assessment =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/web_assessment.rs");
+        let report =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_report.rs");
+        let reporting = include_str!("../../../crates/termivar-scanner/src/reporting.rs");
+        let import =
+            include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import.rs");
+        let audit_import = include_str!(
+            "../../../crates/termivar-scanner/src/reporting/comparison/import/audits.rs"
+        );
+        let sources = SuppliedSessionSources {
+            core,
+            runtime,
+            broker,
+            assessment,
+            report,
+            reporting,
+            import,
+            audit_import,
+        };
+        let violations = supplied_session_review_source_contract_violations(sources);
+        assert!(violations.is_empty(), "{violations:#?}");
+
+        let widened_reader = audit_import.replace(
+            "const MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT: u64 = 256 * 1024;",
+            "const MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT: u64 = 256 * 1024 * 1024;",
+        );
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                audit_import: &widened_reader,
+                ..sources
+            });
+        assert!(violations.iter().any(|violation| {
+            violation.contains("strict supplied-session reader")
+                && violation.contains("schema, limits")
+        }));
+
+        let promoted_unqualified = audit_import.replace(
+            "\"health_unqualified\" => {\n            check(status == Some(200))?;\n            (true, false)\n        }",
+            "\"health_unqualified\" => {\n            check(status == Some(200))?;\n            (true, true)\n        }",
+        );
+        assert_ne!(promoted_unqualified, audit_import);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                audit_import: &promoted_unqualified,
+                ..sources
+            });
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("strict supplied-session reader")));
+
+        let clamped_accounting = runtime.replace(
+            "response_byte_limit_exceeded: self.response_bytes > response_byte_limit,",
+            "response_byte_limit_exceeded: self.response_bytes.min(response_byte_limit) > response_byte_limit,",
+        );
+        assert_ne!(clamped_accounting, runtime);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                runtime: &clamped_accounting,
+                ..sources
+            });
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("supplied-session runtime")));
+
+        let promoted_runtime = runtime.replace(
+            ".filter(|resource| resource.outcome == SuppliedSessionResourceOutcome::Committed)",
+            ".filter(|resource| matches!(resource.outcome, SuppliedSessionResourceOutcome::Committed | SuppliedSessionResourceOutcome::HealthUnqualified))",
+        );
+        assert_ne!(promoted_runtime, runtime);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                runtime: &promoted_runtime,
+                ..sources
+            });
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("supplied-session runtime")));
+
+        let shared_broker = runtime.replace(".isolated_supplied_session()", ".isolated()");
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                runtime: &shared_broker,
+                ..sources
+            });
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("isolated broker")));
+
+        let permissive_import = audit_import.replace(
+            "&[\"authorization_header\"]",
+            "&[\"authorization_header\", \"cookie_jar\"]",
+        );
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                audit_import: &permissive_import,
+                ..sources
+            });
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("unsupported cookies")));
+
+        let web_runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
+        assert!(supplied_session_runtime_module_gate_violations(web_runtime)
+            .unwrap()
+            .is_empty());
+        let ungated = web_runtime.replace(
+            "#[cfg(feature = \"supplied-session-review\")]\nmod supplied_session_runtime;",
+            "mod supplied_session_runtime;",
+        );
+        assert!(!supplied_session_runtime_module_gate_violations(&ungated)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -12547,6 +13242,8 @@ mod tests {
                     AssessmentRunReport::from_completed_truth(
                         self.assessment_items,
                         truth,
+                        #[cfg(feature = "supplied-session-review")]
+                        self.supplied_session,
                         #[cfg(feature = "authorization-review")]
                         self.authorization_review,
                         #[cfg(feature = "openapi-review")]
@@ -12574,7 +13271,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -12602,6 +13299,10 @@ mod tests {
             typed_assessment_bridge.replace(
                 "self.assessment_items,\n                        truth,",
                 "self.assessment_items,\n                        forged_truth,",
+            ),
+            typed_assessment_bridge.replace(
+                "self.supplied_session,",
+                "forged_supplied_session,",
             ),
             typed_assessment_bridge.replace(
                 "self.authorization_review,",
@@ -13105,6 +13806,23 @@ mod tests {
                     RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
                 },
             };
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            use crate::{
+                supplied_session_review::{
+                    SuppliedSessionCredentialMechanism,
+                    MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
+                },
+                web_runtime::{
+                    SuppliedSessionAuditOutcome, SuppliedSessionBodyState,
+                    SuppliedSessionCoverage, SuppliedSessionHealthCheckpointPhase,
+                    SuppliedSessionHealthOracleKind, SuppliedSessionHealthOutcome,
+                    SuppliedSessionPredicateOutcome, SuppliedSessionPrincipalAssurance,
+                    SuppliedSessionResourceOutcome, WebAssessmentSuppliedSessionAudit,
+                    MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
+                    MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
+                    SUPPLIED_SESSION_CAPABILITY_ID,
+                },
+            };
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             use crate::{
                 web_runtime::{
@@ -13166,9 +13884,8 @@ mod tests {
         assert!(reporting_source_import_violations(&imported_error)
             .unwrap()
             .is_empty());
-        assert!(reporting_source_violations(&imported_error)
-            .unwrap()
-            .is_empty());
+        let source_violations = reporting_source_violations(&imported_error).unwrap();
+        assert!(source_violations.is_empty(), "{source_violations:#?}");
 
         let spoofed_error = imported_error.replace(
             "use std::{error::Error, fmt, io};",
@@ -13195,6 +13912,16 @@ mod tests {
         );
         assert_ne!(widened_rest_import, imports);
         let violations = reporting_source_import_violations(&widened_rest_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_supplied_session_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"supplied-session-review\"))]",
+            "#[cfg(feature = \"scanning\")]",
+        );
+        assert_ne!(widened_supplied_session_import, imports);
+        let violations = reporting_source_import_violations(&widened_supplied_session_import)
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
@@ -13569,6 +14296,9 @@ mod tests {
                 status: &'static str,
                 subject_count: u64,
                 item_count: u64,
+                #[cfg(feature = "supplied-session-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                supplied_session: Option<AssessmentSuppliedSessionAuditDocument>,
                 #[cfg(feature = "authorization-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 authorization_review: Option<AssessmentAuthorizationAuditDocument>,
@@ -13588,6 +14318,65 @@ mod tests {
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_asset_fingerprints: Option<AssessmentWordPressAssetFingerprintAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSuppliedSessionAuditDocument {
+                schema: &'static str,
+                capability_id: &'static str,
+                policy_reference: String,
+                application_reference: String,
+                principal_reference: String,
+                principal_alias: String,
+                principal_assurance: &'static str,
+                credential_mechanism: &'static str,
+                health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
+                outcome: &'static str,
+                coverage: &'static str,
+                checkpoints: Vec<AssessmentSuppliedSessionCheckpointDocument>,
+                resources: Vec<AssessmentSuppliedSessionResourceDocument>,
+                selected_resource_count: u8,
+                dispatched_resource_count: u8,
+                committed_resource_count: u8,
+                dispatched_request_count: u8,
+                response_bytes: u64,
+                response_byte_limit: u64,
+                response_byte_limit_exceeded: bool,
+                refresh_performed: bool,
+                anonymous_fallback_performed: bool,
+                continuous_authentication_established: bool,
+                exploit_execution: &'static str,
+                impact_validation: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSuppliedSessionHealthOracleDocument {
+                kind: &'static str,
+                field_reference: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSuppliedSessionCheckpointDocument {
+                sequence: u8,
+                phase: &'static str,
+                after_subject_count: u8,
+                evidence_reference: Option<String>,
+                outcome: &'static str,
+                status: Option<u16>,
+                body_state: &'static str,
+                predicate: &'static str,
+                response_bytes: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSuppliedSessionResourceDocument {
+                sequence: u8,
+                resource_reference: String,
+                evidence_reference: Option<String>,
+                outcome: &'static str,
+                status: Option<u16>,
+                response_bytes: u64,
+                epoch: u8,
             }
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             #[derive(Serialize)]
@@ -14865,6 +15654,10 @@ mod tests {
                 vec!["termivar-scanner/authorization-review".to_owned()],
             ),
             (
+                "supplied-session-review".to_owned(),
+                vec!["termivar-scanner/supplied-session-review".to_owned()],
+            ),
+            (
                 "ssrf-oast-review".to_owned(),
                 vec!["termivar-scanner/ssrf-oast-review".to_owned()],
             ),
@@ -15255,6 +16048,7 @@ mod tests {
             "api-adapter",
             "proxy-adapter",
             "ssrf-oast-review",
+            "supplied-session-review",
         ] {
             assert!(features
                 .get("release-bundle")
@@ -15733,6 +16527,7 @@ mod tests {
             #[cfg(feature = "oast-native-provider")] pub(crate) mod native_oast_provider;
             #[cfg(feature = "oast-correlation")] pub mod oast;
             #[cfg(feature = "ssrf-oast-review")] pub mod ssrf_oast_review;
+            #[cfg(feature = "supplied-session-review")] pub mod supplied_session_review;
             #[cfg(feature = "wordpress-review")] pub mod wordpress_review;
             mod wordpress_version;
             #[cfg(feature = "platform-models")] pub mod persistence;

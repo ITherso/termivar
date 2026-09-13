@@ -758,6 +758,668 @@ fn audit_fixtures() -> Vec<(&'static str, &'static str, Value)> {
     ]
 }
 
+fn supplied_session_audit() -> Value {
+    json!({
+        "schema":"security.supplied-session-audit/v1",
+        "capability_id":"session.supplied-context-assessment@1",
+        "policy_reference":format!("supplied-session-policy-sha256:{}", "1".repeat(64)),
+        "application_reference":format!("supplied-session-application-sha256:{}", "2".repeat(64)),
+        "principal_reference":"supplied-session-principal-0001",
+        "principal_alias":"fixture-user",
+        "principal_assurance":"operator_declared",
+        "credential_mechanism":"authorization_header",
+        "health_oracle":{
+            "kind":"json_boolean_true",
+            "field_reference":format!("supplied-session-health-field-sha256:{}", "4".repeat(64))
+        },
+        "outcome":"complete",
+        "coverage":"complete",
+        "checkpoints":[
+            {
+                "sequence":0,
+                "phase":"startup",
+                "after_subject_count":0,
+                "evidence_reference":format!(
+                    "supplied-session-checkpoint-evidence-sha256:{}",
+                    "7".repeat(64)
+                ),
+                "outcome":"healthy",
+                "status":200,
+                "body_state":"complete",
+                "predicate":"matched",
+                "response_bytes":17
+            },
+            {
+                "sequence":1,
+                "phase":"terminal",
+                "after_subject_count":1,
+                "evidence_reference":format!(
+                    "supplied-session-checkpoint-evidence-sha256:{}",
+                    "8".repeat(64)
+                ),
+                "outcome":"healthy",
+                "status":200,
+                "body_state":"complete",
+                "predicate":"matched",
+                "response_bytes":19
+            }
+        ],
+        "resources":[{
+            "sequence":0,
+            "resource_reference":format!("supplied-session-resource-sha256:{}", "5".repeat(64)),
+            "evidence_reference":format!(
+                "supplied-session-resource-evidence-sha256:{}",
+                "6".repeat(64)
+            ),
+            "outcome":"committed",
+            "status":200,
+            "response_bytes":23,
+            "epoch":1
+        }],
+        "selected_resource_count":1,
+        "dispatched_resource_count":1,
+        "committed_resource_count":1,
+        "dispatched_request_count":3,
+        "response_bytes":59,
+        "response_byte_limit":65_536,
+        "response_byte_limit_exceeded":false,
+        "refresh_performed":false,
+        "anonymous_fallback_performed":false,
+        "continuous_authentication_established":false,
+        "exploit_execution":"not_performed",
+        "impact_validation":"not_performed"
+    })
+}
+
+#[test]
+fn supplied_session_audit_is_a_strict_feature_independent_audit_only_snapshot() {
+    let audit = supplied_session_audit();
+    let mut document = report(Vec::new());
+    document["supplied_session"] = audit.clone();
+
+    let summary = import_assessment_summary(&bytes(&document)).unwrap();
+    assert_eq!(summary.item_count(), 0);
+    let comparison = compare(&document, &document);
+    assert_eq!(
+        comparison["before"]["optional_audits"]["supplied_session"],
+        audit
+    );
+    assert_eq!(
+        comparison["after"]["optional_audits"]["supplied_session"],
+        audit
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["schema"],
+        "termivar-supplied-session-comparison/v1"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["status"],
+        "compared_within_same_declared_context"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["context"]["status"],
+        "same_declared_context"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["context"]["before"]["session_epoch"],
+        1
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["health_and_coverage"]["status"],
+        "unchanged"
+    );
+    for name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(group(&comparison, name).is_empty());
+    }
+
+    let without_audit = report(Vec::new());
+    let comparison = compare(&without_audit, &document);
+    assert!(comparison["before"]["optional_audits"]
+        .get("supplied_session")
+        .is_none());
+    assert_eq!(
+        comparison["after"]["optional_audits"]["supplied_session"],
+        document["supplied_session"]
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["status"],
+        "not_compared"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["reason"],
+        "before_audit_missing"
+    );
+    for name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(group(&comparison, name).is_empty());
+    }
+
+    let mut changed_policy = document.clone();
+    changed_policy["supplied_session"]["policy_reference"] =
+        json!(format!("supplied-session-policy-sha256:{}", "a".repeat(64)));
+    let comparison = compare(&document, &changed_policy);
+    assert_eq!(
+        comparison["supplied_session_comparison"]["status"],
+        "not_compared"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["reason"],
+        "session_policy_changed"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["health_and_coverage"]["status"],
+        "not_comparable"
+    );
+    for name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(group(&comparison, name).is_empty());
+    }
+
+    // The V1 principal slot is deliberately the same generic opaque value in
+    // every report. It cannot make two different declared applications or
+    // health-oracle contexts comparable.
+    let mut changed_application = document.clone();
+    changed_application["supplied_session"]["application_reference"] = json!(format!(
+        "supplied-session-application-sha256:{}",
+        "b".repeat(64)
+    ));
+    let comparison = compare(&document, &changed_application);
+    assert_eq!(
+        comparison["supplied_session_comparison"]["reason"],
+        "application_scope_changed"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["context"]["status"],
+        "application_scope_changed"
+    );
+
+    // Even an identical item fingerprint must remain one-sided when the two
+    // independently supplied application references differ. Equal item bytes
+    // cannot override the explicit application-scope boundary.
+    let mut application_before = report(vec![item(11)]);
+    application_before["supplied_session"] = audit.clone();
+    let mut application_after = application_before.clone();
+    application_after["supplied_session"]["application_reference"] = json!(format!(
+        "supplied-session-application-sha256:{}",
+        "b".repeat(64)
+    ));
+    let comparison = compare(&application_before, &application_after);
+    assert_eq!(
+        comparison["supplied_session_comparison"]["reason"],
+        "application_scope_changed"
+    );
+    assert_eq!(group(&comparison, "only_in_before").len(), 1);
+    assert_eq!(group(&comparison, "only_in_after").len(), 1);
+    assert_eq!(
+        comparison["only_in_before"][0]["fingerprint"],
+        comparison["only_in_after"][0]["fingerprint"]
+    );
+    assert!(group(&comparison, "changed").is_empty());
+    assert!(group(&comparison, "unchanged").is_empty());
+
+    let same_application = compare(&application_before, &application_before);
+    assert_eq!(group(&same_application, "unchanged").len(), 1);
+    for name in ["only_in_before", "only_in_after", "changed"] {
+        assert!(group(&same_application, name).is_empty());
+    }
+
+    // Pairing also fails closed for other declared-context changes and audit
+    // presence changes. These are not target-item changes or remediation.
+    let mut changed_policy_with_item = application_before.clone();
+    changed_policy_with_item["supplied_session"]["policy_reference"] =
+        json!(format!("supplied-session-policy-sha256:{}", "a".repeat(64)));
+    let mut changed_principal_with_item = application_before.clone();
+    changed_principal_with_item["supplied_session"]["principal_alias"] = json!("fixture-peer");
+    for (after, expected_reason) in [
+        (changed_policy_with_item, "session_policy_changed"),
+        (
+            changed_principal_with_item,
+            "operator_declared_principal_changed",
+        ),
+    ] {
+        let comparison = compare(&application_before, &after);
+        assert_eq!(
+            comparison["supplied_session_comparison"]["reason"],
+            expected_reason
+        );
+        assert_eq!(group(&comparison, "only_in_before").len(), 1);
+        assert_eq!(group(&comparison, "only_in_after").len(), 1);
+        assert!(group(&comparison, "changed").is_empty());
+        assert!(group(&comparison, "unchanged").is_empty());
+    }
+
+    let without_session_audit = report(vec![item(11)]);
+    let comparison = compare(&application_before, &without_session_audit);
+    assert_eq!(
+        comparison["supplied_session_comparison"]["reason"],
+        "after_audit_missing"
+    );
+    assert_eq!(group(&comparison, "only_in_before").len(), 1);
+    assert_eq!(group(&comparison, "only_in_after").len(), 1);
+    assert!(group(&comparison, "changed").is_empty());
+    assert!(group(&comparison, "unchanged").is_empty());
+
+    let mut changed_oracle = document.clone();
+    changed_oracle["supplied_session"]["health_oracle"]["field_reference"] = json!(format!(
+        "supplied-session-health-field-sha256:{}",
+        "c".repeat(64)
+    ));
+    let comparison = compare(&document, &changed_oracle);
+    assert_eq!(
+        comparison["supplied_session_comparison"]["reason"],
+        "declared_session_context_changed"
+    );
+
+    let mut changed_principal = document.clone();
+    changed_principal["supplied_session"]["principal_alias"] = json!("fixture-peer");
+    let comparison = compare(&document, &changed_principal);
+    assert_eq!(
+        comparison["supplied_session_comparison"]["reason"],
+        "operator_declared_principal_changed"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["context"]["changed_fields"],
+        json!(["principal_alias"])
+    );
+
+    let markdown = compare_reports(
+        &bytes(&document),
+        &bytes(&changed_policy),
+        ComparisonFormat::Markdown,
+    )
+    .unwrap();
+    assert!(markdown.contains("Supplied session differences"));
+    assert!(markdown.contains("session_policy_changed"));
+    assert!(markdown.contains("not authenticated or cross-run principal identity"));
+    let html = compare_reports(
+        &bytes(&document),
+        &bytes(&changed_policy),
+        ComparisonFormat::Html,
+    )
+    .unwrap();
+    assert!(html.contains("Supplied session differences"));
+    assert!(html.contains("session_policy_changed"));
+}
+
+#[test]
+fn supplied_session_audit_rejects_missing_wrong_typed_and_unbounded_fields() {
+    let mut document = report(Vec::new());
+    document["supplied_session"] = supplied_session_audit();
+    for key in document["supplied_session"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let mut invalid = document.clone();
+        invalid["supplied_session"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&key);
+        reject(&invalid);
+    }
+    for (key, value) in [
+        ("schema", json!("security.supplied-session-audit/v2")),
+        (
+            "capability_id",
+            json!("session.supplied-context-assessment@2"),
+        ),
+        (
+            "policy_reference",
+            json!(format!("sha256:{}", "1".repeat(64))),
+        ),
+        (
+            "application_reference",
+            json!("supplied-session-application-sha256:ABC"),
+        ),
+        ("principal_reference", json!(false)),
+        (
+            "principal_reference",
+            json!("supplied-session-principal-0002"),
+        ),
+        ("principal_alias", json!("")),
+        ("principal_alias", json!("fixture user")),
+        ("principal_alias", json!("a".repeat(129))),
+        ("principal_assurance", json!("authenticated")),
+        ("credential_mechanism", json!("query_parameter")),
+        ("outcome", json!("healthy_complete")),
+        ("coverage", json!("exhaustive")),
+        ("checkpoints", Value::Null),
+        ("resources", json!({})),
+        ("selected_resource_count", json!(true)),
+        ("dispatched_resource_count", json!(-1)),
+        ("committed_resource_count", json!(5)),
+        ("dispatched_request_count", json!(10)),
+        ("response_byte_limit", json!(true)),
+        ("response_byte_limit", json!(0)),
+        ("response_byte_limit", json!(262_145_u64)),
+        ("response_byte_limit_exceeded", json!("false")),
+        ("response_byte_limit_exceeded", json!(true)),
+        ("refresh_performed", json!(true)),
+        ("anonymous_fallback_performed", json!(true)),
+        ("continuous_authentication_established", json!(true)),
+        ("exploit_execution", json!("performed")),
+        ("impact_validation", json!("performed")),
+        ("unexpected", json!("extension")),
+    ] {
+        let mut invalid = document.clone();
+        invalid["supplied_session"][key] = value;
+        reject(&invalid);
+    }
+
+    let mut projected = document;
+    let mut projected_item = item(1);
+    projected_item["capability_id"] = json!("session.supplied-context-assessment@1");
+    projected["items"] = json!([projected_item]);
+    projected["item_count"] = json!(1);
+    reject(&projected);
+}
+
+#[test]
+fn supplied_session_audit_reconciles_checkpoint_resource_request_and_byte_truth() {
+    let mut document = report(Vec::new());
+    document["supplied_session"] = supplied_session_audit();
+
+    let mutations = [
+        ("selected_resource_count", json!(0)),
+        ("dispatched_resource_count", json!(0)),
+        ("committed_resource_count", json!(0)),
+        ("dispatched_request_count", json!(2)),
+        ("response_bytes", json!(58)),
+    ];
+    for (key, value) in mutations {
+        let mut invalid = document.clone();
+        invalid["supplied_session"][key] = value;
+        reject(&invalid);
+    }
+
+    for (path, value) in [
+        (("checkpoints", 0, "sequence"), json!(1)),
+        (("checkpoints", 0, "phase"), json!("terminal")),
+        (("checkpoints", 0, "after_subject_count"), json!(1)),
+        (("checkpoints", 0, "evidence_reference"), Value::Null),
+        (
+            ("checkpoints", 0, "evidence_reference"),
+            json!(format!("sha256:{}", "7".repeat(64))),
+        ),
+        (("checkpoints", 0, "outcome"), json!("unhealthy")),
+        (("checkpoints", 0, "status"), Value::Null),
+        (("checkpoints", 0, "body_state"), json!("incomplete")),
+        (("checkpoints", 0, "predicate"), json!("not_matched")),
+        (("checkpoints", 0, "response_bytes"), json!(true)),
+        (("resources", 0, "sequence"), json!(1)),
+        (
+            ("resources", 0, "resource_reference"),
+            json!(format!("sha256:{}", "5".repeat(64))),
+        ),
+        (("resources", 0, "evidence_reference"), Value::Null),
+        (
+            ("resources", 0, "evidence_reference"),
+            json!(format!("sha256:{}", "6".repeat(64))),
+        ),
+        (("resources", 0, "outcome"), json!("http_error")),
+        (("resources", 0, "status"), json!(201)),
+        (("resources", 0, "response_bytes"), json!(true)),
+        (("resources", 0, "epoch"), json!(2)),
+    ] {
+        let mut invalid = document.clone();
+        invalid["supplied_session"][path.0][path.1][path.2] = value;
+        reject(&invalid);
+    }
+
+    let mut missing_checkpoint_field = document.clone();
+    missing_checkpoint_field["supplied_session"]["checkpoints"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("predicate");
+    reject(&missing_checkpoint_field);
+    let mut missing_checkpoint_evidence = document.clone();
+    missing_checkpoint_evidence["supplied_session"]["checkpoints"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("evidence_reference");
+    reject(&missing_checkpoint_evidence);
+    let mut missing_resource_field = document.clone();
+    missing_resource_field["supplied_session"]["resources"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("epoch");
+    reject(&missing_resource_field);
+    let mut missing_resource_evidence = document.clone();
+    missing_resource_evidence["supplied_session"]["resources"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("evidence_reference");
+    reject(&missing_resource_evidence);
+    let mut duplicate_resource = document.clone();
+    let resource = duplicate_resource["supplied_session"]["resources"][0].clone();
+    duplicate_resource["supplied_session"]["resources"] = json!([resource.clone(), resource]);
+    duplicate_resource["supplied_session"]["selected_resource_count"] = json!(2);
+    duplicate_resource["supplied_session"]["dispatched_resource_count"] = json!(2);
+    duplicate_resource["supplied_session"]["committed_resource_count"] = json!(2);
+    duplicate_resource["supplied_session"]["dispatched_request_count"] = json!(4);
+    duplicate_resource["supplied_session"]["response_bytes"] = json!(82);
+    reject(&duplicate_resource);
+}
+
+#[test]
+fn supplied_session_partial_states_are_distinct_and_strict() {
+    let mut startup_unhealthy = report(Vec::new());
+    let mut audit = supplied_session_audit();
+    audit["outcome"] = json!("startup_unhealthy");
+    audit["coverage"] = json!("none");
+    audit["checkpoints"] = json!([{
+        "sequence":0, "phase":"startup", "after_subject_count":0,
+        "evidence_reference":format!(
+            "supplied-session-checkpoint-evidence-sha256:{}",
+            "7".repeat(64)
+        ),
+        "outcome":"unhealthy", "status":200, "body_state":"complete",
+        "predicate":"not_matched", "response_bytes":17
+    }]);
+    audit["resources"][0]["outcome"] = json!("not_dispatched");
+    audit["resources"][0]["status"] = Value::Null;
+    audit["resources"][0]["evidence_reference"] = Value::Null;
+    audit["resources"][0]["response_bytes"] = json!(0);
+    audit["dispatched_resource_count"] = json!(0);
+    audit["committed_resource_count"] = json!(0);
+    audit["dispatched_request_count"] = json!(1);
+    audit["response_bytes"] = json!(17);
+    startup_unhealthy["supplied_session"] = audit;
+    compare(&startup_unhealthy, &startup_unhealthy);
+    let mut noncommitted_with_evidence = startup_unhealthy.clone();
+    noncommitted_with_evidence["supplied_session"]["resources"][0]["evidence_reference"] =
+        json!(format!(
+            "supplied-session-resource-evidence-sha256:{}",
+            "6".repeat(64)
+        ));
+    reject(&noncommitted_with_evidence);
+
+    let complete = {
+        let mut value = report(Vec::new());
+        value["supplied_session"] = supplied_session_audit();
+        value
+    };
+    let comparison = compare(&complete, &startup_unhealthy);
+    assert_eq!(
+        comparison["supplied_session_comparison"]["status"],
+        "compared_within_same_declared_context"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["context"]["status"],
+        "same_declared_context"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["health_and_coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["supplied_session_comparison"]["accounting"]["status"],
+        "changed"
+    );
+    for name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(group(&comparison, name).is_empty());
+    }
+
+    let mut wrong = startup_unhealthy.clone();
+    wrong["supplied_session"]["coverage"] = json!("complete");
+    reject(&wrong);
+    let mut wrong = startup_unhealthy.clone();
+    wrong["supplied_session"]["checkpoints"][0]["outcome"] = json!("healthy");
+    wrong["supplied_session"]["checkpoints"][0]["predicate"] = json!("matched");
+    reject(&wrong);
+
+    let mut pre_dispatch_cancelled = report(Vec::new());
+    let mut audit = startup_unhealthy["supplied_session"].clone();
+    audit["outcome"] = json!("cancelled");
+    audit["checkpoints"] = json!([]);
+    audit["dispatched_request_count"] = json!(0);
+    audit["response_bytes"] = json!(0);
+    pre_dispatch_cancelled["supplied_session"] = audit;
+    compare(&pre_dispatch_cancelled, &pre_dispatch_cancelled);
+
+    // A dispatched startup health transport failure is recorded as an
+    // indeterminate checkpoint. It consumed one bounded request but cannot
+    // establish resource coverage.
+    let mut startup_transport_failure = report(Vec::new());
+    let mut audit = startup_unhealthy["supplied_session"].clone();
+    audit["outcome"] = json!("resource_unavailable");
+    audit["checkpoints"][0]["outcome"] = json!("indeterminate");
+    audit["checkpoints"][0]["status"] = Value::Null;
+    audit["checkpoints"][0]["body_state"] = json!("unavailable");
+    audit["checkpoints"][0]["predicate"] = json!("not_evaluated");
+    startup_transport_failure["supplied_session"] = audit;
+    compare(&startup_transport_failure, &startup_transport_failure);
+    let mut checkpoint_commit_failure = startup_transport_failure.clone();
+    checkpoint_commit_failure["supplied_session"]["checkpoints"][0]["evidence_reference"] =
+        Value::Null;
+    compare(&checkpoint_commit_failure, &checkpoint_commit_failure);
+    let mut complete_checkpoint_commit_failure = checkpoint_commit_failure.clone();
+    complete_checkpoint_commit_failure["supplied_session"]["checkpoints"][0]["status"] = json!(200);
+    complete_checkpoint_commit_failure["supplied_session"]["checkpoints"][0]["body_state"] =
+        json!("complete");
+    compare(
+        &complete_checkpoint_commit_failure,
+        &complete_checkpoint_commit_failure,
+    );
+    let mut impossible_committed_indeterminate = complete_checkpoint_commit_failure.clone();
+    impossible_committed_indeterminate["supplied_session"]["checkpoints"][0]
+        ["evidence_reference"] = json!(format!(
+        "supplied-session-checkpoint-evidence-sha256:{}",
+        "7".repeat(64)
+    ));
+    reject(&impossible_committed_indeterminate);
+
+    // A pre-dispatch descriptor/transport refusal has no checkpoint and no
+    // dispatched request. It remains distinct from an unhealthy response.
+    let mut startup_not_dispatched = report(Vec::new());
+    let mut audit = startup_transport_failure["supplied_session"].clone();
+    audit["checkpoints"] = json!([]);
+    audit["dispatched_request_count"] = json!(0);
+    audit["response_bytes"] = json!(0);
+    startup_not_dispatched["supplied_session"] = audit;
+    compare(&startup_not_dispatched, &startup_not_dispatched);
+
+    // A complete resource response is not authenticated coverage until its
+    // following health checkpoint succeeds. An indeterminate checkpoint keeps
+    // the response as observed-but-unqualified activity.
+    let mut terminal_transport_failure = report(Vec::new());
+    let mut audit = supplied_session_audit();
+    audit["outcome"] = json!("resource_unavailable");
+    audit["coverage"] = json!("none");
+    audit["checkpoints"][1]["outcome"] = json!("indeterminate");
+    audit["checkpoints"][1]["status"] = Value::Null;
+    audit["checkpoints"][1]["body_state"] = json!("unavailable");
+    audit["checkpoints"][1]["predicate"] = json!("not_evaluated");
+    audit["resources"][0]["outcome"] = json!("health_unqualified");
+    audit["committed_resource_count"] = json!(0);
+    terminal_transport_failure["supplied_session"] = audit;
+    compare(&terminal_transport_failure, &terminal_transport_failure);
+
+    // A session-loss claim is narrower: it follows a healthy startup and a
+    // later complete health response that failed the configured predicate.
+    let mut session_lost = report(Vec::new());
+    let mut audit = supplied_session_audit();
+    audit["outcome"] = json!("session_lost");
+    audit["coverage"] = json!("none");
+    audit["checkpoints"][1]["outcome"] = json!("unhealthy");
+    audit["checkpoints"][1]["predicate"] = json!("not_matched");
+    audit["resources"][0]["outcome"] = json!("health_unqualified");
+    audit["committed_resource_count"] = json!(0);
+    session_lost["supplied_session"] = audit;
+    compare(&session_lost, &session_lost);
+    let mut wrong_session_lost = session_lost.clone();
+    wrong_session_lost["supplied_session"]["checkpoints"][1]["outcome"] = json!("indeterminate");
+    wrong_session_lost["supplied_session"]["checkpoints"][1]["status"] = Value::Null;
+    wrong_session_lost["supplied_session"]["checkpoints"][1]["body_state"] = json!("unavailable");
+    wrong_session_lost["supplied_session"]["checkpoints"][1]["predicate"] = json!("not_evaluated");
+    reject(&wrong_session_lost);
+
+    // The checkpoint counter is scoped to selected session resources, not to
+    // the generic assessment subject_count. This valid audit processes two
+    // selected session resources while the enclosing report declares one
+    // ordinary subject.
+    let mut two_resource_session = report(Vec::new());
+    two_resource_session["subject_count"] = json!(1);
+    let mut audit = supplied_session_audit();
+    audit["checkpoints"][1]["phase"] = json!("subject_boundary");
+    audit["checkpoints"].as_array_mut().unwrap().push(json!({
+        "sequence":2, "phase":"terminal", "after_subject_count":2,
+        "evidence_reference":format!(
+            "supplied-session-checkpoint-evidence-sha256:{}",
+            "9".repeat(64)
+        ),
+        "outcome":"healthy", "status":200, "body_state":"complete",
+        "predicate":"matched", "response_bytes":31
+    }));
+    audit["resources"].as_array_mut().unwrap().push(json!({
+        "sequence":1,
+        "resource_reference":format!("supplied-session-resource-sha256:{}", "6".repeat(64)),
+        "evidence_reference":format!(
+            "supplied-session-resource-evidence-sha256:{}",
+            "7".repeat(64)
+        ),
+        "outcome":"committed", "status":200, "response_bytes":29, "epoch":1
+    }));
+    audit["selected_resource_count"] = json!(2);
+    audit["dispatched_resource_count"] = json!(2);
+    audit["committed_resource_count"] = json!(2);
+    audit["dispatched_request_count"] = json!(5);
+    audit["response_bytes"] = json!(119);
+    two_resource_session["supplied_session"] = audit;
+    compare(&two_resource_session, &two_resource_session);
+    assert_eq!(
+        two_resource_session["supplied_session"]["checkpoints"][2]["after_subject_count"],
+        2
+    );
+
+    for (label, invalid_audit) in [
+        ("checkpoint subject count rewound", {
+            let mut invalid = terminal_transport_failure.clone();
+            invalid["supplied_session"]["checkpoints"][1]["after_subject_count"] = json!(0);
+            invalid
+        }),
+        ("terminal checkpoint relabelled as a boundary", {
+            let mut invalid = terminal_transport_failure.clone();
+            invalid["supplied_session"]["checkpoints"][1]["phase"] = json!("subject_boundary");
+            invalid
+        }),
+        ("healthy checkpoint without committed evidence", {
+            let mut invalid = startup_transport_failure.clone();
+            invalid["supplied_session"]["checkpoints"][0]["outcome"] = json!("healthy");
+            invalid["supplied_session"]["checkpoints"][0]["evidence_reference"] = Value::Null;
+            invalid["supplied_session"]["checkpoints"][0]["status"] = json!(200);
+            invalid["supplied_session"]["checkpoints"][0]["body_state"] = json!("complete");
+            invalid["supplied_session"]["checkpoints"][0]["predicate"] = json!("matched");
+            invalid
+        }),
+    ] {
+        assert!(
+            compare_reports(&bytes(&invalid_audit), SAMPLE, ComparisonFormat::Json).is_err(),
+            "accepted invalid supplied-session audit: {label}"
+        );
+    }
+}
+
 #[test]
 fn all_current_optional_audits_are_feature_independent_bounded_display_snapshots() {
     for (name, _, audit) in audit_fixtures() {

@@ -23,6 +23,10 @@ use termivar_scanner::authorization_review::{
 use termivar_scanner::ssrf_oast_review::{
     SsrfOastAdminToken, SsrfOastReviewPolicy, MAX_SSRF_OAST_REVIEW_POLICY_BYTES,
 };
+#[cfg(feature = "supplied-session-review")]
+use termivar_scanner::supplied_session_review::{
+    SuppliedSessionAuthorization, SuppliedSessionPolicy, HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES,
+};
 use termivar_scanner::{
     web_runtime::WebAssessmentRootAuthorizationContext, DEFAULT_MAX_PAYLOAD_ARTIFACT_BYTES,
 };
@@ -166,16 +170,167 @@ pub(crate) struct AuthorizationReviewInput {
     peer: AuthorizationInputSource,
 }
 
+/// Complete, preflight-selected input for one supplied Authorization session.
+///
+/// Selection performs no I/O. Policy and secret locations are never exposed
+/// through `Debug`, and the policy is validated before the credential source
+/// is opened.
+#[cfg(feature = "supplied-session-review")]
+pub(crate) struct SuppliedSessionInput {
+    policy_file: PathBuf,
+    authorization: AuthorizationInputSource,
+}
+
+/// Validated non-secret supplied-session policy paired with the still-unread
+/// secret source. Keeping this intermediate state makes the CLI's preflight
+/// order explicit: policy validation precedes output reservation, while the
+/// secret is not acquired until after that reservation succeeds.
+#[cfg(feature = "supplied-session-review")]
+pub(crate) struct PreparedSuppliedSessionInput {
+    policy: SuppliedSessionPolicy,
+    authorization: AuthorizationInputSource,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl fmt::Debug for PreparedSuppliedSessionInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedSuppliedSessionInput")
+            .field("policy", &"<validated>")
+            .field("authorization", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl fmt::Debug for SuppliedSessionInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SuppliedSessionInput")
+            .field("policy_file", &"<redacted>")
+            .field("authorization", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl SuppliedSessionInput {
+    /// Requires one policy and exactly one out-of-band Authorization source.
+    pub(crate) fn select(
+        policy_file: Option<PathBuf>,
+        authorization: AuthorizationSourceOptions,
+    ) -> Result<Option<Self>, SuppliedSessionInputError> {
+        let any_selected = policy_file.is_some()
+            || authorization.environment.is_some()
+            || authorization.file.is_some()
+            || authorization.stdin;
+        if !any_selected {
+            return Ok(None);
+        }
+        let policy_file = policy_file.ok_or(SuppliedSessionInputError::MissingPolicy)?;
+        let authorization = AuthorizationInputSource::select(
+            authorization.environment,
+            authorization.file,
+            authorization.stdin,
+        )
+        .map_err(|_| SuppliedSessionInputError::ConflictingAuthorizationSources)?
+        .ok_or(SuppliedSessionInputError::MissingAuthorizationSource)?;
+        Ok(Some(Self {
+            policy_file,
+            authorization,
+        }))
+    }
+
+    /// Loads and validates only the non-secret policy, retaining the selected
+    /// secret source in an unread intermediate state.
+    pub(crate) fn prepare(
+        self,
+        target: &url::Url,
+    ) -> Result<PreparedSuppliedSessionInput, SuppliedSessionInputError> {
+        let policy_source =
+            read_bounded_regular_file(self.policy_file, HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES)
+                .map_err(SuppliedSessionInputError::PolicySource)?;
+        let policy = SuppliedSessionPolicy::parse_toml(target, policy_source.as_slice())
+            .map_err(|_| SuppliedSessionInputError::InvalidPolicy)?;
+        Ok(PreparedSuppliedSessionInput {
+            policy,
+            authorization: self.authorization,
+        })
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl PreparedSuppliedSessionInput {
+    /// Reads the selected secret exactly once after all non-secret preflight
+    /// and output reservation have succeeded.
+    pub(crate) fn load(
+        self,
+    ) -> Result<(SuppliedSessionPolicy, SuppliedSessionAuthorization), SuppliedSessionInputError>
+    {
+        let authorization = self
+            .authorization
+            .read_bytes()
+            .map_err(SuppliedSessionInputError::AuthorizationSource)
+            .and_then(|bytes| {
+                SuppliedSessionAuthorization::new(bytes.into_owned())
+                    .map_err(|_| SuppliedSessionInputError::InvalidAuthorizationValue)
+            })?;
+        Ok((self.policy, authorization))
+    }
+}
+
+/// Static, value-free failures for the supplied-session input boundary.
+#[cfg(feature = "supplied-session-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SuppliedSessionInputError {
+    MissingPolicy,
+    MissingAuthorizationSource,
+    ConflictingAuthorizationSources,
+    PolicySource(AuthorizationInputError),
+    InvalidPolicy,
+    AuthorizationSource(AuthorizationInputError),
+    InvalidAuthorizationValue,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl fmt::Display for SuppliedSessionInputError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingPolicy => "supplied-session review requires one policy file",
+            Self::MissingAuthorizationSource | Self::ConflictingAuthorizationSources => {
+                "supplied-session review requires exactly one Authorization source"
+            },
+            Self::PolicySource(_) => "supplied-session policy must be a bounded regular UTF-8 file",
+            Self::InvalidPolicy => "supplied-session policy is invalid",
+            Self::AuthorizationSource(_) => {
+                "supplied-session Authorization source could not be loaded"
+            },
+            Self::InvalidAuthorizationValue => "supplied-session Authorization value is invalid",
+        })
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl std::error::Error for SuppliedSessionInputError {}
+
 /// One unvalidated credential source selection. The wrapper keeps the public
 /// CLI flow small without exposing source identifiers through `Debug`.
-#[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "ssrf-oast-review",
+    feature = "supplied-session-review"
+))]
 pub(crate) struct AuthorizationSourceOptions {
     environment: Option<OsString>,
     file: Option<PathBuf>,
     stdin: bool,
 }
 
-#[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "ssrf-oast-review",
+    feature = "supplied-session-review"
+))]
 impl AuthorizationSourceOptions {
     pub(crate) const fn new(
         environment: Option<OsString>,
@@ -190,7 +345,11 @@ impl AuthorizationSourceOptions {
     }
 }
 
-#[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "ssrf-oast-review",
+    feature = "supplied-session-review"
+))]
 impl fmt::Debug for AuthorizationSourceOptions {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("AuthorizationSourceOptions(<redacted>)")
@@ -594,7 +753,11 @@ fn validate_opened_regular_file(file: File) -> Result<File, AuthorizationInputEr
     Ok(file)
 }
 
-#[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "ssrf-oast-review",
+    feature = "supplied-session-review"
+))]
 fn read_bounded_regular_file(
     path: PathBuf,
     max_bytes: usize,
@@ -1152,6 +1315,139 @@ mod tests {
         let error = read_bounded_line_source(&mut FailingReader).unwrap_err();
         assert_eq!(error, AuthorizationInputError::SourceReadFailed);
         assert!(!error.to_string().contains("PRIVATE_SOURCE_DIAGNOSTIC"));
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    fn valid_supplied_session_policy() -> &'static str {
+        r#"schema = "security.supplied-session-policy/v1"
+principal_alias = "fixture-reader"
+credential_mechanism = "authorization_header"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private", "/app/private-2"]
+max_session_requests = 5
+max_total_response_bytes = 131072
+max_response_body_bytes = 32768
+max_wall_time_ms = 5000
+"#
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_selection_is_complete_and_redacted() {
+        assert!(SuppliedSessionInput::select(
+            None,
+            AuthorizationSourceOptions::new(None, None, false),
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            SuppliedSessionInput::select(
+                Some(PathBuf::from("PRIVATE-POLICY-PATH")),
+                AuthorizationSourceOptions::new(None, None, false),
+            )
+            .unwrap_err(),
+            SuppliedSessionInputError::MissingAuthorizationSource
+        );
+        assert_eq!(
+            SuppliedSessionInput::select(
+                None,
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-SESSION-ENV")),
+                    None,
+                    false,
+                ),
+            )
+            .unwrap_err(),
+            SuppliedSessionInputError::MissingPolicy
+        );
+        assert_eq!(
+            SuppliedSessionInput::select(
+                Some(PathBuf::from("PRIVATE-POLICY-PATH")),
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-SESSION-ENV")),
+                    Some(PathBuf::from("PRIVATE-SESSION-FILE")),
+                    false,
+                ),
+            )
+            .unwrap_err(),
+            SuppliedSessionInputError::ConflictingAuthorizationSources
+        );
+
+        let input = SuppliedSessionInput::select(
+            Some(PathBuf::from("PRIVATE-POLICY-PATH")),
+            AuthorizationSourceOptions::new(
+                Some(OsString::from("PRIVATE-SESSION-ENV")),
+                None,
+                false,
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        let debug = format!("{input:?}");
+        for private in ["PRIVATE-POLICY-PATH", "PRIVATE-SESSION-ENV"] {
+            assert!(!debug.contains(private));
+        }
+        for error in [
+            SuppliedSessionInputError::MissingPolicy,
+            SuppliedSessionInputError::MissingAuthorizationSource,
+            SuppliedSessionInputError::ConflictingAuthorizationSources,
+            SuppliedSessionInputError::PolicySource(AuthorizationInputError::SourceUnavailable),
+            SuppliedSessionInputError::InvalidPolicy,
+            SuppliedSessionInputError::AuthorizationSource(
+                AuthorizationInputError::SourceUnavailable,
+            ),
+            SuppliedSessionInputError::InvalidAuthorizationValue,
+        ] {
+            let rendered = error.to_string();
+            assert!(!rendered.contains("PRIVATE"));
+            assert!(!rendered.contains("Bearer"));
+        }
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_loads_policy_before_one_move_only_secret() {
+        const SECRET: &str = "Bearer SESSION-CANARY-MUST-NOT-LEAK-0123456789";
+        let directory = tempfile::tempdir().unwrap();
+        let policy_path = directory.path().join("session-policy.toml");
+        let secret_path = directory.path().join("authorization.secret");
+        std::fs::write(&policy_path, valid_supplied_session_policy()).unwrap();
+        std::fs::write(&secret_path, format!("{SECRET}\r\n")).unwrap();
+
+        let input = SuppliedSessionInput::select(
+            Some(policy_path),
+            AuthorizationSourceOptions::new(None, Some(secret_path), false),
+        )
+        .unwrap()
+        .unwrap();
+        let (policy, authorization) = input
+            .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+            .unwrap()
+            .load()
+            .unwrap();
+        let rendered = format!("{policy:?} {authorization:?}");
+        assert!(!rendered.contains(SECRET));
+        assert!(!rendered.contains("SESSION-CANARY"));
+
+        let invalid_policy = directory.path().join("invalid-policy.toml");
+        std::fs::write(&invalid_policy, "schema = [not-valid").unwrap();
+        let input = SuppliedSessionInput::select(
+            Some(invalid_policy),
+            AuthorizationSourceOptions::new(
+                None,
+                Some(directory.path().join("SECRET-MUST-NOT-BE-OPENED")),
+                false,
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            input
+                .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+                .unwrap_err(),
+            SuppliedSessionInputError::InvalidPolicy
+        );
     }
 
     #[cfg(feature = "ssrf-oast-review")]

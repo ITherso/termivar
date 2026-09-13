@@ -286,7 +286,7 @@ fn wordpress_review_target_conflict(
     }
 }
 
-#[cfg(feature = "wordpress-review")]
+#[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
 fn is_wordpress_application_target(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https")
         && target.username().is_empty()
@@ -374,6 +374,26 @@ fn authorization_context_transport_is_allowed(target: &Url) -> bool {
                 matches!(host, url::Host::Ipv4(ip) if ip.is_loopback())
                     || matches!(host, url::Host::Ipv6(ip) if ip.is_loopback())
             }))
+}
+
+/// Rejects supplied-session selection outside its first closed CLI contract.
+/// This runs before policy, secret, output, or network acquisition.
+#[cfg(feature = "supplied-session-review")]
+fn scan_supplied_session_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+    root_authorization_selected: bool,
+    resource_authorization_selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("supplied-session review requires `--profile web-review`")
+    } else if selected && root_authorization_selected {
+        Some("supplied-session review conflicts with root authorization-context review")
+    } else if selected && resource_authorization_selected {
+        Some("supplied-session review conflicts with resource authorization review")
+    } else {
+        None
+    }
 }
 
 #[cfg(feature = "legacy-scanner")]
@@ -623,6 +643,62 @@ struct ScanArgs {
         arg(conflicts_with_all = ["authz_primary_stdin", "authz_peer_stdin"])
     )]
     oast_admin_token_stdin: bool,
+    /// Read one strict bounded `security.supplied-session-policy/v1` policy.
+    /// The policy selects a small exact set of read-only application resources
+    /// and a structured session-health oracle. It is inert without exactly one
+    /// out-of-band Authorization source.
+    #[cfg(feature = "supplied-session-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "profile",
+        conflicts_with_all = [
+            "auth_env",
+            "auth_file",
+            "auth_stdin"
+        ]
+    )]
+    #[cfg_attr(
+        feature = "authorization-review",
+        arg(conflicts_with = "authorization_review_policy")
+    )]
+    session_policy: Option<PathBuf>,
+    /// Read the supplied session's complete Authorization value from an
+    /// environment variable. The variable name and value are redacted.
+    #[cfg(feature = "supplied-session-review")]
+    #[arg(
+        long,
+        value_name = "ENV_VAR",
+        requires = "session_policy",
+        conflicts_with_all = ["session_auth_file", "session_auth_stdin"]
+    )]
+    session_auth_env: Option<OsString>,
+    /// Read the supplied session's complete Authorization value from a bounded
+    /// regular file. The path and value are redacted.
+    #[cfg(feature = "supplied-session-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "session_policy",
+        conflicts_with_all = ["session_auth_env", "session_auth_stdin"]
+    )]
+    session_auth_file: Option<PathBuf>,
+    /// Read the supplied session's complete Authorization value from stdin.
+    #[cfg(feature = "supplied-session-review")]
+    #[arg(
+        long,
+        requires = "session_policy",
+        conflicts_with_all = ["session_auth_env", "session_auth_file", "auth_stdin"]
+    )]
+    #[cfg_attr(
+        feature = "authorization-review",
+        arg(conflicts_with_all = ["authz_primary_stdin", "authz_peer_stdin"])
+    )]
+    #[cfg_attr(
+        feature = "ssrf-oast-review",
+        arg(conflicts_with = "oast_admin_token_stdin")
+    )]
+    session_auth_stdin: bool,
     /// Select the centralized typed assessment renderer. Valid only with
     /// `--profile web-review`. Without this option, text maps to Markdown
     /// and JSON maps to JSON for completed web-review reports.
@@ -756,7 +832,7 @@ struct ScanArgs {
 #[derive(Clone, Debug)]
 struct ScanTarget {
     url: Url,
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
     raw: String,
 }
 
@@ -766,7 +842,7 @@ impl std::str::FromStr for ScanTarget {
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         Ok(Self {
             url: Url::parse(raw)?,
-            #[cfg(feature = "wordpress-review")]
+            #[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
             raw: raw.to_owned(),
         })
     }
@@ -782,8 +858,8 @@ impl ScanTarget {
         self.url
     }
 
-    #[cfg(feature = "wordpress-review")]
-    fn wordpress_application_is_unambiguous(&self) -> bool {
+    #[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
+    fn selected_application_is_unambiguous(&self) -> bool {
         if !is_wordpress_application_target(&self.url) || self.url.as_str() != self.raw {
             return false;
         }
@@ -801,9 +877,14 @@ impl ScanTarget {
                         && index + 1 != raw_path.split('/').count())
             })
     }
+
+    #[cfg(feature = "wordpress-review")]
+    fn wordpress_application_is_unambiguous(&self) -> bool {
+        self.selected_application_is_unambiguous()
+    }
 }
 
-#[cfg(feature = "wordpress-review")]
+#[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
 fn raw_http_directory_path(value: &str) -> Option<&str> {
     if value.is_empty()
         || value.trim() != value
@@ -941,6 +1022,14 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         oast_admin_token_file,
         #[cfg(feature = "ssrf-oast-review")]
         oast_admin_token_stdin,
+        #[cfg(feature = "supplied-session-review")]
+        session_policy,
+        #[cfg(feature = "supplied-session-review")]
+        session_auth_env,
+        #[cfg(feature = "supplied-session-review")]
+        session_auth_file,
+        #[cfg(feature = "supplied-session-review")]
+        session_auth_stdin,
         report_format,
         report_output,
         report_dir,
@@ -1045,6 +1134,11 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
+    #[cfg(feature = "supplied-session-review")]
+    let supplied_session_selected = session_policy.is_some()
+        || session_auth_env.is_some()
+        || session_auth_file.is_some()
+        || session_auth_stdin;
     #[cfg(feature = "wordpress-review")]
     if let Some(message) =
         wordpress_review_target_conflict(wordpress_review, wordpress_discovery, &target.url)
@@ -1059,6 +1153,14 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         )
         .into());
     }
+    #[cfg(feature = "supplied-session-review")]
+    if supplied_session_selected && !target.selected_application_is_unambiguous() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "supplied-session application target must use an unambiguous raw trailing-slash path",
+        )
+        .into());
+    }
     let target = target.into_url();
     #[cfg(feature = "authorization-review")]
     let root_authorization_selected = auth_env.is_some() || auth_file.is_some() || auth_stdin;
@@ -1070,9 +1172,31 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         || authz_peer_env.is_some()
         || authz_peer_file.is_some()
         || authz_peer_stdin;
+    #[cfg(all(
+        feature = "supplied-session-review",
+        not(feature = "authorization-review")
+    ))]
+    let root_authorization_selected = auth_env.is_some() || auth_file.is_some() || auth_stdin;
+    #[cfg(all(
+        feature = "supplied-session-review",
+        not(feature = "authorization-review")
+    ))]
+    let resource_authorization_selected = false;
     #[cfg(feature = "authorization-review")]
     if let Some(message) = scan_resource_authorization_flags_conflict(
         profile,
+        root_authorization_selected,
+        resource_authorization_selected,
+    ) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "supplied-session-review")]
+    if let Some(message) = scan_supplied_session_flags_conflict(
+        profile,
+        supplied_session_selected,
         root_authorization_selected,
         resource_authorization_selected,
     ) {
@@ -1120,6 +1244,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             authz_peer_stdin,
         ),
     )?;
+    #[cfg(feature = "supplied-session-review")]
+    let supplied_session_input = auth_input::SuppliedSessionInput::select(
+        session_policy,
+        auth_input::AuthorizationSourceOptions::new(
+            session_auth_env,
+            session_auth_file,
+            session_auth_stdin,
+        ),
+    )?;
     #[cfg(feature = "ssrf-oast-review")]
     let ssrf_oast_review_input = auth_input::SsrfOastReviewInput::select(
         ssrf_oast_review,
@@ -1158,6 +1291,14 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         )
         .into());
     }
+    #[cfg(feature = "supplied-session-review")]
+    if supplied_session_input.is_some() && !authorization_context_transport_is_allowed(&target) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "supplied-session review requires HTTPS; numeric loopback HTTP is allowed only for local fixtures",
+        )
+        .into());
+    }
 
     if let Some(selected_profile) = profile {
         let mut profile =
@@ -1189,6 +1330,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         let wordpress_review = wordpress_review_input
             .map(|input| input.load(&target))
             .transpose()?;
+        // Validate the non-secret supplied-session policy before reserving any
+        // externally visible output. The prepared value retains an unread
+        // secret source until reservation succeeds below.
+        #[cfg(feature = "supplied-session-review")]
+        let prepared_supplied_session_review = supplied_session_input
+            .map(|input| input.prepare(&target))
+            .transpose()?;
         preflight_report_output(report_output.as_deref())?;
         let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;
         // All flag, profile, target, and obvious report-output checks above
@@ -1202,6 +1350,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         #[cfg(feature = "authorization-review")]
         let resource_authorization_review = resource_authorization_input
             .map(|input| input.load(&target))
+            .transpose()
+            .inspect_err(|_| {
+                abort_report_bundle_after_failure(&mut report_bundle);
+            })?;
+        #[cfg(feature = "supplied-session-review")]
+        let supplied_session_review = prepared_supplied_session_review
+            .map(auth_input::PreparedSuppliedSessionInput::load)
             .transpose()
             .inspect_err(|_| {
                 abort_report_bundle_after_failure(&mut report_bundle);
@@ -1228,6 +1383,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 rest_review,
                 #[cfg(feature = "authorization-review")]
                 resource_authorization_review,
+                #[cfg(feature = "supplied-session-review")]
+                supplied_session_review,
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast_review,
                 #[cfg(feature = "wordpress-review")]
@@ -1780,6 +1937,13 @@ mod tests {
             assert_eq!(args.authz_peer_env, None);
             assert_eq!(args.authz_peer_file, None);
             assert!(!args.authz_peer_stdin);
+        }
+        #[cfg(feature = "supplied-session-review")]
+        {
+            assert_eq!(args.session_policy, None);
+            assert_eq!(args.session_auth_env, None);
+            assert_eq!(args.session_auth_file, None);
+            assert!(!args.session_auth_stdin);
         }
         assert!(DETERMINISTIC_SCAN_WARNING.contains("bounded deterministic"));
     }
@@ -3473,6 +3637,172 @@ mod tests {
             "--authorization-review-policy",
             "review.toml",
             "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_has_only_explicit_web_review_secret_sources() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--session-policy",
+            "--session-auth-env",
+            "--session-auth-file",
+            "--session-auth-stdin",
+        ] {
+            assert!(help.contains(flag), "missing feature-gated flag {flag}");
+        }
+        assert!(!help.contains("--session-auth-value"));
+        assert!(!help.contains("--session-cookie"));
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--session-policy",
+            "private-policy.toml",
+            "--session-auth-env",
+            "PRIVATE_SESSION_ENV",
+            "https://example.test/app/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--session-policy",
+            "private-policy.toml",
+            "--session-auth-file",
+            "private-authorization-file",
+            "https://example.test/app/",
+        ])
+        .unwrap();
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+        assert_eq!(
+            scan_supplied_session_flags_conflict(
+                baseline.profile,
+                true,
+                baseline.auth_env.is_some() || baseline.auth_file.is_some() || baseline.auth_stdin,
+                false,
+            ),
+            Some("supplied-session review requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--session-policy",
+            "private-policy.toml",
+            "--session-auth-file",
+            "private-authorization-file",
+            "https://example.test/app/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.session_policy.is_some());
+        assert!(review.session_auth_file.is_some());
+        assert_eq!(
+            scan_supplied_session_flags_conflict(
+                review.profile,
+                true,
+                review.auth_env.is_some() || review.auth_file.is_some() || review.auth_stdin,
+                false,
+            ),
+            None
+        );
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_rejects_mixed_or_ambiguous_credentials() {
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-env",
+            "ROOT_PRIVATE_ENV",
+            "--session-policy",
+            "private-policy.toml",
+            "--session-auth-env",
+            "SESSION_PRIVATE_ENV",
+            "https://example.test/app/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--session-policy",
+            "private-policy.toml",
+            "--session-auth-env",
+            "SESSION_ONE",
+            "--session-auth-file",
+            "session-two",
+            "https://example.test/app/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_supplied_session_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                true,
+                false,
+            ),
+            Some("supplied-session review conflicts with root authorization-context review")
+        );
+        assert_eq!(
+            scan_supplied_session_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                false,
+                true,
+            ),
+            Some("supplied-session review conflicts with resource authorization review")
+        );
+    }
+
+    #[cfg(not(feature = "supplied-session-review"))]
+    #[test]
+    fn default_cli_does_not_expose_supplied_session_inputs() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--session-policy",
+            "--session-auth-env",
+            "--session-auth-file",
+            "--session-auth-stdin",
+        ] {
+            assert!(!help.contains(flag), "default CLI exposed {flag}");
+        }
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--session-policy",
+            "session.toml",
+            "https://example.test/app/",
         ])
         .is_err());
     }

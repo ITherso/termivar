@@ -249,6 +249,8 @@ const WORDPRESS_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in WordP
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_review_cli -- --nocapture"#;
 const WORDPRESS_DISCOVERY_SMOKE_GATE: &str = r#"      - name: Exercise opt-in WordPress discovery CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture"#;
+const SUPPLIED_SESSION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in supplied-session review CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture"#;
 const WORDPRESS_RESOURCE_ACCEPTANCE_JOB: &str = r#"  wordpress-resource-acceptance:
     name: WordPress Resource Acceptance
     runs-on: ubuntu-latest
@@ -376,8 +378,32 @@ const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capa
           TERMIVAR_CAPABILITIES_MATRIX_CASE=no-default cargo test --locked -p termivar-cli --no-default-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=release-bundle cargo test --locked -p termivar-cli --no-default-features --features release-bundle --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=session-only cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
+const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-in CLI contracts
+        run: |
+          cargo test --locked -p termivar-cli --no-default-features
+          cargo test --locked -p termivar-cli --no-default-features --features legacy-scanner
+          cargo test --locked -p termivar-cli --no-default-features --features api-adapter
+          cargo test --locked -p termivar-cli --no-default-features --features proxy-adapter
+          cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
+          cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
+          cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
+          cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review"#;
+const SCANNER_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify scanner feature boundaries independently
+        run: |
+          set -euo pipefail
+          for feature in \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review legacy-scanner platform-models reporting detection ml \
+            distributed monitoring compliance threat-intel plugins lua
+          do
+            cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
+          done
+          for aggregate in minimal full enterprise research
+          do
+            cargo check --locked -p termivar-scanner --no-default-features --features "$aggregate"
+          done"#;
 const SECURITY_WORKFLOW: &str = ".github/workflows/security.yml";
 const AUDIT_RUNNER: &str = "scripts/ci/run-cargo-audit.sh";
 const DEVELOPMENT_LINE_CHECKOUT: &str = r#"      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -760,12 +786,42 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
+        "platform-runtime-smoke",
+        "Exercise opt-in supplied-session review CLI",
+        SUPPLIED_SESSION_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: three-platform runtime smoke must compile and run the exact feature-minimal supplied-session CLI integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "unit-tests",
+        "Verify default and opt-in CLI contracts",
+        CLI_FEATURE_BOUNDARY_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: unit tests must exercise the exact default and isolated CLI feature boundaries"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
         "unit-tests",
         "Verify compiled CLI capabilities matrix",
         CAPABILITIES_MATRIX_GATE,
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: unit tests must run the exact sequential CLI capabilities build matrix"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "unit-tests",
+        "Verify scanner feature boundaries independently",
+        SCANNER_FEATURE_BOUNDARY_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: unit tests must exercise the exact isolated scanner features and compatibility aggregates"
         ));
     }
     violations
@@ -2965,9 +3021,11 @@ mod tests {
     fn capabilities_matrix_rejects_omission_substitution_and_suppression() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let rest_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
+        let session_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=session-only cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
         for mutation in [
             valid.replacen(CAPABILITIES_MATRIX_GATE, "", 1),
             valid.replacen(rest_case, "", 1),
+            valid.replacen(session_case, "", 1),
             valid.replacen(
                 "--features release-bundle --test capabilities_cli",
                 "--features graphql-review --test capabilities_cli",
@@ -2984,6 +3042,63 @@ mod tests {
                 capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(violations[0].contains("capabilities"), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn supplied_session_feature_boundaries_reject_omission_and_bundle_substitution() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review";
+        let scanner_member = "ssrf-oast-review supplied-session-review legacy-scanner";
+        for mutation in [
+            valid.replacen(cli_case, "", 1),
+            valid.replacen(
+                scanner_member,
+                "ssrf-oast-review legacy-scanner",
+                1,
+            ),
+            valid.replacen(
+                cli_case,
+                "cargo test --locked -p termivar-cli --no-default-features --features release-bundle",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("feature boundaries")
+                    || violations[0].contains("isolated scanner features"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn supplied_session_runtime_smoke_rejects_omission_widening_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(SUPPLIED_SESSION_SMOKE_GATE, "", 1),
+            valid.replacen(
+                SUPPLIED_SESSION_SMOKE_GATE,
+                "      - name: Exercise opt-in supplied-session review CLI\n        run: cargo test --locked -p termivar-cli --all-features --test supplied_session_cli -- --nocapture",
+                1,
+            ),
+            valid.replacen(
+                SUPPLIED_SESSION_SMOKE_GATE,
+                &format!("{SUPPLIED_SESSION_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("supplied-session CLI"),
+                "{violations:?}"
+            );
         }
     }
 

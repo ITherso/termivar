@@ -17,11 +17,12 @@ use reqwest::header::ACCEPT;
 #[cfg(any(
     feature = "graphql-review",
     feature = "authorization-review",
+    feature = "supplied-session-review",
     feature = "wordpress-review"
 ))]
 use reqwest::Method;
 
-#[cfg(feature = "authorization-review")]
+#[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
 use reqwest::header::AUTHORIZATION;
 #[cfg(feature = "graphql-review")]
 use reqwest::header::CONTENT_TYPE;
@@ -34,6 +35,13 @@ use crate::wordpress_review::{
     WordPressComponentKind,
 };
 
+#[cfg(feature = "supplied-session-review")]
+use crate::supplied_session_review::{
+    SuppliedSessionRequestDescriptor, SuppliedSessionRequestPurpose,
+    SUPPLIED_SESSION_HEALTH_ACTION_ID, SUPPLIED_SESSION_RESOURCE_ACTION_ID,
+};
+#[cfg(feature = "supplied-session-review")]
+use crate::web_runtime::authenticated_transport_is_allowed;
 #[cfg(feature = "wordpress-review")]
 use crate::KnowledgeBase;
 use crate::{
@@ -618,6 +626,35 @@ impl HttpRequestBrokerError {
     }
 }
 
+/// Closed error surface for descriptor-bound supplied-session collection.
+///
+/// Keeping this separate prevents a private route-contract failure from
+/// widening the shared broker error that every other runtime matches.
+#[cfg(feature = "supplied-session-review")]
+#[derive(Debug)]
+pub(crate) enum SuppliedSessionRequestError {
+    Http,
+    RuntimeLimit,
+    InvalidDescriptor,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl From<HttpEvidenceError> for SuppliedSessionRequestError {
+    fn from(_error: HttpEvidenceError) -> Self {
+        Self::Http
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl From<HttpRequestBrokerError> for SuppliedSessionRequestError {
+    fn from(error: HttpRequestBrokerError) -> Self {
+        match error {
+            HttpRequestBrokerError::Http(_) => Self::Http,
+            HttpRequestBrokerError::RuntimeLimit(_) => Self::RuntimeLimit,
+        }
+    }
+}
+
 impl From<HttpEvidenceError> for HttpRequestBrokerError {
     fn from(error: HttpEvidenceError) -> Self {
         Self::Http(error)
@@ -640,6 +677,8 @@ pub(crate) struct HttpRequestBroker {
     client: Client,
     #[cfg(feature = "wordpress-review")]
     anonymous_no_proxy_client: Client,
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session_no_proxy_client: Option<Client>,
     policy: HttpEvidencePolicy,
     accounting: Option<RequestAccountingBroker>,
 }
@@ -686,6 +725,8 @@ impl HttpRequestBroker {
             client,
             #[cfg(feature = "wordpress-review")]
             anonymous_no_proxy_client,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_no_proxy_client: None,
             policy,
             accounting,
         })
@@ -703,6 +744,25 @@ impl HttpRequestBroker {
     /// every dispatch and body byte remains charged to the same runtime.
     pub(crate) fn isolated(&self) -> Result<Self, HttpEvidenceError> {
         Self::build(self.policy.clone(), self.accounting.clone())
+    }
+
+    /// Creates the credentialed child pool only when the supplied-session
+    /// runtime is explicitly selected. Feature-enabled anonymous assessments
+    /// therefore keep their existing client construction unchanged.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) fn isolated_supplied_session(&self) -> Result<Self, HttpEvidenceError> {
+        let mut broker = Self::build(self.policy.clone(), self.accounting.clone())?;
+        // No cookie store, redirects, retries, proxy discovery/defaults, or
+        // default headers are installed on this principal-local connection pool.
+        broker.supplied_session_no_proxy_client = Some(
+            Client::builder()
+                .redirect(RedirectPolicy::none())
+                .retry(reqwest::retry::never())
+                .no_proxy()
+                .build()
+                .map_err(HttpEvidenceError::Client)?,
+        );
+        Ok(broker)
     }
 
     pub(super) async fn collect(
@@ -857,6 +917,64 @@ impl HttpRequestBroker {
             .map_err(HttpEvidenceError::Request)?;
         self.collect_built_request(&self.client, action_id, stage, origin, limits, request)
             .await
+    }
+
+    /// Dispatches one descriptor-bound, bodyless supplied-session GET.
+    ///
+    /// The only caller-provided request value is the already validated complete
+    /// Authorization header. The descriptor is revalidated immediately before
+    /// request construction and the dedicated client cannot use ambient proxies,
+    /// redirects, retries, cookies, bodies, or caller-controlled headers.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) async fn collect_supplied_session_authorization_get_for_runtime(
+        &self,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        authorization: &str,
+    ) -> Result<CollectedHttpResponse, SuppliedSessionRequestError> {
+        let purpose_contract_valid = match descriptor.purpose() {
+            SuppliedSessionRequestPurpose::Health => {
+                action_id == SUPPLIED_SESSION_HEALTH_ACTION_ID
+                    && matches!(
+                        origin,
+                        Some(DecisionActionOrigin::Bootstrap | DecisionActionOrigin::Planned)
+                    )
+            },
+            SuppliedSessionRequestPurpose::Resource => {
+                action_id == SUPPLIED_SESSION_RESOURCE_ACTION_ID
+                    && origin == Some(DecisionActionOrigin::Planned)
+            },
+        };
+        let target = descriptor.target();
+        if !descriptor.validate()
+            || stage != DecisionExecutionStage::Passive
+            || !purpose_contract_valid
+            || !authenticated_transport_is_allowed(target)
+        {
+            return Err(SuppliedSessionRequestError::InvalidDescriptor);
+        }
+        self.validate_target(target)?;
+        let mut authorization = HeaderValue::from_str(authorization).map_err(|_| {
+            HttpEvidenceError::InvalidHeaderValue {
+                name: "authorization".to_owned(),
+            }
+        })?;
+        authorization.set_sensitive(true);
+        let client = self
+            .supplied_session_no_proxy_client
+            .as_ref()
+            .ok_or(SuppliedSessionRequestError::InvalidDescriptor)?;
+        let request = client
+            .request(Method::GET, target.clone())
+            .header(AUTHORIZATION, authorization)
+            .build()
+            .map_err(HttpEvidenceError::Request)?;
+        self.collect_built_request(client, action_id, stage, origin, limits, request)
+            .await
+            .map_err(Into::into)
     }
 
     #[cfg(test)]
@@ -1123,6 +1241,9 @@ fn observe_response_bytes(lease: Option<&mut RequestAccountingLease>, observed: 
 mod tests {
     use super::*;
 
+    #[cfg(feature = "supplied-session-review")]
+    use crate::supplied_session_review::{SuppliedSessionPolicy, SUPPLIED_SESSION_POLICY_SCHEMA};
+
     #[cfg(feature = "wordpress-review")]
     fn committed_asset_descriptor(
         application: &url::Url,
@@ -1193,6 +1314,96 @@ mod tests {
 
         assert_eq!(metered_request_body_bytes(&bodyless).unwrap(), 0);
         assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[tokio::test]
+    async fn supplied_session_broker_rejects_a_purpose_action_substitution_before_dispatch() {
+        let application = url::Url::parse("http://127.0.0.1:9/app/").unwrap();
+        let source = format!(
+            r#"schema = "{SUPPLIED_SESSION_POLICY_SCHEMA}"
+principal_alias = "fixture"
+credential_mechanism = "authorization_header"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private"]
+max_session_requests = 3
+max_total_response_bytes = 4096
+max_response_body_bytes = 1024
+max_wall_time_ms = 1000
+"#
+        );
+        let policy = SuppliedSessionPolicy::parse_toml(&application, source.as_bytes()).unwrap();
+        let health = SuppliedSessionRequestDescriptor::health(&policy);
+        let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+        let broker = HttpRequestBroker::new_metered(
+            HttpEvidencePolicy::for_origin(application).unwrap(),
+            accounting.clone(),
+        )
+        .unwrap()
+        .isolated_supplied_session()
+        .unwrap();
+
+        let result = broker
+            .collect_supplied_session_authorization_get_for_runtime(
+                SUPPLIED_SESSION_RESOURCE_ACTION_ID,
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+                DecisionExecutionLimits::new(),
+                &health,
+                "Bearer SYNTHETIC-CANARY",
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(SuppliedSessionRequestError::InvalidDescriptor)
+        ));
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[tokio::test]
+    async fn supplied_session_broker_rejects_cleartext_non_loopback_before_dispatch() {
+        let application = url::Url::parse("http://192.0.2.1/app/").unwrap();
+        let source = format!(
+            r#"schema = "{SUPPLIED_SESSION_POLICY_SCHEMA}"
+principal_alias = "fixture"
+credential_mechanism = "authorization_header"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private"]
+max_session_requests = 3
+max_total_response_bytes = 4096
+max_response_body_bytes = 1024
+max_wall_time_ms = 1000
+"#
+        );
+        let policy = SuppliedSessionPolicy::parse_toml(&application, source.as_bytes()).unwrap();
+        let health = SuppliedSessionRequestDescriptor::health(&policy);
+        let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+        let broker = HttpRequestBroker::new_metered(
+            HttpEvidencePolicy::for_origin(application).unwrap(),
+            accounting.clone(),
+        )
+        .unwrap()
+        .isolated_supplied_session()
+        .unwrap();
+
+        let result = broker
+            .collect_supplied_session_authorization_get_for_runtime(
+                SUPPLIED_SESSION_HEALTH_ACTION_ID,
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Bootstrap),
+                DecisionExecutionLimits::new(),
+                &health,
+                "Bearer SYNTHETIC-CANARY",
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(SuppliedSessionRequestError::InvalidDescriptor)
+        ));
+        assert_eq!(accounting.snapshot().total_requests(), 0);
     }
 
     #[cfg(feature = "wordpress-review")]

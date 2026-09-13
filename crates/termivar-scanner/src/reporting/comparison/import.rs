@@ -64,6 +64,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "authorization_review",
             "openapi_review",
             "rest_review",
+            "supplied_session",
             "wordpress_review",
             "wordpress_discovery",
             "wordpress_asset_fingerprints",
@@ -93,6 +94,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         }
     }
     let mut optional_audits = BTreeMap::new();
+    let mut supplied_session = None;
     let mut wordpress_review = None;
     let mut wordpress_discovery = None;
     let mut wordpress_asset_fingerprints = None;
@@ -100,12 +102,15 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "authorization_review",
         "openapi_review",
         "rest_review",
+        "supplied_session",
         "wordpress_review",
         "wordpress_discovery",
         "wordpress_asset_fingerprints",
     ] {
         if let Some(value) = root.get(name) {
-            if name == "wordpress_discovery" {
+            if name == "supplied_session" {
+                supplied_session = Some(audits::validate_supplied_session(value, &items)?);
+            } else if name == "wordpress_discovery" {
                 wordpress_discovery = Some(audits::validate_wordpress_discovery(value, &items)?);
             } else if name == "wordpress_asset_fingerprints" {
                 wordpress_asset_fingerprints =
@@ -187,6 +192,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             optional_audits,
         },
         items,
+        supplied_session,
         wordpress_review,
     })
 }

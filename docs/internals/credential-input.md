@@ -1,8 +1,9 @@
 # Credential-input guarantees and limits
 
 These guarantees describe the current development source, not the published
-alpha.1 binaries. They apply to the CLI's shared credential/policy-file loader
-and the native provider's administrator-token loader. Source selection, byte
+prerelease binaries. They apply to the CLI's shared credential/policy-file
+loader—including the non-bundled supplied-session Preview—and the native
+provider's administrator-token loader. Source selection, byte
 ceilings, validation, redacted errors and the absence of raw credential-value
 arguments remain unchanged.
 
@@ -42,9 +43,12 @@ allocation into the scanner constructor without an extra intake copy.
 
 This CLI erasure guarantee ends at constructor handoff. Existing downstream
 root/principal `PayloadSeed` or `String` copies and their lifetimes are unchanged;
-they are not covered by this intake guarantee. The provider already guards its
-token input with `Zeroizing`; it now also wipes a removed line-ending suffix
-before truncation and retains its existing token-ownership contract.
+they are not covered by this intake guarantee. The supplied-session path moves
+its guarded Authorization allocation into its context-owned transport state;
+that does not establish erasure of transport-library copies. The provider
+already guards its token input with `Zeroizing`; it also wipes a removed
+line-ending suffix before truncation and retains its existing token-ownership
+contract.
 
 Neither loader claims to erase OS environment storage, allocator history,
 process dumps, HTTP-library buffers or every successful downstream copy.

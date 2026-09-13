@@ -29,8 +29,8 @@ use crate::graphql_review::MAX_GRAPHQL_ACTIVE_VERIFICATIONS;
 #[cfg(feature = "graphql-review")]
 use crate::DefenseInteractionClass;
 
-#[cfg(feature = "authorization-review")]
-use super::authority::authenticated_transport_is_allowed;
+#[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
+use super::authenticated_transport_is_allowed;
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
     AuthorizationPrincipalPair, AuthorizationReviewOutcome, AuthorizationReviewPolicy,
@@ -61,6 +61,10 @@ use super::rest_runtime::{
 use super::ssrf_oast_runtime::{
     CommittedSsrfOastReview, SsrfOastReviewConfig, SsrfOastRuntimeResult,
     WebAssessmentSsrfOastAudit, MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS,
+};
+#[cfg(feature = "supplied-session-review")]
+use super::supplied_session_runtime::{
+    SuppliedSessionRuntimeConfig, WebAssessmentSuppliedSessionAudit,
 };
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_fingerprint_runtime::{
@@ -108,6 +112,8 @@ use crate::ssrf_oast_review::{
     select_observed_query_candidate, SsrfOastAdminToken, SsrfOastReviewPolicy,
     SsrfOastTerminalState,
 };
+#[cfg(feature = "supplied-session-review")]
+use crate::supplied_session_review::{SuppliedSessionAuthorization, SuppliedSessionPolicy};
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::WordPressReviewInputs;
 use crate::{
@@ -1366,6 +1372,8 @@ pub struct WebAssessmentRunReport {
     forms: Vec<WebAssessmentForm>,
     semantics: SemanticExtractionResult,
     defense: WebAssessmentDefenseAudit,
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
@@ -1401,6 +1409,8 @@ impl fmt::Debug for WebAssessmentRunReport {
             .field("defense", &self.defense);
         #[cfg(feature = "authorization-review")]
         debug.field("authorization_review", &self.authorization_review);
+        #[cfg(feature = "supplied-session-review")]
+        debug.field("supplied_session", &self.supplied_session);
         #[cfg(feature = "openapi-review")]
         debug.field("openapi_review", &self.openapi_review);
         #[cfg(feature = "rest-review")]
@@ -1460,6 +1470,11 @@ impl WebAssessmentRunReport {
     }
     pub fn defense(&self) -> &WebAssessmentDefenseAudit {
         &self.defense
+    }
+    /// Returns the optional value-free supplied-session execution audit.
+    #[cfg(feature = "supplied-session-review")]
+    pub const fn supplied_session_audit(&self) -> Option<&WebAssessmentSuppliedSessionAudit> {
+        self.supplied_session.as_ref()
     }
     /// Returns the optional redaction-safe four-view authorization audit.
     #[cfg(feature = "authorization-review")]
@@ -1536,6 +1551,8 @@ impl WebAssessmentRunReport {
         AssessmentRunReport::from_completed_truth(
             self.assessment_items,
             truth,
+            #[cfg(feature = "supplied-session-review")]
+            self.supplied_session,
             #[cfg(feature = "authorization-review")]
             self.authorization_review,
             #[cfg(feature = "openapi-review")]
@@ -1557,6 +1574,8 @@ pub struct WebAssessmentFailureReceipt {
     forms: Vec<WebAssessmentForm>,
     semantics: SemanticExtractionResult,
     defense: WebAssessmentDefenseAudit,
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
     current_subject: WebAssessmentSubjectReport,
     incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     inventory_consistent: bool,
@@ -1568,13 +1587,16 @@ pub struct WebAssessmentFailureReceipt {
 
 impl fmt::Debug for WebAssessmentFailureReceipt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("WebAssessmentFailureReceipt")
+        let mut debug = formatter.debug_struct("WebAssessmentFailureReceipt");
+        debug
             .field("completed_subject_count", &self.completed_subjects.len())
             .field("pending_subject_count", &self.pending_subjects.len())
             .field("form_count", &self.forms.len())
             .field("semantics", &"<redacted>")
-            .field("defense", &self.defense)
+            .field("defense", &self.defense);
+        #[cfg(feature = "supplied-session-review")]
+        debug.field("supplied_session", &self.supplied_session);
+        debug
             .field("current_subject", &self.current_subject)
             .field("incomplete_reasons", &self.incomplete_reasons)
             .field("inventory_consistent", &self.inventory_consistent)
@@ -1610,6 +1632,11 @@ impl WebAssessmentFailureReceipt {
     }
     pub fn defense(&self) -> &WebAssessmentDefenseAudit {
         &self.defense
+    }
+    /// Returns the supplied-session prefix preserved before a later run failure.
+    #[cfg(feature = "supplied-session-review")]
+    pub const fn supplied_session_audit(&self) -> Option<&WebAssessmentSuppliedSessionAudit> {
+        self.supplied_session.as_ref()
     }
     pub fn current_subject(&self) -> &WebAssessmentSubject {
         &self.current_subject.subject
@@ -1678,6 +1705,15 @@ pub enum WebAssessmentRuntimeError {
     #[cfg(feature = "authorization-review")]
     #[error("resource authorization review requires protected authenticated transport")]
     InsecureAuthorizationReviewTransport,
+    #[cfg(feature = "supplied-session-review")]
+    #[error("supplied-session policy does not match the exact assessment application")]
+    SuppliedSessionApplicationMismatch,
+    #[cfg(feature = "supplied-session-review")]
+    #[error("supplied-session review requires protected authenticated transport")]
+    InsecureSuppliedSessionTransport,
+    #[cfg(feature = "supplied-session-review")]
+    #[error("supplied-session review could not be composed safely")]
+    SuppliedSessionComposition,
     #[cfg(feature = "rest-review")]
     #[error("REST review requires OpenAPI review in the same assessment")]
     RestReviewRequiresOpenApiReview,
@@ -1760,6 +1796,18 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             #[cfg(feature = "authorization-review")]
             Self::InsecureAuthorizationReviewTransport => formatter
                 .write_str("WebAssessmentRuntimeError::InsecureAuthorizationReviewTransport"),
+            #[cfg(feature = "supplied-session-review")]
+            Self::SuppliedSessionApplicationMismatch => {
+                formatter.write_str("WebAssessmentRuntimeError::SuppliedSessionApplicationMismatch")
+            },
+            #[cfg(feature = "supplied-session-review")]
+            Self::InsecureSuppliedSessionTransport => {
+                formatter.write_str("WebAssessmentRuntimeError::InsecureSuppliedSessionTransport")
+            },
+            #[cfg(feature = "supplied-session-review")]
+            Self::SuppliedSessionComposition => {
+                formatter.write_str("WebAssessmentRuntimeError::SuppliedSessionComposition")
+            },
             #[cfg(feature = "rest-review")]
             Self::RestReviewRequiresOpenApiReview => {
                 formatter.write_str("WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview")
@@ -1872,6 +1920,8 @@ pub struct WebAssessmentRuntimeBuilder {
     rest_review: bool,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionAuthorization)>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewInputs>,
     #[cfg(feature = "wordpress-review")]
@@ -1902,6 +1952,8 @@ impl WebAssessmentRuntimeBuilder {
             rest_review: false,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review: None,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_review: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
             #[cfg(feature = "wordpress-review")]
@@ -1982,6 +2034,20 @@ impl WebAssessmentRuntimeBuilder {
         administrator: SsrfOastAdminToken,
     ) -> Self {
         self.ssrf_oast_review = Some((policy, administrator));
+        self
+    }
+    /// Enables one bounded, explicitly supplied Authorization session child.
+    ///
+    /// The non-secret policy and move-only credential are consumed by the
+    /// assessment. Construction still rejects an application mismatch or
+    /// unprotected non-loopback transport before any credentialed dispatch.
+    #[cfg(feature = "supplied-session-review")]
+    pub fn with_supplied_session_review(
+        mut self,
+        policy: SuppliedSessionPolicy,
+        authorization: SuppliedSessionAuthorization,
+    ) -> Self {
+        self.supplied_session_review = Some((policy, authorization));
         self
     }
     /// Enables transport-free WordPress interpretation over the already
@@ -2110,6 +2176,19 @@ impl WebAssessmentRuntimeBuilder {
         HttpProbe::new(self.target.clone(), HttpProbeMethod::Get)?;
         let root = canonicalize_root(&self.target, self.limits)
             .ok_or(WebAssessmentRuntimeError::InvalidCanonicalTarget)?;
+        #[cfg(feature = "supplied-session-review")]
+        if self
+            .supplied_session_review
+            .as_ref()
+            .is_some_and(|(policy, _)| policy.application_url() != &root.url)
+        {
+            return Err(WebAssessmentRuntimeError::SuppliedSessionApplicationMismatch);
+        }
+        #[cfg(feature = "supplied-session-review")]
+        if self.supplied_session_review.is_some() && !authenticated_transport_is_allowed(&root.url)
+        {
+            return Err(WebAssessmentRuntimeError::InsecureSuppliedSessionTransport);
+        }
         #[cfg(feature = "wordpress-review")]
         if self
             .wordpress_review
@@ -2225,6 +2304,14 @@ impl WebAssessmentRuntimeBuilder {
             self.limits.runtime_budget(optional_active_verifications),
             self.cancellation,
         )?;
+        #[cfg(feature = "supplied-session-review")]
+        let supplied_session_review = self
+            .supplied_session_review
+            .map(|(policy, authorization)| {
+                SuppliedSessionRuntimeConfig::new(policy, authorization, &authority)
+                    .map_err(|()| WebAssessmentRuntimeError::SuppliedSessionComposition)
+            })
+            .transpose()?;
         let root_subject = WebAssessmentSubject {
             url: root.url.clone(),
             method: WebAssessmentMethod::Get,
@@ -2337,6 +2424,8 @@ impl WebAssessmentRuntimeBuilder {
             rest_review: self.rest_review,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
             native_review,
@@ -2364,6 +2453,8 @@ impl WebAssessmentRuntimeBuilder {
             committed_ssrf_oast_review: None,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review_audit: None,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_audit: None,
             #[cfg(feature = "wordpress-review")]
             committed_wordpress_review: None,
             #[cfg(feature = "graphql-review")]
@@ -2405,6 +2496,8 @@ pub struct WebAssessmentRuntime {
     rest_review: bool,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<SsrfOastReviewConfig>,
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session_review: Option<SuppliedSessionRuntimeConfig>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewBinding>,
     native_review: Option<AssessmentNativeReviewRuntime>,
@@ -2432,6 +2525,8 @@ pub struct WebAssessmentRuntime {
     committed_ssrf_oast_review: Option<CommittedSsrfOastReview>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review_audit: Option<WebAssessmentSsrfOastAudit>,
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session_audit: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "wordpress-review")]
     committed_wordpress_review: Option<CommittedWordPressReview>,
     #[cfg(feature = "graphql-review")]
@@ -2636,6 +2731,16 @@ impl WebAssessmentRuntime {
             progress_executed_subjects,
             progress_processed_subjects,
         );
+
+        // The explicitly supplied session is a bounded child of this same
+        // assessment authority. Run it before anonymous BFS so credentials,
+        // connection state, and response bodies cannot enter ordinary subject
+        // observation or reuse paths. A partial child produces a durable audit
+        // while the independent anonymous assessment may still complete.
+        #[cfg(feature = "supplied-session-review")]
+        if let Some(session) = self.supplied_session_review.take() {
+            self.supplied_session_audit = Some(session.execute(&self.authority).await);
+        }
 
         while !current_layer.is_empty() && !stop {
             current_layer.sort_by(|left, right| left.url.as_str().cmp(right.url.as_str()));
@@ -4198,6 +4303,8 @@ impl WebAssessmentRuntime {
             AssessmentReviewProjectionSources {
                 native: &review_ledgers,
                 api_visibility: self.committed_api_visibility.as_ref(),
+                #[cfg(feature = "supplied-session-review")]
+                supplied_session: self.supplied_session_audit.as_ref(),
                 #[cfg(feature = "graphql-review")]
                 graphql: self.committed_graphql_review.as_ref(),
                 #[cfg(feature = "authorization-review")]
@@ -4276,6 +4383,8 @@ impl WebAssessmentRuntime {
             forms,
             semantics,
             defense: self.defense_audit.clone(),
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session: self.supplied_session_audit.clone(),
             #[cfg(feature = "authorization-review")]
             authorization_review: self.authorization_review_audit.clone(),
             #[cfg(feature = "openapi-review")]
@@ -4662,6 +4771,8 @@ impl WebAssessmentRuntime {
             forms,
             semantics,
             defense: self.defense_audit.clone(),
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session: self.supplied_session_audit.clone(),
             current_subject,
             incomplete_reasons,
             inventory_consistent,

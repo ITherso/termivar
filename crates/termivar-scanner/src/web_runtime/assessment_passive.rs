@@ -121,6 +121,7 @@ const COOKIE_DOMAIN_PRESENT: &str = "cookie_domain_attribute_present";
 const COOKIE_PATH_PRESENT: &str = "cookie_path_attribute_present";
 
 const AUTHORIZED_ROOT_STABLE_SUBJECT_ID: &str = "authorized-root@1";
+const SUPPLIED_SESSION_APPLICATION_STABLE_SUBJECT_ID: &str = "supplied-session-application@1";
 const MAX_PASSIVE_ASSESSMENT_CONDITIONS: usize = 19;
 
 const HSTS_MISSING_CAPABILITY: AssessmentCapabilityDescriptor =
@@ -1080,6 +1081,8 @@ struct PlannedPassiveAssessmentItem {
 pub(crate) struct AssessmentReviewProjectionSources<'a> {
     pub(crate) native: &'a [&'a CommittedAssessmentReviewLedger],
     pub(crate) api_visibility: Option<&'a CommittedAssessmentApiVisibility>,
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) supplied_session: Option<&'a super::WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "graphql-review")]
     pub(crate) graphql: Option<&'a CommittedGraphqlReview>,
     #[cfg(feature = "authorization-review")]
@@ -1106,6 +1109,8 @@ pub(crate) fn project_passive_assessment_items(
         AssessmentReviewProjectionSources {
             native: &[],
             api_visibility: None,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session: None,
             #[cfg(feature = "graphql-review")]
             graphql: None,
             #[cfg(feature = "authorization-review")]
@@ -1146,14 +1151,16 @@ pub(crate) fn project_assessment_items(
     }
     let exact_origin = authorized_root.url().origin().ascii_serialization();
     let scope = StableAssessmentScopeId::from_exact_origin(&exact_origin)?;
-    #[cfg(feature = "wordpress-review")]
-    let project_selected_application =
-        authorized_root.url().path() == "/" || reviews.wordpress.is_some();
-    #[cfg(not(feature = "wordpress-review"))]
     let project_selected_application = authorized_root.url().path() == "/";
-    // `authorized-root@1` remains the stable item-subject identity for the
-    // explicitly selected resource under this exact-origin assessment. The
-    // WordPress audit carries its path-bound application reference separately.
+    #[cfg(feature = "wordpress-review")]
+    let project_selected_application = project_selected_application || reviews.wordpress.is_some();
+    #[cfg(feature = "supplied-session-review")]
+    let project_selected_application =
+        project_selected_application || reviews.supplied_session.is_some();
+    // Anonymous and WordPress-only projections retain `authorized-root@1`.
+    // Supplied-session projections additionally bind the root item identity to
+    // the already-redacted application reference so two declared applications
+    // on one origin cannot be paired as the same product subject.
     let root_subject = if project_selected_application {
         Some(
             EntityId::new(format!("endpoint:{}", authorized_root.url()))
@@ -1166,7 +1173,7 @@ pub(crate) fn project_assessment_items(
     if let Some(root_subject) = &root_subject {
         stable_subjects.push((
             root_subject.clone(),
-            StableAssessmentSubjectId::new(AUTHORIZED_ROOT_STABLE_SUBJECT_ID)?,
+            selected_application_stable_subject_id(&reviews)?,
             authorized_root.query_parameter_names().to_vec(),
         ));
     }
@@ -1218,6 +1225,32 @@ pub(crate) fn project_assessment_items(
     )
 }
 
+fn selected_application_stable_subject_id(
+    reviews: &AssessmentReviewProjectionSources<'_>,
+) -> Result<StableAssessmentSubjectId, AssessmentItemProjectionError> {
+    #[cfg(feature = "supplied-session-review")]
+    let application_reference = reviews
+        .supplied_session
+        .map(|audit| audit.application_reference());
+    #[cfg(not(feature = "supplied-session-review"))]
+    let application_reference = None;
+    StableAssessmentSubjectId::new(selected_application_stable_subject_identity(
+        application_reference,
+    ))
+}
+
+/// Returns the single internal subject identity contract shared by projection
+/// and report validation. A supplied value must already be the runtime-owned,
+/// redaction-safe opaque application reference, never a URL or credential.
+pub(super) fn selected_application_stable_subject_identity(
+    application_reference: Option<&str>,
+) -> String {
+    application_reference.map_or_else(
+        || AUTHORIZED_ROOT_STABLE_SUBJECT_ID.to_owned(),
+        |reference| format!("{SUPPLIED_SESSION_APPLICATION_STABLE_SUBJECT_ID}:{reference}"),
+    )
+}
+
 #[cfg(test)]
 fn project_passive_assessment_items_for_root(
     ledger: &CommittedAssessmentPassiveLedger,
@@ -1241,6 +1274,8 @@ fn project_passive_assessment_items_for_root(
         AssessmentReviewProjectionSources {
             native: &[],
             api_visibility: None,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session: None,
             #[cfg(feature = "graphql-review")]
             graphql: None,
             #[cfg(feature = "authorization-review")]
@@ -3185,6 +3220,38 @@ mod passive_item_tests {
                 assert!(!format!("{incomplete:?}").contains(secret));
             }
         }
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_root_identity_is_deterministic_and_application_bound() {
+        let first_reference = format!("supplied-session-application-sha256:{}", "1".repeat(64));
+        let second_reference = format!("supplied-session-application-sha256:{}", "2".repeat(64));
+        let first_identity = selected_application_stable_subject_identity(Some(&first_reference));
+        assert_eq!(
+            first_identity,
+            format!("supplied-session-application@1:{first_reference}")
+        );
+
+        let first = StableAssessmentSubjectId::new(first_identity).unwrap();
+        let repeated = StableAssessmentSubjectId::new(
+            selected_application_stable_subject_identity(Some(&first_reference)),
+        )
+        .unwrap();
+        let second = StableAssessmentSubjectId::new(selected_application_stable_subject_identity(
+            Some(&second_reference),
+        ))
+        .unwrap();
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+        assert_eq!(
+            selected_application_stable_subject_identity(None),
+            AUTHORIZED_ROOT_STABLE_SUBJECT_ID
+        );
+        let debug = format!("{first:?} {second:?}");
+        assert!(!debug.contains(&first_reference));
+        assert!(!debug.contains(&second_reference));
     }
 
     #[test]

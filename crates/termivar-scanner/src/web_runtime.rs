@@ -68,6 +68,8 @@ mod rest_runtime;
 mod scan_profile;
 #[cfg(feature = "ssrf-oast-review")]
 mod ssrf_oast_runtime;
+#[cfg(feature = "supplied-session-review")]
+mod supplied_session_runtime;
 mod web_assessment;
 mod web_review_decision;
 mod web_review_execution;
@@ -86,7 +88,7 @@ pub(crate) use assessment_defense::{
 pub(crate) use assessment_review::AssessmentReviewObserverSet;
 #[cfg(feature = "oast-native-provider")]
 pub(crate) use authority::NativeOastProviderMintToken;
-pub(crate) use authority::SharedWebRuntimeAuthority;
+pub(crate) use authority::{authenticated_transport_is_allowed, SharedWebRuntimeAuthority};
 pub(crate) use web_assessment::AssessmentDiscoveryObserver;
 use web_review_decision::NativeWebReviewDecisionProfile;
 use web_review_execution::{
@@ -119,6 +121,10 @@ pub use assessment_report::{
     MAX_ASSESSMENT_RUN_ITEMS,
 };
 
+#[cfg(feature = "supplied-session-review")]
+pub use crate::supplied_session_review::{
+    MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES,
+};
 #[cfg(feature = "openapi-review")]
 pub use openapi_runtime::{
     OpenApiCandidateSource, OpenApiRuntimeOutcome, WebAssessmentOpenApiAudit,
@@ -151,6 +157,16 @@ pub use ssrf_oast_runtime::{
     MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS, MAX_SSRF_OAST_REVIEW_PARAMETERS,
     MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS, MAX_SSRF_OAST_REVIEW_REQUESTS,
     MAX_SSRF_OAST_REVIEW_RESOURCES, SSRF_OAST_REVIEW_ACTION_ID, SSRF_OAST_REVIEW_CAPABILITY_ID,
+};
+#[cfg(feature = "supplied-session-review")]
+pub use supplied_session_runtime::{
+    SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCoverage,
+    SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleAudit,
+    SuppliedSessionHealthOracleKind, SuppliedSessionHealthOutcome, SuppliedSessionPredicateOutcome,
+    SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
+    WebAssessmentSuppliedSessionAudit, WebAssessmentSuppliedSessionCheckpointAudit,
+    WebAssessmentSuppliedSessionResourceAudit, SUPPLIED_SESSION_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_CAPABILITY_ID,
 };
 pub use web_assessment::{
     WebAssessmentCompletion, WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage,

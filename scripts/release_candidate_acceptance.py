@@ -68,8 +68,29 @@ EXCLUDED_FEATURES = (
     "legacy-scanner",
     "proxy-adapter",
     "ssrf-oast-review",
+    "supplied-session-review",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
+SUPPLIED_SESSION_OPTIONS = (
+    "--session-policy",
+    "--session-auth-env",
+    "--session-auth-file",
+    "--session-auth-stdin",
+)
+SUPPLIED_SESSION_PREREQUISITES = (
+    "--profile web-review",
+    "--session-policy FILE",
+    "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+    "HTTPS, except numeric-loopback HTTP fixtures",
+)
+SUPPLIED_SESSION_LIMITATION = (
+    "One explicitly supplied principal and strict local policy authorize bounded "
+    "read-oriented application GETs through a context-isolated, no-proxy child of "
+    "the existing assessment broker. Structured health checks qualify bounded "
+    "checkpoint coverage rather than authenticate the principal. Session loss stops "
+    "later session work without anonymous fallback. No cookies, login, refresh, "
+    "OAuth, MFA, mutation, exploit, or impact validation occurs in this first slice."
+)
 WORDPRESS_OPTIONS = (
     "--wordpress-review",
     "--wordpress-discovery",
@@ -384,6 +405,9 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
         require(option in scan_text, f"scan help omits release-bundle option {option}")
     require("--ssrf-oast-review" not in scan_text,
             "scan help unexpectedly exposes ssrf-oast-review")
+    for option in SUPPLIED_SESSION_OPTIONS:
+        require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
+                f"scan help unexpectedly exposes non-bundled option {option}")
     for option in WORDPRESS_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is not None,
                 f"scan help omits bundled WordPress option {option}")
@@ -451,6 +475,31 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
                 "capabilities text and JSON views disagree")
     require("command.capabilities" in surface_keys,
             "capabilities command surface identity changed")
+    session_surfaces = [
+        surface for surface in surfaces
+        if surface.get("key") == "option.supplied-session-review"
+    ]
+    require(len(session_surfaces) == 1,
+            "packaged supplied-session surface identity changed")
+    session = session_surfaces[0]
+    require(session.get("label") == "Supplied-session authenticated assessment"
+            and session.get("compile_feature") == "supplied-session-review"
+            and session.get("build_state") == "not_compiled"
+            and session.get("maturity") == "preview"
+            and session.get("implementation_status") == "implemented"
+            and session.get("group") == "optional"
+            and session.get("kind") == "scan_option"
+            and session.get("alias") is None
+            and session.get("documentation")
+            == "docs/internals/supplied-session-review.md",
+            "packaged supplied-session surface metadata changed")
+    session_prerequisites = session.get("prerequisites")
+    require(isinstance(session_prerequisites, list)
+            and all(isinstance(value, str) for value in session_prerequisites)
+            and tuple(session_prerequisites) == SUPPLIED_SESSION_PREREQUISITES,
+            "packaged supplied-session opt-in contract changed")
+    require(session.get("limitation") == SUPPLIED_SESSION_LIMITATION,
+            "packaged supplied-session limitation changed")
     wordpress_surfaces = [
         surface for surface in surfaces
         if surface.get("key") == "option.wordpress-review"
@@ -508,6 +557,12 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
         "composition_marker": "release-bundle",
         "compiled_members": list(RELEASE_MEMBERS),
         "excluded_features": list(EXCLUDED_FEATURES),
+        "supplied_session_preview": {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+        },
         "wordpress_preview": {
             "build_state": "compiled",
             "maturity": "preview",

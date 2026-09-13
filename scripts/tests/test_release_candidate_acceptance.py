@@ -54,6 +54,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "legacy-scanner",
     "proxy-adapter",
     "ssrf-oast-review",
+    "supplied-session-review",
 )
 EXPECTED_FEATURE_STATES = {
     "api-adapter": "not_compiled",
@@ -67,8 +68,29 @@ EXPECTED_FEATURE_STATES = {
     "release-bundle": "compiled",
     "rest-review": "compiled",
     "ssrf-oast-review": "not_compiled",
+    "supplied-session-review": "not_compiled",
     "wordpress-review": "compiled",
 }
+EXPECTED_SUPPLIED_SESSION_OPTIONS = (
+    "--session-policy",
+    "--session-auth-env",
+    "--session-auth-file",
+    "--session-auth-stdin",
+)
+EXPECTED_SUPPLIED_SESSION_PREREQUISITES = (
+    "--profile web-review",
+    "--session-policy FILE",
+    "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+    "HTTPS, except numeric-loopback HTTP fixtures",
+)
+EXPECTED_SUPPLIED_SESSION_LIMITATION = (
+    "One explicitly supplied principal and strict local policy authorize bounded "
+    "read-oriented application GETs through a context-isolated, no-proxy child of "
+    "the existing assessment broker. Structured health checks qualify bounded "
+    "checkpoint coverage rather than authenticate the principal. Session loss stops "
+    "later session work without anonymous fallback. No cookies, login, refresh, "
+    "OAuth, MFA, mutation, exploit, or impact validation occurs in this first slice."
+)
 EXPECTED_WORDPRESS_OPTIONS = (
     "--wordpress-review",
     "--wordpress-discovery",
@@ -340,6 +362,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "label": "SSRF OAST query review",
             "compile_feature": "ssrf-oast-review",
             "build_state": "compiled" if include_ssrf else "not_compiled",
+        },
+        {
+            "key": "option.supplied-session-review",
+            "label": "Supplied-session authenticated assessment",
+            "compile_feature": "supplied-session-review",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_SUPPLIED_SESSION_PREREQUISITES),
+            "limitation": EXPECTED_SUPPLIED_SESSION_LIMITATION,
+            "documentation": "docs/internals/supplied-session-review.md",
         },
         {
             "key": "option.wordpress-review",
@@ -1208,6 +1244,7 @@ class FakeCommands:
                  extra_incomplete_request: bool = False,
                  omit_progress_help: bool = False,
                  omitted_wordpress_option: str | None = None,
+                 exposed_session_option: str | None = None,
                  progress_stderr: bytes | None = None,
                  discovery_mutation: str | None = None) -> None:
         self.root = root
@@ -1215,6 +1252,7 @@ class FakeCommands:
         self.extra_incomplete_request = extra_incomplete_request
         self.omit_progress_help = omit_progress_help
         self.omitted_wordpress_option = omitted_wordpress_option
+        self.exposed_session_option = exposed_session_option
         self.progress_stderr = progress_stderr
         self.discovery_mutation = discovery_mutation
         self.arguments: list[list[str]] = []
@@ -1235,6 +1273,8 @@ class FakeCommands:
             if arguments == ["scan", "--help"] and self.omitted_wordpress_option:
                 stdout = stdout.replace(
                     f"  {self.omitted_wordpress_option}\n".encode(), b"")
+            if arguments == ["scan", "--help"] and self.exposed_session_option:
+                stdout += f"  {self.exposed_session_option} VALUE\n".encode()
         elif arguments == ["capabilities"]:
             cap = capabilities(include_ssrf=self.include_ssrf)
             stdout = capabilities_text(cap)
@@ -1722,15 +1762,72 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.AcceptanceError, message):
             self.validate(document, text)
 
-    def test_independent_current_inventory_and_wordpress_surface_pass(self):
+    def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 12)
+        self.assertEqual(len(rows), 13)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 4)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 5)
         result = self.validate(document)
         self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
         self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
+        self.assertEqual(result["supplied_session_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+        })
+
+    def test_pinned_supplied_session_surface_matches_the_named_producer_literals(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.supplied-session-review",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = '\n            "docs/internals/supplied-session-review.md",'
+        self.assertEqual(block.count(documentation), 1)
+        before_documentation = block.split(documentation, 1)[0]
+        limitation_line = before_documentation.splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]), EXPECTED_SUPPLIED_SESSION_LIMITATION)
+
+        document = capabilities()
+        session = next(surface for surface in document["surfaces"]
+                       if surface["key"] == "option.supplied-session-review")
+        self.assertEqual(tuple(session["prerequisites"]),
+                         EXPECTED_SUPPLIED_SESSION_PREREQUISITES)
+        self.assertEqual(session["limitation"], EXPECTED_SUPPLIED_SESSION_LIMITATION)
+
+    def test_supplied_session_surface_is_exact_and_fails_closed_on_mutations(self):
+        mutations = (
+            ("label", "Authenticated assessment"),
+            ("compile_feature", "authorization-review"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "session"),
+            ("documentation", "docs/session.md"),
+            ("prerequisites", ["--profile web-review"]),
+            ("limitation", "Confirms the supplied principal and session."),
+        )
+        for field, wrong in mutations:
+            with self.subTest(field=field):
+                document = capabilities()
+                session = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.supplied-session-review")
+                session[field] = wrong
+                expected = ("opt-in contract" if field == "prerequisites"
+                            else "limitation" if field == "limitation"
+                            else "surface metadata")
+                self.assert_rejected(document, expected)
+
+        missing = capabilities()
+        missing["surfaces"] = [surface for surface in missing["surfaces"]
+                               if surface["key"] != "option.supplied-session-review"]
+        self.assert_rejected(missing, "supplied-session surface identity")
 
     def test_pinned_discovery_limitation_matches_the_named_producer_literal(self):
         source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
@@ -1893,6 +1990,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("wordpress-review", "not_compiled"),
             ("api-adapter", "compiled"),
             ("openapi-review", "not_compiled"),
+            ("supplied-session-review", "compiled"),
         ]
         for name, state in cases:
             with self.subTest(name=name, state=state):
@@ -2069,6 +2167,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
 
     def execute(self, *, include_ssrf=False, extra_incomplete_request=False,
                 omit_progress_help=False, omitted_wordpress_option=None,
+                exposed_session_option=None,
                 progress_stderr=None, discovery_mutation=None, path_suffix=""):
         commands = FakeCommands(
             self.root,
@@ -2076,6 +2175,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
             extra_incomplete_request=extra_incomplete_request,
             omit_progress_help=omit_progress_help,
             omitted_wordpress_option=omitted_wordpress_option,
+            exposed_session_option=exposed_session_option,
             progress_stderr=progress_stderr,
             discovery_mutation=discovery_mutation,
         )
@@ -2344,6 +2444,16 @@ class CandidateOrchestrationTests(unittest.TestCase):
         result, _ = self.execute(omit_progress_help=True)
         self.assertEqual(result["status"], "failed")
         self.assertIn("scan help omits --progress", result["failure"])
+
+    def test_packaged_help_must_not_expose_non_bundled_session_options(self):
+        for index, option in enumerate(EXPECTED_SUPPLIED_SESSION_OPTIONS):
+            with self.subTest(option=option):
+                result, _ = self.execute(
+                    exposed_session_option=option,
+                    path_suffix=f"-session-help-{index}",
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("unexpectedly exposes non-bundled option", result["failure"])
 
     def test_packaged_help_must_expose_every_bundled_wordpress_option(self):
         for index, option in enumerate((

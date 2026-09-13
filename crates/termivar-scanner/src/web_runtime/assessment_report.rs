@@ -56,17 +56,27 @@ use super::{
         AssessmentEvidenceReference, AssessmentItem, AssessmentItemSet,
         AssessmentSubjectInventoryEntry, MAX_ASSESSMENT_ITEM_SET_ITEMS,
     },
+    assessment_passive::selected_application_stable_subject_identity,
     scan_profile::{BuiltInScanProfile, ScanProfileV1},
     web_assessment::{
         WebAssessmentCompletion, WebAssessmentDefenseMode, WebAssessmentLimits,
         WebAssessmentMethod, WebAssessmentSubject, WebAssessmentSubjectOrigin, WebAssessmentUsage,
     },
 };
+#[cfg(feature = "supplied-session-review")]
+use super::{
+    SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOutcome,
+    SuppliedSessionResourceOutcome, WebAssessmentSuppliedSessionAudit,
+    MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
+    MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
+};
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
     AuthorizationReviewOutcome, HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS,
     HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS,
 };
+#[cfg(feature = "supplied-session-review")]
+use crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES;
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::{
     WordPressCatalogStatus, MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_RESULT_COMPONENTS,
@@ -195,6 +205,8 @@ pub struct AssessmentRunReport {
     subjects: Vec<AssessmentSubjectInventoryEntry>,
     items: Vec<AssessmentItem>,
     evidence_references: BTreeMap<EvidenceId, AssessmentEvidenceReference>,
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
@@ -209,6 +221,8 @@ pub struct AssessmentRunReport {
 
 #[derive(Default)]
 struct AssessmentReviewAudits {
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
@@ -224,9 +238,13 @@ struct AssessmentReviewAudits {
 impl AssessmentRunReport {
     /// Mints the canonical run envelope from runtime-owned completion truth
     /// and composes it with the closed typed-item set.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_completed_truth(
         items: AssessmentItemSet,
         truth: CompletedWebAssessmentTruth,
+        #[cfg(feature = "supplied-session-review")] supplied_session: Option<
+            WebAssessmentSuppliedSessionAudit,
+        >,
         #[cfg(feature = "authorization-review")] authorization_review: Option<
             WebAssessmentAuthorizationAudit,
         >,
@@ -241,6 +259,8 @@ impl AssessmentRunReport {
             items,
             truth,
             AssessmentReviewAudits {
+                #[cfg(feature = "supplied-session-review")]
+                supplied_session,
                 #[cfg(feature = "authorization-review")]
                 authorization_review,
                 #[cfg(feature = "openapi-review")]
@@ -271,6 +291,8 @@ impl AssessmentRunReport {
         audits: AssessmentReviewAudits,
     ) -> Result<Self, AssessmentRunReportError> {
         let AssessmentReviewAudits {
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session,
             #[cfg(feature = "authorization-review")]
             authorization_review,
             #[cfg(feature = "openapi-review")]
@@ -292,12 +314,22 @@ impl AssessmentRunReport {
         if !items.matches_exact_origin(run_report.authorized_origin()) {
             return Err(AssessmentRunReportError::ScopeAuthorityMismatch);
         }
-        if !items.contains_stable_subject("authorized-root@1") {
+        #[cfg(feature = "supplied-session-review")]
+        let supplied_session_application_reference = supplied_session
+            .as_ref()
+            .map(WebAssessmentSuppliedSessionAudit::application_reference);
+        #[cfg(not(feature = "supplied-session-review"))]
+        let supplied_session_application_reference: Option<&str> = None;
+        let expected_root_subject =
+            selected_application_stable_subject_identity(supplied_session_application_reference);
+        if !items.contains_stable_subject(&expected_root_subject) {
             return Err(AssessmentRunReportError::SubjectReferenceMismatch);
         }
         let (subjects, mut items, evidence_references) = items.into_report_parts();
         validate_subject_inventory(&subjects, &items)?;
         validate_and_canonicalize_items(truth.profile.profile(), &mut items)?;
+        #[cfg(feature = "supplied-session-review")]
+        validate_supplied_session_audit(supplied_session.as_ref(), &items)?;
         #[cfg(feature = "authorization-review")]
         validate_authorization_audit(authorization_review.as_ref(), &items)?;
         #[cfg(feature = "openapi-review")]
@@ -315,6 +347,8 @@ impl AssessmentRunReport {
             subjects,
             items,
             evidence_references,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session,
             #[cfg(feature = "authorization-review")]
             authorization_review,
             #[cfg(feature = "openapi-review")]
@@ -345,6 +379,12 @@ impl AssessmentRunReport {
 
     pub(crate) const fn run_report(&self) -> &RunReport {
         &self.run_report
+    }
+
+    /// Returns the optional redaction-safe supplied-session assessment audit.
+    #[cfg(feature = "supplied-session-review")]
+    pub const fn supplied_session_audit(&self) -> Option<&WebAssessmentSuppliedSessionAudit> {
+        self.supplied_session.as_ref()
     }
 
     /// Returns subjects registered by the consumed projection authority.
@@ -641,6 +681,11 @@ impl fmt::Debug for AssessmentRunReport {
             .field("profile", &self.profile.profile().id())
             .field("subject_count", &self.subjects.len())
             .field("item_count", &self.items.len());
+        #[cfg(feature = "supplied-session-review")]
+        debug.field(
+            "supplied_session_audit_present",
+            &self.supplied_session.is_some(),
+        );
         #[cfg(feature = "authorization-review")]
         debug.field(
             "authorization_review_audit_present",
@@ -665,6 +710,171 @@ impl fmt::Debug for AssessmentRunReport {
         );
         debug.finish()
     }
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn validate_supplied_session_audit(
+    audit: Option<&WebAssessmentSuppliedSessionAudit>,
+    items: &[AssessmentItem],
+) -> Result<(), AssessmentRunReportError> {
+    let projected_count = items
+        .iter()
+        .filter(|item| item.capability_id() == SUPPLIED_SESSION_CAPABILITY_ID)
+        .count();
+    if projected_count != 0 {
+        return Err(AssessmentRunReportError::SuppliedSessionAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return Ok(());
+    };
+    let selected_resource_count = usize::from(audit.selected_resource_count());
+    let dispatched_resource_count = usize::from(audit.dispatched_resource_count());
+    let committed_resource_count = usize::from(audit.committed_resource_count());
+    let dispatched_request_count = usize::from(audit.dispatched_request_count());
+    let actual_dispatched_resource_count = audit
+        .resources()
+        .iter()
+        .filter(|resource| resource.outcome() != SuppliedSessionResourceOutcome::NotDispatched)
+        .count();
+    let actual_committed_resource_count = audit
+        .resources()
+        .iter()
+        .filter(|resource| resource.outcome() == SuppliedSessionResourceOutcome::Committed)
+        .count();
+    let child_response_bytes = audit
+        .checkpoints()
+        .iter()
+        .map(|checkpoint| checkpoint.response_bytes())
+        .chain(
+            audit
+                .resources()
+                .iter()
+                .map(|resource| resource.response_bytes()),
+        )
+        .try_fold(0_u64, u64::checked_add);
+    if audit.schema() != SUPPLIED_SESSION_AUDIT_SCHEMA
+        || audit.capability_id() != SUPPLIED_SESSION_CAPABILITY_ID
+        || !valid_supplied_session_principal_alias(audit.principal_alias())
+        || audit.resources().is_empty()
+        || audit.resources().len() > MAX_SUPPLIED_SESSION_RESOURCES
+        || audit.checkpoints().len() > MAX_SUPPLIED_SESSION_CHECKPOINTS
+        || selected_resource_count != audit.resources().len()
+        || dispatched_resource_count != actual_dispatched_resource_count
+        || committed_resource_count != actual_committed_resource_count
+        || committed_resource_count > dispatched_resource_count
+        || dispatched_resource_count > selected_resource_count
+        || dispatched_request_count > usize::from(MAX_SUPPLIED_SESSION_REQUESTS)
+        || dispatched_request_count
+            != audit
+                .checkpoints()
+                .len()
+                .checked_add(dispatched_resource_count)
+                .ok_or(AssessmentRunReportError::SuppliedSessionAuditMismatch)?
+        || child_response_bytes != Some(audit.response_bytes())
+        || !valid_supplied_session_response_limit(
+            audit.response_bytes(),
+            audit.response_byte_limit(),
+            audit.response_byte_limit_exceeded(),
+        )
+        || audit
+            .checkpoints()
+            .iter()
+            .enumerate()
+            .any(|(index, checkpoint)| {
+                let expected_phase = if index == 0 {
+                    SuppliedSessionHealthCheckpointPhase::Startup
+                } else if index == selected_resource_count {
+                    SuppliedSessionHealthCheckpointPhase::Terminal
+                } else {
+                    SuppliedSessionHealthCheckpointPhase::SubjectBoundary
+                };
+                usize::from(checkpoint.sequence()) != index
+                    || usize::from(checkpoint.after_subject_count()) != index
+                    || checkpoint.phase() != expected_phase
+            })
+        || audit.checkpoints().iter().any(|checkpoint| {
+            let evidence = checkpoint.evidence_reference();
+            let evidence_is_valid = evidence.is_some_and(|reference| {
+                valid_supplied_session_reference(
+                    reference,
+                    "supplied-session-checkpoint-evidence-sha256:",
+                )
+            });
+            (evidence.is_some()
+                || checkpoint.outcome() != SuppliedSessionHealthOutcome::Indeterminate)
+                && !evidence_is_valid
+        })
+        || audit.resources().iter().any(|resource| {
+            let evidence_is_valid = resource.evidence_reference().is_some_and(|reference| {
+                valid_supplied_session_reference(
+                    reference,
+                    "supplied-session-resource-evidence-sha256:",
+                )
+            });
+            supplied_session_resource_outcome_requires_evidence(resource.outcome())
+                != evidence_is_valid
+        })
+        || audit
+            .resources()
+            .iter()
+            .enumerate()
+            .any(|(index, resource)| {
+                usize::from(resource.sequence()) != index
+                    || resource.epoch() != 1
+                    || !valid_supplied_session_reference(
+                        resource.resource_reference(),
+                        "supplied-session-resource-sha256:",
+                    )
+            })
+        || audit.refresh_performed()
+        || audit.anonymous_fallback_performed()
+        || audit.continuous_authentication_established()
+        || audit.exploit_execution_performed()
+        || audit.impact_validation_performed()
+    {
+        return Err(AssessmentRunReportError::SuppliedSessionAuditMismatch);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn valid_supplied_session_response_limit(
+    response_bytes: u64,
+    response_byte_limit: u64,
+    response_byte_limit_exceeded: bool,
+) -> bool {
+    response_byte_limit > 0
+        && response_byte_limit <= MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES
+        && response_byte_limit_exceeded == (response_bytes > response_byte_limit)
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn supplied_session_resource_outcome_requires_evidence(
+    outcome: SuppliedSessionResourceOutcome,
+) -> bool {
+    matches!(
+        outcome,
+        SuppliedSessionResourceOutcome::Committed
+            | SuppliedSessionResourceOutcome::HealthUnqualified
+    )
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn valid_supplied_session_reference(value: &str, prefix: &str) -> bool {
+    value.len() == prefix.len() + 64
+        && value.starts_with(prefix)
+        && value[prefix.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn valid_supplied_session_principal_alias(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
+        })
 }
 
 #[cfg(feature = "authorization-review")]
@@ -763,6 +973,10 @@ pub enum AssessmentRunReportError {
     /// An item reference did not belong to the consumed subject inventory.
     #[error("assessment item subject reference is outside its projection inventory")]
     SubjectReferenceMismatch,
+    /// The optional supplied-session audit disagreed with its audit-only runtime truth.
+    #[cfg(feature = "supplied-session-review")]
+    #[error("supplied-session review audit does not match runtime truth")]
+    SuppliedSessionAuditMismatch,
     /// The optional authorization audit disagreed with projected item truth.
     #[cfg(feature = "authorization-review")]
     #[error("authorization review audit does not match projected item truth")]
@@ -1269,6 +1483,40 @@ mod tests {
     impl CanonicalFingerprint for TestItem {
         fn canonical_fingerprint(&self) -> &str {
             self.0
+        }
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_report_preserves_overrun_accounting_and_qualification_state() {
+        assert!(valid_supplied_session_response_limit(59, 65_536, false));
+        assert!(valid_supplied_session_response_limit(65_537, 65_536, true));
+        assert!(!valid_supplied_session_response_limit(
+            65_537, 65_536, false
+        ));
+        assert!(!valid_supplied_session_response_limit(59, 0, true));
+        assert!(!valid_supplied_session_response_limit(
+            59,
+            MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES + 1,
+            false
+        ));
+
+        assert!(supplied_session_resource_outcome_requires_evidence(
+            SuppliedSessionResourceOutcome::Committed
+        ));
+        assert!(supplied_session_resource_outcome_requires_evidence(
+            SuppliedSessionResourceOutcome::HealthUnqualified
+        ));
+        for outcome in [
+            SuppliedSessionResourceOutcome::HttpError,
+            SuppliedSessionResourceOutcome::RedirectRefused,
+            SuppliedSessionResourceOutcome::Incomplete,
+            SuppliedSessionResourceOutcome::TransportFailed,
+            SuppliedSessionResourceOutcome::NotDispatched,
+        ] {
+            assert!(!supplied_session_resource_outcome_requires_evidence(
+                outcome
+            ));
         }
     }
 

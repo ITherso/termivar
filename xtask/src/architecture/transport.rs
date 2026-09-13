@@ -74,6 +74,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     REST_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     SSRF_OAST_RUNTIME_SOURCE,
+    SUPPLIED_SESSION_RUNTIME_SOURCE,
     WORDPRESS_RUNTIME_SOURCE,
     WORDPRESS_DISCOVERY_RUNTIME_SOURCE,
     WORDPRESS_FINGERPRINT_RUNTIME_SOURCE,
@@ -115,6 +116,8 @@ const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const SSRF_OAST_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/ssrf_oast_runtime.rs";
+const SUPPLIED_SESSION_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs";
 const WORDPRESS_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/wordpress_runtime.rs";
 const WORDPRESS_DISCOVERY_RUNTIME_SOURCE: &str =
@@ -1097,6 +1100,30 @@ fn inspect_assessment_passive_markers(
             "if let Some(existing) = self.receipt_evidence.get(&key)",
             "same-key replay comparison",
         ),
+        (
+            "#[cfg(feature = \"supplied-session-review\")]\n    pub(crate) supplied_session: Option<&'a super::WebAssessmentSuppliedSessionAudit>",
+            "feature-gated supplied-session projection source",
+        ),
+        (
+            "project_selected_application || reviews.supplied_session.is_some()",
+            "session-authorized non-root application identity projection",
+        ),
+        (
+            "StableAssessmentSubjectId::new(selected_application_stable_subject_identity(",
+            "shared selected-application stable identity projection",
+        ),
+        (
+            "pub(super) fn selected_application_stable_subject_identity(",
+            "private selected-application stable identity constructor",
+        ),
+        (
+            "|| AUTHORIZED_ROOT_STABLE_SUBJECT_ID.to_owned(),",
+            "legacy absent-session authorized-root identity",
+        ),
+        (
+            "format!(\"{SUPPLIED_SESSION_APPLICATION_STABLE_SUBJECT_ID}:{reference}\")",
+            "opaque supplied-session application identity binding",
+        ),
     ] {
         if !committed_projection.contains(marker) {
             violations.push(format!(
@@ -1499,12 +1526,12 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             "assessment HTTP policy must clear every raw captured response header".to_owned(),
         );
     }
-    if broker.matches("Client::builder()").count() != 2
-        || broker.matches(".redirect(RedirectPolicy::none())").count() != 2
-        || broker.matches(".retry(reqwest::retry::never())").count() != 2
+    if broker.matches("Client::builder()").count() != 3
+        || broker.matches(".redirect(RedirectPolicy::none())").count() != 3
+        || broker.matches(".retry(reqwest::retry::never())").count() != 3
     {
         violations.push(
-            "the sole production request broker must configure exactly its ordinary and anonymous WordPress redirect-disabled, retry-free clients"
+            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, and selected supplied-session redirect-disabled, retry-free clients"
                 .to_owned(),
         );
     }
@@ -1513,7 +1540,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             .matches("let anonymous_no_proxy_client = Client::builder()")
             .count()
             != 1
-        || broker.matches(".no_proxy()").count() != 1
+        || broker.matches(".no_proxy()").count() != 2
         || broker.matches("&self.anonymous_no_proxy_client").count() != 1
         || !broker.contains(
             "self.anonymous_no_proxy_client\n            .request(Method::GET, target.clone())",
@@ -1521,6 +1548,27 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
     {
         violations.push(
             "the shared broker's WordPress metadata client must remain the exact anonymous GET-only no-proxy pool without caller credentials"
+                .to_owned(),
+        );
+    }
+    if broker.matches("supplied_session_no_proxy_client: Option<Client>").count() != 1
+        || broker
+            .matches("supplied_session_no_proxy_client: None")
+            .count()
+            != 1
+        || broker
+            .matches("broker.supplied_session_no_proxy_client = Some(")
+            .count()
+            != 1
+        || broker
+            .matches(".supplied_session_no_proxy_client\n            .as_ref()")
+            .count()
+            != 1
+        || !broker.contains("!authenticated_transport_is_allowed(target)")
+        || !broker.contains(".request(Method::GET, target.clone())\n            .header(AUTHORIZATION, authorization)")
+    {
+        violations.push(
+            "the shared broker's supplied-session client must remain an opt-in isolated Authorization-only GET no-proxy pool with dispatch-time protected-transport validation"
                 .to_owned(),
         );
     }
@@ -2528,6 +2576,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "authorization_review")
                     });
+                    let supplied_session = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "supplied_session")
+                    });
                     let openapi_review = item.fields.iter().find(|field| {
                         field
                             .ident
@@ -2555,6 +2609,15 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                     if run_started_at.is_none_or(|field| {
                         !is_plain_ident(&field.ty, "SystemTime")
                             || !attributes_are_exact_cfg_feature(&field.attrs, "reporting")
+                    }) || supplied_session.is_none_or(|field| {
+                        !is_generic_of_idents(
+                            &field.ty,
+                            "Option",
+                            &["WebAssessmentSuppliedSessionAudit"],
+                        ) || !attributes_are_exact_cfg_feature(
+                            &field.attrs,
+                            "supplied-session-review",
+                        )
                     }) || authorization_review.is_none_or(|field| {
                         !is_generic_of_idents(
                             &field.ty,
@@ -2578,6 +2641,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             !matches!(
                                 ident_name(ident).as_str(),
                                 "run_started_at"
+                                    | "supplied_session"
                                     | "authorization_review"
                                     | "openapi_review"
                                     | "rest_review"
@@ -2587,7 +2651,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -5049,7 +5113,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 10
+                fields.len() == 11
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -5069,6 +5133,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                             &["EvidenceId", "AssessmentEvidenceReference"],
                         )
                     })
+                    && fields.get("supplied_session").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "Option",
+                            &["WebAssessmentSuppliedSessionAudit"],
+                        )
+                    })
                     && fields.get("authorization_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentAuthorizationAudit"])
                     })
@@ -5084,6 +5155,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("wordpress_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentWordPressAudit"])
                     })
+            })
+            && private_named_field(item, "supplied_session").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "supplied-session-review")
             })
             && private_named_field(item, "authorization_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
@@ -5107,7 +5181,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits; observed fields {observed:?}"
         ));
     }
 
@@ -5123,7 +5197,14 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 &["Clone", "Copy", "Serialize", "Deserialize"],
             )
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 5
+                fields.len() == 6
+                    && fields.get("supplied_session").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "Option",
+                            &["WebAssessmentSuppliedSessionAudit"],
+                        )
+                    })
                     && fields.get("authorization_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentAuthorizationAudit"])
                     })
@@ -5139,6 +5220,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("wordpress_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentWordPressAudit"])
                     })
+            })
+            && private_named_field(item, "supplied_session").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "supplied-session-review")
             })
             && private_named_field(item, "authorization_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
@@ -5157,7 +5241,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !review_audits_shape_is_exact {
         violations.push(
-            "AssessmentReviewAudits must remain one private Default-only container with exactly the five feature-gated redacted audit values"
+            "AssessmentReviewAudits must remain one private Default-only container with exactly the six feature-gated redacted audit values"
                 .to_owned(),
         );
     }
@@ -5188,10 +5272,18 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         .get("from_completed_truth")
         .is_some_and(|method| {
             is_pub_crate_visibility(&method.vis)
+                && method.attrs.iter().all(|attribute| {
+                    attribute.path().is_ident("doc")
+                        || matches!(&attribute.meta, syn::Meta::List(list)
+                                if list.path.is_ident("allow")
+                                    && list.tokens.to_string() == "clippy :: too_many_arguments")
+                })
                 && method
                     .attrs
                     .iter()
-                    .all(|attribute| attribute.path().is_ident("doc"))
+                    .filter(|attribute| attribute.path().is_ident("allow"))
+                    .count()
+                    == 1
                 && method.sig.receiver().is_none()
                 && assessment_report_constructor_inputs_are_exact(method, false)
                 && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
@@ -5201,7 +5293,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -5241,12 +5333,17 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "matches_exact_origin",
                     "authorized_origin",
                     "ScopeAuthorityMismatch",
+                    "selected_application_stable_subject_identity",
+                    "supplied_session_application_reference",
+                    "application_reference",
+                    "expected_root_subject",
                     "contains_stable_subject",
                     "SubjectReferenceMismatch",
                     "into_report_parts",
                     "evidence_references",
                     "validate_subject_inventory",
                     "validate_and_canonicalize_items",
+                    "validate_supplied_session_audit",
                     "validate_authorization_audit",
                     "validate_openapi_audit",
                     "validate_rest_audit",
@@ -5287,6 +5384,11 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 "validate_and_canonicalize_items",
                 "Self",
             )
+            && statement_reference_precedes(
+                &method.block,
+                "validate_supplied_session_audit",
+                "Self",
+            )
             && statement_reference_precedes(&method.block, "validate_authorization_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_openapi_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_rest_audit", "Self")
@@ -5295,7 +5397,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits before construction"
                 .to_owned(),
         );
     }
@@ -5686,33 +5788,55 @@ fn inspect_assessment_report_truth_validators(syntax: &syn::File) -> Vec<String>
 
 fn block_has_exact_stable_subject_call(block: &syn::Block) -> bool {
     struct StableSubjectCallVisitor {
-        exact_calls: usize,
-        total_calls: usize,
+        exact_contains_calls: usize,
+        total_contains_calls: usize,
+        exact_identity_calls: usize,
+        total_identity_calls: usize,
     }
     impl<'ast> Visit<'ast> for StableSubjectCallVisitor {
         fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
             if call.method == "contains_stable_subject" {
-                self.total_calls = self.total_calls.saturating_add(1);
+                self.total_contains_calls = self.total_contains_calls.saturating_add(1);
                 let exact = expression_is_path_ident(call.receiver.as_ref(), "items")
                     && call.args.len() == 1
                     && call.args.first().is_some_and(|argument| {
-                        matches!(argument, syn::Expr::Lit(literal)
-                            if matches!(&literal.lit, syn::Lit::Str(value)
-                                if value.value() == "authorized-root@1"))
+                        expression_is_borrowed_path_ident(argument, "expected_root_subject")
                     });
                 if exact {
-                    self.exact_calls = self.exact_calls.saturating_add(1);
+                    self.exact_contains_calls = self.exact_contains_calls.saturating_add(1);
                 }
             }
             visit::visit_expr_method_call(self, call);
         }
+
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if expression_path_ends_with(
+                call.func.as_ref(),
+                &["selected_application_stable_subject_identity"],
+            ) {
+                self.total_identity_calls = self.total_identity_calls.saturating_add(1);
+                if call.args.len() == 1
+                    && call.args.first().is_some_and(|argument| {
+                        expression_is_path_ident(argument, "supplied_session_application_reference")
+                    })
+                {
+                    self.exact_identity_calls = self.exact_identity_calls.saturating_add(1);
+                }
+            }
+            visit::visit_expr_call(self, call);
+        }
     }
     let mut visitor = StableSubjectCallVisitor {
-        exact_calls: 0,
-        total_calls: 0,
+        exact_contains_calls: 0,
+        total_contains_calls: 0,
+        exact_identity_calls: 0,
+        total_identity_calls: 0,
     };
     visitor.visit_block(block);
-    visitor.total_calls == 1 && visitor.exact_calls == 1
+    visitor.total_contains_calls == 1
+        && visitor.exact_contains_calls == 1
+        && visitor.total_identity_calls == 1
+        && visitor.exact_identity_calls == 1
 }
 
 fn is_fixed_u8_array(item_type: &syn::Type, expected_length: usize) -> bool {
@@ -6504,7 +6628,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 5
+    typed.len() == expected_prefix.len() + 6
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -6513,27 +6637,37 @@ fn assessment_report_constructor_inputs_are_exact(
                 argument.attrs.is_empty() && is_plain_ident(&argument.ty, expected)
             })
         && typed.get(expected_prefix.len()).is_some_and(|argument| {
-            attributes_are_exact_cfg_feature(&argument.attrs, "authorization-review")
+            attributes_are_exact_cfg_feature(&argument.attrs, "supplied-session-review")
                 && is_generic_of_idents(
                     &argument.ty,
                     "Option",
-                    &["WebAssessmentAuthorizationAudit"],
+                    &["WebAssessmentSuppliedSessionAudit"],
                 )
         })
         && typed
             .get(expected_prefix.len() + 1)
             .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "authorization-review")
+                    && is_generic_of_idents(
+                        &argument.ty,
+                        "Option",
+                        &["WebAssessmentAuthorizationAudit"],
+                    )
+            })
+        && typed
+            .get(expected_prefix.len() + 2)
+            .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "openapi-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentOpenApiAudit"])
             })
         && typed
-            .get(expected_prefix.len() + 2)
+            .get(expected_prefix.len() + 3)
             .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "rest-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentRestAudit"])
             })
         && typed
-            .get(expected_prefix.len() + 3)
+            .get(expected_prefix.len() + 4)
             .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "ssrf-oast-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentSsrfOastAudit"])
@@ -9048,6 +9182,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
+                    "supplied_session_runtime"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "wordpress_runtime"
                 )
                 | (
@@ -9124,6 +9262,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "ssrf_oast_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "ssrf-oast-review")
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "supplied_session_runtime"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "supplied-session-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && matches!(
                 module.as_str(),
@@ -12561,7 +12703,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12577,7 +12719,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12593,7 +12735,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12609,7 +12751,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12625,7 +12767,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12641,7 +12783,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12657,7 +12799,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12673,7 +12815,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12689,7 +12831,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12705,7 +12847,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12733,7 +12875,7 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains(
-                    "AssessmentReviewAudits must remain one private Default-only container with exactly the five feature-gated redacted audit values"
+                    "AssessmentReviewAudits must remain one private Default-only container with exactly the six feature-gated redacted audit values"
                 ),
                 "{violations}"
             );
@@ -12841,8 +12983,12 @@ mod tests {
                 "let _ = (&truth.expected_accounting, truth.expected_elapsed_ms);",
             ),
             (
-                "contains_stable_subject(\"authorized-root@1\")",
-                "contains_stable_subject(\"caller-selected-root\")",
+                "selected_application_stable_subject_identity(supplied_session_application_reference)",
+                "selected_application_stable_subject_identity(Some(\"caller-selected-root\"))",
+            ),
+            (
+                "items.contains_stable_subject(&expected_root_subject)",
+                "items.contains_stable_subject(\"authorized-root@1\")",
             ),
         ] {
             let weakened = report_source.replacen(original, replacement, 1);
@@ -13120,6 +13266,7 @@ mod tests {
             pub struct WebAssessmentDefenseAudit { mode: String }
             pub struct WebAssessmentRestAudit { outcome: String }
             pub struct WebAssessmentSsrfOastAudit { outcome: String }
+            pub struct WebAssessmentSuppliedSessionAudit { outcome: String }
             pub struct WebAssessmentWordPressAudit { outcome: String }
             #[non_exhaustive]
             pub enum WebAssessmentProgressCheckpoint {
@@ -13153,6 +13300,8 @@ mod tests {
             pub struct WebAssessmentRunReport {
                 #[cfg(feature = "reporting")]
                 run_started_at: SystemTime,
+                #[cfg(feature = "supplied-session-review")]
+                supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
                 #[cfg(feature = "authorization-review")]
                 authorization_review: Option<WebAssessmentAuthorizationAudit>,
                 #[cfg(feature = "openapi-review")]
@@ -13291,7 +13440,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13306,7 +13455,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13354,7 +13503,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13625,6 +13774,11 @@ mod tests {
                 http.clone(),
                 broker.replace(".no_proxy()", ""),
                 "anonymous GET-only no-proxy",
+            ),
+            (
+                http.clone(),
+                broker.replace("!authenticated_transport_is_allowed(target)", "false"),
+                "protected-transport validation",
             ),
             (
                 http,

@@ -1,9 +1,10 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
 use super::super::{
-    ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit, WordPressAdvisoryKey,
-    WordPressAssetFingerprintComponentKey, WordPressAssetFingerprintResourceKey,
-    WordPressComponentKey, WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY,
+    ImportedSuppliedSessionAudit, ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit,
+    WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
+    WordPressAssetFingerprintResourceKey, WordPressComponentKey,
+    WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY,
 };
 use super::{
     array, boolean, check, digest, keys, number, object, optional_boolean, optional_text,
@@ -22,6 +23,12 @@ pub(super) const REST_CAPABILITY: &str = "api.rest-readonly-surface-observed@1";
 pub(super) const WORDPRESS_CAPABILITY: &str = "technology.wordpress-surface-observed@1";
 const OPENAPI_CAPABILITY: &str = "api.openapi-contract-observed@1";
 const AUTHORIZATION_CAPABILITY: &str = "authorization.resource-cross-principal-equivalence@1";
+const SUPPLIED_SESSION_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v1";
+const SUPPLIED_SESSION_CAPABILITY: &str = "session.supplied-context-assessment@1";
+const MAX_SUPPLIED_SESSION_RESOURCES: u64 = 4;
+const MAX_SUPPLIED_SESSION_CHECKPOINTS: u64 = 5;
+const MAX_SUPPLIED_SESSION_REQUESTS: u64 = 9;
+const MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT: u64 = 256 * 1024;
 const MAX_WORDPRESS_SIGNALS: u64 = 256;
 const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V1: &str = "security.wordpress-discovery-audit/v1";
 const WORDPRESS_DISCOVERY_AUDIT_SCHEMA_V2: &str = "security.wordpress-discovery-audit/v2";
@@ -269,6 +276,637 @@ pub(super) fn validate(
             wordpress(fields, count(items, WORDPRESS_CAPABILITY))?;
             Ok(Some(wordpress_comparison_snapshot(fields)?))
         },
+        _ => Err(ComparisonError::InvalidDocument),
+    }
+}
+
+pub(super) fn validate_supplied_session(
+    value: &Value,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "capability_id",
+            "policy_reference",
+            "application_reference",
+            "principal_reference",
+            "principal_alias",
+            "principal_assurance",
+            "credential_mechanism",
+            "health_oracle",
+            "outcome",
+            "coverage",
+            "checkpoints",
+            "resources",
+            "selected_resource_count",
+            "dispatched_resource_count",
+            "committed_resource_count",
+            "dispatched_request_count",
+            "response_bytes",
+            "response_byte_limit",
+            "response_byte_limit_exceeded",
+            "refresh_performed",
+            "anonymous_fallback_performed",
+            "continuous_authentication_established",
+            "exploit_execution",
+            "impact_validation",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == SUPPLIED_SESSION_AUDIT_SCHEMA)?;
+    check(string(fields, "capability_id")? == SUPPLIED_SESSION_CAPABILITY)?;
+    check(digest(
+        text(fields, "policy_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-policy-sha256:",
+    ))?;
+    check(digest(
+        text(fields, "application_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-application-sha256:",
+    ))?;
+    check(
+        text(fields, "principal_reference", MAX_IDENTIFIER_BYTES)?
+            == "supplied-session-principal-0001",
+    )?;
+    check(valid_supplied_session_principal_alias(text(
+        fields,
+        "principal_alias",
+        128,
+    )?))?;
+    check(token(fields, "principal_assurance", &["operator_declared"])? == "operator_declared")?;
+    check(
+        token(fields, "credential_mechanism", &["authorization_header"])? == "authorization_header",
+    )?;
+    validate_supplied_session_health_oracle(required(fields, "health_oracle")?)?;
+    let outcome = token(
+        fields,
+        "outcome",
+        &[
+            "complete",
+            "startup_unhealthy",
+            "session_lost",
+            "resource_unavailable",
+            "runtime_limit",
+            "cancelled",
+        ],
+    )?;
+    let coverage = token(fields, "coverage", &["complete", "partial", "none"])?;
+    let selected_resource_count = number(
+        fields,
+        "selected_resource_count",
+        MAX_SUPPLIED_SESSION_RESOURCES,
+    )?;
+    let dispatched_resource_count = number(
+        fields,
+        "dispatched_resource_count",
+        MAX_SUPPLIED_SESSION_RESOURCES,
+    )?;
+    let committed_resource_count = number(
+        fields,
+        "committed_resource_count",
+        MAX_SUPPLIED_SESSION_RESOURCES,
+    )?;
+    let dispatched_request_count = number(
+        fields,
+        "dispatched_request_count",
+        MAX_SUPPLIED_SESSION_REQUESTS,
+    )?;
+    let response_bytes = number(fields, "response_bytes", u64::MAX)?;
+    let response_byte_limit = number(
+        fields,
+        "response_byte_limit",
+        MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT,
+    )?;
+    check(response_byte_limit > 0)?;
+    let response_byte_limit_exceeded = boolean(fields, "response_byte_limit_exceeded")?;
+
+    let checkpoints = array(fields, "checkpoints")?;
+    check(
+        checkpoints.len() <= MAX_SUPPLIED_SESSION_CHECKPOINTS as usize
+            && checkpoints.len() <= selected_resource_count as usize + 1,
+    )?;
+    let mut checkpoint_response_bytes = 0_u64;
+    let mut checkpoint_evidence_references = BTreeSet::new();
+    let mut validated_checkpoints = Vec::with_capacity(checkpoints.len());
+    for (index, checkpoint) in checkpoints.iter().enumerate() {
+        let validated =
+            validate_supplied_session_checkpoint(checkpoint, index, selected_resource_count)?;
+        if let Some(reference) = validated.evidence_reference {
+            check(checkpoint_evidence_references.insert(reference))?;
+        }
+        checkpoint_response_bytes = checkpoint_response_bytes
+            .checked_add(validated.response_bytes)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        validated_checkpoints.push(validated);
+    }
+
+    let resources = array(fields, "resources")?;
+    check((1..=MAX_SUPPLIED_SESSION_RESOURCES as usize).contains(&resources.len()))?;
+    let mut resource_references = BTreeSet::new();
+    let mut resource_evidence_references = BTreeSet::new();
+    let mut dispatched_resources = 0_u64;
+    let mut committed_resources = 0_u64;
+    let mut resource_response_bytes = 0_u64;
+    let mut validated_resources = Vec::with_capacity(resources.len());
+    for (index, resource) in resources.iter().enumerate() {
+        let validated = validate_supplied_session_resource(resource, index)?;
+        check(resource_references.insert(validated.reference))?;
+        if let Some(reference) = validated.evidence_reference {
+            check(resource_evidence_references.insert(reference))?;
+        }
+        dispatched_resources = dispatched_resources
+            .checked_add(u64::from(validated.dispatched))
+            .ok_or(ComparisonError::InvalidDocument)?;
+        committed_resources = committed_resources
+            .checked_add(u64::from(validated.committed))
+            .ok_or(ComparisonError::InvalidDocument)?;
+        resource_response_bytes = resource_response_bytes
+            .checked_add(validated.response_bytes)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        validated_resources.push(validated);
+    }
+    check(
+        selected_resource_count == resources.len() as u64
+            && dispatched_resource_count == dispatched_resources
+            && committed_resource_count == committed_resources
+            && committed_resource_count <= dispatched_resource_count
+            && dispatched_resource_count <= selected_resource_count
+            && dispatched_request_count
+                == dispatched_resource_count
+                    .checked_add(checkpoints.len() as u64)
+                    .ok_or(ComparisonError::InvalidDocument)?
+            && checkpoint_response_bytes
+                .checked_add(resource_response_bytes)
+                .ok_or(ComparisonError::InvalidDocument)?
+                == response_bytes
+            && response_byte_limit_exceeded == (response_bytes > response_byte_limit),
+    )?;
+    check(
+        validated_resources
+            .iter()
+            .skip_while(|resource| resource.dispatched)
+            .all(|resource| resource.outcome == "not_dispatched"),
+    )?;
+    check(
+        validated_checkpoints
+            .iter()
+            .take(validated_checkpoints.len().saturating_sub(1))
+            .all(|checkpoint| checkpoint.outcome == "healthy"),
+    )?;
+    check(
+        validated_resources
+            .iter()
+            .take(committed_resource_count as usize)
+            .all(|resource| resource.committed)
+            && validated_resources
+                .iter()
+                .skip(committed_resource_count as usize)
+                .all(|resource| !resource.committed)
+            && dispatched_resource_count <= committed_resource_count.saturating_add(1),
+    )?;
+    check(validated_checkpoints.iter().skip(1).all(|checkpoint| {
+        validated_resources
+            .get(checkpoint.after_subject_count as usize - 1)
+            .is_some_and(|resource| match checkpoint.outcome {
+                "healthy" => matches!(resource.outcome, "committed" | "incomplete"),
+                "unhealthy" | "indeterminate" => {
+                    matches!(resource.outcome, "health_unqualified" | "incomplete")
+                },
+                _ => false,
+            })
+    }))?;
+    check(match coverage {
+        "complete" => selected_resource_count == committed_resource_count && outcome == "complete",
+        "partial" => {
+            committed_resource_count > 0
+                && (outcome != "complete" || committed_resource_count < selected_resource_count)
+        },
+        "none" => committed_resource_count == 0,
+        _ => false,
+    })?;
+    validate_supplied_session_outcome(outcome, &validated_checkpoints, &validated_resources)?;
+    check(!boolean(fields, "refresh_performed")?)?;
+    check(!boolean(fields, "anonymous_fallback_performed")?)?;
+    check(!boolean(fields, "continuous_authentication_established")?)?;
+    check(string(fields, "exploit_execution")? == "not_performed")?;
+    check(string(fields, "impact_validation")? == "not_performed")?;
+    check(count(items, SUPPLIED_SESSION_CAPABILITY) == 0)?;
+    let session_epoch = Value::from(1_u64);
+    Ok(ImportedSuppliedSessionAudit {
+        context: selected_object(
+            fields,
+            &[
+                "schema",
+                "capability_id",
+                "policy_reference",
+                "application_reference",
+                "principal_reference",
+                "principal_alias",
+                "principal_assurance",
+                "credential_mechanism",
+                "health_oracle",
+            ],
+            &[("session_epoch", Some(&session_epoch))],
+        )?,
+        health_and_coverage: selected_object(
+            fields,
+            &["outcome", "coverage", "checkpoints", "resources"],
+            &[],
+        )?,
+        accounting: selected_object(
+            fields,
+            &[
+                "selected_resource_count",
+                "dispatched_resource_count",
+                "committed_resource_count",
+                "dispatched_request_count",
+                "response_bytes",
+                "response_byte_limit",
+                "response_byte_limit_exceeded",
+                "refresh_performed",
+                "anonymous_fallback_performed",
+                "continuous_authentication_established",
+                "exploit_execution",
+                "impact_validation",
+            ],
+            &[],
+        )?,
+    })
+}
+
+fn valid_supplied_session_principal_alias(value: &str) -> bool {
+    value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
+    })
+}
+
+fn validate_supplied_session_health_oracle(value: &Value) -> Result<(), ComparisonError> {
+    let fields = object(value)?;
+    keys(fields, &["kind", "field_reference"], &[])?;
+    check(token(fields, "kind", &["json_boolean_true"])?.eq("json_boolean_true"))?;
+    check(digest(
+        text(fields, "field_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-health-field-sha256:",
+    ))
+}
+
+struct ValidatedSuppliedSessionCheckpoint<'a> {
+    after_subject_count: u64,
+    phase: &'static str,
+    outcome: &'static str,
+    evidence_reference: Option<&'a str>,
+    response_bytes: u64,
+}
+
+fn validate_supplied_session_checkpoint<'a>(
+    value: &'a Value,
+    index: usize,
+    selected_resource_count: u64,
+) -> Result<ValidatedSuppliedSessionCheckpoint<'a>, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "sequence",
+            "phase",
+            "after_subject_count",
+            "evidence_reference",
+            "outcome",
+            "status",
+            "body_state",
+            "predicate",
+            "response_bytes",
+        ],
+        &[],
+    )?;
+    check(number(fields, "sequence", MAX_SUPPLIED_SESSION_CHECKPOINTS - 1)? == index as u64)?;
+    let phase = token(
+        fields,
+        "phase",
+        &["startup", "subject_boundary", "terminal"],
+    )?;
+    let after_subject_count = number(fields, "after_subject_count", selected_resource_count)?;
+    check(after_subject_count == index as u64)?;
+    check(match (after_subject_count, phase) {
+        (0, "startup") => true,
+        (count, "terminal") => count == selected_resource_count,
+        (count, "subject_boundary") => count > 0 && count < selected_resource_count,
+        _ => false,
+    })?;
+    let outcome = token(
+        fields,
+        "outcome",
+        &["healthy", "unhealthy", "indeterminate"],
+    )?;
+    let evidence_reference = optional_text(fields, "evidence_reference", MAX_IDENTIFIER_BYTES)?;
+    check(
+        evidence_reference.is_none_or(|reference| {
+            digest(reference, "supplied-session-checkpoint-evidence-sha256:")
+        }) && (outcome == "indeterminate" || evidence_reference.is_some()),
+    )?;
+    let status = if required(fields, "status")?.is_null() {
+        None
+    } else {
+        let status = required(fields, "status")?
+            .as_u64()
+            .ok_or(ComparisonError::InvalidDocument)?;
+        check((100..=599).contains(&status))?;
+        Some(status)
+    };
+    let body_state = token(
+        fields,
+        "body_state",
+        &["complete", "incomplete", "unavailable"],
+    )?;
+    let predicate = token(
+        fields,
+        "predicate",
+        &["matched", "not_matched", "not_evaluated"],
+    )?;
+    check(match outcome {
+        "healthy" => status == Some(200) && body_state == "complete" && predicate == "matched",
+        "unhealthy" => {
+            status.is_some()
+                && body_state == "complete"
+                && matches!(predicate, "not_matched" | "not_evaluated")
+                && (predicate != "not_matched" || status == Some(200))
+        },
+        "indeterminate" => {
+            predicate == "not_evaluated"
+                && match body_state {
+                    "incomplete" => status.is_some(),
+                    "unavailable" => status.is_none(),
+                    "complete" => status.is_some() && evidence_reference.is_none(),
+                    _ => false,
+                }
+        },
+        _ => false,
+    })?;
+    let response_bytes = number(fields, "response_bytes", u64::MAX)?;
+    Ok(ValidatedSuppliedSessionCheckpoint {
+        after_subject_count,
+        phase: match phase {
+            "startup" => "startup",
+            "subject_boundary" => "subject_boundary",
+            "terminal" => "terminal",
+            _ => return Err(ComparisonError::InvalidDocument),
+        },
+        outcome: match outcome {
+            "healthy" => "healthy",
+            "unhealthy" => "unhealthy",
+            "indeterminate" => "indeterminate",
+            _ => return Err(ComparisonError::InvalidDocument),
+        },
+        evidence_reference,
+        response_bytes,
+    })
+}
+
+struct ValidatedSuppliedSessionResource<'a> {
+    reference: &'a str,
+    evidence_reference: Option<&'a str>,
+    outcome: &'a str,
+    dispatched: bool,
+    committed: bool,
+    response_bytes: u64,
+}
+
+fn validate_supplied_session_resource(
+    value: &Value,
+    index: usize,
+) -> Result<ValidatedSuppliedSessionResource<'_>, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "sequence",
+            "resource_reference",
+            "evidence_reference",
+            "outcome",
+            "status",
+            "response_bytes",
+            "epoch",
+        ],
+        &[],
+    )?;
+    check(number(fields, "sequence", MAX_SUPPLIED_SESSION_RESOURCES - 1)? == index as u64)?;
+    let reference = text(fields, "resource_reference", MAX_IDENTIFIER_BYTES)?;
+    check(digest(reference, "supplied-session-resource-sha256:"))?;
+    let evidence_reference = optional_text(fields, "evidence_reference", MAX_IDENTIFIER_BYTES)?;
+    let outcome = token(
+        fields,
+        "outcome",
+        &[
+            "committed",
+            "health_unqualified",
+            "http_error",
+            "redirect_refused",
+            "incomplete",
+            "transport_failed",
+            "not_dispatched",
+        ],
+    )?;
+    let status = if required(fields, "status")?.is_null() {
+        None
+    } else {
+        let status = required(fields, "status")?
+            .as_u64()
+            .ok_or(ComparisonError::InvalidDocument)?;
+        check((100..=599).contains(&status))?;
+        Some(status)
+    };
+    let response_bytes = number(fields, "response_bytes", u64::MAX)?;
+    check(number(fields, "epoch", 1)? == 1)?;
+    let (dispatched, committed) = match outcome {
+        "committed" => {
+            check(status == Some(200))?;
+            (true, true)
+        },
+        "health_unqualified" => {
+            check(status == Some(200))?;
+            (true, false)
+        },
+        "http_error" => {
+            check(status.is_some_and(|status| status != 200 && !(300..=399).contains(&status)))?;
+            (true, false)
+        },
+        "redirect_refused" => {
+            check(status.is_some_and(|status| (300..=399).contains(&status)))?;
+            (true, false)
+        },
+        "incomplete" => {
+            check(status.is_some_and(|status| !(300..=399).contains(&status)))?;
+            (true, false)
+        },
+        "transport_failed" => {
+            check(status.is_none())?;
+            (true, false)
+        },
+        "not_dispatched" => {
+            check(status.is_none() && response_bytes == 0)?;
+            (false, false)
+        },
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
+    check(match (outcome, evidence_reference) {
+        ("committed" | "health_unqualified", Some(reference)) => {
+            digest(reference, "supplied-session-resource-evidence-sha256:")
+        },
+        ("committed" | "health_unqualified", None) => false,
+        (_, None) => true,
+        _ => false,
+    })?;
+    Ok(ValidatedSuppliedSessionResource {
+        reference,
+        evidence_reference,
+        outcome,
+        dispatched,
+        committed,
+        response_bytes,
+    })
+}
+
+fn validate_supplied_session_outcome(
+    outcome: &str,
+    checkpoints: &[ValidatedSuppliedSessionCheckpoint<'_>],
+    resources: &[ValidatedSuppliedSessionResource<'_>],
+) -> Result<(), ComparisonError> {
+    let selected = resources.len();
+    let dispatched = resources
+        .iter()
+        .filter(|resource| resource.dispatched)
+        .count();
+    let committed = resources
+        .iter()
+        .filter(|resource| resource.committed)
+        .count();
+    let checkpoint_count = checkpoints.len();
+    let all_resources_not_dispatched = resources
+        .iter()
+        .all(|resource| resource.outcome == "not_dispatched");
+    let all_checkpoints_healthy = checkpoints
+        .iter()
+        .all(|checkpoint| checkpoint.outcome == "healthy");
+    let healthy_prefix = |count: usize| {
+        checkpoints
+            .get(..count)
+            .is_some_and(|rows| rows.iter().all(|row| row.outcome == "healthy"))
+    };
+    let startup_not_completed = committed == 0
+        && dispatched == 0
+        && all_resources_not_dispatched
+        && (checkpoint_count == 0
+            || (checkpoint_count == 1
+                && checkpoints.first().is_some_and(|checkpoint| {
+                    checkpoint.phase == "startup" && checkpoint.outcome == "indeterminate"
+                })));
+    let stopped_before_resource_dispatch = dispatched == committed
+        && committed < selected
+        && checkpoint_count == committed + 1
+        && all_checkpoints_healthy;
+    let failed_resource_without_post_health = dispatched == committed + 1
+        && checkpoint_count == committed + 1
+        && all_checkpoints_healthy
+        && resources.get(committed).is_some_and(|resource| {
+            matches!(
+                resource.outcome,
+                "http_error"
+                    | "redirect_refused"
+                    | "incomplete"
+                    | "transport_failed"
+                    | "health_unqualified"
+            )
+        });
+    let interrupted_resource_without_post_health = failed_resource_without_post_health
+        && resources.get(committed).is_some_and(|resource| {
+            matches!(
+                resource.outcome,
+                "incomplete" | "transport_failed" | "health_unqualified"
+            )
+        });
+    let stopped_during_post_health = dispatched == committed + 1
+        && checkpoint_count == committed + 2
+        && healthy_prefix(checkpoint_count - 1)
+        && checkpoints
+            .last()
+            .is_some_and(|checkpoint| checkpoint.outcome == "indeterminate")
+        && resources.get(committed).is_some_and(|resource| {
+            matches!(resource.outcome, "health_unqualified" | "incomplete")
+        });
+    let failed_commit_after_healthy_post_health = dispatched == committed + 1
+        && checkpoint_count == committed + 2
+        && all_checkpoints_healthy
+        && resources
+            .get(committed)
+            .is_some_and(|resource| resource.outcome == "incomplete");
+    match outcome {
+        "complete" => {
+            check(committed == selected && dispatched == selected)?;
+            check(checkpoint_count == selected + 1)?;
+            check(all_checkpoints_healthy)?;
+            check(
+                checkpoints
+                    .first()
+                    .is_some_and(|row| row.phase == "startup"),
+            )?;
+            check(
+                checkpoints
+                    .last()
+                    .is_some_and(|row| row.phase == "terminal"),
+            )?;
+            check(
+                checkpoints[1..checkpoints.len() - 1]
+                    .iter()
+                    .all(|row| row.phase == "subject_boundary"),
+            )
+        },
+        "startup_unhealthy" => {
+            check(all_resources_not_dispatched)?;
+            check(checkpoint_count == 1)?;
+            let checkpoint = checkpoints
+                .first()
+                .ok_or(ComparisonError::InvalidDocument)?;
+            check(checkpoint.phase == "startup" && checkpoint.outcome == "unhealthy")
+        },
+        "session_lost" => {
+            check(dispatched == committed + 1)?;
+            check(checkpoint_count == committed + 2)?;
+            check(
+                checkpoints[..checkpoint_count - 1]
+                    .iter()
+                    .all(|row| row.outcome == "healthy"),
+            )?;
+            check(
+                checkpoints
+                    .last()
+                    .is_some_and(|checkpoint| checkpoint.outcome == "unhealthy"),
+            )?;
+            check(
+                checkpoints
+                    .last()
+                    .is_some_and(|row| matches!(row.phase, "subject_boundary" | "terminal")),
+            )?;
+            check(
+                resources
+                    .get(committed)
+                    .is_some_and(|resource| resource.outcome == "health_unqualified"),
+            )
+        },
+        "resource_unavailable" => check(
+            startup_not_completed
+                || stopped_before_resource_dispatch
+                || failed_resource_without_post_health
+                || stopped_during_post_health
+                || failed_commit_after_healthy_post_health,
+        ),
+        "runtime_limit" | "cancelled" => check(
+            startup_not_completed
+                || stopped_before_resource_dispatch
+                || interrupted_resource_without_post_health
+                || stopped_during_post_health,
+        ),
         _ => Err(ComparisonError::InvalidDocument),
     }
 }
@@ -7006,6 +7644,255 @@ mod tests {
 
     fn opaque_reference(byte: char) -> String {
         format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    fn supplied_session_reference(prefix: &str, byte: char) -> String {
+        format!("{prefix}{}", byte.to_string().repeat(64))
+    }
+
+    fn complete_supplied_session_audit() -> Value {
+        serde_json::json!({
+            "schema": SUPPLIED_SESSION_AUDIT_SCHEMA,
+            "capability_id": SUPPLIED_SESSION_CAPABILITY,
+            "policy_reference": supplied_session_reference(
+                "supplied-session-policy-sha256:",
+                '1',
+            ),
+            "application_reference": supplied_session_reference(
+                "supplied-session-application-sha256:",
+                '2',
+            ),
+            "principal_reference": "supplied-session-principal-0001",
+            "principal_alias": "fixture-reader",
+            "principal_assurance": "operator_declared",
+            "credential_mechanism": "authorization_header",
+            "health_oracle": {
+                "kind": "json_boolean_true",
+                "field_reference": supplied_session_reference(
+                    "supplied-session-health-field-sha256:",
+                    '3',
+                ),
+            },
+            "outcome": "complete",
+            "coverage": "complete",
+            "checkpoints": [
+                {
+                    "sequence": 0,
+                    "phase": "startup",
+                    "after_subject_count": 0,
+                    "evidence_reference": supplied_session_reference(
+                        "supplied-session-checkpoint-evidence-sha256:",
+                        '4',
+                    ),
+                    "outcome": "healthy",
+                    "status": 200,
+                    "body_state": "complete",
+                    "predicate": "matched",
+                    "response_bytes": 10,
+                },
+                {
+                    "sequence": 1,
+                    "phase": "subject_boundary",
+                    "after_subject_count": 1,
+                    "evidence_reference": supplied_session_reference(
+                        "supplied-session-checkpoint-evidence-sha256:",
+                        '5',
+                    ),
+                    "outcome": "healthy",
+                    "status": 200,
+                    "body_state": "complete",
+                    "predicate": "matched",
+                    "response_bytes": 11,
+                },
+                {
+                    "sequence": 2,
+                    "phase": "terminal",
+                    "after_subject_count": 2,
+                    "evidence_reference": supplied_session_reference(
+                        "supplied-session-checkpoint-evidence-sha256:",
+                        '6',
+                    ),
+                    "outcome": "healthy",
+                    "status": 200,
+                    "body_state": "complete",
+                    "predicate": "matched",
+                    "response_bytes": 12,
+                },
+            ],
+            "resources": [
+                {
+                    "sequence": 0,
+                    "resource_reference": supplied_session_reference(
+                        "supplied-session-resource-sha256:",
+                        '7',
+                    ),
+                    "evidence_reference": supplied_session_reference(
+                        "supplied-session-resource-evidence-sha256:",
+                        '8',
+                    ),
+                    "outcome": "committed",
+                    "status": 200,
+                    "response_bytes": 13,
+                    "epoch": 1,
+                },
+                {
+                    "sequence": 1,
+                    "resource_reference": supplied_session_reference(
+                        "supplied-session-resource-sha256:",
+                        '9',
+                    ),
+                    "evidence_reference": supplied_session_reference(
+                        "supplied-session-resource-evidence-sha256:",
+                        'a',
+                    ),
+                    "outcome": "committed",
+                    "status": 200,
+                    "response_bytes": 14,
+                    "epoch": 1,
+                },
+            ],
+            "selected_resource_count": 2,
+            "dispatched_resource_count": 2,
+            "committed_resource_count": 2,
+            "dispatched_request_count": 5,
+            "response_bytes": 60,
+            "response_byte_limit": 65_536,
+            "response_byte_limit_exceeded": false,
+            "refresh_performed": false,
+            "anonymous_fallback_performed": false,
+            "continuous_authentication_established": false,
+            "exploit_execution": "not_performed",
+            "impact_validation": "not_performed",
+        })
+    }
+
+    #[test]
+    fn supplied_session_activity_evidence_references_are_unique() {
+        let valid = complete_supplied_session_audit();
+        assert!(validate_supplied_session(&valid, &BTreeMap::new()).is_ok());
+
+        let mut duplicate_checkpoint = valid.clone();
+        let first_checkpoint_reference =
+            duplicate_checkpoint["checkpoints"][0]["evidence_reference"].clone();
+        duplicate_checkpoint["checkpoints"][1]["evidence_reference"] = first_checkpoint_reference;
+        assert_eq!(
+            validate_supplied_session(&duplicate_checkpoint, &BTreeMap::new()),
+            Err(ComparisonError::InvalidDocument)
+        );
+
+        let mut duplicate_resource = valid;
+        let first_resource_reference =
+            duplicate_resource["resources"][0]["evidence_reference"].clone();
+        duplicate_resource["resources"][1]["evidence_reference"] = first_resource_reference;
+        assert_eq!(
+            validate_supplied_session(&duplicate_resource, &BTreeMap::new()),
+            Err(ComparisonError::InvalidDocument)
+        );
+    }
+
+    #[test]
+    fn supplied_session_accounting_retains_bounded_limit_and_unclamped_overrun() {
+        let mut overrun = complete_supplied_session_audit();
+        let overrun_resource_bytes = MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT + 1;
+        overrun["resources"][1]["response_bytes"] = Value::from(overrun_resource_bytes);
+        overrun["response_bytes"] = Value::from(overrun_resource_bytes + 46);
+        overrun["response_byte_limit"] = Value::from(MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT);
+        overrun["response_byte_limit_exceeded"] = Value::Bool(true);
+        assert!(validate_supplied_session(&overrun, &BTreeMap::new()).is_ok());
+
+        for invalid in [
+            {
+                let mut value = overrun.clone();
+                value["response_byte_limit_exceeded"] = Value::Bool(false);
+                value
+            },
+            {
+                let mut value = overrun.clone();
+                value["response_byte_limit"] = Value::from(0_u64);
+                value
+            },
+            {
+                let mut value = overrun;
+                value["response_byte_limit"] =
+                    Value::from(MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT + 1);
+                value
+            },
+        ] {
+            assert_eq!(
+                validate_supplied_session(&invalid, &BTreeMap::new()),
+                Err(ComparisonError::InvalidDocument)
+            );
+        }
+    }
+
+    #[test]
+    fn supplied_session_lost_keeps_observed_resource_separate_from_qualified_coverage() {
+        let mut lost = complete_supplied_session_audit();
+        lost["outcome"] = Value::String("session_lost".to_owned());
+        lost["coverage"] = Value::String("none".to_owned());
+        lost["checkpoints"].as_array_mut().unwrap().truncate(2);
+        lost["checkpoints"][1]["outcome"] = Value::String("unhealthy".to_owned());
+        lost["checkpoints"][1]["predicate"] = Value::String("not_matched".to_owned());
+        lost["resources"][0]["outcome"] = Value::String("health_unqualified".to_owned());
+        lost["resources"][1]["outcome"] = Value::String("not_dispatched".to_owned());
+        lost["resources"][1]["status"] = Value::Null;
+        lost["resources"][1]["response_bytes"] = Value::from(0_u64);
+        lost["resources"][1]["evidence_reference"] = Value::Null;
+        lost["dispatched_resource_count"] = Value::from(1_u64);
+        lost["committed_resource_count"] = Value::from(0_u64);
+        lost["dispatched_request_count"] = Value::from(3_u64);
+        lost["response_bytes"] = Value::from(34_u64);
+        assert!(validate_supplied_session(&lost, &BTreeMap::new()).is_ok());
+
+        let mut missing_unqualified_evidence = lost.clone();
+        missing_unqualified_evidence["resources"][0]["evidence_reference"] = Value::Null;
+        assert_eq!(
+            validate_supplied_session(&missing_unqualified_evidence, &BTreeMap::new()),
+            Err(ComparisonError::InvalidDocument)
+        );
+
+        let mut falsely_committed = lost;
+        falsely_committed["resources"][0]["outcome"] = Value::String("committed".to_owned());
+        assert_eq!(
+            validate_supplied_session(&falsely_committed, &BTreeMap::new()),
+            Err(ComparisonError::InvalidDocument)
+        );
+    }
+
+    #[test]
+    fn supplied_session_interruptions_do_not_relabel_http_errors() {
+        let mut unavailable = complete_supplied_session_audit();
+        unavailable["outcome"] = Value::String("resource_unavailable".to_owned());
+        unavailable["coverage"] = Value::String("none".to_owned());
+        unavailable["checkpoints"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        unavailable["resources"][0]["outcome"] = Value::String("http_error".to_owned());
+        unavailable["resources"][0]["status"] = Value::from(404_u64);
+        unavailable["resources"][0]["evidence_reference"] = Value::Null;
+        unavailable["resources"][1]["outcome"] = Value::String("not_dispatched".to_owned());
+        unavailable["resources"][1]["status"] = Value::Null;
+        unavailable["resources"][1]["response_bytes"] = Value::from(0_u64);
+        unavailable["resources"][1]["evidence_reference"] = Value::Null;
+        unavailable["dispatched_resource_count"] = Value::from(1_u64);
+        unavailable["committed_resource_count"] = Value::from(0_u64);
+        unavailable["dispatched_request_count"] = Value::from(2_u64);
+        unavailable["response_bytes"] = Value::from(23_u64);
+        assert!(validate_supplied_session(&unavailable, &BTreeMap::new()).is_ok());
+
+        let mut falsely_interrupted = unavailable.clone();
+        falsely_interrupted["outcome"] = Value::String("runtime_limit".to_owned());
+        assert_eq!(
+            validate_supplied_session(&falsely_interrupted, &BTreeMap::new()),
+            Err(ComparisonError::InvalidDocument)
+        );
+
+        let mut interrupted = unavailable;
+        interrupted["outcome"] = Value::String("runtime_limit".to_owned());
+        interrupted["resources"][0]["outcome"] = Value::String("transport_failed".to_owned());
+        interrupted["resources"][0]["status"] = Value::Null;
+        assert!(validate_supplied_session(&interrupted, &BTreeMap::new()).is_ok());
     }
 
     fn deployment_layout() -> Value {

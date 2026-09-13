@@ -22,6 +22,7 @@ const FEATURE_NAMES: &[&str] = &[
     "release-bundle",
     "rest-review",
     "ssrf-oast-review",
+    "supplied-session-review",
     "wordpress-review",
 ];
 
@@ -134,6 +135,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         ("release-bundle", cfg!(feature = "release-bundle")),
         ("rest-review", cfg!(feature = "rest-review")),
         ("ssrf-oast-review", cfg!(feature = "ssrf-oast-review")),
+        (
+            "supplied-session-review",
+            cfg!(feature = "supplied-session-review"),
+        ),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
     ] {
         assert_eq!(
@@ -154,6 +159,44 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.wordpress-discovery"),
         states["wordpress-review"]
     );
+    assert_eq!(
+        surface_state(&document, "option.supplied-session-review"),
+        states["supplied-session-review"]
+    );
+    let supplied_session = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.supplied-session-review")
+        .expect("supplied-session surface");
+    assert_eq!(
+        supplied_session["documentation"],
+        "docs/internals/supplied-session-review.md"
+    );
+    assert_eq!(
+        supplied_session["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--session-policy FILE",
+            "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+            "HTTPS, except numeric-loopback HTTP fixtures"
+        ])
+    );
+    let session_limit = supplied_session["limitation"]
+        .as_str()
+        .expect("supplied-session limitation");
+    for required in [
+        "context-isolated, no-proxy",
+        "health checks qualify",
+        "without anonymous fallback",
+        "No cookies, login, refresh, OAuth, MFA",
+        "exploit, or impact validation",
+    ] {
+        assert!(
+            session_limit.contains(required),
+            "missing supplied-session limitation `{required}`"
+        );
+    }
     let wordpress = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -326,6 +369,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
             "--authorization-review-policy",
         ),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
+        ("option.supplied-session-review", "--session-policy"),
         ("option.wordpress-review", "--wordpress-review"),
         ("option.wordpress-discovery", "--wordpress-discovery"),
     ] {
@@ -445,6 +489,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "legacy-scanner",
         "proxy-adapter",
         "ssrf-oast-review",
+        "supplied-session-review",
     ];
     match case.as_str() {
         "default" | "no-default" => {
@@ -466,7 +511,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                4
+                5
             );
         },
         "rest-only" => {
@@ -475,6 +520,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES.iter().all(|feature| {
                 matches!(*feature, "rest-review" | "openapi-review") || !compiled(feature)
             }));
+        },
+        "session-only" => {
+            assert!(compiled("supplied-session-review"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "supplied-session-review" || !compiled(feature) }));
         },
         "bundle-members-individual" => {
             assert!(!compiled("release-bundle"));

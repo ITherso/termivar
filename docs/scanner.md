@@ -453,6 +453,7 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | `normalization-resilience` | Non-default, explicit `web-review` normalization child for one typed HTML transform with candidate/replay semantic proof; maximum `NeedsReview` / `KnowledgeOnly` | Preview |
 | `rest-review` | Non-default, explicit `web-review` REST child requiring same-run `openapi-review`; maximum one anonymous bodyless exact-origin zero-input GET, two requests/one active verification, `Informational` / `KnowledgeOnly` only | Preview |
 | `authorization-review` | Non-default, explicit `web-review` four-view comparison of one operator-selected exact-origin JSON resource; maximum `NeedsReview` / `KnowledgeOnly` | Preview |
+| `supplied-session-review` | Non-default, explicit `web-review` collection for one operator-declared principal with bounded structured health checkpoints; audit-only, no login/refresh/cookie/OAuth or vulnerability claim | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `platform-models` | Unwired API/auth/dashboard/persistence/post-exploitation/realtime library models | Experimental |
 | `reporting` | Bounded generic `RunReport` renderer; with `scanning`, also the central typed assessment renderer used by completed CLI `web-review` runs. No renderer-owned I/O, persistence, or verdict generation | Preview |

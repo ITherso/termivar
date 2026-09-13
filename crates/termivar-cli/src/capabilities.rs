@@ -256,6 +256,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
         ("release-bundle", cfg!(feature = "release-bundle")),
         ("rest-review", cfg!(feature = "rest-review")),
         ("ssrf-oast-review", cfg!(feature = "ssrf-oast-review")),
+        (
+            "supplied-session-review",
+            cfg!(feature = "supplied-session-review"),
+        ),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
     ]
     .into_iter()
@@ -567,6 +571,24 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/audits/native-oast-corrective-maintenance.md",
         ),
         surface!(
+            "option.supplied-session-review",
+            "Supplied-session authenticated assessment",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("supplied-session-review"),
+            cfg!(feature = "supplied-session-review"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &[
+                "--profile web-review",
+                "--session-policy FILE",
+                "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+                "HTTPS, except numeric-loopback HTTP fixtures",
+            ],
+            "One explicitly supplied principal and strict local policy authorize bounded read-oriented application GETs through a context-isolated, no-proxy child of the existing assessment broker. Structured health checks qualify bounded checkpoint coverage rather than authenticate the principal. Session loss stops later session work without anonymous fallback. No cookies, login, refresh, OAuth, MFA, mutation, exploit, or impact validation occurs in this first slice.",
+            "docs/internals/supplied-session-review.md",
+        ),
+        surface!(
             "option.wordpress-review",
             "WordPress evidence review",
             SurfaceGroup::Optional,
@@ -776,7 +798,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 23);
+        assert_eq!(document.surfaces.len(), 24);
 
         let keys = document
             .surfaces
@@ -808,6 +830,7 @@ mod tests {
                 "option.rest-review",
                 "option.resource-authorization-review",
                 "option.ssrf-oast-review",
+                "option.supplied-session-review",
                 "option.wordpress-review",
                 "option.wordpress-discovery",
                 "command.legacy-scan",
@@ -888,6 +911,7 @@ mod tests {
                 "authorization-review-policy",
             ),
             ("option.ssrf-oast-review", "ssrf-oast-review"),
+            ("option.supplied-session-review", "session-policy"),
             ("option.wordpress-review", "wordpress-review"),
             ("option.wordpress-discovery", "wordpress-discovery"),
         ] {
@@ -995,6 +1019,12 @@ mod tests {
             (
                 "option.ssrf-oast-review",
                 Some("ssrf-oast-review"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.supplied-session-review",
+                Some("supplied-session-review"),
                 "preview",
                 "implemented",
             ),
@@ -1155,6 +1185,22 @@ mod tests {
                 "HTTPS, except numeric-loopback HTTP fixtures",
             ]
         );
+        let session = find("option.supplied-session-review");
+        assert_eq!(
+            session.prerequisites,
+            [
+                "--profile web-review",
+                "--session-policy FILE",
+                "one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
+                "HTTPS, except numeric-loopback HTTP fixtures",
+            ]
+        );
+        assert!(session.limitation.contains("context-isolated, no-proxy"));
+        assert!(session.limitation.contains("health checks qualify"));
+        assert!(session.limitation.contains("without anonymous fallback"));
+        assert!(session
+            .limitation
+            .contains("No cookies, login, refresh, OAuth, MFA"));
     }
 
     #[test]
@@ -1239,6 +1285,42 @@ mod tests {
             "PRIMARY",
         ])
         .is_err());
+
+        #[cfg(feature = "supplied-session-review")]
+        {
+            assert!(crate::Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "https://example.test/app/",
+                "--profile",
+                "web-review",
+                "--session-policy",
+                "session.toml",
+                "--session-auth-file",
+                "authorization.txt",
+            ])
+            .is_ok());
+            assert!(crate::Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "https://example.test/app/",
+                "--session-policy",
+                "session.toml",
+                "--session-auth-file",
+                "authorization.txt",
+            ])
+            .is_err());
+            assert!(crate::Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "https://example.test/app/",
+                "--profile",
+                "web-review",
+                "--session-policy",
+                "session.toml",
+            ])
+            .is_ok());
+        }
     }
 
     #[test]

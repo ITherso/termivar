@@ -49,6 +49,7 @@ impl CollectedHttpResponse {
         feature = "legacy-scanner",
         feature = "authorization-review",
         feature = "openapi-review",
+        feature = "supplied-session-review",
         feature = "ssrf-oast-review",
         feature = "wordpress-review"
     ))]
@@ -73,6 +74,7 @@ impl CollectedHttpResponse {
         feature = "graphql-review",
         feature = "authorization-review",
         feature = "openapi-review",
+        feature = "supplied-session-review",
         feature = "ssrf-oast-review",
         feature = "wordpress-review"
     ))]
@@ -84,6 +86,7 @@ impl CollectedHttpResponse {
         feature = "graphql-review",
         feature = "authorization-review",
         feature = "openapi-review",
+        feature = "supplied-session-review",
         feature = "wordpress-review"
     ))]
     pub(crate) fn normalized_media_type(&self) -> Option<String> {

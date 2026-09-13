@@ -3,7 +3,8 @@
 use super::super::{write_html_text, RenderBuffer, ReportError};
 use super::{
     ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, SourceMetadata,
-    WordPressEntityChanges, WordPressFacetComparison, WordPressReviewComparison,
+    SuppliedSessionComparison, WordPressEntityChanges, WordPressFacetComparison,
+    WordPressReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -31,6 +32,9 @@ pub(super) fn render(
     source(&mut output, "Before report", &document.before)?;
     source(&mut output, "After report", &document.after)?;
     output.push_str("</section><p class=\"muted\">Scope assurance: operator-declared. Coverage equivalence: not established. Source authenticity: not established by parsing.</p>")?;
+    if let Some(session) = &document.supplied_session_comparison {
+        supplied_session(&mut output, session)?;
+    }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         wordpress_review(&mut output, wordpress)?;
     }
@@ -82,6 +86,48 @@ pub(super) fn render(
     output.push_str(SCRIPT)?;
     output.push_str("</script></body></html>")?;
     Ok(output.finish())
+}
+
+fn supplied_session(
+    output: &mut RenderBuffer,
+    comparison: &SuppliedSessionComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"supplied-session-differences\"><h2 id=\"supplied-session-differences\">Supplied session differences</h2><p class=\"muted\">Declared context is separated from health, coverage, and accounting. This display-only comparison does not authenticate a principal or establish target change or remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Declared context", comparison.context.status.as_str()),
+        (
+            "Health and coverage",
+            comparison.health_and_coverage.status.as_str(),
+        ),
+        ("Accounting", comparison.accounting.status.as_str()),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str("</span>. Context or audit presence changes are not target findings or remediation.</p>")?;
+    }
+    for (label, facet) in [
+        ("Declared context", &comparison.context),
+        ("Health and coverage", &comparison.health_and_coverage),
+        ("Accounting", &comparison.accounting),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str("<details><summary>Interpretation limits</summary><ul>")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
 }
 
 fn source(

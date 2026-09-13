@@ -23,6 +23,9 @@ mod tests;
 
 /// Versioned display-only comparison document schema.
 pub const COMPARISON_DOCUMENT_SCHEMA: &str = "termivar-report-comparison/v1";
+/// Additive display-only comparison for supplied-session context and coverage.
+pub(super) const SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
+    "termivar-supplied-session-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
@@ -184,11 +187,26 @@ pub(super) struct ComparisonDocument {
     pub(super) before: SourceMetadata,
     pub(super) after: SourceMetadata,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) supplied_session_comparison: Option<SuppliedSessionComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) wordpress_review_comparison: Option<WordPressReviewComparison>,
     pub(super) only_in_after: Vec<ComparisonItem>,
     pub(super) only_in_before: Vec<ComparisonItem>,
     pub(super) changed: Vec<ComparisonItem>,
     pub(super) unchanged: Vec<ComparisonItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct SuppliedSessionComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) scope_assurance: &'static str,
+    pub(super) context: WordPressFacetComparison,
+    pub(super) health_and_coverage: WordPressFacetComparison,
+    pub(super) accounting: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 5],
 }
 
 #[derive(Debug, Serialize)]
@@ -303,6 +321,13 @@ pub(super) struct ImportedWordPressAssetFingerprintAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedSuppliedSessionAudit {
+    pub(super) context: Value,
+    pub(super) health_and_coverage: Value,
+    pub(super) accounting: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedWordPressAudit {
     /// Opaque deployment-aware application identity; absent from legacy audits.
     pub(super) application_reference: Option<String>,
@@ -373,6 +398,7 @@ pub(super) struct EvidenceMetadata {
 struct ImportedDocument {
     metadata: SourceMetadata,
     items: BTreeMap<String, ImportedItem>,
+    supplied_session: Option<ImportedSuppliedSessionAudit>,
     wordpress_review: Option<ImportedWordPressAudit>,
 }
 
@@ -386,6 +412,14 @@ fn compare_documents(
     before: ImportedDocument,
     mut after: ImportedDocument,
 ) -> Result<ComparisonDocument, ComparisonError> {
+    let block_item_pairing = !supplied_session_context_allows_item_pairing(
+        before.supplied_session.as_ref(),
+        after.supplied_session.as_ref(),
+    );
+    let supplied_session_comparison = compare_supplied_sessions(
+        before.supplied_session.as_ref(),
+        after.supplied_session.as_ref(),
+    );
     let wordpress_review_comparison = compare_wordpress_reviews(
         before.wordpress_review.as_ref(),
         after.wordpress_review.as_ref(),
@@ -403,6 +437,7 @@ fn compare_documents(
         ],
         before: before.metadata,
         after: after.metadata,
+        supplied_session_comparison,
         wordpress_review_comparison,
         only_in_after: Vec::new(),
         only_in_before: Vec::new(),
@@ -410,32 +445,34 @@ fn compare_documents(
         unchanged: Vec::new(),
     };
     for (fingerprint, old) in before.items {
-        if let Some(new) = after.items.remove(&fingerprint) {
-            if old.capability_id != new.capability_id {
-                return Err(ComparisonError::AmbiguousIdentity);
+        if !block_item_pairing {
+            if let Some(new) = after.items.remove(&fingerprint) {
+                if old.capability_id != new.capability_id {
+                    return Err(ComparisonError::AmbiguousIdentity);
+                }
+                let changed_fields = changed_fields(&old.projection, &new.projection);
+                let item = ComparisonItem {
+                    fingerprint,
+                    capability_id: old.capability_id,
+                    before: Some(old.projection),
+                    after: Some(new.projection),
+                    changed_fields,
+                };
+                if item.changed_fields.is_empty() {
+                    document.unchanged.push(item);
+                } else {
+                    document.changed.push(item);
+                }
+                continue;
             }
-            let changed_fields = changed_fields(&old.projection, &new.projection);
-            let item = ComparisonItem {
-                fingerprint,
-                capability_id: old.capability_id,
-                before: Some(old.projection),
-                after: Some(new.projection),
-                changed_fields,
-            };
-            if item.changed_fields.is_empty() {
-                document.unchanged.push(item);
-            } else {
-                document.changed.push(item);
-            }
-        } else {
-            document.only_in_before.push(ComparisonItem {
-                fingerprint,
-                capability_id: old.capability_id,
-                before: Some(old.projection),
-                after: None,
-                changed_fields: Vec::new(),
-            });
         }
+        document.only_in_before.push(ComparisonItem {
+            fingerprint,
+            capability_id: old.capability_id,
+            before: Some(old.projection),
+            after: None,
+            changed_fields: Vec::new(),
+        });
     }
     for (fingerprint, new) in after.items {
         document.only_in_after.push(ComparisonItem {
@@ -447,6 +484,108 @@ fn compare_documents(
         });
     }
     Ok(document)
+}
+
+fn supplied_session_context_allows_item_pairing(
+    before: Option<&ImportedSuppliedSessionAudit>,
+    after: Option<&ImportedSuppliedSessionAudit>,
+) -> bool {
+    match (before, after) {
+        (None, None) => true,
+        (Some(before), Some(after)) => before.context == after.context,
+        (Some(_), None) | (None, Some(_)) => false,
+    }
+}
+
+fn compare_supplied_sessions(
+    before: Option<&ImportedSuppliedSessionAudit>,
+    after: Option<&ImportedSuppliedSessionAudit>,
+) -> Option<SuppliedSessionComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason, context_status, facet_status) = match (before, after) {
+        (Some(before), Some(after)) if before.context == after.context => (
+            "compared_within_same_declared_context",
+            None,
+            "same_declared_context",
+            None,
+        ),
+        (Some(before), Some(after)) => {
+            let application_changed = before.context.get("application_reference")
+                != after.context.get("application_reference");
+            let policy_changed =
+                before.context.get("policy_reference") != after.context.get("policy_reference");
+            let principal_alias_changed =
+                before.context.get("principal_alias") != after.context.get("principal_alias");
+            let reason = if application_changed {
+                "application_scope_changed"
+            } else if policy_changed {
+                "session_policy_changed"
+            } else if principal_alias_changed {
+                "operator_declared_principal_changed"
+            } else {
+                "declared_session_context_changed"
+            };
+            ("not_compared", Some(reason), reason, Some("not_comparable"))
+        },
+        (Some(_), None) => (
+            "not_compared",
+            Some("after_audit_missing"),
+            "audit_presence_changed",
+            Some("not_comparable"),
+        ),
+        (None, Some(_)) => (
+            "not_compared",
+            Some("before_audit_missing"),
+            "audit_presence_changed",
+            Some("not_comparable"),
+        ),
+        (None, None) => return None,
+    };
+    let health_status = facet_status.unwrap_or_else(|| {
+        paired_status(
+            before.map(|audit| &audit.health_and_coverage),
+            after.map(|audit| &audit.health_and_coverage),
+        )
+    });
+    let accounting_status = facet_status.unwrap_or_else(|| {
+        paired_status(
+            before.map(|audit| &audit.accounting),
+            after.map(|audit| &audit.accounting),
+        )
+    });
+    Some(SuppliedSessionComparison {
+        schema: SUPPLIED_SESSION_COMPARISON_SCHEMA,
+        status,
+        reason,
+        scope_assurance: "operator_declared",
+        context: facet(
+            before.map(|audit| &audit.context),
+            after.map(|audit| &audit.context),
+            context_status,
+            "Equal opaque references represent the same supplied declarations within these files; they do not authenticate a principal, application, policy source, or cross-run identity.",
+        ),
+        health_and_coverage: facet(
+            before.map(|audit| &audit.health_and_coverage),
+            after.map(|audit| &audit.health_and_coverage),
+            health_status,
+            "Checkpoint and resource coverage differences can result from session loss, interruption, or policy context; they are not installation change, vulnerability change, or remediation evidence.",
+        ),
+        accounting: facet(
+            before.map(|audit| &audit.accounting),
+            after.map(|audit| &audit.accounting),
+            accounting_status,
+            "Counts and bytes describe bounded committed activity in each supplied audit; equality does not establish equivalent authenticated coverage.",
+        ),
+        interpretation_limits: [
+            "The principal reference is a generic V1 slot with operator-declared assurance, not authenticated or cross-run principal identity.",
+            "Policy and application digests identify declared values; they do not authenticate the target, source, account, role, or tenant.",
+            "Different contexts are not paired as target changes, and missing or reduced coverage is not remediation.",
+            "Health checkpoints establish only their recorded predicate at bounded moments, not continuous authentication.",
+            "Exploit execution, impact validation, automatic refresh, and anonymous fallback were not performed by this audit.",
+        ],
+    })
 }
 
 fn compare_wordpress_reviews(
@@ -868,6 +1007,9 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
         output.push_fmt(format_args!("## {name} source\n\n"))?;
         write_source_markdown(&mut output, source)?;
     }
+    if let Some(session) = &document.supplied_session_comparison {
+        write_supplied_session_comparison_markdown(&mut output, session)?;
+    }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         write_wordpress_comparison_markdown(&mut output, wordpress)?;
     }
@@ -909,6 +1051,52 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
         }
     }
     Ok(output.finish())
+}
+
+fn write_supplied_session_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &SuppliedSessionComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Supplied session differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str("\n- Scope assurance: ")?;
+    write_markdown_code_span(output, comparison.scope_assurance)?;
+    output.push_str(
+        "\n\nThis display-only section keeps declared session context separate from health, coverage, and bounded accounting. It does not authenticate a principal or establish target change or remediation.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Declared context", &comparison.context),
+        ("Health and coverage", &comparison.health_and_coverage),
+        ("Accounting", &comparison.accounting),
+    ] {
+        output.push_fmt(format_args!("### {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### Interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
 }
 
 fn write_source_markdown(

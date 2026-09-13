@@ -23,7 +23,8 @@ The CLI's default feature list is empty; its scanner dependency enables
 features does not opt into their runtime actions: WordPress still requires
 explicit `--profile web-review --wordpress-review`. The development bundle
 excludes OAST, the legacy runner, the unsupported API listener, and the
-experimental proxy. Published alpha.2 archives retain their original six-member
+experimental proxy. The supplied-session Preview is likewise excluded and
+requires an explicit feature-enabled source build. Published alpha.2 archives retain their original six-member
 bundle and contain no WordPress producer or audit support.
 
 The published alpha.2 executable and later development builds can report their

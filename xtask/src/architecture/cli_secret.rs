@@ -51,6 +51,10 @@ const CLI_AUTH_FIELDS: &[&str] = &[
     "authz_primary_env",
     "authz_primary_file",
     "authz_primary_stdin",
+    "session_auth_env",
+    "session_auth_file",
+    "session_auth_stdin",
+    "session_policy",
 ];
 const CLI_SCAN_FIELDS: &[&str] = &[
     "authorization_review_policy",
@@ -90,6 +94,10 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "report_dir",
     "report_format",
     "report_output",
+    "session_auth_env",
+    "session_auth_file",
+    "session_auth_stdin",
+    "session_policy",
     "ssrf_oast_policy",
     "ssrf_oast_review",
     "target",
@@ -125,6 +133,8 @@ fn protected_type_cross_source_violations(
                 "AuthorizationReviewInput",
                 "AuthorizationReviewInputError",
                 "AuthorizationSourceOptions",
+                "SuppliedSessionInput",
+                "SuppliedSessionInputError",
             ][..],
         ),
         (
@@ -711,6 +721,10 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("ssrf_oast_policy", "Option", Some("PathBuf")),
         ("ssrf_oast_review", "bool", None),
         ("authorization_review_policy", "Option", Some("PathBuf")),
+        ("session_policy", "Option", Some("PathBuf")),
+        ("session_auth_env", "Option", Some("OsString")),
+        ("session_auth_file", "Option", Some("PathBuf")),
+        ("session_auth_stdin", "bool", None),
         ("authz_primary_env", "Option", Some("OsString")),
         ("authz_primary_file", "Option", Some("PathBuf")),
         ("authz_primary_stdin", "bool", None),
@@ -751,7 +765,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     }
     let observed_auth_fields = fields
         .keys()
-        .filter(|name| name.starts_with("auth") || name.contains("authorization"))
+        .filter(|name| {
+            name.starts_with("auth")
+                || name.contains("authorization")
+                || name.starts_with("session_auth")
+                || name.as_str() == "session_policy"
+        })
         .cloned()
         .collect::<BTreeSet<_>>();
     if observed_auth_fields
@@ -1124,10 +1143,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_report_flags_conflict",
         "wordpress_review_target_conflict",
         "scan_resource_authorization_flags_conflict",
+        "scan_supplied_session_flags_conflict",
         "select",
         "scan_authorization_flags_conflict",
         "is_exact_origin_root",
         "authorization_context_transport_is_allowed",
+        "select",
         "select",
         "select",
         "select",
@@ -1137,6 +1158,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "load",
         "preflight_report_output",
         "reserve_report_bundle",
+        "load",
         "load",
         "load",
         "load",
@@ -1153,12 +1175,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 4
+            != 5
         || ordered
             .iter()
             .filter(|name| name.as_str() == "select")
             .count()
-            != 4
+            != 5
     {
         violations.push(format!(
             "CLI authorization sources and WordPress local inputs must be selected without I/O and loaded exactly once each after flag, progress, transport, profile, and defense validation and before warning/network execution; report destinations must still be preflighted before credential loading; observed {ordered:?}"
@@ -1700,7 +1722,11 @@ fn bounded_reader_is_exact(items: &[(String, String)]) -> bool {
     definitions_are_exact(
         items,
         r#"
-        #[cfg(any(feature = "authorization-review", feature = "ssrf-oast-review"))]
+        #[cfg(any(
+            feature = "authorization-review",
+            feature = "ssrf-oast-review",
+            feature = "supplied-session-review"
+        ))]
         fn read_bounded_regular_file(path: PathBuf, max_bytes: usize,)
             -> Result<CredentialBytes, AuthorizationInputError> {
             let mut file = open_regular_file(path)?;
@@ -1908,6 +1934,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_report_flags_conflict",
         "wordpress_review_target_conflict",
         "scan_resource_authorization_flags_conflict",
+        "scan_supplied_session_flags_conflict",
         "select",
         "scan_authorization_flags_conflict",
         "is_exact_origin_root",

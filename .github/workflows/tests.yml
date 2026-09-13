@@ -173,6 +173,7 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
           cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
+          cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review
       - name: Verify compiled CLI capabilities matrix
         run: |
           set -euo pipefail
@@ -180,13 +181,14 @@ jobs:
           TERMIVAR_CAPABILITIES_MATRIX_CASE=no-default cargo test --locked -p termivar-cli --no-default-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=release-bundle cargo test --locked -p termivar-cli --no-default-features --features release-bundle --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=session-only cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -298,6 +300,8 @@ jobs:
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_review_cli -- --nocapture
       - name: Exercise opt-in WordPress discovery CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture
+      - name: Exercise opt-in supplied-session review CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture
       - name: Test first-use fixture and checked-in sample contracts
         run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
       - name: Test release archive verification contracts

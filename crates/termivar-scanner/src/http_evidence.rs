@@ -58,6 +58,8 @@ pub use policy::{
     HttpBodyCapture, HttpEvidencePolicy, DEFAULT_HTTP_BODY_LIMIT, MAX_HTTP_BODY_LIMIT,
 };
 pub use probe::{HttpProbe, HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider};
+#[cfg(feature = "supplied-session-review")]
+pub(crate) use request_broker::SuppliedSessionRequestError;
 #[cfg(feature = "wordpress-review")]
 pub(crate) use request_broker::{
     wordpress_asset_request_binding_value, WordPressAssetRequestDescriptor,

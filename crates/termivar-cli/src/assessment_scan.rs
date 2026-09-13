@@ -18,6 +18,10 @@ use termivar_scanner::authorization_review::{
 use termivar_scanner::rest_review::RestDocumentedResponseClass;
 #[cfg(feature = "ssrf-oast-review")]
 use termivar_scanner::ssrf_oast_review::{SsrfOastAdminToken, SsrfOastReviewPolicy};
+#[cfg(feature = "supplied-session-review")]
+use termivar_scanner::supplied_session_review::{
+    SuppliedSessionAuthorization, SuppliedSessionCredentialMechanism, SuppliedSessionPolicy,
+};
 #[cfg(feature = "wordpress-review")]
 use termivar_scanner::web_runtime::WordPressPageScope;
 use termivar_scanner::web_runtime::{
@@ -35,6 +39,14 @@ use termivar_scanner::web_runtime::{
 #[cfg(feature = "rest-review")]
 use termivar_scanner::web_runtime::{
     RestObservedMediaClass, RestRuntimeOutcome, WebAssessmentRestAudit, REST_REVIEW_CAPABILITY_ID,
+};
+#[cfg(feature = "supplied-session-review")]
+use termivar_scanner::web_runtime::{
+    SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCoverage,
+    SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleKind,
+    SuppliedSessionHealthOutcome, SuppliedSessionPredicateOutcome,
+    SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
+    WebAssessmentSuppliedSessionAudit,
 };
 #[cfg(feature = "authorization-review")]
 use termivar_scanner::web_runtime::{
@@ -286,6 +298,9 @@ struct ExactOriginReport {
     defense: DefenseSummary,
     usage: ExactOriginUsage,
     transport: TransportSummary,
+    #[cfg(feature = "supplied-session-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supplied_session_audit: Option<SuppliedSessionAuditRecord>,
     #[cfg(feature = "authorization-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization_review_audit: Option<AuthorizationReviewAuditRecord>,
@@ -297,6 +312,138 @@ struct ExactOriginReport {
     rest_review_audit: Option<RestReviewAuditRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_inventory: Option<FailureInventory>,
+}
+
+/// Explicit value-free projection for incomplete/failed runtime diagnostics.
+///
+/// This deliberately enumerates the public fields instead of serializing the
+/// runtime-owned audit directly, so later private runtime state cannot become
+/// diagnostic output accidentally.
+#[cfg(feature = "supplied-session-review")]
+#[derive(Serialize)]
+struct SuppliedSessionAuditRecord {
+    schema: &'static str,
+    capability_id: &'static str,
+    policy_reference: String,
+    application_reference: String,
+    principal_reference: String,
+    principal_alias: String,
+    principal_assurance: SuppliedSessionPrincipalAssurance,
+    credential_mechanism: SuppliedSessionCredentialMechanism,
+    health_oracle: SuppliedSessionHealthOracleRecord,
+    outcome: SuppliedSessionAuditOutcome,
+    coverage: SuppliedSessionCoverage,
+    checkpoints: Vec<SuppliedSessionCheckpointRecord>,
+    resources: Vec<SuppliedSessionResourceRecord>,
+    selected_resource_count: u8,
+    dispatched_resource_count: u8,
+    committed_resource_count: u8,
+    dispatched_request_count: u8,
+    response_bytes: u64,
+    response_byte_limit: u64,
+    response_byte_limit_exceeded: bool,
+    refresh_performed: bool,
+    anonymous_fallback_performed: bool,
+    continuous_authentication_established: bool,
+    exploit_execution: &'static str,
+    impact_validation: &'static str,
+}
+
+#[cfg(feature = "supplied-session-review")]
+#[derive(Serialize)]
+struct SuppliedSessionHealthOracleRecord {
+    kind: SuppliedSessionHealthOracleKind,
+    field_reference: String,
+}
+
+#[cfg(feature = "supplied-session-review")]
+#[derive(Serialize)]
+struct SuppliedSessionCheckpointRecord {
+    sequence: u8,
+    phase: SuppliedSessionHealthCheckpointPhase,
+    after_subject_count: u8,
+    evidence_reference: Option<String>,
+    outcome: SuppliedSessionHealthOutcome,
+    status: Option<u16>,
+    body_state: SuppliedSessionBodyState,
+    predicate: SuppliedSessionPredicateOutcome,
+    response_bytes: u64,
+}
+
+#[cfg(feature = "supplied-session-review")]
+#[derive(Serialize)]
+struct SuppliedSessionResourceRecord {
+    sequence: u8,
+    resource_reference: String,
+    evidence_reference: Option<String>,
+    outcome: SuppliedSessionResourceOutcome,
+    status: Option<u16>,
+    response_bytes: u64,
+    epoch: u8,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl SuppliedSessionAuditRecord {
+    fn from_audit(audit: &WebAssessmentSuppliedSessionAudit) -> Self {
+        debug_assert!(!audit.exploit_execution_performed());
+        debug_assert!(!audit.impact_validation_performed());
+        Self {
+            schema: audit.schema(),
+            capability_id: audit.capability_id(),
+            policy_reference: audit.policy_reference().to_owned(),
+            application_reference: audit.application_reference().to_owned(),
+            principal_reference: audit.principal_reference().to_owned(),
+            principal_alias: audit.principal_alias().to_owned(),
+            principal_assurance: audit.principal_assurance(),
+            credential_mechanism: audit.credential_mechanism(),
+            health_oracle: SuppliedSessionHealthOracleRecord {
+                kind: audit.health_oracle().kind(),
+                field_reference: audit.health_oracle().field_reference().to_owned(),
+            },
+            outcome: audit.outcome(),
+            coverage: audit.coverage(),
+            checkpoints: audit
+                .checkpoints()
+                .iter()
+                .map(|checkpoint| SuppliedSessionCheckpointRecord {
+                    sequence: checkpoint.sequence(),
+                    phase: checkpoint.phase(),
+                    after_subject_count: checkpoint.after_subject_count(),
+                    evidence_reference: checkpoint.evidence_reference().map(str::to_owned),
+                    outcome: checkpoint.outcome(),
+                    status: checkpoint.status(),
+                    body_state: checkpoint.body_state(),
+                    predicate: checkpoint.predicate(),
+                    response_bytes: checkpoint.response_bytes(),
+                })
+                .collect(),
+            resources: audit
+                .resources()
+                .iter()
+                .map(|resource| SuppliedSessionResourceRecord {
+                    sequence: resource.sequence(),
+                    resource_reference: resource.resource_reference().to_owned(),
+                    evidence_reference: resource.evidence_reference().map(str::to_owned),
+                    outcome: resource.outcome(),
+                    status: resource.status(),
+                    response_bytes: resource.response_bytes(),
+                    epoch: resource.epoch(),
+                })
+                .collect(),
+            selected_resource_count: audit.selected_resource_count(),
+            dispatched_resource_count: audit.dispatched_resource_count(),
+            committed_resource_count: audit.committed_resource_count(),
+            dispatched_request_count: audit.dispatched_request_count(),
+            response_bytes: audit.response_bytes(),
+            response_byte_limit: audit.response_byte_limit(),
+            response_byte_limit_exceeded: audit.response_byte_limit_exceeded(),
+            refresh_performed: audit.refresh_performed(),
+            anonymous_fallback_performed: audit.anonymous_fallback_performed(),
+            continuous_authentication_established: audit.continuous_authentication_established(),
+            exploit_execution: "not_performed",
+            impact_validation: "not_performed",
+        }
+    }
 }
 
 #[cfg(feature = "authorization-review")]
@@ -589,6 +736,9 @@ pub(crate) struct ProfileScanRuntimeOptions {
     #[cfg(feature = "authorization-review")]
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) supplied_session_review:
+        Option<(SuppliedSessionPolicy, SuppliedSessionAuthorization)>,
     #[cfg(feature = "ssrf-oast-review")]
     pub(crate) ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "wordpress-review")]
@@ -620,6 +770,8 @@ pub(crate) async fn run_profile_scan(
         rest_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
+        #[cfg(feature = "supplied-session-review")]
+        supplied_session_review,
         #[cfg(feature = "ssrf-oast-review")]
         ssrf_oast_review,
         #[cfg(feature = "wordpress-review")]
@@ -672,6 +824,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "resource authorization review requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "supplied-session-review")]
+            if supplied_session_review.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "supplied-session review requires the web-review profile",
                 )
                 .into());
             }
@@ -732,6 +892,8 @@ pub(crate) async fn run_profile_scan(
                     rest_review,
                     #[cfg(feature = "authorization-review")]
                     resource_authorization_review,
+                    #[cfg(feature = "supplied-session-review")]
+                    supplied_session_review,
                     #[cfg(feature = "ssrf-oast-review")]
                     ssrf_oast_review,
                     #[cfg(feature = "wordpress-review")]
@@ -791,6 +953,8 @@ struct WebReviewRunOptions {
     rest_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
+    #[cfg(feature = "supplied-session-review")]
+    supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionAuthorization)>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "wordpress-review")]
@@ -817,6 +981,8 @@ async fn run_web_review(
         rest_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
+        #[cfg(feature = "supplied-session-review")]
+        supplied_session_review,
         #[cfg(feature = "ssrf-oast-review")]
         ssrf_oast_review,
         #[cfg(feature = "wordpress-review")]
@@ -902,6 +1068,10 @@ async fn run_web_review(
     #[cfg(feature = "authorization-review")]
     if let Some((policy, principals)) = resource_authorization_review {
         builder = builder.with_resource_authorization_review(policy, principals);
+    }
+    #[cfg(feature = "supplied-session-review")]
+    if let Some((policy, authorization)) = supplied_session_review {
+        builder = builder.with_supplied_session_review(policy, authorization);
     }
     #[cfg(feature = "ssrf-oast-review")]
     if let Some((policy, administrator)) = ssrf_oast_review {
@@ -1236,6 +1406,10 @@ fn document_from_web_review_report(
             defense: defense_summary(report.defense()),
             usage: exact_origin_usage(report.usage()),
             transport: transport_summary(report.transport()),
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_audit: report
+                .supplied_session_audit()
+                .map(SuppliedSessionAuditRecord::from_audit),
             #[cfg(feature = "authorization-review")]
             authorization_review_audit: report
                 .authorization_review_audit()
@@ -1313,6 +1487,10 @@ fn document_from_web_review_failure(
             defense: defense_summary(receipt.defense()),
             usage: exact_origin_usage(receipt.usage()),
             transport: transport_summary(receipt.transport()),
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_audit: receipt
+                .supplied_session_audit()
+                .map(SuppliedSessionAuditRecord::from_audit),
             #[cfg(feature = "authorization-review")]
             authorization_review_audit: None,
             #[cfg(feature = "openapi-review")]
@@ -1878,6 +2056,25 @@ fn render_text(document: &WebAssessmentDocument) -> String {
                 report.usage.response_bytes,
                 report.usage.elapsed_ms
             ));
+            #[cfg(feature = "supplied-session-review")]
+            if let Some(audit) = &report.supplied_session_audit {
+                lines.push(format!(
+                    "supplied session audit: principal_alias={} principal_assurance={} health_oracle={} health_field_reference={} outcome={} coverage={} selected_resources={} dispatched_resources={} committed_resources={} requests={} response_bytes={} response_byte_limit={} response_byte_limit_exceeded={}",
+                    audit.principal_alias,
+                    supplied_session_principal_assurance_code(audit.principal_assurance),
+                    supplied_session_health_oracle_code(audit.health_oracle.kind),
+                    audit.health_oracle.field_reference,
+                    supplied_session_audit_outcome_code(audit.outcome),
+                    supplied_session_coverage_code(audit.coverage),
+                    audit.selected_resource_count,
+                    audit.dispatched_resource_count,
+                    audit.committed_resource_count,
+                    audit.dispatched_request_count,
+                    audit.response_bytes,
+                    audit.response_byte_limit,
+                    audit.response_byte_limit_exceeded,
+                ));
+            }
             #[cfg(feature = "authorization-review")]
             if let Some(audit) = &report.authorization_review_audit {
                 lines.push(format!(
@@ -1914,6 +2111,49 @@ fn render_text(document: &WebAssessmentDocument) -> String {
     lines.join("\n")
 }
 
+#[cfg(feature = "supplied-session-review")]
+const fn supplied_session_principal_assurance_code(
+    value: SuppliedSessionPrincipalAssurance,
+) -> &'static str {
+    match value {
+        SuppliedSessionPrincipalAssurance::OperatorDeclared => "operator_declared",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn supplied_session_health_oracle_code(
+    value: SuppliedSessionHealthOracleKind,
+) -> &'static str {
+    match value {
+        SuppliedSessionHealthOracleKind::JsonBooleanTrue => "json_boolean_true",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn supplied_session_audit_outcome_code(value: SuppliedSessionAuditOutcome) -> &'static str {
+    match value {
+        SuppliedSessionAuditOutcome::Complete => "complete",
+        SuppliedSessionAuditOutcome::StartupUnhealthy => "startup_unhealthy",
+        SuppliedSessionAuditOutcome::SessionLost => "session_lost",
+        SuppliedSessionAuditOutcome::ResourceUnavailable => "resource_unavailable",
+        SuppliedSessionAuditOutcome::RuntimeLimit => "runtime_limit",
+        SuppliedSessionAuditOutcome::Cancelled => "cancelled",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn supplied_session_coverage_code(value: SuppliedSessionCoverage) -> &'static str {
+    match value {
+        SuppliedSessionCoverage::Complete => "complete",
+        SuppliedSessionCoverage::Partial => "partial",
+        SuppliedSessionCoverage::None => "none",
+        _ => "unknown",
+    }
+}
+
 fn append_assessment_item_lines(lines: &mut Vec<String>, report: &AssessmentItemsReport) {
     let AssessmentItemsReport::Unavailable {
         code,
@@ -1933,6 +2173,83 @@ fn append_assessment_item_lines(lines: &mut Vec<String>, report: &AssessmentItem
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "supplied-session-review")]
+    fn diagnostic_supplied_session_audit() -> SuppliedSessionAuditRecord {
+        SuppliedSessionAuditRecord {
+            schema: "security.supplied-session-audit/v1",
+            capability_id: "session.supplied-context-assessment@1",
+            policy_reference: format!("supplied-session-policy-sha256:{}", "1".repeat(64)),
+            application_reference: format!(
+                "supplied-session-application-sha256:{}",
+                "2".repeat(64)
+            ),
+            principal_reference: "supplied-session-principal-0001".to_owned(),
+            principal_alias: "fixture-reader".to_owned(),
+            principal_assurance: SuppliedSessionPrincipalAssurance::OperatorDeclared,
+            credential_mechanism: SuppliedSessionCredentialMechanism::AuthorizationHeader,
+            health_oracle: SuppliedSessionHealthOracleRecord {
+                kind: SuppliedSessionHealthOracleKind::JsonBooleanTrue,
+                field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),
+            },
+            outcome: SuppliedSessionAuditOutcome::Complete,
+            coverage: SuppliedSessionCoverage::Complete,
+            checkpoints: vec![
+                SuppliedSessionCheckpointRecord {
+                    sequence: 0,
+                    phase: SuppliedSessionHealthCheckpointPhase::Startup,
+                    after_subject_count: 0,
+                    evidence_reference: Some(format!(
+                        "supplied-session-checkpoint-evidence-sha256:{}",
+                        "4".repeat(64)
+                    )),
+                    outcome: SuppliedSessionHealthOutcome::Healthy,
+                    status: Some(200),
+                    body_state: SuppliedSessionBodyState::Complete,
+                    predicate: SuppliedSessionPredicateOutcome::Matched,
+                    response_bytes: 10,
+                },
+                SuppliedSessionCheckpointRecord {
+                    sequence: 1,
+                    phase: SuppliedSessionHealthCheckpointPhase::Terminal,
+                    after_subject_count: 1,
+                    evidence_reference: Some(format!(
+                        "supplied-session-checkpoint-evidence-sha256:{}",
+                        "5".repeat(64)
+                    )),
+                    outcome: SuppliedSessionHealthOutcome::Healthy,
+                    status: Some(200),
+                    body_state: SuppliedSessionBodyState::Complete,
+                    predicate: SuppliedSessionPredicateOutcome::Matched,
+                    response_bytes: 11,
+                },
+            ],
+            resources: vec![SuppliedSessionResourceRecord {
+                sequence: 0,
+                resource_reference: format!("supplied-session-resource-sha256:{}", "6".repeat(64)),
+                evidence_reference: Some(format!(
+                    "supplied-session-resource-evidence-sha256:{}",
+                    "7".repeat(64)
+                )),
+                outcome: SuppliedSessionResourceOutcome::Committed,
+                status: Some(200),
+                response_bytes: 12,
+                epoch: 1,
+            }],
+            selected_resource_count: 1,
+            dispatched_resource_count: 1,
+            committed_resource_count: 1,
+            dispatched_request_count: 3,
+            response_bytes: 33,
+            response_byte_limit: 65_536,
+            response_byte_limit_exceeded: false,
+            refresh_performed: false,
+            anonymous_fallback_performed: false,
+            continuous_authentication_established: false,
+            exploit_execution: "not_performed",
+            impact_validation: "not_performed",
+        }
+    }
 
     #[test]
     fn progress_cadence_delays_a_new_period_after_an_overdue_emission() {
@@ -2716,6 +3033,8 @@ lifetime_ms = 5000
                     retained_dispatch_receipts: 2,
                     omitted_dispatch_receipts: 0,
                 },
+                #[cfg(feature = "supplied-session-review")]
+                supplied_session_audit: Some(diagnostic_supplied_session_audit()),
                 #[cfg(feature = "authorization-review")]
                 authorization_review_audit: None,
                 #[cfg(feature = "openapi-review")]
@@ -2781,6 +3100,23 @@ lifetime_ms = 5000
         assert!(rendered.contains(
             "REST review audit: eligible_operations=0 requests=0 active_verifications=0 outcome=not_eligible replay_stable=false item_projected=false"
         ));
+        #[cfg(feature = "supplied-session-review")]
+        {
+            assert!(rendered.contains(
+                "supplied session audit: principal_alias=fixture-reader principal_assurance=operator_declared health_oracle=json_boolean_true"
+            ));
+            assert!(rendered.contains("outcome=complete coverage=complete"));
+            assert!(rendered.contains("response_byte_limit=65536"));
+            let serialized = serde_json::to_value(&document).unwrap();
+            let audit = &serialized["assessment"]["report"]["supplied_session_audit"];
+            assert_eq!(audit["schema"], "security.supplied-session-audit/v1");
+            assert_eq!(audit["principal_alias"], "fixture-reader");
+            assert_eq!(audit["health_oracle"]["kind"], "json_boolean_true");
+            assert_eq!(audit["response_byte_limit"], 65_536);
+            assert_eq!(audit["response_byte_limit_exceeded"], false);
+            assert_eq!(audit["exploit_execution"], "not_performed");
+            assert_eq!(audit["impact_validation"], "not_performed");
+        }
         assert!(!rendered.contains(SECRET));
         assert!(!rendered.contains("https://example.test/private"));
         #[cfg(feature = "authorization-review")]
@@ -2788,6 +3124,18 @@ lifetime_ms = 5000
             let serialized = serde_json::to_value(&document).unwrap();
             assert!(serialized["assessment"]["report"]
                 .get("authorization_review_audit")
+                .is_none());
+        }
+        #[cfg(feature = "supplied-session-review")]
+        {
+            let mut without_session = document;
+            let AssessmentBody::ExactOrigin(report) = &mut without_session.assessment else {
+                panic!("expected exact-origin report");
+            };
+            report.supplied_session_audit = None;
+            let serialized = serde_json::to_value(&without_session).unwrap();
+            assert!(serialized["assessment"]["report"]
+                .get("supplied_session_audit")
                 .is_none());
         }
     }
