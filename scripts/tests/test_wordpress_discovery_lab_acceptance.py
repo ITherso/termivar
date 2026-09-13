@@ -6418,10 +6418,20 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             scenarios, responses, _ = offline_fixture(root)
-            surface_item = synthetic_assessment_item(
-                "sha256:" + "9" * 64,
-                "session.synthetic-health-observation@1",
-                "Synthetic supplied-session health observation",
+            surface_lost = synthetic_assessment_item(
+                BASE_FINGERPRINT,
+                BASE_CAPABILITY,
+                "WordPress surface hints observed",
+            )
+            surface_complete = copy.deepcopy(surface_lost)
+            surface_complete["evidence_count"] = 2
+            surface_complete["evidence_references"] = [
+                "evidence-0000", "evidence-0005"
+            ]
+            passive_item = synthetic_assessment_item(
+                "sha256:" + "8" * 64,
+                "http.synthetic-passive-observation@1",
+                "Synthetic unchanged passive observation",
             )
             discovery_complete = synthetic_discovery_item()
             discovery_complete["evidence_count"] = 5
@@ -6448,12 +6458,17 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             for name, audit in audits.items():
                 integration_selected = name != "session-root-option-off"
                 items = [
-                    copy.deepcopy(surface_item),
+                    copy.deepcopy(
+                        surface_complete
+                        if integration_selected and audit["outcome"] == "complete"
+                        else surface_lost
+                    ),
                     copy.deepcopy(
                         discovery_complete
                         if integration_selected and audit["outcome"] == "complete"
                         else discovery_lost
                     ),
+                    copy.deepcopy(passive_item),
                 ]
                 wordpress_document, _, _ = self.session_wordpress_document(
                     root,
@@ -6552,23 +6567,34 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
 
             healthy_raw = raw_documents["session-root-healthy"]
             loss_raw = raw_documents["session-root-loss-after-resource"]
-            unchanged_projection = projection_from_item(surface_item)
+            surface_before_projection = projection_from_item(surface_complete)
+            surface_after_projection = projection_from_item(surface_lost)
             changed_before_projection = projection_from_item(discovery_complete)
             changed_after_projection = projection_from_item(discovery_lost)
+            unchanged_projection = projection_from_item(passive_item)
             health_loss = comparison_document(
-                healthy_raw, 2, loss_raw, 2,
+                healthy_raw, 3, loss_raw, 3,
                 groups={
                     "only_in_after": [],
                     "only_in_before": [],
-                    "changed": [comparison_item(
-                        discovery_complete["fingerprint"],
-                        discovery_complete["capability_id"],
-                        before=changed_before_projection,
-                        after=changed_after_projection,
-                        changed_fields=["evidence"],
-                    )],
+                    "changed": [
+                        comparison_item(
+                            surface_complete["fingerprint"],
+                            surface_complete["capability_id"],
+                            before=surface_before_projection,
+                            after=surface_after_projection,
+                            changed_fields=["evidence"],
+                        ),
+                        comparison_item(
+                            discovery_complete["fingerprint"],
+                            discovery_complete["capability_id"],
+                            before=changed_before_projection,
+                            after=changed_after_projection,
+                            changed_fields=["evidence"],
+                        ),
+                    ],
                     "unchanged": [comparison_item(
-                        surface_item["fingerprint"], surface_item["capability_id"],
+                        passive_item["fingerprint"], passive_item["capability_id"],
                         before=unchanged_projection,
                         after=copy.deepcopy(unchanged_projection),
                         changed_fields=[],
@@ -6798,8 +6824,8 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                 "synthetic cross-principal partition",
                 context_blocks_item_pairing=True,
             )
-            self.assertEqual(counts["only_in_before"], 2)
-            self.assertEqual(counts["only_in_after"], 2)
+            self.assertEqual(counts["only_in_before"], 3)
+            self.assertEqual(counts["only_in_after"], 3)
             duplicated = copy.deepcopy(principal_change)
             duplicated["only_in_before"].append(
                 copy.deepcopy(duplicated["only_in_before"][0])
@@ -6846,7 +6872,7 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                 {
                     "only_in_after": 0,
                     "only_in_before": 0,
-                    "changed": 1,
+                    "changed": 2,
                     "unchanged": 1,
                 },
             )
@@ -6857,8 +6883,8 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             self.assertEqual(
                 result["supplied_session_alice_to_bob"]["item_counts"],
                 {
-                    "only_in_after": 2,
-                    "only_in_before": 2,
+                    "only_in_after": 3,
+                    "only_in_before": 3,
                     "changed": 0,
                     "unchanged": 0,
                 },
@@ -7003,7 +7029,7 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                 (
                     "wrong health-loss outer capability",
                     lambda response: response["changed"][0].update({
-                        "capability_id": BASE_CAPABILITY,
+                        "capability_id": "session.synthetic-invalid@1",
                     }),
                 ),
                 (

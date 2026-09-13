@@ -4650,45 +4650,51 @@ def _run_offline_acceptance(
             after_document,
             "offline supplied-session health-loss comparison",
         )
-        expected_changed_fingerprints = {
-            fingerprint
+        expected_changed_capability_ids = {
+            "technology.wordpress-surface-observed@1",
+            "technology.wordpress-metadata-source-response-observed@1",
+        }
+        expected_changed_identities = {
+            fingerprint: capability_id
             for fingerprint, capability_id in before_document.identities.items()
-            if capability_id
-            == "technology.wordpress-metadata-source-response-observed@1"
+            if capability_id in expected_changed_capability_ids
             and after_document.identities.get(fingerprint) == capability_id
         }
         changed_items = comparison["changed"]
-        changed_item = (
-            changed_items[0]
-            if isinstance(changed_items, list) and len(changed_items) == 1
-            else None
-        )
         require(
             before_document.item_count == after_document.item_count
-            and len(expected_changed_fingerprints) == 1
+            and len(expected_changed_identities) == 2
+            and set(expected_changed_identities.values())
+            == expected_changed_capability_ids
             and counts["only_in_before"] == 0
             and counts["only_in_after"] == 0
-            and counts["changed"] == 1
-            and counts["unchanged"] == before_document.item_count - 1
-            and identities["changed"]
-            == {
-                fingerprint:
-                "technology.wordpress-metadata-source-response-observed@1"
-                for fingerprint in expected_changed_fingerprints
-            }
+            and counts["changed"] == len(expected_changed_identities)
+            and counts["unchanged"]
+            == before_document.item_count - len(expected_changed_identities)
+            and identities["changed"] == expected_changed_identities
             and identities["unchanged"]
             == {
                 fingerprint: capability_id
                 for fingerprint, capability_id in before_document.identities.items()
-                if fingerprint not in expected_changed_fingerprints
+                if fingerprint not in expected_changed_identities
             }
-            and isinstance(changed_item, dict)
-            and changed_item.get("fingerprint")
-            == next(iter(expected_changed_fingerprints))
-            and changed_item.get("capability_id")
-            == "technology.wordpress-metadata-source-response-observed@1"
-            and changed_item.get("changed_fields") == ["evidence"],
+            and all(
+                isinstance(item, dict)
+                and expected_changed_identities.get(item.get("fingerprint"))
+                == item.get("capability_id")
+                and item.get("changed_fields") == ["evidence"]
+                for item in changed_items
+            ),
             "offline supplied-session health loss has an invalid item partition",
+            {
+                "expected_changed_capability_ids": sorted(
+                    expected_changed_capability_ids
+                ),
+                "actual_changed_capability_ids": sorted(
+                    identities["changed"].values()
+                ),
+                "item_counts": counts,
+            },
         )
         supplied = comparison.get("supplied_session_comparison")
         require(
