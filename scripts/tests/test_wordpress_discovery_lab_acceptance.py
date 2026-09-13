@@ -3274,23 +3274,125 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         self.assertFalse(upstream_thread.is_alive())
 
     def test_html_execution_boundary_is_exact_and_bounded(self):
-        html = (
+        boundary = (
             "<h3>Execution boundary</h3>"
+            "<p>The WordPress review interprets retained and operator-supplied data "
+            "only; it does not execute an exploit or validate impact.</p>"
             "<dl class=\"meta\">"
             "<dt>Exploit execution</dt><dd><code>not_performed</code></dd>"
             "<dt>Impact validation</dt><dd><code>not_performed</code></dd>"
             "</dl>"
-        ).encode()
-        runner._validate_wordpress_execution_boundary(html)
-
-        duplicated = html.replace(
-            b"</dl>",
-            b"<dt>Exploit execution</dt><dd><code>not_performed</code></dd></dl>",
         )
+        wordpress = (
+            "<section><h2>WordPress evidence review audit</h2>"
+            + boundary
+            + "</section>"
+        )
+        html = wordpress.encode()
+        runner._validate_wordpress_execution_boundary(html, "pretty-discovery")
+
+        supplied_session = (
+            "<section><h2>Supplied session assessment audit</h2>"
+            "<dl class=\"meta\">"
+            "<dt>Exploit execution</dt><dd><code>not_performed</code></dd>"
+            "<dt>Impact validation</dt><dd><code>not_performed</code></dd>"
+            "</dl></section>"
+        )
+        runner._validate_wordpress_execution_boundary(
+            (supplied_session + wordpress).encode(),
+            "session-root-healthy",
+        )
+
+        duplicated = wordpress.replace(
+            "</section>", boundary + "</section>"
+        ).encode()
         with self.assertRaisesRegex(runner.AcceptanceError, "omits or duplicates"):
-            runner._validate_wordpress_execution_boundary(duplicated)
+            runner._validate_wordpress_execution_boundary(
+                duplicated, "pretty-discovery"
+            )
+        for duplicate_fragment in (
+            "<h3>Execution boundary</h3>",
+            "<dt>Exploit execution</dt><dd><code>not_performed</code></dd>",
+            "<dt>Impact validation</dt><dd><code>not_performed</code></dd>",
+        ):
+            with self.subTest(duplicate_fragment=duplicate_fragment):
+                duplicated_fragment = wordpress.replace(
+                    "</section>", duplicate_fragment + "</section>"
+                ).encode()
+                with self.assertRaisesRegex(
+                    runner.AcceptanceError, "omits or duplicates"
+                ):
+                    runner._validate_wordpress_execution_boundary(
+                        duplicated_fragment, "pretty-discovery"
+                    )
+        outside_only = (
+            supplied_session
+            + "<section><h2>WordPress evidence review audit</h2></section>"
+        ).encode()
+        with self.assertRaisesRegex(runner.AcceptanceError, "omits or duplicates"):
+            runner._validate_wordpress_execution_boundary(
+                outside_only, "session-root-healthy"
+            )
+        wrong_paragraph = wordpress.replace(
+            "it does not execute an exploit or validate impact.",
+            "it performs no active checks.",
+        ).encode()
+        with self.assertRaisesRegex(
+            runner.AcceptanceError, "omits or duplicates"
+        ) as raised:
+            runner._validate_wordpress_execution_boundary(
+                wrong_paragraph, "session-root-healthy"
+            )
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {
+                "scenario": "session-root-healthy",
+                "expected": {
+                    "wordpress_section_count": 1,
+                    "section_closed": True,
+                    "execution_block_count": 1,
+                    "execution_heading_count": 1,
+                    "exploit_field_count": 1,
+                    "impact_field_count": 1,
+                },
+                "actual": {
+                    "wordpress_section_count": 1,
+                    "section_closed": True,
+                    "execution_block_count": 0,
+                    "execution_heading_count": 1,
+                    "exploit_field_count": 1,
+                    "impact_field_count": 1,
+                },
+            },
+        )
+        noncontiguous = wordpress.replace(
+            '</p><dl class="meta">',
+            '</p><p>unreviewed insertion</p><dl class="meta">',
+        ).encode()
+        with self.assertRaisesRegex(runner.AcceptanceError, "omits or duplicates"):
+            runner._validate_wordpress_execution_boundary(
+                noncontiguous, "pretty-discovery"
+            )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError, "WordPress review section"
+        ):
+            runner._validate_wordpress_execution_boundary(
+                (wordpress + wordpress).encode(), "pretty-discovery"
+            )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError, "WordPress review section"
+        ):
+            runner._validate_wordpress_execution_boundary(
+                b"<section><h2>WordPress evidence review audit</h2>",
+                "pretty-discovery",
+            )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError, "closed registry"
+        ) as raised:
+            runner._validate_wordpress_execution_boundary(html, "../private")
+        self.assertIsNone(raised.exception.diagnostic)
         with self.assertRaisesRegex(runner.AcceptanceError, "report bound"):
-            runner._validate_wordpress_execution_boundary(b"")
+            runner._validate_wordpress_execution_boundary(b"", "pretty-discovery")
 
     def test_internal_container_address_rejects_network_or_address_drift(self):
         network_name = "termivar-wp-net-0123456789ab"

@@ -2087,7 +2087,11 @@ def _report_identity(bundle: Path) -> dict[str, Any]:
     return identity
 
 
-def _validate_wordpress_execution_boundary(html_bytes: bytes) -> None:
+def _validate_wordpress_execution_boundary(html_bytes: bytes, scenario: str) -> None:
+    require(
+        isinstance(scenario, str) and scenario in EXPECTED_SCENARIOS,
+        "assessment HTML execution-boundary scenario is not in the closed registry",
+    )
     require(
         0 < len(html_bytes) <= MAX_REPORT_PAYLOAD_BYTES,
         "assessment HTML is empty or exceeds its report bound",
@@ -2096,13 +2100,69 @@ def _validate_wordpress_execution_boundary(html_bytes: bytes) -> None:
         html = html_bytes.decode("utf-8", "strict")
     except UnicodeDecodeError as error:
         raise AcceptanceError("assessment HTML is not valid UTF-8") from error
-    for marker in (
-        "<dt>Exploit execution</dt><dd><code>not_performed</code></dd>",
-        "<dt>Impact validation</dt><dd><code>not_performed</code></dd>",
+
+    wordpress_section_marker = (
+        "<section><h2>WordPress evidence review audit</h2>"
+    )
+    execution_heading = "<h3>Execution boundary</h3>"
+    execution_boundary = (
+        execution_heading
+        + "<p>The WordPress review interprets retained and operator-supplied data "
+        "only; it does not execute an exploit or validate impact.</p>"
+        '<dl class="meta">'
+        "<dt>Exploit execution</dt><dd><code>not_performed</code></dd>"
+        "<dt>Impact validation</dt><dd><code>not_performed</code></dd>"
+        "</dl>"
+    )
+    wordpress_section_count = html.count(wordpress_section_marker)
+    wordpress_section = ""
+    section_closed = False
+    if wordpress_section_count == 1:
+        wordpress_section_start = html.index(wordpress_section_marker)
+        wordpress_section_end = html.find("</section>", wordpress_section_start)
+        section_closed = wordpress_section_end >= 0
+        if section_closed:
+            wordpress_section = html[wordpress_section_start:wordpress_section_end]
+    actual = {
+        "wordpress_section_count": wordpress_section_count,
+        "section_closed": section_closed,
+        "execution_block_count": wordpress_section.count(execution_boundary),
+        "execution_heading_count": wordpress_section.count(execution_heading),
+        "exploit_field_count": wordpress_section.count(
+            "<dt>Exploit execution</dt><dd><code>not_performed</code></dd>"
+        ),
+        "impact_field_count": wordpress_section.count(
+            "<dt>Impact validation</dt><dd><code>not_performed</code></dd>"
+        ),
+    }
+    expected = {
+        "wordpress_section_count": 1,
+        "section_closed": True,
+        "execution_block_count": 1,
+        "execution_heading_count": 1,
+        "exploit_field_count": 1,
+        "impact_field_count": 1,
+    }
+    diagnostic = {"scenario": scenario, "expected": expected, "actual": actual}
+    require(
+        wordpress_section_count == 1 and section_closed,
+        "assessment HTML omits or duplicates its WordPress review section",
+        diagnostic,
+    )
+    require(
+        actual["execution_block_count"] == 1,
+        "assessment HTML omits or duplicates its fixed WordPress execution boundary",
+        diagnostic,
+    )
+    for count_name in (
+        "execution_heading_count",
+        "exploit_field_count",
+        "impact_field_count",
     ):
         require(
-            html.count(marker) == 1,
+            actual[count_name] == 1,
             "assessment HTML omits or duplicates its fixed WordPress execution boundary",
+            diagnostic,
         )
 
 
@@ -7266,7 +7326,8 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 )
                 if discovery:
                     _validate_wordpress_execution_boundary(
-                        (bundle / "assessment.html").read_bytes()
+                        (bundle / "assessment.html").read_bytes(),
+                        name,
                     )
                     try:
                         if supplied_session is not None:
