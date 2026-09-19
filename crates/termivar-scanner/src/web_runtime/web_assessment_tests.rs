@@ -9398,7 +9398,7 @@ fn no_eof_truth_precedes_stop_state_and_uses_exact_five_or_six_parents() {
         "response-status-evidence",
         "response-final-url-evidence",
         "response-body-truncated-evidence",
-        "response-body-digest-evidence",
+        "response-body-lineage-evidence",
     ];
     for (missing, expected_invariant) in incomplete_required.into_iter().enumerate() {
         let mut refs = parents.refs(false);
@@ -9432,7 +9432,7 @@ fn no_eof_truth_precedes_stop_state_and_uses_exact_five_or_six_parents() {
         "response-final-url-evidence",
         "response-media-type-evidence",
         "response-body-truncated-evidence",
-        "response-body-digest-evidence",
+        "response-body-lineage-evidence",
     ];
     for (missing, expected_invariant) in complete_required.into_iter().enumerate() {
         let mut refs = parents.refs(true);
