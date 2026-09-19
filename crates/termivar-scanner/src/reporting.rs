@@ -1474,6 +1474,11 @@ fn write_assessment_actionable_items_html(
                 "Opaque assessment subject reference (not proof of affectedness or location)",
                 &item.subject_reference,
             )?;
+            write_html_actionable_code_field(
+                output,
+                "Assessment target kind (resource location withheld)",
+                item.presentation_target,
+            )?;
             write_html_actionable_text_field(
                 output,
                 "Collection and principal context",
@@ -3680,6 +3685,11 @@ fn write_assessment_actionable_items_markdown(
                 output,
                 "Opaque assessment subject reference (not proof of affectedness or location)",
                 &item.subject_reference,
+            )?;
+            write_markdown_actionable_code_field(
+                output,
+                "Assessment target kind (resource location withheld)",
+                item.presentation_target,
             )?;
             write_markdown_actionable_text_field(
                 output,
@@ -10865,6 +10875,8 @@ struct AssessmentItemDocument<'a> {
     schema: &'a str,
     capability_id: &'a str,
     subject_reference: String,
+    #[serde(skip_serializing)]
+    presentation_target: &'static str,
     title: &'a str,
     disposition: &'static str,
     claim_basis: &'static str,
@@ -10898,6 +10910,7 @@ impl<'a> AssessmentItemDocument<'a> {
             schema: item.schema(),
             capability_id: item.capability_id(),
             subject_reference: item.subject_reference().to_string(),
+            presentation_target: item.presentation_target_kind(),
             title: item.title(),
             disposition: item.disposition().as_str(),
             claim_basis: assessment_basis_token(item.basis()),
@@ -10923,6 +10936,17 @@ impl<'a> AssessmentItemDocument<'a> {
 
     fn validate(&self) -> Result<(), ReportError> {
         if !valid_opaque_assessment_reference(&self.subject_reference, "subject") {
+            return Err(ReportError::Serialization);
+        }
+        if !matches!(
+            self.presentation_target,
+            "assessment_subject"
+                | "query_parameter"
+                | "ssrf_oast_query"
+                | "authorization_resource"
+                | "openapi_document"
+                | "rest_operation"
+        ) {
             return Err(ReportError::Serialization);
         }
         let mut references: Vec<&str> = Vec::new();
@@ -11543,6 +11567,7 @@ mod tests {
                 schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
                 capability_id: text,
                 subject_reference: "subject-0000".to_owned(),
+                presentation_target: "assessment_subject",
                 title: text,
                 disposition: "informational",
                 claim_basis: "observation",
@@ -11731,6 +11756,7 @@ mod tests {
             schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
             capability_id: "cors.policy.relationship@1",
             subject_reference: "subject-0000".to_owned(),
+            presentation_target: "assessment_subject",
             title: "CORS policy relationship warrants review",
             disposition: "needs_review",
             claim_basis: "differential",
@@ -11756,6 +11782,7 @@ mod tests {
             schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
             capability_id: "review.confirmed.test-boundary@1",
             subject_reference: "subject-0000".to_owned(),
+            presentation_target: "assessment_subject",
             title: "Verifier-authorized transition",
             disposition: "confirmed",
             claim_basis: "verifier_transition",
@@ -11960,6 +11987,7 @@ mod tests {
             schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
             capability_id: WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID,
             subject_reference: "subject-0000".to_owned(),
+            presentation_target: "assessment_subject",
             title: "WordPress metadata-source response outcome observed",
             disposition: "informational",
             claim_basis: "observation",
@@ -12658,6 +12686,38 @@ mod tests {
         assert_eq!(value["status"], "complete");
         assert_eq!(value["subject_count"], 1);
         assert_eq!(value["item_count"], 3);
+        let item_keys = value["items"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            item_keys,
+            BTreeSet::from([
+                "candidate_evidence_references",
+                "capability_id",
+                "case_reference",
+                "category",
+                "claim_basis",
+                "confidence_ppm",
+                "control_evidence_references",
+                "cwe",
+                "disposition",
+                "evidence_count",
+                "evidence_references",
+                "fingerprint",
+                "outcome_reference",
+                "redacted_summary",
+                "remediation",
+                "schema",
+                "severity",
+                "subject_reference",
+                "title",
+                "verification_stage",
+            ])
+        );
+        assert!(value["items"][0].get("presentation_target").is_none());
         assert_eq!(value["items"][0]["disposition"], "informational");
         assert_eq!(value["items"][0]["claim_basis"], "observation");
         assert_eq!(
@@ -12769,6 +12829,7 @@ mod tests {
                 "Informational observations",
                 "What was observed",
                 "Opaque assessment subject reference (not proof of affectedness or location)",
+                "Assessment target kind (resource location withheld)",
                 "Collection and principal context",
                 "What was not established",
                 "Recommended action (not a verified fix)",
@@ -12815,6 +12876,13 @@ mod tests {
                 rendered.contains("Unassigned severity does not mean low or zero")
                     || rendered.contains("unassigned does not mean low or zero")
             );
+            assert_eq!(
+                rendered
+                    .matches("Assessment target kind (resource location withheld)")
+                    .count(),
+                3
+            );
+            assert_eq!(rendered.matches("assessment_subject").count(), 3);
         }
 
         for (label, count) in [
@@ -12832,6 +12900,9 @@ mod tests {
             for presentation_only in [
                 "Decision overview",
                 "Actionable items",
+                "Assessment target kind (resource location withheld)",
+                "presentation_target",
+                "assessment_subject",
                 "What was not established",
                 "Safe verification guidance",
                 "Technical audit appendix",
@@ -17153,6 +17224,26 @@ mod tests {
                 "private-verifier-id-sentinel",
             ] {
                 assert!(!rendered.contains(sentinel));
+            }
+        }
+    }
+
+    #[cfg(feature = "scanning")]
+    #[test]
+    fn assessment_presentation_target_rejects_unclosed_or_location_bearing_values() {
+        for invalid in [
+            "",
+            "subject",
+            "query_parameter:return_to",
+            "https://private.example.test/secret/path",
+        ] {
+            let mut document = complete_assessment_document();
+            document.items[0].presentation_target = invalid;
+            for format in ReportGenerator::available_formats() {
+                assert_eq!(
+                    render_assessment_with_limit(&document, *format, usize::MAX),
+                    Err(ReportError::Serialization)
+                );
             }
         }
     }

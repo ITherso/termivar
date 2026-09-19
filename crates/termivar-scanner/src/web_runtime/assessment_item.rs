@@ -362,9 +362,61 @@ pub(crate) enum AssessmentItemTarget {
     RestOperation(String),
 }
 
+/// Value-free presentation discriminator derived from an assessment target.
+///
+/// This deliberately retains only the closed target variant. In particular,
+/// query names and stable product identities never enter presentation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssessmentItemPresentationTarget {
+    AssessmentSubject,
+    QueryParameter,
+    #[cfg(feature = "ssrf-oast-review")]
+    SsrfOastQuery,
+    #[cfg(feature = "authorization-review")]
+    AuthorizationResource,
+    #[cfg(feature = "openapi-review")]
+    OpenApiDocument,
+    #[cfg(feature = "rest-review")]
+    RestOperation,
+}
+
+impl AssessmentItemPresentationTarget {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AssessmentSubject => "assessment_subject",
+            Self::QueryParameter => "query_parameter",
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQuery => "ssrf_oast_query",
+            #[cfg(feature = "authorization-review")]
+            Self::AuthorizationResource => "authorization_resource",
+            #[cfg(feature = "openapi-review")]
+            Self::OpenApiDocument => "openapi_document",
+            #[cfg(feature = "rest-review")]
+            Self::RestOperation => "rest_operation",
+        }
+    }
+}
+
 impl AssessmentItemTarget {
     pub(crate) const fn subject() -> Self {
         Self::Subject
+    }
+
+    const fn presentation_target(&self) -> AssessmentItemPresentationTarget {
+        match self {
+            Self::Subject => AssessmentItemPresentationTarget::AssessmentSubject,
+            Self::QueryParameter(_) => AssessmentItemPresentationTarget::QueryParameter,
+            #[cfg(feature = "ssrf-oast-review")]
+            Self::SsrfOastQuery(_) => AssessmentItemPresentationTarget::SsrfOastQuery,
+            #[cfg(feature = "authorization-review")]
+            Self::AuthorizationResource(_) => {
+                AssessmentItemPresentationTarget::AuthorizationResource
+            },
+            #[cfg(feature = "openapi-review")]
+            Self::OpenApiDocument(_) => AssessmentItemPresentationTarget::OpenApiDocument,
+            #[cfg(feature = "rest-review")]
+            Self::RestOperation(_) => AssessmentItemPresentationTarget::RestOperation,
+        }
     }
 
     pub(crate) fn query_parameter(
@@ -1335,6 +1387,7 @@ impl AssessmentBasis {
 pub struct AssessmentItem {
     capability: &'static AssessmentCapabilityDescriptor,
     subject_reference: AssessmentSubjectReference,
+    presentation_target: AssessmentItemPresentationTarget,
     confidence: Probability,
     fingerprint: String,
     basis: AssessmentBasis,
@@ -1359,6 +1412,11 @@ impl AssessmentItem {
     /// Returns the opaque canonical-subject reference.
     pub const fn subject_reference(&self) -> AssessmentSubjectReference {
         self.subject_reference
+    }
+
+    /// Returns a value-free, closed description of the assessment target kind.
+    pub(crate) const fn presentation_target_kind(&self) -> &'static str {
+        self.presentation_target.as_str()
     }
 
     /// Returns the product disposition.
@@ -1552,6 +1610,7 @@ impl AssessmentItem {
         Self {
             capability,
             subject_reference: subject.reference,
+            presentation_target: target.presentation_target(),
             confidence,
             fingerprint: assessment_fingerprint(
                 capability.id,

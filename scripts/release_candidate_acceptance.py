@@ -192,6 +192,7 @@ ACTIONABLE_HEADINGS = (
 ACTIONABLE_ITEM_FIELD_ORDER = (
     "What was observed",
     "Opaque assessment subject reference (not proof of affectedness or location)",
+    "Assessment target kind (resource location withheld)",
     "Collection and principal context",
     "Interpretation",
     "What was not established",
@@ -214,6 +215,45 @@ ACTIONABLE_ITEM_FIELD_ORDER = (
     "Verifier outcome reference",
     "Verification stage",
 )
+ACTIONABLE_TARGET_KIND_FIELD = "Assessment target kind (resource location withheld)"
+ACTIONABLE_TARGET_KINDS = (
+    "assessment_subject",
+    "query_parameter",
+    "ssrf_oast_query",
+    "authorization_resource",
+    "openapi_document",
+    "rest_operation",
+)
+PACKAGED_ACTIONABLE_TARGET_KINDS_BY_CAPABILITY = {
+    "web.passive.csp.missing@1": "assessment_subject",
+    "web.passive.permissions-policy.missing@1": "assessment_subject",
+    "web.passive.referrer-policy.missing@1": "assessment_subject",
+    "web.passive.x-content-type-options.missing@1": "assessment_subject",
+    "passive.header.hsts.missing@1": "assessment_subject",
+    "cors.policy.relationship@1": "assessment_subject",
+}
+ACTIONABLE_ITEM_JSON_FIELDS = frozenset({
+    "schema",
+    "capability_id",
+    "subject_reference",
+    "title",
+    "disposition",
+    "claim_basis",
+    "severity",
+    "confidence_ppm",
+    "fingerprint",
+    "evidence_count",
+    "redacted_summary",
+    "category",
+    "cwe",
+    "remediation",
+    "evidence_references",
+    "control_evidence_references",
+    "candidate_evidence_references",
+    "case_reference",
+    "outcome_reference",
+    "verification_stage",
+})
 ACTIONABLE_INTERPRETATIONS = {
     "informational": (
         "Informational: bounded observation evidence was committed; no differential or "
@@ -1239,6 +1279,8 @@ def _actionable_item_rows(assessment: dict) -> tuple[list[dict], dict[str, int]]
     for item in items:
         require(isinstance(item, dict),
                 "packaged actionable assessment item is invalid")
+        require(not (set(item) - ACTIONABLE_ITEM_JSON_FIELDS),
+                "packaged actionable assessment item JSON contract changed")
         for field in (
                 "schema", "capability_id", "title", "disposition", "claim_basis",
                 "subject_reference", "fingerprint", "redacted_summary", "category"):
@@ -1428,6 +1470,15 @@ def _validate_actionable_assessment_html(assessment: dict, encoded: bytes) -> di
                     "Opaque assessment subject reference (not proof of affectedness or location)")
                 == _normalized_html_text(item["subject_reference"]),
                 "packaged actionable item resource reference changed")
+        target_kind = _one_actionable_field(article, ACTIONABLE_TARGET_KIND_FIELD)
+        require(target_kind in ACTIONABLE_TARGET_KINDS,
+                "packaged actionable item target kind is invalid")
+        expected_target_kind = PACKAGED_ACTIONABLE_TARGET_KINDS_BY_CAPABILITY.get(
+            item["capability_id"])
+        require(expected_target_kind is not None,
+                "packaged actionable item target-kind oracle is missing")
+        require(target_kind == expected_target_kind,
+                "packaged actionable item target kind changed")
         context = _one_actionable_field(article, "Collection and principal context")
         expected_context = ACTIONABLE_CONTEXTS[
             "supplied_session_run"

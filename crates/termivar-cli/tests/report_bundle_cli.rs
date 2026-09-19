@@ -154,6 +154,10 @@ fn assert_actionable_html_matches_assessment(html: &str, assessment: &Value) {
     let mut needs_review = 0_u64;
     let mut confirmed = 0_u64;
     for item in items {
+        assert!(
+            item.get("presentation_target").is_none(),
+            "presentation-only target kind must not change assessment JSON"
+        );
         match item["disposition"].as_str() {
             Some("informational") => informational += 1,
             Some("needs_review") => needs_review += 1,
@@ -185,6 +189,16 @@ fn assert_actionable_html_matches_assessment(html: &str, assessment: &Value) {
     assert!(html.contains(
         "These counts describe typed assessment items, not a count of confirmed vulnerabilities."
     ));
+    let subject_target = concat!(
+        "<dt>Assessment target kind (resource location withheld)</dt>",
+        "<dd><code>assessment_subject</code></dd>"
+    );
+    assert_eq!(
+        html.matches(subject_target).count(),
+        items.len(),
+        "the root-only fixture must retain one closed subject target kind per item"
+    );
+    assert!(!html.contains("<code>query_parameter</code>"));
     assert!(html.contains("report integrity does not establish target truth or remediation"));
     assert!(!html.contains("Result: secure"));
     assert!(!html.contains("Coverage: complete"));

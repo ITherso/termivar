@@ -182,6 +182,58 @@ fn discovered_subject_identity_fails_closed_for_unapproved_structure() {
     );
 }
 
+#[test]
+fn presentation_target_vocabulary_is_closed_and_value_free() {
+    assert_eq!(
+        AssessmentItemTarget::subject()
+            .presentation_target()
+            .as_str(),
+        "assessment_subject"
+    );
+    let query =
+        AssessmentItemTarget::query_parameter("VENOM-PRESENTATION-TARGET-QUERY-MUST-NOT-LEAK")
+            .unwrap();
+    assert_eq!(query.presentation_target().as_str(), "query_parameter");
+    assert!(!format!("{:?}", query.presentation_target())
+        .contains("VENOM-PRESENTATION-TARGET-QUERY-MUST-NOT-LEAK"));
+
+    #[cfg(feature = "ssrf-oast-review")]
+    assert_eq!(
+        AssessmentItemTarget::ssrf_oast_query(format!(
+            "ssrf-oast-parameter-sha256:{}",
+            "a".repeat(64)
+        ))
+        .unwrap()
+        .presentation_target()
+        .as_str(),
+        "ssrf_oast_query"
+    );
+    #[cfg(feature = "authorization-review")]
+    assert_eq!(
+        AssessmentItemTarget::authorization_resource("authorization-resource@1")
+            .unwrap()
+            .presentation_target()
+            .as_str(),
+        "authorization_resource"
+    );
+    #[cfg(feature = "openapi-review")]
+    assert_eq!(
+        AssessmentItemTarget::openapi_document("openapi-document@1")
+            .unwrap()
+            .presentation_target()
+            .as_str(),
+        "openapi_document"
+    );
+    #[cfg(feature = "rest-review")]
+    assert_eq!(
+        AssessmentItemTarget::rest_operation("rest-operation@1")
+            .unwrap()
+            .presentation_target()
+            .as_str(),
+        "rest_operation"
+    );
+}
+
 #[cfg(feature = "ssrf-oast-review")]
 #[test]
 fn ssrf_oast_query_target_accepts_only_the_exact_pseudonymous_identity() {
@@ -1074,7 +1126,7 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
     let (context, ids, knowledge) = mapped_context(
         &subject,
         "route.fingerprint@1",
-        &["id"],
+        &["id", "VENOM-PRESENTATION-QUERY-NAME-MUST-NOT-LEAK"],
         &["evidence:fingerprint-1", "evidence:fingerprint-2"],
     );
     let target = AssessmentItemTarget::subject();
@@ -1091,6 +1143,7 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
         observation.fingerprint(),
         "sha256:400a1146bdcc9b51ebfc699ccffeeba37deb5482d2418e8af0e33ba4ae0979d3"
     );
+    assert_eq!(observation.presentation_target_kind(), "assessment_subject");
     let differential = AssessmentItem::from_differential(
         &ALTERNATE_DESCRIPTOR,
         &context,
@@ -1162,7 +1215,8 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
         &context,
         &knowledge,
         &subject,
-        &AssessmentItemTarget::query_parameter("id").unwrap(),
+        &AssessmentItemTarget::query_parameter("VENOM-PRESENTATION-QUERY-NAME-MUST-NOT-LEAK")
+            .unwrap(),
         &[ids[0].clone()],
     )
     .unwrap();
@@ -1176,6 +1230,12 @@ fn stable_fingerprint_excludes_basis_evidence_confidence_summary_and_disposition
     )
     .unwrap();
     assert_ne!(observation.fingerprint(), parameter_item.fingerprint());
+    assert_eq!(
+        parameter_item.fingerprint(),
+        "sha256:098123e12cbe77dc29c4668fe6918b0f265131b619568aafc1c94eb7d866a313"
+    );
+    assert_eq!(parameter_item.presentation_target_kind(), "query_parameter");
+    assert!(!format!("{parameter_item:?}").contains("VENOM-PRESENTATION-QUERY-NAME-MUST-NOT-LEAK"));
     assert_ne!(observation.fingerprint(), other_capability.fingerprint());
 
     let mut renamed = AssessmentProjectionContext::new(&knowledge, test_scope_id());

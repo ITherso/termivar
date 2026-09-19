@@ -6077,6 +6077,7 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("schema", "&'a str"),
             ("capability_id", "&'a str"),
             ("subject_reference", "String"),
+            ("presentation_target", "&'static str"),
             ("title", "&'a str"),
             ("disposition", "&'static str"),
             ("claim_basis", "&'static str"),
@@ -6188,6 +6189,13 @@ fn reporting_serde_skip_vec_is_empty(attribute: &Attribute) -> bool {
         && attribute.meta.require_list().is_ok_and(|list| {
             squash_ascii_whitespace(&list.tokens.to_string())
                 == "skip_serializing_if=\"Vec::is_empty\""
+        })
+}
+
+fn reporting_serde_skip_serializing(attribute: &Attribute) -> bool {
+    attribute.path().is_ident("serde")
+        && attribute.meta.require_list().is_ok_and(|list| {
+            squash_ascii_whitespace(&list.tokens.to_string()) == "skip_serializing"
         })
 }
 
@@ -6432,9 +6440,11 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 .iter()
                 .map(|field| {
                     let field_name = field.ident.as_ref()?.to_string();
-                    let attributes_are_exact = if name == "AssessmentDocument"
-                        && field_name == "supplied_session"
+                    let attributes_are_exact = if name == "AssessmentItemDocument"
+                        && field_name == "presentation_target"
                     {
+                        field.attrs.len() == 1 && reporting_serde_skip_serializing(&field.attrs[0])
+                    } else if name == "AssessmentDocument" && field_name == "supplied_session" {
                         reporting_audit_field_attributes_are_exact(
                             &field.attrs,
                             "supplied-session-review",
@@ -8928,8 +8938,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 389_681;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x8628_bb06_84d3_c49f_6d60_af9c_3d05_91bd;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 390_296;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x2fbe_5b87_19b2_b5e3_9930_187f_a256_dd94;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -10173,6 +10183,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "split_at",
     "subject_count",
     "subject_reference",
+    "presentation_target_kind",
     "summary",
     "target",
     "themes",
@@ -10637,7 +10648,8 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
             );
         }
         let exact_redaction_attribute = reporting_serde_skip_option_is_none(attribute)
-            || reporting_serde_skip_vec_is_empty(attribute);
+            || reporting_serde_skip_vec_is_empty(attribute)
+            || reporting_serde_skip_serializing(attribute);
         if !ALLOWED_REPORTING_ATTRIBUTES.contains(&attribute_name.as_str())
             && !matches!(attribute_name.as_str(), "cfg" | "cfg_attr")
             && !exact_redaction_attribute
@@ -15465,6 +15477,8 @@ mod tests {
                 schema: &'a str,
                 capability_id: &'a str,
                 subject_reference: String,
+                #[serde(skip_serializing)]
+                presentation_target: &'static str,
                 title: &'a str,
                 disposition: &'static str,
                 claim_basis: &'static str,
@@ -15870,6 +15884,35 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("AssessmentItemDocument")
                     && violation.contains("exactly cfg"))
+        );
+
+        let serialized_presentation_target = source.replace(
+            "                #[serde(skip_serializing)]\n                presentation_target: &'static str,",
+            "                presentation_target: &'static str,",
+        );
+        assert_ne!(serialized_presentation_target, source);
+        let violations = reporting_document_contract_violations(&serialized_presentation_target)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentItemDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let conditionally_serialized_presentation_target = source.replace(
+            "                #[serde(skip_serializing)]\n                presentation_target: &'static str,",
+            "                #[serde(skip_serializing_if = \"str::is_empty\")]\n                presentation_target: &'static str,",
+        );
+        assert_ne!(conditionally_serialized_presentation_target, source);
+        let violations =
+            reporting_document_contract_violations(&conditionally_serialized_presentation_target)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("AssessmentItemDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
         );
 
         let broadened_audit_field = source.replace(

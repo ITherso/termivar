@@ -3976,6 +3976,42 @@ impl<'ast> Visit<'ast> for AtomicPairedComparisonConstructionVisitor {
 
 fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
     let mut violations = Vec::new();
+    let presentation_target = syntax.items.iter().find_map(|item| match item {
+        Item::Enum(item) if item.ident == "AssessmentItemPresentationTarget" => Some(item),
+        _ => None,
+    });
+    let presentation_target_is_exact = presentation_target.is_some_and(|item| {
+        matches!(item.vis, syn::Visibility::Inherited)
+            && item.generics.params.is_empty()
+            && item.generics.where_clause.is_none()
+            && item.variants.len() == 6
+            && item
+                .variants
+                .iter()
+                .zip([
+                    ("AssessmentSubject", None),
+                    ("QueryParameter", None),
+                    ("SsrfOastQuery", Some("ssrf-oast-review")),
+                    ("AuthorizationResource", Some("authorization-review")),
+                    ("OpenApiDocument", Some("openapi-review")),
+                    ("RestOperation", Some("rest-review")),
+                ])
+                .all(|(variant, (expected, feature))| {
+                    ident_name(&variant.ident) == expected
+                        && matches!(variant.fields, syn::Fields::Unit)
+                        && variant.discriminant.is_none()
+                        && feature.map_or_else(
+                            || variant.attrs.is_empty(),
+                            |feature| attributes_are_exact_cfg_feature(&variant.attrs, feature),
+                        )
+                })
+    });
+    if !presentation_target_is_exact {
+        violations.push(
+            "AssessmentItemPresentationTarget must remain the exact private value-free target-kind vocabulary"
+                .to_owned(),
+        );
+    }
     let differential_evidence = syntax.items.iter().find_map(|item| match item {
         Item::Enum(item) if item.ident == "AssessmentDifferentialEvidence" => Some(item),
         _ => None,
@@ -4079,13 +4115,16 @@ fn inspect_assessment_item_public_storage(syntax: &syn::File) -> Vec<String> {
                     })
             }),
             "AssessmentItem" => private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 5
+                fields.len() == 6
                     && fields.get("capability").is_some_and(|field| {
                         is_static_borrowed_ident(field, "AssessmentCapabilityDescriptor")
                     })
                     && fields
                         .get("subject_reference")
                         .is_some_and(|field| is_plain_ident(field, "AssessmentSubjectReference"))
+                    && fields.get("presentation_target").is_some_and(|field| {
+                        is_plain_ident(field, "AssessmentItemPresentationTarget")
+                    })
                     && fields
                         .get("confidence")
                         .is_some_and(|field| is_plain_ident(field, "Probability"))
@@ -12221,6 +12260,30 @@ mod tests {
             violations.contains("exact private matched-pair or single atomic"),
             "{violations}"
         );
+
+        for mutated in [
+            source.replacen(
+                "enum AssessmentItemPresentationTarget {",
+                "pub(crate) enum AssessmentItemPresentationTarget {",
+                1,
+            ),
+            source.replacen("    QueryParameter,", "    QueryParameter(String),", 1),
+            source.replacen("    RestOperation,", "    ArbitraryTarget,", 1),
+            source.replacen(
+                "#[cfg(feature = \"rest-review\")]\n    RestOperation,",
+                "#[cfg(feature = \"openapi-review\")]\n    RestOperation,",
+                1,
+            ),
+        ] {
+            assert_ne!(mutated, source);
+            let violations = inspect_assessment_item_projection(&mutated)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("exact private value-free target-kind vocabulary"),
+                "{violations}"
+            );
+        }
     }
 
     #[test]

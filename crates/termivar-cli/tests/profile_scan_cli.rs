@@ -376,6 +376,8 @@ fn incomplete_openapi_review_exposes_actionable_redacted_diagnostics() {
 
 #[test]
 fn completed_web_review_uses_the_central_renderer_for_every_format() {
+    const PRIVATE_QUERY_NAME: &str = "termivar_s03b_query_locator";
+    const PRIVATE_QUERY_VALUE: &str = "VENOM-PRESENTATION-QUERY-VALUE-MUST-NOT-LEAK";
     let server = serve_request(|target, request| {
         let origin = request.lines().find_map(|line| {
             let (name, value) = line.split_once(':')?;
@@ -394,7 +396,7 @@ fn completed_web_review_uses_the_central_renderer_for_every_format() {
             let parsed = url::Url::parse(&format!("http://fixture{target}")).unwrap();
             let candidate = parsed
                 .query_pairs()
-                .find_map(|(name, value)| (name == "next").then(|| value.into_owned()))
+                .find_map(|(name, value)| (name == PRIVATE_QUERY_NAME).then(|| value.into_owned()))
                 .unwrap();
             let body = format!("<script>const destination = '{candidate}'</script>");
             return format!(
@@ -405,7 +407,7 @@ fn completed_web_review_uses_the_central_renderer_for_every_format() {
         }
         ok_html("hello", "")
     });
-    let target = format!("{}?next=host-value", server.url);
+    let target = format!("{}?{PRIVATE_QUERY_NAME}={PRIVATE_QUERY_VALUE}", server.url);
     for (format, required) in [
         ("json", "\"schema\":\"venom-rendered-assessment/v1\""),
         ("csv", "\"record_type\",\"document_schema\""),
@@ -439,6 +441,8 @@ fn completed_web_review_uses_the_central_renderer_for_every_format() {
         assert!(stdout.contains("needs_review"));
         assert!(stdout.contains("differential"));
         assert!(!stdout.contains(&server.url));
+        assert!(!stdout.contains(PRIVATE_QUERY_NAME));
+        assert!(!stdout.contains(PRIVATE_QUERY_VALUE));
         assert!(!stdout.contains("decision-scan/v1"));
         if matches!(format, "html" | "markdown") {
             let headings = if format == "html" {
@@ -464,6 +468,7 @@ fn completed_web_review_uses_the_central_renderer_for_every_format() {
                 "These counts describe typed assessment items, not a count of confirmed vulnerabilities.",
                 "What was observed",
                 "Opaque assessment subject reference (not proof of affectedness or location)",
+                "Assessment target kind (resource location withheld)",
                 "What was not established",
                 "Recommended action (not a verified fix)",
                 "Safe verification guidance",
@@ -473,10 +478,14 @@ fn completed_web_review_uses_the_central_renderer_for_every_format() {
             }
             assert!(!stdout.contains("Result: secure"));
             assert!(!stdout.contains("Coverage: complete"));
+            assert!(stdout.contains("assessment_subject"));
+            assert!(stdout.contains("query_parameter"));
         } else {
             for presentation_only in [
                 "Decision overview",
                 "Actionable items",
+                "Assessment target kind (resource location withheld)",
+                "presentation_target",
                 "What was not established",
                 "Safe verification guidance",
                 "Technical audit appendix",

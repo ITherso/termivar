@@ -361,6 +361,7 @@ ACTIONABLE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <article class="item"><h3>Actionable item 1: CORS policy relationship warrants review</h3><p class="disposition"><span>Disposition: </span><code>needs_review</code></p><dl>
 <dt>What was observed</dt><dd>A matched control and candidate differed under review policy.</dd>
 <dt>Opaque assessment subject reference (not proof of affectedness or location)</dt><dd><code>subject-0000</code></dd>
+<dt>Assessment target kind (resource location withheld)</dt><dd><code>assessment_subject</code></dd>
 <dt>Collection and principal context</dt><dd>No supplied-session audit is present. The current report contract does not assign a separate principal to this item.</dd>
 <dt>Interpretation</dt><dd>Needs review: a typed evidence relationship was committed; human interpretation is required and no verifier transition was established.</dd>
 <dt>What was not established</dt><dd>This review candidate is not a confirmed vulnerability; exploitability, impact, and remediation were not established.</dd>
@@ -386,6 +387,7 @@ ACTIONABLE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <article class="item"><h3>Actionable item 2: Strict transport policy was not observed</h3><p class="disposition"><span>Disposition: </span><code>informational</code></p><dl>
 <dt>What was observed</dt><dd>Bounded response metadata did not include HSTS.</dd>
 <dt>Opaque assessment subject reference (not proof of affectedness or location)</dt><dd><code>subject-0000</code></dd>
+<dt>Assessment target kind (resource location withheld)</dt><dd><code>assessment_subject</code></dd>
 <dt>Collection and principal context</dt><dd>No supplied-session audit is present. The current report contract does not assign a separate principal to this item.</dd>
 <dt>Interpretation</dt><dd>Informational: bounded observation evidence was committed; no differential or verifier transition was established.</dd>
 <dt>What was not established</dt><dd>This observation alone does not establish a vulnerability, exploitability, impact, or remediation.</dd>
@@ -621,6 +623,32 @@ def mutate_actionable_html(html: str, mutation: str | None) -> str:
             '<p class="disposition"><span>Disposition: </span><code>needs_review</code></p>',
             '<p class="disposition"><span>Disposition: </span><code>needs_review</code></p>'
             '<p class="disposition"><span>Disposition: </span><code>needs_review</code></p>'),
+        "missing_target_kind": (
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>assessment_subject</code></dd>",
+            ""),
+        "duplicate_target_kind": (
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>assessment_subject</code></dd>",
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>assessment_subject</code></dd>"
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>assessment_subject</code></dd>"),
+        "wrong_target_kind": (
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>assessment_subject</code></dd>",
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>query_parameter</code></dd>"),
+        "unknown_target_kind": (
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>assessment_subject</code></dd>",
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>unknown_target</code></dd>"),
+        "raw_target_location": (
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>assessment_subject</code></dd>",
+            "<dt>Assessment target kind (resource location withheld)</dt>"
+            "<dd><code>https://private.example.test/secret/path</code></dd>"),
         "missing_limitation": (
             "This observation alone does not establish a vulnerability, exploitability, "
             "impact, or remediation.", "No limitation recorded."),
@@ -3000,6 +3028,11 @@ class CandidateOrchestrationTests(unittest.TestCase):
             ("wrong_disposition", "item disposition changed"),
             ("missing_disposition_class", "item disposition changed"),
             ("duplicate_disposition", "item disposition changed"),
+            ("missing_target_kind", "item field structure changed"),
+            ("duplicate_target_kind", "item field structure changed"),
+            ("wrong_target_kind", "item target kind changed"),
+            ("unknown_target_kind", "item target kind is invalid"),
+            ("raw_target_location", "item target kind is invalid"),
             ("missing_limitation", "item limitation changed"),
             ("context_overclaim", "item context limitation changed"),
             ("wrong_remediation", "item recommendation changed"),
@@ -3064,6 +3097,15 @@ class CandidateOrchestrationTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.AcceptanceError, "evidence count is invalid"):
             runner._validate_actionable_assessment_html(
                 bool_evidence_count, ACTIONABLE_HTML.encode("utf-8"))
+
+        serialized_presentation_target = actionable_assessment()
+        serialized_presentation_target["items"][0]["presentation_target"] = (
+            "assessment_subject"
+        )
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "item JSON contract changed"):
+            runner._validate_actionable_assessment_html(
+                serialized_presentation_target, ACTIONABLE_HTML.encode("utf-8"))
 
         missing_recommendation_id = actionable_assessment()
         missing_recommendation_id["items"][0]["remediation"]["id"] = None
