@@ -37,6 +37,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "tls-observation",
     "wordpress-review",
     "platform-models",
     "plugins",
@@ -66,6 +67,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "tls-observation",
     "wordpress-review",
     "platform-models",
     "plugins",
@@ -96,6 +98,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "reporting",
     "scanning",
     "supplied-session-review",
+    "tls-observation",
     "wordpress-review",
     "threat-intel",
 ];
@@ -121,6 +124,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "reporting",
     "scanning",
     "supplied-session-review",
+    "tls-observation",
     "wordpress-review",
 ];
 
@@ -140,6 +144,7 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "toml",
     "termivar-oast",
     "uuid",
+    "x509-parser",
     "zeroize",
 ];
 
@@ -193,6 +198,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "tls-observation",
     "wordpress-review",
 ];
 const REQUIRED_API_DEPENDENCIES: &[&str] = &["axum"];
@@ -916,6 +922,14 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         false,
         &["lua54", "vendored"],
     ));
+    violations.extend(exact_dependency_contract_violations(
+        "termivar-scanner",
+        &scanner_dependencies,
+        "x509-parser",
+        true,
+        false,
+        &[],
+    ));
     let mlua_requirement = scanner
         .dependencies
         .iter()
@@ -926,6 +940,17 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         "mlua",
         mlua_requirement.as_deref(),
         "^0.9",
+    ));
+    let x509_parser_requirement = scanner
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name.as_str() == "x509-parser")
+        .map(|dependency| dependency.req.to_string());
+    violations.extend(exact_dependency_requirement_violations(
+        "termivar-scanner",
+        "x509-parser",
+        x509_parser_requirement.as_deref(),
+        "^0.18.1",
     ));
     let cli = packages
         .iter()
@@ -1322,6 +1347,7 @@ fn cli_feature_violations(
             "supplied-session-review",
             &["termivar-scanner/supplied-session-review"][..],
         ),
+        ("tls-observation", &["termivar-scanner/tls-observation"][..]),
         (
             "wordpress-review",
             &["termivar-scanner/wordpress-review"][..],
@@ -1576,6 +1602,22 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "secret-exposure-review",
                 "scanning",
                 "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "tls-observation",
+            &[
+                "tls-observation",
+                "scanning",
+                "core",
+                "dep:x509-parser",
                 "dep:async-trait",
                 "dep:html5ever",
                 "dep:markup5ever_rcdom",
@@ -4872,7 +4914,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 9
+        || report_call.args.len() != 10
     {
         return false;
     }
@@ -4906,6 +4948,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
                 "secret_exposure_review",
                 "secret-exposure-review",
             )
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(argument, "tls_observation", "tls-observation")
         })
 }
 
@@ -5171,6 +5216,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentSecretExposureAuditDocument>",
             ),
             (
+                "tls_observation",
+                "Option<AssessmentTlsObservationAuditDocument>",
+            ),
+            (
                 "wordpress_review",
                 "Option<AssessmentWordPressAuditDocument>",
             ),
@@ -5331,6 +5380,57 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("impact_validation", "&'static str"),
             ("raw_values_retained", "bool"),
             ("public_secret_hashes_retained", "bool"),
+        ],
+    ),
+    (
+        "AssessmentTlsObservationAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy", "&'static str"),
+            ("selected", "bool"),
+            ("additional_request_count", "u64"),
+            ("assessment_request_count", "u64"),
+            ("target_scheme", "&'static str"),
+            ("observation_source_scope", "&'static str"),
+            ("observation_clock_assurance", "&'static str"),
+            ("successful_https_response_count", "u64"),
+            ("plaintext_response_count", "u64"),
+            ("tls_info_unavailable_count", "u64"),
+            ("malformed_certificate_count", "u64"),
+            ("certificate_limit_rejection_count", "u64"),
+            ("unretained_leaf_response_count", "u64"),
+            ("leaf_observation_count", "u64"),
+            ("protocol", "&'static str"),
+            ("cipher_suite", "&'static str"),
+            ("alpn_protocol", "&'static str"),
+            ("full_chain", "&'static str"),
+            ("connection_reuse", "&'static str"),
+            ("session_resumption", "&'static str"),
+            ("handshake_kind", "&'static str"),
+            ("revocation", "&'static str"),
+            ("transport_validation_scope", "&'static str"),
+            ("active_tls_matrix", "&'static str"),
+            ("source_authentication", "&'static str"),
+            ("observations", "Vec<AssessmentTlsLeafObservationDocument>"),
+        ],
+    ),
+    (
+        "AssessmentTlsLeafObservationDocument",
+        &[],
+        &[
+            ("leaf_certificate_sha256", "String"),
+            ("leaf_certificate_byte_length", "u64"),
+            ("not_before_epoch_seconds", "i64"),
+            ("not_after_epoch_seconds", "i64"),
+            ("observed_at_epoch_seconds", "i64"),
+            ("dns_san_count", "u64"),
+            ("ip_san_count", "u64"),
+            ("other_san_count", "u64"),
+            ("san_count_truncated", "bool"),
+            ("certificate_time_status", "&'static str"),
+            ("response_occurrence_count", "u64"),
+            ("standard_transport_validation_succeeded", "bool"),
         ],
     ),
     (
@@ -6291,6 +6391,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "openapi-review" => "feature=\"openapi-review\"",
         "rest-review" => "feature=\"rest-review\"",
         "secret-exposure-review" => "feature=\"secret-exposure-review\"",
+        "tls-observation" => "feature=\"tls-observation\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
         _ => return false,
@@ -6336,6 +6437,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSecretExposureAuditDocument"
                 | "AssessmentSecretExposureOutcomeDocument"
                 | "AssessmentSecretExposureObservationDocument"
+                | "AssessmentTlsObservationAuditDocument"
+                | "AssessmentTlsLeafObservationDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -6441,6 +6544,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSecretExposureOutcomeDocument"
                 | "AssessmentSecretExposureObservationDocument" => {
                     "all(feature=\"scanning\",feature=\"secret-exposure-review\")"
+                },
+                "AssessmentTlsObservationAuditDocument"
+                | "AssessmentTlsLeafObservationDocument" => {
+                    "all(feature=\"scanning\",feature=\"tls-observation\")"
                 },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
@@ -6559,6 +6666,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                             &field.attrs,
                             "secret-exposure-review",
                         )
+                    } else if name == "AssessmentDocument" && field_name == "tls_observation" {
+                        reporting_audit_field_attributes_are_exact(&field.attrs, "tls-observation")
                     } else if name == "AssessmentDocument"
                         && matches!(
                             field_name.as_str(),
@@ -9039,8 +9148,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 408_440;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xd186_d341_2904_a168_8c05_034e_b516_17e9;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 424_764;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xe444_ad97_4286_b07e_8ed1_5859_6238_9a66;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -9140,6 +9249,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::AssessmentBasis",
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
+    "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS",
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
     "crate::web_runtime::MAX_REST_REVIEW_ACTIVE_VERIFICATIONS",
     "crate::web_runtime::MAX_REST_REVIEW_REQUESTS",
@@ -9162,6 +9272,13 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
     "crate::web_runtime::SECRET_EXPOSURE_POLICY_ID",
     "crate::web_runtime::SECRET_EXPOSURE_REPRESENTATION",
+    "crate::web_runtime::TLS_OBSERVATION_AUDIT_SCHEMA",
+    "crate::web_runtime::TLS_OBSERVATION_BACKEND_LIMIT",
+    "crate::web_runtime::TLS_OBSERVATION_CLOCK_ASSURANCE",
+    "crate::web_runtime::TLS_OBSERVATION_POLICY_ID",
+    "crate::web_runtime::TLS_OBSERVATION_REVOCATION_STATUS",
+    "crate::web_runtime::TLS_OBSERVATION_SOURCE_SCOPE",
+    "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
@@ -9178,6 +9295,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::WebAssessmentRunReport",
     "crate::web_runtime::WebAssessmentSecretExposureAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
+    "crate::web_runtime::WebAssessmentTlsObservationAudit",
     "crate::web_runtime::WordPressAssetFingerprintExecution",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
@@ -9261,11 +9379,21 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentDecisionOverview::from_document",
     "AssessmentSecretExposureAuditDocument::from_audit",
+    "AssessmentTlsObservationAuditDocument::from_audit",
+    "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_BODY_BYTES",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_OCCURRENCES",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_RESPONSES",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES",
+    "crate::web_runtime::TLS_OBSERVATION_AUDIT_SCHEMA",
+    "crate::web_runtime::TLS_OBSERVATION_BACKEND_LIMIT",
+    "crate::web_runtime::TLS_OBSERVATION_CLOCK_ASSURANCE",
+    "crate::web_runtime::TLS_OBSERVATION_POLICY_ID",
+    "crate::web_runtime::TLS_OBSERVATION_REVOCATION_STATUS",
+    "crate::web_runtime::TLS_OBSERVATION_SOURCE_SCOPE",
+    "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE",
+    "crate::web_runtime::WebAssessmentTlsObservationAudit",
     "crate::web_runtime::SECRET_EXPOSURE_AUDIT_SCHEMA",
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_ID",
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
@@ -9790,6 +9918,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
     "AssessmentSecretExposureAuditDocument::from_audit",
+    "AssessmentTlsObservationAuditDocument::from_audit",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentOpenApiAuditDocument::from_audit",
@@ -9997,6 +10126,37 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accepted_association_count",
+    "alpn_protocol",
+    "certificate_limit_rejection_count",
+    "certificate_time_status",
+    "cipher_suite",
+    "connection_reuse",
+    "dns_san_count",
+    "full_chain",
+    "handshake_kind",
+    "ip_san_count",
+    "leaf_observations",
+    "malformed_certificate_count",
+    "not_after_epoch_seconds",
+    "not_before_epoch_seconds",
+    "observation_clock_assurance",
+    "observation_source_scope",
+    "observed_at_epoch_seconds",
+    "other_san_count",
+    "plaintext_response_count",
+    "policy",
+    "protocol",
+    "response_occurrence_count",
+    "revocation",
+    "san_count_truncated",
+    "session_resumption",
+    "standard_transport_validation_scope",
+    "standard_transport_validation_succeeded",
+    "successful_https_response_count",
+    "target_scheme",
+    "tls_info_unavailable_count",
+    "tls_observation_audit",
+    "unretained_leaf_response_count",
     "cmp",
     "detector_class",
     "body_derived_projection_suppressed_response_count",
@@ -10592,6 +10752,21 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::WebAssessmentSecretExposureAudit"
                 )
             });
+        let tls_observation_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::web_runtime::TLS_OBSERVATION_AUDIT_SCHEMA"
+                        | "crate::web_runtime::TLS_OBSERVATION_BACKEND_LIMIT"
+                        | "crate::web_runtime::TLS_OBSERVATION_CLOCK_ASSURANCE"
+                        | "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS"
+                        | "crate::web_runtime::TLS_OBSERVATION_POLICY_ID"
+                        | "crate::web_runtime::TLS_OBSERVATION_REVOCATION_STATUS"
+                        | "crate::web_runtime::TLS_OBSERVATION_SOURCE_SCOPE"
+                        | "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE"
+                        | "crate::web_runtime::WebAssessmentTlsObservationAudit"
+                )
+            });
         let supplied_session_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -10712,6 +10887,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
+        } else if tls_observation_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"tls-observation\")")
         } else if supplied_session_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -10727,7 +10907,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, and WordPress audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -10798,6 +10978,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
                     | Some("feature=\"secret-exposure-review\"")
+                    | Some("feature=\"tls-observation\"")
                     | Some("feature=\"supplied-session-review\"")
                     | Some("not(feature=\"supplied-session-review\")")
                     | Some("feature=\"wordpress-review\"")
@@ -10805,12 +10986,13 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
                     | Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"tls-observation\")")
                     | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, supplied-session, authorization, OpenAPI, REST, passive secret-exposure, and WordPress audit feature gates"
+                "reporting production source may contain only the exact scanning, supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, and WordPress audit feature gates"
                     .to_owned(),
             );
         }
@@ -11557,6 +11739,10 @@ mod tests {
             "secret-exposure-review".to_owned(),
             vec!["scanning".to_owned()],
         );
+        features.insert(
+            "tls-observation".to_owned(),
+            vec!["scanning".to_owned(), "dep:x509-parser".to_owned()],
+        );
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("openapi-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("rest-review".to_owned(), vec!["openapi-review".to_owned()]);
@@ -11982,6 +12168,52 @@ mod tests {
             .get_mut("release-bundle")
             .unwrap()
             .push("supplied-session-review".to_owned());
+        assert!(
+            cli_feature_violations(&cli_features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
+    }
+
+    #[test]
+    fn tls_observation_is_isolated_non_bundled_and_in_compatibility_aggregates() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("tls-observation").unwrap(),
+            &["scanning".to_owned(), "dep:x509-parser".to_owned()]
+        );
+        assert!(!raw_feature_closure(&features, "default").contains("tls-observation"));
+        assert!(!raw_feature_closure(&features, "default").contains("dep:x509-parser"));
+        for aggregate in ["full", "enterprise"] {
+            assert!(features
+                .get(aggregate)
+                .unwrap()
+                .iter()
+                .any(|member| member == "tls-observation"));
+        }
+
+        features
+            .get_mut("tls-observation")
+            .unwrap()
+            .retain(|member| member != "dep:x509-parser");
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`tls-observation` raw feature closure")
+                && violation.contains("dep:x509-parser")
+        }));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert!(cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .all(|member| member != "tls-observation"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("tls-observation".to_owned());
         assert!(
             cli_feature_violations(&cli_features, &dependencies)
                 .iter()
@@ -13793,6 +14025,8 @@ mod tests {
                         self.wordpress_review,
                         #[cfg(feature = "secret-exposure-review")]
                         self.secret_exposure_review,
+                        #[cfg(feature = "tls-observation")]
+                        self.tls_observation,
                     )
                 }
             }
@@ -13810,7 +14044,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -13853,6 +14087,11 @@ mod tests {
             typed_assessment_bridge
                 .replace("self.ssrf_oast_review,", "forged_ssrf_oast_review,"),
             typed_assessment_bridge.replace("self.wordpress_review,", "forged_wordpress_review,"),
+            typed_assessment_bridge.replace(
+                "self.secret_exposure_review,",
+                "forged_secret_exposure_review,",
+            ),
+            typed_assessment_bridge.replace("self.tls_observation,", "forged_tls_observation,"),
         ] {
             assert!(!reporting_cross_file_source_violations(
                 "web_runtime/web_assessment.rs",
@@ -14342,6 +14581,14 @@ mod tests {
                 SECRET_EXPOSURE_CATALOGUE_ID, SECRET_EXPOSURE_CATALOGUE_REVISION,
                 SECRET_EXPOSURE_POLICY_ID, SECRET_EXPOSURE_REPRESENTATION,
             };
+            #[cfg(all(feature = "scanning", feature = "tls-observation"))]
+            use crate::web_runtime::{
+                WebAssessmentTlsObservationAudit, HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS,
+                TLS_OBSERVATION_AUDIT_SCHEMA, TLS_OBSERVATION_BACKEND_LIMIT,
+                TLS_OBSERVATION_CLOCK_ASSURANCE, TLS_OBSERVATION_POLICY_ID,
+                TLS_OBSERVATION_REVOCATION_STATUS, TLS_OBSERVATION_SOURCE_SCOPE,
+                TLS_OBSERVATION_VALIDATION_SCOPE,
+            };
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             use crate::{
                 authorization_review::{
@@ -14480,6 +14727,16 @@ mod tests {
         );
         assert_ne!(widened_secret_exposure_import, imports);
         let violations = reporting_source_import_violations(&widened_secret_exposure_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_tls_observation_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"tls-observation\"))]",
+            "#[cfg(feature = \"scanning\")]",
+        );
+        assert_ne!(widened_tls_observation_import, imports);
+        let violations = reporting_source_import_violations(&widened_tls_observation_import)
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
@@ -14869,6 +15126,9 @@ mod tests {
                 #[cfg(feature = "secret-exposure-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 secret_exposure_review: Option<AssessmentSecretExposureAuditDocument>,
+                #[cfg(feature = "tls-observation")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                tls_observation: Option<AssessmentTlsObservationAuditDocument>,
                 #[cfg(feature = "wordpress-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -14924,6 +15184,53 @@ mod tests {
                 capability_id: &'static str,
                 occurrence_count: u64,
                 evidence_references: Vec<String>,
+            }
+            #[cfg(all(feature = "scanning", feature = "tls-observation"))]
+            #[derive(Serialize)]
+            struct AssessmentTlsObservationAuditDocument {
+                schema: &'static str,
+                policy: &'static str,
+                selected: bool,
+                additional_request_count: u64,
+                assessment_request_count: u64,
+                target_scheme: &'static str,
+                observation_source_scope: &'static str,
+                observation_clock_assurance: &'static str,
+                successful_https_response_count: u64,
+                plaintext_response_count: u64,
+                tls_info_unavailable_count: u64,
+                malformed_certificate_count: u64,
+                certificate_limit_rejection_count: u64,
+                unretained_leaf_response_count: u64,
+                leaf_observation_count: u64,
+                protocol: &'static str,
+                cipher_suite: &'static str,
+                alpn_protocol: &'static str,
+                full_chain: &'static str,
+                connection_reuse: &'static str,
+                session_resumption: &'static str,
+                handshake_kind: &'static str,
+                revocation: &'static str,
+                transport_validation_scope: &'static str,
+                active_tls_matrix: &'static str,
+                source_authentication: &'static str,
+                observations: Vec<AssessmentTlsLeafObservationDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "tls-observation"))]
+            #[derive(Serialize)]
+            struct AssessmentTlsLeafObservationDocument {
+                leaf_certificate_sha256: String,
+                leaf_certificate_byte_length: u64,
+                not_before_epoch_seconds: i64,
+                not_after_epoch_seconds: i64,
+                observed_at_epoch_seconds: i64,
+                dns_san_count: u64,
+                ip_san_count: u64,
+                other_san_count: u64,
+                san_count_truncated: bool,
+                certificate_time_status: &'static str,
+                response_occurrence_count: u64,
+                standard_transport_validation_succeeded: bool,
             }
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             #[derive(Serialize)]
@@ -15849,6 +16156,48 @@ mod tests {
             .unwrap()
             .is_empty());
 
+        let missing_tls_source_scope = source.replace(
+            "                observation_source_scope: &'static str,\n",
+            "",
+        );
+        assert_ne!(missing_tls_source_scope, source);
+        let violations = reporting_document_contract_violations(&missing_tls_source_scope)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentTlsObservationAuditDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let invalid_tls_clock_assurance_type = source.replace(
+            "                observation_clock_assurance: &'static str,",
+            "                observation_clock_assurance: bool,",
+        );
+        assert_ne!(invalid_tls_clock_assurance_type, source);
+        let violations = reporting_document_contract_violations(&invalid_tls_clock_assurance_type)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentTlsObservationAuditDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let widened_tls_audit_gate = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"tls-observation\"))]\n            #[derive(Serialize)]\n            struct AssessmentTlsObservationAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentTlsObservationAuditDocument",
+        );
+        assert_ne!(widened_tls_audit_gate, source);
+        let violations = reporting_document_contract_violations(&widened_tls_audit_gate)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentTlsObservationAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
         let private_fingerprint = source.replace(
             "redacted_summary: &'a str,",
             "redacted_summary: &'a str,\n                fingerprint: &'a str,",
@@ -16412,6 +16761,10 @@ mod tests {
                 vec!["termivar-scanner/secret-exposure-review".to_owned()],
             ),
             (
+                "tls-observation".to_owned(),
+                vec!["termivar-scanner/tls-observation".to_owned()],
+            ),
+            (
                 "ssrf-oast-review".to_owned(),
                 vec!["termivar-scanner/ssrf-oast-review".to_owned()],
             ),
@@ -16804,6 +17157,7 @@ mod tests {
             "secret-exposure-review",
             "ssrf-oast-review",
             "supplied-session-review",
+            "tls-observation",
         ] {
             assert!(features
                 .get("release-bundle")
@@ -16910,6 +17264,9 @@ mod tests {
         assert!(dependencies
             .get("zeroize")
             .is_some_and(|dependency| dependency.optional));
+        assert!(dependencies
+            .get("x509-parser")
+            .is_some_and(|dependency| dependency.optional));
 
         dependencies.get_mut("mlua").unwrap().optional = false;
         assert_eq!(
@@ -16927,6 +17284,71 @@ mod tests {
                 "termivar-scanner feature-owned dependency `zeroize` must remain present and optional"
             ]
         );
+
+        dependencies.get_mut("zeroize").unwrap().optional = true;
+        dependencies.get_mut("x509-parser").unwrap().optional = false;
+        assert_eq!(
+            scanner_dependency_violations(&dependencies),
+            vec![
+                "termivar-scanner feature-owned dependency `x509-parser` must remain present and optional"
+            ]
+        );
+    }
+
+    #[test]
+    fn tls_observation_parser_dependency_disables_all_upstream_default_features() {
+        let mut dependencies = BTreeMap::from([(
+            "x509-parser".to_owned(),
+            DependencyContract {
+                optional: true,
+                uses_default_features: false,
+                features: BTreeSet::new(),
+            },
+        )]);
+        assert!(exact_dependency_contract_violations(
+            "termivar-scanner",
+            &dependencies,
+            "x509-parser",
+            true,
+            false,
+            &[],
+        )
+        .is_empty());
+
+        dependencies
+            .get_mut("x509-parser")
+            .unwrap()
+            .uses_default_features = true;
+        assert!(exact_dependency_contract_violations(
+            "termivar-scanner",
+            &dependencies,
+            "x509-parser",
+            true,
+            false,
+            &[],
+        )
+        .iter()
+        .any(|violation| violation.contains("default-features=false")));
+
+        dependencies
+            .get_mut("x509-parser")
+            .unwrap()
+            .uses_default_features = false;
+        dependencies
+            .get_mut("x509-parser")
+            .unwrap()
+            .features
+            .insert("verify".to_owned());
+        assert!(exact_dependency_contract_violations(
+            "termivar-scanner",
+            &dependencies,
+            "x509-parser",
+            true,
+            false,
+            &[],
+        )
+        .iter()
+        .any(|violation| violation.contains("verify")));
     }
 
     #[test]

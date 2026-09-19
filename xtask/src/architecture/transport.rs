@@ -73,6 +73,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     OPENAPI_RUNTIME_SOURCE,
     REST_RUNTIME_SOURCE,
     SECRET_EXPOSURE_RUNTIME_SOURCE,
+    TLS_OBSERVATION_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     SSRF_OAST_RUNTIME_SOURCE,
     SUPPLIED_SESSION_RUNTIME_SOURCE,
@@ -115,6 +116,8 @@ const OPENAPI_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/op
 const REST_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/rest_runtime.rs";
 const SECRET_EXPOSURE_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/secret_exposure.rs";
+const TLS_OBSERVATION_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/tls_observation.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const SSRF_OAST_RUNTIME_SOURCE: &str =
@@ -149,6 +152,17 @@ const NATIVE_REVIEW_BOUNDED_SOURCES: &[&str] = &[
     REFLECTION_CONTEXT_SOURCE,
 ];
 const KNOWLEDGE_SOURCE: &str = "crates/termivar-scanner/src/knowledge.rs";
+
+fn transport_item_is_test_only(attributes: &[syn::Attribute]) -> bool {
+    has_cfg_test(attributes)
+        || attributes.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute.meta.require_list().is_ok_and(|list| {
+                    normalize_identifier(&list.tokens.to_string().replace(' ', ""))
+                        == "all(test,feature=\"tls-observation\")"
+                })
+        })
+}
 
 const ASSESSMENT_EXTERNAL_TRAIT_PROTECTED_TYPES: &[&str] = &[
     "AssessmentBasis",
@@ -258,6 +272,7 @@ const WEB_ASSESSMENT_PUBLIC_EXPORTS: &[&str] = &[
 enum BrokerConstructorKind {
     RequestAccounting,
     MeteredHttp,
+    MeteredTlsObservation,
 }
 
 impl BrokerConstructorKind {
@@ -265,6 +280,7 @@ impl BrokerConstructorKind {
         match self {
             Self::RequestAccounting => "RequestAccountingBroker::new",
             Self::MeteredHttp => "HttpRequestBroker::new_metered",
+            Self::MeteredTlsObservation => "HttpRequestBroker::new_metered_with_tls_observation",
         }
     }
 }
@@ -275,6 +291,7 @@ struct ExpectedBrokerConstructor {
     kind: BrokerConstructorKind,
     impl_target: &'static str,
     function: &'static str,
+    count: usize,
 }
 
 const EXPECTED_BROKER_CONSTRUCTORS: &[ExpectedBrokerConstructor] = &[
@@ -282,37 +299,50 @@ const EXPECTED_BROKER_CONSTRUCTORS: &[ExpectedBrokerConstructor] = &[
         source: SHARED_RUNTIME_AUTHORITY_SOURCE,
         kind: BrokerConstructorKind::RequestAccounting,
         impl_target: "SharedWebRuntimeAuthority",
-        function: "new_exact_origin",
+        function: "new_exact_origin_inner",
+        count: 1,
     },
     ExpectedBrokerConstructor {
         source: SHARED_RUNTIME_AUTHORITY_SOURCE,
         kind: BrokerConstructorKind::MeteredHttp,
         impl_target: "SharedWebRuntimeAuthority",
-        function: "new_exact_origin",
+        function: "new_exact_origin_inner",
+        count: 2,
+    },
+    ExpectedBrokerConstructor {
+        source: SHARED_RUNTIME_AUTHORITY_SOURCE,
+        kind: BrokerConstructorKind::MeteredTlsObservation,
+        impl_target: "SharedWebRuntimeAuthority",
+        function: "new_exact_origin_inner",
+        count: 1,
     },
     ExpectedBrokerConstructor {
         source: LEGACY_DISCOVERY_AUTHORITY_SOURCE,
         kind: BrokerConstructorKind::RequestAccounting,
         impl_target: "LegacyDiscoveryAuthority",
         function: "new",
+        count: 1,
     },
     ExpectedBrokerConstructor {
         source: LEGACY_DISCOVERY_AUTHORITY_SOURCE,
         kind: BrokerConstructorKind::MeteredHttp,
         impl_target: "LegacyDiscoveryAuthority",
         function: "new",
+        count: 1,
     },
     ExpectedBrokerConstructor {
         source: LEGACY_DISCOVERY_AUTHORITY_SOURCE,
         kind: BrokerConstructorKind::RequestAccounting,
         impl_target: "LegacyVerificationAuthority",
         function: "new",
+        count: 1,
     },
     ExpectedBrokerConstructor {
         source: LEGACY_DISCOVERY_AUTHORITY_SOURCE,
         kind: BrokerConstructorKind::MeteredHttp,
         impl_target: "LegacyVerificationAuthority",
         function: "new",
+        count: 1,
     },
 ];
 
@@ -1550,12 +1580,17 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
                 .to_owned(),
         );
     }
-    if broker.matches("Client::builder()").count() != 3
-        || broker.matches(".redirect(RedirectPolicy::none())").count() != 3
-        || broker.matches(".retry(reqwest::retry::never())").count() != 3
+    if broker.matches("Client::builder()").count() != 4
+        || broker.matches(".redirect(RedirectPolicy::none())").count() != 4
+        || broker.matches(".retry(reqwest::retry::never())").count() != 4
+        || broker.matches(".tls_info(true)").count() != 4
+        || !broker.contains("#[cfg(all(test, feature = \"tls-observation\"))]")
+        || !broker.contains("reqwest::Certificate::from_der(root_certificate_der)")
+        || !broker.contains(".add_root_certificate(root_certificate)")
+        || !broker.contains(".resolve(resolved_host, resolved_address)")
     {
         violations.push(
-            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, and selected supplied-session redirect-disabled, retry-free clients"
+            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, and selected supplied-session redirect-disabled, retry-free clients plus the exact cfg(test) owned trusted-root TLS seam"
                 .to_owned(),
         );
     }
@@ -1564,7 +1599,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             .matches("let anonymous_no_proxy_client = Client::builder()")
             .count()
             != 1
-        || broker.matches(".no_proxy()").count() != 2
+        || broker.matches(".no_proxy()").count() != 3
         || broker.matches("&self.anonymous_no_proxy_client").count() != 1
         || !broker.contains(
             "self.anonymous_no_proxy_client\n            .request(Method::GET, target.clone())",
@@ -1620,7 +1655,29 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
                 .to_owned(),
         );
     }
+    if !tls_observation_reduction_follows_ttfb_measurement(broker) {
+        violations.push(
+            "passive TLS reduction must run only after transport TTFB is captured".to_owned(),
+        );
+    }
     violations
+}
+
+fn tls_observation_reduction_follows_ttfb_measurement(broker: &str) -> bool {
+    let Some((_, collection_tail)) = broker.split_once("async fn collect_built_request(") else {
+        return false;
+    };
+    let collection = collection_tail
+        .split_once("\n    fn begin_accounting(")
+        .map_or(collection_tail, |(body, _)| body);
+    let Some(ttfb) = collection.find("let ttfb_ms = elapsed_ms(started.elapsed());") else {
+        return false;
+    };
+    let Some(reduction) = collection.find("if let Some(collector) = self.tls_observation.as_ref()")
+    else {
+        return false;
+    };
+    ttfb < reduction
 }
 
 fn inspect_web_assessment_composition(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -1628,10 +1685,19 @@ fn inspect_web_assessment_composition(source: &str) -> Result<Vec<String>, syn::
     let mut visitor = AssessmentCompositionVisitor::default();
     visitor.visit_file(&syntax);
     let mut violations = visitor.violations.into_iter().collect::<Vec<_>>();
-    if visitor.authority_calls != 1 {
+    if visitor.authority_calls != 2
+        || visitor.tls_authority_calls != 1
+        || visitor.conditional_authority_calls != 1
+        || visitor.conditional_tls_authority_calls != 1
+        || visitor.unconditional_authority_calls != 1
+    {
         violations.push(format!(
-            "origin assessment must construct SharedWebRuntimeAuthority exactly once in WebAssessmentRuntimeBuilder::build; observed {} direct calls",
-            visitor.authority_calls
+            "origin assessment must retain the exact mutually exclusive TLS-selected and option-off SharedWebRuntimeAuthority construction in WebAssessmentRuntimeBuilder::build; observed ordinary={} tls={} conditional_ordinary={} conditional_tls={} unconditional_ordinary={}",
+            visitor.authority_calls,
+            visitor.tls_authority_calls,
+            visitor.conditional_authority_calls,
+            visitor.conditional_tls_authority_calls,
+            visitor.unconditional_authority_calls,
         ));
     }
     if visitor.shared_child_builds != 1 {
@@ -2120,6 +2186,10 @@ struct AssessmentCompositionVisitor {
     control_depth: usize,
     closure_depth: usize,
     authority_calls: usize,
+    tls_authority_calls: usize,
+    conditional_authority_calls: usize,
+    conditional_tls_authority_calls: usize,
+    unconditional_authority_calls: usize,
     shared_child_builds: usize,
     standalone_build_calls: usize,
     runtime_start_calls: usize,
@@ -2206,23 +2276,43 @@ impl<'ast> Visit<'ast> for AssessmentCompositionVisitor {
                     ));
                 }
             }
+            let authority_member = segments.last().map(|value| normalize_identifier(value));
             if segments.len() >= 2
-                && segments
-                    .last()
-                    .is_some_and(|value| normalize_identifier(value) == "new_exact_origin")
+                && matches!(
+                    authority_member,
+                    Some("new_exact_origin") | Some("new_exact_origin_with_tls_observation")
+                )
                 && segments
                     .get(segments.len() - 2)
                     .is_some_and(|value| normalize_identifier(value) == "SharedWebRuntimeAuthority")
             {
-                self.authority_calls = self.authority_calls.saturating_add(1);
+                let tls_selected =
+                    authority_member == Some("new_exact_origin_with_tls_observation");
+                if tls_selected {
+                    self.tls_authority_calls = self.tls_authority_calls.saturating_add(1);
+                    if self.control_depth == 1 {
+                        self.conditional_tls_authority_calls =
+                            self.conditional_tls_authority_calls.saturating_add(1);
+                    }
+                } else {
+                    self.authority_calls = self.authority_calls.saturating_add(1);
+                    if self.control_depth == 1 {
+                        self.conditional_authority_calls =
+                            self.conditional_authority_calls.saturating_add(1);
+                    } else if self.control_depth == 0 {
+                        self.unconditional_authority_calls =
+                            self.unconditional_authority_calls.saturating_add(1);
+                    }
+                }
                 let (impl_name, function_name) = self.current_boundary();
                 if impl_name != "WebAssessmentRuntimeBuilder"
                     || function_name != "build"
-                    || self.control_depth != 0
+                    || self.control_depth > 1
+                    || (tls_selected && self.control_depth != 1)
                     || self.closure_depth != 0
                 {
                     self.violations.insert(format!(
-                        "SharedWebRuntimeAuthority::new_exact_origin must be one unconditional direct call in WebAssessmentRuntimeBuilder::build, not {impl_name}::{function_name}"
+                        "SharedWebRuntimeAuthority construction must remain the exact direct TLS-selected/option-off branch in WebAssessmentRuntimeBuilder::build, not {impl_name}::{function_name}"
                     ));
                 }
             }
@@ -2326,6 +2416,10 @@ impl<'ast> Visit<'ast> for AssessmentCompositionVisitor {
 
     fn visit_macro(&mut self, item: &'ast Macro) {
         if token_stream_contains_identifier(item.tokens.clone(), "new_exact_origin")
+            || token_stream_contains_identifier(
+                item.tokens.clone(),
+                "new_exact_origin_with_tls_observation",
+            )
             || token_stream_contains_identifier(item.tokens.clone(), "build_with_shared_authority")
         {
             self.violations.insert(
@@ -2344,6 +2438,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     let mut audit_owners = BTreeMap::<String, usize>::new();
     let mut defense_audit_owners = BTreeMap::<String, usize>::new();
     let mut rest_audit_owners = BTreeMap::<String, usize>::new();
+    let mut tls_observation_audit_owners = BTreeMap::<String, usize>::new();
     let mut wordpress_audit_owners = BTreeMap::<String, usize>::new();
 
     let progress_checkpoint = syntax.items.iter().find_map(|item| match item {
@@ -2584,6 +2679,16 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                 if rest_audit_count > 0 {
                     rest_audit_owners.insert(name.clone(), rest_audit_count);
                 }
+                let tls_observation_audit_count = item
+                    .fields
+                    .iter()
+                    .filter(|field| {
+                        type_references_ident(&field.ty, "WebAssessmentTlsObservationAudit")
+                    })
+                    .count();
+                if tls_observation_audit_count > 0 {
+                    tls_observation_audit_owners.insert(name.clone(), tls_observation_audit_count);
+                }
                 let wordpress_audit_count = item
                     .fields
                     .iter()
@@ -2640,6 +2745,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "secret_exposure_review")
                     });
+                    let tls_observation = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "tls_observation")
+                    });
                     let ssrf_oast_review = item.fields.iter().find(|field| {
                         field
                             .ident
@@ -2685,6 +2796,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             &field.attrs,
                             "secret-exposure-review",
                         )
+                    }) || tls_observation.is_none_or(|field| {
+                        !is_generic_of_idents(
+                            &field.ty,
+                            "Option",
+                            &["WebAssessmentTlsObservationAudit"],
+                        ) || !attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
                     }) || ssrf_oast_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentSsrfOastAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
@@ -2701,13 +2818,14 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                                     | "openapi_review"
                                     | "rest_review"
                                     | "secret_exposure_review"
+                                    | "tls_observation"
                                     | "ssrf_oast_review"
                                     | "wordpress_review"
                             )
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -2754,6 +2872,13 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     if rest_audit_owners != expected_rest_audit_owners {
         violations.push(format!(
             "assessment REST audit ownership drifted: expected {expected_rest_audit_owners:?}, observed {rest_audit_owners:?}"
+        ));
+    }
+    let expected_tls_observation_audit_owners =
+        BTreeMap::from([("WebAssessmentRunReport".to_owned(), 1usize)]);
+    if tls_observation_audit_owners != expected_tls_observation_audit_owners {
+        violations.push(format!(
+            "assessment TLS-observation audit ownership drifted: expected {expected_tls_observation_audit_owners:?}, observed {tls_observation_audit_owners:?}"
         ));
     }
     let expected_wordpress_audit_owners =
@@ -5208,7 +5333,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 12
+                fields.len() == 13
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -5247,6 +5372,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("secret_exposure_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSecretExposureAudit"])
                     })
+                    && fields.get("tls_observation").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentTlsObservationAudit"])
+                    })
                     && fields.get("ssrf_oast_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
                     })
@@ -5268,6 +5396,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "secret_exposure_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "secret-exposure-review")
             })
+            && private_named_field(item, "tls_observation").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
+            })
             && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
             })
@@ -5282,7 +5413,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits; observed fields {observed:?}"
         ));
     }
 
@@ -5298,7 +5429,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 &["Clone", "Copy", "Serialize", "Deserialize"],
             )
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 7
+                fields.len() == 8
                     && fields.get("supplied_session").is_some_and(|field| {
                         is_generic_of_idents(
                             field,
@@ -5318,6 +5449,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("secret_exposure_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSecretExposureAudit"])
                     })
+                    && fields.get("tls_observation").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentTlsObservationAudit"])
+                    })
                     && fields.get("ssrf_oast_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
                     })
@@ -5339,6 +5473,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "secret_exposure_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "secret-exposure-review")
             })
+            && private_named_field(item, "tls_observation").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
+            })
             && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
             })
@@ -5348,7 +5485,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !review_audits_shape_is_exact {
         violations.push(
-            "AssessmentReviewAudits must remain one private Default-only container with exactly the seven feature-gated redacted audit values"
+            "AssessmentReviewAudits must remain one private Default-only container with exactly the eight feature-gated redacted audit values"
                 .to_owned(),
         );
     }
@@ -5400,7 +5537,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -5455,6 +5592,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_openapi_audit",
                     "validate_rest_audit",
                     "validate_secret_exposure_audit",
+                    "validate_tls_observation_audit",
                     "validate_ssrf_oast_audit",
                     "validate_wordpress_audit",
                     "profile",
@@ -5501,12 +5639,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && statement_reference_precedes(&method.block, "validate_openapi_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_rest_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_secret_exposure_audit", "Self")
+            && statement_reference_precedes(&method.block, "validate_tls_observation_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_ssrf_oast_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_wordpress_audit", "Self")
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits before construction"
                 .to_owned(),
         );
     }
@@ -6737,7 +6876,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 7
+    typed.len() == expected_prefix.len() + 8
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -6791,12 +6930,22 @@ fn assessment_report_constructor_inputs_are_exact(
                         &["WebAssessmentWordPressAudit"],
                     )
             })
+        && typed
+            .get(expected_prefix.len() + 6)
+            .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "secret-exposure-review")
+                    && is_generic_of_idents(
+                        &argument.ty,
+                        "Option",
+                        &["WebAssessmentSecretExposureAudit"],
+                    )
+            })
         && typed.last().is_some_and(|argument| {
-            attributes_are_exact_cfg_feature(&argument.attrs, "secret-exposure-review")
+            attributes_are_exact_cfg_feature(&argument.attrs, "tls-observation")
                 && is_generic_of_idents(
                     &argument.ty,
                     "Option",
-                    &["WebAssessmentSecretExposureAudit"],
+                    &["WebAssessmentTlsObservationAudit"],
                 )
         })
 }
@@ -7913,7 +8062,9 @@ impl BrokerConstructorAliases {
         let name = normalize_identifier(name);
         match kind {
             BrokerConstructorKind::RequestAccounting => self.request_accounting.contains(name),
-            BrokerConstructorKind::MeteredHttp => self.http_request.contains(name),
+            BrokerConstructorKind::MeteredHttp | BrokerConstructorKind::MeteredTlsObservation => {
+                self.http_request.contains(name)
+            },
         }
     }
 
@@ -8005,7 +8156,7 @@ impl BrokerConstructorAliasCollector {
 
 impl<'ast> Visit<'ast> for BrokerConstructorAliasCollector {
     fn visit_item(&mut self, item: &'ast Item) {
-        if !has_cfg_test(item_attributes(item)) {
+        if !transport_item_is_test_only(item_attributes(item)) {
             visit::visit_item(self, item);
         }
     }
@@ -8061,7 +8212,7 @@ impl<'ast> Visit<'ast> for BrokerConstructorAliasCollector {
     }
 
     fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
-        if !has_cfg_test(&item.attrs) {
+        if !transport_item_is_test_only(&item.attrs) {
             visit::visit_impl_item_fn(self, item);
         }
     }
@@ -8365,7 +8516,7 @@ fn validate_broker_constructor_inventory(
                     function: owner.function.to_owned(),
                     trait_impl: false,
                 },
-                1,
+                owner.count,
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -8512,17 +8663,26 @@ impl BrokerConstructorSourceInventory {
                 "{source_name} uses production {kind} source indirection; broker-constructor inventory requires directly parsed scanner modules"
             )
         }));
-        violations.extend(
-            self.direct_call_sites
-                .iter()
-                .filter(|call| call.control_flow_depth > 0)
-                .map(|call| {
-                    format!(
-                        "{source_name} places {} inside loop/conditional control flow; authority constructors must mint each broker exactly once on their direct constructor path",
-                        call.kind.label()
-                    )
-                }),
-        );
+        violations.extend(self.direct_call_sites.iter().filter_map(|call| {
+            if call.control_flow_depth == 0 {
+                return None;
+            }
+            let exact_tls_selection = call.control_flow_depth == 1
+                && call.closure_depth == 0
+                && call.impl_target.as_deref() == Some("SharedWebRuntimeAuthority")
+                && call.function.as_deref() == Some("new_exact_origin_inner")
+                && matches!(
+                    call.kind,
+                    BrokerConstructorKind::MeteredHttp
+                        | BrokerConstructorKind::MeteredTlsObservation
+                );
+            (!exact_tls_selection).then(|| {
+                format!(
+                    "{source_name} places {} inside loop/conditional control flow; authority constructors must mint each broker exactly once on their direct constructor path",
+                    call.kind.label()
+                )
+            })
+        }));
         violations.extend(self.direct_call_sites.iter().filter_map(|call| {
             if call.closure_depth == 0 {
                 return None;
@@ -8577,6 +8737,9 @@ impl BrokerConstructorInventoryVisitor {
         match normalize_identifier(member) {
             "new" => Some(BrokerConstructorKind::RequestAccounting),
             "new_metered" => Some(BrokerConstructorKind::MeteredHttp),
+            "new_metered_with_tls_observation" => {
+                Some(BrokerConstructorKind::MeteredTlsObservation)
+            },
             _ => None,
         }
     }
@@ -8706,6 +8869,7 @@ impl BrokerConstructorInventoryVisitor {
             for kind in [
                 BrokerConstructorKind::RequestAccounting,
                 BrokerConstructorKind::MeteredHttp,
+                BrokerConstructorKind::MeteredTlsObservation,
             ] {
                 if self.aliases.name_has_kind(&ident_name(identifier), kind) {
                     let count = self.inventory.macro_references.entry(kind).or_default();
@@ -8790,13 +8954,13 @@ impl BrokerConstructorInventoryVisitor {
 
 impl<'ast> Visit<'ast> for BrokerConstructorInventoryVisitor {
     fn visit_item(&mut self, item: &'ast Item) {
-        if !has_cfg_test(item_attributes(item)) {
+        if !transport_item_is_test_only(item_attributes(item)) {
             visit::visit_item(self, item);
         }
     }
 
     fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
-        if has_cfg_test(&item.attrs) {
+        if transport_item_is_test_only(&item.attrs) {
             return;
         }
         let target_name = type_path(&item.self_ty).and_then(|path| {
@@ -8815,7 +8979,7 @@ impl<'ast> Visit<'ast> for BrokerConstructorInventoryVisitor {
     }
 
     fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
-        if !has_cfg_test(&item.attrs) {
+        if !transport_item_is_test_only(&item.attrs) {
             self.functions
                 .push(normalize_identifier(&ident_name(&item.sig.ident)).to_owned());
             visit::visit_impl_item_fn(self, item);
@@ -8824,7 +8988,7 @@ impl<'ast> Visit<'ast> for BrokerConstructorInventoryVisitor {
     }
 
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        if !has_cfg_test(&item.attrs) {
+        if !transport_item_is_test_only(&item.attrs) {
             self.functions
                 .push(normalize_identifier(&ident_name(&item.sig.ident)).to_owned());
             visit::visit_item_fn(self, item);
@@ -8833,7 +8997,7 @@ impl<'ast> Visit<'ast> for BrokerConstructorInventoryVisitor {
     }
 
     fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
-        if !has_cfg_test(&item.attrs) {
+        if !transport_item_is_test_only(&item.attrs) {
             self.functions
                 .push(normalize_identifier(&ident_name(&item.sig.ident)).to_owned());
             visit::visit_trait_item_fn(self, item);
@@ -9007,6 +9171,7 @@ impl OwnershipVisitor<'_> {
             return;
         }
         if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
+            || self.source == TLS_OBSERVATION_RUNTIME_SOURCE
             || self.source == WORDPRESS_RUNTIME_SOURCE
             || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
             || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
@@ -9148,6 +9313,7 @@ impl OwnershipVisitor<'_> {
             if let TokenTree::Ident(identifier) = token {
                 let identifier = normalize_identifier(&ident_name(identifier)).to_owned();
                 if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
+                    || self.source == TLS_OBSERVATION_RUNTIME_SOURCE
                     || self.source == WORDPRESS_RUNTIME_SOURCE
                     || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
                     || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
@@ -9211,7 +9377,7 @@ impl OwnershipVisitor<'_> {
 
 impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
     fn visit_item(&mut self, item: &'ast Item) {
-        if !has_cfg_test(item_attributes(item)) {
+        if !transport_item_is_test_only(item_attributes(item)) {
             visit::visit_item(self, item);
         }
     }
@@ -9222,7 +9388,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
     }
 
     fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
-        if !has_cfg_test(&item.attrs) {
+        if !transport_item_is_test_only(&item.attrs) {
             visit::visit_impl_item_fn(self, item);
         }
     }
@@ -9338,6 +9504,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
+                    "tls_observation"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "ssrf_oast_runtime"
                 )
                 | (
@@ -9418,6 +9588,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "secret_exposure"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "secret-exposure-review")
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "tls_observation"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "tls-observation")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "resource_authorization_runtime"
         {
@@ -10207,6 +10381,12 @@ impl<'ast> Visit<'ast> for DirectCapabilityVisitor {
         visit::visit_item_use(self, item);
     }
 
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        if !transport_item_is_test_only(&item.attrs) {
+            visit::visit_impl_item_fn(self, item);
+        }
+    }
+
     fn visit_item_extern_crate(&mut self, item: &'ast ItemExternCrate) {
         self.inspect_segments(&[item.ident.to_string()]);
     }
@@ -10293,8 +10473,17 @@ mod tests {
         use crate::runtime_budget::RequestAccountingBroker;
         struct SharedWebRuntimeAuthority;
         impl SharedWebRuntimeAuthority {
-            fn new_exact_origin() {
+            fn new_exact_origin_inner() {
                 let accounting = RequestAccountingBroker::new(budget());
+                #[cfg(feature = "tls-observation")]
+                let _ = if selected() {
+                    HttpRequestBroker::new_metered_with_tls_observation(
+                        policy(), accounting.clone(), collector()
+                    )
+                } else {
+                    HttpRequestBroker::new_metered(policy(), accounting.clone())
+                };
+                #[cfg(not(feature = "tls-observation"))]
                 let _ = HttpRequestBroker::new_metered(policy(), accounting);
             }
         }
@@ -10531,6 +10720,52 @@ mod tests {
     }
 
     #[test]
+    fn tls_observation_runtime_is_a_transport_free_bounded_consumer() {
+        assert!(BOUNDED_RUNTIME_SOURCES.contains(&TLS_OBSERVATION_RUNTIME_SOURCE));
+        assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&TLS_OBSERVATION_RUNTIME_SOURCE));
+        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&TLS_OBSERVATION_RUNTIME_SOURCE));
+
+        for source in [
+            "use reqwest::Client; fn escape() { let _ = Client::new(); }",
+            "use crate::http_evidence::HttpRequestBroker;",
+            "use crate::runtime_budget::RequestAccountingBroker;",
+            "use crate::RuntimeBudget;",
+        ] {
+            let violations = inspect_bounded_source(TLS_OBSERVATION_RUNTIME_SOURCE, source)
+                .unwrap()
+                .join("\n");
+            assert!(
+                !violations.is_empty(),
+                "TLS observation authority escape unexpectedly passed: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn tls_observation_reduction_cannot_inflate_transport_ttfb() {
+        let valid =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs")
+                .replace("\r\n", "\n");
+        assert!(tls_observation_reduction_follows_ttfb_measurement(&valid));
+
+        let without_measurement = valid.replacen(
+            "            let ttfb_ms = elapsed_ms(started.elapsed());\n",
+            "",
+            1,
+        );
+        assert_ne!(without_measurement, valid);
+        let after_reduction = without_measurement.replacen(
+            "            let status = response.status();\n",
+            "            let ttfb_ms = elapsed_ms(started.elapsed());\n            let status = response.status();\n",
+            1,
+        );
+        assert_ne!(after_reduction, without_measurement);
+        assert!(!tls_observation_reduction_follows_ttfb_measurement(
+            &after_reduction
+        ));
+    }
+
+    #[test]
     fn constructor_inventory_resolves_self_and_raw_aliases_in_every_source() {
         let self_indirection = r#"
             use crate::runtime_budget::RequestAccountingBroker as Accounting;
@@ -10563,8 +10798,17 @@ mod tests {
             use self::AccountingFirst as r#AccountingSecond;
             struct SharedWebRuntimeAuthority;
             impl SharedWebRuntimeAuthority {
-                fn new_exact_origin() {
+                fn new_exact_origin_inner() {
                     let accounting = r#AccountingSecond::new(budget());
+                    #[cfg(feature = "tls-observation")]
+                    let _ = if selected() {
+                        r#TransportSecond::new_metered_with_tls_observation(
+                            policy(), accounting.clone(), collector()
+                        )
+                    } else {
+                        r#TransportSecond::new_metered(policy(), accounting.clone())
+                    };
+                    #[cfg(not(feature = "tls-observation"))]
                     let _ = r#TransportSecond::new_metered(policy(), accounting);
                 }
             }
@@ -10754,7 +10998,7 @@ mod tests {
         let helper_violations = constructor_source_violations(&helper_sources).join("\n");
         assert!(helper_violations
             .contains("<free>::helper contains 1 production RequestAccountingBroker::new calls"));
-        assert!(helper_violations.contains("SharedWebRuntimeAuthority::new_exact_origin contains 0 production RequestAccountingBroker::new calls"));
+        assert!(helper_violations.contains("SharedWebRuntimeAuthority::new_exact_origin_inner contains 0 production RequestAccountingBroker::new calls"));
 
         let trait_impl = r#"
             use crate::http_evidence::HttpRequestBroker;
@@ -11531,6 +11775,34 @@ mod tests {
             visitor.visit_file(&syntax);
             assert!(visitor.found, "direct capability not detected: {source}");
         }
+
+        let test_only_method = syn::parse_file(
+            r#"
+                struct Fixture;
+                impl Fixture {
+                    #[cfg(all(test, feature = "tls-observation"))]
+                    fn owned_tls_server() { let _ = tokio::net::TcpListener::bind("127.0.0.1:0"); }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut visitor = DirectCapabilityVisitor::default();
+        visitor.visit_file(&test_only_method);
+        assert!(!visitor.found);
+
+        let production_method = syn::parse_file(
+            r#"
+                struct Fixture;
+                impl Fixture {
+                    #[cfg(feature = "tls-observation")]
+                    fn escaped_server() { let _ = tokio::net::TcpListener::bind("127.0.0.1:0"); }
+                }
+            "#,
+        )
+        .unwrap();
+        let mut visitor = DirectCapabilityVisitor::default();
+        visitor.visit_file(&production_method);
+        assert!(visitor.found);
     }
 
     #[test]
@@ -11617,12 +11889,22 @@ mod tests {
     fn valid_assessment_composition() -> &'static str {
         r#"
             struct SharedWebRuntimeAuthority;
-            impl SharedWebRuntimeAuthority { fn new_exact_origin() -> Self { Self } }
+            impl SharedWebRuntimeAuthority {
+                fn new_exact_origin() -> Self { Self }
+                fn new_exact_origin_with_tls_observation() -> Self { Self }
+            }
             struct ChildBuilder;
             impl ChildBuilder { fn build_with_shared_authority(&self, _: SharedWebRuntimeAuthority) {} }
             struct WebAssessmentRuntimeBuilder;
             impl WebAssessmentRuntimeBuilder {
                 fn build(&self) {
+                    #[cfg(feature = "tls-observation")]
+                    let _authority = if selected() {
+                        SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation()
+                    } else {
+                        SharedWebRuntimeAuthority::new_exact_origin()
+                    };
+                    #[cfg(not(feature = "tls-observation"))]
                     let _authority = SharedWebRuntimeAuthority::new_exact_origin();
                 }
             }
@@ -11703,7 +11985,7 @@ mod tests {
                     "let _authority = SharedWebRuntimeAuthority::new_exact_origin();",
                     "if enabled() { let _authority = SharedWebRuntimeAuthority::new_exact_origin(); }",
                 ),
-                "unconditional direct call",
+                "exact mutually exclusive",
             ),
             (
                 valid_assessment_composition().replace(
@@ -11714,10 +11996,10 @@ mod tests {
             ),
             (
                 valid_assessment_composition().replace(
-                    "let _authority = SharedWebRuntimeAuthority::new_exact_origin();",
+                    "#[cfg(not(feature = \"tls-observation\"))]\n                    let _authority = SharedWebRuntimeAuthority::new_exact_origin();",
                     "",
                 ),
-                "exactly once",
+                "exact mutually exclusive",
             ),
         ] {
             let violations = inspect_web_assessment_composition(&mutation)
@@ -12289,7 +12571,9 @@ mod tests {
     #[test]
     fn assessment_item_contract_is_read_only_nonserializable_and_claim_derived() {
         let source =
-            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs");
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs")
+                .replace("\r\n", "\n");
+        let source = source.as_str();
         assert!(
             inspect_assessment_item_projection(source)
                 .unwrap()
@@ -12891,7 +13175,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12907,7 +13191,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12923,7 +13207,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12939,7 +13223,23 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+            ),
+            "{violations}"
+        );
+
+        let missing_tls_observation_audit = report_source.replacen(
+            "    #[cfg(feature = \"tls-observation\")]\n    tls_observation: Option<WebAssessmentTlsObservationAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_tls_observation_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_tls_observation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12955,7 +13255,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12971,7 +13271,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12987,7 +13287,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13003,7 +13303,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13019,7 +13319,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13035,7 +13335,23 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+            ),
+            "{violations}"
+        );
+
+        let unvalidated_tls_observation_audit = report_source.replacen(
+            "        #[cfg(feature = \"tls-observation\")]\n        validate_tls_observation_audit(\n            tls_observation.as_ref(),\n            &truth.target,\n            truth.expected_accounting.requests().consumed(),\n        )?;",
+            "        #[cfg(feature = \"tls-observation\")]\n        let _ = tls_observation.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_tls_observation_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_tls_observation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13051,7 +13367,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13067,7 +13383,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13095,7 +13411,7 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains(
-                    "AssessmentReviewAudits must remain one private Default-only container with exactly the seven feature-gated redacted audit values"
+                "AssessmentReviewAudits must remain one private Default-only container with exactly the eight feature-gated redacted audit values"
                 ),
                 "{violations}"
             );
@@ -13486,6 +13802,7 @@ mod tests {
             pub struct WebAssessmentDefenseAudit { mode: String }
             pub struct WebAssessmentRestAudit { outcome: String }
             pub struct WebAssessmentSecretExposureAudit { outcome: String }
+            pub struct WebAssessmentTlsObservationAudit { outcome: String }
             pub struct WebAssessmentSsrfOastAudit { outcome: String }
             pub struct WebAssessmentSuppliedSessionAudit { outcome: String }
             pub struct WebAssessmentWordPressAudit { outcome: String }
@@ -13531,6 +13848,8 @@ mod tests {
                 rest_review: Option<WebAssessmentRestAudit>,
                 #[cfg(feature = "secret-exposure-review")]
                 secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
+                #[cfg(feature = "tls-observation")]
+                tls_observation: Option<WebAssessmentTlsObservationAudit>,
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
                 #[cfg(feature = "wordpress-review")]
@@ -13663,7 +13982,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13678,7 +13997,35 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
+            ),
+            "{violations}"
+        );
+
+        let nested_tls_observation_audit = valid.replace(
+            "subject: String",
+            "subject: String, tls_observation: Option<WebAssessmentTlsObservationAudit>",
+        );
+        assert_ne!(nested_tls_observation_audit, valid);
+        let violations = inspect_web_assessment_models(&nested_tls_observation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("TLS-observation audit ownership drifted"),
+            "{violations}"
+        );
+
+        let missing_tls_observation_audit = valid.replace(
+            "                #[cfg(feature = \"tls-observation\")]\n                tls_observation: Option<WebAssessmentTlsObservationAudit>,\n",
+            "",
+        );
+        assert_ne!(missing_tls_observation_audit, valid);
+        let violations = inspect_web_assessment_models(&missing_tls_observation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13693,7 +14040,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13741,7 +14088,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13990,8 +14337,9 @@ mod tests {
             http.push_str(child);
         }
         let broker =
-            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
-        let checked_in_transport_violations = inspect_assessment_transport_markers(&http, broker);
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs")
+                .replace("\r\n", "\n");
+        let checked_in_transport_violations = inspect_assessment_transport_markers(&http, &broker);
         assert!(
             checked_in_transport_violations.is_empty(),
             "{checked_in_transport_violations:#?}"
@@ -14061,9 +14409,9 @@ mod tests {
             ),
             (
                 http.clone(),
-                broker.replace("\r\n", "\n").replacen(
-                    ".redirect(RedirectPolicy::none())\n                .retry(reqwest::retry::never())\n                .no_proxy()\n                .build()",
-                    ".redirect(RedirectPolicy::none())\n                .retry(reqwest::retry::never())\n                .no_proxy()\n                .cookie_store(true)\n                .build()",
+                broker.replacen(
+                    ".redirect(RedirectPolicy::none())\n            .retry(reqwest::retry::never())\n            .no_proxy();",
+                    ".redirect(RedirectPolicy::none())\n            .retry(reqwest::retry::never())\n            .no_proxy()\n            .cookie_store(true);",
                     1,
                 ),
                 "no automatic cookie store",

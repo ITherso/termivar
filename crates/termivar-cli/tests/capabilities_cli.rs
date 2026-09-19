@@ -24,6 +24,7 @@ const FEATURE_NAMES: &[&str] = &[
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "tls-observation",
     "wordpress-review",
 ];
 
@@ -144,6 +145,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "supplied-session-review",
             cfg!(feature = "supplied-session-review"),
         ),
+        ("tls-observation", cfg!(feature = "tls-observation")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
     ] {
         assert_eq!(
@@ -172,6 +174,43 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.supplied-session-review"),
         states["supplied-session-review"]
     );
+    assert_eq!(
+        surface_state(&document, "option.tls-observation"),
+        states["tls-observation"]
+    );
+    let tls = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.tls-observation")
+        .expect("TLS-observation surface");
+    assert_eq!(
+        tls["documentation"],
+        "docs/internals/existing-connection-tls-observation.md"
+    );
+    assert_eq!(
+        tls["prerequisites"],
+        serde_json::json!(["--profile web-review", "--tls-observation"])
+    );
+    let tls_limit = tls["limitation"]
+        .as_str()
+        .expect("TLS-observation limitation");
+    for required in [
+        "successful HTTPS responses already obtained through the assessment broker",
+        "adds no request or handshake",
+        "only one leaf DER certificate",
+        "Negotiated TLS version, cipher suite, ALPN, full chain, connection reuse, handshake kind and resumption are not exposed",
+        "revocation, OCSP, CT and AIA retrieval are not performed",
+        "Repeated certificate bytes do not identify one connection",
+        "one successful connection does not enumerate server support",
+        "Plain HTTP is not applicable",
+        "missing TLS metadata remains unavailable",
+    ] {
+        assert!(
+            tls_limit.contains(required),
+            "missing TLS-observation limitation `{required}`"
+        );
+    }
     let secret_exposure = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -430,6 +469,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
             "--authorization-review-policy",
         ),
         ("option.secret-exposure-review", "--secret-exposure-review"),
+        ("option.tls-observation", "--tls-observation"),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
         ("option.supplied-session-review", "--session-policy"),
         ("option.wordpress-review", "--wordpress-review"),
@@ -565,6 +605,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "secret-exposure-review",
         "ssrf-oast-review",
         "supplied-session-review",
+        "tls-observation",
     ];
     match case.as_str() {
         "default" | "no-default" => {
@@ -586,7 +627,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                6
+                7
             );
         },
         "rest-only" => {
@@ -607,6 +648,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "secret-exposure-review" || !compiled(feature) }));
+        },
+        "tls-only" => {
+            assert!(compiled("tls-observation"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "tls-observation" || !compiled(feature) }));
         },
         "bundle-members-individual" => {
             assert!(!compiled("release-bundle"));

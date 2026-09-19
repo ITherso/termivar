@@ -28,6 +28,8 @@ pub(super) const SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
     "termivar-supplied-session-comparison/v1";
 /// Additive, display-only passive secret-exposure comparison section.
 pub(super) const SECRET_EXPOSURE_COMPARISON_SCHEMA: &str = "termivar-secret-exposure-comparison/v1";
+/// Additive, display-only passive TLS observation comparison section.
+pub(super) const TLS_OBSERVATION_COMPARISON_SCHEMA: &str = "termivar-tls-observation-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
@@ -194,6 +196,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) secret_exposure_comparison: Option<SecretExposureComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) tls_observation_comparison: Option<TlsObservationComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) wordpress_review_comparison: Option<WordPressReviewComparison>,
     pub(super) only_in_after: Vec<ComparisonItem>,
     pub(super) only_in_before: Vec<ComparisonItem>,
@@ -223,6 +227,18 @@ pub(super) struct SecretExposureComparison {
     pub(super) methodology: WordPressFacetComparison,
     pub(super) coverage: WordPressFacetComparison,
     pub(super) interpretation_limits: [&'static str; 4],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct TlsObservationComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) certificate_observations: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 5],
 }
 
 #[derive(Debug, Serialize)]
@@ -354,6 +370,13 @@ pub(super) struct ImportedSecretExposureAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedTlsObservationAudit {
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+    pub(super) certificate_observations: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SuppliedSessionResourceBinding {
     pub(super) evidence_reference: Option<String>,
     pub(super) response_bytes: u64,
@@ -436,6 +459,7 @@ struct ImportedDocument {
     items: BTreeMap<String, ImportedItem>,
     supplied_session: Option<ImportedSuppliedSessionAudit>,
     secret_exposure: Option<ImportedSecretExposureAudit>,
+    tls_observation: Option<ImportedTlsObservationAudit>,
     wordpress_review: Option<ImportedWordPressAudit>,
 }
 
@@ -461,6 +485,10 @@ fn compare_documents(
         before.secret_exposure.as_ref(),
         after.secret_exposure.as_ref(),
     );
+    let tls_observation_comparison = compare_tls_observation(
+        before.tls_observation.as_ref(),
+        after.tls_observation.as_ref(),
+    );
     let wordpress_review_comparison = compare_wordpress_reviews(
         before.wordpress_review.as_ref(),
         after.wordpress_review.as_ref(),
@@ -480,6 +508,7 @@ fn compare_documents(
         after: after.metadata,
         supplied_session_comparison,
         secret_exposure_comparison,
+        tls_observation_comparison,
         wordpress_review_comparison,
         only_in_after: Vec::new(),
         only_in_before: Vec::new(),
@@ -670,6 +699,60 @@ fn compare_secret_exposure(
             "No raw matched value or public secret hash is imported into this display-only comparison.",
             "A one-sided observation does not establish when exposure began or ended, and disappearance is not remediation.",
             "Source authentication, secret validity, exploit execution, and impact validation are not established by this audit.",
+        ],
+    })
+}
+
+fn compare_tls_observation(
+    before: Option<&ImportedTlsObservationAudit>,
+    after: Option<&ImportedTlsObservationAudit>,
+) -> Option<TlsObservationComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    Some(TlsObservationComparison {
+        schema: TLS_OBSERVATION_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            paired_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Policy, target scheme, backend visibility, validation scope, or active-matrix selection changes are methodology changes; they are not vulnerability, hardening, or remediation evidence.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            paired_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "Assessment-request, response, retention, first-observation-time, validity-at-observation, and occurrence-count changes describe observation coverage; fewer observations do not establish a certificate removal or remediation.",
+        ),
+        certificate_observations: facet(
+            before.map(|audit| &audit.certificate_observations),
+            after.map(|audit| &audit.certificate_observations),
+            paired_status(
+                before.map(|audit| &audit.certificate_observations),
+                after.map(|audit| &audit.certificate_observations),
+            ),
+            "Leaf digest, byte length, declared validity bounds, and SAN-count changes are stable certificate-observation differences only; they do not authenticate a source or enumerate TLS support.",
+        ),
+        interpretation_limits: [
+            "The audit describes leaf bytes exposed by successful existing response connections; it does not enumerate all server protocols, cipher suites, certificates, chains, or handshakes.",
+            "The current backend does not expose negotiated protocol, negotiated cipher suite, ALPN, full chain, connection reuse, session resumption, or resumed-versus-full handshake state.",
+            "Standard transport validation is scoped to a successful response connection and is not source authentication, a fresh signature check by this report, or worldwide trust.",
+            "Revocation, AIA, CRL, OCSP, certificate-transparency, and active negotiation retrieval were not performed.",
+            "A one-sided or changed certificate observation does not establish vulnerability, exploitation, impact, rotation quality, or remediation.",
         ],
     })
 }
@@ -1123,6 +1206,9 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
     if let Some(secret_exposure) = &document.secret_exposure_comparison {
         write_secret_exposure_comparison_markdown(&mut output, secret_exposure)?;
     }
+    if let Some(tls_observation) = &document.tls_observation_comparison {
+        write_tls_observation_comparison_markdown(&mut output, tls_observation)?;
+    }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         write_wordpress_comparison_markdown(&mut output, wordpress)?;
     }
@@ -1291,6 +1377,53 @@ fn write_secret_exposure_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### Secret exposure interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_tls_observation_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &TlsObservationComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Existing-connection TLS observation differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str(
+        "\n\nThis section compares validated passive TLS audit projections. It does not enumerate server TLS support, authenticate a source, check revocation, or establish vulnerability or remediation.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+        (
+            "Certificate observations",
+            &comparison.certificate_observations,
+        ),
+    ] {
+        output.push_fmt(format_args!("### TLS {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### TLS observation interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

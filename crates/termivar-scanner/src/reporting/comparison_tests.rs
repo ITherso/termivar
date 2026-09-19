@@ -129,6 +129,65 @@ fn report_with_secret_exposure(items: Vec<Value>, audit: Value) -> Value {
     document
 }
 
+fn tls_leaf_observation(identity: u32, occurrence_count: u64) -> Value {
+    json!({
+        "leaf_certificate_sha256": format!("{identity:064x}"),
+        "leaf_certificate_byte_length": 768,
+        "not_before_epoch_seconds": 100,
+        "not_after_epoch_seconds": 300,
+        "observed_at_epoch_seconds": 200,
+        "dns_san_count": 2,
+        "ip_san_count": 1,
+        "other_san_count": 0,
+        "san_count_truncated": false,
+        "certificate_time_status": "valid_at_observation",
+        "response_occurrence_count": occurrence_count,
+        "standard_transport_validation_succeeded": true
+    })
+}
+
+fn tls_observation_audit(observations: Vec<Value>) -> Value {
+    let successful_https_response_count = observations
+        .iter()
+        .map(|row| row["response_occurrence_count"].as_u64().unwrap())
+        .sum::<u64>();
+    json!({
+        "schema": "security.tls-observation-audit/v1",
+        "policy": "termivar.existing-connection-tls-observation/v1",
+        "selected": true,
+        "additional_request_count": 0,
+        "assessment_request_count": successful_https_response_count,
+        "target_scheme": "https",
+        "observation_source_scope": "assessment_exact_origin_existing_connections/v1",
+        "observation_clock_assurance": "local_system_clock_not_independently_verified",
+        "successful_https_response_count": successful_https_response_count,
+        "plaintext_response_count": 0,
+        "tls_info_unavailable_count": 0,
+        "malformed_certificate_count": 0,
+        "certificate_limit_rejection_count": 0,
+        "unretained_leaf_response_count": 0,
+        "leaf_observation_count": observations.len(),
+        "protocol": "not_exposed_by_backend",
+        "cipher_suite": "not_exposed_by_backend",
+        "alpn_protocol": "not_exposed_by_backend",
+        "full_chain": "not_exposed_by_backend",
+        "connection_reuse": "not_exposed_by_backend",
+        "session_resumption": "not_exposed_by_backend",
+        "handshake_kind": "not_exposed_by_backend",
+        "revocation": "not_checked",
+        "transport_validation_scope": "successful_https_response_connection/v1",
+        "active_tls_matrix": "not_performed",
+        "source_authentication": "not_established",
+        "observations": observations
+    })
+}
+
+fn report_with_tls_observation(audit: Value) -> Value {
+    let mut document = report(Vec::new());
+    document["tls_observation"] = audit;
+    document
+}
+
 fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
@@ -217,6 +276,278 @@ fn imported_summary_accepts_a_complete_empty_assessment() {
     assert_eq!(summary.status(), "complete");
     assert_eq!(summary.subject_count(), 2);
     assert_eq!(summary.item_count(), 0);
+}
+
+#[test]
+fn tls_observation_audit_is_strict_feature_independent_and_self_compares() {
+    let document =
+        report_with_tls_observation(tls_observation_audit(vec![tls_leaf_observation(41, 2)]));
+    let summary = import_assessment_summary(&bytes(&document)).unwrap();
+    assert_eq!(summary.item_count(), 0);
+
+    let comparison = compare(&document, &document);
+    assert_eq!(
+        comparison["before"]["optional_audits"]["tls_observation"]["schema"],
+        "security.tls-observation-audit/v1"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["schema"],
+        "termivar-tls-observation-comparison/v1"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["status"],
+        "compared"
+    );
+    for facet in ["methodology", "coverage", "certificate_observations"] {
+        assert_eq!(
+            comparison["tls_observation_comparison"][facet]["status"],
+            "unchanged"
+        );
+    }
+    assert_eq!(
+        comparison["tls_observation_comparison"]["methodology"]["before"]["alpn_protocol"],
+        "not_exposed_by_backend"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["methodology"]["before"]["session_resumption"],
+        "not_exposed_by_backend"
+    );
+    for group in ["only_in_before", "only_in_after", "changed"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn selected_empty_tls_observation_audit_is_valid_and_self_compared() {
+    let document = report_with_tls_observation(tls_observation_audit(Vec::new()));
+    assert!(import_assessment_summary(&bytes(&document)).is_ok());
+
+    let comparison = compare(&document, &document);
+    assert_eq!(
+        comparison["tls_observation_comparison"]["status"],
+        "compared"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["coverage"]["before"]
+            ["successful_https_response_count"],
+        0
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["certificate_observations"]["before"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["certificate_observations"]["status"],
+        "unchanged"
+    );
+}
+
+#[test]
+fn tls_observation_changes_remain_methodology_coverage_or_certificate_observations() {
+    let before =
+        report_with_tls_observation(tls_observation_audit(vec![tls_leaf_observation(51, 1)]));
+    let mut certificate_changed = before.clone();
+    certificate_changed["tls_observation"]["observations"][0]["leaf_certificate_sha256"] =
+        json!(format!("{:064x}", 52));
+    let comparison = compare(&before, &certificate_changed);
+    assert_eq!(
+        comparison["tls_observation_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["certificate_observations"]["status"],
+        "changed"
+    );
+    assert!(
+        comparison["tls_observation_comparison"]["certificate_observations"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("do not authenticate")
+    );
+
+    let mut coverage_changed = before.clone();
+    coverage_changed["tls_observation"]["assessment_request_count"] = json!(2);
+    coverage_changed["tls_observation"]["successful_https_response_count"] = json!(2);
+    coverage_changed["tls_observation"]["tls_info_unavailable_count"] = json!(1);
+    let comparison = compare(&before, &coverage_changed);
+    assert_eq!(
+        comparison["tls_observation_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert!(comparison["tls_observation_comparison"]["coverage"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("not establish"));
+
+    let mut observation_time_changed = before.clone();
+    observation_time_changed["tls_observation"]["observations"][0]["observed_at_epoch_seconds"] =
+        json!(201);
+    let comparison = compare(&before, &observation_time_changed);
+    assert_eq!(
+        comparison["tls_observation_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["certificate_observations"]["status"],
+        "unchanged"
+    );
+
+    let mut occurrence_changed = before.clone();
+    occurrence_changed["tls_observation"]["assessment_request_count"] = json!(2);
+    occurrence_changed["tls_observation"]["successful_https_response_count"] = json!(2);
+    occurrence_changed["tls_observation"]["observations"][0]["response_occurrence_count"] =
+        json!(2);
+    let comparison = compare(&before, &occurrence_changed);
+    assert_eq!(
+        comparison["tls_observation_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["certificate_observations"]["status"],
+        "unchanged"
+    );
+
+    let missing = report(Vec::new());
+    let comparison = compare(&before, &missing);
+    assert_eq!(
+        comparison["tls_observation_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["tls_observation_comparison"]["reason"],
+        "after_audit_missing"
+    );
+}
+
+#[test]
+fn tls_observation_reader_rejects_contract_accounting_and_leaf_mutations() {
+    let valid =
+        report_with_tls_observation(tls_observation_audit(vec![tls_leaf_observation(61, 1)]));
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+
+    for (field, replacement) in [
+        ("schema", json!("security.tls-observation-audit/v2")),
+        ("policy", json!("termivar.other/v1")),
+        ("selected", json!(false)),
+        ("additional_request_count", json!(1)),
+        ("assessment_request_count", json!(0)),
+        ("observation_source_scope", json!("unscoped")),
+        ("observation_clock_assurance", json!("verified")),
+        ("protocol", json!("TLSv1.3")),
+        ("cipher_suite", json!("TLS_AES_128_GCM_SHA256")),
+        ("alpn_protocol", json!("h2")),
+        ("full_chain", json!("available")),
+        ("connection_reuse", json!("reused")),
+        ("session_resumption", json!("resumed")),
+        ("handshake_kind", json!("full")),
+        ("revocation", json!("good")),
+        ("active_tls_matrix", json!("performed")),
+        ("source_authentication", json!("established")),
+    ] {
+        let mut changed = valid.clone();
+        changed["tls_observation"][field] = replacement;
+        assert!(
+            import_assessment_summary(&bytes(&changed)).is_err(),
+            "mutation of {field} must be rejected"
+        );
+    }
+
+    for field in [
+        "schema",
+        "policy",
+        "selected",
+        "additional_request_count",
+        "assessment_request_count",
+        "target_scheme",
+        "observation_source_scope",
+        "observation_clock_assurance",
+        "successful_https_response_count",
+        "plaintext_response_count",
+        "tls_info_unavailable_count",
+        "malformed_certificate_count",
+        "certificate_limit_rejection_count",
+        "unretained_leaf_response_count",
+        "leaf_observation_count",
+        "protocol",
+        "cipher_suite",
+        "alpn_protocol",
+        "full_chain",
+        "connection_reuse",
+        "session_resumption",
+        "handshake_kind",
+        "revocation",
+        "transport_validation_scope",
+        "active_tls_matrix",
+        "source_authentication",
+        "observations",
+    ] {
+        let mut missing = valid.clone();
+        missing["tls_observation"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            import_assessment_summary(&bytes(&missing)).is_err(),
+            "missing {field} must be rejected"
+        );
+    }
+
+    let mut boolean_count = valid.clone();
+    boolean_count["tls_observation"]["successful_https_response_count"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&boolean_count)).is_err());
+
+    let mut inconsistent_partition = valid.clone();
+    inconsistent_partition["tls_observation"]["successful_https_response_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&inconsistent_partition)).is_err());
+
+    let mut invalid_time = valid.clone();
+    invalid_time["tls_observation"]["observations"][0]["observed_at_epoch_seconds"] = json!(400);
+    assert!(import_assessment_summary(&bytes(&invalid_time)).is_err());
+
+    let mut zero_occurrence = valid.clone();
+    zero_occurrence["tls_observation"]["observations"][0]["response_occurrence_count"] = json!(0);
+    zero_occurrence["tls_observation"]["successful_https_response_count"] = json!(0);
+    assert!(import_assessment_summary(&bytes(&zero_occurrence)).is_err());
+
+    let mut duplicate_leaf = valid.clone();
+    let repeated = duplicate_leaf["tls_observation"]["observations"][0].clone();
+    duplicate_leaf["tls_observation"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .push(repeated);
+    duplicate_leaf["tls_observation"]["leaf_observation_count"] = json!(2);
+    duplicate_leaf["tls_observation"]["assessment_request_count"] = json!(2);
+    duplicate_leaf["tls_observation"]["successful_https_response_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&duplicate_leaf)).is_err());
+
+    let mut excessive_der = valid.clone();
+    excessive_der["tls_observation"]["observations"][0]["leaf_certificate_byte_length"] =
+        json!(65_537);
+    assert!(import_assessment_summary(&bytes(&excessive_der)).is_err());
+
+    let mut excessive_sans = valid.clone();
+    excessive_sans["tls_observation"]["observations"][0]["dns_san_count"] = json!(257);
+    assert!(import_assessment_summary(&bytes(&excessive_sans)).is_err());
+
+    for replacement in [json!(null), json!("true"), json!({}), json!([]), json!(1)] {
+        let mut wrong_truncation_type = valid.clone();
+        wrong_truncation_type["tls_observation"]["observations"][0]["san_count_truncated"] =
+            replacement;
+        assert!(import_assessment_summary(&bytes(&wrong_truncation_type)).is_err());
+    }
+
+    let mut incoherent_truncation = valid.clone();
+    incoherent_truncation["tls_observation"]["observations"][0]["san_count_truncated"] =
+        json!(true);
+    assert!(import_assessment_summary(&bytes(&incoherent_truncation)).is_err());
+
+    let mut extra = valid.clone();
+    extra["tls_observation"]["unexpected"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&extra)).is_err());
 }
 
 #[test]

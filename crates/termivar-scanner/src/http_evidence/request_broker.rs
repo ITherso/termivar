@@ -47,6 +47,8 @@ use crate::supplied_session_review::{
 };
 #[cfg(feature = "supplied-session-review")]
 use crate::web_runtime::authenticated_transport_is_allowed;
+#[cfg(feature = "tls-observation")]
+use crate::web_runtime::TlsObservationCollector;
 #[cfg(feature = "wordpress-review")]
 use crate::KnowledgeBase;
 use crate::{
@@ -686,6 +688,8 @@ pub(crate) struct HttpRequestBroker {
     supplied_session_no_proxy_client: Option<Client>,
     policy: HttpEvidencePolicy,
     accounting: Option<RequestAccountingBroker>,
+    #[cfg(feature = "tls-observation")]
+    tls_observation: Option<TlsObservationCollector>,
 }
 
 impl HttpRequestBroker {
@@ -694,27 +698,78 @@ impl HttpRequestBroker {
         policy: HttpEvidencePolicy,
         accounting: RequestAccountingBroker,
     ) -> Result<Self, HttpEvidenceError> {
-        Self::build(policy, Some(accounting))
+        Self::build(
+            policy,
+            Some(accounting),
+            #[cfg(feature = "tls-observation")]
+            None,
+        )
+    }
+
+    /// Creates a metered broker that passively observes existing TLS responses.
+    #[cfg(feature = "tls-observation")]
+    pub(crate) fn new_metered_with_tls_observation(
+        policy: HttpEvidencePolicy,
+        accounting: RequestAccountingBroker,
+        collector: TlsObservationCollector,
+    ) -> Result<Self, HttpEvidenceError> {
+        Self::build(policy, Some(accounting), Some(collector))
+    }
+
+    /// Test-only verification-preserving trusted-root seam for an owned fixture.
+    #[cfg(all(test, feature = "tls-observation"))]
+    pub(crate) fn new_metered_with_tls_observation_and_test_root(
+        policy: HttpEvidencePolicy,
+        accounting: RequestAccountingBroker,
+        collector: TlsObservationCollector,
+        root_certificate_der: &[u8],
+        resolved_host: &str,
+        resolved_address: std::net::SocketAddr,
+    ) -> Result<Self, HttpEvidenceError> {
+        let mut broker = Self::new_metered_with_tls_observation(policy, accounting, collector)?;
+        let root_certificate = reqwest::Certificate::from_der(root_certificate_der)
+            .map_err(HttpEvidenceError::Client)?;
+        broker.client = Client::builder()
+            .redirect(RedirectPolicy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy()
+            .tls_info(true)
+            .add_root_certificate(root_certificate)
+            .resolve(resolved_host, resolved_address)
+            .build()
+            .map_err(HttpEvidenceError::Client)?;
+        Ok(broker)
     }
 
     /// Creates an explicitly unmetered broker for legacy standalone APIs.
     ///
     /// Bounded runtimes must never call this constructor.
     pub(crate) fn new_unmetered(policy: HttpEvidencePolicy) -> Result<Self, HttpEvidenceError> {
-        Self::build(policy, None)
+        Self::build(
+            policy,
+            None,
+            #[cfg(feature = "tls-observation")]
+            None,
+        )
     }
 
     fn build(
         policy: HttpEvidencePolicy,
         accounting: Option<RequestAccountingBroker>,
+        #[cfg(feature = "tls-observation")] tls_observation: Option<TlsObservationCollector>,
     ) -> Result<Self, HttpEvidenceError> {
         let client = Client::builder()
             .redirect(RedirectPolicy::none())
             // A broker lease represents exactly one wire attempt. Semantic
             // retries re-enter the broker and acquire their own lease.
-            .retry(reqwest::retry::never())
-            .build()
-            .map_err(HttpEvidenceError::Client)?;
+            .retry(reqwest::retry::never());
+        #[cfg(feature = "tls-observation")]
+        let client = if tls_observation.is_some() {
+            client.tls_info(true)
+        } else {
+            client
+        };
+        let client = client.build().map_err(HttpEvidenceError::Client)?;
         // WordPress public-metadata discovery has a stricter, anonymous
         // transport shape than ordinary assessment probes. In particular it
         // must not inherit a process-level proxy or proxy credentials. Keep a
@@ -723,7 +778,15 @@ impl HttpRequestBroker {
         let anonymous_no_proxy_client = Client::builder()
             .redirect(RedirectPolicy::none())
             .retry(reqwest::retry::never())
-            .no_proxy()
+            .no_proxy();
+        #[cfg(all(feature = "wordpress-review", feature = "tls-observation"))]
+        let anonymous_no_proxy_client = if tls_observation.is_some() {
+            anonymous_no_proxy_client.tls_info(true)
+        } else {
+            anonymous_no_proxy_client
+        };
+        #[cfg(feature = "wordpress-review")]
+        let anonymous_no_proxy_client = anonymous_no_proxy_client
             .build()
             .map_err(HttpEvidenceError::Client)?;
         Ok(Self {
@@ -734,6 +797,8 @@ impl HttpRequestBroker {
             supplied_session_no_proxy_client: None,
             policy,
             accounting,
+            #[cfg(feature = "tls-observation")]
+            tls_observation,
         })
     }
 
@@ -748,7 +813,12 @@ impl HttpRequestBroker {
     /// connection-bound server state cannot bleed between principals while
     /// every dispatch and body byte remains charged to the same runtime.
     pub(crate) fn isolated(&self) -> Result<Self, HttpEvidenceError> {
-        Self::build(self.policy.clone(), self.accounting.clone())
+        Self::build(
+            self.policy.clone(),
+            self.accounting.clone(),
+            #[cfg(feature = "tls-observation")]
+            self.tls_observation.clone(),
+        )
     }
 
     /// Creates the credentialed child pool only when the supplied-session
@@ -756,14 +826,26 @@ impl HttpRequestBroker {
     /// therefore keep their existing client construction unchanged.
     #[cfg(feature = "supplied-session-review")]
     pub(crate) fn isolated_supplied_session(&self) -> Result<Self, HttpEvidenceError> {
-        let mut broker = Self::build(self.policy.clone(), self.accounting.clone())?;
+        let mut broker = Self::build(
+            self.policy.clone(),
+            self.accounting.clone(),
+            #[cfg(feature = "tls-observation")]
+            self.tls_observation.clone(),
+        )?;
         // No cookie store, redirects, retries, proxy discovery/defaults, or
         // default headers are installed on this principal-local connection pool.
+        let supplied_session_client = Client::builder()
+            .redirect(RedirectPolicy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy();
+        #[cfg(feature = "tls-observation")]
+        let supplied_session_client = if broker.tls_observation.is_some() {
+            supplied_session_client.tls_info(true)
+        } else {
+            supplied_session_client
+        };
         broker.supplied_session_no_proxy_client = Some(
-            Client::builder()
-                .redirect(RedirectPolicy::none())
-                .retry(reqwest::retry::never())
-                .no_proxy()
+            supplied_session_client
                 .build()
                 .map_err(HttpEvidenceError::Client)?,
         );
@@ -1029,6 +1111,8 @@ impl HttpRequestBroker {
         limits: DecisionExecutionLimits,
         request: reqwest::Request,
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        #[cfg(feature = "tls-observation")]
+        let request_scheme = request.url().scheme().to_owned();
         let request_body_bytes = metered_request_body_bytes(&request)?;
         let execution_body_limit = limits
             .max_response_body_bytes()
@@ -1047,7 +1131,22 @@ impl HttpRequestBroker {
                 .execute(request)
                 .await
                 .map_err(HttpEvidenceError::Request)?;
+            // TTFB is a transport measurement. Passive metadata reduction
+            // must not inflate it merely because the TLS observer is selected.
             let ttfb_ms = elapsed_ms(started.elapsed());
+            #[cfg(feature = "tls-observation")]
+            if let Some(collector) = self.tls_observation.as_ref() {
+                match request_scheme.as_str() {
+                    "http" => collector.observe_plaintext_response(),
+                    "https" => collector.observe_https_response(
+                        response
+                            .extensions()
+                            .get::<reqwest::tls::TlsInfo>()
+                            .and_then(reqwest::tls::TlsInfo::peer_certificate),
+                    ),
+                    _ => {},
+                }
+            }
             let status = response.status();
             let final_url = response.url().clone();
             let version = format!("{:?}", response.version());
@@ -1335,6 +1434,43 @@ mod tests {
 
         assert_eq!(metered_request_body_bytes(&bodyless).unwrap(), 0);
         assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
+    }
+
+    #[cfg(feature = "tls-observation")]
+    #[test]
+    fn isolated_brokers_retain_one_assessment_owned_tls_collector() {
+        let target = url::Url::parse("https://example.test/app/").unwrap();
+        let policy = HttpEvidencePolicy::for_origin(target).unwrap();
+        let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+        let collector = TlsObservationCollector::new("https");
+        let broker = HttpRequestBroker::new_metered_with_tls_observation(
+            policy.clone(),
+            accounting.clone(),
+            collector.clone(),
+        )
+        .unwrap();
+        assert!(broker
+            .tls_observation
+            .as_ref()
+            .is_some_and(|selected| selected.shares_state_with(&collector)));
+
+        let isolated = broker.isolated().unwrap();
+        assert!(isolated
+            .tls_observation
+            .as_ref()
+            .is_some_and(|selected| selected.shares_state_with(&collector)));
+
+        #[cfg(feature = "supplied-session-review")]
+        {
+            let session = broker.isolated_supplied_session().unwrap();
+            assert!(session
+                .tls_observation
+                .as_ref()
+                .is_some_and(|selected| selected.shares_state_with(&collector)));
+        }
+
+        let option_off = HttpRequestBroker::new_metered(policy, accounting).unwrap();
+        assert!(option_off.tls_observation.is_none());
     }
 
     #[cfg(feature = "supplied-session-review")]

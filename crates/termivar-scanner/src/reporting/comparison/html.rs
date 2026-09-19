@@ -3,8 +3,8 @@
 use super::super::{write_html_text, RenderBuffer, ReportError};
 use super::{
     ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, SecretExposureComparison,
-    SourceMetadata, SuppliedSessionComparison, WordPressEntityChanges, WordPressFacetComparison,
-    WordPressReviewComparison,
+    SourceMetadata, SuppliedSessionComparison, TlsObservationComparison, WordPressEntityChanges,
+    WordPressFacetComparison, WordPressReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -37,6 +37,9 @@ pub(super) fn render(
     }
     if let Some(comparison) = &document.secret_exposure_comparison {
         secret_exposure(&mut output, comparison)?;
+    }
+    if let Some(comparison) = &document.tls_observation_comparison {
+        tls_observation(&mut output, comparison)?;
     }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         wordpress_review(&mut output, wordpress)?;
@@ -164,6 +167,53 @@ fn secret_exposure(
     )?;
     wordpress_facet(output, "Secret-exposure coverage", &comparison.coverage)?;
     output.push_str("<details><summary>Secret-exposure interpretation limits</summary><ul>")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn tls_observation(
+    output: &mut RenderBuffer,
+    comparison: &TlsObservationComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"tls-observation-differences\"><h2 id=\"tls-observation-differences\">Existing-connection TLS observation differences</h2><p class=\"muted\">Validated passive TLS projections are compared separately from target items. This display does not enumerate server TLS support, authenticate a source, check revocation, or establish vulnerability or remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Coverage", comparison.coverage.status.as_str()),
+        (
+            "Certificate observations",
+            comparison.certificate_observations.status.as_str(),
+        ),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str(
+            "</span>. A missing or reduced audit is not certificate removal or remediation.</p>",
+        )?;
+    }
+    for (label, facet) in [
+        ("TLS methodology", &comparison.methodology),
+        ("TLS coverage", &comparison.coverage),
+        (
+            "TLS certificate observations",
+            &comparison.certificate_observations,
+        ),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str("<details><summary>TLS observation interpretation limits</summary><ul>")?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;
         write_html_text(output, limit)?;

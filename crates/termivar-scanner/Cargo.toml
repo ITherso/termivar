@@ -39,12 +39,15 @@ thiserror = { workspace = true }
 toml = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 mlua = { version = "0.9", default-features = false, features = ["lua54", "vendored"], optional = true }
+x509-parser = { workspace = true, optional = true }
 
 [dev-dependencies]
 clap = { workspace = true }
 criterion = "0.5"
+rcgen = { version = "0.13.2", default-features = false, features = ["ring"] }
 tempfile = { workspace = true }
 termivar-oast = { version = "0.10.0-alpha.3", path = "../termivar-oast", default-features = false, features = ["client", "test-support"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 
 [features]
 # Default product: deterministic evidence/reasoning/runtime surface.
@@ -84,6 +87,11 @@ supplied-session-review = ["scanning", "dep:zeroize"]
 # textual response bodies already acquired by the assessment runtime. The
 # fixed detector catalogue retains no matched values or public secret hashes.
 secret-exposure-review = ["scanning"]
+
+# Explicitly enabled, zero-additional-request observation of the validated TLS
+# connection that delivered an existing HTTPS response. The backend exposes
+# only bounded leaf-certificate bytes; active negotiation remains separate.
+tls-observation = ["scanning", "dep:x509-parser"]
 
 # Explicitly enabled WordPress interpretation over the already-observed root
 # response and bounded operator-supplied local data. It adds no transport.
@@ -144,14 +152,14 @@ lua = ["core", "dep:mlua", "dep:tokio"]
 
 # Historical compatibility aggregate enabling every opt-in source surface.
 # This is not a supported product tier or a production-readiness claim.
-full = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "supplied-session-review", "secret-exposure-review", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "platform-models", "reporting", "plugins", "lua"]
+full = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "supplied-session-review", "secret-exposure-review", "tls-observation", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "platform-models", "reporting", "plugins", "lua"]
 
 # Minimal deterministic scanner runtime
 minimal = ["core", "scanning"]
 
 # Historical compatibility aggregate excluding threat intelligence.
 # It is not an enterprise distribution or supported package.
-enterprise = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "supplied-session-review", "secret-exposure-review", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "platform-models", "reporting", "plugins", "lua"]
+enterprise = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "supplied-session-review", "secret-exposure-review", "tls-observation", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "platform-models", "reporting", "plugins", "lua"]
 
 # Historical alias for the all-opt-in compatibility aggregate.
 research = ["full"]

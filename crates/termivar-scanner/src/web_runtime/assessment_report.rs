@@ -50,6 +50,12 @@ use super::ssrf_oast_runtime::{
     MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS, MAX_SSRF_OAST_REVIEW_REQUESTS,
     SSRF_OAST_REVIEW_CAPABILITY_ID,
 };
+#[cfg(feature = "tls-observation")]
+use super::tls_observation::{
+    WebAssessmentTlsObservationAudit, TLS_OBSERVATION_AUDIT_SCHEMA, TLS_OBSERVATION_BACKEND_LIMIT,
+    TLS_OBSERVATION_CLOCK_ASSURANCE, TLS_OBSERVATION_POLICY_ID, TLS_OBSERVATION_REVOCATION_STATUS,
+    TLS_OBSERVATION_SOURCE_SCOPE, TLS_OBSERVATION_VALIDATION_SCOPE,
+};
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_fingerprint_runtime::{
     WordPressAssetFingerprintExecution, WordPressAssetFingerprintResourceReceipt,
@@ -231,6 +237,8 @@ pub struct AssessmentRunReport {
     wordpress_review: Option<WebAssessmentWordPressAudit>,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
+    #[cfg(feature = "tls-observation")]
+    tls_observation: Option<WebAssessmentTlsObservationAudit>,
 }
 
 #[derive(Default)]
@@ -249,6 +257,8 @@ struct AssessmentReviewAudits {
     wordpress_review: Option<WebAssessmentWordPressAudit>,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
+    #[cfg(feature = "tls-observation")]
+    tls_observation: Option<WebAssessmentTlsObservationAudit>,
 }
 
 impl AssessmentRunReport {
@@ -271,6 +281,9 @@ impl AssessmentRunReport {
         #[cfg(feature = "secret-exposure-review")] secret_exposure_review: Option<
             WebAssessmentSecretExposureAudit,
         >,
+        #[cfg(feature = "tls-observation")] tls_observation: Option<
+            WebAssessmentTlsObservationAudit,
+        >,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
         Self::new_validated(
@@ -292,6 +305,8 @@ impl AssessmentRunReport {
                 wordpress_review,
                 #[cfg(feature = "secret-exposure-review")]
                 secret_exposure_review,
+                #[cfg(feature = "tls-observation")]
+                tls_observation,
             },
         )
     }
@@ -326,6 +341,8 @@ impl AssessmentRunReport {
             wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure_review,
+            #[cfg(feature = "tls-observation")]
+            tls_observation,
         } = audits;
         validate_run_identity(&run_report, truth.target_identity)?;
         validate_run_completion(&run_report)?;
@@ -369,6 +386,12 @@ impl AssessmentRunReport {
             &items,
             &evidence_references,
         )?;
+        #[cfg(feature = "tls-observation")]
+        validate_tls_observation_audit(
+            tls_observation.as_ref(),
+            &truth.target,
+            truth.expected_accounting.requests().consumed(),
+        )?;
 
         Ok(Self {
             run_report,
@@ -390,6 +413,8 @@ impl AssessmentRunReport {
             wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure_review,
+            #[cfg(feature = "tls-observation")]
+            tls_observation,
         })
     }
 
@@ -471,6 +496,71 @@ impl AssessmentRunReport {
     #[cfg(feature = "secret-exposure-review")]
     pub const fn secret_exposure_review_audit(&self) -> Option<&WebAssessmentSecretExposureAudit> {
         self.secret_exposure_review.as_ref()
+    }
+
+    /// Returns the optional passive existing-connection TLS audit.
+    #[cfg(feature = "tls-observation")]
+    pub const fn tls_observation_audit(&self) -> Option<&WebAssessmentTlsObservationAudit> {
+        self.tls_observation.as_ref()
+    }
+}
+
+#[cfg(feature = "tls-observation")]
+fn validate_tls_observation_audit(
+    audit: Option<&WebAssessmentTlsObservationAudit>,
+    target: &str,
+    assessment_request_count: Option<u64>,
+) -> Result<(), AssessmentRunReportError> {
+    let Some(audit) = audit else {
+        return Ok(());
+    };
+    let target_scheme = Url::parse(target)
+        .map_err(|_| AssessmentRunReportError::TlsObservationAuditMismatch)?
+        .scheme()
+        .to_owned();
+    let observed_response_count = audit
+        .successful_https_response_count()
+        .checked_add(audit.plaintext_response_count())
+        .ok_or(AssessmentRunReportError::TlsObservationAuditMismatch)?;
+    let https_partition = audit
+        .tls_info_unavailable_count()
+        .checked_add(audit.malformed_certificate_count())
+        .and_then(|count| count.checked_add(audit.certificate_limit_rejection_count()))
+        .and_then(|count| count.checked_add(audit.unretained_leaf_response_count()))
+        .and_then(|count| {
+            audit
+                .leaf_observations()
+                .iter()
+                .try_fold(count, |sum, row| {
+                    sum.checked_add(row.response_occurrence_count())
+                })
+        })
+        .ok_or(AssessmentRunReportError::TlsObservationAuditMismatch)?;
+    let valid = audit.schema() == TLS_OBSERVATION_AUDIT_SCHEMA
+        && audit.policy() == TLS_OBSERVATION_POLICY_ID
+        && audit.selected()
+        && audit.additional_request_count() == 0
+        && audit.target_scheme().as_str() == target_scheme
+        && audit.observation_source_scope() == TLS_OBSERVATION_SOURCE_SCOPE
+        && audit.observation_clock_assurance() == TLS_OBSERVATION_CLOCK_ASSURANCE
+        && audit.protocol() == TLS_OBSERVATION_BACKEND_LIMIT
+        && audit.cipher_suite() == TLS_OBSERVATION_BACKEND_LIMIT
+        && audit.alpn_protocol() == TLS_OBSERVATION_BACKEND_LIMIT
+        && audit.full_chain() == TLS_OBSERVATION_BACKEND_LIMIT
+        && audit.connection_reuse() == TLS_OBSERVATION_BACKEND_LIMIT
+        && audit.session_resumption() == TLS_OBSERVATION_BACKEND_LIMIT
+        && audit.handshake_kind() == TLS_OBSERVATION_BACKEND_LIMIT
+        && audit.revocation() == TLS_OBSERVATION_REVOCATION_STATUS
+        && audit.standard_transport_validation_scope() == TLS_OBSERVATION_VALIDATION_SCOPE
+        && https_partition == audit.successful_https_response_count()
+        && (target_scheme == "https" || audit.successful_https_response_count() == 0)
+        && (target_scheme == "http" || audit.plaintext_response_count() == 0)
+        && matches!(target_scheme.as_str(), "http" | "https")
+        && assessment_request_count.is_some_and(|count| observed_response_count <= count);
+    if valid {
+        Ok(())
+    } else {
+        Err(AssessmentRunReportError::TlsObservationAuditMismatch)
     }
 }
 
@@ -870,6 +960,11 @@ impl fmt::Debug for AssessmentRunReport {
             "secret_exposure_review_audit_present",
             &self.secret_exposure_review.is_some(),
         );
+        #[cfg(feature = "tls-observation")]
+        debug.field(
+            "tls_observation_audit_present",
+            &self.tls_observation.is_some(),
+        );
         debug.finish()
     }
 }
@@ -1259,6 +1354,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "secret-exposure-review")]
     #[error("secret-exposure review audit does not match committed item truth")]
     SecretExposureAuditMismatch,
+    /// The optional passive TLS audit disagreed with its transport-owned truth.
+    #[cfg(feature = "tls-observation")]
+    #[error("TLS observation audit does not match transport truth")]
+    TlsObservationAuditMismatch,
 }
 
 fn build_run_report(
@@ -1643,6 +1742,33 @@ mod tests {
     const PRIVATE_CANONICAL_TARGET: &str = "https://private-target-credential-sentinel.test/review";
     const PRIVATE_STOP_DETAIL: &str = "private-stop-diagnostic-sentinel";
     const TEST_ELAPSED_MS: u64 = 1_000;
+
+    #[cfg(feature = "tls-observation")]
+    #[test]
+    fn tls_observation_response_count_is_bounded_by_run_request_accounting() {
+        let collector = super::super::tls_observation::TlsObservationCollector::new("https");
+        let empty = collector.audit();
+        assert!(
+            validate_tls_observation_audit(Some(&empty), "https://example.test/", Some(0),).is_ok()
+        );
+
+        collector.observe_https_response(None);
+        let one_response = collector.audit();
+        assert!(validate_tls_observation_audit(
+            Some(&one_response),
+            "https://example.test/",
+            Some(1),
+        )
+        .is_ok());
+        assert_eq!(
+            validate_tls_observation_audit(Some(&one_response), "https://example.test/", Some(0),),
+            Err(AssessmentRunReportError::TlsObservationAuditMismatch)
+        );
+        assert_eq!(
+            validate_tls_observation_audit(Some(&one_response), "https://example.test/", None,),
+            Err(AssessmentRunReportError::TlsObservationAuditMismatch)
+        );
+    }
 
     fn usage_truth(target: &str) -> AssessmentUsageTruth {
         AssessmentUsageTruth {

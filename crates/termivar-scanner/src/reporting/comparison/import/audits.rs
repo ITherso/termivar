@@ -1,7 +1,7 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
 use super::super::{
-    ImportedSecretExposureAudit, ImportedSuppliedSessionAudit,
+    ImportedSecretExposureAudit, ImportedSuppliedSessionAudit, ImportedTlsObservationAudit,
     ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit, SuppliedSessionResourceBinding,
     WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
     WordPressAssetFingerprintResourceKey, WordPressComponentKey,
@@ -32,6 +32,17 @@ const SECRET_EXPOSURE_POLICY: &str = "termivar.passive-secret-exposure/v1";
 const SECRET_EXPOSURE_CATALOGUE_ID: &str = "termivar.high-specificity-secret-detectors";
 const SECRET_EXPOSURE_REPRESENTATION: &str = "complete-uncoded-response-body/v1";
 const SECRET_EXPOSURE_CONTEXT: &str = "anonymous-ordinary-get";
+const TLS_OBSERVATION_AUDIT_SCHEMA: &str = "security.tls-observation-audit/v1";
+const TLS_OBSERVATION_POLICY: &str = "termivar.existing-connection-tls-observation/v1";
+const TLS_OBSERVATION_BACKEND_LIMIT: &str = "not_exposed_by_backend";
+const TLS_OBSERVATION_REVOCATION: &str = "not_checked";
+const TLS_OBSERVATION_VALIDATION_SCOPE: &str = "successful_https_response_connection/v1";
+const TLS_OBSERVATION_SOURCE_SCOPE: &str = "assessment_exact_origin_existing_connections/v1";
+const TLS_OBSERVATION_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
+const MAX_TLS_RESPONSES: u64 = 10_000;
+const MAX_TLS_RETAINED_LEAF_OBSERVATIONS: u64 = 16;
+const MAX_TLS_LEAF_CERTIFICATE_BYTES: u64 = 64 * 1024;
+const MAX_TLS_SAN_ENTRIES_PER_CERTIFICATE: u64 = 256;
 const MAX_SECRET_EXPOSURE_RESPONSES: u64 = 1_024;
 const MAX_SECRET_EXPOSURE_RESPONSE_BYTES: u64 = 128 * 1_024;
 const MAX_SECRET_EXPOSURE_TOTAL_BYTES: u64 = 4 * 1_024 * 1_024;
@@ -515,6 +526,263 @@ pub(super) fn validate_secret_exposure(
         methodology,
         coverage: Value::Object(coverage),
     })
+}
+
+pub(super) fn validate_tls_observation(
+    value: &Value,
+) -> Result<ImportedTlsObservationAudit, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "additional_request_count",
+            "assessment_request_count",
+            "target_scheme",
+            "observation_source_scope",
+            "observation_clock_assurance",
+            "successful_https_response_count",
+            "plaintext_response_count",
+            "tls_info_unavailable_count",
+            "malformed_certificate_count",
+            "certificate_limit_rejection_count",
+            "unretained_leaf_response_count",
+            "leaf_observation_count",
+            "protocol",
+            "cipher_suite",
+            "alpn_protocol",
+            "full_chain",
+            "connection_reuse",
+            "session_resumption",
+            "handshake_kind",
+            "revocation",
+            "transport_validation_scope",
+            "active_tls_matrix",
+            "source_authentication",
+            "observations",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == TLS_OBSERVATION_AUDIT_SCHEMA)?;
+    check(string(fields, "policy")? == TLS_OBSERVATION_POLICY)?;
+    check(boolean(fields, "selected")?)?;
+    check(number(fields, "additional_request_count", 0)? == 0)?;
+    let assessment_request_count = number(fields, "assessment_request_count", MAX_TLS_RESPONSES)?;
+    let target_scheme = token(fields, "target_scheme", &["http", "https"])?;
+    check(string(fields, "observation_source_scope")? == TLS_OBSERVATION_SOURCE_SCOPE)?;
+    check(string(fields, "observation_clock_assurance")? == TLS_OBSERVATION_CLOCK_ASSURANCE)?;
+    let successful_https_response_count =
+        number(fields, "successful_https_response_count", MAX_TLS_RESPONSES)?;
+    let plaintext_response_count = number(fields, "plaintext_response_count", MAX_TLS_RESPONSES)?;
+    let tls_info_unavailable_count =
+        number(fields, "tls_info_unavailable_count", MAX_TLS_RESPONSES)?;
+    let malformed_certificate_count =
+        number(fields, "malformed_certificate_count", MAX_TLS_RESPONSES)?;
+    let certificate_limit_rejection_count = number(
+        fields,
+        "certificate_limit_rejection_count",
+        MAX_TLS_RESPONSES,
+    )?;
+    let unretained_leaf_response_count =
+        number(fields, "unretained_leaf_response_count", MAX_TLS_RESPONSES)?;
+    let leaf_observation_count = number(
+        fields,
+        "leaf_observation_count",
+        MAX_TLS_RETAINED_LEAF_OBSERVATIONS,
+    )?;
+    for name in [
+        "protocol",
+        "cipher_suite",
+        "alpn_protocol",
+        "full_chain",
+        "connection_reuse",
+        "session_resumption",
+        "handshake_kind",
+    ] {
+        check(string(fields, name)? == TLS_OBSERVATION_BACKEND_LIMIT)?;
+    }
+    check(string(fields, "revocation")? == TLS_OBSERVATION_REVOCATION)?;
+    check(string(fields, "transport_validation_scope")? == TLS_OBSERVATION_VALIDATION_SCOPE)?;
+    check(string(fields, "active_tls_matrix")? == "not_performed")?;
+    check(string(fields, "source_authentication")? == "not_established")?;
+
+    let wire_observations = array(fields, "observations")?;
+    check(wire_observations.len() as u64 == leaf_observation_count)?;
+    let mut retained_response_count = 0_u64;
+    let mut identities = BTreeSet::new();
+    let mut certificate_observations = Vec::with_capacity(wire_observations.len());
+    let mut observation_coverage = Vec::with_capacity(wire_observations.len());
+    for value in wire_observations {
+        let row = object(value)?;
+        keys(
+            row,
+            &[
+                "leaf_certificate_sha256",
+                "leaf_certificate_byte_length",
+                "not_before_epoch_seconds",
+                "not_after_epoch_seconds",
+                "observed_at_epoch_seconds",
+                "dns_san_count",
+                "ip_san_count",
+                "other_san_count",
+                "san_count_truncated",
+                "certificate_time_status",
+                "response_occurrence_count",
+                "standard_transport_validation_succeeded",
+            ],
+            &[],
+        )?;
+        let sha256 = string(row, "leaf_certificate_sha256")?;
+        check(
+            sha256.len() == 64
+                && sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        )?;
+        let byte_length = number(
+            row,
+            "leaf_certificate_byte_length",
+            MAX_TLS_LEAF_CERTIFICATE_BYTES,
+        )?;
+        check(byte_length > 0 && identities.insert(sha256.to_owned()))?;
+        let not_before = signed_number(row, "not_before_epoch_seconds")?;
+        let not_after = signed_number(row, "not_after_epoch_seconds")?;
+        let observed_at = signed_number(row, "observed_at_epoch_seconds")?;
+        let dns_san_count = number(row, "dns_san_count", MAX_TLS_SAN_ENTRIES_PER_CERTIFICATE)?;
+        let ip_san_count = number(row, "ip_san_count", MAX_TLS_SAN_ENTRIES_PER_CERTIFICATE)?;
+        let other_san_count = number(row, "other_san_count", MAX_TLS_SAN_ENTRIES_PER_CERTIFICATE)?;
+        let san_count_truncated = boolean(row, "san_count_truncated")?;
+        check(
+            dns_san_count
+                .checked_add(ip_san_count)
+                .and_then(|count| count.checked_add(other_san_count))
+                .is_some_and(|count| {
+                    count <= MAX_TLS_SAN_ENTRIES_PER_CERTIFICATE
+                        && (!san_count_truncated || count == MAX_TLS_SAN_ENTRIES_PER_CERTIFICATE)
+                }),
+        )?;
+        let time_status = token(
+            row,
+            "certificate_time_status",
+            &[
+                "valid_at_observation",
+                "not_yet_valid_at_observation",
+                "expired_at_observation",
+            ],
+        )?;
+        check(match time_status {
+            "valid_at_observation" => not_before <= observed_at && observed_at <= not_after,
+            "not_yet_valid_at_observation" => observed_at < not_before && not_before <= not_after,
+            "expired_at_observation" => not_before <= not_after && not_after < observed_at,
+            _ => false,
+        })?;
+        let occurrence_count = number(row, "response_occurrence_count", MAX_TLS_RESPONSES)?;
+        check(occurrence_count > 0)?;
+        retained_response_count = retained_response_count
+            .checked_add(occurrence_count)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        check(boolean(row, "standard_transport_validation_succeeded")?)?;
+        certificate_observations.push(selected_object(
+            row,
+            &[
+                "leaf_certificate_sha256",
+                "leaf_certificate_byte_length",
+                "not_before_epoch_seconds",
+                "not_after_epoch_seconds",
+                "dns_san_count",
+                "ip_san_count",
+                "other_san_count",
+                "san_count_truncated",
+            ],
+            &[],
+        )?);
+        observation_coverage.push(selected_object(
+            row,
+            &[
+                "observed_at_epoch_seconds",
+                "certificate_time_status",
+                "response_occurrence_count",
+                "standard_transport_validation_succeeded",
+            ],
+            &[],
+        )?);
+    }
+    certificate_observations.sort_by(|left, right| {
+        left["leaf_certificate_sha256"]
+            .as_str()
+            .cmp(&right["leaf_certificate_sha256"].as_str())
+    });
+    let https_partition = tls_info_unavailable_count
+        .checked_add(malformed_certificate_count)
+        .and_then(|count| count.checked_add(certificate_limit_rejection_count))
+        .and_then(|count| count.checked_add(unretained_leaf_response_count))
+        .and_then(|count| count.checked_add(retained_response_count));
+    check(https_partition == Some(successful_https_response_count))?;
+    let observed_response_count = successful_https_response_count
+        .checked_add(plaintext_response_count)
+        .ok_or(ComparisonError::InvalidDocument)?;
+    check(observed_response_count <= assessment_request_count)?;
+    check(match target_scheme {
+        "https" => plaintext_response_count == 0,
+        "http" => successful_https_response_count == 0,
+        _ => false,
+    })?;
+
+    let methodology = selected_object(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "additional_request_count",
+            "target_scheme",
+            "observation_source_scope",
+            "observation_clock_assurance",
+            "protocol",
+            "cipher_suite",
+            "alpn_protocol",
+            "full_chain",
+            "connection_reuse",
+            "session_resumption",
+            "handshake_kind",
+            "revocation",
+            "transport_validation_scope",
+            "active_tls_matrix",
+            "source_authentication",
+        ],
+        &[],
+    )?;
+    let observation_coverage = Value::Array(observation_coverage);
+    let coverage = selected_object(
+        fields,
+        &[
+            "assessment_request_count",
+            "successful_https_response_count",
+            "plaintext_response_count",
+            "tls_info_unavailable_count",
+            "malformed_certificate_count",
+            "certificate_limit_rejection_count",
+            "unretained_leaf_response_count",
+            "leaf_observation_count",
+        ],
+        &[("observation_coverage", Some(&observation_coverage))],
+    )?;
+    Ok(ImportedTlsObservationAudit {
+        methodology,
+        coverage,
+        certificate_observations: Value::Array(certificate_observations),
+    })
+}
+
+fn signed_number(
+    fields: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<i64, ComparisonError> {
+    required(fields, key)?
+        .as_i64()
+        .ok_or(ComparisonError::InvalidDocument)
 }
 
 fn valid_secret_exposure_catalogue_revision(value: &str) -> bool {

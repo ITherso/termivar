@@ -72,6 +72,8 @@ use super::ssrf_oast_runtime::{
 use super::supplied_session_runtime::{
     SuppliedSessionRuntimeConfig, WebAssessmentSuppliedSessionAudit,
 };
+#[cfg(feature = "tls-observation")]
+use super::tls_observation::WebAssessmentTlsObservationAudit;
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_fingerprint_runtime::{
     WordPressAssetFingerprintCollector, WordPressAssetFingerprintStop,
@@ -1395,6 +1397,8 @@ pub struct WebAssessmentRunReport {
     wordpress_review: Option<WebAssessmentWordPressAudit>,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
+    #[cfg(feature = "tls-observation")]
+    tls_observation: Option<WebAssessmentTlsObservationAudit>,
     assessment_items: AssessmentItemSet,
     assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
@@ -1432,6 +1436,8 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug.field("wordpress_review", &self.wordpress_review);
         #[cfg(feature = "secret-exposure-review")]
         debug.field("secret_exposure_review", &self.secret_exposure_review);
+        #[cfg(feature = "tls-observation")]
+        debug.field("tls_observation", &self.tls_observation);
         debug
             .field("assessment_items", &self.assessment_items)
             .field(
@@ -1517,6 +1523,11 @@ impl WebAssessmentRunReport {
     pub const fn secret_exposure_review_audit(&self) -> Option<&WebAssessmentSecretExposureAudit> {
         self.secret_exposure_review.as_ref()
     }
+    /// Returns the optional passive observation of TLS already used by this run.
+    #[cfg(feature = "tls-observation")]
+    pub const fn tls_observation_audit(&self) -> Option<&WebAssessmentTlsObservationAudit> {
+        self.tls_observation.as_ref()
+    }
     /// Returns claim-safe items derived only from committed assessment truth.
     pub fn assessment_items(&self) -> &[AssessmentItem] {
         self.assessment_items.items()
@@ -1584,6 +1595,8 @@ impl WebAssessmentRunReport {
             self.wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
             self.secret_exposure_review,
+            #[cfg(feature = "tls-observation")]
+            self.tls_observation,
         )
     }
 }
@@ -1967,6 +1980,8 @@ pub struct WebAssessmentRuntimeBuilder {
     wordpress_page_scope: Option<super::wordpress_runtime::WordPressPageScope>,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_review: bool,
+    #[cfg(feature = "tls-observation")]
+    tls_observation: bool,
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     wordpress_supplied_session: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
@@ -2003,6 +2018,8 @@ impl WebAssessmentRuntimeBuilder {
             wordpress_page_scope: None,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure_review: false,
+            #[cfg(feature = "tls-observation")]
+            tls_observation: false,
             #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
             wordpress_supplied_session: false,
             root_authorization_context: None,
@@ -2040,6 +2057,13 @@ impl WebAssessmentRuntimeBuilder {
     #[cfg(feature = "secret-exposure-review")]
     pub fn enable_secret_exposure_review(mut self) -> Self {
         self.secret_exposure_review = true;
+        self
+    }
+    /// Enables passive observation of TLS already negotiated by the existing
+    /// assessment transport. This schedules no request or handshake of its own.
+    #[cfg(feature = "tls-observation")]
+    pub fn enable_tls_observation(mut self) -> Self {
+        self.tls_observation = true;
         self
     }
     /// Explicitly enables the bounded normalization-resilience child review.
@@ -2402,6 +2426,23 @@ impl WebAssessmentRuntimeBuilder {
             .max_active_verifications()
             .checked_add(optional_active_verifications)
             .expect("compiled optional active-verification allowances fit u16");
+        #[cfg(feature = "tls-observation")]
+        let authority = if self.tls_observation {
+            SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation(
+                &root.url,
+                policy,
+                self.limits.runtime_budget(optional_active_verifications),
+                self.cancellation,
+            )?
+        } else {
+            SharedWebRuntimeAuthority::new_exact_origin(
+                &root.url,
+                policy,
+                self.limits.runtime_budget(optional_active_verifications),
+                self.cancellation,
+            )?
+        };
+        #[cfg(not(feature = "tls-observation"))]
         let authority = SharedWebRuntimeAuthority::new_exact_origin(
             &root.url,
             policy,
@@ -4600,6 +4641,8 @@ impl WebAssessmentRuntime {
                 .secret_exposure_collector
                 .as_ref()
                 .map(|_| self.secret_exposure_ledger.audit()),
+            #[cfg(feature = "tls-observation")]
+            tls_observation: self.authority.tls_observation_audit(),
             assessment_items,
             assessment_projection_incompleteness,
             completion,

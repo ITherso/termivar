@@ -255,6 +255,10 @@ const SUPPLIED_SESSION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in suppl
         run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture"#;
 const SECRET_EXPOSURE_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive secret-exposure review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture"#;
+const TLS_OBSERVATION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive TLS observation CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test tls_observation_cli -- --nocapture"#;
+const TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE: &str = r#"      - name: Exercise trusted passive TLS observation broker path
+        run: cargo test --locked -p termivar-scanner --no-default-features --features tls-observation web_runtime::authority::tests::selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch -- --exact --nocapture"#;
 const SECRET_EXPOSURE_SESSION_BOUNDARY_SMOKE_GATE: &str = r#"      - name: Reject authenticated session bodies from the anonymous secret-exposure context
         run: cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review,supplied-session-review --test supplied_session_cli passive_secret_review_does_not_select_authenticated_session_bodies -- --exact --nocapture"#;
 const SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE: &str = r#"      - name: Exercise supplied-session and OAST preflight composition
@@ -388,6 +392,7 @@ const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capa
           TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=session-only cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=secret-only cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=tls-only cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-in CLI contracts
@@ -400,12 +405,13 @@ const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
           cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
           cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review
-          cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review"#;
+          cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review
+          cargo test --locked -p termivar-cli --no-default-features --features tls-observation"#;
 const SCANNER_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -609,6 +615,7 @@ const EXPECTED_WORKFLOW_TRIGGERS: &str =
     "on:\n  push:\n    branches: [ main, develop ]\n  pull_request:\n    branches: [ main, develop, 'agent/**' ]";
 const EXPECTED_WORKFLOW_ENV: &str = "env:\n  CARGO_TERM_COLOR: always\n  RUST_BACKTRACE: 1";
 const EXPECTED_CARGO_CONFIG: &[u8] = b"[alias]\nxtask = \"run --locked -p xtask --\"\n";
+const EXPECTED_CARGO_CONFIG_CRLF: &[u8] = b"[alias]\r\nxtask = \"run --locked -p xtask --\"\r\n";
 const EXPECTED_COVERAGE_JOB: &str = r#"  code-coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
@@ -828,6 +835,26 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact release-profile feature-minimal passive secret-exposure CLI integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise opt-in passive TLS observation CLI",
+        TLS_OBSERVATION_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact feature-minimal passive TLS-observation CLI integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise trusted passive TLS observation broker path",
+        TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must execute the exact trusted owned-loopback TLS-observation broker regression"
         ));
     }
     if !job_has_exact_step(
@@ -1557,7 +1584,8 @@ fn cargo_configuration_violations(
     legacy_config_exists: bool,
 ) -> Vec<String> {
     let mut violations = Vec::new();
-    if config != Some(EXPECTED_CARGO_CONFIG) {
+    if !matches!(config, Some(bytes) if bytes == EXPECTED_CARGO_CONFIG || bytes == EXPECTED_CARGO_CONFIG_CRLF)
+    {
         violations.push(
             ".cargo/config.toml: coverage requires the exact reviewed alias-only bytes".to_owned(),
         );
@@ -2857,8 +2885,8 @@ mod tests {
 
     #[test]
     fn repository_wordpress_discovery_fuzz_contract_is_exact() {
-        let contents = include_str!("../../../.github/workflows/fuzz.yml");
-        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+        let contents = include_str!("../../../.github/workflows/fuzz.yml").replace("\r\n", "\n");
+        for fixture in [contents.clone(), contents.replace('\n', "\r\n")] {
             let violations = wordpress_discovery_fuzz_workflow_policy_violations(&[(
                 FUZZ_WORKFLOW.to_owned(),
                 fixture,
@@ -3077,11 +3105,13 @@ mod tests {
         let rest_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=rest-only cargo test --locked -p termivar-cli --no-default-features --features rest-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
         let session_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=session-only cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
         let secret_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=secret-only cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
+        let tls_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=tls-only cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
         for mutation in [
             valid.replacen(CAPABILITIES_MATRIX_GATE, "", 1),
             valid.replacen(rest_case, "", 1),
             valid.replacen(session_case, "", 1),
             valid.replacen(secret_case, "", 1),
+            valid.replacen(tls_case, "", 1),
             valid.replacen(
                 "--features release-bundle --test capabilities_cli",
                 "--features graphql-review --test capabilities_cli",
@@ -3106,12 +3136,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review legacy-scanner",
+                "ssrf-oast-review supplied-session-review tls-observation legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3137,12 +3167,44 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review secret-exposure-review legacy-scanner",
+                "ssrf-oast-review secret-exposure-review tls-observation legacy-scanner",
+                1,
+            ),
+            valid.replacen(
+                cli_case,
+                "cargo test --locked -p termivar-cli --no-default-features --features release-bundle",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("feature boundaries")
+                    || violations[0].contains("isolated scanner features"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tls_observation_feature_boundaries_reject_omission_and_bundle_substitution() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let cli_case =
+            "cargo test --locked -p termivar-cli --no-default-features --features tls-observation";
+        let scanner_member =
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation legacy-scanner";
+        for mutation in [
+            valid.replacen(cli_case, "", 1),
+            valid.replacen(
+                scanner_member,
+                "ssrf-oast-review supplied-session-review secret-exposure-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3250,6 +3312,56 @@ mod tests {
                 violations[0].contains("secret-exposure"),
                 "{violations:?}"
             );
+        }
+    }
+
+    #[test]
+    fn tls_observation_runtime_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(TLS_OBSERVATION_SMOKE_GATE, "", 1),
+            valid.replacen(
+                TLS_OBSERVATION_SMOKE_GATE,
+                "      - name: Exercise opt-in passive TLS observation CLI\n        run: cargo test --locked -p termivar-cli --all-features --test tls_observation_cli -- --nocapture",
+                1,
+            ),
+            valid.replacen(
+                TLS_OBSERVATION_SMOKE_GATE,
+                &format!("{TLS_OBSERVATION_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("TLS-observation"), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn trusted_tls_observation_broker_smoke_rejects_omission_filter_drift_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE, "", 1),
+            valid.replacen(
+                "selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch -- --exact",
+                "selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch",
+                1,
+            ),
+            valid.replacen(
+                TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE,
+                &format!(
+                    "{TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE}\n        continue-on-error: true"
+                ),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("trusted owned-loopback"), "{violations:?}");
         }
     }
 
@@ -4292,6 +4404,7 @@ mod tests {
     #[test]
     fn coverage_cargo_configuration_and_custom_build_targets_are_closed() {
         assert!(cargo_configuration_violations(Some(EXPECTED_CARGO_CONFIG), false).is_empty());
+        assert!(cargo_configuration_violations(Some(EXPECTED_CARGO_CONFIG_CRLF), false).is_empty());
         assert_eq!(
             cargo_configuration_violations(
                 Some(b"[build]\nrustflags = ['--cfg', 'hidden']\n"),

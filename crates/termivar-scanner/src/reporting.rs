@@ -24,6 +24,13 @@ use crate::web_runtime::{
     SECRET_EXPOSURE_AUDIT_SCHEMA, SECRET_EXPOSURE_CATALOGUE_ID, SECRET_EXPOSURE_CATALOGUE_REVISION,
     SECRET_EXPOSURE_POLICY_ID, SECRET_EXPOSURE_REPRESENTATION,
 };
+#[cfg(all(feature = "scanning", feature = "tls-observation"))]
+use crate::web_runtime::{
+    WebAssessmentTlsObservationAudit, HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS,
+    TLS_OBSERVATION_AUDIT_SCHEMA, TLS_OBSERVATION_BACKEND_LIMIT, TLS_OBSERVATION_CLOCK_ASSURANCE,
+    TLS_OBSERVATION_POLICY_ID, TLS_OBSERVATION_REVOCATION_STATUS, TLS_OBSERVATION_SOURCE_SCOPE,
+    TLS_OBSERVATION_VALIDATION_SCOPE,
+};
 #[cfg(all(feature = "scanning", feature = "authorization-review"))]
 use crate::{
     authorization_review::{
@@ -1122,6 +1129,46 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "tls-observation")]
+    if let Some(audit) = &document.tls_observation {
+        let evidence_count = audit.leaf_observation_count.to_string();
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "tls_observation_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                "selected",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "informational",
+                "observation",
+                "",
+                "",
+                "",
+                &evidence_count,
+                &summary,
+                "existing-connection-tls-observation",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         let evidence_count = audit.evidence_reference_count.to_string();
@@ -1798,6 +1845,44 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             output.push_str("</code></li>")?;
         }
         output.push_str("</ul></section>")?;
+    }
+    #[cfg(feature = "tls-observation")]
+    if let Some(audit) = &document.tls_observation {
+        output.push_str(
+            "<section><h2>Existing-connection TLS observation audit</h2>\
+<p class=\"wp-note\">This passive view describes leaf certificates exposed by successful existing HTTPS responses under the assessment's exact-origin authority. It does not attribute a certificate to a request purpose or principal. Validity status is relative to the reported local system-clock instant, whose accuracy was not independently verified. One successful connection does not enumerate server protocol or cipher support. Negotiated protocol, ALPN, cipher suite, full chain, connection reuse, session resumption, and handshake kind are unavailable from the current backend; revocation was not checked.</p><dl class=\"meta\">",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Leaf certificate observations</h3><ul>")?;
+        for observation in &audit.observations {
+            output.push_str("<li><code>")?;
+            write_html_text(
+                &mut output,
+                &format!(
+                    "sha256={};byte_length={};not_before={};not_after={};observed_at={};dns_sans={};ip_sans={};other_sans={};san_count_truncated={};time_status={};response_occurrences={};standard_transport_validation_succeeded={}",
+                    observation.leaf_certificate_sha256,
+                    observation.leaf_certificate_byte_length,
+                    observation.not_before_epoch_seconds,
+                    observation.not_after_epoch_seconds,
+                    observation.observed_at_epoch_seconds,
+                    observation.dns_san_count,
+                    observation.ip_san_count,
+                    observation.other_san_count,
+                    observation.san_count_truncated,
+                    observation.certificate_time_status,
+                    observation.response_occurrence_count,
+                    observation.standard_transport_validation_succeeded,
+                ),
+            )?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul><p class=\"wp-note\">Certificate names and DER bytes are not retained in this report. A digest identifies observed bytes; it is not source authentication. Active negotiation, chain enumeration, revocation retrieval, exploit execution, and impact validation were not performed.</p></section>")?;
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
@@ -4019,6 +4104,41 @@ fn render_assessment_markdown(
             output.push_char('\n')?;
         }
     }
+    #[cfg(feature = "tls-observation")]
+    if let Some(audit) = &document.tls_observation {
+        output.push_str(
+            "\n### Existing-connection TLS observation audit\n\nThis passive view describes leaf certificates exposed by successful existing HTTPS responses under the assessment's exact-origin authority. It does not attribute a certificate to a request purpose or principal. Validity status is relative to the reported local system-clock instant, whose accuracy was not independently verified. One successful connection does not enumerate server protocol or cipher support. Negotiated protocol, ALPN, cipher suite, full chain, connection reuse, session resumption, and handshake kind are unavailable from the current backend; revocation was not checked.\n\n",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Leaf certificate observations\n\n")?;
+        for observation in &audit.observations {
+            output.push_str("- ")?;
+            write_markdown_code_span(
+                &mut output,
+                &format!(
+                    "sha256={};byte_length={};not_before={};not_after={};observed_at={};dns_sans={};ip_sans={};other_sans={};san_count_truncated={};time_status={};response_occurrences={};standard_transport_validation_succeeded={}",
+                    observation.leaf_certificate_sha256,
+                    observation.leaf_certificate_byte_length,
+                    observation.not_before_epoch_seconds,
+                    observation.not_after_epoch_seconds,
+                    observation.observed_at_epoch_seconds,
+                    observation.dns_san_count,
+                    observation.ip_san_count,
+                    observation.other_san_count,
+                    observation.san_count_truncated,
+                    observation.certificate_time_status,
+                    observation.response_occurrence_count,
+                    observation.standard_transport_validation_succeeded,
+                ),
+            )?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\nCertificate names and DER bytes are not retained in this report. A digest identifies observed bytes; it is not source authentication. Active negotiation, chain enumeration, revocation retrieval, exploit execution, and impact validation were not performed.\n")?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         output.push_str("\n### WordPress evidence review audit\n\n")?;
@@ -4130,6 +4250,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "secret-exposure-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_exposure_review: Option<AssessmentSecretExposureAuditDocument>,
+    #[cfg(feature = "tls-observation")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tls_observation: Option<AssessmentTlsObservationAuditDocument>,
     #[cfg(feature = "wordpress-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -4217,6 +4340,19 @@ impl<'a> AssessmentDocument<'a> {
                 )
             })
             .transpose()?;
+        #[cfg(feature = "tls-observation")]
+        let tls_observation = report
+            .tls_observation_audit()
+            .map(|audit| {
+                let assessment_request_count = report
+                    .run_report()
+                    .accounting()
+                    .requests()
+                    .consumed()
+                    .ok_or(ReportError::Serialization)?;
+                AssessmentTlsObservationAuditDocument::from_audit(audit, assessment_request_count)
+            })
+            .transpose()?;
         Ok(Self {
             schema: ASSESSMENT_REPORT_DOCUMENT_SCHEMA,
             source_schema: report.schema(),
@@ -4250,6 +4386,8 @@ impl<'a> AssessmentDocument<'a> {
                 .secret_exposure_review_audit()
                 .map(|audit| AssessmentSecretExposureAuditDocument::from_audit(report, audit))
                 .transpose()?,
+            #[cfg(feature = "tls-observation")]
+            tls_observation,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: report
                 .wordpress_review_audit()
@@ -4319,6 +4457,10 @@ impl<'a> AssessmentDocument<'a> {
             .any(|item| secret_exposure_capability(item.capability_id).is_some())
         {
             return Err(ReportError::Serialization);
+        }
+        #[cfg(feature = "tls-observation")]
+        if let Some(audit) = &self.tls_observation {
+            audit.validate()?;
         }
         #[cfg(feature = "wordpress-review")]
         if let Some(audit) = &self.wordpress_review {
@@ -4872,6 +5014,276 @@ impl AssessmentSecretExposureAuditDocument {
             (
                 "Public secret hashes retained",
                 self.public_secret_hashes_retained.to_string(),
+            ),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "tls-observation"))]
+#[derive(Serialize)]
+struct AssessmentTlsObservationAuditDocument {
+    schema: &'static str,
+    policy: &'static str,
+    selected: bool,
+    additional_request_count: u64,
+    assessment_request_count: u64,
+    target_scheme: &'static str,
+    observation_source_scope: &'static str,
+    observation_clock_assurance: &'static str,
+    successful_https_response_count: u64,
+    plaintext_response_count: u64,
+    tls_info_unavailable_count: u64,
+    malformed_certificate_count: u64,
+    certificate_limit_rejection_count: u64,
+    unretained_leaf_response_count: u64,
+    leaf_observation_count: u64,
+    protocol: &'static str,
+    cipher_suite: &'static str,
+    alpn_protocol: &'static str,
+    full_chain: &'static str,
+    connection_reuse: &'static str,
+    session_resumption: &'static str,
+    handshake_kind: &'static str,
+    revocation: &'static str,
+    transport_validation_scope: &'static str,
+    active_tls_matrix: &'static str,
+    source_authentication: &'static str,
+    observations: Vec<AssessmentTlsLeafObservationDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "tls-observation"))]
+#[derive(Serialize)]
+struct AssessmentTlsLeafObservationDocument {
+    leaf_certificate_sha256: String,
+    leaf_certificate_byte_length: u64,
+    not_before_epoch_seconds: i64,
+    not_after_epoch_seconds: i64,
+    observed_at_epoch_seconds: i64,
+    dns_san_count: u64,
+    ip_san_count: u64,
+    other_san_count: u64,
+    san_count_truncated: bool,
+    certificate_time_status: &'static str,
+    response_occurrence_count: u64,
+    standard_transport_validation_succeeded: bool,
+}
+
+#[cfg(all(feature = "scanning", feature = "tls-observation"))]
+impl AssessmentTlsObservationAuditDocument {
+    fn from_audit(
+        audit: &WebAssessmentTlsObservationAudit,
+        assessment_request_count: u64,
+    ) -> Result<Self, ReportError> {
+        let mut observations = audit
+            .leaf_observations()
+            .iter()
+            .map(|observation| AssessmentTlsLeafObservationDocument {
+                leaf_certificate_sha256: observation.sha256().to_owned(),
+                leaf_certificate_byte_length: observation.byte_length(),
+                not_before_epoch_seconds: observation.not_before_epoch_seconds(),
+                not_after_epoch_seconds: observation.not_after_epoch_seconds(),
+                observed_at_epoch_seconds: observation.observed_at_epoch_seconds(),
+                dns_san_count: u64::from(observation.dns_san_count()),
+                ip_san_count: u64::from(observation.ip_san_count()),
+                other_san_count: u64::from(observation.other_san_count()),
+                san_count_truncated: observation.san_count_truncated(),
+                certificate_time_status: observation.certificate_time_status().as_str(),
+                response_occurrence_count: observation.response_occurrence_count(),
+                standard_transport_validation_succeeded: observation
+                    .standard_transport_validation_succeeded(),
+            })
+            .collect::<Vec<_>>();
+        observations.sort_by(|left, right| {
+            left.leaf_certificate_sha256
+                .cmp(&right.leaf_certificate_sha256)
+        });
+        Ok(Self {
+            schema: audit.schema(),
+            policy: audit.policy(),
+            selected: audit.selected(),
+            additional_request_count: audit.additional_request_count(),
+            assessment_request_count,
+            target_scheme: audit.target_scheme().as_str(),
+            observation_source_scope: audit.observation_source_scope(),
+            observation_clock_assurance: audit.observation_clock_assurance(),
+            successful_https_response_count: audit.successful_https_response_count(),
+            plaintext_response_count: audit.plaintext_response_count(),
+            tls_info_unavailable_count: audit.tls_info_unavailable_count(),
+            malformed_certificate_count: audit.malformed_certificate_count(),
+            certificate_limit_rejection_count: audit.certificate_limit_rejection_count(),
+            unretained_leaf_response_count: audit.unretained_leaf_response_count(),
+            leaf_observation_count: u64::try_from(observations.len())
+                .map_err(|_| ReportError::Serialization)?,
+            protocol: audit.protocol(),
+            cipher_suite: audit.cipher_suite(),
+            alpn_protocol: audit.alpn_protocol(),
+            full_chain: audit.full_chain(),
+            connection_reuse: audit.connection_reuse(),
+            session_resumption: audit.session_resumption(),
+            handshake_kind: audit.handshake_kind(),
+            revocation: audit.revocation(),
+            transport_validation_scope: audit.standard_transport_validation_scope(),
+            active_tls_matrix: "not_performed",
+            source_authentication: "not_established",
+            observations,
+        })
+    }
+
+    fn validate(&self) -> Result<(), ReportError> {
+        let mut unique_digests = std::collections::BTreeSet::new();
+        let retained_response_count = self.observations.iter().try_fold(0_u64, |sum, row| {
+            let san_count = row
+                .dns_san_count
+                .checked_add(row.ip_san_count)
+                .and_then(|count| count.checked_add(row.other_san_count));
+            let time_consistent = match row.certificate_time_status {
+                "valid_at_observation" => {
+                    row.not_before_epoch_seconds <= row.observed_at_epoch_seconds
+                        && row.observed_at_epoch_seconds <= row.not_after_epoch_seconds
+                },
+                "not_yet_valid_at_observation" => {
+                    row.observed_at_epoch_seconds < row.not_before_epoch_seconds
+                        && row.not_before_epoch_seconds <= row.not_after_epoch_seconds
+                },
+                "expired_at_observation" => {
+                    row.not_before_epoch_seconds <= row.not_after_epoch_seconds
+                        && row.not_after_epoch_seconds < row.observed_at_epoch_seconds
+                },
+                _ => false,
+            };
+            if row.leaf_certificate_sha256.len() != 64
+                || !row
+                    .leaf_certificate_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || row.leaf_certificate_byte_length == 0
+                || row.leaf_certificate_byte_length > 64 * 1024
+                || row.response_occurrence_count == 0
+                || san_count
+                    .is_none_or(|count| count > 256 || (row.san_count_truncated && count != 256))
+                || !time_consistent
+                || !row.standard_transport_validation_succeeded
+                || !unique_digests.insert(row.leaf_certificate_sha256.as_str())
+            {
+                return None;
+            }
+            sum.checked_add(row.response_occurrence_count)
+        });
+        let https_partition = self
+            .tls_info_unavailable_count
+            .checked_add(self.malformed_certificate_count)
+            .and_then(|count| count.checked_add(self.certificate_limit_rejection_count))
+            .and_then(|count| count.checked_add(self.unretained_leaf_response_count))
+            .and_then(|count| {
+                retained_response_count.and_then(|retained| count.checked_add(retained))
+            });
+        let observed_response_count = self
+            .successful_https_response_count
+            .checked_add(self.plaintext_response_count);
+        if self.schema != TLS_OBSERVATION_AUDIT_SCHEMA
+            || self.policy != TLS_OBSERVATION_POLICY_ID
+            || !self.selected
+            || self.additional_request_count != 0
+            || self.assessment_request_count > u64::from(HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS)
+            || observed_response_count.is_none_or(|count| count > self.assessment_request_count)
+            || !matches!(self.target_scheme, "http" | "https")
+            || self.observation_source_scope != TLS_OBSERVATION_SOURCE_SCOPE
+            || self.observation_clock_assurance != TLS_OBSERVATION_CLOCK_ASSURANCE
+            || self.leaf_observation_count
+                != u64::try_from(self.observations.len()).map_err(|_| ReportError::Serialization)?
+            || self.observations.len() > 16
+            || self.successful_https_response_count > 10_000
+            || self.plaintext_response_count > 10_000
+            || https_partition != Some(self.successful_https_response_count)
+            || (self.target_scheme == "https" && self.plaintext_response_count != 0)
+            || (self.target_scheme == "http" && self.successful_https_response_count != 0)
+            || self.protocol != TLS_OBSERVATION_BACKEND_LIMIT
+            || self.cipher_suite != TLS_OBSERVATION_BACKEND_LIMIT
+            || self.alpn_protocol != TLS_OBSERVATION_BACKEND_LIMIT
+            || self.full_chain != TLS_OBSERVATION_BACKEND_LIMIT
+            || self.connection_reuse != TLS_OBSERVATION_BACKEND_LIMIT
+            || self.session_resumption != TLS_OBSERVATION_BACKEND_LIMIT
+            || self.handshake_kind != TLS_OBSERVATION_BACKEND_LIMIT
+            || self.revocation != TLS_OBSERVATION_REVOCATION_STATUS
+            || self.transport_validation_scope != TLS_OBSERVATION_VALIDATION_SCOPE
+            || self.active_tls_matrix != "not_performed"
+            || self.source_authentication != "not_established"
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Audit schema", self.schema.to_owned()),
+            ("Policy", self.policy.to_owned()),
+            ("Selected", self.selected.to_string()),
+            ("Target scheme", self.target_scheme.to_owned()),
+            (
+                "Observation source scope",
+                self.observation_source_scope.to_owned(),
+            ),
+            (
+                "Observation clock assurance",
+                self.observation_clock_assurance.to_owned(),
+            ),
+            (
+                "Additional target requests",
+                self.additional_request_count.to_string(),
+            ),
+            (
+                "Assessment requests",
+                self.assessment_request_count.to_string(),
+            ),
+            (
+                "Successful HTTPS responses",
+                self.successful_https_response_count.to_string(),
+            ),
+            (
+                "Plaintext responses",
+                self.plaintext_response_count.to_string(),
+            ),
+            (
+                "TLS information unavailable",
+                self.tls_info_unavailable_count.to_string(),
+            ),
+            (
+                "Malformed leaf certificates",
+                self.malformed_certificate_count.to_string(),
+            ),
+            (
+                "Certificate limit rejections",
+                self.certificate_limit_rejection_count.to_string(),
+            ),
+            (
+                "Unretained leaf responses",
+                self.unretained_leaf_response_count.to_string(),
+            ),
+            (
+                "Unique retained leaf certificates",
+                self.leaf_observation_count.to_string(),
+            ),
+            ("Negotiated protocol", self.protocol.to_owned()),
+            ("Negotiated cipher suite", self.cipher_suite.to_owned()),
+            ("ALPN protocol", self.alpn_protocol.to_owned()),
+            ("Full chain", self.full_chain.to_owned()),
+            ("Connection reuse", self.connection_reuse.to_owned()),
+            ("Session resumption", self.session_resumption.to_owned()),
+            ("Handshake kind", self.handshake_kind.to_owned()),
+            ("Revocation", self.revocation.to_owned()),
+            (
+                "Transport validation scope",
+                self.transport_validation_scope.to_owned(),
+            ),
+            ("Active TLS matrix", self.active_tls_matrix.to_owned()),
+            (
+                "Source authentication",
+                self.source_authentication.to_owned(),
             ),
         ]
     }
@@ -12097,6 +12509,8 @@ mod tests {
             rest_review: None,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure_review: None,
+            #[cfg(feature = "tls-observation")]
+            tls_observation: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
             #[cfg(feature = "wordpress-review")]
@@ -12163,6 +12577,178 @@ mod tests {
             raw_values_retained: false,
             public_secret_hashes_retained: false,
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "tls-observation"))]
+    fn tls_observation_audit_document() -> AssessmentTlsObservationAuditDocument {
+        AssessmentTlsObservationAuditDocument {
+            schema: TLS_OBSERVATION_AUDIT_SCHEMA,
+            policy: TLS_OBSERVATION_POLICY_ID,
+            selected: true,
+            additional_request_count: 0,
+            assessment_request_count: 2,
+            target_scheme: "https",
+            observation_source_scope: TLS_OBSERVATION_SOURCE_SCOPE,
+            observation_clock_assurance: TLS_OBSERVATION_CLOCK_ASSURANCE,
+            successful_https_response_count: 2,
+            plaintext_response_count: 0,
+            tls_info_unavailable_count: 0,
+            malformed_certificate_count: 0,
+            certificate_limit_rejection_count: 0,
+            unretained_leaf_response_count: 0,
+            leaf_observation_count: 1,
+            protocol: TLS_OBSERVATION_BACKEND_LIMIT,
+            cipher_suite: TLS_OBSERVATION_BACKEND_LIMIT,
+            alpn_protocol: TLS_OBSERVATION_BACKEND_LIMIT,
+            full_chain: TLS_OBSERVATION_BACKEND_LIMIT,
+            connection_reuse: TLS_OBSERVATION_BACKEND_LIMIT,
+            session_resumption: TLS_OBSERVATION_BACKEND_LIMIT,
+            handshake_kind: TLS_OBSERVATION_BACKEND_LIMIT,
+            revocation: TLS_OBSERVATION_REVOCATION_STATUS,
+            transport_validation_scope: TLS_OBSERVATION_VALIDATION_SCOPE,
+            active_tls_matrix: "not_performed",
+            source_authentication: "not_established",
+            observations: vec![AssessmentTlsLeafObservationDocument {
+                leaf_certificate_sha256:
+                    "abababababababababababababababababababababababababababababababab".to_owned(),
+                leaf_certificate_byte_length: 768,
+                not_before_epoch_seconds: 100,
+                not_after_epoch_seconds: 300,
+                observed_at_epoch_seconds: 200,
+                dns_san_count: 2,
+                ip_san_count: 1,
+                other_san_count: 0,
+                san_count_truncated: false,
+                certificate_time_status: "valid_at_observation",
+                response_occurrence_count: 2,
+                standard_transport_validation_succeeded: true,
+            }],
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "tls-observation"))]
+    #[test]
+    fn tls_observation_audit_is_rendered_honestly_in_every_format() {
+        let mut document = observation_assessment_document("unrelated.observation@1");
+        document.tls_observation = Some(tls_observation_audit_document());
+
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("security.tls-observation-audit/v1"));
+            assert!(rendered.contains("termivar.existing-connection-tls-observation/v1"));
+            assert!(rendered.contains("not_exposed_by_backend"));
+            assert!(rendered.contains("not_checked"));
+            assert!(rendered.contains("not_established"));
+            assert!(rendered
+                .contains("abababababababababababababababababababababababababababababababab"));
+            assert!(!rendered.contains("certificate.example.test"));
+            assert!(!rendered.contains("BEGIN CERTIFICATE"));
+        }
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &value["tls_observation"];
+        assert_eq!(audit["additional_request_count"], 0);
+        assert_eq!(audit["assessment_request_count"], 2);
+        assert_eq!(
+            audit["observation_source_scope"],
+            "assessment_exact_origin_existing_connections/v1"
+        );
+        assert_eq!(
+            audit["observation_clock_assurance"],
+            "local_system_clock_not_independently_verified"
+        );
+        assert_eq!(audit["leaf_observation_count"], 1);
+        assert_eq!(audit["alpn_protocol"], "not_exposed_by_backend");
+        assert_eq!(audit["session_resumption"], "not_exposed_by_backend");
+        assert_eq!(audit["active_tls_matrix"], "not_performed");
+        assert_eq!(
+            audit["observations"][0]["standard_transport_validation_succeeded"],
+            true
+        );
+    }
+
+    #[cfg(all(feature = "scanning", feature = "tls-observation"))]
+    #[test]
+    fn tls_observation_writer_rejects_accounting_and_claim_mutations() {
+        let mut document = observation_assessment_document("unrelated.observation@1");
+        document.tls_observation = Some(tls_observation_audit_document());
+        assert!(render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).is_ok());
+
+        document
+            .tls_observation
+            .as_mut()
+            .unwrap()
+            .observation_source_scope = "unscoped";
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        document
+            .tls_observation
+            .as_mut()
+            .unwrap()
+            .observation_source_scope = TLS_OBSERVATION_SOURCE_SCOPE;
+        document
+            .tls_observation
+            .as_mut()
+            .unwrap()
+            .observation_clock_assurance = "verified";
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        document
+            .tls_observation
+            .as_mut()
+            .unwrap()
+            .observation_clock_assurance = TLS_OBSERVATION_CLOCK_ASSURANCE;
+
+        document
+            .tls_observation
+            .as_mut()
+            .unwrap()
+            .successful_https_response_count = 1;
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        document
+            .tls_observation
+            .as_mut()
+            .unwrap()
+            .successful_https_response_count = 2;
+        document
+            .tls_observation
+            .as_mut()
+            .unwrap()
+            .assessment_request_count = 1;
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        document
+            .tls_observation
+            .as_mut()
+            .unwrap()
+            .assessment_request_count = 2;
+        document.tls_observation.as_mut().unwrap().alpn_protocol = "h2";
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        let audit = document.tls_observation.as_mut().unwrap();
+        audit.alpn_protocol = TLS_OBSERVATION_BACKEND_LIMIT;
+        audit.observations[0].san_count_truncated = true;
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
     }
 
     #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]

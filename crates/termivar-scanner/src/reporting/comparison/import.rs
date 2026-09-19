@@ -65,6 +65,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "openapi_review",
             "rest_review",
             "secret_exposure_review",
+            "tls_observation",
             "supplied_session",
             "wordpress_review",
             "wordpress_discovery",
@@ -97,6 +98,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     let mut optional_audits = BTreeMap::new();
     let mut supplied_session = None;
     let mut secret_exposure = None;
+    let mut tls_observation = None;
     let mut wordpress_review = None;
     let mut wordpress_discovery = None;
     let mut wordpress_asset_fingerprints = None;
@@ -105,6 +107,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "openapi_review",
         "rest_review",
         "secret_exposure_review",
+        "tls_observation",
         "supplied_session",
         "wordpress_review",
         "wordpress_discovery",
@@ -115,6 +118,8 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
                 supplied_session = Some(audits::validate_supplied_session(value, &items)?);
             } else if name == "secret_exposure_review" {
                 secret_exposure = Some(audits::validate_secret_exposure(value, &items)?);
+            } else if name == "tls_observation" {
+                tls_observation = Some(audits::validate_tls_observation(value)?);
             } else if name == "wordpress_discovery" {
                 wordpress_discovery = Some(audits::validate_wordpress_discovery(value, &items)?);
             } else if name == "wordpress_asset_fingerprints" {
@@ -205,6 +210,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         items,
         supplied_session,
         secret_exposure,
+        tls_observation,
         wordpress_review,
     })
 }

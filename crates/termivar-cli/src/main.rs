@@ -397,6 +397,20 @@ fn scan_secret_exposure_review_flags_conflict(
     }
 }
 
+/// Rejects passive TLS observation outside its explicit web-review contract.
+/// This runs before output reservation or runtime construction.
+#[cfg(feature = "tls-observation")]
+fn scan_tls_observation_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--tls-observation` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
 fn is_exact_origin_root(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https")
         && target.username().is_empty()
@@ -517,6 +531,12 @@ struct ScanArgs {
     #[cfg(feature = "secret-exposure-review")]
     #[arg(long, requires = "profile")]
     secret_exposure_review: bool,
+    /// Observe bounded certificate facts already exposed by successful HTTPS
+    /// connections used by this assessment. This adds no target request or
+    /// handshake and is compiled only with `tls-observation`.
+    #[cfg(feature = "tls-observation")]
+    #[arg(long, requires = "profile")]
+    tls_observation: bool,
     /// Interpret bounded WordPress component evidence already present in the
     /// assessment. This option adds no target requests and is compiled only
     /// with `wordpress-review`.
@@ -1062,6 +1082,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         rest_review,
         #[cfg(feature = "secret-exposure-review")]
         secret_exposure_review,
+        #[cfg(feature = "tls-observation")]
+        tls_observation,
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
         #[cfg(feature = "wordpress-review")]
@@ -1172,6 +1194,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         secret_exposure_review,
         secret_exposure_unprotected_response_source_selected,
     ) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "tls-observation")]
+    if let Some(message) = scan_tls_observation_flags_conflict(profile, tls_observation) {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -1508,6 +1537,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 rest_review,
                 #[cfg(feature = "secret-exposure-review")]
                 secret_exposure_review,
+                #[cfg(feature = "tls-observation")]
+                tls_observation,
                 #[cfg(feature = "authorization-review")]
                 resource_authorization_review,
                 #[cfg(feature = "supplied-session-review")]
@@ -2033,6 +2064,8 @@ mod tests {
         assert!(!args.rest_review);
         #[cfg(feature = "secret-exposure-review")]
         assert!(!args.secret_exposure_review);
+        #[cfg(feature = "tls-observation")]
+        assert!(!args.tls_observation);
         #[cfg(feature = "wordpress-review")]
         {
             assert!(!args.wordpress_review);
@@ -2109,6 +2142,8 @@ mod tests {
         assert!(!args.rest_review);
         #[cfg(feature = "secret-exposure-review")]
         assert!(!args.secret_exposure_review);
+        #[cfg(feature = "tls-observation")]
+        assert!(!args.tls_observation);
         #[cfg(feature = "wordpress-review")]
         {
             assert!(!args.wordpress_review);
@@ -2385,6 +2420,82 @@ mod tests {
             "--profile",
             "web-review",
             "--secret-exposure-review",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "tls-observation")]
+    #[test]
+    fn tls_observation_is_explicit_web_review_only() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--tls-observation"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--tls-observation",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--tls-observation",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        let baseline = parsed_scan_args(&baseline);
+        assert!(baseline.tls_observation);
+        assert_eq!(
+            scan_tls_observation_flags_conflict(baseline.profile, baseline.tls_observation),
+            Some("`--tls-observation` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--tls-observation",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert!(review.tls_observation);
+        assert_eq!(
+            scan_tls_observation_flags_conflict(review.profile, review.tls_observation),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "tls-observation"))]
+    #[test]
+    fn default_cli_does_not_expose_tls_observation() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--tls-observation"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--tls-observation",
             "https://example.test/",
         ])
         .is_err());

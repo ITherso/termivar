@@ -56,6 +56,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "tls-observation",
 )
 EXPECTED_FEATURE_STATES = {
     "api-adapter": "not_compiled",
@@ -71,6 +72,7 @@ EXPECTED_FEATURE_STATES = {
     "secret-exposure-review": "not_compiled",
     "ssrf-oast-review": "not_compiled",
     "supplied-session-review": "not_compiled",
+    "tls-observation": "not_compiled",
     "wordpress-review": "compiled",
 }
 EXPECTED_SECRET_EXPOSURE_PREREQUISITES = (
@@ -87,6 +89,21 @@ EXPECTED_SECRET_EXPOSURE_LIMITATION = (
     "provider acceptance, exploit execution, and impact "
     "validation are not established or performed. Authenticated supplied-session response "
     "bodies are not selected."
+)
+EXPECTED_TLS_OBSERVATION_OPTION = "--tls-observation"
+EXPECTED_TLS_OBSERVATION_PREREQUISITES = (
+    "--profile web-review",
+    "--tls-observation",
+)
+EXPECTED_TLS_OBSERVATION_LIMITATION = (
+    "Observes bounded leaf-certificate facts only from successful HTTPS responses already "
+    "obtained through the assessment broker and adds no request or handshake. The configured "
+    "Rustls transport validated the successful connection, but the current Reqwest response "
+    "seam exposes only one leaf DER certificate. Negotiated TLS version, cipher suite, ALPN, "
+    "full chain, connection reuse, handshake kind and resumption are not exposed; revocation, "
+    "OCSP, CT and AIA retrieval are not performed. Repeated certificate bytes do not identify "
+    "one connection, and one successful connection does not enumerate server support. Plain "
+    "HTTP is not applicable; missing TLS metadata remains unavailable rather than a clean result."
 )
 EXPECTED_SUPPLIED_SESSION_OPTIONS = (
     "--session-policy",
@@ -871,6 +888,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "prerequisites": list(EXPECTED_SECRET_EXPOSURE_PREREQUISITES),
             "limitation": EXPECTED_SECRET_EXPOSURE_LIMITATION,
             "documentation": "docs/internals/passive-secret-exposure-review.md",
+        },
+        {
+            "key": "option.tls-observation",
+            "label": "Existing-connection TLS observation",
+            "compile_feature": "tls-observation",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_TLS_OBSERVATION_PREREQUISITES),
+            "limitation": EXPECTED_TLS_OBSERVATION_LIMITATION,
+            "documentation": "docs/internals/existing-connection-tls-observation.md",
         },
         {
             "key": "option.supplied-session-review",
@@ -2277,13 +2308,19 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 14)
+        self.assertEqual(len(rows), 15)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 6)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 7)
         result = self.validate(document)
         self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
         self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
         self.assertEqual(result["secret_exposure_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+        })
+        self.assertEqual(result["tls_observation_preview"], {
             "build_state": "not_compiled",
             "maturity": "preview",
             "implementation_status": "implemented",
@@ -2351,6 +2388,116 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             if surface["key"] != "option.secret-exposure-review"
         ]
         self.assert_rejected(missing, "secret-exposure surface identity")
+
+    def test_pinned_tls_observation_surface_matches_the_named_producer_literals(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.tls-observation",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = (
+            '\n            "docs/internals/existing-connection-tls-observation.md",'
+        )
+        self.assertEqual(block.count(documentation), 1)
+        before_documentation = block.split(documentation, 1)[0]
+        limitation_line = before_documentation.splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_TLS_OBSERVATION_LIMITATION)
+
+        document = capabilities()
+        surface = next(surface for surface in document["surfaces"]
+                       if surface["key"] == "option.tls-observation")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_TLS_OBSERVATION_PREREQUISITES)
+        self.assertEqual(surface["limitation"], EXPECTED_TLS_OBSERVATION_LIMITATION)
+
+    def test_tls_observation_surface_is_exact_and_fails_closed_on_mutations(self):
+        metadata_mutations = (
+            ("label", "TLS scanner"),
+            ("compile_feature", "wordpress-review"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "tls"),
+            ("documentation", "docs/tls.md"),
+        )
+        for field, wrong in metadata_mutations:
+            with self.subTest(field=field):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.tls-observation")
+                surface[field] = wrong
+                self.assert_rejected(document, "TLS-observation surface metadata")
+
+        for wrong in (None, True, "--tls-observation", {}, [True],
+                      ["--profile web-review", "--tls-observation-120"]):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.tls-observation")
+                surface["prerequisites"] = wrong
+                self.assert_rejected(document, "TLS-observation opt-in contract")
+
+        limitation_mutations = (
+            (
+                "adds no request or handshake",
+                "adds at most 120 requests or handshakes",
+            ),
+            (
+                "Negotiated TLS version, cipher suite, ALPN, full chain, connection reuse, "
+                "handshake kind and resumption are not exposed",
+                "Negotiated TLS versions and cipher suites are fully enumerated",
+            ),
+            (
+                "one successful connection does not enumerate server support",
+                "one successful connection enumerates all server support",
+            ),
+            (
+                "already obtained through the assessment broker and adds no request or handshake",
+                "already obtained through the assessment broker and adds one extra handshake",
+            ),
+        )
+        for old, new in limitation_mutations:
+            with self.subTest(old=old):
+                self.assertEqual(EXPECTED_TLS_OBSERVATION_LIMITATION.count(old), 1)
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.tls-observation")
+                surface["limitation"] = surface["limitation"].replace(old, new)
+                self.assert_rejected(document, "TLS-observation limitation")
+
+        fuzzy = capabilities()
+        tls = next(surface for surface in fuzzy["surfaces"]
+                   if surface["key"] == "option.tls-observation")
+        tls["limitation"] = (
+            "Existing HTTPS TLS data are reviewed by the broker. At most 120 operations are "
+            "allowed and most negotiated details are unavailable."
+        )
+        self.assert_rejected(fuzzy, "TLS-observation limitation")
+
+        for wrong in (None, True, 12, [], {}):
+            with self.subTest(limitation=wrong):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.tls-observation")
+                surface["limitation"] = wrong
+                self.assert_rejected(document, "TLS-observation limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            surface for surface in missing["surfaces"]
+            if surface["key"] != "option.tls-observation"
+        ]
+        self.assert_rejected(missing, "TLS-observation surface identity")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"Existing-connection TLS observation", b"other")
+        self.assert_rejected(document, "text and JSON views disagree", text)
 
     def test_pinned_supplied_session_surface_matches_the_named_producer_literals(self):
         source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
@@ -2632,6 +2779,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("api-adapter", "compiled"),
             ("openapi-review", "not_compiled"),
             ("supplied-session-review", "compiled"),
+            ("tls-observation", "compiled"),
         ]
         for name, state in cases:
             with self.subTest(name=name, state=state):
@@ -3634,6 +3782,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn(
             "unexpectedly exposes non-bundled secret-exposure review",
+            result["failure"],
+        )
+
+    def test_packaged_help_must_not_expose_non_bundled_tls_observation_option(self):
+        result, _ = self.execute(
+            exposed_session_option=EXPECTED_TLS_OBSERVATION_OPTION,
+            path_suffix="-tls-observation-help",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(
+            "unexpectedly exposes non-bundled TLS observation",
             result["failure"],
         )
 

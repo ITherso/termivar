@@ -72,6 +72,8 @@ mod secret_exposure;
 mod ssrf_oast_runtime;
 #[cfg(feature = "supplied-session-review")]
 mod supplied_session_runtime;
+#[cfg(feature = "tls-observation")]
+mod tls_observation;
 mod web_assessment;
 mod web_review_decision;
 mod web_review_execution;
@@ -93,6 +95,8 @@ pub(crate) use authority::authenticated_transport_is_allowed;
 #[cfg(feature = "oast-native-provider")]
 pub(crate) use authority::NativeOastProviderMintToken;
 pub(crate) use authority::SharedWebRuntimeAuthority;
+#[cfg(feature = "tls-observation")]
+pub(crate) use tls_observation::TlsObservationCollector;
 pub(crate) use web_assessment::AssessmentDiscoveryObserver;
 use web_review_decision::NativeWebReviewDecisionProfile;
 use web_review_execution::{
@@ -180,6 +184,16 @@ pub use supplied_session_runtime::{
     WebAssessmentSuppliedSessionAudit, WebAssessmentSuppliedSessionCheckpointAudit,
     WebAssessmentSuppliedSessionResourceAudit, SUPPLIED_SESSION_AUDIT_SCHEMA,
     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+};
+#[cfg(feature = "tls-observation")]
+pub use tls_observation::{
+    TlsCertificateTimeStatus, TlsLeafObservation, TlsObservationTargetScheme,
+    WebAssessmentTlsObservationAudit, MAX_TLS_CERTIFICATE_EXTENSIONS,
+    MAX_TLS_LEAF_CERTIFICATE_BYTES, MAX_TLS_RETAINED_LEAF_OBSERVATIONS,
+    MAX_TLS_SAN_ENTRIES_PER_CERTIFICATE, MAX_TLS_SUBJECT_ALTERNATIVE_NAME_BYTES,
+    TLS_OBSERVATION_AUDIT_SCHEMA, TLS_OBSERVATION_BACKEND_LIMIT, TLS_OBSERVATION_CLOCK_ASSURANCE,
+    TLS_OBSERVATION_POLICY_ID, TLS_OBSERVATION_REVOCATION_STATUS, TLS_OBSERVATION_SOURCE_SCOPE,
+    TLS_OBSERVATION_VALIDATION_SCOPE,
 };
 pub use web_assessment::{
     WebAssessmentCompletion, WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage,

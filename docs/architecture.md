@@ -42,6 +42,17 @@ are outside this slice. Authenticated supplied-session bodies are not selected.
 See
 [Passive response secret-exposure review](internals/passive-secret-exposure-review.md).
 
+The separately non-default `tls-observation` feature requires explicit
+`--profile web-review --tls-observation`. It changes only the configuration of
+the assessment clients that already own selected work so successful responses
+can expose Reqwest TLS information to one shared bounded collector. It adds no
+subject, request, connection, handshake or retry. The collector reduces one
+backend-exposed leaf DER certificate immediately and retains no DER bytes or
+readable names. Negotiated protocol/cipher/ALPN, full chain, connection reuse,
+handshake kind and resumption remain unavailable at this backend seam; this
+slice does not create a second TLS client to manufacture those fields. See
+[Existing-connection TLS observation](internals/existing-connection-tls-observation.md).
+
 The separately non-default `wordpress-review` feature also stays inside that
 single assessment boundary. With explicit `--profile web-review
 --wordpress-review`, it receives only the existing complete root-response HTML
@@ -356,6 +367,16 @@ Disabling the option leaves no collector or secret-exposure audit. Selecting a
 supplied session does not transfer its response body or credentials into this
 anonymous V1 observer. See
 [Passive response secret-exposure review](internals/passive-secret-exposure-review.md).
+
+Passive TLS observation uses the same ownership split. Explicit selection
+creates one assessment-owned collector and enables `tls_info` on every client
+constructed by that assessment; the owning path still selects and accounts for
+the request. After a successful response, the broker reduces available TLS
+metadata before body processing. Disabling the option leaves no collector or
+TLS audit and does not change client behavior. The collector cannot authorize a
+request or handshake, and saved leaf repetitions cannot be used as connection
+or resumption evidence. See
+[Existing-connection TLS observation](internals/existing-connection-tls-observation.md).
 
 Normalization resilience is a separate opt-in composition rather than a
 responsibility of `defense`. Both the scanner/CLI

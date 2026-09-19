@@ -796,6 +796,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) rest_review: bool,
     #[cfg(feature = "secret-exposure-review")]
     pub(crate) secret_exposure_review: bool,
+    #[cfg(feature = "tls-observation")]
+    pub(crate) tls_observation: bool,
     #[cfg(feature = "authorization-review")]
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
@@ -834,6 +836,8 @@ pub(crate) async fn run_profile_scan(
         rest_review,
         #[cfg(feature = "secret-exposure-review")]
         secret_exposure_review,
+        #[cfg(feature = "tls-observation")]
+        tls_observation,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
         #[cfg(feature = "supplied-session-review")]
@@ -892,6 +896,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "secret-exposure review requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "tls-observation")]
+            if tls_observation {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "TLS observation requires the web-review profile",
                 )
                 .into());
             }
@@ -976,6 +988,8 @@ pub(crate) async fn run_profile_scan(
                     rest_review,
                     #[cfg(feature = "secret-exposure-review")]
                     secret_exposure_review,
+                    #[cfg(feature = "tls-observation")]
+                    tls_observation,
                     #[cfg(feature = "authorization-review")]
                     resource_authorization_review,
                     #[cfg(feature = "supplied-session-review")]
@@ -1041,6 +1055,8 @@ struct WebReviewRunOptions {
     rest_review: bool,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_review: bool,
+    #[cfg(feature = "tls-observation")]
+    tls_observation: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "supplied-session-review")]
@@ -1073,6 +1089,8 @@ async fn run_web_review(
         rest_review,
         #[cfg(feature = "secret-exposure-review")]
         secret_exposure_review,
+        #[cfg(feature = "tls-observation")]
+        tls_observation,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
         #[cfg(feature = "supplied-session-review")]
@@ -1161,6 +1179,10 @@ async fn run_web_review(
     #[cfg(feature = "secret-exposure-review")]
     if secret_exposure_review {
         builder = builder.enable_secret_exposure_review();
+    }
+    #[cfg(feature = "tls-observation")]
+    if tls_observation {
+        builder = builder.enable_tls_observation();
     }
     if let Some(context) = root_authorization_context {
         builder = builder.with_root_authorization_context(context);
@@ -2501,6 +2523,29 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "secret-exposure review requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "tls-observation")]
+    #[tokio::test]
+    async fn baseline_rejects_tls_observation_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                tls_observation: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("TLS observation is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "TLS observation requires the web-review profile"
         );
     }
 

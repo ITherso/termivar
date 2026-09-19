@@ -35,6 +35,7 @@ nav:
       - OpenAPI surface review: internals/openapi-surface-review.md
       - REST read-only review: internals/rest-readonly-review.md
       - Passive secret-exposure review: internals/passive-secret-exposure-review.md
+      - Existing-connection TLS observation: internals/existing-connection-tls-observation.md
       - WordPress evidence review: wordpress-review.md
       - Normalization resilience: internals/normalization-resilience.md
       - Defense observation: internals/defense-observation.md
@@ -81,6 +82,7 @@ nav:
       - API reasoning: internals/api-reasoning.md
       - GraphQL surface review: internals/graphql-review.md
       - Passive secret-exposure review: internals/passive-secret-exposure-review.md
+      - Existing-connection TLS observation: internals/existing-connection-tls-observation.md
       - Standard web decision profile: internals/web-decision.md
       - Standard web decision runtime: internals/web-runtime.md
       - Web reasoning: internals/web-reasoning.md

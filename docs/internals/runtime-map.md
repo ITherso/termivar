@@ -107,6 +107,34 @@ secret validity, provider acceptance, exploit execution, and impact validation
 are not established or performed. See
 [Passive response secret-exposure review](passive-secret-exposure-review.md).
 
+## Existing-connection TLS observation
+
+The non-default `tls-observation` scanner/CLI feature adds no work by itself
+and remains outside `release-bundle`. Explicit
+`--profile web-review --tls-observation` enables TLS metadata exposure on the
+same assessment-owned Reqwest clients and reduces metadata only from successful
+responses they already obtain. It does not add a subject, request, connection,
+handshake, retry or redirect.
+
+The current response seam exposes at most one peer leaf certificate as complete
+DER. The shared collector immediately bounds, parses and reduces it; neither
+the DER bytes nor readable subject/SAN names enter evidence or reports. At most
+16 unique leaves retain a complete-DER SHA-256/length, validity/observation
+times, bounded SAN-class counts, time status, successful transport-validation
+scope and response occurrence count. Plain HTTP, missing metadata, malformed or
+oversized leaves and retention exhaustion remain distinct accounting outcomes.
+
+Reqwest does not expose negotiated protocol, cipher suite, ALPN, the full peer
+chain, connection identity/reuse, handshake kind or resumption here. These stay
+`not_exposed_by_backend`; revocation/OCSP/CT/AIA remains `not_checked`. Matching
+leaf bytes cannot prove socket reuse, and one successful connection is not an
+active TLS support matrix. The source is scoped to the assessment's exact-origin
+authority rather than a request purpose or principal. Validity classification
+uses a local system clock whose accuracy is not independently verified. The
+strict optional
+`security.tls-observation-audit/v1` produces no finding or active verification.
+See [Existing-connection TLS observation](existing-connection-tls-observation.md).
+
 ## WordPress evidence review
 
 The non-default `wordpress-review` scanner/CLI feature adds no work by itself.
@@ -704,6 +732,7 @@ The following matrix separates build availability from actual execution:
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
 | REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
 | Passive response secret-exposure review | scanner and CLI opt-in (`secret-exposure-review`) plus explicit `--profile web-review --secret-exposure-review` | one shared observer evaluates eligible complete ordinary anonymous GET bodies inside the response transaction; only validated committed records reach the audit, and it adds no request, active verification, provider call, or subject | no | Preview, development-only; 128 KiB/response and 4 MiB/assessment admitted detector-work ceilings, 1,024 outcome/64 occurrence/32 retained-observation ceilings, fixed value-free catalogue, `Informational` / `KnowledgeOnly` only, supplied-session bodies excluded, and outside `release-bundle` |
+| Existing-connection TLS observation | scanner and CLI opt-in (`tls-observation`) plus explicit `--profile web-review --tls-observation` | existing assessment clients expose TLS information for successful responses already selected by their owning paths; one shared collector immediately reduces bounded leaf DER facts and adds no request, connection, handshake, action or retry | no | Preview, development-only; 64 KiB/leaf, 16 retained unique leaves, 256 bounded SAN entries/leaf, leaf-only Reqwest backend visibility, no active protocol/cipher enumeration, no revocation/OCSP/CT/AIA retrieval, no finding, and outside `release-bundle` |
 | WordPress evidence review and metadata discovery | scanner and CLI opt-in (`wordpress-review`), compiled by the current untagged alpha.3 `release-bundle`, plus optional bounded local context/catalogue; the session consumer additionally requires `supplied-session-review` and `--wordpress-supplied-session` | review-only interprets complete exact-root HTML and supplied declarations with zero added requests; explicit `--wordpress-discovery` may issue at most twelve anonymous, bodyless, same-origin metadata GET attempts through the same broker/budget; optional observed page scope reuses up to three eligible committed anonymous secondary-page responses without fetching pages; the session consumer may nominate public metadata only from health-qualified committed resource HTML and never forwards credentials or selects authenticated-page fingerprints | no | Preview, development-only; absent from the default build and published alpha.2 archives; zero active verifications, at most one root-surface item plus one distinct metadata-source response-outcome item; advisory decisions are audit-only and no exploit/impact validation occurs |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
@@ -731,13 +760,14 @@ The normal CLI dependency additionally enables `reporting` for the explicit
 completed `web-review` path; this does not alter no-profile execution or its
 wire contract.
 The stock untagged alpha.3 `release-bundle` capability inventory now reports
-14 known feature identities: the marker plus seven compiled members and six
+15 known feature identities: the marker plus seven compiled members and seven
 excluded features. The eight compiled identities remain `release-bundle`,
 `artifact-adapter`, `normalization-resilience`, `graphql-review`,
 `openapi-review`, `rest-review`, `authorization-review`, and
-`wordpress-review`. The six excluded identities are `api-adapter`,
+`wordpress-review`. The seven excluded identities are `api-adapter`,
 `legacy-scanner`, `proxy-adapter`, `secret-exposure-review`,
-`ssrf-oast-review`, and `supplied-session-review`. `default` remains empty;
+`ssrf-oast-review`, `supplied-session-review`, and `tls-observation`.
+`default` remains empty;
 this inventory is build truth, not runtime activation or publication status.
 `LuaEngineConfig` is a small shared support type reachable through either
 `platform-models` or `lua`; the broader `config` module remains platform-only.

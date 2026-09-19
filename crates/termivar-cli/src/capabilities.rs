@@ -264,6 +264,7 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
             "supplied-session-review",
             cfg!(feature = "supplied-session-review"),
         ),
+        ("tls-observation", cfg!(feature = "tls-observation")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
     ]
     .into_iter()
@@ -570,6 +571,19 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/passive-secret-exposure-review.md",
         ),
         surface!(
+            "option.tls-observation",
+            "Existing-connection TLS observation",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("tls-observation"),
+            cfg!(feature = "tls-observation"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &["--profile web-review", "--tls-observation"],
+            "Observes bounded leaf-certificate facts only from successful HTTPS responses already obtained through the assessment broker and adds no request or handshake. The configured Rustls transport validated the successful connection, but the current Reqwest response seam exposes only one leaf DER certificate. Negotiated TLS version, cipher suite, ALPN, full chain, connection reuse, handshake kind and resumption are not exposed; revocation, OCSP, CT and AIA retrieval are not performed. Repeated certificate bytes do not identify one connection, and one successful connection does not enumerate server support. Plain HTTP is not applicable; missing TLS metadata remains unavailable rather than a clean result.",
+            "docs/internals/existing-connection-tls-observation.md",
+        ),
+        surface!(
             "option.ssrf-oast-review",
             "SSRF OAST query review",
             SurfaceGroup::Optional,
@@ -818,7 +832,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 25);
+        assert_eq!(document.surfaces.len(), 26);
 
         let keys = document
             .surfaces
@@ -850,6 +864,7 @@ mod tests {
                 "option.rest-review",
                 "option.resource-authorization-review",
                 "option.secret-exposure-review",
+                "option.tls-observation",
                 "option.ssrf-oast-review",
                 "option.supplied-session-review",
                 "option.wordpress-review",
@@ -932,6 +947,7 @@ mod tests {
                 "authorization-review-policy",
             ),
             ("option.secret-exposure-review", "secret-exposure-review"),
+            ("option.tls-observation", "tls-observation"),
             ("option.ssrf-oast-review", "ssrf-oast-review"),
             ("option.supplied-session-review", "session-policy"),
             ("option.wordpress-review", "wordpress-review"),
@@ -1041,6 +1057,12 @@ mod tests {
             (
                 "option.secret-exposure-review",
                 Some("secret-exposure-review"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.tls-observation",
+                Some("tls-observation"),
                 "preview",
                 "implemented",
             ),
@@ -1241,6 +1263,27 @@ mod tests {
             assert!(
                 secret_exposure.limitation.contains(required),
                 "missing passive secret-exposure limitation `{required}`"
+            );
+        }
+        let tls = find("option.tls-observation");
+        assert_eq!(
+            tls.prerequisites,
+            ["--profile web-review", "--tls-observation"]
+        );
+        for required in [
+            "successful HTTPS responses already obtained through the assessment broker",
+            "adds no request or handshake",
+            "only one leaf DER certificate",
+            "Negotiated TLS version, cipher suite, ALPN, full chain, connection reuse, handshake kind and resumption are not exposed",
+            "revocation, OCSP, CT and AIA retrieval are not performed",
+            "Repeated certificate bytes do not identify one connection",
+            "one successful connection does not enumerate server support",
+            "Plain HTTP is not applicable",
+            "missing TLS metadata remains unavailable",
+        ] {
+            assert!(
+                tls.limitation.contains(required),
+                "missing TLS-observation limitation `{required}`"
             );
         }
         let session = find("option.supplied-session-review");

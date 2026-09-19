@@ -73,6 +73,7 @@ EXCLUDED_FEATURES = (
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "tls-observation",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
 SECRET_EXPOSURE_OPTION = "--secret-exposure-review"
@@ -90,6 +91,21 @@ SECRET_EXPOSURE_LIMITATION = (
     "provider acceptance, exploit execution, and impact "
     "validation are not established or performed. Authenticated supplied-session response "
     "bodies are not selected."
+)
+TLS_OBSERVATION_OPTION = "--tls-observation"
+TLS_OBSERVATION_PREREQUISITES = (
+    "--profile web-review",
+    "--tls-observation",
+)
+TLS_OBSERVATION_LIMITATION = (
+    "Observes bounded leaf-certificate facts only from successful HTTPS responses already "
+    "obtained through the assessment broker and adds no request or handshake. The configured "
+    "Rustls transport validated the successful connection, but the current Reqwest response "
+    "seam exposes only one leaf DER certificate. Negotiated TLS version, cipher suite, ALPN, "
+    "full chain, connection reuse, handshake kind and resumption are not exposed; revocation, "
+    "OCSP, CT and AIA retrieval are not performed. Repeated certificate bytes do not identify "
+    "one connection, and one successful connection does not enumerate server support. Plain "
+    "HTTP is not applicable; missing TLS metadata remains unavailable rather than a clean result."
 )
 SUPPLIED_SESSION_OPTIONS = (
     "--session-policy",
@@ -613,6 +629,9 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require(re.search(rf"(?m)^\s*{re.escape(SECRET_EXPOSURE_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled secret-exposure review")
+    require(re.search(rf"(?m)^\s*{re.escape(TLS_OBSERVATION_OPTION)}(?:\s|$)",
+                      scan_text) is None,
+            "scan help unexpectedly exposes non-bundled TLS observation")
     for option in SUPPLIED_SESSION_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
                 f"scan help unexpectedly exposes non-bundled option {option}")
@@ -656,6 +675,39 @@ def _validate_secret_exposure_surface(
     require(f"[{expected_state}] {secret['label']}" in text_value,
             "secret-exposure capability text and JSON views disagree")
     return secret
+
+
+def _validate_tls_observation_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    tls_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.tls-observation"
+    ]
+    require(len(tls_surfaces) == 1,
+            "packaged TLS-observation surface identity changed")
+    tls = tls_surfaces[0]
+    require(tls.get("label") == "Existing-connection TLS observation"
+            and tls.get("compile_feature") == "tls-observation"
+            and tls.get("build_state") == expected_state
+            and tls.get("maturity") == "preview"
+            and tls.get("implementation_status") == "implemented"
+            and tls.get("group") == "optional"
+            and tls.get("kind") == "scan_option"
+            and tls.get("alias") is None
+            and tls.get("documentation")
+            == "docs/internals/existing-connection-tls-observation.md",
+            "packaged TLS-observation surface metadata changed")
+    tls_prerequisites = tls.get("prerequisites")
+    require(isinstance(tls_prerequisites, list)
+            and all(isinstance(value, str) for value in tls_prerequisites)
+            and tuple(tls_prerequisites) == TLS_OBSERVATION_PREREQUISITES,
+            "packaged TLS-observation opt-in contract changed")
+    require(tls.get("limitation") == TLS_OBSERVATION_LIMITATION,
+            "packaged TLS-observation limitation changed")
+    require(f"[{expected_state}] {tls['label']}" in text_value,
+            "TLS-observation capability text and JSON views disagree")
+    return tls
 
 
 def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> dict:
@@ -717,6 +769,7 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
     require("command.capabilities" in surface_keys,
             "capabilities command surface identity changed")
     _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
+    _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
     session_surfaces = [
         surface for surface in surfaces
         if surface.get("key") == "option.supplied-session-review"
@@ -800,6 +853,12 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
         "compiled_members": list(RELEASE_MEMBERS),
         "excluded_features": list(EXCLUDED_FEATURES),
         "secret_exposure_preview": {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+        },
+        "tls_observation_preview": {
             "build_state": "not_compiled",
             "maturity": "preview",
             "implementation_status": "implemented",
