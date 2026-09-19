@@ -461,16 +461,17 @@ fn scan_pem_private_keys(
             block_cursor = candidate_next;
         }
 
-        if valid
-            && closed_at.is_some()
-            && payload_bytes >= MIN_PEM_PAYLOAD_BYTES
-            && payload_bytes % 4 == 0
-            && label.prefix_is_plausible(&payload_prefix[..prefix_len])
-        {
-            counts.record(SecretExposureDetectorClass::PemPrivateKeyBlock)?;
-            cursor = closed_at.expect("checked PEM close remains present");
-        } else {
-            cursor = next;
+        match closed_at {
+            Some(closed_at)
+                if valid
+                    && payload_bytes >= MIN_PEM_PAYLOAD_BYTES
+                    && payload_bytes.is_multiple_of(4)
+                    && label.prefix_is_plausible(&payload_prefix[..prefix_len]) =>
+            {
+                counts.record(SecretExposureDetectorClass::PemPrivateKeyBlock)?;
+                cursor = closed_at;
+            },
+            _ => cursor = next,
         }
     }
     Ok(())
