@@ -34,7 +34,9 @@ Markdown:
    remediation priority. Each item retains its redacted observation, opaque
    assessment-subject reference (not proof of affectedness or location), claim
    basis, capability-owned recommendation and ID, evidence references and count,
-   explicit interpretation limit, and safe verification guidance. A
+   explicit interpretation limit, and safe verification guidance. Human formats
+   also show a closed structural target kind while withholding the resource
+   location, query name/value, and stable locator hashes. A
    recommendation is not a verified fix, and report integrity does not verify
    remediation. Active revalidation requires separately established exact
    target/context/action authority; report references do not grant it.
