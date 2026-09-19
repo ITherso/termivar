@@ -21,6 +21,8 @@ use termivar_core::{
 use thiserror::Error;
 use url::Url;
 
+#[cfg(feature = "secret-exposure-review")]
+use super::assessment_item::AssessmentBasis;
 #[cfg(feature = "openapi-review")]
 use super::openapi_runtime::{
     OpenApiRuntimeOutcome, WebAssessmentOpenApiAudit, MAX_OPENAPI_REVIEW_REQUESTS,
@@ -35,6 +37,12 @@ use super::resource_authorization_runtime::{
 use super::rest_runtime::{
     RestRuntimeOutcome, WebAssessmentRestAudit, MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
     MAX_REST_REVIEW_REQUESTS, REST_REVIEW_CAPABILITY_ID,
+};
+#[cfg(feature = "secret-exposure-review")]
+use super::secret_exposure::{
+    WebAssessmentSecretExposureAudit, MAX_SECRET_EXPOSURE_BODY_BYTES,
+    MAX_SECRET_EXPOSURE_OCCURRENCES, MAX_SECRET_EXPOSURE_RESPONSES,
+    MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS, MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES,
 };
 #[cfg(feature = "ssrf-oast-review")]
 use super::ssrf_oast_runtime::{
@@ -221,6 +229,8 @@ pub struct AssessmentRunReport {
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WebAssessmentWordPressAudit>,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
 }
 
 #[derive(Default)]
@@ -237,6 +247,8 @@ struct AssessmentReviewAudits {
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WebAssessmentWordPressAudit>,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
 }
 
 impl AssessmentRunReport {
@@ -256,6 +268,9 @@ impl AssessmentRunReport {
         #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
         #[cfg(feature = "ssrf-oast-review")] ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
         #[cfg(feature = "wordpress-review")] wordpress_review: Option<WebAssessmentWordPressAudit>,
+        #[cfg(feature = "secret-exposure-review")] secret_exposure_review: Option<
+            WebAssessmentSecretExposureAudit,
+        >,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
         Self::new_validated(
@@ -275,6 +290,8 @@ impl AssessmentRunReport {
                 ssrf_oast_review,
                 #[cfg(feature = "wordpress-review")]
                 wordpress_review,
+                #[cfg(feature = "secret-exposure-review")]
+                secret_exposure_review,
             },
         )
     }
@@ -307,6 +324,8 @@ impl AssessmentRunReport {
             ssrf_oast_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_review,
         } = audits;
         validate_run_identity(&run_report, truth.target_identity)?;
         validate_run_completion(&run_report)?;
@@ -344,6 +363,12 @@ impl AssessmentRunReport {
         validate_ssrf_oast_audit(ssrf_oast_review.as_ref(), &items)?;
         #[cfg(feature = "wordpress-review")]
         validate_wordpress_audit(wordpress_review.as_ref(), &items)?;
+        #[cfg(feature = "secret-exposure-review")]
+        validate_secret_exposure_audit(
+            secret_exposure_review.as_ref(),
+            &items,
+            &evidence_references,
+        )?;
 
         Ok(Self {
             run_report,
@@ -363,6 +388,8 @@ impl AssessmentRunReport {
             ssrf_oast_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_review,
         })
     }
 
@@ -404,7 +431,7 @@ impl AssessmentRunReport {
     /// Resolves one runtime-owned evidence identity to the opaque reference
     /// minted by the same consumed projection authority. This mapping remains
     /// private to report composition and is never serialized as runtime state.
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     pub(crate) fn evidence_reference_for(
         &self,
         evidence_id: &EvidenceId,
@@ -439,6 +466,122 @@ impl AssessmentRunReport {
     pub const fn wordpress_review_audit(&self) -> Option<&WebAssessmentWordPressAudit> {
         self.wordpress_review.as_ref()
     }
+
+    /// Returns the optional value-free passive secret-exposure audit.
+    #[cfg(feature = "secret-exposure-review")]
+    pub const fn secret_exposure_review_audit(&self) -> Option<&WebAssessmentSecretExposureAudit> {
+        self.secret_exposure_review.as_ref()
+    }
+}
+
+#[cfg(feature = "secret-exposure-review")]
+fn validate_secret_exposure_audit(
+    audit: Option<&WebAssessmentSecretExposureAudit>,
+    items: &[AssessmentItem],
+    evidence_references: &BTreeMap<EvidenceId, AssessmentEvidenceReference>,
+) -> Result<(), AssessmentRunReportError> {
+    let is_secret_item = |item: &AssessmentItem| {
+        matches!(
+            item.capability_id(),
+            "exposure.response-private-key-material@1"
+                | "exposure.response-aws-access-key-pair@1"
+                | "exposure.response-stripe-live-secret@1"
+                | "exposure.response-bearer-authorization@1"
+        )
+    };
+    let projected = items
+        .iter()
+        .filter(|item| is_secret_item(item))
+        .collect::<Vec<_>>();
+    let Some(audit) = audit else {
+        return if projected.is_empty() {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::SecretExposureAuditMismatch)
+        };
+    };
+    let outcome_sum = audit
+        .outcomes()
+        .iter()
+        .try_fold(0_u32, |count, row| count.checked_add(row.count()));
+    let evaluated = audit
+        .outcomes()
+        .iter()
+        .find(|row| row.outcome().as_str() == "evaluated")
+        .map_or(0, |row| row.count());
+    let retained_occurrences = audit
+        .observations()
+        .iter()
+        .try_fold(0_u64, |count, observation| {
+            count.checked_add(u64::from(observation.occurrence_count()))
+        });
+    if usize::try_from(audit.response_count()).unwrap_or(usize::MAX) > MAX_SECRET_EXPOSURE_RESPONSES
+        || audit.evaluated_response_count() != evaluated
+        || audit.not_evaluated_response_count()
+            != audit
+                .response_count()
+                .saturating_sub(audit.evaluated_response_count())
+        || outcome_sum != Some(audit.response_count())
+        || audit.interpreted_byte_count() > MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES
+        || audit.interpreted_byte_count()
+            > u64::from(audit.evaluated_response_count())
+                .saturating_mul(MAX_SECRET_EXPOSURE_BODY_BYTES as u64)
+        || audit.observations().len() > MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS
+        || projected.len() != audit.observations().len()
+        || audit.match_occurrence_count()
+            > u64::from(audit.response_count())
+                .saturating_mul(u64::from(MAX_SECRET_EXPOSURE_OCCURRENCES))
+        || retained_occurrences.is_none_or(|count| {
+            if audit.omitted_observation_count() == 0 {
+                count != audit.match_occurrence_count()
+            } else {
+                count >= audit.match_occurrence_count()
+            }
+        })
+    {
+        return Err(AssessmentRunReportError::SecretExposureAuditMismatch);
+    }
+
+    let mut paired_items = BTreeSet::new();
+    let mut paired_evidence = BTreeSet::new();
+    for observation in audit.observations() {
+        if observation.occurrence_count() == 0
+            || observation.occurrence_count() > MAX_SECRET_EXPOSURE_OCCURRENCES
+            || observation.evidence_ids().len() != 1
+        {
+            return Err(AssessmentRunReportError::SecretExposureAuditMismatch);
+        }
+        let evidence_id = &observation.evidence_ids()[0];
+        let evidence_reference = evidence_references
+            .get(evidence_id)
+            .copied()
+            .ok_or(AssessmentRunReportError::SecretExposureAuditMismatch)?;
+        if !paired_evidence.insert(evidence_reference) {
+            return Err(AssessmentRunReportError::SecretExposureAuditMismatch);
+        }
+        let matches = projected
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                if item.capability_id() != observation.detector_class().capability_id() {
+                    return false;
+                }
+                matches!(
+                    item.basis(),
+                    AssessmentBasis::Observation(basis)
+                        if basis.evidence() == [evidence_reference]
+                )
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 || !paired_items.insert(matches[0]) {
+            return Err(AssessmentRunReportError::SecretExposureAuditMismatch);
+        }
+    }
+    if paired_items.len() != projected.len() {
+        return Err(AssessmentRunReportError::SecretExposureAuditMismatch);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "wordpress-review")]
@@ -721,6 +864,11 @@ impl fmt::Debug for AssessmentRunReport {
         debug.field(
             "wordpress_review_audit_present",
             &self.wordpress_review.is_some(),
+        );
+        #[cfg(feature = "secret-exposure-review")]
+        debug.field(
+            "secret_exposure_review_audit_present",
+            &self.secret_exposure_review.is_some(),
         );
         debug.finish()
     }
@@ -1107,6 +1255,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "wordpress-review")]
     #[error("WordPress review audit does not match projected item truth")]
     WordPressAuditMismatch,
+    /// The optional passive secret-exposure audit disagreed with projected item truth.
+    #[cfg(feature = "secret-exposure-review")]
+    #[error("secret-exposure review audit does not match committed item truth")]
+    SecretExposureAuditMismatch,
 }
 
 fn build_run_report(

@@ -34,6 +34,7 @@ nav:
       - OpenAPI contract catalog: internals/openapi-contract-catalog.md
       - OpenAPI surface review: internals/openapi-surface-review.md
       - REST read-only review: internals/rest-readonly-review.md
+      - Passive secret-exposure review: internals/passive-secret-exposure-review.md
       - WordPress evidence review: wordpress-review.md
       - Normalization resilience: internals/normalization-resilience.md
       - Defense observation: internals/defense-observation.md
@@ -79,6 +80,7 @@ nav:
       - Authorization differential review: internals/authorization-differential-review.md
       - API reasoning: internals/api-reasoning.md
       - GraphQL surface review: internals/graphql-review.md
+      - Passive secret-exposure review: internals/passive-secret-exposure-review.md
       - Standard web decision profile: internals/web-decision.md
       - Standard web decision runtime: internals/web-runtime.md
       - Web reasoning: internals/web-reasoning.md

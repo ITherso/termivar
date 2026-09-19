@@ -21,7 +21,7 @@ use reqwest::header::HeaderValue;
 use reqwest::{header::HeaderMap, header::HeaderName, StatusCode, Url};
 use sha2::{Digest, Sha256};
 use termivar_core::{
-    ConfidenceScore, DerivationAlgorithm, Evidence, EvidenceDerivation, EvidenceKind,
+    ConfidenceScore, DerivationAlgorithm, Evidence, EvidenceDerivation, EvidenceId, EvidenceKind,
     EvidenceSource, EvidenceValue, HttpEvidencePredicate, KnowledgePredicate,
 };
 use thiserror::Error;
@@ -884,13 +884,23 @@ impl HttpEvidenceExecutor {
             EvidenceValue::Boolean(response.body_truncated),
             "response-body-truncation",
         )?);
-        evidence.push(self.observation(
-            decision,
-            EvidenceKind::Content,
-            HttpEvidencePredicate::RESPONSE_BODY_SHA256.into(),
-            EvidenceValue::Text(format!("{:x}", Sha256::digest(&response.body))),
-            "response-body-sha256",
-        )?);
+        // The ordinary assessment observer may classify this response as
+        // secret-bearing. Reserve an opaque identity now, but construct and hash
+        // the public body-digest record only after the sealed observer decides
+        // that retaining it is safe. The insertion index preserves the exact
+        // option-off evidence order.
+        let response_body_digest_evidence_id = EvidenceId::new();
+        let response_body_digest_insert_index = evidence.len();
+        if self.complete_response_observer.is_none() {
+            evidence.push(self.observation_with_id(
+                response_body_digest_evidence_id.clone(),
+                decision,
+                EvidenceKind::Content,
+                HttpEvidencePredicate::RESPONSE_BODY_SHA256.into(),
+                EvidenceValue::Text(format!("{:x}", Sha256::digest(&response.body))),
+                "response-body-sha256",
+            )?);
+        }
 
         if let HttpBodyCapture::TextSample { max_chars } = self.policy().body_capture() {
             if textual_response(&response.headers) {
@@ -951,6 +961,7 @@ impl HttpEvidenceExecutor {
         }
 
         append_rate_limit_evidence(self, decision, &response, &mut evidence)?;
+        let mut response_body_lineage_evidence_id = None;
         if let Some(observer) = &self.complete_response_observer {
             let media_type = normalized_media_type(&response.headers);
             // Raw headers remain local to the executor. Only this bounded,
@@ -985,20 +996,20 @@ impl HttpEvidenceExecutor {
                 reliability: self.policy().reliability(),
                 complete_body: (response.body_complete && !response.body_truncated)
                     .then_some(response.body.as_slice()),
-                #[cfg(feature = "wordpress-review")]
+                #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
                 request_headers_empty: probe.headers().is_empty(),
-                #[cfg(feature = "wordpress-review")]
+                #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
                 response_final_url_matches_request: response.final_url == *probe.url(),
-                #[cfg(feature = "wordpress-review")]
+                #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
                 response_content_encoding_absent: !response
                     .headers
                     .contains_key(reqwest::header::CONTENT_ENCODING),
-                #[cfg(feature = "wordpress-review")]
+                #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
                 response_content_length_consistent: response::content_length_matches_body(
                     &response.headers,
                     u64::try_from(response.body.len()).unwrap_or(u64::MAX),
                 ),
-                #[cfg(feature = "wordpress-review")]
+                #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
                 response_body_bytes: u64::try_from(response.body.len()).unwrap_or(u64::MAX),
                 request_method_evidence_id: evidence_id(HttpEvidencePredicate::REQUEST_METHOD),
                 request_url_evidence_id: evidence_id(HttpEvidencePredicate::REQUEST_URL),
@@ -1012,19 +1023,62 @@ impl HttpEvidenceExecutor {
                 response_body_truncated_evidence_id: evidence_id(
                     HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
                 ),
-                #[cfg(feature = "wordpress-review")]
+                #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
                 response_body_bytes_evidence_id: evidence_id(
                     HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
                 ),
-                response_body_digest_evidence_id: evidence_id(
-                    HttpEvidencePredicate::RESPONSE_BODY_SHA256,
-                ),
+                // This reserved ID lets legacy/option-off observers construct
+                // their existing derivations before the digest record is inserted.
+                // A suppressing observer must not cite it and instead returns one
+                // committed, non-secret lineage record from its own projection.
+                response_body_digest_evidence_id: Some(&response_body_digest_evidence_id),
                 passive_response_projection: &passive_response_projection,
                 review_response_projection: &review_response_projection,
                 #[cfg(feature = "wordpress-review")]
                 wordpress_rest_index_advertisement: &wordpress_rest_index_advertisement,
             };
-            evidence.extend(observer.observe(observation)?);
+            let (projected, digest_disposition) = observer.observe(observation)?;
+            match digest_disposition {
+                ResponseBodyDigestDisposition::Retain => {
+                    evidence.insert(
+                        response_body_digest_insert_index,
+                        self.observation_with_id(
+                            response_body_digest_evidence_id.clone(),
+                            decision,
+                            EvidenceKind::Content,
+                            HttpEvidencePredicate::RESPONSE_BODY_SHA256.into(),
+                            EvidenceValue::Text(format!("{:x}", Sha256::digest(&response.body))),
+                            "response-body-sha256",
+                        )?,
+                    );
+                },
+                ResponseBodyDigestDisposition::Suppress {
+                    lineage_evidence_id,
+                } => {
+                    let lineage_count = projected
+                        .iter()
+                        .filter(|item| item.id() == &lineage_evidence_id)
+                        .count();
+                    let publishes_body_digest = projected.iter().any(|item| {
+                        item.predicate()
+                            == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+                    });
+                    let cites_discarded_digest = projected.iter().any(|item| {
+                        item.origin().derivation().is_some_and(|derivation| {
+                            derivation
+                                .parents()
+                                .contains(&response_body_digest_evidence_id)
+                        })
+                    });
+                    if lineage_count != 1 || publishes_body_digest || cites_discarded_digest {
+                        return Err(HttpEvidenceError::AssessmentObserverInvariant {
+                            invariant: "suppressed body digest lineage",
+                        });
+                    }
+                    response_body_lineage_evidence_id = Some(lineage_evidence_id);
+                },
+            }
+            evidence.extend(projected);
         }
         if self.assessment_defense_projection {
             let signal = bounded_assessment_defense_signal(
@@ -1041,13 +1095,27 @@ impl HttpEvidenceExecutor {
                 HttpEvidencePredicate::RESPONSE_FINAL_URL,
                 HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
                 HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
-                HttpEvidencePredicate::RESPONSE_BODY_SHA256,
                 HttpEvidencePredicate::RATE_LIMIT_DETECTED,
                 HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
             ];
-            let mut parents = Vec::with_capacity(parent_predicates.len());
+            let mut parents = Vec::with_capacity(parent_predicates.len() + 1);
             for descriptor in parent_predicates {
                 let predicate = descriptor.into_knowledge();
+                let mut matching = evidence
+                    .iter()
+                    .filter(|item| item.predicate() == &predicate);
+                let Some(parent) = matching.next() else {
+                    return Err(HttpEvidenceError::AssessmentDefenseProjectionInvariant);
+                };
+                if matching.next().is_some() {
+                    return Err(HttpEvidenceError::AssessmentDefenseProjectionInvariant);
+                }
+                parents.push(parent.id().clone());
+            }
+            if let Some(lineage) = response_body_lineage_evidence_id {
+                parents.push(lineage);
+            } else {
+                let predicate = HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge();
                 let mut matching = evidence
                     .iter()
                     .filter(|item| item.predicate() == &predicate);
@@ -1084,6 +1152,28 @@ impl HttpEvidenceExecutor {
         let source = EvidenceSource::new(self.id.clone(), method)?
             .with_correlation_id(decision.case().id())?;
         Ok(Evidence::new(
+            decision.case().subject().clone(),
+            kind,
+            predicate,
+            value,
+            source,
+            self.policy().reliability(),
+        ))
+    }
+
+    fn observation_with_id(
+        &self,
+        id: EvidenceId,
+        decision: &DecisionExecutionRequest,
+        kind: EvidenceKind,
+        predicate: KnowledgePredicate,
+        value: EvidenceValue,
+        method: &str,
+    ) -> Result<Evidence, HttpEvidenceError> {
+        let source = EvidenceSource::new(self.id.clone(), method)?
+            .with_correlation_id(decision.case().id())?;
+        Ok(Evidence::with_id(
+            id,
             decision.case().subject().clone(),
             kind,
             predicate,
@@ -1140,7 +1230,15 @@ pub(crate) trait CompleteHttpResponseObserver:
     fn observe(
         &self,
         observation: CompleteHttpResponseObservation<'_>,
-    ) -> Result<Vec<Evidence>, HttpEvidenceError>;
+    ) -> Result<(Vec<Evidence>, ResponseBodyDigestDisposition), HttpEvidenceError>;
+}
+
+/// Whether the ordinary public body digest is safe to retain. Suppression
+/// names one value-free evidence record from the same atomic observer
+/// projection as replacement lineage.
+pub(crate) enum ResponseBodyDigestDisposition {
+    Retain,
+    Suppress { lineage_evidence_id: EvidenceId },
 }
 
 /// Borrowed response view that never exposes a partial body.
@@ -1160,15 +1258,15 @@ pub(crate) struct CompleteHttpResponseObservation<'a> {
     media_type: Option<&'a str>,
     reliability: ConfidenceScore,
     complete_body: Option<&'a [u8]>,
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     request_headers_empty: bool,
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     response_final_url_matches_request: bool,
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     response_content_encoding_absent: bool,
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     response_content_length_consistent: bool,
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     response_body_bytes: u64,
     request_method_evidence_id: Option<&'a termivar_core::EvidenceId>,
     request_url_evidence_id: Option<&'a termivar_core::EvidenceId>,
@@ -1176,7 +1274,7 @@ pub(crate) struct CompleteHttpResponseObservation<'a> {
     response_final_url_evidence_id: Option<&'a termivar_core::EvidenceId>,
     response_media_type_evidence_id: Option<&'a termivar_core::EvidenceId>,
     response_body_truncated_evidence_id: Option<&'a termivar_core::EvidenceId>,
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     response_body_bytes_evidence_id: Option<&'a termivar_core::EvidenceId>,
     response_body_digest_evidence_id: Option<&'a termivar_core::EvidenceId>,
     passive_response_projection: &'a PassiveResponseProjection,
@@ -1264,22 +1362,27 @@ impl CompleteHttpResponseObservation<'_> {
         }
     }
 
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     pub(crate) const fn response_body_bytes(&self) -> u64 {
         self.response_body_bytes
     }
 
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(feature = "secret-exposure-review")]
+    pub(crate) const fn request_headers_empty(&self) -> bool {
+        self.request_headers_empty
+    }
+
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     pub(crate) const fn response_final_url_matches_request(&self) -> bool {
         self.response_final_url_matches_request
     }
 
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     pub(crate) const fn response_content_encoding_absent(&self) -> bool {
         self.response_content_encoding_absent
     }
 
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     pub(crate) const fn response_content_length_consistent(&self) -> bool {
         self.response_content_length_consistent
     }
@@ -1314,7 +1417,7 @@ impl CompleteHttpResponseObservation<'_> {
         self.response_body_truncated_evidence_id
     }
 
-    #[cfg(feature = "wordpress-review")]
+    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
     pub(crate) const fn response_body_bytes_evidence_id(
         &self,
     ) -> Option<&termivar_core::EvidenceId> {
@@ -1396,15 +1499,15 @@ pub(crate) fn complete_http_response_observation_for_test<'a>(
         media_type: input.media_type,
         reliability: input.reliability,
         complete_body: input.complete_body,
-        #[cfg(feature = "wordpress-review")]
+        #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
         request_headers_empty: true,
-        #[cfg(feature = "wordpress-review")]
+        #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
         response_final_url_matches_request: true,
-        #[cfg(feature = "wordpress-review")]
+        #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
         response_content_encoding_absent: true,
-        #[cfg(feature = "wordpress-review")]
+        #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
         response_content_length_consistent: true,
-        #[cfg(feature = "wordpress-review")]
+        #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
         response_body_bytes: input
             .complete_body
             .map(|body| u64::try_from(body.len()).unwrap_or(u64::MAX))
@@ -1415,7 +1518,7 @@ pub(crate) fn complete_http_response_observation_for_test<'a>(
         response_final_url_evidence_id: input.response_final_url_evidence_id,
         response_media_type_evidence_id: input.response_media_type_evidence_id,
         response_body_truncated_evidence_id: input.response_body_truncated_evidence_id,
-        #[cfg(feature = "wordpress-review")]
+        #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
         response_body_bytes_evidence_id: None,
         response_body_digest_evidence_id: input.response_body_digest_evidence_id,
         passive_response_projection: input.passive_response_projection,
@@ -2341,7 +2444,7 @@ mod tests {
         fn observe(
             &self,
             _observation: CompleteHttpResponseObservation<'_>,
-        ) -> Result<Vec<Evidence>, HttpEvidenceError> {
+        ) -> Result<(Vec<Evidence>, ResponseBodyDigestDisposition), HttpEvidenceError> {
             Err(HttpEvidenceError::AssessmentObserverInvariant {
                 invariant: "test-observer-rejected",
             })

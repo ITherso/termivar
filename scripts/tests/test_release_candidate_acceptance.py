@@ -53,6 +53,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "api-adapter",
     "legacy-scanner",
     "proxy-adapter",
+    "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
 )
@@ -67,10 +68,26 @@ EXPECTED_FEATURE_STATES = {
     "proxy-adapter": "not_compiled",
     "release-bundle": "compiled",
     "rest-review": "compiled",
+    "secret-exposure-review": "not_compiled",
     "ssrf-oast-review": "not_compiled",
     "supplied-session-review": "not_compiled",
     "wordpress-review": "compiled",
 }
+EXPECTED_SECRET_EXPOSURE_PREREQUISITES = (
+    "--profile web-review",
+    "--secret-exposure-review",
+)
+EXPECTED_SECRET_EXPOSURE_LIMITATION = (
+    "Reviews only existing anonymous committed complete status-200 uncoded textual GET "
+    "response bodies. It issues zero additional requests and uses a fixed bounded detector "
+    "catalogue. Reports contain no raw matched values or hashes. V1 fails closed when "
+    "GraphQL, OpenAPI, REST, resource authorization, "
+    "or WordPress discovery is selected because those response paths do not share its "
+    "value-free body-digest boundary. Credential validity, ownership, source authenticity, "
+    "provider acceptance, exploit execution, and impact "
+    "validation are not established or performed. Authenticated supplied-session response "
+    "bodies are not selected."
+)
 EXPECTED_SUPPLIED_SESSION_OPTIONS = (
     "--session-policy",
     "--session-auth-env",
@@ -840,6 +857,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "label": "SSRF OAST query review",
             "compile_feature": "ssrf-oast-review",
             "build_state": "compiled" if include_ssrf else "not_compiled",
+        },
+        {
+            "key": "option.secret-exposure-review",
+            "label": "Passive response secret-exposure review",
+            "compile_feature": "secret-exposure-review",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_SECRET_EXPOSURE_PREREQUISITES),
+            "limitation": EXPECTED_SECRET_EXPOSURE_LIMITATION,
+            "documentation": "docs/internals/passive-secret-exposure-review.md",
         },
         {
             "key": "option.supplied-session-review",
@@ -2246,18 +2277,80 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 13)
+        self.assertEqual(len(rows), 14)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 5)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 6)
         result = self.validate(document)
         self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
         self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
+        self.assertEqual(result["secret_exposure_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+        })
         self.assertEqual(result["supplied_session_preview"], {
             "build_state": "not_compiled",
             "maturity": "preview",
             "implementation_status": "implemented",
             "runtime_activation": "unavailable_in_release_bundle",
         })
+
+    def test_pinned_secret_exposure_surface_matches_the_named_producer_literals(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.secret-exposure-review",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = (
+            '\n            "docs/internals/passive-secret-exposure-review.md",'
+        )
+        self.assertEqual(block.count(documentation), 1)
+        before_documentation = block.split(documentation, 1)[0]
+        limitation_line = before_documentation.splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_SECRET_EXPOSURE_LIMITATION)
+
+        document = capabilities()
+        surface = next(surface for surface in document["surfaces"]
+                       if surface["key"] == "option.secret-exposure-review")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_SECRET_EXPOSURE_PREREQUISITES)
+        self.assertEqual(surface["limitation"], EXPECTED_SECRET_EXPOSURE_LIMITATION)
+
+    def test_secret_exposure_surface_is_exact_and_fails_closed_on_mutations(self):
+        mutations = (
+            ("label", "Secret scanner"),
+            ("compile_feature", "wordpress-review"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "secrets"),
+            ("documentation", "docs/secrets.md"),
+            ("prerequisites", ["--secret-exposure-review"]),
+            ("limitation", "Validates leaked credentials without limitations."),
+        )
+        for field, wrong in mutations:
+            with self.subTest(field=field):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.secret-exposure-review")
+                surface[field] = wrong
+                expected = ("opt-in contract" if field == "prerequisites"
+                            else "limitation" if field == "limitation"
+                            else "surface metadata")
+                self.assert_rejected(document, expected)
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            surface for surface in missing["surfaces"]
+            if surface["key"] != "option.secret-exposure-review"
+        ]
+        self.assert_rejected(missing, "secret-exposure surface identity")
 
     def test_pinned_supplied_session_surface_matches_the_named_producer_literals(self):
         source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
@@ -3532,6 +3625,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 )
                 self.assertEqual(result["status"], "failed")
                 self.assertIn("unexpectedly exposes non-bundled option", result["failure"])
+
+    def test_packaged_help_must_not_expose_non_bundled_secret_exposure_option(self):
+        result, _ = self.execute(
+            exposed_session_option="--secret-exposure-review",
+            path_suffix="-secret-exposure-help",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(
+            "unexpectedly exposes non-bundled secret-exposure review",
+            result["failure"],
+        )
 
     def test_packaged_help_must_expose_every_bundled_wordpress_option(self):
         for index, option in enumerate((

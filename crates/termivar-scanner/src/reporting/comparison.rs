@@ -26,6 +26,8 @@ pub const COMPARISON_DOCUMENT_SCHEMA: &str = "termivar-report-comparison/v1";
 /// Additive display-only comparison for supplied-session context and coverage.
 pub(super) const SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
     "termivar-supplied-session-comparison/v1";
+/// Additive, display-only passive secret-exposure comparison section.
+pub(super) const SECRET_EXPOSURE_COMPARISON_SCHEMA: &str = "termivar-secret-exposure-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
@@ -190,6 +192,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) supplied_session_comparison: Option<SuppliedSessionComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) secret_exposure_comparison: Option<SecretExposureComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) wordpress_review_comparison: Option<WordPressReviewComparison>,
     pub(super) only_in_after: Vec<ComparisonItem>,
     pub(super) only_in_before: Vec<ComparisonItem>,
@@ -208,6 +212,17 @@ pub(super) struct SuppliedSessionComparison {
     pub(super) health_and_coverage: WordPressFacetComparison,
     pub(super) accounting: WordPressFacetComparison,
     pub(super) interpretation_limits: [&'static str; 5],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct SecretExposureComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 4],
 }
 
 #[derive(Debug, Serialize)]
@@ -333,6 +348,12 @@ pub(super) struct ImportedSuppliedSessionAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedSecretExposureAudit {
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SuppliedSessionResourceBinding {
     pub(super) evidence_reference: Option<String>,
     pub(super) response_bytes: u64,
@@ -414,6 +435,7 @@ struct ImportedDocument {
     metadata: SourceMetadata,
     items: BTreeMap<String, ImportedItem>,
     supplied_session: Option<ImportedSuppliedSessionAudit>,
+    secret_exposure: Option<ImportedSecretExposureAudit>,
     wordpress_review: Option<ImportedWordPressAudit>,
 }
 
@@ -435,6 +457,10 @@ fn compare_documents(
         before.supplied_session.as_ref(),
         after.supplied_session.as_ref(),
     );
+    let secret_exposure_comparison = compare_secret_exposure(
+        before.secret_exposure.as_ref(),
+        after.secret_exposure.as_ref(),
+    );
     let wordpress_review_comparison = compare_wordpress_reviews(
         before.wordpress_review.as_ref(),
         after.wordpress_review.as_ref(),
@@ -453,6 +479,7 @@ fn compare_documents(
         before: before.metadata,
         after: after.metadata,
         supplied_session_comparison,
+        secret_exposure_comparison,
         wordpress_review_comparison,
         only_in_after: Vec::new(),
         only_in_before: Vec::new(),
@@ -599,6 +626,50 @@ fn compare_supplied_sessions(
             "Different contexts are not paired as target changes, and missing or reduced coverage is not remediation.",
             "Health checkpoints establish only their recorded predicate at bounded moments, not continuous authentication.",
             "Exploit execution, impact validation, automatic refresh, and anonymous fallback were not performed by this audit.",
+        ],
+    })
+}
+
+fn compare_secret_exposure(
+    before: Option<&ImportedSecretExposureAudit>,
+    after: Option<&ImportedSecretExposureAudit>,
+) -> Option<SecretExposureComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    Some(SecretExposureComparison {
+        schema: SECRET_EXPOSURE_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            paired_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Catalogue, policy, representation, context, or inspection-limit changes are methodology changes; they do not establish a target change.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            paired_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "Missing or reduced response, byte, outcome, or observation coverage is not remediation, secret absence, or proof of safety.",
+        ),
+        interpretation_limits: [
+            "The fixed detector catalogue reports bounded secret-shaped response observations; it does not validate ownership, permissions, or provider acceptance.",
+            "No raw matched value or public secret hash is imported into this display-only comparison.",
+            "A one-sided observation does not establish when exposure began or ended, and disappearance is not remediation.",
+            "Source authentication, secret validity, exploit execution, and impact validation are not established by this audit.",
         ],
     })
 }
@@ -1049,6 +1120,9 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
     if let Some(session) = &document.supplied_session_comparison {
         write_supplied_session_comparison_markdown(&mut output, session)?;
     }
+    if let Some(secret_exposure) = &document.secret_exposure_comparison {
+        write_secret_exposure_comparison_markdown(&mut output, secret_exposure)?;
+    }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         write_wordpress_comparison_markdown(&mut output, wordpress)?;
     }
@@ -1177,6 +1251,49 @@ fn write_source_markdown(
         } else {
             write_markdown_code_span(output, &display_serializable(value)?)?;
         }
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_secret_exposure_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &SecretExposureComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Passive secret-exposure differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str(
+        "\n\nThis section compares validated, value-free audit projections. It does not validate a secret, authenticate a source, contact a provider, or establish remediation.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+    ] {
+        output.push_fmt(format_args!("### Secret exposure {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### Secret exposure interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
         output.push_char('\n')?;
     }
     output.push_char('\n')?;

@@ -47,7 +47,7 @@ impl SuppliedSessionCookieUpdateObservation {
     }
 }
 
-#[cfg(feature = "wordpress-review")]
+#[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
 pub(super) fn content_length_matches_body(headers: &HeaderMap, body_length: u64) -> bool {
     let mut values = headers.get_all(reqwest::header::CONTENT_LENGTH).iter();
     let Some(value) = values.next() else {

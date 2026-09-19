@@ -22,6 +22,26 @@ registry, completeness lifecycle, and final report. It emits at most
 or body, uses no credential/cookie, and does not chain to SQL, SSTI, XSS,
 authorization, SSRF, or upload review.
 
+The separately non-default `secret-exposure-review` feature requires explicit
+`--profile web-review --secret-exposure-review`. It adds one shared observer to
+the existing ordinary anonymous response commit path, not a collector client,
+subject, action, request, or second scanner. Only complete status-200 uncoded
+textual GET bodies with an exact final URL, empty explicit request headers,
+consistent byte/length evidence, and a successful evidence commit may enter
+the fixed bounded detector catalogue. The collector stages value-free counts;
+the committed ledger is the report authority. No matched bytes, fragments,
+reversible encodings, or public secret hashes cross into evidence or reports.
+Every observed body, including an evaluated zero-match, uses value-free
+replacement lineage instead of a public whole-body digest and withholds
+downstream generic/WordPress body-derived projection. The audit makes that
+suppressed coverage explicit; the finite detector catalogue cannot establish
+that an unmatched body contains no other low-entropy secret.
+Its items are `Informational` / `KnowledgeOnly`; validity, ownership, source
+authentication, provider acceptance, exploit execution, and impact validation
+are outside this slice. Authenticated supplied-session bodies are not selected.
+See
+[Passive response secret-exposure review](internals/passive-secret-exposure-review.md).
+
 The separately non-default `wordpress-review` feature also stays inside that
 single assessment boundary. With explicit `--profile web-review
 --wordpress-review`, it receives only the existing complete root-response HTML
@@ -240,6 +260,13 @@ the single bounded typed renderer. Optional detection, platform-model, ML,
 monitoring, compliance, and threat-intelligence modules retain their separate
 feature boundaries.
 
+The private feature-gated `web_runtime/secret_exposure.rs` child owns only the
+fixed bounded detector catalogue, response admission state, committed ledger,
+and informational projection. Transport remains in `http_evidence`, response
+commit and scheduling remain in `WebAssessmentRuntime`, and serialization
+remains in `reporting.rs`; the child cannot acquire a client, add an action, or
+mint a report from uncommitted callback data.
+
 ## Target product-layer split
 
 Dashboard, distributed orchestration, compliance, and web application concerns should move outward once their contracts stabilize.
@@ -317,6 +344,18 @@ successful-status relationship, and redirect classification is the closed
 301/302/303/307/308 set. Defense shadow/enforcement may retain or
 suppress these already-planned differential reads but cannot add a native
 action, refill the plan, increase intensity, or broaden scope.
+
+Passive secret-exposure review preserves the same ownership split. When both
+its non-default compile feature and explicit runtime option are selected, the
+ordinary response observer receives one shared assessment-owned bounded
+collector. It inspects no response until the request/final-URL, status,
+completeness, representation, media-type, byte, and context assurances have
+passed. The resulting value-free evidence must commit with the parent response
+evidence before the separate committed ledger can project an audit or item.
+Disabling the option leaves no collector or secret-exposure audit. Selecting a
+supplied session does not transfer its response body or credentials into this
+anonymous V1 observer. See
+[Passive response secret-exposure review](internals/passive-secret-exposure-review.md).
 
 Normalization resilience is a separate opt-in composition rather than a
 responsibility of `defense`. Both the scanner/CLI

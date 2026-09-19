@@ -35,6 +35,100 @@ fn report(items: Vec<Value>) -> Value {
     })
 }
 
+fn secret_exposure_item(identity: u32, detector_class: &str, evidence_reference: &str) -> Value {
+    let capability_id = match detector_class {
+        "pem_private_key_block" => "exposure.response-private-key-material@1",
+        "aws_access_key_pair" => "exposure.response-aws-access-key-pair@1",
+        "stripe_live_secret" => "exposure.response-stripe-live-secret@1",
+        "bearer_authorization_assignment" => "exposure.response-bearer-authorization@1",
+        _ => panic!("test detector must be part of the literal closed catalogue"),
+    };
+    let mut item = item(identity);
+    item["capability_id"] = json!(capability_id);
+    item["evidence_references"] = json!([evidence_reference]);
+    item
+}
+
+fn secret_exposure_observation(
+    detector_class: &str,
+    occurrence_count: u64,
+    evidence_reference: &str,
+) -> Value {
+    let capability_id = match detector_class {
+        "pem_private_key_block" => "exposure.response-private-key-material@1",
+        "aws_access_key_pair" => "exposure.response-aws-access-key-pair@1",
+        "stripe_live_secret" => "exposure.response-stripe-live-secret@1",
+        "bearer_authorization_assignment" => "exposure.response-bearer-authorization@1",
+        _ => panic!("test detector must be part of the literal closed catalogue"),
+    };
+    json!({
+        "detector_class": detector_class,
+        "capability_id": capability_id,
+        "occurrence_count": occurrence_count,
+        "evidence_references": [evidence_reference]
+    })
+}
+
+fn secret_exposure_audit(
+    response_count: u64,
+    evaluated_response_count: u64,
+    interpreted_byte_count: u64,
+    observations: Vec<Value>,
+    match_occurrence_count: u64,
+) -> Value {
+    let observation_count = observations.len();
+    let not_evaluated_response_count = response_count - evaluated_response_count;
+    let body_derived_projection_suppressed_response_count = response_count;
+    let mut outcomes = Vec::new();
+    if evaluated_response_count > 0 {
+        outcomes.push(json!({
+            "outcome": "evaluated",
+            "count": evaluated_response_count
+        }));
+    }
+    if not_evaluated_response_count > 0 {
+        outcomes.push(json!({
+            "outcome": "unsupported_media_type",
+            "count": not_evaluated_response_count
+        }));
+    }
+    json!({
+        "schema": "security.passive-secret-exposure-audit/v1",
+        "policy": "termivar.passive-secret-exposure/v1",
+        "catalogue_id": "termivar.high-specificity-secret-detectors",
+        "catalogue_revision": "v1",
+        "representation": "complete-uncoded-response-body/v1",
+        "context": "anonymous-ordinary-get",
+        "selected": true,
+        "additional_request_count": 0,
+        "response_count": response_count,
+        "evaluated_response_count": evaluated_response_count,
+        "not_evaluated_response_count": not_evaluated_response_count,
+        "body_derived_projection_suppressed_response_count": body_derived_projection_suppressed_response_count,
+        "interpreted_byte_count": interpreted_byte_count,
+        "per_response_byte_limit": 131_072,
+        "total_byte_limit": 4_194_304,
+        "observation_count": observation_count,
+        "omitted_observation_count": 0,
+        "match_occurrence_count": match_occurrence_count,
+        "outcomes": outcomes,
+        "observations": observations,
+        "source_authentication": "not_established",
+        "secret_validity": "not_tested",
+        "provider_validation": "not_performed",
+        "exploit_execution": "not_performed",
+        "impact_validation": "not_performed",
+        "raw_values_retained": false,
+        "public_secret_hashes_retained": false
+    })
+}
+
+fn report_with_secret_exposure(items: Vec<Value>, audit: Value) -> Value {
+    let mut document = report(items);
+    document["secret_exposure_review"] = audit;
+    document
+}
+
 fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
@@ -123,6 +217,654 @@ fn imported_summary_accepts_a_complete_empty_assessment() {
     assert_eq!(summary.status(), "complete");
     assert_eq!(summary.subject_count(), 2);
     assert_eq!(summary.item_count(), 0);
+}
+
+#[test]
+fn secret_exposure_audit_is_strict_feature_independent_and_self_compares() {
+    let item = secret_exposure_item(71, "pem_private_key_block", "evidence-0007");
+    let audit = secret_exposure_audit(
+        2,
+        1,
+        4_096,
+        vec![secret_exposure_observation(
+            "pem_private_key_block",
+            2,
+            "evidence-0007",
+        )],
+        2,
+    );
+    let document = report_with_secret_exposure(vec![item], audit.clone());
+    let comparison = compare(&document, &document);
+
+    assert_eq!(
+        comparison["before"]["optional_audits"]["secret_exposure_review"],
+        audit
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["schema"],
+        "termivar-secret-exposure-comparison/v1"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["status"],
+        "compared"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["before"]
+            ["body_derived_projection_suppressed_response_count"],
+        2
+    );
+    assert_eq!(comparison["unchanged"].as_array().unwrap().len(), 1);
+    for group in ["only_in_after", "only_in_before", "changed"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+
+    let markdown = compare_reports(
+        &bytes(&document),
+        &bytes(&document),
+        ComparisonFormat::Markdown,
+    )
+    .unwrap();
+    assert!(markdown.contains("Passive secret-exposure differences"));
+    assert!(markdown.contains("does not validate a secret"));
+
+    let html =
+        compare_reports(&bytes(&document), &bytes(&document), ComparisonFormat::Html).unwrap();
+    assert!(html.contains("Passive secret-exposure differences"));
+    assert!(html.contains("Secret-exposure methodology"));
+    assert!(html.contains("Secret-exposure coverage"));
+    assert!(html.contains("does not validate a secret"));
+}
+
+#[test]
+fn selected_empty_secret_exposure_audit_is_valid_and_not_skipped() {
+    let audit = secret_exposure_audit(0, 0, 0, Vec::new(), 0);
+    let document = report_with_secret_exposure(Vec::new(), audit);
+    let comparison = compare(&document, &document);
+
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["status"],
+        "compared"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["before"]["observation_count"],
+        0
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["before"]["observations"],
+        json!([])
+    );
+    for group in ["only_in_after", "only_in_before", "changed", "unchanged"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn secret_exposure_methodology_and_coverage_changes_are_separate() {
+    let base =
+        report_with_secret_exposure(Vec::new(), secret_exposure_audit(0, 0, 0, Vec::new(), 0));
+    let mut catalogue_changed = base.clone();
+    catalogue_changed["secret_exposure_review"]["catalogue_revision"] = json!("v2");
+    let comparison = compare(&base, &catalogue_changed);
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["methodology"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["methodology"]["changed_fields"],
+        json!(["catalogue_revision"])
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert!(
+        comparison["secret_exposure_comparison"]["methodology"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("Catalogue")
+    );
+
+    let coverage_changed =
+        report_with_secret_exposure(Vec::new(), secret_exposure_audit(1, 0, 0, Vec::new(), 0));
+    let comparison = compare(&base, &coverage_changed);
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["before"]
+            ["body_derived_projection_suppressed_response_count"],
+        0
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["after"]
+            ["body_derived_projection_suppressed_response_count"],
+        1
+    );
+    assert!(comparison["secret_exposure_comparison"]["coverage"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("not remediation"));
+}
+
+#[test]
+fn missing_secret_exposure_audit_is_not_comparable_or_secret_absence() {
+    let selected =
+        report_with_secret_exposure(Vec::new(), secret_exposure_audit(0, 0, 0, Vec::new(), 0));
+    let missing = report(Vec::new());
+    let comparison = compare(&selected, &missing);
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["reason"],
+        "after_audit_missing"
+    );
+    assert!(comparison["secret_exposure_comparison"]["coverage"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("secret absence"));
+}
+
+#[test]
+fn secret_exposure_audit_rejects_contract_and_accounting_mutations() {
+    let valid = report_with_secret_exposure(
+        vec![secret_exposure_item(
+            72,
+            "stripe_live_secret",
+            "evidence-0012",
+        )],
+        secret_exposure_audit(
+            1,
+            1,
+            512,
+            vec![secret_exposure_observation(
+                "stripe_live_secret",
+                1,
+                "evidence-0012",
+            )],
+            1,
+        ),
+    );
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+
+    let mut non_object = valid.clone();
+    non_object["secret_exposure_review"] = Value::Null;
+    assert!(import_assessment_summary(&bytes(&non_object)).is_err());
+
+    for field in [
+        "schema",
+        "policy",
+        "catalogue_id",
+        "catalogue_revision",
+        "representation",
+        "context",
+        "selected",
+        "additional_request_count",
+        "response_count",
+        "evaluated_response_count",
+        "not_evaluated_response_count",
+        "body_derived_projection_suppressed_response_count",
+        "interpreted_byte_count",
+        "per_response_byte_limit",
+        "total_byte_limit",
+        "observation_count",
+        "omitted_observation_count",
+        "match_occurrence_count",
+        "outcomes",
+        "observations",
+        "source_authentication",
+        "secret_validity",
+        "provider_validation",
+        "exploit_execution",
+        "impact_validation",
+        "raw_values_retained",
+        "public_secret_hashes_retained",
+    ] {
+        let mut missing = valid.clone();
+        missing["secret_exposure_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            import_assessment_summary(&bytes(&missing)).is_err(),
+            "missing {field}"
+        );
+    }
+
+    let mut extra = valid.clone();
+    extra["secret_exposure_review"]["unexpected"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&extra)).is_err());
+    for (field, replacement) in [
+        ("schema", json!("security.passive-secret-exposure-audit/v2")),
+        ("policy", json!("termivar.passive-secret-exposure/v2")),
+        ("catalogue_id", json!("different-catalogue")),
+        ("catalogue_revision", json!("v0")),
+        ("catalogue_revision", json!("v1000")),
+        ("representation", json!("decoded-text/v1")),
+        ("context", json!("credentialed-get")),
+        ("selected", json!(false)),
+        ("selected", json!("true")),
+        ("additional_request_count", json!(1)),
+        ("response_count", json!(true)),
+        ("per_response_byte_limit", json!(0)),
+        ("per_response_byte_limit", json!(131_073)),
+        ("total_byte_limit", json!(131_071)),
+        ("total_byte_limit", json!(4_194_305)),
+        ("source_authentication", json!("authenticated")),
+        ("secret_validity", json!("valid")),
+        ("provider_validation", json!("performed")),
+        ("exploit_execution", json!("performed")),
+        ("impact_validation", json!("performed")),
+        ("raw_values_retained", json!(true)),
+        ("public_secret_hashes_retained", json!(true)),
+        ("outcomes", json!({})),
+        ("observations", Value::Null),
+    ] {
+        let mut changed = valid.clone();
+        changed["secret_exposure_review"][field] = replacement;
+        assert!(
+            import_assessment_summary(&bytes(&changed)).is_err(),
+            "changed {field}"
+        );
+    }
+
+    let mut inconsistent_partition = valid.clone();
+    inconsistent_partition["secret_exposure_review"]["not_evaluated_response_count"] = json!(1);
+    assert!(import_assessment_summary(&bytes(&inconsistent_partition)).is_err());
+    let mut inconsistent_bytes = valid.clone();
+    inconsistent_bytes["secret_exposure_review"]["interpreted_byte_count"] = json!(131_073);
+    assert!(import_assessment_summary(&bytes(&inconsistent_bytes)).is_err());
+    let mut boolean_suppression = valid.clone();
+    boolean_suppression["secret_exposure_review"]
+        ["body_derived_projection_suppressed_response_count"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&boolean_suppression)).is_err());
+    let mut excessive_suppression = valid.clone();
+    excessive_suppression["secret_exposure_review"]
+        ["body_derived_projection_suppressed_response_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&excessive_suppression)).is_err());
+    let mut missing_match_suppression = valid.clone();
+    missing_match_suppression["secret_exposure_review"]
+        ["body_derived_projection_suppressed_response_count"] = json!(0);
+    assert!(import_assessment_summary(&bytes(&missing_match_suppression)).is_err());
+    let mut inconsistent_outcome = valid.clone();
+    inconsistent_outcome["secret_exposure_review"]["outcomes"][0]["count"] = json!(0);
+    assert!(import_assessment_summary(&bytes(&inconsistent_outcome)).is_err());
+    let mut invalid_outcome = valid.clone();
+    invalid_outcome["secret_exposure_review"]["outcomes"][0]["outcome"] = json!("clean");
+    assert!(import_assessment_summary(&bytes(&invalid_outcome)).is_err());
+    let mut duplicate_outcome = valid.clone();
+    duplicate_outcome["secret_exposure_review"]["outcomes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"outcome":"evaluated","count":0}));
+    assert!(import_assessment_summary(&bytes(&duplicate_outcome)).is_err());
+    let mut excessive_occurrences = valid.clone();
+    excessive_occurrences["secret_exposure_review"]["match_occurrence_count"] = json!(65);
+    assert!(import_assessment_summary(&bytes(&excessive_occurrences)).is_err());
+    let mut occurrence_disagreement = valid.clone();
+    occurrence_disagreement["secret_exposure_review"]["match_occurrence_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&occurrence_disagreement)).is_err());
+
+    let mut bounded_detector_refusal =
+        report_with_secret_exposure(Vec::new(), secret_exposure_audit(1, 0, 0, Vec::new(), 0));
+    bounded_detector_refusal["secret_exposure_review"]["outcomes"][0]["outcome"] =
+        json!("detector_limit_exceeded");
+    assert!(import_assessment_summary(&bytes(&bounded_detector_refusal)).is_ok());
+    let mut missing_refusal_suppression = bounded_detector_refusal.clone();
+    missing_refusal_suppression["secret_exposure_review"]
+        ["body_derived_projection_suppressed_response_count"] = json!(0);
+    assert!(import_assessment_summary(&bytes(&missing_refusal_suppression)).is_err());
+    let clean_evaluated =
+        report_with_secret_exposure(Vec::new(), secret_exposure_audit(2, 1, 32, Vec::new(), 0));
+    assert!(import_assessment_summary(&bytes(&clean_evaluated)).is_ok());
+    let mut missing_clean_suppression = clean_evaluated;
+    missing_clean_suppression["secret_exposure_review"]
+        ["body_derived_projection_suppressed_response_count"] = json!(1);
+    assert!(import_assessment_summary(&bytes(&missing_clean_suppression)).is_err());
+}
+
+#[test]
+fn secret_exposure_reader_enforces_producer_observation_cardinality() {
+    let selected_empty =
+        report_with_secret_exposure(Vec::new(), secret_exposure_audit(0, 0, 0, Vec::new(), 0));
+    assert!(import_assessment_summary(&bytes(&selected_empty)).is_ok());
+
+    let producer_boundary = |observation_count: usize| {
+        let detector_classes = [
+            "pem_private_key_block",
+            "aws_access_key_pair",
+            "stripe_live_secret",
+            "bearer_authorization_assignment",
+        ];
+        let mut items = Vec::with_capacity(observation_count);
+        let mut observations = Vec::with_capacity(observation_count);
+        for index in 0..observation_count {
+            let detector_class = detector_classes[index % detector_classes.len()];
+            let evidence_reference = format!("evidence-{:04}", index + 100);
+            items.push(secret_exposure_item(
+                200 + u32::try_from(index).unwrap(),
+                detector_class,
+                &evidence_reference,
+            ));
+            observations.push(secret_exposure_observation(
+                detector_class,
+                1,
+                &evidence_reference,
+            ));
+        }
+        let response_count = u64::try_from(observation_count.div_ceil(4)).unwrap();
+        report_with_secret_exposure(
+            items,
+            secret_exposure_audit(
+                response_count,
+                response_count,
+                0,
+                observations,
+                u64::try_from(observation_count).unwrap(),
+            ),
+        )
+    };
+
+    let retained_limit = producer_boundary(32);
+    assert!(import_assessment_summary(&bytes(&retained_limit)).is_ok());
+    let retained_over_limit = producer_boundary(33);
+    assert!(import_assessment_summary(&bytes(&retained_over_limit)).is_err());
+
+    let mut valid_omission = retained_limit.clone();
+    valid_omission["secret_exposure_review"]["response_count"] = json!(9);
+    valid_omission["secret_exposure_review"]["evaluated_response_count"] = json!(9);
+    valid_omission["secret_exposure_review"]["body_derived_projection_suppressed_response_count"] =
+        json!(9);
+    valid_omission["secret_exposure_review"]["outcomes"][0]["count"] = json!(9);
+    valid_omission["secret_exposure_review"]["omitted_observation_count"] = json!(1);
+    valid_omission["secret_exposure_review"]["match_occurrence_count"] = json!(33);
+    assert!(import_assessment_summary(&bytes(&valid_omission)).is_ok());
+
+    let mut retained_equals_total = valid_omission.clone();
+    retained_equals_total["secret_exposure_review"]["match_occurrence_count"] = json!(32);
+    assert!(import_assessment_summary(&bytes(&retained_equals_total)).is_err());
+
+    let mut omitted_rows_exceed_missing_occurrences = valid_omission.clone();
+    omitted_rows_exceed_missing_occurrences["secret_exposure_review"]
+        ["omitted_observation_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&omitted_rows_exceed_missing_occurrences)).is_err());
+
+    let mut missing_occurrences_exceed_omitted_rows = valid_omission.clone();
+    missing_occurrences_exceed_omitted_rows["secret_exposure_review"]["match_occurrence_count"] =
+        json!(97);
+    assert!(import_assessment_summary(&bytes(&missing_occurrences_exceed_omitted_rows)).is_err());
+
+    let mut impossible_below_cap_omission = producer_boundary(31);
+    impossible_below_cap_omission["secret_exposure_review"]["omitted_observation_count"] = json!(1);
+    impossible_below_cap_omission["secret_exposure_review"]["match_occurrence_count"] = json!(32);
+    assert!(import_assessment_summary(&bytes(&impossible_below_cap_omission)).is_err());
+
+    let mut zero_total_with_omission =
+        report_with_secret_exposure(Vec::new(), secret_exposure_audit(1, 1, 0, Vec::new(), 0));
+    zero_total_with_omission["secret_exposure_review"]["omitted_observation_count"] = json!(1);
+    assert!(import_assessment_summary(&bytes(&zero_total_with_omission)).is_err());
+
+    let mut ten_suppressed_responses_one_match = report_with_secret_exposure(
+        vec![secret_exposure_item(
+            299,
+            "stripe_live_secret",
+            "evidence-0299",
+        )],
+        secret_exposure_audit(
+            10,
+            10,
+            64,
+            vec![secret_exposure_observation(
+                "stripe_live_secret",
+                1,
+                "evidence-0299",
+            )],
+            1,
+        ),
+    );
+    assert!(import_assessment_summary(&bytes(&ten_suppressed_responses_one_match)).is_ok());
+    ten_suppressed_responses_one_match["secret_exposure_review"]
+        ["body_derived_projection_suppressed_response_count"] = json!(9);
+    assert!(import_assessment_summary(&bytes(&ten_suppressed_responses_one_match)).is_err());
+    ten_suppressed_responses_one_match["secret_exposure_review"]
+        ["body_derived_projection_suppressed_response_count"] = json!(11);
+    assert!(import_assessment_summary(&bytes(&ten_suppressed_responses_one_match)).is_err());
+
+    let five_observations = (0_u32..5)
+        .map(|index| {
+            secret_exposure_observation(
+                "stripe_live_secret",
+                1,
+                &format!("evidence-{:04}", index + 300),
+            )
+        })
+        .collect::<Vec<_>>();
+    let five_items = (0_u32..5)
+        .map(|index| {
+            secret_exposure_item(
+                300 + index,
+                "stripe_live_secret",
+                &format!("evidence-{:04}", index + 300),
+            )
+        })
+        .collect::<Vec<_>>();
+    let observations_exceed_evaluated_capacity = report_with_secret_exposure(
+        five_items,
+        secret_exposure_audit(2, 1, 64, five_observations, 5),
+    );
+    assert!(import_assessment_summary(&bytes(&observations_exceed_evaluated_capacity)).is_err());
+
+    let occurrences_exceed_evaluated_capacity = report_with_secret_exposure(
+        vec![
+            secret_exposure_item(305, "stripe_live_secret", "evidence-0305"),
+            secret_exposure_item(306, "aws_access_key_pair", "evidence-0306"),
+        ],
+        secret_exposure_audit(
+            2,
+            1,
+            64,
+            vec![
+                secret_exposure_observation("stripe_live_secret", 64, "evidence-0305"),
+                secret_exposure_observation("aws_access_key_pair", 1, "evidence-0306"),
+            ],
+            65,
+        ),
+    );
+    assert!(import_assessment_summary(&bytes(&occurrences_exceed_evaluated_capacity)).is_err());
+
+    let mut zero_count_outcome = producer_boundary(1);
+    zero_count_outcome["secret_exposure_review"]["outcomes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"outcome":"invalid_utf8","count":0}));
+    assert!(import_assessment_summary(&bytes(&zero_count_outcome)).is_err());
+
+    let mut excessive_class_rows = producer_boundary(1);
+    excessive_class_rows["secret_exposure_review"]["omitted_observation_count"] = json!(4);
+    excessive_class_rows["secret_exposure_review"]["match_occurrence_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&excessive_class_rows)).is_err());
+}
+
+#[test]
+fn secret_exposure_observations_require_exact_pairs_and_one_to_one_items() {
+    let valid = report_with_secret_exposure(
+        vec![secret_exposure_item(
+            73,
+            "aws_access_key_pair",
+            "evidence-0013",
+        )],
+        secret_exposure_audit(
+            1,
+            1,
+            64,
+            vec![secret_exposure_observation(
+                "aws_access_key_pair",
+                1,
+                "evidence-0013",
+            )],
+            1,
+        ),
+    );
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+
+    let mut missing_audit = valid.clone();
+    missing_audit
+        .as_object_mut()
+        .unwrap()
+        .remove("secret_exposure_review");
+    assert!(import_assessment_summary(&bytes(&missing_audit)).is_err());
+    for (field, replacement) in [
+        ("detector_class", json!("unknown")),
+        (
+            "capability_id",
+            json!("exposure.response-stripe-live-secret@1"),
+        ),
+        ("occurrence_count", json!(0)),
+        ("occurrence_count", json!(65)),
+        ("occurrence_count", json!(true)),
+        ("evidence_references", json!([])),
+        (
+            "evidence_references",
+            json!(["evidence-0013", "evidence-0014"]),
+        ),
+        ("evidence_references", json!(["evidence:13"])),
+    ] {
+        let mut changed = valid.clone();
+        changed["secret_exposure_review"]["observations"][0][field] = replacement;
+        assert!(
+            import_assessment_summary(&bytes(&changed)).is_err(),
+            "changed observation {field}"
+        );
+    }
+    let mut extra = valid.clone();
+    extra["secret_exposure_review"]["observations"][0]["extra"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&extra)).is_err());
+    let mut wrong_reference = valid.clone();
+    wrong_reference["secret_exposure_review"]["observations"][0]["evidence_references"] =
+        json!(["evidence-0014"]);
+    assert!(import_assessment_summary(&bytes(&wrong_reference)).is_err());
+    let mut duplicate_observation = valid.clone();
+    let repeated = duplicate_observation["secret_exposure_review"]["observations"][0].clone();
+    duplicate_observation["secret_exposure_review"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .push(repeated);
+    duplicate_observation["secret_exposure_review"]["observation_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&duplicate_observation)).is_err());
+    let shared_reference = report_with_secret_exposure(
+        vec![
+            secret_exposure_item(76, "aws_access_key_pair", "evidence-0013"),
+            secret_exposure_item(77, "stripe_live_secret", "evidence-0013"),
+        ],
+        secret_exposure_audit(
+            1,
+            1,
+            64,
+            vec![
+                secret_exposure_observation("aws_access_key_pair", 1, "evidence-0013"),
+                secret_exposure_observation("stripe_live_secret", 1, "evidence-0013"),
+            ],
+            2,
+        ),
+    );
+    assert!(import_assessment_summary(&bytes(&shared_reference)).is_err());
+    let mut differential_item = valid.clone();
+    differential_item["items"][0]["claim_basis"] = json!("differential");
+    differential_item["items"][0]["disposition"] = json!("needs_review");
+    assert!(import_assessment_summary(&bytes(&differential_item)).is_err());
+    let mut orphan_item = valid.clone();
+    orphan_item["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(secret_exposure_item(
+            74,
+            "aws_access_key_pair",
+            "evidence-0014",
+        ));
+    orphan_item["item_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&orphan_item)).is_err());
+}
+
+#[test]
+fn secret_exposure_coverage_ignores_local_evidence_renumbering() {
+    let before = report_with_secret_exposure(
+        vec![secret_exposure_item(
+            75,
+            "bearer_authorization_assignment",
+            "evidence-0015",
+        )],
+        secret_exposure_audit(
+            1,
+            1,
+            96,
+            vec![secret_exposure_observation(
+                "bearer_authorization_assignment",
+                3,
+                "evidence-0015",
+            )],
+            3,
+        ),
+    );
+    let mut after = before.clone();
+    after["items"][0]["evidence_references"] = json!(["evidence-9015"]);
+    after["secret_exposure_review"]["observations"][0]["evidence_references"] =
+        json!(["evidence-9015"]);
+    let comparison = compare(&before, &after);
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(comparison["unchanged"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn secret_exposure_coverage_binds_occurrences_to_stable_item_fingerprints() {
+    let mut first = secret_exposure_item(81, "stripe_live_secret", "evidence-0021");
+    first["subject_reference"] = json!("subject-0000");
+    let mut second = secret_exposure_item(82, "stripe_live_secret", "evidence-0022");
+    second["subject_reference"] = json!("subject-0001");
+    let before = report_with_secret_exposure(
+        vec![first, second],
+        secret_exposure_audit(
+            1,
+            1,
+            96,
+            vec![
+                secret_exposure_observation("stripe_live_secret", 1, "evidence-0021"),
+                secret_exposure_observation("stripe_live_secret", 2, "evidence-0022"),
+            ],
+            3,
+        ),
+    );
+    let mut after = before.clone();
+    after["secret_exposure_review"]["observations"][0]["occurrence_count"] = json!(2);
+    after["secret_exposure_review"]["observations"][1]["occurrence_count"] = json!(1);
+
+    let comparison = compare(&before, &after);
+    assert_eq!(
+        comparison["secret_exposure_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_ne!(
+        comparison["secret_exposure_comparison"]["coverage"]["before"]["observations"],
+        comparison["secret_exposure_comparison"]["coverage"]["after"]["observations"],
+    );
+    assert_eq!(comparison["changed"].as_array().unwrap().len(), 0);
+    assert_eq!(comparison["unchanged"].as_array().unwrap().len(), 2);
 }
 
 #[test]

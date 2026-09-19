@@ -1,14 +1,15 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
 use super::super::{
-    ImportedSuppliedSessionAudit, ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit,
-    SuppliedSessionResourceBinding, WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
+    ImportedSecretExposureAudit, ImportedSuppliedSessionAudit,
+    ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit, SuppliedSessionResourceBinding,
+    WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
     WordPressAssetFingerprintResourceKey, WordPressComponentKey,
     WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY,
 };
 use super::{
     array, boolean, check, digest, keys, number, object, optional_boolean, optional_text,
-    optional_token, required, string, text, token, ComparisonError, ImportedItem, Value,
+    optional_token, reference, required, string, text, token, ComparisonError, ImportedItem, Value,
     MAX_IDENTIFIER_BYTES, MAX_LEGACY_AUDIT_TEXT_BYTES,
 };
 use crate::wordpress_version::{
@@ -26,6 +27,37 @@ const AUTHORIZATION_CAPABILITY: &str = "authorization.resource-cross-principal-e
 const SUPPLIED_SESSION_AUDIT_SCHEMA_V1: &str = "security.supplied-session-audit/v1";
 const SUPPLIED_SESSION_AUDIT_SCHEMA_V2: &str = "security.supplied-session-audit/v2";
 const SUPPLIED_SESSION_CAPABILITY: &str = "session.supplied-context-assessment@1";
+const SECRET_EXPOSURE_AUDIT_SCHEMA: &str = "security.passive-secret-exposure-audit/v1";
+const SECRET_EXPOSURE_POLICY: &str = "termivar.passive-secret-exposure/v1";
+const SECRET_EXPOSURE_CATALOGUE_ID: &str = "termivar.high-specificity-secret-detectors";
+const SECRET_EXPOSURE_REPRESENTATION: &str = "complete-uncoded-response-body/v1";
+const SECRET_EXPOSURE_CONTEXT: &str = "anonymous-ordinary-get";
+const MAX_SECRET_EXPOSURE_RESPONSES: u64 = 1_024;
+const MAX_SECRET_EXPOSURE_RESPONSE_BYTES: u64 = 128 * 1_024;
+const MAX_SECRET_EXPOSURE_TOTAL_BYTES: u64 = 4 * 1_024 * 1_024;
+const MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS: u64 = 32;
+const MAX_SECRET_EXPOSURE_CLASSES_PER_RESPONSE: u64 = 4;
+const MAX_SECRET_EXPOSURE_OMITTED_OBSERVATIONS: u64 =
+    MAX_SECRET_EXPOSURE_RESPONSES * MAX_SECRET_EXPOSURE_CLASSES_PER_RESPONSE;
+const MAX_SECRET_EXPOSURE_OCCURRENCES_PER_RESPONSE: u64 = 64;
+const SECRET_EXPOSURE_CAPABILITIES: [(&str, &str); 4] = [
+    (
+        "pem_private_key_block",
+        "exposure.response-private-key-material@1",
+    ),
+    (
+        "aws_access_key_pair",
+        "exposure.response-aws-access-key-pair@1",
+    ),
+    (
+        "stripe_live_secret",
+        "exposure.response-stripe-live-secret@1",
+    ),
+    (
+        "bearer_authorization_assignment",
+        "exposure.response-bearer-authorization@1",
+    ),
+];
 const MAX_SUPPLIED_SESSION_RESOURCES: u64 = 4;
 const MAX_SUPPLIED_SESSION_CHECKPOINTS: u64 = 5;
 const MAX_SUPPLIED_SESSION_REQUESTS: u64 = 9;
@@ -286,6 +318,357 @@ pub(super) fn validate(
         },
         _ => Err(ComparisonError::InvalidDocument),
     }
+}
+
+pub(super) fn is_secret_exposure_capability(capability: &str) -> bool {
+    SECRET_EXPOSURE_CAPABILITIES
+        .iter()
+        .any(|(_, expected)| *expected == capability)
+}
+
+pub(super) fn validate_secret_exposure(
+    value: &Value,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<ImportedSecretExposureAudit, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "catalogue_id",
+            "catalogue_revision",
+            "representation",
+            "context",
+            "selected",
+            "additional_request_count",
+            "response_count",
+            "evaluated_response_count",
+            "not_evaluated_response_count",
+            "body_derived_projection_suppressed_response_count",
+            "interpreted_byte_count",
+            "per_response_byte_limit",
+            "total_byte_limit",
+            "observation_count",
+            "omitted_observation_count",
+            "match_occurrence_count",
+            "outcomes",
+            "observations",
+            "source_authentication",
+            "secret_validity",
+            "provider_validation",
+            "exploit_execution",
+            "impact_validation",
+            "raw_values_retained",
+            "public_secret_hashes_retained",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == SECRET_EXPOSURE_AUDIT_SCHEMA)?;
+    check(string(fields, "policy")? == SECRET_EXPOSURE_POLICY)?;
+    check(string(fields, "catalogue_id")? == SECRET_EXPOSURE_CATALOGUE_ID)?;
+    let catalogue_revision = string(fields, "catalogue_revision")?;
+    check(valid_secret_exposure_catalogue_revision(catalogue_revision))?;
+    check(string(fields, "representation")? == SECRET_EXPOSURE_REPRESENTATION)?;
+    check(string(fields, "context")? == SECRET_EXPOSURE_CONTEXT)?;
+    check(boolean(fields, "selected")?)?;
+    check(number(fields, "additional_request_count", 0)? == 0)?;
+
+    let response_count = number(fields, "response_count", MAX_SECRET_EXPOSURE_RESPONSES)?;
+    let evaluated_response_count = number(
+        fields,
+        "evaluated_response_count",
+        MAX_SECRET_EXPOSURE_RESPONSES,
+    )?;
+    let not_evaluated_response_count = number(
+        fields,
+        "not_evaluated_response_count",
+        MAX_SECRET_EXPOSURE_RESPONSES,
+    )?;
+    check(
+        evaluated_response_count.checked_add(not_evaluated_response_count) == Some(response_count),
+    )?;
+    let body_derived_projection_suppressed_response_count = number(
+        fields,
+        "body_derived_projection_suppressed_response_count",
+        MAX_SECRET_EXPOSURE_RESPONSES,
+    )?;
+    check(body_derived_projection_suppressed_response_count == response_count)?;
+    let per_response_byte_limit = number(
+        fields,
+        "per_response_byte_limit",
+        MAX_SECRET_EXPOSURE_RESPONSE_BYTES,
+    )?;
+    check(per_response_byte_limit > 0)?;
+    let total_byte_limit = number(fields, "total_byte_limit", MAX_SECRET_EXPOSURE_TOTAL_BYTES)?;
+    check(total_byte_limit >= per_response_byte_limit)?;
+    let interpreted_byte_count = number(
+        fields,
+        "interpreted_byte_count",
+        MAX_SECRET_EXPOSURE_TOTAL_BYTES,
+    )?;
+    check(interpreted_byte_count <= total_byte_limit)?;
+    check(
+        evaluated_response_count
+            .checked_mul(per_response_byte_limit)
+            .is_some_and(|maximum| interpreted_byte_count <= maximum),
+    )?;
+
+    let observation_count = number(
+        fields,
+        "observation_count",
+        MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS,
+    )?;
+    let omitted_observation_count = number(
+        fields,
+        "omitted_observation_count",
+        MAX_SECRET_EXPOSURE_OMITTED_OBSERVATIONS,
+    )?;
+    check(
+        omitted_observation_count == 0
+            || observation_count == MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS,
+    )?;
+    check(
+        observation_count
+            .checked_add(omitted_observation_count)
+            .zip(evaluated_response_count.checked_mul(MAX_SECRET_EXPOSURE_CLASSES_PER_RESPONSE))
+            .is_some_and(|(observed, maximum)| observed <= maximum),
+    )?;
+    let match_occurrence_count = number(
+        fields,
+        "match_occurrence_count",
+        MAX_SECRET_EXPOSURE_RESPONSES * MAX_SECRET_EXPOSURE_OCCURRENCES_PER_RESPONSE,
+    )?;
+    check(
+        evaluated_response_count
+            .checked_mul(MAX_SECRET_EXPOSURE_OCCURRENCES_PER_RESPONSE)
+            .is_some_and(|maximum| match_occurrence_count <= maximum),
+    )?;
+    let outcomes = validate_secret_exposure_outcomes(
+        array(fields, "outcomes")?,
+        response_count,
+        evaluated_response_count,
+        not_evaluated_response_count,
+    )?;
+    let (observations, retained_occurrences) = validate_secret_exposure_observations(
+        array(fields, "observations")?,
+        observation_count,
+        items,
+    )?;
+    let missing_occurrences = match_occurrence_count
+        .checked_sub(retained_occurrences)
+        .ok_or(ComparisonError::InvalidDocument)?;
+    check(missing_occurrences >= omitted_observation_count)?;
+    check(
+        omitted_observation_count
+            .checked_mul(MAX_SECRET_EXPOSURE_OCCURRENCES_PER_RESPONSE)
+            .is_some_and(|maximum| missing_occurrences <= maximum),
+    )?;
+
+    check(string(fields, "source_authentication")? == "not_established")?;
+    check(string(fields, "secret_validity")? == "not_tested")?;
+    check(string(fields, "provider_validation")? == "not_performed")?;
+    check(string(fields, "exploit_execution")? == "not_performed")?;
+    check(string(fields, "impact_validation")? == "not_performed")?;
+    check(!boolean(fields, "raw_values_retained")?)?;
+    check(!boolean(fields, "public_secret_hashes_retained")?)?;
+
+    let methodology = selected_object(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "catalogue_id",
+            "catalogue_revision",
+            "representation",
+            "context",
+            "selected",
+            "additional_request_count",
+            "per_response_byte_limit",
+            "total_byte_limit",
+            "source_authentication",
+            "secret_validity",
+            "provider_validation",
+            "exploit_execution",
+            "impact_validation",
+            "raw_values_retained",
+            "public_secret_hashes_retained",
+        ],
+        &[],
+    )?;
+    let mut coverage = Map::new();
+    for name in [
+        "response_count",
+        "evaluated_response_count",
+        "not_evaluated_response_count",
+        "body_derived_projection_suppressed_response_count",
+        "interpreted_byte_count",
+        "observation_count",
+        "omitted_observation_count",
+        "match_occurrence_count",
+    ] {
+        coverage.insert(name.to_owned(), canonical_value(required(fields, name)?)?);
+    }
+    coverage.insert("outcomes".to_owned(), Value::Array(outcomes));
+    coverage.insert("observations".to_owned(), Value::Array(observations));
+    Ok(ImportedSecretExposureAudit {
+        methodology,
+        coverage: Value::Object(coverage),
+    })
+}
+
+fn valid_secret_exposure_catalogue_revision(value: &str) -> bool {
+    value.strip_prefix('v').is_some_and(|digits| {
+        (1..=3).contains(&digits.len())
+            && digits.as_bytes()[0].is_ascii_digit()
+            && digits.as_bytes()[0] != b'0'
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn validate_secret_exposure_outcomes(
+    values: &[Value],
+    response_count: u64,
+    evaluated_response_count: u64,
+    not_evaluated_response_count: u64,
+) -> Result<Vec<Value>, ComparisonError> {
+    const OUTCOMES: [&str; 12] = [
+        "evaluated",
+        "method_not_get",
+        "status_not_200",
+        "incomplete_body",
+        "request_context_ineligible",
+        "content_coded",
+        "content_length_inconsistent",
+        "unsupported_media_type",
+        "invalid_utf8",
+        "response_byte_limit_exceeded",
+        "total_byte_limit_exceeded",
+        "detector_limit_exceeded",
+    ];
+    check(values.len() <= OUTCOMES.len())?;
+    let mut unique = BTreeMap::new();
+    let mut total = 0_u64;
+    for value in values {
+        let fields = object(value)?;
+        keys(fields, &["outcome", "count"], &[])?;
+        let outcome = token(fields, "outcome", &OUTCOMES)?;
+        let count = number(fields, "count", MAX_SECRET_EXPOSURE_RESPONSES)?;
+        check(count > 0)?;
+        check(unique.insert(outcome.to_owned(), count).is_none())?;
+        total = total
+            .checked_add(count)
+            .ok_or(ComparisonError::InvalidDocument)?;
+    }
+    check(total == response_count)?;
+    check(unique.get("evaluated").copied().unwrap_or(0) == evaluated_response_count)?;
+    let not_evaluated = unique
+        .iter()
+        .filter(|(outcome, _)| outcome.as_str() != "evaluated")
+        .try_fold(0_u64, |total, (_, count)| total.checked_add(*count))
+        .ok_or(ComparisonError::InvalidDocument)?;
+    check(not_evaluated == not_evaluated_response_count)?;
+    Ok(unique
+        .into_iter()
+        .map(|(outcome, count)| {
+            let mut fields = Map::new();
+            fields.insert("outcome".to_owned(), Value::String(outcome));
+            fields.insert("count".to_owned(), Value::from(count));
+            Value::Object(fields)
+        })
+        .collect())
+}
+
+fn validate_secret_exposure_observations(
+    values: &[Value],
+    observation_count: u64,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<(Vec<Value>, u64), ComparisonError> {
+    check(values.len() as u64 == observation_count)?;
+    let secret_items = items
+        .iter()
+        .filter(|(_, item)| is_secret_exposure_capability(&item.capability_id))
+        .collect::<Vec<_>>();
+    check(secret_items.len() == values.len())?;
+
+    let mut observations = Vec::with_capacity(values.len());
+    let mut unique = BTreeSet::new();
+    let mut unique_evidence_references = BTreeSet::new();
+    let mut matched_items = BTreeSet::new();
+    let mut occurrence_total = 0_u64;
+    for value in values {
+        let fields = object(value)?;
+        keys(
+            fields,
+            &[
+                "detector_class",
+                "capability_id",
+                "occurrence_count",
+                "evidence_references",
+            ],
+            &[],
+        )?;
+        let detector_class = string(fields, "detector_class")?;
+        let capability_id = string(fields, "capability_id")?;
+        check(SECRET_EXPOSURE_CAPABILITIES.contains(&(detector_class, capability_id)))?;
+        let occurrence_count = number(
+            fields,
+            "occurrence_count",
+            MAX_SECRET_EXPOSURE_OCCURRENCES_PER_RESPONSE,
+        )?;
+        check(occurrence_count > 0)?;
+        occurrence_total = occurrence_total
+            .checked_add(occurrence_count)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        let references = array(fields, "evidence_references")?;
+        check(references.len() == 1)?;
+        let evidence_reference = references[0]
+            .as_str()
+            .ok_or(ComparisonError::InvalidDocument)?;
+        reference(evidence_reference, "evidence")?;
+        check(unique_evidence_references.insert(evidence_reference.to_owned()))?;
+        check(unique.insert((
+            detector_class.to_owned(),
+            capability_id.to_owned(),
+            occurrence_count,
+            evidence_reference.to_owned(),
+        )))?;
+
+        let matching = secret_items
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, item))| {
+                item.capability_id == capability_id
+                    && item.projection.claim_basis == "observation"
+                    && item.observation_evidence_references.len() == 1
+                    && item
+                        .observation_evidence_references
+                        .contains(evidence_reference)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        check(matching.len() == 1 && matched_items.insert(matching[0]))?;
+        let item_fingerprint = secret_items[matching[0]].0;
+
+        let mut normalized = Map::new();
+        normalized.insert(
+            "item_fingerprint".to_owned(),
+            Value::String(item_fingerprint.to_string()),
+        );
+        normalized.insert(
+            "detector_class".to_owned(),
+            Value::String(detector_class.to_owned()),
+        );
+        normalized.insert(
+            "capability_id".to_owned(),
+            Value::String(capability_id.to_owned()),
+        );
+        normalized.insert("occurrence_count".to_owned(), Value::from(occurrence_count));
+        observations.push(Value::Object(normalized));
+    }
+    check(matched_items.len() == secret_items.len())?;
+    observations.sort_by_key(|left| left.to_string());
+    Ok((observations, occurrence_total))
 }
 
 pub(super) fn validate_supplied_session(

@@ -70,10 +70,27 @@ EXCLUDED_FEATURES = (
     "api-adapter",
     "legacy-scanner",
     "proxy-adapter",
+    "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
+SECRET_EXPOSURE_OPTION = "--secret-exposure-review"
+SECRET_EXPOSURE_PREREQUISITES = (
+    "--profile web-review",
+    "--secret-exposure-review",
+)
+SECRET_EXPOSURE_LIMITATION = (
+    "Reviews only existing anonymous committed complete status-200 uncoded textual GET "
+    "response bodies. It issues zero additional requests and uses a fixed bounded detector "
+    "catalogue. Reports contain no raw matched values or hashes. V1 fails closed when "
+    "GraphQL, OpenAPI, REST, resource authorization, "
+    "or WordPress discovery is selected because those response paths do not share its "
+    "value-free body-digest boundary. Credential validity, ownership, source authenticity, "
+    "provider acceptance, exploit execution, and impact "
+    "validation are not established or performed. Authenticated supplied-session response "
+    "bodies are not selected."
+)
 SUPPLIED_SESSION_OPTIONS = (
     "--session-policy",
     "--session-auth-env",
@@ -593,6 +610,9 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
         require(option in scan_text, f"scan help omits release-bundle option {option}")
     require("--ssrf-oast-review" not in scan_text,
             "scan help unexpectedly exposes ssrf-oast-review")
+    require(re.search(rf"(?m)^\s*{re.escape(SECRET_EXPOSURE_OPTION)}(?:\s|$)",
+                      scan_text) is None,
+            "scan help unexpectedly exposes non-bundled secret-exposure review")
     for option in SUPPLIED_SESSION_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
                 f"scan help unexpectedly exposes non-bundled option {option}")
@@ -603,6 +623,39 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
         require(re.search(rf"(?m)^\s+{command}(?:\s|$)", report_text) is not None,
                 f"report help omits {command}")
     return {"version": f"termivar {expected_version}", "help_surfaces": "matched"}
+
+
+def _validate_secret_exposure_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    secret_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.secret-exposure-review"
+    ]
+    require(len(secret_surfaces) == 1,
+            "packaged secret-exposure surface identity changed")
+    secret = secret_surfaces[0]
+    require(secret.get("label") == "Passive response secret-exposure review"
+            and secret.get("compile_feature") == "secret-exposure-review"
+            and secret.get("build_state") == expected_state
+            and secret.get("maturity") == "preview"
+            and secret.get("implementation_status") == "implemented"
+            and secret.get("group") == "optional"
+            and secret.get("kind") == "scan_option"
+            and secret.get("alias") is None
+            and secret.get("documentation")
+            == "docs/internals/passive-secret-exposure-review.md",
+            "packaged secret-exposure surface metadata changed")
+    secret_prerequisites = secret.get("prerequisites")
+    require(isinstance(secret_prerequisites, list)
+            and all(isinstance(value, str) for value in secret_prerequisites)
+            and tuple(secret_prerequisites) == SECRET_EXPOSURE_PREREQUISITES,
+            "packaged secret-exposure opt-in contract changed")
+    require(secret.get("limitation") == SECRET_EXPOSURE_LIMITATION,
+            "packaged secret-exposure limitation changed")
+    require(f"[{expected_state}] {secret['label']}" in text_value,
+            "secret-exposure capability text and JSON views disagree")
+    return secret
 
 
 def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> dict:
@@ -663,6 +716,7 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
                 "capabilities text and JSON views disagree")
     require("command.capabilities" in surface_keys,
             "capabilities command surface identity changed")
+    _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
     session_surfaces = [
         surface for surface in surfaces
         if surface.get("key") == "option.supplied-session-review"
@@ -745,6 +799,12 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
         "composition_marker": "release-bundle",
         "compiled_members": list(RELEASE_MEMBERS),
         "excluded_features": list(EXCLUDED_FEATURES),
+        "secret_exposure_preview": {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+        },
         "supplied_session_preview": {
             "build_state": "not_compiled",
             "maturity": "preview",

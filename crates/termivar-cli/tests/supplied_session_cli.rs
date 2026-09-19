@@ -19,6 +19,8 @@ use serde_json::Value;
 
 const AUTHORIZATION: &str = "Bearer SESSION-PROCESS-CANARY-0123456789ABCDEF";
 const RESPONSE_CANARY: &str = "PRIVATE-RESPONSE-CANARY-MUST-NOT-LEAK";
+#[cfg(feature = "secret-exposure-review")]
+const AUTHENTICATED_SECRET_SHAPE: &str = "sk_live_SessionOnlyA1b2C3d4E5f6";
 const BROAD_COOKIE: &str = "BROAD-COOKIE-PROCESS-CANARY-0123456789";
 const NARROW_COOKIE: &str = "NARROW-COOKIE-PROCESS-CANARY-9876543210";
 const ALTERNATE_BROAD_COOKIE: &str = "ALTERNATE-BROAD-COOKIE-PROCESS-CANARY";
@@ -354,6 +356,8 @@ fn assert_no_private_values(bytes: &[u8]) {
         ALTERNATE_BROAD_COOKIE,
         ALTERNATE_NARROW_COOKIE,
         RESPONSE_CANARY,
+        #[cfg(feature = "secret-exposure-review")]
+        AUTHENTICATED_SECRET_SHAPE,
         "/app/private",
         "/app/alice-private",
         "/app/bob-private",
@@ -362,6 +366,89 @@ fn assert_no_private_values(bytes: &[u8]) {
     ] {
         assert!(!rendered.contains(private), "output retained private input");
     }
+}
+
+#[cfg(feature = "secret-exposure-review")]
+#[test]
+fn passive_secret_review_does_not_select_authenticated_session_bodies() {
+    let server = serve(
+        |_, target, authorization, cookie| match (target, authorization, cookie) {
+            ("/app/health", AuthorizationClass::Expected, CookieClass::Absent) => {
+                json_ok(r#"{"authenticated":true}"#)
+            },
+            ("/app/private", AuthorizationClass::Expected, CookieClass::Absent) => json_ok(
+                &format!(r#"{{"synthetic_secret":"{AUTHENTICATED_SECRET_SHAPE}"}}"#),
+            ),
+            ("/app/private-2", AuthorizationClass::Expected, CookieClass::Absent) => {
+                json_ok(r#"{"record":"ordinary protected fixture"}"#)
+            },
+            (target, AuthorizationClass::Absent, CookieClass::Absent)
+                if target.starts_with("/app/") =>
+            {
+                html_ok("<main>ordinary anonymous fixture without secret shapes</main>")
+            },
+            _ => response(
+                "401 Unauthorized",
+                "application/json",
+                r#"{"error":true}"#,
+                "",
+            ),
+        },
+    );
+    let parent = tempfile::tempdir().expect("create private combined-feature fixture");
+    let (policy_path, authorization_path) = write_inputs(parent.path());
+    let destination = parent.path().join("combined-feature-bundle");
+    let output = termivar()
+        .args([
+            "scan",
+            &server.application_url,
+            "--profile",
+            "web-review",
+            "--secret-exposure-review",
+        ])
+        .arg("--session-policy")
+        .arg(&policy_path)
+        .arg("--session-auth-file")
+        .arg(&authorization_path)
+        .arg("--report-dir")
+        .arg(&destination)
+        .output()
+        .expect("run combined supplied-session and passive-secret assessment");
+    assert!(output.status.success(), "combined-feature process failed");
+    assert_no_private_values(&output.stdout);
+    assert_no_private_values(&output.stderr);
+
+    let (assessment_bytes, assessment) = read_assessment(&destination);
+    assert_no_private_values(&assessment_bytes);
+    assert_bundle_has_no_private_values(&destination);
+
+    let session = &assessment["supplied_session"];
+    assert_eq!(session["outcome"], "complete");
+    assert_eq!(session["committed_resource_count"], 2);
+    let secret_review = &assessment["secret_exposure_review"];
+    assert_eq!(secret_review["selected"], true);
+    assert_eq!(secret_review["context"], "anonymous-ordinary-get");
+    assert_eq!(secret_review["additional_request_count"], 0);
+    assert_eq!(secret_review["response_count"], 1);
+    assert_eq!(secret_review["evaluated_response_count"], 1);
+    assert_eq!(secret_review["not_evaluated_response_count"], 0);
+    assert_eq!(secret_review["observation_count"], 0);
+    assert_eq!(secret_review["match_occurrence_count"], 0);
+    assert_eq!(secret_review["observations"], serde_json::json!([]));
+    assert!(assessment["items"]
+        .as_array()
+        .expect("assessment items")
+        .iter()
+        .all(|item| !item["capability_id"]
+            .as_str()
+            .is_some_and(|capability| capability.starts_with("exposure.response-"))));
+
+    let requests = server.requests.lock().expect("request trace lock");
+    assert!(requests.iter().any(|request| {
+        request.target == "/app/private"
+            && request.authorization == AuthorizationClass::Expected
+            && request.cookie == CookieClass::Absent
+    }));
 }
 
 fn assert_bundle_has_no_private_values(destination: &Path) {

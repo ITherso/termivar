@@ -378,6 +378,25 @@ fn scan_resource_authorization_flags_conflict(
     }
 }
 
+/// Rejects passive secret-exposure review outside its explicit web-review
+/// contract. This runs before output reservation or runtime construction.
+#[cfg(feature = "secret-exposure-review")]
+fn scan_secret_exposure_review_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+    unprotected_response_source_selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--secret-exposure-review` requires `--profile web-review`")
+    } else if selected && unprotected_response_source_selected {
+        Some(
+            "`--secret-exposure-review` cannot be combined with review options whose response-body digest privacy contract is not supported",
+        )
+    } else {
+        None
+    }
+}
+
 fn is_exact_origin_root(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https")
         && target.username().is_empty()
@@ -492,6 +511,12 @@ struct ScanArgs {
     #[cfg(feature = "rest-review")]
     #[arg(long, requires_all = ["profile", "openapi_review"])]
     rest_review: bool,
+    /// Inspect eligible response bodies already committed by the anonymous
+    /// web assessment for bounded secret-shaped exposure evidence. This adds
+    /// no target requests and is compiled only with `secret-exposure-review`.
+    #[cfg(feature = "secret-exposure-review")]
+    #[arg(long, requires = "profile")]
+    secret_exposure_review: bool,
     /// Interpret bounded WordPress component evidence already present in the
     /// assessment. This option adds no target requests and is compiled only
     /// with `wordpress-review`.
@@ -1035,6 +1060,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         openapi_review,
         #[cfg(feature = "rest-review")]
         rest_review,
+        #[cfg(feature = "secret-exposure-review")]
+        secret_exposure_review,
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
         #[cfg(feature = "wordpress-review")]
@@ -1110,6 +1137,20 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     let openapi_review = false;
     #[cfg(not(feature = "rest-review"))]
     let rest_review = false;
+    #[cfg(feature = "secret-exposure-review")]
+    #[allow(unused_mut)]
+    let secret_exposure_unprotected_response_source_selected = {
+        let mut selected = graphql_review || openapi_review || rest_review;
+        #[cfg(feature = "authorization-review")]
+        {
+            selected |= authorization_review_policy.is_some();
+        }
+        #[cfg(feature = "wordpress-review")]
+        {
+            selected |= wordpress_discovery;
+        }
+        selected
+    };
     if scan_flags_conflict(format, explain) {
         use clap::CommandFactory;
         Cli::command()
@@ -1120,6 +1161,17 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .exit();
     }
     if let Some(message) = scan_rest_review_flags_conflict(profile, openapi_review, rest_review) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "secret-exposure-review")]
+    if let Some(message) = scan_secret_exposure_review_flags_conflict(
+        profile,
+        secret_exposure_review,
+        secret_exposure_unprotected_response_source_selected,
+    ) {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -1454,6 +1506,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 graphql_review,
                 openapi_review,
                 rest_review,
+                #[cfg(feature = "secret-exposure-review")]
+                secret_exposure_review,
                 #[cfg(feature = "authorization-review")]
                 resource_authorization_review,
                 #[cfg(feature = "supplied-session-review")]
@@ -1977,6 +2031,8 @@ mod tests {
         assert!(!args.openapi_review);
         #[cfg(feature = "rest-review")]
         assert!(!args.rest_review);
+        #[cfg(feature = "secret-exposure-review")]
+        assert!(!args.secret_exposure_review);
         #[cfg(feature = "wordpress-review")]
         {
             assert!(!args.wordpress_review);
@@ -2051,6 +2107,8 @@ mod tests {
         assert!(!args.openapi_review);
         #[cfg(feature = "rest-review")]
         assert!(!args.rest_review);
+        #[cfg(feature = "secret-exposure-review")]
+        assert!(!args.secret_exposure_review);
         #[cfg(feature = "wordpress-review")]
         {
             assert!(!args.wordpress_review);
@@ -2233,6 +2291,103 @@ mod tests {
             scan_profile_flags_conflict(None, false, false, false, false, false),
             None
         );
+    }
+
+    #[cfg(feature = "secret-exposure-review")]
+    #[test]
+    fn secret_exposure_review_is_explicit_web_review_only() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--secret-exposure-review"));
+
+        for command in ["scan", "decision-scan"] {
+            assert!(Cli::try_parse_from([
+                "termivar",
+                command,
+                "--secret-exposure-review",
+                "https://example.test/",
+            ])
+            .is_err());
+
+            let baseline = Cli::try_parse_from([
+                "termivar",
+                command,
+                "--profile",
+                "baseline",
+                "--secret-exposure-review",
+                "https://example.test/",
+            ])
+            .expect("semantic profile validation runs before runtime construction");
+            let baseline = parsed_scan_args(&baseline);
+            assert!(baseline.secret_exposure_review);
+            assert_eq!(
+                scan_secret_exposure_review_flags_conflict(
+                    baseline.profile,
+                    baseline.secret_exposure_review,
+                    false,
+                ),
+                Some("`--secret-exposure-review` requires `--profile web-review`")
+            );
+
+            let review = Cli::try_parse_from([
+                "termivar",
+                command,
+                "--profile",
+                "web-review",
+                "--secret-exposure-review",
+                "https://example.test/",
+            ])
+            .unwrap();
+            let review = parsed_scan_args(&review);
+            assert!(review.secret_exposure_review);
+            assert_eq!(
+                scan_secret_exposure_review_flags_conflict(
+                    review.profile,
+                    review.secret_exposure_review,
+                    false,
+                ),
+                None
+            );
+            assert_eq!(
+                scan_secret_exposure_review_flags_conflict(
+                    review.profile,
+                    review.secret_exposure_review,
+                    true,
+                ),
+                Some(
+                    "`--secret-exposure-review` cannot be combined with review options whose response-body digest privacy contract is not supported"
+                )
+            );
+        }
+    }
+
+    #[cfg(not(feature = "secret-exposure-review"))]
+    #[test]
+    fn default_cli_does_not_expose_secret_exposure_review() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--secret-exposure-review"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--secret-exposure-review",
+            "https://example.test/",
+        ])
+        .is_err());
     }
 
     #[test]

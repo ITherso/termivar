@@ -2,8 +2,8 @@
 
 use super::super::{write_html_text, RenderBuffer, ReportError};
 use super::{
-    ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, SourceMetadata,
-    SuppliedSessionComparison, WordPressEntityChanges, WordPressFacetComparison,
+    ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, SecretExposureComparison,
+    SourceMetadata, SuppliedSessionComparison, WordPressEntityChanges, WordPressFacetComparison,
     WordPressReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -34,6 +34,9 @@ pub(super) fn render(
     output.push_str("</section><p class=\"muted\">Scope assurance: operator-declared. Coverage equivalence: not established. Source authenticity: not established by parsing.</p>")?;
     if let Some(session) = &document.supplied_session_comparison {
         supplied_session(&mut output, session)?;
+    }
+    if let Some(comparison) = &document.secret_exposure_comparison {
+        secret_exposure(&mut output, comparison)?;
     }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         wordpress_review(&mut output, wordpress)?;
@@ -122,6 +125,45 @@ fn supplied_session(
         wordpress_facet(output, label, facet)?;
     }
     output.push_str("<details><summary>Interpretation limits</summary><ul>")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn secret_exposure(
+    output: &mut RenderBuffer,
+    comparison: &SecretExposureComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"secret-exposure-differences\"><h2 id=\"secret-exposure-differences\">Passive secret-exposure differences</h2><p class=\"muted\">Validated, value-free audit projections are compared separately from target observations. This display does not validate a secret, authenticate a source, contact a provider, or establish remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Coverage", comparison.coverage.status.as_str()),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str(
+            "</span>. A missing or reduced audit is not secret absence or remediation.</p>",
+        )?;
+    }
+    wordpress_facet(
+        output,
+        "Secret-exposure methodology",
+        &comparison.methodology,
+    )?;
+    wordpress_facet(output, "Secret-exposure coverage", &comparison.coverage)?;
+    output.push_str("<details><summary>Secret-exposure interpretation limits</summary><ul>")?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;
         write_html_text(output, limit)?;

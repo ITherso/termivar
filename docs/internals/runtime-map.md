@@ -67,6 +67,46 @@ and value-sensitive `Resources` may produce
 cookie, redirect, retry, or write method is used, and the selected operation is
 not chained into SQL, SSTI, XSS, authorization, SSRF, or upload review.
 
+## Passive response secret-exposure review
+
+The non-default `secret-exposure-review` scanner/CLI feature adds no work by
+itself and remains outside `release-bundle`. Explicit
+`--profile web-review --secret-exposure-review` attaches one shared,
+assessment-owned observer to the ordinary anonymous response transaction. Its
+value-free records become report authority only after the validated commit. It
+does not add a request, widen the generic subject plan, promote `HEAD` to
+`GET`, start a provider client, or create a second assessment. Every observed
+body, including an evaluated zero-match, uses value-free lineage instead of a
+public whole-body digest and is not projected into generic or WordPress body-
+derived evidence; the audit counts that privacy suppression. Native active-review control/candidate bodies
+are never detector inputs. While this option is selected, their ordinary public
+body digest is replaced with value-free, receipt-bound lineage; the native
+semantic evidence and request plan remain unchanged.
+
+Admission requires one complete status-200 ordinary `GET` with no explicit
+request headers, no redirect, no `Content-Encoding`, consistent retained byte
+and `Content-Length` evidence, a supported textual media type, valid UTF-8, and
+a successful evidence commit. The fixed V1 catalogue recognizes only
+structurally plausible private-key blocks, nearby paired AWS access-key-ID and
+secret-access-key assignments, Stripe live secret/restricted-key shapes, and
+explicit Bearer authorization assignments. It retains detector classes and
+bounded counts only—never matched values, fragments, reversible encodings, or
+public secret hashes. Supplied-session response bodies are not selected.
+
+The observer accepts at most 128 KiB per response and reserves at most 4 MiB of
+admitted detector-work bytes across an assessment before UTF-8 and detector
+parsing. Invalid UTF-8 and detector-limit refusals still consume that private
+allowance; the public `interpreted_byte_count` counts only successfully
+evaluated bodies. It also allows at most 1,024 response outcomes, 64 occurrences
+per response, and 32 retained subject/class observations. The existing smaller
+assessment bounds still win. Committed response outcomes and retained/omitted
+counts feed the same final item set and the optional strict
+`security.passive-secret-exposure-audit/v1`. A retained detector class may
+produce only an `Informational` / `KnowledgeOnly` item. Source authentication,
+secret validity, provider acceptance, exploit execution, and impact validation
+are not established or performed. See
+[Passive response secret-exposure review](passive-secret-exposure-review.md).
+
 ## WordPress evidence review
 
 The non-default `wordpress-review` scanner/CLI feature adds no work by itself.
@@ -268,6 +308,7 @@ termivar scan <target> --profile web-review
       -> bounded semantic extraction
       -> defense observation and shadow planning
       -> passive header/cookie assessment projection
+      -> optional value-free secret-shaped observation inside the response transaction
       -> root-scoped matched CORS and optional redirect review
       -> one bounded root-or-discovered parser-driven reflection-context pair
       -> one DOM reflection parse + bounded attribute/JavaScript source-anchor passes
@@ -390,6 +431,21 @@ active verification. A surface item requires stable successful JSON
 parameter, credential, cookie, or downstream vulnerability-family action is
 created. See [REST read-only review](rest-readonly-review.md).
 
+The non-default `secret-exposure-review` scanner/CLI feature requires explicit
+`--secret-exposure-review --profile web-review`. V1 rejects combinations with
+GraphQL, OpenAPI, REST, resource authorization, or WordPress
+discovery before target or output work because those separate response paths do
+not yet share its value-free body-digest boundary. One shared observer stages
+value-free facts inside the ordinary anonymous GET response transaction; only
+the committed ledger may consume them. It adds zero requests or active
+verifications. Admission fails closed for redirects,
+explicit request headers, credentials, content coding, inconsistent lengths,
+unsupported media types, invalid UTF-8, truncation, failure, or configured
+limits. The fixed catalogue projects only value-free `Informational` /
+`KnowledgeOnly` observations; it does not validate a secret or provider,
+authenticate the source, or establish exploitability or impact. See
+[Passive response secret-exposure review](passive-secret-exposure-review.md).
+
 At most one deterministic query name across the assessment receives SQL
 structural review. Two independent matched quote-balance pairs must reproduce
 both a status-class and normalized body-structure change. Error text and
@@ -488,6 +544,10 @@ Composition is selection-specific:
   anonymous `web-review` child. It selects one exact-origin endpoint at most,
   executes the fixed three-request control/candidate/replay protocol, and can
   produce only informational knowledge observations.
+- **Passive response secret-exposure review** (`secret-exposure-review`, opt-in)
+  is one shared observer inside the ordinary anonymous GET response transaction.
+  Only committed value-free records may project bounded informational
+  observations from the fixed detector catalogue, and it adds no request.
 - **Resource authorization review** (`authorization-review`, opt-in) is one
   native action in the existing `web-review` runtime. It compares one exact
   selected JSON resource across primary/peer candidate and replay views, using
@@ -643,6 +703,7 @@ The following matrix separates build availability from actual execution:
 | normalization-resilience review | scanner and CLI opt-in (`normalization-resilience`) plus explicit runtime flag | one eligible `web-review` parent may produce one transformed candidate/replay child under the shared broker | no | Preview; max one transform/depth one, three child requests/one active verification, `NeedsReview` / `KnowledgeOnly` only |
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
 | REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
+| Passive response secret-exposure review | scanner and CLI opt-in (`secret-exposure-review`) plus explicit `--profile web-review --secret-exposure-review` | one shared observer evaluates eligible complete ordinary anonymous GET bodies inside the response transaction; only validated committed records reach the audit, and it adds no request, active verification, provider call, or subject | no | Preview, development-only; 128 KiB/response and 4 MiB/assessment admitted detector-work ceilings, 1,024 outcome/64 occurrence/32 retained-observation ceilings, fixed value-free catalogue, `Informational` / `KnowledgeOnly` only, supplied-session bodies excluded, and outside `release-bundle` |
 | WordPress evidence review and metadata discovery | scanner and CLI opt-in (`wordpress-review`), compiled by the current untagged alpha.3 `release-bundle`, plus optional bounded local context/catalogue; the session consumer additionally requires `supplied-session-review` and `--wordpress-supplied-session` | review-only interprets complete exact-root HTML and supplied declarations with zero added requests; explicit `--wordpress-discovery` may issue at most twelve anonymous, bodyless, same-origin metadata GET attempts through the same broker/budget; optional observed page scope reuses up to three eligible committed anonymous secondary-page responses without fetching pages; the session consumer may nominate public metadata only from health-qualified committed resource HTML and never forwards credentials or selects authenticated-page fingerprints | no | Preview, development-only; absent from the default build and published alpha.2 archives; zero active verifications, at most one root-surface item plus one distinct metadata-source response-outcome item; advisory decisions are audit-only and no exploit/impact validation occurs |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
@@ -669,6 +730,15 @@ The default scanner crate feature closure is exactly `core` plus `scanning`.
 The normal CLI dependency additionally enables `reporting` for the explicit
 completed `web-review` path; this does not alter no-profile execution or its
 wire contract.
+The stock untagged alpha.3 `release-bundle` capability inventory now reports
+14 known feature identities: the marker plus seven compiled members and six
+excluded features. The eight compiled identities remain `release-bundle`,
+`artifact-adapter`, `normalization-resilience`, `graphql-review`,
+`openapi-review`, `rest-review`, `authorization-review`, and
+`wordpress-review`. The six excluded identities are `api-adapter`,
+`legacy-scanner`, `proxy-adapter`, `secret-exposure-review`,
+`ssrf-oast-review`, and `supplied-session-review`. `default` remains empty;
+this inventory is build truth, not runtime activation or publication status.
 `LuaEngineConfig` is a small shared support type reachable through either
 `platform-models` or `lua`; the broader `config` module remains platform-only.
 The raw `lua` closure is exactly `core`, optional `mlua`, and optional Tokio;

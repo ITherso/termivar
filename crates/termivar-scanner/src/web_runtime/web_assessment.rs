@@ -57,6 +57,12 @@ use super::rest_runtime::{
     CommittedRestReview, RestRuntimeOutcome, RestRuntimeResult, WebAssessmentRestAudit,
     MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
 };
+#[cfg(feature = "secret-exposure-review")]
+use super::secret_exposure::{
+    is_secret_exposure_response_lineage, secret_exposure_response_lineage_id,
+    secret_exposure_response_parent_ids, CommittedSecretExposureLedger, SecretExposureCollector,
+    WebAssessmentSecretExposureAudit, RESPONSE_BODY_LINEAGE, SECRET_EXPOSURE_NAMESPACE,
+};
 #[cfg(feature = "ssrf-oast-review")]
 use super::ssrf_oast_runtime::{
     CommittedSsrfOastReview, SsrfOastReviewConfig, SsrfOastRuntimeResult,
@@ -117,7 +123,10 @@ use crate::supplied_session_review::{SuppliedSessionCredential, SuppliedSessionP
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::WordPressReviewInputs;
 use crate::{
-    http_evidence::{CompleteHttpResponseObservation, CompleteHttpResponseObserver},
+    http_evidence::{
+        CompleteHttpResponseObservation, CompleteHttpResponseObserver,
+        ResponseBodyDigestDisposition,
+    },
     web_actions::NativeWebReviewActionKind,
     AttackPlan, DecisionEvidenceReceipt, DecisionExecutionFailureReceipt, DecisionExecutionStage,
     DecisionLoopCommand, DecisionStopReason, DefensePosture, DefenseProduct, FingerprintConfidence,
@@ -1384,6 +1393,8 @@ pub struct WebAssessmentRunReport {
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WebAssessmentWordPressAudit>,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
     assessment_items: AssessmentItemSet,
     assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
@@ -1419,6 +1430,8 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug.field("ssrf_oast_review", &self.ssrf_oast_review);
         #[cfg(feature = "wordpress-review")]
         debug.field("wordpress_review", &self.wordpress_review);
+        #[cfg(feature = "secret-exposure-review")]
+        debug.field("secret_exposure_review", &self.secret_exposure_review);
         debug
             .field("assessment_items", &self.assessment_items)
             .field(
@@ -1498,6 +1511,12 @@ impl WebAssessmentRunReport {
     pub const fn wordpress_review_audit(&self) -> Option<&WebAssessmentWordPressAudit> {
         self.wordpress_review.as_ref()
     }
+    /// Returns the optional value-free audit of already acquired anonymous
+    /// ordinary response bodies.
+    #[cfg(feature = "secret-exposure-review")]
+    pub const fn secret_exposure_review_audit(&self) -> Option<&WebAssessmentSecretExposureAudit> {
+        self.secret_exposure_review.as_ref()
+    }
     /// Returns claim-safe items derived only from committed assessment truth.
     pub fn assessment_items(&self) -> &[AssessmentItem] {
         self.assessment_items.items()
@@ -1563,6 +1582,8 @@ impl WebAssessmentRunReport {
             self.ssrf_oast_review,
             #[cfg(feature = "wordpress-review")]
             self.wordpress_review,
+            #[cfg(feature = "secret-exposure-review")]
+            self.secret_exposure_review,
         )
     }
 }
@@ -1714,6 +1735,11 @@ pub enum WebAssessmentRuntimeError {
     #[cfg(feature = "supplied-session-review")]
     #[error("supplied-session review could not be composed safely")]
     SuppliedSessionComposition,
+    #[cfg(feature = "secret-exposure-review")]
+    #[error(
+        "passive secret-exposure review conflicts with a response source that lacks its value-free body-digest boundary"
+    )]
+    SecretExposureResponseSourceConflict,
     #[cfg(feature = "rest-review")]
     #[error("REST review requires OpenAPI review in the same assessment")]
     RestReviewRequiresOpenApiReview,
@@ -1813,6 +1839,9 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             Self::SuppliedSessionComposition => {
                 formatter.write_str("WebAssessmentRuntimeError::SuppliedSessionComposition")
             },
+            #[cfg(feature = "secret-exposure-review")]
+            Self::SecretExposureResponseSourceConflict => formatter
+                .write_str("WebAssessmentRuntimeError::SecretExposureResponseSourceConflict"),
             #[cfg(feature = "rest-review")]
             Self::RestReviewRequiresOpenApiReview => {
                 formatter.write_str("WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview")
@@ -1936,6 +1965,8 @@ pub struct WebAssessmentRuntimeBuilder {
     wordpress_discovery: bool,
     #[cfg(feature = "wordpress-review")]
     wordpress_page_scope: Option<super::wordpress_runtime::WordPressPageScope>,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure_review: bool,
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     wordpress_supplied_session: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
@@ -1970,6 +2001,8 @@ impl WebAssessmentRuntimeBuilder {
             wordpress_discovery: false,
             #[cfg(feature = "wordpress-review")]
             wordpress_page_scope: None,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_review: false,
             #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
             wordpress_supplied_session: false,
             root_authorization_context: None,
@@ -1999,6 +2032,14 @@ impl WebAssessmentRuntimeBuilder {
     /// every review leg is composed through the assessment's shared broker.
     pub fn enable_low_risk_differential_review(mut self) -> Self {
         self.low_risk_differential_review = true;
+        self
+    }
+    /// Enables bounded, value-free inspection of already acquired anonymous
+    /// ordinary GET response bodies. This option schedules no request of its
+    /// own and does not widen the assessment target or action plan.
+    #[cfg(feature = "secret-exposure-review")]
+    pub fn enable_secret_exposure_review(mut self) -> Self {
+        self.secret_exposure_review = true;
         self
     }
     /// Explicitly enables the bounded normalization-resilience child review.
@@ -2127,7 +2168,26 @@ impl WebAssessmentRuntimeBuilder {
         self.root_authorization_context = Some(context);
         self
     }
+    #[cfg(feature = "secret-exposure-review")]
+    fn secret_exposure_response_source_conflict(&self) -> bool {
+        let conflict = false;
+        #[cfg(feature = "graphql-review")]
+        let conflict = conflict || self.graphql_review;
+        #[cfg(feature = "openapi-review")]
+        let conflict = conflict || self.openapi_review;
+        #[cfg(feature = "rest-review")]
+        let conflict = conflict || self.rest_review;
+        #[cfg(feature = "authorization-review")]
+        let conflict = conflict || self.resource_authorization_review.is_some();
+        #[cfg(feature = "wordpress-review")]
+        let conflict = conflict || self.wordpress_discovery;
+        self.secret_exposure_review && conflict
+    }
     pub fn build(self) -> Result<WebAssessmentRuntime, WebAssessmentRuntimeError> {
+        #[cfg(feature = "secret-exposure-review")]
+        if self.secret_exposure_response_source_conflict() {
+            return Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict);
+        }
         #[cfg(feature = "ssrf-oast-review")]
         let ssrf_oast_review = self.ssrf_oast_review.map(|(policy, administrator)| {
             let selection = select_observed_query_candidate(
@@ -2392,17 +2452,22 @@ impl WebAssessmentRuntimeBuilder {
                 select_ssti_review_query_parameter(&root_subject.query_parameter_names);
             let reflection_query_parameter =
                 select_reflection_review_query_parameter(&root_subject.query_parameter_names);
-            let observer = Arc::new(
-                AssessmentReviewObserverSet::new_with_sql(
-                    root.url.clone(),
-                    seeds.clone(),
-                    redirect_query_parameter.as_deref(),
-                    reflection_query_parameter.as_deref(),
-                    sql_query_parameter.as_deref(),
-                    ssti_query_parameter.as_deref(),
-                )
-                .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
-            );
+            let observer = AssessmentReviewObserverSet::new_with_sql(
+                root.url.clone(),
+                seeds.clone(),
+                redirect_query_parameter.as_deref(),
+                reflection_query_parameter.as_deref(),
+                sql_query_parameter.as_deref(),
+                ssti_query_parameter.as_deref(),
+            )
+            .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+            #[cfg(feature = "secret-exposure-review")]
+            let observer = if self.secret_exposure_review {
+                observer.with_secret_exposure_privacy_guard()
+            } else {
+                observer
+            };
+            let observer = Arc::new(observer);
             let ledger = CommittedAssessmentReviewLedger::new_with_sql(
                 root.url.clone(),
                 seeds.clone(),
@@ -2472,6 +2537,12 @@ impl WebAssessmentRuntimeBuilder {
             supplied_session_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_collector: self
+                .secret_exposure_review
+                .then(SecretExposureCollector::default),
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_ledger: CommittedSecretExposureLedger::default(),
             #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
             wordpress_supplied_session,
             native_review,
@@ -2546,6 +2617,10 @@ pub struct WebAssessmentRuntime {
     supplied_session_review: Option<SuppliedSessionRuntimeConfig>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewBinding>,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure_collector: Option<SecretExposureCollector>,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure_ledger: CommittedSecretExposureLedger,
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     wordpress_supplied_session: bool,
     native_review: Option<AssessmentNativeReviewRuntime>,
@@ -2854,17 +2929,22 @@ impl WebAssessmentRuntime {
                         select_sql_review_query_parameter(&subject.query_parameter_names)
                     {
                         let seeds = NativeWebReviewSeeds::from_authorized_origin(&subject.url)?;
-                        let observer = Arc::new(
-                            AssessmentReviewObserverSet::new_with_sql(
-                                subject.url.clone(),
-                                seeds.clone(),
-                                None,
-                                Some(&parameter),
-                                Some(&parameter),
-                                Some(&parameter),
-                            )
-                            .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
-                        );
+                        let observer = AssessmentReviewObserverSet::new_with_sql(
+                            subject.url.clone(),
+                            seeds.clone(),
+                            None,
+                            Some(&parameter),
+                            Some(&parameter),
+                            Some(&parameter),
+                        )
+                        .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                        #[cfg(feature = "secret-exposure-review")]
+                        let observer = if self.secret_exposure_collector.is_some() {
+                            observer.with_secret_exposure_privacy_guard()
+                        } else {
+                            observer
+                        };
+                        let observer = Arc::new(observer);
                         let ledger = CommittedAssessmentReviewLedger::new_with_sql(
                             subject.url.clone(),
                             seeds.clone(),
@@ -2947,6 +3027,13 @@ impl WebAssessmentRuntime {
                 } else {
                     subject_observer
                 };
+                #[cfg(feature = "secret-exposure-review")]
+                let subject_observer =
+                    if let Some(collector) = self.secret_exposure_collector.as_ref() {
+                        subject_observer.with_secret_exposure(collector.clone())
+                    } else {
+                        subject_observer
+                    };
                 let subject_observer: Arc<dyn CompleteHttpResponseObserver> =
                     Arc::new(subject_observer);
                 let builder = StandardWebDecisionRuntime::builder(subject.url.clone())
@@ -3395,16 +3482,21 @@ impl WebAssessmentRuntime {
                     pending_xss_review
                 {
                     let xss_action = selection.action_kind();
-                    let observer = Arc::new(
-                        AssessmentReviewObserverSet::new_xss_with_source_evidence(
-                            target.clone(),
-                            seeds.clone(),
-                            &parameter,
-                            selection.clone(),
-                            source_evidence_ids.clone(),
-                        )
-                        .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
-                    );
+                    let observer = AssessmentReviewObserverSet::new_xss_with_source_evidence(
+                        target.clone(),
+                        seeds.clone(),
+                        &parameter,
+                        selection.clone(),
+                        source_evidence_ids.clone(),
+                    )
+                    .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                    #[cfg(feature = "secret-exposure-review")]
+                    let observer = if self.secret_exposure_collector.is_some() {
+                        observer.with_secret_exposure_privacy_guard()
+                    } else {
+                        observer
+                    };
+                    let observer = Arc::new(observer);
                     let ledger = CommittedAssessmentReviewLedger::new_xss_with_source_evidence(
                         target.clone(),
                         seeds.clone(),
@@ -3516,15 +3608,20 @@ impl WebAssessmentRuntime {
                 }
                 #[cfg(feature = "normalization-resilience")]
                 if let Some((target, seeds, parent, selection)) = pending_normalization_review {
-                    let observer = Arc::new(
-                        AssessmentReviewObserverSet::new_normalization(
-                            target.clone(),
-                            seeds.clone(),
-                            selection.clone(),
-                            &parent,
-                        )
-                        .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
-                    );
+                    let observer = AssessmentReviewObserverSet::new_normalization(
+                        target.clone(),
+                        seeds.clone(),
+                        selection.clone(),
+                        &parent,
+                    )
+                    .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+                    #[cfg(feature = "secret-exposure-review")]
+                    let observer = if self.secret_exposure_collector.is_some() {
+                        observer.with_secret_exposure_privacy_guard()
+                    } else {
+                        observer
+                    };
+                    let observer = Arc::new(observer);
                     let ledger = CommittedAssessmentReviewLedger::new_normalization(
                         target.clone(),
                         seeds.clone(),
@@ -4412,6 +4509,11 @@ impl WebAssessmentRuntime {
                 ssrf_oast: self.committed_ssrf_oast_review.as_ref(),
                 #[cfg(feature = "wordpress-review")]
                 wordpress: self.committed_wordpress_review.as_ref(),
+                #[cfg(feature = "secret-exposure-review")]
+                secret_exposure: self
+                    .secret_exposure_collector
+                    .as_ref()
+                    .map(|_| &self.secret_exposure_ledger),
             },
             self.authority.knowledge(),
             &self.root,
@@ -4493,6 +4595,11 @@ impl WebAssessmentRuntime {
                 .committed_wordpress_review
                 .as_ref()
                 .map(|review| review.audit().clone()),
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_review: self
+                .secret_exposure_collector
+                .as_ref()
+                .map(|_| self.secret_exposure_ledger.audit()),
             assessment_items,
             assessment_projection_incompleteness,
             completion,
@@ -4931,6 +5038,14 @@ impl WebAssessmentRuntime {
             self.authority.knowledge(),
             expected_subject,
         )?;
+        #[cfg(feature = "secret-exposure-review")]
+        if self.secret_exposure_collector.is_some() {
+            self.secret_exposure_ledger.ingest_receipt(
+                receipt,
+                self.authority.knowledge(),
+                expected_subject,
+            )?;
+        }
         if observation.is_some_and(|observation| observation.projection_incomplete()) {
             reasons.insert(WebAssessmentIncompleteReason::PassiveResponseProjectionLimit);
         }
@@ -5237,6 +5352,8 @@ pub(crate) struct AssessmentDiscoveryObserver {
     wordpress_page_candidate: Option<(WordPressPageCandidate, FrozenWordPressPageLayout)>,
     #[cfg(feature = "wordpress-review")]
     wordpress_asset_fingerprints: Option<WordPressAssetFingerprintCollector>,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure: Option<SecretExposureCollector>,
 }
 
 impl AssessmentDiscoveryObserver {
@@ -5271,7 +5388,15 @@ impl AssessmentDiscoveryObserver {
             wordpress_page_candidate: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_asset_fingerprints: None,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure: None,
         }
+    }
+
+    #[cfg(feature = "secret-exposure-review")]
+    fn with_secret_exposure(mut self, collector: SecretExposureCollector) -> Self {
+        self.secret_exposure = Some(collector);
+        self
     }
 
     #[cfg(feature = "wordpress-review")]
@@ -5588,7 +5713,7 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
     fn observe(
         &self,
         observation: CompleteHttpResponseObservation<'_>,
-    ) -> Result<Vec<Evidence>, HttpEvidenceError> {
+    ) -> Result<(Vec<Evidence>, ResponseBodyDigestDisposition), HttpEvidenceError> {
         if observation.case_id() != BOOTSTRAP_CASE_ID
             || observation.action_id() != BOOTSTRAP_ACTION_ID
             || observation.hypothesis_id() != BOOTSTRAP_HYPOTHESIS_ID
@@ -5605,7 +5730,13 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                 .require_permitted_target(observation.requested_url())
                 .is_err()
         {
-            return Ok(Vec::new());
+            #[cfg(feature = "secret-exposure-review")]
+            if self.secret_exposure.is_some() {
+                return Err(HttpEvidenceError::AssessmentObserverInvariant {
+                    invariant: "secret-exposure observer routing",
+                });
+            }
+            return Ok((Vec::new(), ResponseBodyDigestDisposition::Retain));
         }
         // Passive metadata is value-free and body-independent. Emit it before
         // every HEAD, incomplete-body, non-HTML, or discovery eligibility exit
@@ -5620,6 +5751,32 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                 parents: passive_projection_parents(&observation)?,
             },
         )?;
+        #[cfg(feature = "secret-exposure-review")]
+        let mut secret_exposure_lineage = None;
+        #[cfg(feature = "secret-exposure-review")]
+        if let Some(secret_exposure) = self.secret_exposure.as_ref() {
+            let secret_exposure_parents = secret_exposure_projection_parents(&observation)?;
+            let projected =
+                secret_exposure.observe(&observation, secret_exposure_parents.clone())?;
+            secret_exposure_lineage = secret_exposure_response_lineage_id(
+                &projected,
+                observation.subject(),
+                observation.case_id(),
+                &secret_exposure_parents,
+            );
+            let lineage_record_present = projected.iter().any(|item| {
+                item.predicate().namespace() == SECRET_EXPOSURE_NAMESPACE
+                    && item.predicate().name() == RESPONSE_BODY_LINEAGE
+            });
+            if lineage_record_present != secret_exposure_lineage.is_some() {
+                return Err(HttpEvidenceError::AssessmentObserverInvariant {
+                    invariant: "secret-exposure response lineage",
+                });
+            }
+            evidence.extend(projected);
+        }
+        #[cfg(not(feature = "secret-exposure-review"))]
+        let secret_exposure_lineage: Option<EvidenceId> = None;
         #[cfg(feature = "wordpress-review")]
         if let Some(fingerprints) = self.wordpress_asset_fingerprints.as_ref() {
             if observation.method() == HttpProbeMethod::Get {
@@ -5629,10 +5786,16 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                         invariant: "ordinary WordPress asset GET history must remain bounded",
                     })?;
             }
-            evidence.extend(fingerprints.observe_selected_response(&observation)?);
+            // An S04-selected ordinary response must not publish a second
+            // unkeyed digest through opportunistic fingerprint reuse. The
+            // dedicated WordPress-owned acquisition path remains unchanged and
+            // retains its explicitly selected exact-byte fingerprint evidence.
+            if secret_exposure_lineage.is_none() {
+                evidence.extend(fingerprints.observe_selected_response(&observation)?);
+            }
         }
         if self.expected_method == HttpProbeMethod::Head {
-            return Ok(evidence);
+            return Ok(complete_observer_output(evidence, secret_exposure_lineage));
         }
         let Some(body) = observation.complete_body() else {
             evidence.push(derived_observation(
@@ -5640,19 +5803,19 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                 WebDiscoveryEvidencePredicate::DOCUMENT_BODY_INCOMPLETE,
                 EvidenceValue::Boolean(true),
                 "document-body-incomplete",
-                incomplete_projection_parents(&observation)?,
+                incomplete_projection_parents(&observation, secret_exposure_lineage.as_ref())?,
             )?);
-            return Ok(evidence);
+            return Ok(complete_observer_output(evidence, secret_exposure_lineage));
         };
         if self.stopped() {
-            return Ok(evidence);
+            return Ok(complete_observer_output(evidence, secret_exposure_lineage));
         }
         if observation.media_type() != Some("text/html")
             || !matches!(observation.status(), 200 | 206)
         {
-            return Ok(evidence);
+            return Ok(complete_observer_output(evidence, secret_exposure_lineage));
         }
-        let parents = complete_projection_parents(&observation)?;
+        let parents = complete_projection_parents(&observation, secret_exposure_lineage.as_ref())?;
         if observation.status() == 206 {
             evidence.push(derived_observation(
                 &observation,
@@ -5661,7 +5824,7 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                 "document-partial-representation",
                 parents,
             )?);
-            return Ok(evidence);
+            return Ok(complete_observer_output(evidence, secret_exposure_lineage));
         }
         let Ok(html) = std::str::from_utf8(body) else {
             evidence.push(derived_observation(
@@ -5671,8 +5834,16 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                 "document-invalid-utf8",
                 parents,
             )?);
-            return Ok(evidence);
+            return Ok(complete_observer_output(evidence, secret_exposure_lineage));
         };
+        // Every S04-observed body uses the dedicated value-free lineage above
+        // and is never parsed by generic discovery or WordPress collectors.
+        // The fixed catalogue is finite, so even a zero-match body may contain
+        // another low-entropy secret; neither a public whole-body digest nor a
+        // body-derived path/form/component projection may become its oracle.
+        if secret_exposure_lineage.is_some() {
+            return Ok(complete_observer_output(evidence, secret_exposure_lineage));
+        }
         let parsed = parse_document(observation.requested_url(), html, self.limits);
         #[cfg(feature = "wordpress-review")]
         let wordpress_observation = self.wordpress_discovery_context.as_ref().map(|context| {
@@ -5706,7 +5877,7 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                     )
                 });
         if self.stopped() {
-            return Ok(evidence);
+            return Ok(complete_observer_output(evidence, secret_exposure_lineage));
         }
         let admitted = self.admit_document(parsed);
         #[cfg(feature = "wordpress-review")]
@@ -5725,11 +5896,27 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
         let wordpress_fingerprint_evidence = self
             .wordpress_asset_fingerprints
             .as_ref()
-            .map(|_| complete_fingerprint_projection_parents(&observation))
+            .map(|_| {
+                complete_fingerprint_projection_parents(
+                    &observation,
+                    secret_exposure_lineage.as_ref(),
+                )
+            })
             .transpose()?;
         evidence.extend(self.evidence_for_document(&observation, admitted, parents)?);
         if self.stopped() {
-            evidence.retain(|item| item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE);
+            evidence.retain(|item| {
+                item.predicate().namespace() == ASSESSMENT_PASSIVE_NAMESPACE || {
+                    #[cfg(feature = "secret-exposure-review")]
+                    {
+                        item.predicate().namespace() == SECRET_EXPOSURE_NAMESPACE
+                    }
+                    #[cfg(not(feature = "secret-exposure-review"))]
+                    {
+                        false
+                    }
+                }
+            });
         } else {
             #[cfg(feature = "wordpress-review")]
             if let Some(collector) = self.wordpress_signals.as_ref() {
@@ -5778,7 +5965,22 @@ impl CompleteHttpResponseObserver for AssessmentDiscoveryObserver {
                 }
             }
         }
-        Ok(evidence)
+        Ok(complete_observer_output(evidence, secret_exposure_lineage))
+    }
+}
+
+fn complete_observer_output(
+    evidence: Vec<Evidence>,
+    secret_exposure_lineage: Option<EvidenceId>,
+) -> (Vec<Evidence>, ResponseBodyDigestDisposition) {
+    match secret_exposure_lineage {
+        Some(lineage_evidence_id) => (
+            evidence,
+            ResponseBodyDigestDisposition::Suppress {
+                lineage_evidence_id,
+            },
+        ),
+        None => (evidence, ResponseBodyDigestDisposition::Retain),
     }
 }
 
@@ -5812,8 +6014,9 @@ fn admit_unique_url(envelope: &mut AssessmentEnvelope, url: &Url) -> bool {
 
 fn complete_projection_parents(
     observation: &CompleteHttpResponseObservation<'_>,
+    secret_exposure_lineage: Option<&EvidenceId>,
 ) -> Result<Vec<EvidenceId>, HttpEvidenceError> {
-    [
+    let mut parents = [
         (
             observation.request_method_evidence_id(),
             "request-method-evidence",
@@ -5834,9 +6037,45 @@ fn complete_projection_parents(
             observation.response_body_truncated_evidence_id(),
             "response-body-truncated-evidence",
         ),
+    ]
+    .into_iter()
+    .map(|(id, invariant)| {
+        id.cloned()
+            .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+    parents.push(body_content_lineage(observation, secret_exposure_lineage)?);
+    Ok(parents)
+}
+
+#[cfg(feature = "secret-exposure-review")]
+fn secret_exposure_projection_parents(
+    observation: &CompleteHttpResponseObservation<'_>,
+) -> Result<Vec<EvidenceId>, HttpEvidenceError> {
+    let mut parents = [
         (
-            observation.response_body_digest_evidence_id(),
-            "response-body-digest-evidence",
+            observation.request_method_evidence_id(),
+            "request-method-evidence",
+        ),
+        (
+            observation.request_url_evidence_id(),
+            "request-url-evidence",
+        ),
+        (
+            observation.response_status_evidence_id(),
+            "response-status-evidence",
+        ),
+        (
+            observation.response_final_url_evidence_id(),
+            "response-final-url-evidence",
+        ),
+        (
+            observation.response_body_bytes_evidence_id(),
+            "response-body-byte-count-evidence",
+        ),
+        (
+            observation.response_body_truncated_evidence_id(),
+            "response-body-truncated-evidence",
         ),
     ]
     .into_iter()
@@ -5844,14 +6083,19 @@ fn complete_projection_parents(
         id.cloned()
             .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
     })
-    .collect()
+    .collect::<Result<Vec<_>, _>>()?;
+    if let Some(media) = observation.response_media_type_evidence_id() {
+        parents.push(media.clone());
+    }
+    Ok(parents)
 }
 
 #[cfg(feature = "wordpress-review")]
 fn complete_fingerprint_projection_parents(
     observation: &CompleteHttpResponseObservation<'_>,
+    secret_exposure_lineage: Option<&EvidenceId>,
 ) -> Result<Vec<EvidenceId>, HttpEvidenceError> {
-    [
+    let mut parents = [
         (
             observation.request_method_evidence_id(),
             "request-method-evidence",
@@ -5880,17 +6124,15 @@ fn complete_fingerprint_projection_parents(
             observation.response_body_truncated_evidence_id(),
             "response-body-truncated-evidence",
         ),
-        (
-            observation.response_body_digest_evidence_id(),
-            "response-body-digest-evidence",
-        ),
     ]
     .into_iter()
     .map(|(id, invariant)| {
         id.cloned()
             .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
     })
-    .collect()
+    .collect::<Result<Vec<_>, _>>()?;
+    parents.push(body_content_lineage(observation, secret_exposure_lineage)?);
+    Ok(parents)
 }
 
 fn passive_projection_parents(
@@ -5924,6 +6166,7 @@ fn passive_projection_parents(
 
 fn incomplete_projection_parents(
     observation: &CompleteHttpResponseObservation<'_>,
+    secret_exposure_lineage: Option<&EvidenceId>,
 ) -> Result<Vec<EvidenceId>, HttpEvidenceError> {
     let mut parents = [
         (
@@ -5942,10 +6185,6 @@ fn incomplete_projection_parents(
             observation.response_body_truncated_evidence_id(),
             "response-body-truncated-evidence",
         ),
-        (
-            observation.response_body_digest_evidence_id(),
-            "response-body-digest-evidence",
-        ),
     ]
     .into_iter()
     .map(|(id, invariant)| {
@@ -5953,10 +6192,23 @@ fn incomplete_projection_parents(
             .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
     })
     .collect::<Result<Vec<_>, _>>()?;
+    parents.push(body_content_lineage(observation, secret_exposure_lineage)?);
     if let Some(media_id) = observation.response_media_type_evidence_id() {
         parents.push(media_id.clone());
     }
     Ok(parents)
+}
+
+fn body_content_lineage(
+    observation: &CompleteHttpResponseObservation<'_>,
+    secret_exposure_lineage: Option<&EvidenceId>,
+) -> Result<EvidenceId, HttpEvidenceError> {
+    secret_exposure_lineage
+        .cloned()
+        .or_else(|| observation.response_body_digest_evidence_id().cloned())
+        .ok_or(HttpEvidenceError::AssessmentObserverInvariant {
+            invariant: "response-body-lineage-evidence",
+        })
 }
 
 fn derived_observation(
@@ -6365,11 +6617,6 @@ fn validate_bootstrap_request_envelope(
             EvidenceKind::Content,
             "response-body-truncation",
         ),
-        (
-            HttpEvidencePredicate::RESPONSE_BODY_SHA256,
-            EvidenceKind::Content,
-            "response-body-sha256",
-        ),
     ] {
         let predicate = descriptor.into_knowledge();
         let mut matches = receipt
@@ -6415,17 +6662,10 @@ fn validate_bootstrap_request_envelope(
                 };
                 body_truncated = Some(*value);
             },
-            HttpEvidencePredicate::RESPONSE_BODY_SHA256 => {
-                let EvidenceValue::Text(value) = evidence.value() else {
-                    return Err(());
-                };
-                if !valid_sha256(value) {
-                    return Err(());
-                }
-            },
             _ => return Err(()),
         }
     }
+    response_body_lineage_from_receipt(receipt)?;
     let media_predicate = HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge();
     let mut media_matches = receipt
         .evidence()
@@ -6488,11 +6728,6 @@ fn projection_base(
             EvidenceKind::Content,
             "response-body-truncation",
         ),
-        (
-            HttpEvidencePredicate::RESPONSE_BODY_SHA256,
-            EvidenceKind::Content,
-            "response-body-sha256",
-        ),
     ];
     let mut ids = Vec::with_capacity(specs.len());
     let mut status = None;
@@ -6539,18 +6774,11 @@ fn projection_base(
                 };
                 body_truncated = Some(*value);
             },
-            HttpEvidencePredicate::RESPONSE_BODY_SHA256 => {
-                let EvidenceValue::Text(value) = evidence.value() else {
-                    return Err(());
-                };
-                if !valid_sha256(value) {
-                    return Err(());
-                }
-            },
             _ => return Err(()),
         }
         ids.push(evidence.id().clone());
     }
+    ids.push(response_body_lineage_from_receipt(receipt)?.id().clone());
     let media_predicate = HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge();
     let mut media_matches = receipt
         .evidence()
@@ -6582,6 +6810,67 @@ fn projection_base(
         status: status.ok_or(())?,
         body_truncated: body_truncated.ok_or(())?,
     })
+}
+
+fn response_body_lineage_from_receipt(receipt: &DecisionEvidenceReceipt) -> Result<&Evidence, ()> {
+    let digest_predicate = HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge();
+    let digests = receipt
+        .evidence()
+        .iter()
+        .filter(|evidence| evidence.predicate() == &digest_predicate)
+        .collect::<Vec<_>>();
+    #[cfg(feature = "secret-exposure-review")]
+    let lineages = receipt
+        .evidence()
+        .iter()
+        .filter(|evidence| {
+            evidence.predicate().namespace() == SECRET_EXPOSURE_NAMESPACE
+                && evidence.predicate().name() == RESPONSE_BODY_LINEAGE
+        })
+        .collect::<Vec<_>>();
+    #[cfg(not(feature = "secret-exposure-review"))]
+    let lineages: Vec<&Evidence> = Vec::new();
+
+    if let ([digest], []) = (digests.as_slice(), lineages.as_slice()) {
+        let EvidenceValue::Text(value) = digest.value() else {
+            return Err(());
+        };
+        if digest.subject() != receipt.case().subject()
+            || digest.kind() != &EvidenceKind::Content
+            || digest.source().component() != HTTP_EVIDENCE_EXECUTOR_ID
+            || digest.source().method() != "response-body-sha256"
+            || digest.source().correlation_id() != Some(BOOTSTRAP_CASE_ID)
+            || !matches!(digest.origin(), EvidenceOrigin::Direct)
+            || !valid_sha256(value)
+        {
+            return Err(());
+        }
+        return Ok(*digest);
+    }
+    #[cfg(feature = "secret-exposure-review")]
+    {
+        let expected_parent_ids = secret_exposure_response_parent_ids(
+            receipt.evidence(),
+            receipt.case().subject(),
+            receipt.case().id(),
+        )
+        .ok_or(())?;
+        match (digests.as_slice(), lineages.as_slice()) {
+            ([], [lineage])
+                if is_secret_exposure_response_lineage(
+                    lineage,
+                    receipt.case().subject(),
+                    receipt.case().id(),
+                    &expected_parent_ids,
+                ) =>
+            {
+                Ok(*lineage)
+            },
+            _ => Err(()),
+        }
+    }
+    #[cfg(not(feature = "secret-exposure-review"))]
+    Err(())
 }
 
 fn validate_discovery_evidence(

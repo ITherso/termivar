@@ -141,7 +141,7 @@ fn observe(
             passive_response_projection: &passive,
             review_response_projection: Some(&review),
         });
-    observer.observe(observation)
+    observer.observe(observation).map(|(evidence, _)| evidence)
 }
 
 fn values(evidence: &[Evidence]) -> Vec<(&str, &str)> {
@@ -465,7 +465,7 @@ fn unrelated_actions_are_ignored_but_malformed_recognized_actions_fail_closed() 
             passive_response_projection: &passive,
             review_response_projection: Some(&projection),
         });
-    assert!(observer.observe(unrelated).unwrap().is_empty());
+    assert!(observer.observe(unrelated).unwrap().0.is_empty());
 
     let strategy = native_review_strategy_ref(NativeWebReviewActionKind::CorsPolicyPair);
     assert!(matches!(

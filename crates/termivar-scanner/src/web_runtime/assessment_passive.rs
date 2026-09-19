@@ -39,6 +39,8 @@ use super::resource_authorization_runtime::{
 };
 #[cfg(feature = "rest-review")]
 use super::rest_runtime::{project_rest_item, CommittedRestReview};
+#[cfg(feature = "secret-exposure-review")]
+use super::secret_exposure::{project_secret_exposure_items, CommittedSecretExposureLedger};
 #[cfg(feature = "ssrf-oast-review")]
 use super::ssrf_oast_runtime::{project_ssrf_oast_item, CommittedSsrfOastReview};
 #[cfg(feature = "wordpress-review")]
@@ -1095,6 +1097,8 @@ pub(crate) struct AssessmentReviewProjectionSources<'a> {
     pub(crate) ssrf_oast: Option<&'a CommittedSsrfOastReview>,
     #[cfg(feature = "wordpress-review")]
     pub(crate) wordpress: Option<&'a CommittedWordPressReview>,
+    #[cfg(feature = "secret-exposure-review")]
+    pub(crate) secret_exposure: Option<&'a CommittedSecretExposureLedger>,
 }
 
 /// Test adapter that projects only the explicitly authorized root.
@@ -1123,6 +1127,8 @@ pub(crate) fn project_passive_assessment_items(
             ssrf_oast: None,
             #[cfg(feature = "wordpress-review")]
             wordpress: None,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure: None,
         },
         knowledge,
         authorized_root,
@@ -1157,6 +1163,9 @@ pub(crate) fn project_assessment_items(
     #[cfg(feature = "supplied-session-review")]
     let project_selected_application =
         project_selected_application || reviews.supplied_session.is_some();
+    #[cfg(feature = "secret-exposure-review")]
+    let project_selected_application =
+        project_selected_application || reviews.secret_exposure.is_some();
     // Anonymous and WordPress-only projections retain `authorized-root@1`.
     // Supplied-session projections additionally bind the root item identity to
     // the already-redacted application reference so two declared applications
@@ -1291,6 +1300,8 @@ fn project_passive_assessment_items_for_root(
             ssrf_oast: None,
             #[cfg(feature = "wordpress-review")]
             wordpress: None,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure: None,
         },
         knowledge,
         scope,
@@ -1407,6 +1418,10 @@ fn project_assessment_items_for_subjects(
     #[cfg(feature = "wordpress-review")]
     if let Some(wordpress) = reviews.wordpress {
         project_wordpress_item(&mut context, knowledge, wordpress)?;
+    }
+    #[cfg(feature = "secret-exposure-review")]
+    if let Some(secret_exposure) = reviews.secret_exposure {
+        project_secret_exposure_items(&mut context, knowledge, secret_exposure)?;
     }
     Ok(PassiveAssessmentItemProjection {
         items: context.finish(),
@@ -1771,12 +1786,14 @@ fn parse_receipt(
 ) -> Result<CommittedAssessmentPassiveObservation, ()> {
     for evidence in receipt.evidence() {
         let namespace = evidence.predicate().namespace();
-        if namespace.starts_with("web.")
-            && !matches!(
-                namespace,
-                ASSESSMENT_PASSIVE_NAMESPACE | "web.discovery" | "web.defense"
-            )
-        {
+        let allowed_namespace = matches!(
+            namespace,
+            ASSESSMENT_PASSIVE_NAMESPACE | "web.discovery" | "web.defense"
+        ) || (cfg!(feature = "secret-exposure-review")
+            && namespace == "web.secret-exposure")
+            || (cfg!(feature = "wordpress-review")
+                && namespace == "web.wordpress-asset-fingerprint");
+        if namespace.starts_with("web.") && !allowed_namespace {
             return Err(());
         }
     }
@@ -2099,10 +2116,37 @@ fn parse_receipt(
 }
 
 fn validate_trailing_namespaces(items: &[Evidence]) -> Result<(), ()> {
+    let mut secret_started = false;
+    let mut secret_ended = false;
+    let mut fingerprint_started = false;
+    let mut discovery_started = false;
     let mut defense_started = false;
     for item in items {
-        match item.predicate().namespace() {
-            "web.discovery" if !defense_started => {},
+        let namespace = item.predicate().namespace();
+        if namespace == "web.secret-exposure" {
+            if !cfg!(feature = "secret-exposure-review")
+                || secret_ended
+                || fingerprint_started
+                || discovery_started
+                || defense_started
+            {
+                return Err(());
+            }
+            secret_started = true;
+            continue;
+        }
+        if secret_started {
+            secret_ended = true;
+        }
+        if namespace == "web.wordpress-asset-fingerprint" {
+            if !cfg!(feature = "wordpress-review") || discovery_started || defense_started {
+                return Err(());
+            }
+            fingerprint_started = true;
+            continue;
+        }
+        match namespace {
+            "web.discovery" if !defense_started => discovery_started = true,
             "web.defense" => defense_started = true,
             _ => return Err(()),
         }

@@ -66,6 +66,8 @@ mod resource_authorization_runtime;
 #[cfg(feature = "rest-review")]
 mod rest_runtime;
 mod scan_profile;
+#[cfg(feature = "secret-exposure-review")]
+mod secret_exposure;
 #[cfg(feature = "ssrf-oast-review")]
 mod ssrf_oast_runtime;
 #[cfg(feature = "supplied-session-review")]
@@ -152,6 +154,14 @@ pub use scan_profile::{
     ScanProfileV1Error, BASELINE_SCAN_PROFILE_ID, BASELINE_SCAN_PROFILE_MAX_TOTAL_REQUESTS,
     BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES, BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
     SCAN_PROFILE_V1_SCHEMA, WEB_REVIEW_SCAN_PROFILE_ID,
+};
+#[cfg(feature = "secret-exposure-review")]
+pub use secret_exposure::{
+    SecretExposureDetectorClass, SecretExposureResponseOutcome, WebAssessmentSecretExposureAudit,
+    MAX_SECRET_EXPOSURE_BODY_BYTES, MAX_SECRET_EXPOSURE_OCCURRENCES, MAX_SECRET_EXPOSURE_RESPONSES,
+    MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS, MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES,
+    SECRET_EXPOSURE_AUDIT_SCHEMA, SECRET_EXPOSURE_CATALOGUE_ID, SECRET_EXPOSURE_CATALOGUE_REVISION,
+    SECRET_EXPOSURE_POLICY_ID, SECRET_EXPOSURE_REPRESENTATION,
 };
 #[cfg(feature = "ssrf-oast-review")]
 pub use ssrf_oast_runtime::{

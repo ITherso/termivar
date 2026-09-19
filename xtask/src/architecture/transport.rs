@@ -72,6 +72,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     GRAPHQL_RUNTIME_SOURCE,
     OPENAPI_RUNTIME_SOURCE,
     REST_RUNTIME_SOURCE,
+    SECRET_EXPOSURE_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     SSRF_OAST_RUNTIME_SOURCE,
     SUPPLIED_SESSION_RUNTIME_SOURCE,
@@ -112,6 +113,8 @@ const NATIVE_REVIEW_EXECUTION_SOURCE: &str =
 const GRAPHQL_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/graphql_runtime.rs";
 const OPENAPI_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/openapi_runtime.rs";
 const REST_RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/rest_runtime.rs";
+const SECRET_EXPOSURE_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/secret_exposure.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const SSRF_OAST_RUNTIME_SOURCE: &str =
@@ -2631,6 +2634,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "rest_review")
                     });
+                    let secret_exposure_review = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "secret_exposure_review")
+                    });
                     let ssrf_oast_review = item.fields.iter().find(|field| {
                         field
                             .ident
@@ -2667,6 +2676,15 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                     }) || rest_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentRestAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "rest-review")
+                    }) || secret_exposure_review.is_none_or(|field| {
+                        !is_generic_of_idents(
+                            &field.ty,
+                            "Option",
+                            &["WebAssessmentSecretExposureAudit"],
+                        ) || !attributes_are_exact_cfg_feature(
+                            &field.attrs,
+                            "secret-exposure-review",
+                        )
                     }) || ssrf_oast_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentSsrfOastAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
@@ -2682,13 +2700,14 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                                     | "authorization_review"
                                     | "openapi_review"
                                     | "rest_review"
+                                    | "secret_exposure_review"
                                     | "ssrf_oast_review"
                                     | "wordpress_review"
                             )
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -5189,7 +5208,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 11
+                fields.len() == 12
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -5225,6 +5244,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("rest_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentRestAudit"])
                     })
+                    && fields.get("secret_exposure_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentSecretExposureAudit"])
+                    })
                     && fields.get("ssrf_oast_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
                     })
@@ -5243,6 +5265,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             })
             && private_named_field(item, "rest_review")
                 .is_some_and(|field| attributes_are_exact_cfg_feature(&field.attrs, "rest-review"))
+            && private_named_field(item, "secret_exposure_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "secret-exposure-review")
+            })
             && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
             })
@@ -5257,7 +5282,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits; observed fields {observed:?}"
         ));
     }
 
@@ -5273,7 +5298,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 &["Clone", "Copy", "Serialize", "Deserialize"],
             )
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 6
+                fields.len() == 7
                     && fields.get("supplied_session").is_some_and(|field| {
                         is_generic_of_idents(
                             field,
@@ -5290,6 +5315,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("rest_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentRestAudit"])
                     })
+                    && fields.get("secret_exposure_review").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["WebAssessmentSecretExposureAudit"])
+                    })
                     && fields.get("ssrf_oast_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
                     })
@@ -5308,6 +5336,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             })
             && private_named_field(item, "rest_review")
                 .is_some_and(|field| attributes_are_exact_cfg_feature(&field.attrs, "rest-review"))
+            && private_named_field(item, "secret_exposure_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "secret-exposure-review")
+            })
             && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
             })
@@ -5317,7 +5348,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !review_audits_shape_is_exact {
         violations.push(
-            "AssessmentReviewAudits must remain one private Default-only container with exactly the six feature-gated redacted audit values"
+            "AssessmentReviewAudits must remain one private Default-only container with exactly the seven feature-gated redacted audit values"
                 .to_owned(),
         );
     }
@@ -5369,7 +5400,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -5423,6 +5454,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_authorization_audit",
                     "validate_openapi_audit",
                     "validate_rest_audit",
+                    "validate_secret_exposure_audit",
                     "validate_ssrf_oast_audit",
                     "validate_wordpress_audit",
                     "profile",
@@ -5468,12 +5500,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && statement_reference_precedes(&method.block, "validate_authorization_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_openapi_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_rest_audit", "Self")
+            && statement_reference_precedes(&method.block, "validate_secret_exposure_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_ssrf_oast_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_wordpress_audit", "Self")
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits before construction"
                 .to_owned(),
         );
     }
@@ -5483,9 +5516,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .get("evidence_reference_for")
             .is_some_and(|method| {
                 is_pub_crate_visibility(&method.vis)
-                    && attributes_are_exact_cfg_feature_allowing_docs(
+                    && attributes_are_exact_cfg_any_features_allowing_docs(
                         &method.attrs,
-                        "wordpress-review",
+                        &["wordpress-review", "secret-exposure-review"],
                     )
                     && method.sig.receiver().is_some_and(|receiver| {
                         receiver.reference.is_some() && receiver.mutability.is_none()
@@ -5504,7 +5537,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             });
     if !evidence_reference_accessor {
         violations.push(
-            "AssessmentRunReport::evidence_reference_for must remain a WordPress-report-only borrowed lookup into the context-minted evidence-reference map"
+            "AssessmentRunReport::evidence_reference_for must remain a WordPress/secret-report-only borrowed lookup into the context-minted evidence-reference map"
                 .to_owned(),
         );
     }
@@ -6704,7 +6737,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 6
+    typed.len() == expected_prefix.len() + 7
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -6748,9 +6781,23 @@ fn assessment_report_constructor_inputs_are_exact(
                 attributes_are_exact_cfg_feature(&argument.attrs, "ssrf-oast-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentSsrfOastAudit"])
             })
+        && typed
+            .get(expected_prefix.len() + 5)
+            .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "wordpress-review")
+                    && is_generic_of_idents(
+                        &argument.ty,
+                        "Option",
+                        &["WebAssessmentWordPressAudit"],
+                    )
+            })
         && typed.last().is_some_and(|argument| {
-            attributes_are_exact_cfg_feature(&argument.attrs, "wordpress-review")
-                && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentWordPressAudit"])
+            attributes_are_exact_cfg_feature(&argument.attrs, "secret-exposure-review")
+                && is_generic_of_idents(
+                    &argument.ty,
+                    "Option",
+                    &["WebAssessmentSecretExposureAudit"],
+                )
         })
 }
 
@@ -6985,8 +7032,12 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
                             | "response_content_encoding_absent"
                             | "response_content_length_consistent"
                             | "response_final_url_matches_request"
-                            | "wordpress_rest_index_advertisement"
                     ) {
+                        attributes_are_exact_cfg_any_features_allowing_docs(
+                            &field.attrs,
+                            &["wordpress-review", "secret-exposure-review"],
+                        )
+                    } else if name == "wordpress_rest_index_advertisement" {
                         attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
                     } else {
                         field.attrs.is_empty()
@@ -7014,7 +7065,6 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
             );
         }
         let mut allowed_accessors = expected_fields;
-        allowed_accessors.remove("request_headers_empty");
         allowed_accessors.insert("complete_identity_content_body".to_owned());
         let accessor_methods = syntax
             .items
@@ -7046,13 +7096,21 @@ fn inspect_complete_observer_seam(source: &str) -> Result<Vec<String>, syn::Erro
                 && matches!(method.sig.inputs.first(), Some(syn::FnArg::Receiver(_)))
                 && (if matches!(
                     name.as_str(),
-                    "complete_identity_content_body"
-                        | "response_body_bytes"
+                    "response_body_bytes"
                         | "response_body_bytes_evidence_id"
                         | "response_content_encoding_absent"
                         | "response_content_length_consistent"
                         | "response_final_url_matches_request"
-                        | "wordpress_rest_index_advertisement"
+                ) {
+                    attributes_are_exact_cfg_any_features_allowing_docs(
+                        &method.attrs,
+                        &["wordpress-review", "secret-exposure-review"],
+                    )
+                } else if name == "request_headers_empty" {
+                    attributes_are_exact_cfg_feature(&method.attrs, "secret-exposure-review")
+                } else if matches!(
+                    name.as_str(),
+                    "complete_identity_content_body" | "wordpress_rest_index_advertisement"
                 ) {
                     attributes_are_exact_cfg_feature_allowing_docs(
                         &method.attrs,
@@ -7282,6 +7340,28 @@ fn attributes_are_exact_cfg_feature_allowing_docs(
         return false;
     };
     non_docs.next().is_none() && attribute_is_exact_cfg_feature(attribute, expected)
+}
+
+fn attributes_are_exact_cfg_any_features_allowing_docs(
+    attributes: &[syn::Attribute],
+    expected: &[&str],
+) -> bool {
+    let mut non_docs = attributes
+        .iter()
+        .filter(|attribute| !attribute.path().is_ident("doc"));
+    let Some(attribute) = non_docs.next() else {
+        return false;
+    };
+    non_docs.next().is_none()
+        && attribute.path().is_ident("cfg")
+        && attribute.meta.require_list().is_ok_and(|list| {
+            let features = expected
+                .iter()
+                .map(|feature| format!("feature=\"{feature}\""))
+                .collect::<Vec<_>>()
+                .join(",");
+            normalized_token_text(&list.tokens) == format!("any({features})")
+        })
 }
 
 fn attribute_is_exact_cfg_feature(attribute: &syn::Attribute, expected: &str) -> bool {
@@ -9254,6 +9334,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | ("crates/termivar-scanner/src/web_runtime.rs", "rest_runtime")
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
+                    "secret_exposure"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "ssrf_oast_runtime"
                 )
                 | (
@@ -9330,6 +9414,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "rest_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "rest-review")
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "secret_exposure"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "secret-exposure-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "resource_authorization_runtime"
         {
@@ -12803,7 +12891,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12819,7 +12907,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12835,7 +12923,23 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+            ),
+            "{violations}"
+        );
+
+        let missing_secret_exposure_audit = report_source.replacen(
+            "    #[cfg(feature = \"secret-exposure-review\")]\n    secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_secret_exposure_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_secret_exposure_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12851,7 +12955,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12867,7 +12971,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12883,7 +12987,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12899,7 +13003,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12915,7 +13019,23 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
+            ),
+            "{violations}"
+        );
+
+        let unvalidated_secret_exposure_audit = report_source.replacen(
+            "        #[cfg(feature = \"secret-exposure-review\")]\n        validate_secret_exposure_audit(\n            secret_exposure_review.as_ref(),\n            &items,\n            &evidence_references,\n        )?;",
+            "        #[cfg(feature = \"secret-exposure-review\")]\n        let _ = secret_exposure_review.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_secret_exposure_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_secret_exposure_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12931,7 +13051,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12947,7 +13067,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -12975,7 +13095,7 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains(
-                    "AssessmentReviewAudits must remain one private Default-only container with exactly the six feature-gated redacted audit values"
+                    "AssessmentReviewAudits must remain one private Default-only container with exactly the seven feature-gated redacted audit values"
                 ),
                 "{violations}"
             );
@@ -13365,6 +13485,7 @@ mod tests {
             pub struct WebAssessmentSubjectReport { subject: String }
             pub struct WebAssessmentDefenseAudit { mode: String }
             pub struct WebAssessmentRestAudit { outcome: String }
+            pub struct WebAssessmentSecretExposureAudit { outcome: String }
             pub struct WebAssessmentSsrfOastAudit { outcome: String }
             pub struct WebAssessmentSuppliedSessionAudit { outcome: String }
             pub struct WebAssessmentWordPressAudit { outcome: String }
@@ -13408,6 +13529,8 @@ mod tests {
                 openapi_review: Option<WebAssessmentOpenApiAudit>,
                 #[cfg(feature = "rest-review")]
                 rest_review: Option<WebAssessmentRestAudit>,
+                #[cfg(feature = "secret-exposure-review")]
+                secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
                 #[cfg(feature = "wordpress-review")]
@@ -13540,7 +13663,22 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields"
+            ),
+            "{violations}"
+        );
+
+        let missing_secret_exposure_audit = valid.replace(
+            "                #[cfg(feature = \"secret-exposure-review\")]\n                secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,\n",
+            "",
+        );
+        assert_ne!(missing_secret_exposure_audit, valid);
+        let violations = inspect_web_assessment_models(&missing_secret_exposure_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13555,7 +13693,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -13603,7 +13741,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );

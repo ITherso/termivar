@@ -133,8 +133,8 @@ composition marker compiles `artifact-adapter`, `normalization-resilience`,
 untagged alpha.3 development composition also compiles the `wordpress-review`
 Preview. It does not activate any of them: WordPress still requires explicit
 `--profile web-review --wordpress-review`. Current alpha.3 excludes
-`supplied-session-review`, `ssrf-oast-review`, `legacy-scanner`, `api-adapter`,
-and `proxy-adapter`.
+`supplied-session-review`, `secret-exposure-review`, `ssrf-oast-review`,
+`legacy-scanner`, `api-adapter`, and `proxy-adapter`.
 Enabling the seven current member features individually can therefore produce
 the same member surface states while `release-bundle` remains `not_compiled`.
 

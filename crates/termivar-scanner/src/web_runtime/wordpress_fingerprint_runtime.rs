@@ -42,6 +42,12 @@ use super::{
     SharedWebRuntimeAuthority,
 };
 
+#[cfg(feature = "secret-exposure-review")]
+use super::secret_exposure::{
+    is_secret_exposure_response_lineage, secret_exposure_response_parent_ids,
+    RESPONSE_BODY_LINEAGE, SECRET_EXPOSURE_NAMESPACE,
+};
+
 pub const WORDPRESS_ASSET_FINGERPRINT_ACTION_ID: &str = "web.review.wordpress.asset-fingerprint@1";
 pub const MAX_WORDPRESS_ASSET_FINGERPRINT_REQUESTS: u8 = 4;
 pub const MAX_WORDPRESS_ASSET_FINGERPRINT_COMPONENTS: usize = 2;
@@ -2150,15 +2156,73 @@ fn committed_response_base_is_valid(
     if expected_body_bytes.is_some_and(|expected| expected != body_bytes) {
         return false;
     }
-    let digest = unique_value(HttpEvidencePredicate::RESPONSE_BODY_SHA256);
-    let Some(EvidenceValue::Text(digest)) = digest else {
-        return false;
+    let digest_predicate = HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge();
+    let digests = evidence_ids
+        .iter()
+        .filter_map(|id| {
+            knowledge.inspect_evidence(id, |evidence| {
+                (evidence.predicate() == &digest_predicate).then(|| evidence.value().clone())
+            })?
+        })
+        .collect::<Vec<_>>();
+    #[cfg(feature = "secret-exposure-review")]
+    let lineages = {
+        let request_correlation = evidence_ids.iter().find_map(|id| {
+            knowledge.inspect_evidence(id, |evidence| {
+                (evidence.predicate() == &HttpEvidencePredicate::REQUEST_METHOD.into_knowledge())
+                    .then(|| evidence.source().correlation_id().map(str::to_owned))
+                    .flatten()
+            })?
+        });
+        let Some(request_correlation) = request_correlation else {
+            return false;
+        };
+        let response_evidence = evidence_ids
+            .iter()
+            .filter_map(|id| knowledge.inspect_evidence(id, Clone::clone))
+            .collect::<Vec<_>>();
+        if response_evidence.len() != evidence_ids.len() {
+            return false;
+        }
+        let Some(expected_lineage_parents) = secret_exposure_response_parent_ids(
+            &response_evidence,
+            expected_subject,
+            &request_correlation,
+        ) else {
+            return false;
+        };
+        evidence_ids
+            .iter()
+            .filter_map(|id| {
+                knowledge.inspect_evidence(id, |evidence| {
+                    (evidence.predicate().namespace() == SECRET_EXPOSURE_NAMESPACE
+                        && evidence.predicate().name() == RESPONSE_BODY_LINEAGE)
+                        .then(|| {
+                            is_secret_exposure_response_lineage(
+                                evidence,
+                                expected_subject,
+                                &request_correlation,
+                                &expected_lineage_parents,
+                            )
+                        })
+                })?
+            })
+            .collect::<Vec<_>>()
     };
-    digest.len() == 64
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-        && expected_sha256.is_none_or(|expected| digest == hex_sha256(expected))
+    #[cfg(not(feature = "secret-exposure-review"))]
+    let lineages: Vec<bool> = Vec::new();
+
+    match (digests.as_slice(), lineages.as_slice(), expected_sha256) {
+        ([EvidenceValue::Text(digest)], [], expected) => {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                && expected.is_none_or(|expected| digest.as_str() == hex_sha256(expected))
+        },
+        ([], [true], None) => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -2167,19 +2231,29 @@ mod tests {
 
     use super::{
         asset_media_type_is_supported, asset_path_reference, candidate_binding_evidence,
-        fetched_representation_evidence, looks_like_html, opaque_url_reference,
-        root_representation_binding_evidence, selected_variants_completely_interpreted,
-        source_page_capacity_allows, summarize_reused_representations, CommittedRepresentation,
+        committed_response_base_is_valid, fetched_representation_evidence, looks_like_html,
+        opaque_url_reference, root_representation_binding_evidence,
+        selected_variants_completely_interpreted, source_page_capacity_allows,
+        summarize_reused_representations, CommittedRepresentation,
         WordPressAssetFingerprintCollector, WordPressAssetFingerprintRuntimeError,
         WordPressComponentIdentity, WordPressComponentKind, WordPressDiscoveryAssociation,
         WordPressObservedAssetCandidate, WordPressObservedAssetFingerprint,
         WordPressSelectedObservedAsset, ASSET_FETCHED_ROOT_DERIVATION,
         MAX_WORDPRESS_ASSET_FINGERPRINT_CANDIDATE_IDENTITIES,
     };
+    #[cfg(feature = "secret-exposure-review")]
+    use crate::web_runtime::secret_exposure::RESPONSE_BODY_LINEAGE;
     use crate::wordpress_review::parse_wordpress_asset_fingerprint_catalog;
+    #[cfg(feature = "secret-exposure-review")]
+    use crate::{KnowledgeBase, HTTP_EVIDENCE_EXECUTOR_ID};
     use std::collections::BTreeSet;
     use std::sync::Arc;
     use termivar_core::{ConfidenceScore, EntityId, EvidenceId};
+    #[cfg(feature = "secret-exposure-review")]
+    use termivar_core::{
+        DerivationAlgorithm, Evidence, EvidenceDerivation, EvidenceKind, EvidenceSource,
+        HttpEvidencePredicate, KnowledgePredicate,
+    };
     use url::Url;
 
     #[test]
@@ -2401,6 +2475,141 @@ mod tests {
             ],
             33,
         ));
+    }
+
+    #[cfg(feature = "secret-exposure-review")]
+    #[test]
+    fn committed_response_base_accepts_exactly_one_body_identity_lineage() {
+        let subject = EntityId::new("endpoint:https://example.test/blog/").unwrap();
+        let url = Url::parse("https://example.test/blog/").unwrap();
+        let correlation = "case:wordpress-fingerprint-lineage";
+        let base_record = |kind, method, predicate, value| {
+            Evidence::new(
+                subject.clone(),
+                kind,
+                predicate,
+                value,
+                EvidenceSource::new(HTTP_EVIDENCE_EXECUTOR_ID, method)
+                    .unwrap()
+                    .with_correlation_id(correlation)
+                    .unwrap(),
+                ConfidenceScore::from_percent(100).unwrap(),
+            )
+        };
+        let base = vec![
+            base_record(
+                EvidenceKind::Http,
+                "request-method",
+                HttpEvidencePredicate::REQUEST_METHOD.into_knowledge(),
+                EvidenceValue::Text("GET".to_owned()),
+            ),
+            base_record(
+                EvidenceKind::Http,
+                "request-url",
+                HttpEvidencePredicate::REQUEST_URL.into_knowledge(),
+                EvidenceValue::Text(url.to_string()),
+            ),
+            base_record(
+                EvidenceKind::Http,
+                "response-status",
+                HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
+                EvidenceValue::Unsigned(200),
+            ),
+            base_record(
+                EvidenceKind::Http,
+                "response-final-url",
+                HttpEvidencePredicate::RESPONSE_FINAL_URL.into_knowledge(),
+                EvidenceValue::Text(url.to_string()),
+            ),
+            base_record(
+                EvidenceKind::Http,
+                "response-media-type",
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge(),
+                EvidenceValue::Text("text/html".to_owned()),
+            ),
+            base_record(
+                EvidenceKind::Content,
+                "response-body-size",
+                HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+                EvidenceValue::Unsigned(41),
+            ),
+            base_record(
+                EvidenceKind::Content,
+                "response-body-truncation",
+                HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED.into_knowledge(),
+                EvidenceValue::Boolean(false),
+            ),
+        ];
+        let digest = |value| {
+            Evidence::new(
+                subject.clone(),
+                EvidenceKind::Content,
+                HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge(),
+                value,
+                EvidenceSource::new(HTTP_EVIDENCE_EXECUTOR_ID, "response-body-sha256")
+                    .unwrap()
+                    .with_correlation_id(correlation)
+                    .unwrap(),
+                ConfidenceScore::from_percent(100).unwrap(),
+            )
+        };
+        let lineage = || {
+            Evidence::new(
+                subject.clone(),
+                EvidenceKind::Custom("passive-secret-exposure".to_owned()),
+                KnowledgePredicate::new("web.secret-exposure", RESPONSE_BODY_LINEAGE).unwrap(),
+                EvidenceValue::Text("evaluated".to_owned()),
+                EvidenceSource::new(
+                    HTTP_EVIDENCE_EXECUTOR_ID,
+                    "bounded-value-free-secret-detection",
+                )
+                .unwrap()
+                .with_correlation_id(correlation)
+                .unwrap(),
+                ConfidenceScore::from_percent(100).unwrap(),
+            )
+            .derived_from(
+                EvidenceDerivation::new(
+                    base.iter()
+                        .map(|item| item.id().clone())
+                        .collect::<Vec<_>>(),
+                    DerivationAlgorithm::new("web.secret-exposure.fixed-catalogue", 1).unwrap(),
+                )
+                .unwrap(),
+            )
+        };
+        let validates = |body_identity: Vec<Evidence>| {
+            let knowledge = KnowledgeBase::new();
+            let mut evidence = base.clone();
+            evidence.extend(body_identity);
+            let evidence_ids = evidence
+                .iter()
+                .map(|item| item.id().clone())
+                .collect::<Vec<_>>();
+            knowledge.insert_evidence_batch(evidence).unwrap();
+            committed_response_base_is_valid(
+                &knowledge,
+                &evidence_ids,
+                &subject,
+                &url,
+                |media_type| media_type == "text/html",
+                Some(41),
+                None,
+            )
+        };
+
+        assert!(validates(vec![digest(EvidenceValue::Text("a".repeat(64)))]));
+        assert!(validates(vec![lineage()]));
+        assert!(!validates(vec![
+            digest(EvidenceValue::Text("a".repeat(64))),
+            lineage(),
+        ]));
+        assert!(!validates(vec![
+            digest(EvidenceValue::Text("a".repeat(64))),
+            digest(EvidenceValue::Text("a".repeat(64))),
+        ]));
+        assert!(!validates(vec![lineage(), lineage()]));
+        assert!(!validates(vec![digest(EvidenceValue::Unsigned(64))]));
     }
 
     #[test]

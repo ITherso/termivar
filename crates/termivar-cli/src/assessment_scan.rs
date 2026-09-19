@@ -794,6 +794,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) graphql_review: bool,
     pub(crate) openapi_review: bool,
     pub(crate) rest_review: bool,
+    #[cfg(feature = "secret-exposure-review")]
+    pub(crate) secret_exposure_review: bool,
     #[cfg(feature = "authorization-review")]
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
@@ -830,6 +832,8 @@ pub(crate) async fn run_profile_scan(
         graphql_review,
         openapi_review,
         rest_review,
+        #[cfg(feature = "secret-exposure-review")]
+        secret_exposure_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
         #[cfg(feature = "supplied-session-review")]
@@ -880,6 +884,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "OpenAPI review requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "secret-exposure-review")]
+            if secret_exposure_review {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "secret-exposure review requires the web-review profile",
                 )
                 .into());
             }
@@ -962,6 +974,8 @@ pub(crate) async fn run_profile_scan(
                     graphql_review,
                     openapi_review,
                     rest_review,
+                    #[cfg(feature = "secret-exposure-review")]
+                    secret_exposure_review,
                     #[cfg(feature = "authorization-review")]
                     resource_authorization_review,
                     #[cfg(feature = "supplied-session-review")]
@@ -1025,6 +1039,8 @@ struct WebReviewRunOptions {
     graphql_review: bool,
     openapi_review: bool,
     rest_review: bool,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "supplied-session-review")]
@@ -1055,6 +1071,8 @@ async fn run_web_review(
         graphql_review,
         openapi_review,
         rest_review,
+        #[cfg(feature = "secret-exposure-review")]
+        secret_exposure_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
         #[cfg(feature = "supplied-session-review")]
@@ -1139,6 +1157,10 @@ async fn run_web_review(
             )
             .into());
         }
+    }
+    #[cfg(feature = "secret-exposure-review")]
+    if secret_exposure_review {
+        builder = builder.enable_secret_exposure_review();
     }
     if let Some(context) = root_authorization_context {
         builder = builder.with_root_authorization_context(context);
@@ -2456,6 +2478,29 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "REST read-only review requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "secret-exposure-review")]
+    #[tokio::test]
+    async fn baseline_rejects_secret_exposure_review_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                secret_exposure_review: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("secret-exposure review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "secret-exposure review requires the web-review profile"
         );
     }
 

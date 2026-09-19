@@ -26,7 +26,7 @@ use crate::{
     http_evidence::{
         CompleteHttpResponseObservation, CompleteHttpResponseObserver,
         CorsAllowCredentialsRelation, CorsAllowOriginRelation, LocationRelation,
-        VaryOriginRelation,
+        ResponseBodyDigestDisposition, VaryOriginRelation,
     },
     payload_strategies::{
         ExternalUrlQueryPairStrategy, XssAttributeBoundaryQueryPairStrategy,
@@ -55,6 +55,12 @@ use crate::DefensePosture;
 
 #[cfg(feature = "normalization-resilience")]
 use super::assessment_defense::{AssessmentDefenseBodyCoverage, CommittedAssessmentDefenseLedger};
+#[cfg(feature = "secret-exposure-review")]
+use super::secret_exposure::{
+    is_active_review_body_privacy_lineage, project_active_review_body_privacy_lineage,
+    secret_exposure_response_parent_ids_for_executor, ACTIVE_REVIEW_BODY_LINEAGE,
+    SECRET_EXPOSURE_NAMESPACE,
+};
 use super::web_assessment::{
     classify_exact_html_reflection, cross_validate_attribute_reflection_source,
     cross_validate_javascript_reflection_source, match_exact_xss_attribute_boundary_document,
@@ -603,12 +609,14 @@ pub(crate) struct AssessmentReviewObserverSet {
     sql: Option<SqlStructuralContract>,
     ssti: Option<SstiStructuralContract>,
     xss: Option<XssStructuralContract>,
+    #[cfg(feature = "secret-exposure-review")]
+    secret_exposure_privacy_guard: bool,
 }
 
 impl fmt::Debug for AssessmentReviewObserverSet {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("AssessmentReviewObserverSet")
+        let mut debug = formatter.debug_struct("AssessmentReviewObserverSet");
+        debug
             .field("root", &"<redacted>")
             .field("subject", &"<redacted>")
             .field("seeds", &self.seeds)
@@ -619,8 +627,13 @@ impl fmt::Debug for AssessmentReviewObserverSet {
             )
             .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .field("ssti", &self.ssti.as_ref().map(|_| "<configured>"))
-            .field("xss", &self.xss.as_ref().map(|_| "<configured>"))
-            .finish()
+            .field("xss", &self.xss.as_ref().map(|_| "<configured>"));
+        #[cfg(feature = "secret-exposure-review")]
+        debug.field(
+            "secret_exposure_privacy_guard",
+            &self.secret_exposure_privacy_guard,
+        );
+        debug.finish()
     }
 }
 
@@ -757,7 +770,18 @@ impl AssessmentReviewObserverSet {
             sql,
             ssti,
             xss: None,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_privacy_guard: false,
         })
+    }
+
+    /// Replaces the public body digest for native review responses with one
+    /// value-free, receipt-bound lineage record. This deliberately does not
+    /// run the passive detector catalogue over probe or control responses.
+    #[cfg(feature = "secret-exposure-review")]
+    pub(crate) fn with_secret_exposure_privacy_guard(mut self) -> Self {
+        self.secret_exposure_privacy_guard = true;
+        self
     }
 
     #[cfg(test)]
@@ -1200,16 +1224,25 @@ impl CompleteHttpResponseObserver for AssessmentReviewObserverSet {
     fn observe(
         &self,
         observation: CompleteHttpResponseObservation<'_>,
-    ) -> Result<Vec<Evidence>, HttpEvidenceError> {
+    ) -> Result<(Vec<Evidence>, ResponseBodyDigestDisposition), HttpEvidenceError> {
         let Some(kind) = NativeWebReviewActionKind::all()
             .into_iter()
             .find(|kind| observation.action_id() == kind.action_id())
         else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), ResponseBodyDigestDisposition::Retain));
         };
         self.validate_recognized(kind, &observation)?;
 
-        let mut parents = review_projection_parents(&observation, kind)?;
+        #[cfg(feature = "secret-exposure-review")]
+        let privacy_lineage = self
+            .secret_exposure_privacy_guard
+            .then(|| project_active_review_body_privacy_lineage(&observation))
+            .transpose()?;
+        #[cfg(not(feature = "secret-exposure-review"))]
+        let privacy_lineage: Option<Evidence> = None;
+        let privacy_lineage_id = privacy_lineage.as_ref().map(Evidence::id);
+
+        let mut parents = review_projection_parents(&observation, kind, privacy_lineage_id)?;
         if is_xss_response_action(kind) {
             parents.extend(
                 self.xss
@@ -1232,20 +1265,35 @@ impl CompleteHttpResponseObserver for AssessmentReviewObserverSet {
             review_source_method(kind, observation.stage()),
         )?
         .with_correlation_id(observation.case_id())?;
-        self.project(kind, &observation)
+        let mut evidence = self
+            .project(kind, &observation)
             .into_iter()
             .map(|(property, value)| {
-                Ok(Evidence::new(
-                    observation.subject().clone(),
-                    EvidenceKind::Custom(ASSESSMENT_REVIEW_CATEGORY.to_owned()),
-                    property.predicate(),
-                    EvidenceValue::Text(value.to_owned()),
-                    source.clone(),
-                    observation.reliability(),
+                Ok::<Evidence, HttpEvidenceError>(
+                    Evidence::new(
+                        observation.subject().clone(),
+                        EvidenceKind::Custom(ASSESSMENT_REVIEW_CATEGORY.to_owned()),
+                        property.predicate(),
+                        EvidenceValue::Text(value.to_owned()),
+                        source.clone(),
+                        observation.reliability(),
+                    )
+                    .derived_from(derivation.clone()),
                 )
-                .derived_from(derivation.clone()))
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(lineage) = privacy_lineage {
+            let lineage_evidence_id = lineage.id().clone();
+            evidence.push(lineage);
+            Ok((
+                evidence,
+                ResponseBodyDigestDisposition::Suppress {
+                    lineage_evidence_id,
+                },
+            ))
+        } else {
+            Ok((evidence, ResponseBodyDigestDisposition::Retain))
+        }
     }
 }
 
@@ -1346,6 +1394,7 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
 fn review_projection_parents(
     observation: &CompleteHttpResponseObservation<'_>,
     kind: NativeWebReviewActionKind,
+    body_lineage: Option<&EvidenceId>,
 ) -> Result<Vec<EvidenceId>, HttpEvidenceError> {
     let mut parents = [
         (
@@ -1371,6 +1420,9 @@ fn review_projection_parents(
             .ok_or(HttpEvidenceError::AssessmentObserverInvariant { invariant })
     })
     .collect::<Result<Vec<_>, _>>()?;
+    if let Some(lineage) = body_lineage {
+        parents.push(lineage.clone());
+    }
     if is_xss_response_action(kind)
         || matches!(
             kind,
@@ -1391,20 +1443,24 @@ fn review_projection_parents(
                     })?,
             );
         }
-        parents.extend([
+        parents.push(
             observation
                 .response_body_truncated_evidence_id()
                 .cloned()
                 .ok_or(HttpEvidenceError::AssessmentObserverInvariant {
                     invariant: "native-review-response-body-truncation-evidence",
                 })?,
-            observation
-                .response_body_digest_evidence_id()
-                .cloned()
-                .ok_or(HttpEvidenceError::AssessmentObserverInvariant {
-                    invariant: "native-review-response-body-digest-evidence",
-                })?,
-        ]);
+        );
+        if body_lineage.is_none() {
+            parents.push(
+                observation
+                    .response_body_digest_evidence_id()
+                    .cloned()
+                    .ok_or(HttpEvidenceError::AssessmentObserverInvariant {
+                        invariant: "native-review-response-body-digest-evidence",
+                    })?,
+            );
+        }
     }
     Ok(parents)
 }
@@ -3388,6 +3444,17 @@ fn expected_review_parent_ids(
         return Err(AssessmentReviewLedgerError::EvidenceProjection);
     }
     let mut items = vec![method, requested, status, final_url];
+    #[cfg(feature = "secret-exposure-review")]
+    let privacy_lineage = optional_active_review_privacy_lineage(receipt)?;
+    #[cfg(not(feature = "secret-exposure-review"))]
+    let privacy_lineage: Option<&Evidence> = None;
+    let digest = optional_unique_base(receipt, HttpEvidencePredicate::RESPONSE_BODY_SHA256)?;
+    if let Some(lineage) = privacy_lineage {
+        if digest.is_some() {
+            return Err(AssessmentReviewLedgerError::EvidenceProjection);
+        }
+        items.push(lineage);
+    }
     if is_xss_response_action(kind)
         || matches!(
             kind,
@@ -3406,13 +3473,18 @@ fn expected_review_parent_ids(
             items.push(media);
         }
         let truncated = unique_base(receipt, HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED)?;
-        let digest = unique_base(receipt, HttpEvidencePredicate::RESPONSE_BODY_SHA256)?;
-        if !matches!(truncated.value(), EvidenceValue::Boolean(_))
-            || !matches!(digest.value(), EvidenceValue::Text(value) if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
-        {
+        if !matches!(truncated.value(), EvidenceValue::Boolean(_)) {
             return Err(AssessmentReviewLedgerError::EvidenceProjection);
         }
-        items.extend([truncated, digest]);
+        items.push(truncated);
+        if privacy_lineage.is_none() {
+            let digest = digest.ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+            if !matches!(digest.value(), EvidenceValue::Text(value) if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+            {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
+            items.push(digest);
+        }
     }
     let reliability = items[0].reliability();
     for item in &items {
@@ -3442,6 +3514,40 @@ fn expected_review_parent_ids(
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+#[cfg(feature = "secret-exposure-review")]
+fn optional_active_review_privacy_lineage(
+    receipt: &DecisionEvidenceReceipt,
+) -> Result<Option<&Evidence>, AssessmentReviewLedgerError> {
+    let mut matching = receipt.evidence().iter().filter(|item| {
+        item.predicate().namespace() == SECRET_EXPOSURE_NAMESPACE
+            && item.predicate().name() == ACTIVE_REVIEW_BODY_LINEAGE
+    });
+    let lineage = matching.next();
+    if matching.next().is_some() {
+        return Err(AssessmentReviewLedgerError::EvidenceProjection);
+    }
+    let Some(lineage) = lineage else {
+        return Ok(None);
+    };
+    let parent_ids = secret_exposure_response_parent_ids_for_executor(
+        receipt.evidence(),
+        receipt.case().subject(),
+        receipt.case().id(),
+        receipt.executor_id(),
+    )
+    .ok_or(AssessmentReviewLedgerError::EvidenceProjection)?;
+    if !is_active_review_body_privacy_lineage(
+        lineage,
+        receipt.case().subject(),
+        receipt.case().id(),
+        receipt.executor_id(),
+        &parent_ids,
+    ) {
+        return Err(AssessmentReviewLedgerError::EvidenceProjection);
+    }
+    Ok(Some(lineage))
 }
 
 fn unique_base(

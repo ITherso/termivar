@@ -78,6 +78,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "oast_admin_token_stdin",
     "openapi_review",
     "rest_review",
+    "secret_exposure_review",
     "wordpress_advisories",
     "wordpress_advisories_format",
     "wordpress_core_version_file",
@@ -720,6 +721,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("oast_admin_token_stdin", "bool", None),
         ("openapi_review", "bool", None),
         ("rest_review", "bool", None),
+        ("secret_exposure_review", "bool", None),
         ("wordpress_review", "bool", None),
         ("wordpress_discovery", "bool", None),
         (

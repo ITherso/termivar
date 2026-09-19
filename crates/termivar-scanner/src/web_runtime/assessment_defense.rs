@@ -22,6 +22,13 @@ use crate::{
 };
 use crate::{DecisionEvidenceReceipt, DecisionExecutionStage, KnowledgeBase, VerificationCase};
 
+#[cfg(feature = "secret-exposure-review")]
+use super::secret_exposure::{
+    is_active_review_body_privacy_lineage, is_secret_exposure_response_lineage,
+    secret_exposure_response_parent_ids, secret_exposure_response_parent_ids_for_executor,
+    ACTIVE_REVIEW_BODY_LINEAGE, RESPONSE_BODY_LINEAGE, SECRET_EXPOSURE_NAMESPACE,
+};
+
 #[cfg(feature = "authorization-review")]
 use super::resource_authorization_runtime::{
     AUTHORIZATION_DEFENSE_CHALLENGE_PREDICATE, AUTHORIZATION_DEFENSE_RATE_LIMIT_PREDICATE,
@@ -916,11 +923,10 @@ impl BaseEvidence {
             HttpEvidencePredicate::RESPONSE_FINAL_URL,
             HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
             HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
-            HttpEvidencePredicate::RESPONSE_BODY_SHA256,
             HttpEvidencePredicate::RATE_LIMIT_DETECTED,
             HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
         ];
-        let mut parents = Vec::with_capacity(required.len());
+        let mut parents = Vec::with_capacity(required.len() + 1);
         let mut status = None;
         let mut rate_detected = None;
         let mut rate_advertised = None;
@@ -996,6 +1002,77 @@ impl BaseEvidence {
                 };
                 rate_advertised = Some(*value);
             }
+        }
+        let digest_predicate = HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge();
+        let digests = receipt
+            .evidence()
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.predicate() == &digest_predicate)
+            .collect::<Vec<_>>();
+        #[cfg(feature = "secret-exposure-review")]
+        let lineages = receipt
+            .evidence()
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                item.predicate().namespace() == SECRET_EXPOSURE_NAMESPACE
+                    && matches!(
+                        item.predicate().name(),
+                        RESPONSE_BODY_LINEAGE | ACTIVE_REVIEW_BODY_LINEAGE
+                    )
+            })
+            .collect::<Vec<_>>();
+        #[cfg(not(feature = "secret-exposure-review"))]
+        let lineages: Vec<(usize, &Evidence)> = Vec::new();
+        #[cfg(feature = "secret-exposure-review")]
+        let expected_lineage_parents = secret_exposure_response_parent_ids(
+            receipt.evidence(),
+            receipt.case().subject(),
+            receipt.case().id(),
+        );
+        #[cfg(feature = "secret-exposure-review")]
+        let expected_active_lineage_parents = secret_exposure_response_parent_ids_for_executor(
+            receipt.evidence(),
+            receipt.case().subject(),
+            receipt.case().id(),
+            receipt.executor_id(),
+        );
+        match (digests.as_slice(), lineages.as_slice()) {
+            ([(index, digest)], [])
+                if *index < first_defense
+                    && digest.subject() == receipt.case().subject()
+                    && digest.origin().is_direct()
+                    && digest.source().component() == receipt.executor_id()
+                    && digest.source().correlation_id() == Some(receipt.case().id())
+                    && base_record_shape(HttpEvidencePredicate::RESPONSE_BODY_SHA256, digest) =>
+            {
+                parents.push(digest.id().clone());
+            },
+            #[cfg(feature = "secret-exposure-review")]
+            ([], [(index, lineage)])
+                if *index < first_defense
+                    && ((lineage.predicate().name() == RESPONSE_BODY_LINEAGE
+                        && is_secret_exposure_response_lineage(
+                            lineage,
+                            receipt.case().subject(),
+                            receipt.case().id(),
+                            expected_lineage_parents.as_deref().unwrap_or_default(),
+                        ))
+                        || (lineage.predicate().name() == ACTIVE_REVIEW_BODY_LINEAGE
+                            && is_active_review_body_privacy_lineage(
+                                lineage,
+                                receipt.case().subject(),
+                                receipt.case().id(),
+                                receipt.executor_id(),
+                                expected_active_lineage_parents
+                                    .as_deref()
+                                    .unwrap_or_default(),
+                            ))) =>
+            {
+                parents.push(lineage.id().clone());
+            },
+            _ => return Err(()),
         }
         let status = status
             .filter(|value| (100..=599).contains(value))

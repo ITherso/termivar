@@ -34,6 +34,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "oast-native-provider",
     "openapi-review",
     "rest-review",
+    "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
     "wordpress-review",
@@ -62,6 +63,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "oast-native-provider",
     "openapi-review",
     "rest-review",
+    "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
     "wordpress-review",
@@ -88,6 +90,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "oast-correlation",
     "openapi-review",
     "rest-review",
+    "secret-exposure-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -112,6 +115,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "oast-correlation",
     "openapi-review",
     "rest-review",
+    "secret-exposure-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -186,6 +190,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "proxy-adapter",
     "release-bundle",
     "rest-review",
+    "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
     "wordpress-review",
@@ -1302,6 +1307,10 @@ fn cli_feature_violations(
             &["openapi-review", "termivar-scanner/rest-review"][..],
         ),
         (
+            "secret-exposure-review",
+            &["termivar-scanner/secret-exposure-review"][..],
+        ),
+        (
             "authorization-review",
             &["termivar-scanner/authorization-review"][..],
         ),
@@ -1550,6 +1559,21 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             "authorization-review",
             &[
                 "authorization-review",
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "secret-exposure-review",
+            &[
+                "secret-exposure-review",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -4848,7 +4872,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 8
+        || report_call.args.len() != 9
     {
         return false;
     }
@@ -4875,6 +4899,13 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "wordpress_review", "wordpress-review")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(
+                argument,
+                "secret_exposure_review",
+                "secret-exposure-review",
+            )
         })
 }
 
@@ -5136,6 +5167,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("openapi_review", "Option<AssessmentOpenApiAuditDocument>"),
             ("rest_review", "Option<AssessmentRestAuditDocument>"),
             (
+                "secret_exposure_review",
+                "Option<AssessmentSecretExposureAuditDocument>",
+            ),
+            (
                 "wordpress_review",
                 "Option<AssessmentWordPressAuditDocument>",
             ),
@@ -5260,6 +5295,57 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("status", "Option<u16>"),
             ("response_bytes", "u64"),
             ("epoch", "u8"),
+        ],
+    ),
+    (
+        "AssessmentSecretExposureAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy", "&'static str"),
+            ("catalogue_id", "&'static str"),
+            ("catalogue_revision", "&'static str"),
+            ("representation", "&'static str"),
+            ("context", "&'static str"),
+            ("selected", "bool"),
+            ("additional_request_count", "u64"),
+            ("response_count", "u64"),
+            ("evaluated_response_count", "u64"),
+            ("not_evaluated_response_count", "u64"),
+            ("body_derived_projection_suppressed_response_count", "u64"),
+            ("interpreted_byte_count", "u64"),
+            ("per_response_byte_limit", "u64"),
+            ("total_byte_limit", "u64"),
+            ("observation_count", "u64"),
+            ("omitted_observation_count", "u64"),
+            ("match_occurrence_count", "u64"),
+            ("outcomes", "Vec<AssessmentSecretExposureOutcomeDocument>"),
+            (
+                "observations",
+                "Vec<AssessmentSecretExposureObservationDocument>",
+            ),
+            ("source_authentication", "&'static str"),
+            ("secret_validity", "&'static str"),
+            ("provider_validation", "&'static str"),
+            ("exploit_execution", "&'static str"),
+            ("impact_validation", "&'static str"),
+            ("raw_values_retained", "bool"),
+            ("public_secret_hashes_retained", "bool"),
+        ],
+    ),
+    (
+        "AssessmentSecretExposureOutcomeDocument",
+        &[],
+        &[("outcome", "&'static str"), ("count", "u64")],
+    ),
+    (
+        "AssessmentSecretExposureObservationDocument",
+        &[],
+        &[
+            ("detector_class", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("occurrence_count", "u64"),
+            ("evidence_references", "Vec<String>"),
         ],
     ),
     (
@@ -6204,6 +6290,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "authorization-review" => "feature=\"authorization-review\"",
         "openapi-review" => "feature=\"openapi-review\"",
         "rest-review" => "feature=\"rest-review\"",
+        "secret-exposure-review" => "feature=\"secret-exposure-review\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
         _ => return false,
@@ -6246,6 +6333,9 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentAuthorizationAuditDocument"
                 | "AssessmentOpenApiAuditDocument"
                 | "AssessmentRestAuditDocument"
+                | "AssessmentSecretExposureAuditDocument"
+                | "AssessmentSecretExposureOutcomeDocument"
+                | "AssessmentSecretExposureObservationDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -6346,6 +6436,11 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 },
                 "AssessmentRestAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"rest-review\")"
+                },
+                "AssessmentSecretExposureAuditDocument"
+                | "AssessmentSecretExposureOutcomeDocument"
+                | "AssessmentSecretExposureObservationDocument" => {
+                    "all(feature=\"scanning\",feature=\"secret-exposure-review\")"
                 },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
@@ -6458,6 +6553,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         reporting_audit_field_attributes_are_exact(&field.attrs, "openapi-review")
                     } else if name == "AssessmentDocument" && field_name == "rest_review" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "rest-review")
+                    } else if name == "AssessmentDocument" && field_name == "secret_exposure_review"
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "secret-exposure-review",
+                        )
                     } else if name == "AssessmentDocument"
                         && matches!(
                             field_name.as_str(),
@@ -8938,8 +9039,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 390_296;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x2fbe_5b87_19b2_b5e3_9930_187f_a256_dd94;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 408_440;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xd186_d341_2904_a168_8c05_034e_b516_17e9;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -9042,6 +9143,11 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
     "crate::web_runtime::MAX_REST_REVIEW_ACTIVE_VERIFICATIONS",
     "crate::web_runtime::MAX_REST_REVIEW_REQUESTS",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_BODY_BYTES",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_OCCURRENCES",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_RESPONSES",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES",
     "crate::web_runtime::MAX_SUPPLIED_SESSION_CHECKPOINTS",
     "crate::web_runtime::MAX_SUPPLIED_SESSION_REQUESTS",
     "crate::web_runtime::MAX_SUPPLIED_SESSION_RESOURCES",
@@ -9051,6 +9157,11 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::REST_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::RestObservedMediaClass",
     "crate::web_runtime::RestRuntimeOutcome",
+    "crate::web_runtime::SECRET_EXPOSURE_AUDIT_SCHEMA",
+    "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_ID",
+    "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
+    "crate::web_runtime::SECRET_EXPOSURE_POLICY_ID",
+    "crate::web_runtime::SECRET_EXPOSURE_REPRESENTATION",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
@@ -9065,6 +9176,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SuppliedSessionPrincipalAssurance",
     "crate::web_runtime::SuppliedSessionResourceOutcome",
     "crate::web_runtime::WebAssessmentRunReport",
+    "crate::web_runtime::WebAssessmentSecretExposureAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
     "crate::web_runtime::WordPressAssetFingerprintExecution",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
@@ -9148,6 +9260,18 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentDecisionOverview::from_document",
+    "AssessmentSecretExposureAuditDocument::from_audit",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_BODY_BYTES",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_OCCURRENCES",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_RESPONSES",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS",
+    "crate::web_runtime::MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES",
+    "crate::web_runtime::SECRET_EXPOSURE_AUDIT_SCHEMA",
+    "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_ID",
+    "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
+    "crate::web_runtime::SECRET_EXPOSURE_POLICY_ID",
+    "crate::web_runtime::SECRET_EXPOSURE_REPRESENTATION",
+    "crate::web_runtime::WebAssessmentSecretExposureAudit",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
@@ -9665,6 +9789,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentDecisionOverview::from_document",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
+    "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentOpenApiAuditDocument::from_audit",
@@ -9746,6 +9871,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "serde_json::to_writer",
     "serde_json::to_string",
     "severity_token",
+    "secret_exposure_capability",
+    "secret_exposure_capability_for_class",
     "starts_csv_formula_after_whitespace",
     "std::str::from_utf8",
     "std::collections::BTreeSet::new",
@@ -9870,6 +9997,22 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accepted_association_count",
+    "cmp",
+    "detector_class",
+    "body_derived_projection_suppressed_response_count",
+    "evaluated_response_count",
+    "find_map",
+    "interpreted_byte_count",
+    "match_occurrence_count",
+    "not_evaluated_response_count",
+    "observations",
+    "occurrence_count",
+    "omitted_observation_count",
+    "response_count",
+    "secret_exposure_review_audit",
+    "sort_by_key",
+    "sort_by",
+    "then_with",
     "browser_semantics",
     "cookie_lifecycle",
     "cookie_policy",
@@ -10432,6 +10575,23 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::RestRuntimeOutcome"
                 )
             });
+        let secret_exposure_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::web_runtime::MAX_SECRET_EXPOSURE_BODY_BYTES"
+                        | "crate::web_runtime::MAX_SECRET_EXPOSURE_OCCURRENCES"
+                        | "crate::web_runtime::MAX_SECRET_EXPOSURE_RESPONSES"
+                        | "crate::web_runtime::MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS"
+                        | "crate::web_runtime::MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES"
+                        | "crate::web_runtime::SECRET_EXPOSURE_AUDIT_SCHEMA"
+                        | "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_ID"
+                        | "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION"
+                        | "crate::web_runtime::SECRET_EXPOSURE_POLICY_ID"
+                        | "crate::web_runtime::SECRET_EXPOSURE_REPRESENTATION"
+                        | "crate::web_runtime::WebAssessmentSecretExposureAudit"
+                )
+            });
         let supplied_session_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -10547,6 +10707,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"rest-review\")")
+        } else if secret_exposure_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
         } else if supplied_session_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -10562,7 +10727,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, OpenAPI, REST, and WordPress audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -10632,18 +10797,20 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"authorization-review\"")
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
+                    | Some("feature=\"secret-exposure-review\"")
                     | Some("feature=\"supplied-session-review\"")
                     | Some("not(feature=\"supplied-session-review\")")
                     | Some("feature=\"wordpress-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
                     | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, supplied-session, authorization, OpenAPI, REST, and WordPress audit feature gates"
+                "reporting production source may contain only the exact scanning, supplied-session, authorization, OpenAPI, REST, passive secret-exposure, and WordPress audit feature gates"
                     .to_owned(),
             );
         }
@@ -11386,6 +11553,10 @@ mod tests {
             "supplied-session-review".to_owned(),
             vec!["scanning".to_owned(), "dep:zeroize".to_owned()],
         );
+        features.insert(
+            "secret-exposure-review".to_owned(),
+            vec!["scanning".to_owned()],
+        );
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("openapi-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("rest-review".to_owned(), vec!["openapi-review".to_owned()]);
@@ -11724,6 +11895,48 @@ mod tests {
             .get_mut("release-bundle")
             .unwrap()
             .retain(|feature| feature != "wordpress-review");
+        assert!(
+            cli_feature_violations(&cli_features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
+    }
+
+    #[test]
+    fn secret_exposure_review_is_isolated_non_bundled_and_in_compatibility_aggregates() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("secret-exposure-review").unwrap(),
+            &["scanning".to_owned()]
+        );
+        assert!(!raw_feature_closure(&features, "default").contains("secret-exposure-review"));
+        for aggregate in ["full", "enterprise"] {
+            assert!(features
+                .get(aggregate)
+                .unwrap()
+                .iter()
+                .any(|member| member == "secret-exposure-review"));
+        }
+
+        features.get_mut("secret-exposure-review").unwrap().clear();
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`secret-exposure-review` raw feature closure")
+                && violation.contains("scanning")
+        }));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert!(cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .all(|member| member != "secret-exposure-review"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("secret-exposure-review".to_owned());
         assert!(
             cli_feature_violations(&cli_features, &dependencies)
                 .iter()
@@ -13578,6 +13791,8 @@ mod tests {
                         self.ssrf_oast_review,
                         #[cfg(feature = "wordpress-review")]
                         self.wordpress_review,
+                        #[cfg(feature = "secret-exposure-review")]
+                        self.secret_exposure_review,
                     )
                 }
             }
@@ -13595,7 +13810,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -14118,6 +14333,15 @@ mod tests {
                 MAX_REST_REVIEW_ACTIVE_VERIFICATIONS, MAX_REST_REVIEW_REQUESTS,
                 REST_REVIEW_CAPABILITY_ID,
             };
+            #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+            use crate::web_runtime::{
+                WebAssessmentSecretExposureAudit, MAX_SECRET_EXPOSURE_BODY_BYTES,
+                MAX_SECRET_EXPOSURE_OCCURRENCES, MAX_SECRET_EXPOSURE_RESPONSES,
+                MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS,
+                MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES, SECRET_EXPOSURE_AUDIT_SCHEMA,
+                SECRET_EXPOSURE_CATALOGUE_ID, SECRET_EXPOSURE_CATALOGUE_REVISION,
+                SECRET_EXPOSURE_POLICY_ID, SECRET_EXPOSURE_REPRESENTATION,
+            };
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             use crate::{
                 authorization_review::{
@@ -14246,6 +14470,16 @@ mod tests {
         );
         assert_ne!(widened_supplied_session_import, imports);
         let violations = reporting_source_import_violations(&widened_supplied_session_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_secret_exposure_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"secret-exposure-review\"))]",
+            "#[cfg(feature = \"scanning\")]",
+        );
+        assert_ne!(widened_secret_exposure_import, imports);
+        let violations = reporting_source_import_violations(&widened_secret_exposure_import)
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
@@ -14632,6 +14866,9 @@ mod tests {
                 #[cfg(feature = "rest-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 rest_review: Option<AssessmentRestAuditDocument>,
+                #[cfg(feature = "secret-exposure-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                secret_exposure_review: Option<AssessmentSecretExposureAuditDocument>,
                 #[cfg(feature = "wordpress-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -14642,6 +14879,51 @@ mod tests {
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_asset_fingerprints: Option<AssessmentWordPressAssetFingerprintAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSecretExposureAuditDocument {
+                schema: &'static str,
+                policy: &'static str,
+                catalogue_id: &'static str,
+                catalogue_revision: &'static str,
+                representation: &'static str,
+                context: &'static str,
+                selected: bool,
+                additional_request_count: u64,
+                response_count: u64,
+                evaluated_response_count: u64,
+                not_evaluated_response_count: u64,
+                body_derived_projection_suppressed_response_count: u64,
+                interpreted_byte_count: u64,
+                per_response_byte_limit: u64,
+                total_byte_limit: u64,
+                observation_count: u64,
+                omitted_observation_count: u64,
+                match_occurrence_count: u64,
+                outcomes: Vec<AssessmentSecretExposureOutcomeDocument>,
+                observations: Vec<AssessmentSecretExposureObservationDocument>,
+                source_authentication: &'static str,
+                secret_validity: &'static str,
+                provider_validation: &'static str,
+                exploit_execution: &'static str,
+                impact_validation: &'static str,
+                raw_values_retained: bool,
+                public_secret_hashes_retained: bool,
+            }
+            #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSecretExposureOutcomeDocument {
+                outcome: &'static str,
+                count: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSecretExposureObservationDocument {
+                detector_class: &'static str,
+                capability_id: &'static str,
+                occurrence_count: u64,
+                evidence_references: Vec<String>,
             }
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             #[derive(Serialize)]
@@ -16126,6 +16408,10 @@ mod tests {
                 vec!["termivar-scanner/supplied-session-review".to_owned()],
             ),
             (
+                "secret-exposure-review".to_owned(),
+                vec!["termivar-scanner/secret-exposure-review".to_owned()],
+            ),
+            (
                 "ssrf-oast-review".to_owned(),
                 vec!["termivar-scanner/ssrf-oast-review".to_owned()],
             ),
@@ -16515,6 +16801,7 @@ mod tests {
             "legacy-scanner",
             "api-adapter",
             "proxy-adapter",
+            "secret-exposure-review",
             "ssrf-oast-review",
             "supplied-session-review",
         ] {

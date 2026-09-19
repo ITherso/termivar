@@ -8,6 +8,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "secret-exposure-review")]
+use sha2::{Digest, Sha256};
 use termivar_core::{ConfidenceScore, EntityId, KnowledgePredicate};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -323,6 +325,557 @@ async fn dropping_the_progress_observer_cannot_stop_or_expand_the_assessment() {
     assert_eq!(server.hit_count("/").await, 1);
 }
 
+#[cfg(feature = "secret-exposure-review")]
+#[tokio::test]
+async fn passive_secret_exposure_uses_committed_ordinary_response_without_requests_or_values() {
+    const SYNTHETIC_SECRET: &str = "sk_live_A1b2C3d4E5f6G7h8";
+    let body = format!(
+        "<html><body><script>const synthetic_fixture = '{SYNTHETIC_SECRET}';</script></body></html>"
+    )
+    .into_bytes();
+    let expected_body_digest = format!("{:x}", Sha256::digest(&body));
+    let served_body = body.clone();
+    let server =
+        serve(move |_| FixtureReply::Response(FixtureResponse::html(served_body.clone()))).await;
+
+    let off_url = server.url("/");
+    let off_subject =
+        EntityId::new(format!("endpoint:{off_url}")).expect("numeric-loopback subject identity");
+    let mut option_off = WebAssessmentRuntime::builder(off_url).build().unwrap();
+    let off = option_off.analyze().await.unwrap();
+    assert!(off.secret_exposure_review_audit().is_none());
+    assert!(!off
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id().starts_with("exposure.response-")));
+    let off_requests = server.requests().await;
+    assert_eq!(off_requests.len(), 1);
+    assert_eq!(off_requests[0].method, "GET");
+    assert_eq!(off_requests[0].target, "/");
+    let off_snapshot = option_off.knowledge().snapshot_for_subject(&off_subject);
+    let off_digest = off_snapshot
+        .evidence()
+        .iter()
+        .filter(|item| {
+            item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(off_digest.len(), 1);
+    assert_eq!(
+        off_digest[0].value(),
+        &EvidenceValue::Text(expected_body_digest.clone())
+    );
+
+    let selected_url = server.url("/");
+    let selected_subject = EntityId::new(format!("endpoint:{selected_url}"))
+        .expect("numeric-loopback subject identity");
+    let mut selected_runtime = WebAssessmentRuntime::builder(selected_url)
+        .enable_secret_exposure_review()
+        .build()
+        .unwrap();
+    let selected = selected_runtime.analyze().await.unwrap();
+    assert_report_reconciles(&selected);
+    let audit = selected
+        .secret_exposure_review_audit()
+        .expect("selected secret-exposure audit");
+    assert_eq!(audit.response_count(), 1);
+    assert_eq!(audit.evaluated_response_count(), 1);
+    assert_eq!(audit.not_evaluated_response_count(), 0);
+    assert_eq!(audit.body_derived_projection_suppressed_response_count(), 1);
+    assert_eq!(audit.observation_count(), 1);
+    assert_eq!(audit.omitted_observation_count(), 0);
+    assert_eq!(audit.match_occurrence_count(), 1);
+    assert_eq!(audit.outcomes().len(), 1);
+    assert_eq!(audit.outcomes()[0].outcome().as_str(), "evaluated");
+    assert_eq!(audit.outcomes()[0].count(), 1);
+    assert_eq!(
+        audit.observations()[0].detector_class().as_str(),
+        "stripe_live_secret"
+    );
+    assert_eq!(audit.observations()[0].occurrence_count(), 1);
+    assert_eq!(audit.observations()[0].evidence_ids().len(), 1);
+    let item = selected
+        .assessment_items()
+        .iter()
+        .find(|item| item.capability_id() == "exposure.response-stripe-live-secret@1")
+        .expect("committed detector observation becomes one item");
+    assert_eq!(item.disposition(), AssessmentDisposition::Informational);
+    assert_eq!(item.severity(), None);
+    assert_eq!(item.evidence_count(), 1);
+    assert_eq!(server.requests().await.len(), 2);
+    let internal_debug = format!(
+        "{selected:?}{:?}",
+        selected_runtime
+            .knowledge()
+            .snapshot_for_subject(&selected_subject)
+    );
+    assert!(!internal_debug.contains(SYNTHETIC_SECRET));
+    assert!(!internal_debug.contains("A1b2C3d4E5f6G7h8"));
+    assert!(!internal_debug.contains(&expected_body_digest));
+    assert!(!selected_runtime
+        .knowledge()
+        .snapshot_for_subject(&selected_subject)
+        .evidence()
+        .iter()
+        .any(|item| {
+            item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+        }));
+    assert!(matches!(
+        selected.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+
+    #[cfg(feature = "reporting")]
+    {
+        let product =
+            ReportGenerator::compose_assessment(selected, ScanProfileV1::web_review().unwrap())
+                .unwrap();
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+            ReportFormat::Csv,
+        ] {
+            let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+            assert!(rendered.contains("exposure.response-stripe-live-secret@1"));
+            assert!(!rendered.contains(SYNTHETIC_SECRET));
+            assert!(!rendered.contains("A1b2C3d4E5f6G7h8"));
+            assert_no_confirmed_assessment_item(&rendered, format);
+        }
+    }
+}
+
+#[cfg(feature = "secret-exposure-review")]
+#[tokio::test]
+async fn selected_secret_exposure_suppresses_zero_match_low_entropy_body_and_projection() {
+    const UNCATALOGUED_LOW_ENTROPY_VALUE: &str = "password=foo";
+    let body = format!(
+        "<html><body><a href='/{UNCATALOGUED_LOW_ENTROPY_VALUE}'>fixture</a></body></html>"
+    )
+    .into_bytes();
+    let expected_body_digest = format!("{:x}", Sha256::digest(&body));
+    let served_body = body.clone();
+    let server =
+        serve(move |_| FixtureReply::Response(FixtureResponse::html(served_body.clone()))).await;
+    let url = server.url("/");
+    let subject =
+        EntityId::new(format!("endpoint:{url}")).expect("numeric-loopback subject identity");
+
+    let mut runtime = WebAssessmentRuntime::builder(url)
+        .enable_secret_exposure_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let audit = report
+        .secret_exposure_review_audit()
+        .expect("selected secret-exposure audit");
+    assert_eq!(audit.response_count(), 1);
+    assert_eq!(audit.evaluated_response_count(), 1);
+    assert_eq!(audit.observation_count(), 0);
+    assert_eq!(audit.match_occurrence_count(), 0);
+    assert_eq!(audit.body_derived_projection_suppressed_response_count(), 1);
+    assert_eq!(server.requests().await.len(), 1);
+
+    let snapshot = runtime.knowledge().snapshot_for_subject(&subject);
+    assert!(!snapshot.evidence().iter().any(|item| {
+        item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+    }));
+    assert!(!snapshot
+        .evidence()
+        .iter()
+        .any(|item| item.predicate().namespace() == "web.discovery"));
+    assert_eq!(
+        snapshot
+            .evidence()
+            .iter()
+            .filter(|item| {
+                item.predicate().namespace() == "web.secret-exposure"
+                    && item.predicate().name() == "response_body_lineage"
+            })
+            .count(),
+        1
+    );
+    let debug = format!("{report:?}{snapshot:?}");
+    assert!(!debug.contains(UNCATALOGUED_LOW_ENTROPY_VALUE));
+    assert!(!debug.contains(&expected_body_digest));
+}
+
+#[cfg(feature = "secret-exposure-review")]
+#[tokio::test]
+async fn selected_secret_exposure_replaces_native_review_body_digests_without_losing_semantics() {
+    const SYNTHETIC_SECRET: &str = "sk_live_N4t1v3R7v13wS3cr3t";
+    let body = format!(
+        "<html><body><script>const synthetic_fixture = '{SYNTHETIC_SECRET}';</script></body></html>"
+    )
+    .into_bytes();
+    let expected_body_digest = format!("{:x}", Sha256::digest(&body));
+    let served_body = body.clone();
+    let server =
+        serve(move |_| FixtureReply::Response(FixtureResponse::html(served_body.clone()))).await;
+
+    let option_off_url = server.url("/");
+    let option_off_subject = EntityId::new(format!("endpoint:{option_off_url}"))
+        .expect("numeric-loopback subject identity");
+    let mut option_off = WebAssessmentRuntime::builder(option_off_url)
+        .enable_low_risk_differential_review()
+        .build()
+        .unwrap();
+    let option_off_report = option_off.analyze().await.unwrap();
+    assert_report_reconciles(&option_off_report);
+    let option_off_requests = server.requests().await;
+    assert_eq!(option_off_requests.len(), 3);
+    let option_off_snapshot = option_off
+        .knowledge()
+        .snapshot_for_subject(&option_off_subject);
+    let option_off_digests = option_off_snapshot
+        .evidence()
+        .iter()
+        .filter(|item| {
+            item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(option_off_digests.len(), 3);
+    assert!(option_off_digests
+        .iter()
+        .all(|item| item.value() == &EvidenceValue::Text(expected_body_digest.clone())));
+
+    let selected_url = server.url("/");
+    let selected_subject = EntityId::new(format!("endpoint:{selected_url}"))
+        .expect("numeric-loopback subject identity");
+    let mut selected_runtime = WebAssessmentRuntime::builder(selected_url)
+        .enable_low_risk_differential_review()
+        .enable_secret_exposure_review()
+        .build()
+        .unwrap();
+    let selected_report = selected_runtime.analyze().await.unwrap();
+    assert_report_reconciles(&selected_report);
+    assert!(matches!(
+        selected_report.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    let all_requests = server.requests().await;
+    assert_eq!(all_requests.len(), 6);
+    assert_eq!(&all_requests[..3], &all_requests[3..]);
+
+    let selected_snapshot = selected_runtime
+        .knowledge()
+        .snapshot_for_subject(&selected_subject);
+    assert!(!selected_snapshot.evidence().iter().any(|item| {
+        item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+    }));
+    assert_eq!(
+        selected_snapshot
+            .evidence()
+            .iter()
+            .filter(|item| {
+                item.predicate().namespace() == "web.secret-exposure"
+                    && item.predicate().name() == "response_body_lineage"
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        selected_snapshot
+            .evidence()
+            .iter()
+            .filter(|item| {
+                item.predicate().namespace() == "web.secret-exposure"
+                    && item.predicate().name() == "active_review_body_lineage"
+            })
+            .count(),
+        2
+    );
+    assert!(selected_snapshot.evidence().iter().any(|item| {
+        item.predicate().namespace() == crate::web_actions::NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE
+    }));
+    let internal_debug = format!("{selected_report:?}{selected_snapshot:?}");
+    assert!(!internal_debug.contains(SYNTHETIC_SECRET));
+    assert!(!internal_debug.contains(&expected_body_digest));
+}
+
+#[cfg(feature = "secret-exposure-review")]
+#[tokio::test]
+async fn selected_secret_exposure_zero_match_body_cannot_schedule_a_structural_child() {
+    const CHILD_PATH: &str = "/child?item=fixture";
+    let server = serve(move |request| {
+        if request.path() == "/" {
+            FixtureReply::Response(FixtureResponse::html(format!(
+                "<html><body><a href='{CHILD_PATH}'>child</a></body></html>"
+            )))
+        } else {
+            FixtureReply::Response(FixtureResponse::html("unexpected child response"))
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_low_risk_differential_review()
+        .enable_secret_exposure_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert!(runtime.non_root_structural_review.is_none());
+    assert_eq!(report.usage().total_requests(), 3);
+    assert!(server
+        .requests()
+        .await
+        .iter()
+        .all(|request| request.target == "/"));
+
+    let root_subject =
+        EntityId::new(format!("endpoint:{}", runtime.root.url())).expect("root subject identity");
+    let root_snapshot = runtime.knowledge().snapshot_for_subject(&root_subject);
+    assert!(!root_snapshot.evidence().iter().any(|item| {
+        item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+    }));
+    assert!(root_snapshot.evidence().iter().any(|item| {
+        item.predicate().namespace() == "web.secret-exposure"
+            && item.predicate().name() == "active_review_body_lineage"
+    }));
+    assert!(root_snapshot.evidence().iter().any(|item| {
+        item.predicate().namespace() == crate::web_actions::NATIVE_WEB_REVIEW_EVIDENCE_NAMESPACE
+    }));
+    assert!(!format!("{report:?}{root_snapshot:?}").contains(CHILD_PATH));
+}
+
+#[cfg(feature = "secret-exposure-review")]
+#[tokio::test]
+async fn positive_secret_body_cannot_reach_generic_discovery_or_authorize_follow_up() {
+    const SYNTHETIC_SECRET: &str = "sk_live_Q7w8E9r0T1y2U3i4";
+    const PRIVATE_PATH_CANARY: &str = "private-s04-path-canary";
+    let body = format!(
+        "<html><body><a href='/{SYNTHETIC_SECRET}/'>link</a><form action='/submit/{SYNTHETIC_SECRET}'><input name='{SYNTHETIC_SECRET}'></form></body></html>"
+    );
+    let server =
+        serve(move |_| FixtureReply::Response(FixtureResponse::html(body.as_bytes().to_vec())))
+            .await;
+    let url = server.url(&format!("/{PRIVATE_PATH_CANARY}/"));
+    let subject = EntityId::new(format!("endpoint:{url}")).unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(url)
+        .enable_secret_exposure_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let audit = report.secret_exposure_review_audit().unwrap();
+
+    assert_eq!(audit.match_occurrence_count(), 3);
+    assert_eq!(audit.body_derived_projection_suppressed_response_count(), 1);
+    assert!(matches!(
+        report.completion(),
+        WebAssessmentCompletion::Complete
+    ));
+    assert!(server
+        .requests()
+        .await
+        .iter()
+        .all(|request| !request.target.contains(SYNTHETIC_SECRET)));
+
+    let snapshot = runtime.knowledge().snapshot_for_subject(&subject);
+    assert!(!snapshot
+        .evidence()
+        .iter()
+        .any(|item| item.predicate().namespace() == "web.discovery"));
+    let debug = format!("{audit:?}{snapshot:?}");
+    assert!(!debug.contains(SYNTHETIC_SECRET));
+    assert!(!format!("{audit:?}").contains(PRIVATE_PATH_CANARY));
+
+    #[cfg(feature = "reporting")]
+    {
+        let product =
+            ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                .unwrap();
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+            ReportFormat::Csv,
+        ] {
+            let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+            assert!(!rendered.contains(SYNTHETIC_SECRET));
+        }
+    }
+}
+
+#[cfg(feature = "secret-exposure-review")]
+#[tokio::test]
+async fn selected_secret_exposure_suppresses_digest_for_refused_response_bodies() {
+    let cases = [
+        (
+            "invalid_utf8",
+            "text/html",
+            b"synthetic-low-entropy-secret-\xff".to_vec(),
+        ),
+        (
+            "unsupported_media_type",
+            "application/octet-stream",
+            b"synthetic-low-entropy-secret".to_vec(),
+        ),
+    ];
+    for (expected_outcome, media_type, body) in cases {
+        let expected_body_digest = format!("{:x}", Sha256::digest(&body));
+        let served_body = body.clone();
+        let server = serve(move |_| {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some(media_type),
+                served_body.clone(),
+            ))
+        })
+        .await;
+        let url = server.url("/");
+        let subject = EntityId::new(format!("endpoint:{url}")).unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(url)
+            .enable_secret_exposure_review()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let audit = report
+            .secret_exposure_review_audit()
+            .expect("selected audit remains present after refusal");
+        assert_eq!(audit.response_count(), 1);
+        assert_eq!(audit.evaluated_response_count(), 0);
+        assert_eq!(audit.interpreted_byte_count(), 0);
+        assert_eq!(audit.body_derived_projection_suppressed_response_count(), 1);
+        assert_eq!(audit.outcomes().len(), 1);
+        assert_eq!(audit.outcomes()[0].outcome().as_str(), expected_outcome);
+        assert_eq!(audit.outcomes()[0].count(), 1);
+
+        let snapshot = runtime.knowledge().snapshot_for_subject(&subject);
+        assert!(!snapshot.evidence().iter().any(|item| {
+            item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+        }));
+        assert!(!format!("{snapshot:?}").contains(&expected_body_digest));
+        assert_eq!(server.requests().await.len(), 1);
+    }
+}
+
+#[cfg(feature = "secret-exposure-review")]
+#[tokio::test]
+async fn committed_response_lineage_requires_exactly_one_digest_or_secret_outcome() {
+    let server = serve(|_| {
+        let synthetic_shape = ["sk_", "live_", "Ab3dEf5hIj7kLm9nPq2rSt4v"].concat();
+        FixtureReply::Response(FixtureResponse::html(format!(
+            "<html><body><pre>{synthetic_shape}</pre></body></html>"
+        )))
+    })
+    .await;
+
+    let mut digest_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .build()
+        .unwrap();
+    let digest_report = digest_runtime.analyze().await.unwrap();
+    let digest_receipt = digest_report.subjects()[0].bootstrap().unwrap();
+    let digest = digest_receipt
+        .evidence()
+        .iter()
+        .find(|evidence| {
+            evidence.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+        })
+        .expect("option-off receipt has one ordinary response digest")
+        .clone();
+    assert_eq!(
+        response_body_lineage_from_receipt(digest_receipt)
+            .unwrap()
+            .id(),
+        digest.id()
+    );
+    let mut defense = CommittedAssessmentDefenseLedger::default();
+    assert!(defense
+        .ingest_receipt(digest_receipt, digest_runtime.knowledge(), true)
+        .unwrap()
+        .is_some());
+
+    let mut lineage_runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .enable_secret_exposure_review()
+        .build()
+        .unwrap();
+    let lineage_report = lineage_runtime.analyze().await.unwrap();
+    let lineage_receipt = lineage_report.subjects()[0].bootstrap().unwrap();
+    let lineage = lineage_receipt
+        .evidence()
+        .iter()
+        .find(|evidence| {
+            evidence.predicate().namespace() == "web.secret-exposure"
+                && evidence.predicate().name() == "response_body_lineage"
+        })
+        .expect("positive selected receipt has one value-free replacement lineage")
+        .clone();
+    assert_eq!(
+        response_body_lineage_from_receipt(lineage_receipt)
+            .unwrap()
+            .id(),
+        lineage.id()
+    );
+    let mut defense = CommittedAssessmentDefenseLedger::default();
+    assert!(defense
+        .ingest_receipt(lineage_receipt, lineage_runtime.knowledge(), true)
+        .unwrap()
+        .is_some());
+
+    let assert_rejected = |template: &DecisionEvidenceReceipt, evidence: Vec<Evidence>| {
+        let (knowledge, receipt) = receipt_with_committed_batch(template, evidence);
+        assert!(response_body_lineage_from_receipt(&receipt).is_err());
+        let mut defense = CommittedAssessmentDefenseLedger::default();
+        assert!(defense.ingest_receipt(&receipt, &knowledge, true).is_err());
+        assert!(defense.observations().is_empty());
+    };
+
+    let mut digest_and_lineage = lineage_receipt.evidence().to_vec();
+    digest_and_lineage.push(fresh_evidence(&digest));
+    assert_rejected(lineage_receipt, digest_and_lineage);
+
+    let mut duplicate_digest = digest_receipt.evidence().to_vec();
+    duplicate_digest.push(fresh_evidence(&digest));
+    assert_rejected(digest_receipt, duplicate_digest);
+
+    let mut duplicate_lineage = lineage_receipt.evidence().to_vec();
+    duplicate_lineage.push(fresh_evidence(&lineage));
+    assert_rejected(lineage_receipt, duplicate_lineage);
+
+    let replacement_parent = lineage_receipt
+        .evidence()
+        .iter()
+        .find(|evidence| {
+            evidence.predicate().namespace() == "web.secret-exposure"
+                && evidence.predicate().name() == "response_outcome"
+        })
+        .expect("selected receipt has a distinct value-free outcome")
+        .id()
+        .clone();
+    let mut substituted_parent = lineage_receipt.evidence().to_vec();
+    let lineage_index = substituted_parent
+        .iter()
+        .position(|evidence| evidence.id() == lineage.id())
+        .unwrap();
+    let derivation = lineage.origin().derivation().unwrap();
+    let mut parents = derivation.parents().to_vec();
+    parents[0] = replacement_parent;
+    substituted_parent[lineage_index] = rebuild_evidence(
+        &lineage,
+        lineage.kind().clone(),
+        lineage.value().clone(),
+        lineage.source().clone(),
+        EvidenceOrigin::Derived(
+            EvidenceDerivation::new(parents, derivation.algorithm().clone()).unwrap(),
+        ),
+    );
+    assert_rejected(lineage_receipt, substituted_parent);
+
+    let mut wrong_type_digest = digest_receipt.evidence().to_vec();
+    let digest_index = wrong_type_digest
+        .iter()
+        .position(|evidence| evidence.id() == digest.id())
+        .unwrap();
+    wrong_type_digest[digest_index] = rebuild_evidence(
+        &digest,
+        digest.kind().clone(),
+        EvidenceValue::Unsigned(64),
+        digest.source().clone(),
+        digest.origin().clone(),
+    );
+    assert_rejected(digest_receipt, wrong_type_digest);
+}
+
 #[cfg(feature = "wordpress-review")]
 #[tokio::test]
 async fn wordpress_review_reuses_root_observation_and_adds_no_requests() {
@@ -472,6 +1025,80 @@ fn wordpress_discovery_requires_wordpress_review_at_build_time() {
     assert!(matches!(
         result,
         Err(WebAssessmentRuntimeError::WordPressDiscoveryRequiresReview)
+    ));
+}
+
+#[cfg(all(feature = "secret-exposure-review", feature = "wordpress-review"))]
+#[test]
+fn secret_exposure_rejects_wordpress_discovery_at_builder_preflight() {
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .enable_secret_exposure_review()
+        .with_wordpress_discovery()
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
+    ));
+}
+
+#[cfg(all(feature = "secret-exposure-review", feature = "graphql-review"))]
+#[test]
+fn secret_exposure_rejects_graphql_at_builder_preflight() {
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .enable_secret_exposure_review()
+        .enable_graphql_review()
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
+    ));
+}
+
+#[cfg(all(feature = "secret-exposure-review", feature = "openapi-review"))]
+#[test]
+fn secret_exposure_rejects_openapi_at_builder_preflight() {
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .enable_secret_exposure_review()
+        .enable_openapi_review()
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
+    ));
+}
+
+#[cfg(all(feature = "secret-exposure-review", feature = "rest-review"))]
+#[test]
+fn secret_exposure_rejects_rest_at_builder_preflight() {
+    let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+        .enable_secret_exposure_review()
+        .enable_rest_review()
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
+    ));
+}
+
+#[cfg(all(feature = "secret-exposure-review", feature = "authorization-review"))]
+#[test]
+fn secret_exposure_rejects_resource_authorization_at_builder_preflight() {
+    let origin = Url::parse("https://example.test/").unwrap();
+    let result = WebAssessmentRuntime::builder(origin.clone())
+        .enable_secret_exposure_review()
+        .with_resource_authorization_review(
+            authorization_policy(&origin),
+            authorization_principals(),
+        )
+        .build();
+
+    assert!(matches!(
+        result,
+        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
     ));
 }
 
@@ -7882,34 +8509,36 @@ fn observe_full_for_test(
     parents: TestObservationParentRefs<'_>,
     passive_response_projection: &crate::http_evidence::passive_review::PassiveResponseProjection,
 ) -> Result<Vec<Evidence>, HttpEvidenceError> {
-    observer.observe(complete_http_response_observation_for_test(
-        CompleteHttpResponseObservationTestInput {
-            case_id: envelope.case_id,
-            action_id: envelope.action_id,
-            executor_id: HTTP_EVIDENCE_EXECUTOR_ID,
-            hypothesis_id: envelope.hypothesis_id,
-            has_payload_strategy: envelope.has_payload_strategy,
-            payload_strategy: None,
-            applies_hypothesis_transition: envelope.applies_hypothesis_transition,
-            stage: envelope.stage,
-            subject: envelope.subject,
-            method: envelope.method,
-            requested_url: envelope.requested_url,
-            status,
-            media_type,
-            reliability: ConfidenceScore::from_percent(100).unwrap(),
-            complete_body,
-            request_method_evidence_id: parents.request_method,
-            request_url_evidence_id: parents.request_url,
-            response_status_evidence_id: parents.response_status,
-            response_final_url_evidence_id: parents.response_final_url,
-            response_media_type_evidence_id: parents.response_media_type,
-            response_body_truncated_evidence_id: parents.response_body_truncated,
-            response_body_digest_evidence_id: parents.response_body_digest,
-            passive_response_projection,
-            review_response_projection: None,
-        },
-    ))
+    Ok(observer
+        .observe(complete_http_response_observation_for_test(
+            CompleteHttpResponseObservationTestInput {
+                case_id: envelope.case_id,
+                action_id: envelope.action_id,
+                executor_id: HTTP_EVIDENCE_EXECUTOR_ID,
+                hypothesis_id: envelope.hypothesis_id,
+                has_payload_strategy: envelope.has_payload_strategy,
+                payload_strategy: None,
+                applies_hypothesis_transition: envelope.applies_hypothesis_transition,
+                stage: envelope.stage,
+                subject: envelope.subject,
+                method: envelope.method,
+                requested_url: envelope.requested_url,
+                status,
+                media_type,
+                reliability: ConfidenceScore::from_percent(100).unwrap(),
+                complete_body,
+                request_method_evidence_id: parents.request_method,
+                request_url_evidence_id: parents.request_url,
+                response_status_evidence_id: parents.response_status,
+                response_final_url_evidence_id: parents.response_final_url,
+                response_media_type_evidence_id: parents.response_media_type,
+                response_body_truncated_evidence_id: parents.response_body_truncated,
+                response_body_digest_evidence_id: parents.response_body_digest,
+                passive_response_projection,
+                review_response_projection: None,
+            },
+        ))?
+        .0)
 }
 
 fn observer_fixture(

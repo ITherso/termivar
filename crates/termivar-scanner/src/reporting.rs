@@ -16,6 +16,14 @@ use crate::web_runtime::{
     RestObservedMediaClass, RestRuntimeOutcome, MAX_REST_REVIEW_ACTIVE_VERIFICATIONS,
     MAX_REST_REVIEW_REQUESTS, REST_REVIEW_CAPABILITY_ID,
 };
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+use crate::web_runtime::{
+    WebAssessmentSecretExposureAudit, MAX_SECRET_EXPOSURE_BODY_BYTES,
+    MAX_SECRET_EXPOSURE_OCCURRENCES, MAX_SECRET_EXPOSURE_RESPONSES,
+    MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS, MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES,
+    SECRET_EXPOSURE_AUDIT_SCHEMA, SECRET_EXPOSURE_CATALOGUE_ID, SECRET_EXPOSURE_CATALOGUE_REVISION,
+    SECRET_EXPOSURE_POLICY_ID, SECRET_EXPOSURE_REPRESENTATION,
+};
 #[cfg(all(feature = "scanning", feature = "authorization-review"))]
 use crate::{
     authorization_review::{
@@ -834,6 +842,9 @@ const ASSESSMENT_CSV_HEADERS: [&str; 30] = [
     "verification_stage",
 ];
 
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+const SECRET_EXPOSURE_CONTEXT: &str = "anonymous-ordinary-get";
+
 #[cfg(feature = "scanning")]
 fn render_assessment_csv(
     document: &AssessmentDocument<'_>,
@@ -1059,6 +1070,46 @@ fn render_assessment_csv(
                 &request_count,
                 &summary,
                 "api-surface",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
+    #[cfg(feature = "secret-exposure-review")]
+    if let Some(audit) = &document.secret_exposure_review {
+        let evidence_count = audit.observation_count.to_string();
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "secret_exposure_review_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                "selected",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "informational",
+                "observation",
+                "",
+                "",
+                "",
+                &evidence_count,
+                &summary,
+                "passive-secret-exposure",
                 "",
                 "",
                 "",
@@ -1708,6 +1759,45 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             output.push_str("</code></dd>")?;
         }
         output.push_str("</dl></section>")?;
+    }
+    #[cfg(feature = "secret-exposure-review")]
+    if let Some(audit) = &document.secret_exposure_review {
+        output.push_str(
+            "<section><h2>Passive response secret-exposure review audit</h2>\
+<p class=\"wp-note\">Detector observations are redacted response-content classifications. They do not establish source authenticity, secret validity, provider acceptance, exploitability, or impact.</p><dl class=\"meta\">",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Response outcomes</h3><ul>")?;
+        for outcome in &audit.outcomes {
+            output.push_str("<li><code>")?;
+            write_html_text(
+                &mut output,
+                &format!("outcome={};count={}", outcome.outcome, outcome.count),
+            )?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul><h3>Redacted observations</h3><ul>")?;
+        for observation in &audit.observations {
+            output.push_str("<li><code>")?;
+            write_html_text(
+                &mut output,
+                &format!(
+                    "detector_class={};capability_id={};occurrence_count={};evidence_reference={}",
+                    observation.detector_class,
+                    observation.capability_id,
+                    observation.occurrence_count,
+                    observation.evidence_references[0],
+                ),
+            )?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul></section>")?;
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
@@ -3894,6 +3984,41 @@ fn render_assessment_markdown(
             output.push_char('\n')?;
         }
     }
+    #[cfg(feature = "secret-exposure-review")]
+    if let Some(audit) = &document.secret_exposure_review {
+        output.push_str(
+            "\n### Passive response secret-exposure review audit\n\nDetector observations are redacted response-content classifications. They do not establish source authenticity, secret validity, provider acceptance, exploitability, or impact.\n\n",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Response outcomes\n\n")?;
+        for outcome in &audit.outcomes {
+            output.push_str("- ")?;
+            write_markdown_code_span(
+                &mut output,
+                &format!("outcome={};count={}", outcome.outcome, outcome.count),
+            )?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Redacted observations\n\n")?;
+        for observation in &audit.observations {
+            output.push_str("- ")?;
+            write_markdown_code_span(
+                &mut output,
+                &format!(
+                    "detector_class={};capability_id={};occurrence_count={};evidence_reference={}",
+                    observation.detector_class,
+                    observation.capability_id,
+                    observation.occurrence_count,
+                    observation.evidence_references[0],
+                ),
+            )?;
+            output.push_char('\n')?;
+        }
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         output.push_str("\n### WordPress evidence review audit\n\n")?;
@@ -4002,6 +4127,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "rest-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     rest_review: Option<AssessmentRestAuditDocument>,
+    #[cfg(feature = "secret-exposure-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_exposure_review: Option<AssessmentSecretExposureAuditDocument>,
     #[cfg(feature = "wordpress-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -4117,6 +4245,11 @@ impl<'a> AssessmentDocument<'a> {
             rest_review: report
                 .rest_review_audit()
                 .map(AssessmentRestAuditDocument::from_audit),
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_review: report
+                .secret_exposure_review_audit()
+                .map(|audit| AssessmentSecretExposureAuditDocument::from_audit(report, audit))
+                .transpose()?,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: report
                 .wordpress_review_audit()
@@ -4174,6 +4307,16 @@ impl<'a> AssessmentDocument<'a> {
             .items
             .iter()
             .any(|item| item.capability_id == REST_REVIEW_CAPABILITY_ID)
+        {
+            return Err(ReportError::Serialization);
+        }
+        #[cfg(feature = "secret-exposure-review")]
+        if let Some(audit) = &self.secret_exposure_review {
+            audit.validate(&self.items)?;
+        } else if self
+            .items
+            .iter()
+            .any(|item| secret_exposure_capability(item.capability_id).is_some())
         {
             return Err(ReportError::Serialization);
         }
@@ -4340,6 +4483,401 @@ impl<'a> AssessmentDocument<'a> {
             item.validate()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+const SECRET_EXPOSURE_CAPABILITIES: [(&str, &str); 4] = [
+    (
+        "pem_private_key_block",
+        "exposure.response-private-key-material@1",
+    ),
+    (
+        "aws_access_key_pair",
+        "exposure.response-aws-access-key-pair@1",
+    ),
+    (
+        "stripe_live_secret",
+        "exposure.response-stripe-live-secret@1",
+    ),
+    (
+        "bearer_authorization_assignment",
+        "exposure.response-bearer-authorization@1",
+    ),
+];
+
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+const SECRET_EXPOSURE_OUTCOMES: [&str; 12] = [
+    "evaluated",
+    "method_not_get",
+    "status_not_200",
+    "incomplete_body",
+    "request_context_ineligible",
+    "content_coded",
+    "content_length_inconsistent",
+    "unsupported_media_type",
+    "invalid_utf8",
+    "response_byte_limit_exceeded",
+    "total_byte_limit_exceeded",
+    "detector_limit_exceeded",
+];
+
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+fn secret_exposure_capability(capability_id: &str) -> Option<&'static str> {
+    SECRET_EXPOSURE_CAPABILITIES
+        .iter()
+        .find_map(|(class, expected)| (*expected == capability_id).then_some(*class))
+}
+
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+fn secret_exposure_capability_for_class(detector_class: &str) -> Option<&'static str> {
+    SECRET_EXPOSURE_CAPABILITIES
+        .iter()
+        .find_map(|(expected, capability)| (*expected == detector_class).then_some(*capability))
+}
+
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+#[derive(Serialize)]
+struct AssessmentSecretExposureAuditDocument {
+    schema: &'static str,
+    policy: &'static str,
+    catalogue_id: &'static str,
+    catalogue_revision: &'static str,
+    representation: &'static str,
+    context: &'static str,
+    selected: bool,
+    additional_request_count: u64,
+    response_count: u64,
+    evaluated_response_count: u64,
+    not_evaluated_response_count: u64,
+    body_derived_projection_suppressed_response_count: u64,
+    interpreted_byte_count: u64,
+    per_response_byte_limit: u64,
+    total_byte_limit: u64,
+    observation_count: u64,
+    omitted_observation_count: u64,
+    match_occurrence_count: u64,
+    outcomes: Vec<AssessmentSecretExposureOutcomeDocument>,
+    observations: Vec<AssessmentSecretExposureObservationDocument>,
+    source_authentication: &'static str,
+    secret_validity: &'static str,
+    provider_validation: &'static str,
+    exploit_execution: &'static str,
+    impact_validation: &'static str,
+    raw_values_retained: bool,
+    public_secret_hashes_retained: bool,
+}
+
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+#[derive(Serialize)]
+struct AssessmentSecretExposureOutcomeDocument {
+    outcome: &'static str,
+    count: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+#[derive(Serialize)]
+struct AssessmentSecretExposureObservationDocument {
+    detector_class: &'static str,
+    capability_id: &'static str,
+    occurrence_count: u64,
+    evidence_references: Vec<String>,
+}
+
+#[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+impl AssessmentSecretExposureAuditDocument {
+    fn from_audit(
+        report: &AssessmentRunReport,
+        audit: &WebAssessmentSecretExposureAudit,
+    ) -> Result<Self, ReportError> {
+        let mut outcomes = audit
+            .outcomes()
+            .iter()
+            .map(|outcome| {
+                Ok(AssessmentSecretExposureOutcomeDocument {
+                    outcome: outcome.outcome().as_str(),
+                    count: u64::from(outcome.count()),
+                })
+            })
+            .collect::<Result<Vec<_>, ReportError>>()?;
+        outcomes.sort_by_key(|outcome| outcome.outcome);
+
+        let mut observations = audit
+            .observations()
+            .iter()
+            .map(|observation| {
+                let detector_class = observation.detector_class();
+                let evidence_references = observation
+                    .evidence_ids()
+                    .iter()
+                    .map(|evidence_id| {
+                        report
+                            .evidence_reference_for(evidence_id)
+                            .map(|reference| reference.to_string())
+                            .ok_or(ReportError::Serialization)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(AssessmentSecretExposureObservationDocument {
+                    detector_class: detector_class.as_str(),
+                    capability_id: detector_class.capability_id(),
+                    occurrence_count: u64::from(observation.occurrence_count()),
+                    evidence_references,
+                })
+            })
+            .collect::<Result<Vec<_>, ReportError>>()?;
+        observations.sort_by(|left, right| {
+            left.detector_class
+                .cmp(right.detector_class)
+                .then_with(|| left.evidence_references.cmp(&right.evidence_references))
+        });
+
+        Ok(Self {
+            schema: SECRET_EXPOSURE_AUDIT_SCHEMA,
+            policy: SECRET_EXPOSURE_POLICY_ID,
+            catalogue_id: SECRET_EXPOSURE_CATALOGUE_ID,
+            catalogue_revision: SECRET_EXPOSURE_CATALOGUE_REVISION,
+            representation: SECRET_EXPOSURE_REPRESENTATION,
+            context: SECRET_EXPOSURE_CONTEXT,
+            selected: true,
+            additional_request_count: 0,
+            response_count: u64::from(audit.response_count()),
+            evaluated_response_count: u64::from(audit.evaluated_response_count()),
+            not_evaluated_response_count: u64::from(audit.not_evaluated_response_count()),
+            body_derived_projection_suppressed_response_count: u64::from(
+                audit.body_derived_projection_suppressed_response_count(),
+            ),
+            interpreted_byte_count: audit.interpreted_byte_count(),
+            per_response_byte_limit: u64::try_from(MAX_SECRET_EXPOSURE_BODY_BYTES)
+                .map_err(|_| ReportError::Serialization)?,
+            total_byte_limit: MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES,
+            observation_count: u64::try_from(observations.len())
+                .map_err(|_| ReportError::Serialization)?,
+            omitted_observation_count: u64::from(audit.omitted_observation_count()),
+            match_occurrence_count: audit.match_occurrence_count(),
+            outcomes,
+            observations,
+            source_authentication: "not_established",
+            secret_validity: "not_tested",
+            provider_validation: "not_performed",
+            exploit_execution: "not_performed",
+            impact_validation: "not_performed",
+            raw_values_retained: false,
+            public_secret_hashes_retained: false,
+        })
+    }
+
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        let response_partition = self
+            .evaluated_response_count
+            .checked_add(self.not_evaluated_response_count);
+        let maximum_interpreted_bytes = self
+            .evaluated_response_count
+            .checked_mul(self.per_response_byte_limit);
+        let maximum_occurrences = self
+            .evaluated_response_count
+            .checked_mul(u64::from(MAX_SECRET_EXPOSURE_OCCURRENCES));
+        let maximum_observations = self.evaluated_response_count.checked_mul(
+            u64::try_from(SECRET_EXPOSURE_CAPABILITIES.len())
+                .map_err(|_| ReportError::Serialization)?,
+        );
+        let retained_and_omitted_observations = self
+            .observation_count
+            .checked_add(self.omitted_observation_count);
+        if self.schema != SECRET_EXPOSURE_AUDIT_SCHEMA
+            || self.policy != SECRET_EXPOSURE_POLICY_ID
+            || self.catalogue_id != SECRET_EXPOSURE_CATALOGUE_ID
+            || self.catalogue_revision != SECRET_EXPOSURE_CATALOGUE_REVISION
+            || self.representation != SECRET_EXPOSURE_REPRESENTATION
+            || self.context != SECRET_EXPOSURE_CONTEXT
+            || !self.selected
+            || self.additional_request_count != 0
+            || self.response_count
+                > u64::try_from(MAX_SECRET_EXPOSURE_RESPONSES)
+                    .map_err(|_| ReportError::Serialization)?
+            || response_partition != Some(self.response_count)
+            || self.body_derived_projection_suppressed_response_count != self.response_count
+            || self.per_response_byte_limit
+                != u64::try_from(MAX_SECRET_EXPOSURE_BODY_BYTES)
+                    .map_err(|_| ReportError::Serialization)?
+            || self.total_byte_limit != MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES
+            || self.interpreted_byte_count > self.total_byte_limit
+            || maximum_interpreted_bytes.is_none_or(|maximum| self.interpreted_byte_count > maximum)
+            || self.observation_count
+                != u64::try_from(self.observations.len()).map_err(|_| ReportError::Serialization)?
+            || self.observations.len() > MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS
+            || (self.omitted_observation_count > 0
+                && self.observations.len() != MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS)
+            || maximum_observations.is_none_or(|maximum| {
+                retained_and_omitted_observations.is_none_or(|total| total > maximum)
+            })
+            || maximum_occurrences.is_none_or(|maximum| self.match_occurrence_count > maximum)
+            || self.source_authentication != "not_established"
+            || self.secret_validity != "not_tested"
+            || self.provider_validation != "not_performed"
+            || self.exploit_execution != "not_performed"
+            || self.impact_validation != "not_performed"
+            || self.raw_values_retained
+            || self.public_secret_hashes_retained
+        {
+            return Err(ReportError::Serialization);
+        }
+
+        let mut outcome_names = std::collections::BTreeSet::new();
+        let mut outcome_total = 0_u64;
+        let mut evaluated_from_outcomes = 0_u64;
+        for outcome in &self.outcomes {
+            if !SECRET_EXPOSURE_OUTCOMES.contains(&outcome.outcome)
+                || outcome.count == 0
+                || !outcome_names.insert(outcome.outcome)
+            {
+                return Err(ReportError::Serialization);
+            }
+            outcome_total = outcome_total
+                .checked_add(outcome.count)
+                .ok_or(ReportError::Serialization)?;
+            if outcome.outcome == "evaluated" {
+                evaluated_from_outcomes = outcome.count;
+            }
+        }
+        if outcome_total != self.response_count
+            || evaluated_from_outcomes != self.evaluated_response_count
+        {
+            return Err(ReportError::Serialization);
+        }
+
+        let secret_items = items
+            .iter()
+            .filter(|item| secret_exposure_capability(item.capability_id).is_some())
+            .collect::<Vec<_>>();
+        if secret_items.len() != self.observations.len() {
+            return Err(ReportError::Serialization);
+        }
+        let mut unique_observations = std::collections::BTreeSet::new();
+        let mut unique_observation_evidence_references = std::collections::BTreeSet::new();
+        let mut matched_item_indexes = std::collections::BTreeSet::new();
+        let mut retained_occurrences = 0_u64;
+        for observation in &self.observations {
+            if secret_exposure_capability_for_class(observation.detector_class)
+                != Some(observation.capability_id)
+                || observation.occurrence_count == 0
+                || observation.occurrence_count > u64::from(MAX_SECRET_EXPOSURE_OCCURRENCES)
+                || observation.evidence_references.len() != 1
+                || !valid_opaque_assessment_reference(
+                    &observation.evidence_references[0],
+                    "evidence",
+                )
+                || !unique_observation_evidence_references
+                    .insert(observation.evidence_references[0].as_str())
+                || !unique_observations.insert((
+                    observation.detector_class,
+                    observation.capability_id,
+                    observation.occurrence_count,
+                    observation.evidence_references[0].as_str(),
+                ))
+            {
+                return Err(ReportError::Serialization);
+            }
+            retained_occurrences = retained_occurrences
+                .checked_add(observation.occurrence_count)
+                .ok_or(ReportError::Serialization)?;
+            let matching = secret_items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| {
+                    item.capability_id == observation.capability_id
+                        && item.claim_basis == "observation"
+                        && item.evidence_references == observation.evidence_references
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if matching.len() != 1 || !matched_item_indexes.insert(matching[0]) {
+                return Err(ReportError::Serialization);
+            }
+        }
+        let missing_occurrences = self
+            .match_occurrence_count
+            .checked_sub(retained_occurrences);
+        let maximum_omitted_occurrences = self
+            .omitted_observation_count
+            .checked_mul(u64::from(MAX_SECRET_EXPOSURE_OCCURRENCES));
+        if matched_item_indexes.len() != secret_items.len()
+            || missing_occurrences
+                .zip(maximum_omitted_occurrences)
+                .is_none_or(|(missing, maximum)| {
+                    missing < self.omitted_observation_count || missing > maximum
+                })
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Audit schema", self.schema.to_owned()),
+            ("Policy", self.policy.to_owned()),
+            ("Detector catalogue", self.catalogue_id.to_owned()),
+            ("Catalogue revision", self.catalogue_revision.to_owned()),
+            ("Representation", self.representation.to_owned()),
+            ("Collection context", self.context.to_owned()),
+            ("Selected", self.selected.to_string()),
+            (
+                "Additional target requests",
+                self.additional_request_count.to_string(),
+            ),
+            ("Responses considered", self.response_count.to_string()),
+            (
+                "Responses evaluated",
+                self.evaluated_response_count.to_string(),
+            ),
+            (
+                "Responses not evaluated",
+                self.not_evaluated_response_count.to_string(),
+            ),
+            (
+                "Responses with body-derived projections suppressed",
+                self.body_derived_projection_suppressed_response_count
+                    .to_string(),
+            ),
+            (
+                "Interpreted response bytes",
+                self.interpreted_byte_count.to_string(),
+            ),
+            (
+                "Per-response byte limit",
+                self.per_response_byte_limit.to_string(),
+            ),
+            ("Total byte limit", self.total_byte_limit.to_string()),
+            ("Retained observations", self.observation_count.to_string()),
+            (
+                "Omitted observations",
+                self.omitted_observation_count.to_string(),
+            ),
+            (
+                "Matched occurrences",
+                self.match_occurrence_count.to_string(),
+            ),
+            (
+                "Source authentication",
+                self.source_authentication.to_owned(),
+            ),
+            ("Secret validity", self.secret_validity.to_owned()),
+            ("Provider validation", self.provider_validation.to_owned()),
+            ("Exploit execution", self.exploit_execution.to_owned()),
+            ("Impact validation", self.impact_validation.to_owned()),
+            (
+                "Raw matched values retained",
+                self.raw_values_retained.to_string(),
+            ),
+            (
+                "Public secret hashes retained",
+                self.public_secret_hashes_retained.to_string(),
+            ),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
     }
 }
 
@@ -11557,6 +12095,8 @@ mod tests {
             openapi_review: None,
             #[cfg(feature = "rest-review")]
             rest_review: None,
+            #[cfg(feature = "secret-exposure-review")]
+            secret_exposure_review: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
             #[cfg(feature = "wordpress-review")]
@@ -11590,6 +12130,480 @@ mod tests {
                 verification_stage: None,
             }],
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+    fn empty_secret_exposure_audit_document() -> AssessmentSecretExposureAuditDocument {
+        AssessmentSecretExposureAuditDocument {
+            schema: SECRET_EXPOSURE_AUDIT_SCHEMA,
+            policy: SECRET_EXPOSURE_POLICY_ID,
+            catalogue_id: SECRET_EXPOSURE_CATALOGUE_ID,
+            catalogue_revision: SECRET_EXPOSURE_CATALOGUE_REVISION,
+            representation: SECRET_EXPOSURE_REPRESENTATION,
+            context: SECRET_EXPOSURE_CONTEXT,
+            selected: true,
+            additional_request_count: 0,
+            response_count: 0,
+            evaluated_response_count: 0,
+            not_evaluated_response_count: 0,
+            body_derived_projection_suppressed_response_count: 0,
+            interpreted_byte_count: 0,
+            per_response_byte_limit: u64::try_from(MAX_SECRET_EXPOSURE_BODY_BYTES).unwrap(),
+            total_byte_limit: MAX_SECRET_EXPOSURE_TOTAL_BODY_BYTES,
+            observation_count: 0,
+            omitted_observation_count: 0,
+            match_occurrence_count: 0,
+            outcomes: Vec::new(),
+            observations: Vec::new(),
+            source_authentication: "not_established",
+            secret_validity: "not_tested",
+            provider_validation: "not_performed",
+            exploit_execution: "not_performed",
+            impact_validation: "not_performed",
+            raw_values_retained: false,
+            public_secret_hashes_retained: false,
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+    fn positive_secret_exposure_assessment_document() -> AssessmentDocument<'static> {
+        let mut document =
+            observation_assessment_document("exposure.response-stripe-live-secret@1");
+        document.items[0].title = "A live-mode provider-secret shape was observed";
+        document.items[0].redacted_summary =
+            "A complete response contained a redacted provider-secret shape.";
+        document.items[0].category = "passive-secret-exposure";
+        document.items[0].remediation.id = "secret-exposure.review-response@1";
+        document.items[0].remediation.summary =
+            "Review the response source and rotate affected credentials when independently confirmed.";
+        document.items[0].evidence_references = vec!["evidence-0007".to_owned()];
+        let mut audit = empty_secret_exposure_audit_document();
+        audit.response_count = 1;
+        audit.evaluated_response_count = 1;
+        audit.body_derived_projection_suppressed_response_count = 1;
+        audit.interpreted_byte_count = 96;
+        audit.observation_count = 1;
+        audit.match_occurrence_count = 2;
+        audit.outcomes = vec![AssessmentSecretExposureOutcomeDocument {
+            outcome: "evaluated",
+            count: 1,
+        }];
+        audit.observations = vec![AssessmentSecretExposureObservationDocument {
+            detector_class: "stripe_live_secret",
+            capability_id: "exposure.response-stripe-live-secret@1",
+            occurrence_count: 2,
+            evidence_references: vec!["evidence-0007".to_owned()],
+        }];
+        document.secret_exposure_review = Some(audit);
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+    fn retained_secret_exposure_limit_document() -> AssessmentDocument<'static> {
+        let mut document = observation_assessment_document(SECRET_EXPOSURE_CAPABILITIES[0].1);
+        document.items.clear();
+        let mut observations = Vec::with_capacity(MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS);
+        for index in 0..MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS {
+            let (detector_class, capability_id) =
+                SECRET_EXPOSURE_CAPABILITIES[index % SECRET_EXPOSURE_CAPABILITIES.len()];
+            let evidence_reference = format!("evidence-{:04}", index + 100);
+            let mut item = observation_assessment_document(capability_id)
+                .items
+                .pop()
+                .unwrap();
+            item.fingerprint = Box::leak(format!("sha256:{:064x}", index + 1).into_boxed_str());
+            item.evidence_references = vec![evidence_reference.clone()];
+            document.items.push(item);
+            observations.push(AssessmentSecretExposureObservationDocument {
+                detector_class,
+                capability_id,
+                occurrence_count: 1,
+                evidence_references: vec![evidence_reference],
+            });
+        }
+        document.item_count = u64::try_from(document.items.len()).unwrap();
+        let mut audit = empty_secret_exposure_audit_document();
+        audit.response_count = 9;
+        audit.evaluated_response_count = 9;
+        audit.body_derived_projection_suppressed_response_count = 9;
+        audit.interpreted_byte_count = 4_096;
+        audit.observation_count = u64::try_from(MAX_SECRET_EXPOSURE_RETAINED_OBSERVATIONS).unwrap();
+        audit.omitted_observation_count = 1;
+        audit.match_occurrence_count = 33;
+        audit.outcomes = vec![AssessmentSecretExposureOutcomeDocument {
+            outcome: "evaluated",
+            count: 9,
+        }];
+        audit.observations = observations;
+        document.secret_exposure_review = Some(audit);
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+    #[test]
+    fn selected_empty_secret_exposure_audit_is_rendered_without_inventing_an_item() {
+        let mut document = observation_assessment_document("unrelated.observation@1");
+        document.secret_exposure_review = Some(empty_secret_exposure_audit_document());
+
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("security.passive-secret-exposure-audit/v1"));
+            assert!(rendered.contains("termivar.passive-secret-exposure/v1"));
+            assert!(!rendered.contains("sk_live_private-render-sentinel"));
+        }
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["secret_exposure_review"]["selected"], true);
+        assert_eq!(value["secret_exposure_review"]["response_count"], 0);
+        assert_eq!(
+            value["secret_exposure_review"]["body_derived_projection_suppressed_response_count"],
+            0
+        );
+        assert_eq!(
+            value["secret_exposure_review"]["observations"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            value["secret_exposure_review"]["additional_request_count"],
+            0
+        );
+    }
+
+    #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+    #[test]
+    fn secret_exposure_audit_and_item_are_cross_linked_and_value_free_in_every_renderer() {
+        let document = positive_secret_exposure_assessment_document();
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("stripe_live_secret"));
+            assert!(rendered.contains("exposure.response-stripe-live-secret@1"));
+            assert!(rendered.contains("evidence-0007"));
+            assert!(rendered.contains("not_performed"));
+            assert!(rendered.contains("not_established"));
+            assert!(!rendered.contains("sk_live_private-render-sentinel"));
+        }
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["secret_exposure_review"]["observation_count"], 1);
+        assert_eq!(value["secret_exposure_review"]["match_occurrence_count"], 2);
+        assert_eq!(
+            value["secret_exposure_review"]["body_derived_projection_suppressed_response_count"],
+            1
+        );
+        assert_eq!(
+            value["secret_exposure_review"]["observations"][0]["evidence_references"],
+            serde_json::json!(["evidence-0007"]),
+        );
+        assert_eq!(
+            value["secret_exposure_review"]["raw_values_retained"],
+            false
+        );
+        assert_eq!(
+            value["secret_exposure_review"]["public_secret_hashes_retained"],
+            false,
+        );
+    }
+
+    #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
+    #[test]
+    fn secret_exposure_writer_rejects_missing_or_inconsistent_cross_links_and_accounting() {
+        assert!(render_assessment_with_limit(
+            &retained_secret_exposure_limit_document(),
+            ReportFormat::Json,
+            usize::MAX,
+        )
+        .is_ok());
+
+        let mut missing_audit = positive_secret_exposure_assessment_document();
+        missing_audit.secret_exposure_review = None;
+        assert_eq!(
+            render_assessment_with_limit(&missing_audit, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization),
+        );
+
+        let mut wrong_reference = positive_secret_exposure_assessment_document();
+        wrong_reference
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .observations[0]
+            .evidence_references[0] = "evidence-0008".to_owned();
+        assert_eq!(
+            render_assessment_with_limit(&wrong_reference, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization),
+        );
+
+        let mut wrong_partition = positive_secret_exposure_assessment_document();
+        wrong_partition
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .not_evaluated_response_count = 1;
+        assert_eq!(
+            render_assessment_with_limit(&wrong_partition, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization),
+        );
+
+        let mut raw_retention = positive_secret_exposure_assessment_document();
+        raw_retention
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .raw_values_retained = true;
+        assert_eq!(
+            render_assessment_with_limit(&raw_retention, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization),
+        );
+
+        let mut missing_match_suppression = positive_secret_exposure_assessment_document();
+        missing_match_suppression
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .body_derived_projection_suppressed_response_count = 0;
+        assert_eq!(
+            render_assessment_with_limit(
+                &missing_match_suppression,
+                ReportFormat::Json,
+                usize::MAX,
+            ),
+            Err(ReportError::Serialization),
+        );
+
+        let mut excessive_suppression = positive_secret_exposure_assessment_document();
+        excessive_suppression
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .body_derived_projection_suppressed_response_count = 2;
+        assert_eq!(
+            render_assessment_with_limit(&excessive_suppression, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization),
+        );
+
+        let mut clean_response_suppression =
+            observation_assessment_document("unrelated.observation@1");
+        let mut clean_audit = empty_secret_exposure_audit_document();
+        clean_audit.response_count = 1;
+        clean_audit.evaluated_response_count = 1;
+        clean_audit.body_derived_projection_suppressed_response_count = 1;
+        clean_audit.outcomes = vec![AssessmentSecretExposureOutcomeDocument {
+            outcome: "evaluated",
+            count: 1,
+        }];
+        clean_response_suppression.secret_exposure_review = Some(clean_audit);
+        assert!(render_assessment_with_limit(
+            &clean_response_suppression,
+            ReportFormat::Json,
+            usize::MAX,
+        )
+        .is_ok());
+        clean_response_suppression
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .body_derived_projection_suppressed_response_count = 0;
+        assert_eq!(
+            render_assessment_with_limit(
+                &clean_response_suppression,
+                ReportFormat::Json,
+                usize::MAX,
+            ),
+            Err(ReportError::Serialization),
+        );
+
+        let mut missing_refusal_suppression =
+            observation_assessment_document("unrelated.observation@1");
+        let mut refused_audit = empty_secret_exposure_audit_document();
+        refused_audit.response_count = 1;
+        refused_audit.not_evaluated_response_count = 1;
+        refused_audit.outcomes = vec![AssessmentSecretExposureOutcomeDocument {
+            outcome: "invalid_utf8",
+            count: 1,
+        }];
+        missing_refusal_suppression.secret_exposure_review = Some(refused_audit);
+        assert_eq!(
+            render_assessment_with_limit(
+                &missing_refusal_suppression,
+                ReportFormat::Json,
+                usize::MAX,
+            ),
+            Err(ReportError::Serialization),
+        );
+
+        let mut missing_item = positive_secret_exposure_assessment_document();
+        missing_item.items[0].capability_id = "unrelated.observation@1";
+        assert_eq!(
+            render_assessment_with_limit(&missing_item, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization),
+        );
+
+        let mut shared_reference = positive_secret_exposure_assessment_document();
+        let mut second_item =
+            observation_assessment_document("exposure.response-aws-access-key-pair@1")
+                .items
+                .pop()
+                .unwrap();
+        second_item.evidence_references = vec!["evidence-0007".to_owned()];
+        shared_reference.items.push(second_item);
+        shared_reference.item_count = 2;
+        let audit = shared_reference.secret_exposure_review.as_mut().unwrap();
+        audit.observation_count = 2;
+        audit.match_occurrence_count = 3;
+        audit
+            .observations
+            .push(AssessmentSecretExposureObservationDocument {
+                detector_class: "aws_access_key_pair",
+                capability_id: "exposure.response-aws-access-key-pair@1",
+                occurrence_count: 1,
+                evidence_references: vec!["evidence-0007".to_owned()],
+            });
+        assert_eq!(
+            render_assessment_with_limit(&shared_reference, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization),
+        );
+
+        let mut retained_equals_total = retained_secret_exposure_limit_document();
+        retained_equals_total
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .match_occurrence_count = 32;
+        assert_eq!(
+            render_assessment_with_limit(&retained_equals_total, ReportFormat::Json, usize::MAX,),
+            Err(ReportError::Serialization),
+        );
+
+        let mut impossible_below_cap_omission = positive_secret_exposure_assessment_document();
+        let below_cap_audit = impossible_below_cap_omission
+            .secret_exposure_review
+            .as_mut()
+            .unwrap();
+        below_cap_audit.omitted_observation_count = 1;
+        below_cap_audit.match_occurrence_count = 3;
+        assert_eq!(
+            render_assessment_with_limit(
+                &impossible_below_cap_omission,
+                ReportFormat::Json,
+                usize::MAX,
+            ),
+            Err(ReportError::Serialization),
+        );
+
+        let mut omitted_rows_exceed_missing_occurrences = retained_secret_exposure_limit_document();
+        omitted_rows_exceed_missing_occurrences
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .omitted_observation_count = 2;
+        assert_eq!(
+            render_assessment_with_limit(
+                &omitted_rows_exceed_missing_occurrences,
+                ReportFormat::Json,
+                usize::MAX,
+            ),
+            Err(ReportError::Serialization),
+        );
+
+        let mut missing_occurrences_exceed_omitted_rows = retained_secret_exposure_limit_document();
+        let missing_upper_audit = missing_occurrences_exceed_omitted_rows
+            .secret_exposure_review
+            .as_mut()
+            .unwrap();
+        missing_upper_audit.match_occurrence_count = 97;
+        assert_eq!(
+            render_assessment_with_limit(
+                &missing_occurrences_exceed_omitted_rows,
+                ReportFormat::Json,
+                usize::MAX,
+            ),
+            Err(ReportError::Serialization),
+        );
+
+        let mut many_suppressed_responses_one_match =
+            positive_secret_exposure_assessment_document();
+        let positive_count_audit = many_suppressed_responses_one_match
+            .secret_exposure_review
+            .as_mut()
+            .unwrap();
+        positive_count_audit.response_count = 10;
+        positive_count_audit.evaluated_response_count = 10;
+        positive_count_audit.body_derived_projection_suppressed_response_count = 10;
+        positive_count_audit.match_occurrence_count = 1;
+        positive_count_audit.outcomes[0].count = 10;
+        positive_count_audit.observations[0].occurrence_count = 1;
+        assert!(render_assessment_with_limit(
+            &many_suppressed_responses_one_match,
+            ReportFormat::Json,
+            usize::MAX,
+        )
+        .is_ok());
+        many_suppressed_responses_one_match
+            .secret_exposure_review
+            .as_mut()
+            .unwrap()
+            .body_derived_projection_suppressed_response_count = 9;
+        assert_eq!(
+            render_assessment_with_limit(
+                &many_suppressed_responses_one_match,
+                ReportFormat::Json,
+                usize::MAX,
+            ),
+            Err(ReportError::Serialization),
+        );
+
+        let mut observations_exceed_evaluated_capacity = retained_secret_exposure_limit_document();
+        let evaluated_capacity_audit = observations_exceed_evaluated_capacity
+            .secret_exposure_review
+            .as_mut()
+            .unwrap();
+        evaluated_capacity_audit.evaluated_response_count = 7;
+        evaluated_capacity_audit.not_evaluated_response_count = 2;
+        evaluated_capacity_audit.body_derived_projection_suppressed_response_count = 9;
+        evaluated_capacity_audit.outcomes = vec![
+            AssessmentSecretExposureOutcomeDocument {
+                outcome: "evaluated",
+                count: 7,
+            },
+            AssessmentSecretExposureOutcomeDocument {
+                outcome: "unsupported_media_type",
+                count: 2,
+            },
+        ];
+        assert_eq!(
+            render_assessment_with_limit(
+                &observations_exceed_evaluated_capacity,
+                ReportFormat::Json,
+                usize::MAX,
+            ),
+            Err(ReportError::Serialization),
+        );
+
+        let mut zero_total_with_omission =
+            observation_assessment_document("unrelated.observation@1");
+        let mut zero_total_audit = empty_secret_exposure_audit_document();
+        zero_total_audit.response_count = 1;
+        zero_total_audit.evaluated_response_count = 1;
+        zero_total_audit.omitted_observation_count = 1;
+        zero_total_audit.outcomes = vec![AssessmentSecretExposureOutcomeDocument {
+            outcome: "evaluated",
+            count: 1,
+        }];
+        zero_total_with_omission.secret_exposure_review = Some(zero_total_audit);
+        assert_eq!(
+            render_assessment_with_limit(&zero_total_with_omission, ReportFormat::Json, usize::MAX,),
+            Err(ReportError::Serialization),
+        );
     }
 
     #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]

@@ -255,6 +255,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
         ("proxy-adapter", cfg!(feature = "proxy-adapter")),
         ("release-bundle", cfg!(feature = "release-bundle")),
         ("rest-review", cfg!(feature = "rest-review")),
+        (
+            "secret-exposure-review",
+            cfg!(feature = "secret-exposure-review"),
+        ),
         ("ssrf-oast-review", cfg!(feature = "ssrf-oast-review")),
         (
             "supplied-session-review",
@@ -553,6 +557,19 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/authorization-differential-review.md",
         ),
         surface!(
+            "option.secret-exposure-review",
+            "Passive response secret-exposure review",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("secret-exposure-review"),
+            cfg!(feature = "secret-exposure-review"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &["--profile web-review", "--secret-exposure-review"],
+            "Reviews only existing anonymous committed complete status-200 uncoded textual GET response bodies. It issues zero additional requests and uses a fixed bounded detector catalogue. Reports contain no raw matched values or hashes. V1 fails closed when GraphQL, OpenAPI, REST, resource authorization, or WordPress discovery is selected because those response paths do not share its value-free body-digest boundary. Credential validity, ownership, source authenticity, provider acceptance, exploit execution, and impact validation are not established or performed. Authenticated supplied-session response bodies are not selected.",
+            "docs/internals/passive-secret-exposure-review.md",
+        ),
+        surface!(
             "option.ssrf-oast-review",
             "SSRF OAST query review",
             SurfaceGroup::Optional,
@@ -801,7 +818,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 24);
+        assert_eq!(document.surfaces.len(), 25);
 
         let keys = document
             .surfaces
@@ -832,6 +849,7 @@ mod tests {
                 "option.openapi-review",
                 "option.rest-review",
                 "option.resource-authorization-review",
+                "option.secret-exposure-review",
                 "option.ssrf-oast-review",
                 "option.supplied-session-review",
                 "option.wordpress-review",
@@ -913,6 +931,7 @@ mod tests {
                 "option.resource-authorization-review",
                 "authorization-review-policy",
             ),
+            ("option.secret-exposure-review", "secret-exposure-review"),
             ("option.ssrf-oast-review", "ssrf-oast-review"),
             ("option.supplied-session-review", "session-policy"),
             ("option.wordpress-review", "wordpress-review"),
@@ -1016,6 +1035,12 @@ mod tests {
             (
                 "option.resource-authorization-review",
                 Some("authorization-review"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.secret-exposure-review",
+                Some("secret-exposure-review"),
                 "preview",
                 "implemented",
             ),
@@ -1199,6 +1224,25 @@ mod tests {
                 "HTTPS, except numeric-loopback HTTP fixtures",
             ]
         );
+        let secret_exposure = find("option.secret-exposure-review");
+        assert_eq!(
+            secret_exposure.prerequisites,
+            ["--profile web-review", "--secret-exposure-review"]
+        );
+        for required in [
+            "existing anonymous committed complete status-200 uncoded textual GET response bodies",
+            "zero additional requests",
+            "fixed bounded detector catalogue",
+            "no raw matched values or hashes",
+            "Credential validity, ownership, source authenticity, provider acceptance",
+            "exploit execution, and impact validation are not established or performed",
+            "Authenticated supplied-session response bodies are not selected",
+        ] {
+            assert!(
+                secret_exposure.limitation.contains(required),
+                "missing passive secret-exposure limitation `{required}`"
+            );
+        }
         let session = find("option.supplied-session-review");
         assert_eq!(
             session.prerequisites,

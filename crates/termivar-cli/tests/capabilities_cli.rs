@@ -21,6 +21,7 @@ const FEATURE_NAMES: &[&str] = &[
     "proxy-adapter",
     "release-bundle",
     "rest-review",
+    "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
     "wordpress-review",
@@ -134,6 +135,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         ("proxy-adapter", cfg!(feature = "proxy-adapter")),
         ("release-bundle", cfg!(feature = "release-bundle")),
         ("rest-review", cfg!(feature = "rest-review")),
+        (
+            "secret-exposure-review",
+            cfg!(feature = "secret-exposure-review"),
+        ),
         ("ssrf-oast-review", cfg!(feature = "ssrf-oast-review")),
         (
             "supplied-session-review",
@@ -152,6 +157,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         states["rest-review"]
     );
     assert_eq!(
+        surface_state(&document, "option.secret-exposure-review"),
+        states["secret-exposure-review"]
+    );
+    assert_eq!(
         surface_state(&document, "option.wordpress-review"),
         states["wordpress-review"]
     );
@@ -163,6 +172,39 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.supplied-session-review"),
         states["supplied-session-review"]
     );
+    let secret_exposure = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.secret-exposure-review")
+        .expect("secret-exposure surface");
+    assert_eq!(
+        secret_exposure["documentation"],
+        "docs/internals/passive-secret-exposure-review.md"
+    );
+    assert_eq!(
+        secret_exposure["prerequisites"],
+        serde_json::json!(["--profile web-review", "--secret-exposure-review"])
+    );
+    let secret_exposure_limit = secret_exposure["limitation"]
+        .as_str()
+        .expect("secret-exposure limitation");
+    for required in [
+        "existing anonymous committed complete status-200 uncoded textual GET response bodies",
+        "zero additional requests",
+        "fixed bounded detector catalogue",
+        "no raw matched values or hashes",
+        "V1 fails closed when GraphQL, OpenAPI, REST, resource authorization, or WordPress discovery is selected",
+        "those response paths do not share its value-free body-digest boundary",
+        "Credential validity, ownership, source authenticity, provider acceptance",
+        "exploit execution, and impact validation are not established or performed",
+        "Authenticated supplied-session response bodies are not selected",
+    ] {
+        assert!(
+            secret_exposure_limit.contains(required),
+            "missing secret-exposure limitation `{required}`"
+        );
+    }
     let supplied_session = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -387,6 +429,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
             "option.resource-authorization-review",
             "--authorization-review-policy",
         ),
+        ("option.secret-exposure-review", "--secret-exposure-review"),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
         ("option.supplied-session-review", "--session-policy"),
         ("option.wordpress-review", "--wordpress-review"),
@@ -519,6 +562,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "api-adapter",
         "legacy-scanner",
         "proxy-adapter",
+        "secret-exposure-review",
         "ssrf-oast-review",
         "supplied-session-review",
     ];
@@ -542,7 +586,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                5
+                6
             );
         },
         "rest-only" => {
@@ -557,6 +601,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "supplied-session-review" || !compiled(feature) }));
+        },
+        "secret-only" => {
+            assert!(compiled("secret-exposure-review"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "secret-exposure-review" || !compiled(feature) }));
         },
         "bundle-members-individual" => {
             assert!(!compiled("release-bundle"));
