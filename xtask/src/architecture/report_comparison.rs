@@ -740,6 +740,7 @@ impl ComparisonVisitor<'_> {
                     "super::MAX_IDENTIFIER_BYTES",
                     "super::MAX_LEGACY_AUDIT_TEXT_BYTES",
                     "super::super::ImportedWordPressAudit",
+                    "super::super::ImportedJwtPolicyReviewAudit",
                     "super::super::ImportedSecretExposureAudit",
                     "super::super::ImportedSuppliedSessionAudit",
                     "super::super::ImportedTlsObservationAudit",
@@ -756,6 +757,7 @@ impl ComparisonVisitor<'_> {
                     "super::ComparisonError",
                     "super::ComparisonItem",
                     "super::ItemProjection",
+                    "super::JwtPolicyReviewComparison",
                     "super::SecretExposureComparison",
                     "super::SourceMetadata",
                     "super::SuppliedSessionComparison",
@@ -1122,6 +1124,51 @@ mod tests {
             let violations =
                 source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
             assert!(!violations.is_empty(), "accepted `{addition}`");
+        }
+    }
+
+    #[test]
+    fn jwt_policy_review_uses_only_exact_inert_comparison_projections() {
+        for (relative, addition) in [
+            (
+                "reporting/comparison/import/audits.rs",
+                "use super::super::ImportedJwtPolicyReviewAudit;",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::JwtPolicyReviewComparison;",
+            ),
+        ] {
+            let violations = source_violations(relative, addition).unwrap();
+            assert!(
+                violations.is_empty(),
+                "rejected `{addition}` in {relative}: {violations:?}"
+            );
+        }
+
+        for (relative, addition) in [
+            (
+                "reporting/comparison/import/audits.rs",
+                "use super::super::PreparedJwtPolicyReviewInput;",
+            ),
+            (
+                "reporting/comparison/import/audits.rs",
+                "use super::super::ImportedJwtPolicyReviewAuditAuthority;",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::JwtPolicyReviewAudit;",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::ImportedJwtPolicyReviewAudit;",
+            ),
+        ] {
+            let violations = source_violations(relative, addition).unwrap();
+            assert!(
+                !violations.is_empty(),
+                "accepted `{addition}` in {relative}"
+            );
         }
     }
 

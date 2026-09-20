@@ -39,6 +39,7 @@ rest-review = ["openapi-review", "termivar-scanner/rest-review"]
 authorization-review = ["termivar-scanner/authorization-review"]
 secret-exposure-review = ["termivar-scanner/secret-exposure-review"]
 tls-observation = ["termivar-scanner/tls-observation"]
+jwt-policy-review = ["dep:toml", "termivar-scanner/jwt-policy-review"]
 supplied-session-review = ["termivar-scanner/supplied-session-review"]
 ssrf-oast-review = ["termivar-scanner/ssrf-oast-review"]
 wordpress-review = ["termivar-scanner/wordpress-review"]
@@ -68,9 +69,12 @@ sha2 = { workspace = true }
 same-file = { workspace = true }
 semver = { workspace = true }
 zeroize = { workspace = true }
+toml = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
+ring = { workspace = true }
 tempfile = { workspace = true }

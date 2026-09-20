@@ -15,6 +15,7 @@ const FEATURE_NAMES: &[&str] = &[
     "artifact-adapter",
     "authorization-review",
     "graphql-review",
+    "jwt-policy-review",
     "legacy-scanner",
     "normalization-resilience",
     "openapi-review",
@@ -127,6 +128,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             cfg!(feature = "authorization-review"),
         ),
         ("graphql-review", cfg!(feature = "graphql-review")),
+        ("jwt-policy-review", cfg!(feature = "jwt-policy-review")),
         ("legacy-scanner", cfg!(feature = "legacy-scanner")),
         (
             "normalization-resilience",
@@ -178,6 +180,55 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.tls-observation"),
         states["tls-observation"]
     );
+    assert_eq!(
+        surface_state(&document, "option.jwt-policy-review"),
+        states["jwt-policy-review"]
+    );
+    let jwt = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.jwt-policy-review")
+        .expect("local JWT-policy surface");
+    assert_eq!(
+        jwt["documentation"],
+        "docs/internals/local-jwt-policy-review.md"
+    );
+    assert_eq!(
+        jwt["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--jwt-policy FILE",
+            "--jwt-public-jwk FILE",
+            "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin"
+        ])
+    );
+    let jwt_limit = jwt["limitation"].as_str().expect("JWT-policy limitation");
+    for required in [
+        "verifies only ES256",
+        "local P-256 public JWK",
+        "V1 policy requires a non-secret operator policy revision plus explicit intended typ, issuer, and audience bindings; all three checks are mandatory",
+        "revision must change when private policy semantics change",
+        "identify the exact public-key bytes with SHA-256 without authenticating their source",
+        "Windows UNC, device, and named-pipe namespaces are rejected before open",
+        "mapped drives and mounted network filesystems remain an operator trust boundary",
+        "closed public-JWK structure and canonical 32-byte x/y coordinates",
+        "curve membership and signature validity are decided by local ES256 verification",
+        "failure remains unauthenticated with local_signature=invalid",
+        "never placed in argv, sent to the target, replayed, or used as authorization",
+        "JWT evaluator performs zero target requests and no remote key retrieval; the surrounding scan retains its ordinary authorized web-review requests",
+        "jku, x5u, embedded keys, and private JWK material",
+        "Parsed, policy-consistent, locally signature-verified, and target-accepted are distinct states",
+        "target acceptance is not performed",
+        "does not authenticate the issuer or source",
+        "establish server acceptance",
+        "exploit or impact validation",
+    ] {
+        assert!(
+            jwt_limit.contains(required),
+            "missing local JWT-policy limitation `{required}`"
+        );
+    }
     let tls = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -470,6 +521,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         ),
         ("option.secret-exposure-review", "--secret-exposure-review"),
         ("option.tls-observation", "--tls-observation"),
+        ("option.jwt-policy-review", "--jwt-policy"),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
         ("option.supplied-session-review", "--session-policy"),
         ("option.wordpress-review", "--wordpress-review"),
@@ -486,6 +538,18 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         scan.contains("--session-cookie-file"),
         "supplied-session cookie source/help drift"
     );
+    for option in [
+        "--jwt-public-jwk",
+        "--jwt-token-env",
+        "--jwt-token-file",
+        "--jwt-token-stdin",
+    ] {
+        assert_eq!(
+            surface_state(&document, "option.jwt-policy-review") == "compiled",
+            scan.contains(option),
+            "local JWT-policy input/help drift for {option}"
+        );
+    }
     let feature_states = feature_states(&document);
     assert_eq!(
         feature_states["supplied-session-review"] == "compiled"
@@ -606,6 +670,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "ssrf-oast-review",
         "supplied-session-review",
         "tls-observation",
+        "jwt-policy-review",
     ];
     match case.as_str() {
         "default" | "no-default" => {
@@ -627,7 +692,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                7
+                8
             );
         },
         "rest-only" => {
@@ -654,6 +719,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "tls-observation" || !compiled(feature) }));
+        },
+        "jwt-only" => {
+            assert!(compiled("jwt-policy-review"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "jwt-policy-review" || !compiled(feature) }));
         },
         "bundle-members-individual" => {
             assert!(!compiled("release-bundle"));

@@ -2,9 +2,9 @@
 
 use super::super::{write_html_text, RenderBuffer, ReportError};
 use super::{
-    ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, SecretExposureComparison,
-    SourceMetadata, SuppliedSessionComparison, TlsObservationComparison, WordPressEntityChanges,
-    WordPressFacetComparison, WordPressReviewComparison,
+    ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, JwtPolicyReviewComparison,
+    SecretExposureComparison, SourceMetadata, SuppliedSessionComparison, TlsObservationComparison,
+    WordPressEntityChanges, WordPressFacetComparison, WordPressReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -40,6 +40,9 @@ pub(super) fn render(
     }
     if let Some(comparison) = &document.tls_observation_comparison {
         tls_observation(&mut output, comparison)?;
+    }
+    if let Some(comparison) = &document.jwt_policy_review_comparison {
+        jwt_policy_review(&mut output, comparison)?;
     }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         wordpress_review(&mut output, wordpress)?;
@@ -214,6 +217,50 @@ fn tls_observation(
         wordpress_facet(output, label, facet)?;
     }
     output.push_str("<details><summary>TLS observation interpretation limits</summary><ul>")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn jwt_policy_review(
+    output: &mut RenderBuffer,
+    comparison: &JwtPolicyReviewComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"jwt-policy-review-differences\"><h2 id=\"jwt-policy-review-differences\">Local JWT policy review differences</h2><p class=\"muted\">Validated, value-free local JWT audit projections are compared separately from target observations. This display retains no token, claim value, signature, or key material and does not establish target acceptance, authorization, vulnerability, or remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Coverage", comparison.coverage.status.as_str()),
+        ("Outcome", comparison.outcome.status.as_str()),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div>")?;
+    output.push_str("<p><strong>Comparison schema:</strong> <span class=\"hash\">")?;
+    write_html_text(output, comparison.schema)?;
+    output.push_str("</span></p>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str(
+            "</span>. A missing audit is not target rejection, vulnerability absence, or remediation.</p>",
+        )?;
+    }
+    for (label, facet) in [
+        ("JWT methodology", &comparison.methodology),
+        ("JWT coverage", &comparison.coverage),
+        ("JWT outcome", &comparison.outcome),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str("<details><summary>JWT policy review interpretation limits</summary><ul>")?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;
         write_html_text(output, limit)?;

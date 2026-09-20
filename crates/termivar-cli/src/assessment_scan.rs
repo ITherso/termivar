@@ -14,6 +14,8 @@ use serde::Serialize;
 use termivar_scanner::authorization_review::{
     AuthorizationPrincipalPair, AuthorizationReviewOutcome, AuthorizationReviewPolicy,
 };
+#[cfg(feature = "jwt-policy-review")]
+use termivar_scanner::jwt_policy_review::JwtPolicyReviewAudit;
 #[cfg(feature = "rest-review")]
 use termivar_scanner::rest_review::RestDocumentedResponseClass;
 #[cfg(feature = "ssrf-oast-review")]
@@ -798,6 +800,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) secret_exposure_review: bool,
     #[cfg(feature = "tls-observation")]
     pub(crate) tls_observation: bool,
+    #[cfg(feature = "jwt-policy-review")]
+    pub(crate) jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "authorization-review")]
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
@@ -838,6 +842,8 @@ pub(crate) async fn run_profile_scan(
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "jwt-policy-review")]
+        jwt_policy_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
         #[cfg(feature = "supplied-session-review")]
@@ -888,6 +894,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "OpenAPI review requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "jwt-policy-review")]
+            if jwt_policy_review.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "JWT policy review requires the web-review profile",
                 )
                 .into());
             }
@@ -990,6 +1004,8 @@ pub(crate) async fn run_profile_scan(
                     secret_exposure_review,
                     #[cfg(feature = "tls-observation")]
                     tls_observation,
+                    #[cfg(feature = "jwt-policy-review")]
+                    jwt_policy_review,
                     #[cfg(feature = "authorization-review")]
                     resource_authorization_review,
                     #[cfg(feature = "supplied-session-review")]
@@ -1057,6 +1073,8 @@ struct WebReviewRunOptions {
     secret_exposure_review: bool,
     #[cfg(feature = "tls-observation")]
     tls_observation: bool,
+    #[cfg(feature = "jwt-policy-review")]
+    jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "supplied-session-review")]
@@ -1091,6 +1109,8 @@ async fn run_web_review(
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "jwt-policy-review")]
+        jwt_policy_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
         #[cfg(feature = "supplied-session-review")]
@@ -1253,7 +1273,15 @@ async fn run_web_review(
                 session.observe_final_usage(report.usage());
                 session.transition(ProgressStage::ComposingReport);
             }
-            let product = match ReportGenerator::compose_assessment(report, profile) {
+            #[cfg(not(feature = "jwt-policy-review"))]
+            let composed = ReportGenerator::compose_assessment(report, profile);
+            #[cfg(feature = "jwt-policy-review")]
+            let composed = ReportGenerator::compose_assessment_with_jwt_policy_review(
+                report,
+                profile,
+                jwt_policy_review,
+            );
+            let product = match composed {
                 Ok(product) => product,
                 Err(error) => {
                     finish_progress_failed(&mut progress);

@@ -21,6 +21,13 @@ use termivar_core::{
 use thiserror::Error;
 use url::Url;
 
+#[cfg(feature = "jwt-policy-review")]
+use crate::jwt_policy_review::{
+    JwtExternalOperationStatus, JwtLocalSignatureStatus, JwtParsingStatus, JwtPolicyReviewAudit,
+    JwtPolicyStatus, JwtPolicyViolation, JwtTargetAcceptanceStatus, MAX_CLOCK_SKEW_SECONDS,
+    MAX_REQUIRED_CLAIMS,
+};
+
 #[cfg(feature = "secret-exposure-review")]
 use super::assessment_item::AssessmentBasis;
 #[cfg(feature = "openapi-review")]
@@ -239,6 +246,8 @@ pub struct AssessmentRunReport {
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<WebAssessmentTlsObservationAudit>,
+    #[cfg(feature = "jwt-policy-review")]
+    jwt_policy_review: Option<JwtPolicyReviewAudit>,
 }
 
 #[derive(Default)]
@@ -415,6 +424,8 @@ impl AssessmentRunReport {
             secret_exposure_review,
             #[cfg(feature = "tls-observation")]
             tls_observation,
+            #[cfg(feature = "jwt-policy-review")]
+            jwt_policy_review: None,
         })
     }
 
@@ -503,6 +514,106 @@ impl AssessmentRunReport {
     pub const fn tls_observation_audit(&self) -> Option<&WebAssessmentTlsObservationAudit> {
         self.tls_observation.as_ref()
     }
+
+    /// Attaches one independently evaluated, transport-free local JWT audit
+    /// after the ordinary web assessment has completed.
+    #[cfg(feature = "jwt-policy-review")]
+    pub(crate) fn with_jwt_policy_review_audit(
+        mut self,
+        audit: Option<JwtPolicyReviewAudit>,
+    ) -> Result<Self, AssessmentRunReportError> {
+        if self.jwt_policy_review.is_some() {
+            return Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch);
+        }
+        if let Some(audit) = audit.as_ref() {
+            validate_jwt_policy_review_audit(audit)?;
+        }
+        self.jwt_policy_review = audit;
+        Ok(self)
+    }
+
+    /// Returns the optional value-free, transport-free local JWT audit.
+    #[cfg(feature = "jwt-policy-review")]
+    pub const fn jwt_policy_review_audit(&self) -> Option<&JwtPolicyReviewAudit> {
+        self.jwt_policy_review.as_ref()
+    }
+}
+
+#[cfg(feature = "jwt-policy-review")]
+fn validate_jwt_policy_review_audit(
+    audit: &JwtPolicyReviewAudit,
+) -> Result<(), AssessmentRunReportError> {
+    let methodology = audit.methodology();
+    let external = audit.external_activity();
+    let base_valid = audit.schema() == crate::jwt_policy_review::JWT_POLICY_REVIEW_AUDIT_SCHEMA
+        && audit.policy() == crate::jwt_policy_review::JWT_POLICY_REVIEW_POLICY_ID
+        && audit.selected()
+        && valid_jwt_methodology_reference(methodology.operator_policy_reference())
+        && valid_jwt_methodology_reference(methodology.operator_policy_revision())
+        && valid_jwt_public_key_sha256(methodology.local_public_key_sha256())
+        && methodology.expected_type_selected()
+        && methodology.expected_issuer_selected()
+        && methodology.expected_audience_selected()
+        && methodology.required_claim_count() as usize <= MAX_REQUIRED_CLAIMS
+        && methodology.allowed_clock_skew_seconds() <= MAX_CLOCK_SKEW_SECONDS
+        && external.target_request_count() == 0
+        && external.remote_key_retrieval() == JwtExternalOperationStatus::NotPerformed
+        && external.token_forwarding() == JwtExternalOperationStatus::NotPerformed
+        && audit.target_acceptance_status() == JwtTargetAcceptanceStatus::NotPerformed;
+    if !base_valid {
+        return Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch);
+    }
+
+    let state_valid = match audit.parsing_status() {
+        JwtParsingStatus::Rejected(_) => {
+            audit.policy_status() == JwtPolicyStatus::NotEvaluated
+                && audit.local_signature_status() == JwtLocalSignatureStatus::NotEvaluated
+                && audit.policy_violations().is_empty()
+        },
+        JwtParsingStatus::Parsed => {
+            matches!(
+                audit.local_signature_status(),
+                JwtLocalSignatureStatus::Verified | JwtLocalSignatureStatus::Invalid
+            ) && match audit.policy_status() {
+                JwtPolicyStatus::Consistent => audit.policy_violations().is_empty(),
+                JwtPolicyStatus::Inconsistent => !audit.policy_violations().is_empty(),
+                JwtPolicyStatus::NotEvaluated => false,
+            }
+        },
+    };
+    let mut required_ordinals = BTreeSet::new();
+    let ordinals_valid = audit.policy_violations().iter().all(|violation| {
+        let JwtPolicyViolation::MissingRequiredClaim { ordinal } = violation else {
+            return true;
+        };
+        *ordinal < methodology.required_claim_count() && required_ordinals.insert(*ordinal)
+    });
+    if state_valid && ordinals_valid {
+        Ok(())
+    } else {
+        Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch)
+    }
+}
+
+#[cfg(feature = "jwt-policy-review")]
+fn valid_jwt_methodology_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b'-' | b'_' | b'.'))
+        })
+}
+
+#[cfg(feature = "jwt-policy-review")]
+fn valid_jwt_public_key_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 #[cfg(feature = "tls-observation")]
@@ -965,6 +1076,11 @@ impl fmt::Debug for AssessmentRunReport {
             "tls_observation_audit_present",
             &self.tls_observation.is_some(),
         );
+        #[cfg(feature = "jwt-policy-review")]
+        debug.field(
+            "jwt_policy_review_audit_present",
+            &self.jwt_policy_review.is_some(),
+        );
         debug.finish()
     }
 }
@@ -1358,6 +1474,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "tls-observation")]
     #[error("TLS observation audit does not match transport truth")]
     TlsObservationAuditMismatch,
+    /// The optional transport-free JWT audit violated its closed local contract.
+    #[cfg(feature = "jwt-policy-review")]
+    #[error("JWT policy review audit does not match its local evaluation contract")]
+    JwtPolicyReviewAuditMismatch,
 }
 
 fn build_run_report(

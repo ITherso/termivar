@@ -51,6 +51,11 @@ const CLI_AUTH_FIELDS: &[&str] = &[
     "authz_primary_env",
     "authz_primary_file",
     "authz_primary_stdin",
+    "jwt_policy",
+    "jwt_public_jwk",
+    "jwt_token_env",
+    "jwt_token_file",
+    "jwt_token_stdin",
     "session_auth_env",
     "session_auth_file",
     "session_auth_stdin",
@@ -72,6 +77,11 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "explain",
     "format",
     "graphql_review",
+    "jwt_policy",
+    "jwt_public_jwk",
+    "jwt_token_env",
+    "jwt_token_file",
+    "jwt_token_stdin",
     "normalization_resilience",
     "oast_admin_token_env",
     "oast_admin_token_file",
@@ -138,6 +148,9 @@ fn protected_type_cross_source_violations(
                 "AuthorizationReviewInput",
                 "AuthorizationReviewInputError",
                 "AuthorizationSourceOptions",
+                "JwtPolicyInputError",
+                "JwtPolicyReviewInput",
+                "PreparedJwtPolicyReviewInput",
                 "SuppliedSessionInput",
                 "PreparedSuppliedSessionInput",
                 "SuppliedSessionInputError",
@@ -426,10 +439,10 @@ fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> 
 
     let methods = inherent_methods(&syntax, "AuthorizationInputSource");
     if methods.keys().map(String::as_str).collect::<BTreeSet<_>>()
-        != BTreeSet::from(["load", "read_bytes", "select"])
+        != BTreeSet::from(["load", "read_bytes", "read_bytes_with_limit", "select"])
     {
         violations.push(format!(
-            "AuthorizationInputSource method inventory must remain exactly select, consuming load, and private consuming byte transfer; observed {:?}",
+            "AuthorizationInputSource method inventory must remain exactly select, consuming load, and private consuming bounded byte transfer; observed {:?}",
             methods.keys().collect::<Vec<_>>()
         ));
     }
@@ -508,13 +521,13 @@ fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> 
     }
     if !bounded_reader_is_exact(&contracts) {
         violations.push(
-            "CLI file/stdin reader must retain at most 4 KiB plus one CRLF, probe one overflow byte, remove only one terminal line ending, and fail closed"
+            "CLI file/stdin reader must retain at most the caller ceiling plus one CRLF, probe one overflow byte, remove only one terminal line ending, and fail closed"
                 .to_owned(),
         );
     }
     if !environment_reader_is_exact(&contracts) {
         violations.push(
-            "CLI environment reader must validate the source name, discard OS diagnostics, and enforce the 4 KiB ceiling before construction"
+            "CLI environment reader must validate the source name, discard OS diagnostics, and enforce the caller ceiling after guarded construction"
                 .to_owned(),
         );
     }
@@ -527,6 +540,12 @@ fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> 
     if !source_dispatch_is_exact(&contracts) {
         violations.push(
             "CLI authorization source dispatch must use the bounded reader for file/stdin and discard all source-location diagnostics"
+                .to_owned(),
+        );
+    }
+    if !jwt_policy_input_contract_is_exact(&syntax, &contracts) {
+        violations.push(
+            "local JWT CLI policy input must retain its exact bounded schema, mandatory binding fields, value-safe error surface, and source-preserving failures"
                 .to_owned(),
         );
     }
@@ -564,6 +583,16 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
             "AuthorizationReviewInput",
             &["load", "select"][..],
             "formatter.debug_struct(\"AuthorizationReviewInput\").field(\"policy_file\",&\"<redacted>\").field(\"primary\",&\"<redacted>\").field(\"peer\",&\"<redacted>\").finish()",
+        ),
+        (
+            "JwtPolicyReviewInput",
+            &["prepare", "select"][..],
+            "formatter.debug_struct(\"JwtPolicyReviewInput\").field(\"policy_file\",&\"<redacted>\").field(\"public_jwk_file\",&\"<redacted>\").field(\"token\",&\"<redacted>\").finish()",
+        ),
+        (
+            "PreparedJwtPolicyReviewInput",
+            &["load"][..],
+            "formatter.debug_struct(\"PreparedJwtPolicyReviewInput\").field(\"policy\",&\"<validated>\").field(\"public_key\",&\"<validated-public-key>\").field(\"token\",&\"<redacted>\").finish()",
         ),
         (
             "SuppliedSessionInput",
@@ -608,6 +637,21 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
     for marker in [
         "pub(crate)structAuthorizationSourceOptions{environment:Option<OsString>,file:Option<PathBuf>,stdin:bool,}",
         "pub(crate)structAuthorizationReviewInput{policy_file:PathBuf,primary:AuthorizationInputSource,peer:AuthorizationInputSource,}",
+        "pub(crate)structJwtPolicyReviewInput{policy_file:PathBuf,public_jwk_file:PathBuf,token:AuthorizationInputSource,}",
+        "pub(crate)structPreparedJwtPolicyReviewInput{policy:JwtLocalPolicy,public_key:Es256LocalPublicKey,token:AuthorizationInputSource,}",
+        "validate_jwt_local_file_path(&policy_file).map_err(JwtPolicyInputError::PolicySource)?;",
+        "validate_jwt_local_file_path(&public_jwk_file).map_err(JwtPolicyInputError::PublicKeySource)?;",
+        "ifletAuthorizationInputSource::File(token_file)=&token{validate_jwt_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;}",
+        "Prefix::UNC(_,_)|Prefix::VerbatimUNC(_,_)|Prefix::DeviceNS(_)|Prefix::Verbatim(_)=>returntrue,",
+        "upper.starts_with(\"\\\\??\\\\\")||upper.starts_with(\"\\\\DEVICE\\\\\")||upper.starts_with(\"\\\\GLOBAL??\\\\\")||upper.starts_with(\"\\\\GLOBALROOT\\\\\")||upper.starts_with(\"\\\\PIPE\\\\\")",
+        "\"CON\"|\"PRN\"|\"AUX\"|\"NUL\"|\"CLOCK$\"|\"CONIN$\"|\"CONOUT$\"",
+        "read_bounded_regular_file(self.policy_file,MAX_JWT_POLICY_BYTES)",
+        "read_bounded_regular_file(self.public_jwk_file,MAX_LOCAL_PUBLIC_JWK_BYTES)",
+        "JwtLocalPolicy::new((&document.policy_reference,&document.policy_revision),&document.expected_type,&document.expected_issuer,&document.expected_audience,&required_claims,document.require_expiration,document.allowed_clock_skew_seconds,)",
+        "Es256LocalPublicKey::from_jwk_json(public_jwk_source.into_owned())",
+        "self.token.read_bytes_with_limit(MAX_COMPACT_JWT_BYTES)",
+        "SecretCompactJwt::new(token.into_owned())",
+        "review_compact_jwt(&token,&self.public_key,&self.policy,JwtEvaluationTime{unix_seconds},)",
         "letboth_stdin=primary.stdin&&peer.stdin;",
         "ifboth_stdin{returnErr(AuthorizationReviewInputError::AmbiguousStdin);}",
         "read_bounded_regular_file(self.policy_file,HARD_MAX_AUTHORIZATION_REVIEW_POLICY_BYTES)",
@@ -620,7 +664,7 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
     ] {
         if !compact.contains(marker) {
             violations.push(format!(
-                "authorization-review CLI must reuse the sole bounded credential loader and preserve bounded policy parsing, stdin isolation, and distinct role construction: missing `{marker}`"
+                "CLI protected review inputs must reject Windows remote/device JWT file spellings before opening and reuse the sole bounded secret loader while preserving bounded policy/key parsing, stdin isolation, distinct role construction, and typed JWT evaluation: missing `{marker}`"
             ));
         }
     }
@@ -716,6 +760,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("progress", "bool", None),
         ("enforce_defense", "bool", None),
         ("graphql_review", "bool", None),
+        ("jwt_policy", "Option", Some("PathBuf")),
+        ("jwt_public_jwk", "Option", Some("PathBuf")),
+        ("jwt_token_env", "Option", Some("OsString")),
+        ("jwt_token_file", "Option", Some("PathBuf")),
+        ("jwt_token_stdin", "bool", None),
         ("normalization_resilience", "bool", None),
         ("oast_admin_token_env", "Option", Some("OsString")),
         ("oast_admin_token_file", "Option", Some("PathBuf")),
@@ -800,6 +849,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         .filter(|name| {
             name.starts_with("auth")
                 || name.contains("authorization")
+                || name.starts_with("jwt_")
                 || name.starts_with("session_auth")
                 || name.as_str() == "session_cookie_file"
                 || name.as_str() == "session_policy"
@@ -813,7 +863,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .collect()
     {
         violations.push(format!(
-            "CLI Scan may expose only the exact root and resource-review out-of-band authorization inputs; observed {observed_auth_fields:?}"
+            "CLI Scan may expose only the exact root, resource-review, supplied-session, and local-JWT out-of-band inputs; observed {observed_auth_fields:?}"
         ));
     }
     for (name, expected_type, expected_arg) in [
@@ -896,6 +946,58 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         {
             violations.push(format!(
                 "CLI `{name}` must remain absent outside the exact non-default authorization-review feature"
+            ));
+        }
+    }
+    for (name, expected_type, expected_arg) in [
+        (
+            "jwt_policy",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"jwt_public_jwk\",\"jwt_token_source\"]",
+        ),
+        (
+            "jwt_public_jwk",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires_all=[\"profile\",\"jwt_policy\"]",
+        ),
+        (
+            "jwt_token_env",
+            ("Option", Some("OsString")),
+            "long,value_name=\"ENV_VAR\",group=\"jwt_token_source\",requires_all=[\"profile\",\"jwt_policy\",\"jwt_public_jwk\"],conflicts_with_all=[\"jwt_token_file\",\"jwt_token_stdin\"]",
+        ),
+        (
+            "jwt_token_file",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",group=\"jwt_token_source\",requires_all=[\"profile\",\"jwt_policy\",\"jwt_public_jwk\"],conflicts_with_all=[\"jwt_token_env\",\"jwt_token_stdin\"]",
+        ),
+        (
+            "jwt_token_stdin",
+            ("bool", None),
+            "long,group=\"jwt_token_source\",requires_all=[\"profile\",\"jwt_policy\",\"jwt_public_jwk\"],conflicts_with_all=[\"jwt_token_env\",\"jwt_token_file\",\"auth_stdin\"]",
+        ),
+    ] {
+        let exact = fields.get(name).is_some_and(|field| {
+            let type_matches = match expected_type {
+                (outer, Some(inner)) => is_one_argument_type(&field.ty, outer, inner),
+                (plain, None) => is_plain_type(&field.ty, plain),
+            };
+            let expected_cfg_attrs = if name == "jwt_token_stdin" {
+                &[
+                    "feature=\"authorization-review\",arg(conflicts_with_all=[\"authz_primary_stdin\",\"authz_peer_stdin\"])",
+                    "feature=\"supplied-session-review\",arg(conflicts_with=\"session_auth_stdin\")",
+                    "feature=\"ssrf-oast-review\",arg(conflicts_with=\"oast_admin_token_stdin\")",
+                ][..]
+            } else {
+                &[][..]
+            };
+            type_matches
+                && exact_cfg_feature_attribute(&field.attrs, "jwt-policy-review")
+                && exact_arg_attribute(&field.attrs, expected_arg)
+                && exact_cfg_attr_attributes(&field.attrs, expected_cfg_attrs)
+        });
+        if !exact {
+            violations.push(format!(
+                "CLI `{name}` must retain its exact private jwt-policy-review gate, local-only source type, complete-input requirements, and stdin conflicts"
             ));
         }
     }
@@ -1085,6 +1187,17 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         }
     }
 
+    let jwt_selection = "letjwt_policy_review_selected=jwt_policy.is_some()||jwt_public_jwk.is_some()||jwt_token_env.is_some()||jwt_token_file.is_some()||jwt_token_stdin;";
+    let jwt_profile_guard =
+        "scan_jwt_policy_review_flags_conflict(profile,jwt_policy_review_selected)";
+    if compact.matches(jwt_selection).count() != 1
+        || compact.matches(jwt_profile_guard).count() != 1
+    {
+        violations.push(
+            "CLI local JWT semantic preflight must bind the exact union of all five JWT inputs to the web-review-only guard before acquisition"
+                .to_owned(),
+        );
+    }
     if !compact
         .contains("auth_input::AuthorizationInputSource::select(auth_env,auth_file,auth_stdin)?")
         || compact
@@ -1124,16 +1237,33 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     {
         violations.push(
             "CLI must require explicit SSRF OAST enablement, one policy, and exactly one out-of-band administrator source without reading them"
+            .to_owned(),
+        );
+    }
+    if !compact.contains("auth_input::JwtPolicyReviewInput::select(jwt_policy,jwt_public_jwk,auth_input::AuthorizationSourceOptions::new(jwt_token_env,jwt_token_file,jwt_token_stdin),)?")
+        || compact
+            .matches("auth_input::JwtPolicyReviewInput::select(")
+            .count()
+            != 1
+        || compact
+            .matches("auth_input::AuthorizationSourceOptions::new(jwt_token_")
+            .count()
+            != 1
+    {
+        violations.push(
+            "CLI must select one local JWT policy, one explicit public JWK, and exactly one out-of-band compact-token source without reading it"
                 .to_owned(),
         );
     }
-    if !compact.contains("letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?")
+    if !compact.contains("letprepared_jwt_policy_review=jwt_policy_review_input.map(auth_input::JwtPolicyReviewInput::prepare).transpose()?")
+        || !compact.contains(".map(auth_input::PreparedJwtPolicyReviewInput::load)")
+        || !compact.contains("letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?")
         || !compact.contains("letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?")
         || !compact.contains(".map(auth_input::PreparedSuppliedSessionInput::load)")
         || !compact.contains(".map(auth_input::PreparedSsrfOastReviewInput::load)")
     {
         violations.push(
-            "CLI must validate supplied-session and OAST non-secret policies before opening any compatible credential source"
+            "CLI must validate local JWT policy/public-key, supplied-session, and OAST non-secret inputs before opening any compatible credential source"
                 .to_owned(),
         );
     }
@@ -1179,6 +1309,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     let expected = [
         "scan_flags_conflict",
         "scan_rest_review_flags_conflict",
+        "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
         "scan_ssrf_oast_review_flags_conflict",
@@ -1195,14 +1326,17 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "select",
         "select",
         "select",
+        "select",
         "authorization_context_transport_is_allowed",
         "for_builtin",
         "with_defense_enforcement_enabled",
         "load",
         "prepare",
         "prepare",
+        "prepare",
         "preflight_report_output",
         "reserve_report_bundle",
+        "load",
         "load",
         "load",
         "load",
@@ -1220,21 +1354,40 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 5
+            != 6
         || ordered
             .iter()
             .filter(|name| name.as_str() == "prepare")
             .count()
-            != 2
+            != 3
         || ordered
             .iter()
             .filter(|name| name.as_str() == "select")
             .count()
-            != 5
+            != 6
     {
         violations.push(format!(
-            "CLI authorization sources and WordPress local inputs must be selected without I/O and loaded exactly once each after flag, progress, transport, profile, and defense validation and before warning/network execution; report destinations must still be preflighted before credential loading; observed {ordered:?}"
+            "CLI authorization, local JWT, and WordPress inputs must be selected without I/O and loaded exactly once each after flag, progress, transport, profile, and defense validation and before warning/network execution; report destinations must still be preflighted before secret loading; observed {ordered:?}"
         ));
+    }
+    let typed_boundary_order = [
+        "letwordpress_review=wordpress_review_input.map(|input|input.load(&target)).transpose()?;",
+        "letprepared_jwt_policy_review=jwt_policy_review_input.map(auth_input::JwtPolicyReviewInput::prepare).transpose()?;",
+        "letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?;",
+        "letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?;",
+        "preflight_report_output(report_output.as_deref())?;",
+        "letmutreport_bundle=report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
+        "letroot_authorization_context=authorization_source.map(auth_input::AuthorizationInputSource::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
+        "letresource_authorization_review=resource_authorization_input.map(|input|input.load(&target)).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
+        "letsupplied_session_review=prepared_supplied_session_review.map(auth_input::PreparedSuppliedSessionInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
+        "letssrf_oast_review=prepared_ssrf_oast_review.map(auth_input::PreparedSsrfOastReviewInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
+        "letjwt_policy_review=prepared_jwt_policy_review.map(auth_input::PreparedJwtPolicyReviewInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
+    ];
+    if !unique_markers_are_ordered(&compact, &typed_boundary_order) {
+        violations.push(
+            "CLI typed input operations must preserve the exact non-secret preparation, report preflight/reservation, secret-load, and failure-cleanup order"
+                .to_owned(),
+        );
     }
 
     Ok(violations)
@@ -1585,6 +1738,19 @@ fn exact_cfg_feature_attribute(attributes: &[Attribute], feature: &str) -> bool 
     predicates == [format!("feature=\"{feature}\"")]
 }
 
+fn exact_cfg_attr_attributes(attributes: &[Attribute], expected: &[&str]) -> bool {
+    let predicates = attributes
+        .iter()
+        .filter_map(|attribute| match &attribute.meta {
+            Meta::List(list) if list.path.is_ident("cfg_attr") => {
+                Some(compact_tokens(&list.tokens))
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    predicates == expected
+}
+
 fn compact_tokens(tokens: &TokenStream) -> String {
     tokens
         .to_string()
@@ -1774,6 +1940,7 @@ fn bounded_reader_is_exact(items: &[(String, String)]) -> bool {
         r#"
         #[cfg(any(
             feature = "authorization-review",
+            feature = "jwt-policy-review",
             feature = "ssrf-oast-review",
             feature = "supplied-session-review"
         ))]
@@ -1795,9 +1962,14 @@ fn bounded_reader_is_exact(items: &[(String, String)]) -> bool {
             }
             Ok(())
         }
+        #[cfg(test)]
         fn read_bounded_line_source(reader: &mut impl Read,)
             -> Result<CredentialBytes, AuthorizationInputError> {
-            let retained_limit = MAX_AUTHORIZATION_CONTEXT_BYTES.saturating_add(2);
+            read_bounded_line_source_with_limit(reader, MAX_AUTHORIZATION_CONTEXT_BYTES)
+        }
+        fn read_bounded_line_source_with_limit(reader: &mut impl Read, max_bytes: usize,)
+            -> Result<CredentialBytes, AuthorizationInputError> {
+            let retained_limit = max_bytes.saturating_add(2);
             let mut bytes = read_bounded_bytes(reader, retained_limit)?;
             let mut overflow = Zeroizing::new([0_u8; 1]);
             if read_overflow_byte(reader, &mut overflow)? != 0 {
@@ -1805,7 +1977,7 @@ fn bounded_reader_is_exact(items: &[(String, String)]) -> bool {
             }
             let retained = wipe_terminal_line_ending(bytes.bytes.as_mut_slice());
             bytes.bytes.truncate(retained);
-            if bytes.as_slice().len() > MAX_AUTHORIZATION_CONTEXT_BYTES {
+            if bytes.as_slice().len() > max_bytes {
                 return Err(AuthorizationInputError::ValueTooLarge);
             }
             Ok(bytes)
@@ -1850,18 +2022,28 @@ fn environment_reader_is_exact(items: &[(String, String)]) -> bool {
     definitions_are_exact(
         items,
         r#"
+        #[cfg(test)]
         fn read_environment(name: OsString) -> Result<CredentialBytes, AuthorizationInputError> {
+            read_environment_with_limit(name, MAX_AUTHORIZATION_CONTEXT_BYTES)
+        }
+        fn read_environment_with_limit(name: OsString, max_bytes: usize,)
+            -> Result<CredentialBytes, AuthorizationInputError> {
             let name = name.into_string().map_err(|_| AuthorizationInputError::SourceNameInvalid)?;
             if name.is_empty() || name.chars().any(|character| matches!(character, '=' | '\0')) {
                 return Err(AuthorizationInputError::SourceNameInvalid);
             }
             let value = std::env::var_os(name).ok_or(AuthorizationInputError::SourceUnavailable)?;
-            validate_environment_value(value)
+            validate_environment_value_with_limit(value, max_bytes)
         }
+        #[cfg(test)]
         fn validate_environment_value(value: OsString) -> Result<CredentialBytes, AuthorizationInputError> {
+            validate_environment_value_with_limit(value, MAX_AUTHORIZATION_CONTEXT_BYTES)
+        }
+        fn validate_environment_value_with_limit(value: OsString, max_bytes: usize,)
+            -> Result<CredentialBytes, AuthorizationInputError> {
             let bytes = CredentialBytes::new(value.into_encoded_bytes());
             std::str::from_utf8(bytes.as_slice()).map_err(|_| AuthorizationInputError::SourceNotUnicode)?;
-            if bytes.as_slice().len() > MAX_AUTHORIZATION_CONTEXT_BYTES {
+            if bytes.as_slice().len() > max_bytes {
                 return Err(AuthorizationInputError::ValueTooLarge);
             }
             Ok(bytes)
@@ -1954,18 +2136,200 @@ fn source_dispatch_is_exact(items: &[(String, String)]) -> bool {
                     .map_err(|_| AuthorizationInputError::InvalidValue)
             }
             fn read_bytes(self) -> Result<CredentialBytes, AuthorizationInputError> {
+                self.read_bytes_with_limit(MAX_AUTHORIZATION_CONTEXT_BYTES)
+            }
+            fn read_bytes_with_limit(self, max_bytes: usize,)
+                -> Result<CredentialBytes, AuthorizationInputError> {
                 match self {
-                    Self::Environment(name) => read_environment(name),
+                    Self::Environment(name) => read_environment_with_limit(name, max_bytes),
                     Self::File(path) => {
                         let mut file = open_regular_file(path)?;
-                        ensure_opened_file_length(&file, MAX_AUTHORIZATION_CONTEXT_BYTES + 2)?;
-                        read_bounded_line_source(&mut file)
+                        ensure_opened_file_length(&file, max_bytes.saturating_add(2))?;
+                        read_bounded_line_source_with_limit(&mut file, max_bytes)
                     },
                     Self::Stdin => {
                         let stdin = io::stdin();
                         let mut input = stdin.lock();
-                        read_bounded_line_source(&mut input)
+                        read_bounded_line_source_with_limit(&mut input, max_bytes)
                     },
+                }
+            }
+        }
+    "#,
+    )
+}
+
+fn jwt_policy_input_contract_is_exact(syntax: &syn::File, items: &[(String, String)]) -> bool {
+    let ceiling_is_exact = syntax.items.iter().any(|item| {
+        matches!(item, Item::Const(item)
+            if item.ident == "MAX_JWT_POLICY_BYTES"
+                && matches!(item.vis, Visibility::Inherited)
+                && is_plain_type(item.ty.as_ref(), "usize")
+                && exact_non_doc_list_attributes(
+                    &item.attrs,
+                    &[("cfg", "feature=\"jwt-policy-review\"")],
+                )
+                && matches!(item.expr.as_ref(),
+                    Expr::Binary(binary)
+                        if matches!(binary.op, syn::BinOp::Mul(_))
+                            && integer_literal_is(binary.left.as_ref(), "8")
+                            && integer_literal_is(binary.right.as_ref(), "1024")))
+    });
+    let schema_is_exact = syntax.items.iter().any(|item| {
+        matches!(item, Item::Const(item)
+            if item.ident == "JWT_POLICY_INPUT_SCHEMA"
+                && matches!(item.vis, Visibility::Inherited)
+                && is_reference_to_plain_type(item.ty.as_ref(), "str")
+                && exact_non_doc_list_attributes(
+                    &item.attrs,
+                    &[("cfg", "feature=\"jwt-policy-review\"")],
+                )
+                && matches!(item.expr.as_ref(),
+                    Expr::Lit(literal)
+                        if matches!(&literal.lit, syn::Lit::Str(value)
+                            if value.value() == "security.jwt-local-policy/v1")))
+    });
+    let policy_document_is_exact = syntax.items.iter().any(|item| {
+        let Item::Struct(item) = item else {
+            return false;
+        };
+        if item.ident != "JwtPolicyDocument"
+            || !matches!(item.vis, Visibility::Inherited)
+            || !exact_non_doc_list_attributes(
+                &item.attrs,
+                &[
+                    ("cfg", "feature=\"jwt-policy-review\""),
+                    ("derive", "serde::Deserialize"),
+                    ("serde", "deny_unknown_fields"),
+                ],
+            )
+        {
+            return false;
+        }
+        let Fields::Named(fields) = &item.fields else {
+            return false;
+        };
+        let expected = [
+            ("schema", "String", None),
+            ("policy_reference", "String", None),
+            ("policy_revision", "String", None),
+            ("expected_type", "String", None),
+            ("expected_issuer", "String", None),
+            ("expected_audience", "String", None),
+            ("required_claims", "Vec", Some("String")),
+            ("require_expiration", "bool", None),
+            ("allowed_clock_skew_seconds", "u32", None),
+        ];
+        fields.named.len() == expected.len()
+            && fields
+                .named
+                .iter()
+                .zip(expected)
+                .all(|(field, (name, outer, inner))| {
+                    field.ident.as_ref().is_some_and(|ident| ident == name)
+                        && matches!(field.vis, Visibility::Inherited)
+                        && field.attrs.is_empty()
+                        && inner.map_or_else(
+                            || is_plain_type(&field.ty, outer),
+                            |inner| is_one_argument_type(&field.ty, outer, inner),
+                        )
+                })
+    });
+    let error_is_exact = find_enum(syntax, "JwtPolicyInputError").is_some_and(|item| {
+        const VARIANTS: &[(&str, Option<&str>)] = &[
+            ("MissingPolicy", None),
+            ("MissingPublicKey", None),
+            ("MissingTokenSource", None),
+            ("ConflictingTokenSources", None),
+            ("PolicySource", Some("AuthorizationInputError")),
+            ("InvalidPolicy", None),
+            ("PublicKeySource", Some("AuthorizationInputError")),
+            ("InvalidPublicKey", None),
+            ("TokenSource", Some("AuthorizationInputError")),
+            ("InvalidToken", None),
+            ("EvaluationClockUnavailable", None),
+        ];
+        is_pub_crate(&item.vis)
+            && exact_non_doc_list_attributes(
+                &item.attrs,
+                &[
+                    ("cfg", "feature=\"jwt-policy-review\""),
+                    ("derive", "Debug"),
+                ],
+            )
+            && enum_variants_are_exact(item, VARIANTS)
+            && explicit_trait_impls(syntax, "JwtPolicyInputError")
+                == BTreeSet::from(["Display".to_owned(), "Error".to_owned()])
+    });
+    ceiling_is_exact
+        && schema_is_exact
+        && policy_document_is_exact
+        && error_is_exact
+        && jwt_policy_error_impls_are_exact(items)
+}
+
+fn integer_literal_is(expression: &Expr, expected: &str) -> bool {
+    matches!(expression, Expr::Lit(literal)
+        if matches!(&literal.lit, syn::Lit::Int(value) if value.base10_digits() == expected))
+}
+
+fn is_reference_to_plain_type(item_type: &Type, expected: &str) -> bool {
+    matches!(item_type, Type::Reference(reference)
+        if reference.mutability.is_none() && is_plain_type(reference.elem.as_ref(), expected))
+}
+
+fn exact_non_doc_list_attributes(attributes: &[Attribute], expected: &[(&str, &str)]) -> bool {
+    let observed = attributes
+        .iter()
+        .filter(|attribute| !attribute.path().is_ident("doc"))
+        .map(|attribute| match &attribute.meta {
+            Meta::List(list) if list.path.segments.len() == 1 => Some((
+                list.path.segments[0].ident.to_string(),
+                compact_tokens(&list.tokens),
+            )),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>();
+    observed.is_some_and(|observed| {
+        observed
+            == expected
+                .iter()
+                .map(|(path, tokens)| ((*path).to_owned(), (*tokens).to_owned()))
+                .collect::<Vec<_>>()
+    })
+}
+
+fn jwt_policy_error_impls_are_exact(items: &[(String, String)]) -> bool {
+    definitions_are_exact(
+        items,
+        r#"
+        #[cfg(feature = "jwt-policy-review")]
+        impl fmt::Display for JwtPolicyInputError {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(match self {
+                    Self::MissingPolicy => "JWT policy review requires one policy file",
+                    Self::MissingPublicKey => "JWT policy review requires one local public JWK file",
+                    Self::MissingTokenSource | Self::ConflictingTokenSources => {
+                        "JWT policy review requires exactly one compact-token source"
+                    },
+                    Self::PolicySource(_) => "JWT policy must be a bounded regular UTF-8 file",
+                    Self::InvalidPolicy => "JWT policy is invalid",
+                    Self::PublicKeySource(_) => "JWT public JWK must be a bounded regular file",
+                    Self::InvalidPublicKey => "JWT public JWK is invalid",
+                    Self::TokenSource(_) => "JWT token source could not be loaded",
+                    Self::InvalidToken => "JWT token value is invalid",
+                    Self::EvaluationClockUnavailable => "JWT local evaluation clock is unavailable",
+                })
+            }
+        }
+        #[cfg(feature = "jwt-policy-review")]
+        impl std::error::Error for JwtPolicyInputError {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                match self {
+                    Self::PolicySource(source)
+                    | Self::PublicKeySource(source)
+                    | Self::TokenSource(source) => Some(source),
+                    _ => None,
                 }
             }
         }
@@ -1977,6 +2341,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
     const OBSERVED: &[&str] = &[
         "scan_flags_conflict",
         "scan_rest_review_flags_conflict",
+        "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
         "scan_ssrf_oast_review_flags_conflict",
@@ -2051,6 +2416,20 @@ fn contains_ordered_subsequence(observed: &[String], expected: &[&str]) -> bool 
         }
     }
     cursor == expected.len()
+}
+
+fn unique_markers_are_ordered(source: &str, markers: &[&str]) -> bool {
+    let mut cursor = 0;
+    for marker in markers {
+        if source.matches(marker).count() != 1 {
+            return false;
+        }
+        let Some(relative) = source[cursor..].find(marker) else {
+            return false;
+        };
+        cursor = cursor.saturating_add(relative).saturating_add(marker.len());
+    }
+    true
 }
 
 fn find_struct_has_derive(syntax: &syn::File, name: &str) -> bool {
@@ -2301,11 +2680,11 @@ mod tests {
     #[test]
     fn environment_validation_must_follow_zeroizing_ownership() {
         for (from, to) in [
-            ("validate_environment_value(value)\n}", "Ok(CredentialBytes::new(value.into_encoded_bytes()))\n}"),
+            ("validate_environment_value_with_limit(value, max_bytes)\n}", "Ok(CredentialBytes::new(value.into_encoded_bytes()))\n}"),
             ("let bytes = CredentialBytes::new(value.into_encoded_bytes());", "let bytes = value.into_encoded_bytes();"),
             ("let bytes = CredentialBytes::new(value.into_encoded_bytes());", "let bytes = CredentialBytes::new(value.into_string().unwrap().into_bytes());"),
             ("std::str::from_utf8(bytes.as_slice()).map_err(|_| AuthorizationInputError::SourceNotUnicode)?;", "let _ = std::str::from_utf8(bytes.as_slice());"),
-            ("if bytes.as_slice().len() > MAX_AUTHORIZATION_CONTEXT_BYTES", "if bytes.as_slice().len() > usize::MAX"),
+            ("if bytes.as_slice().len() > max_bytes", "if bytes.as_slice().len() > usize::MAX"),
             ("if name.is_empty()", "if false"),
             ("std::env::var_os(name).ok_or(AuthorizationInputError::SourceUnavailable)?", "std::env::var_os(name).unwrap_or_default()"),
         ] {
@@ -2313,6 +2692,128 @@ mod tests {
                 |source| inspect_auth_input_contract(source).unwrap(),
                 "environment reader must validate");
         }
+    }
+
+    #[test]
+    fn jwt_policy_input_stays_local_bounded_redacted_and_single_read() {
+        for (from, to, needle) in [
+            (
+                "pub(crate) struct JwtPolicyReviewInput {",
+                "#[derive(Clone)]\npub(crate) struct JwtPolicyReviewInput {",
+                "JwtPolicyReviewInput must remain underived",
+            ),
+            (
+                ".field(\"token\", &\"<redacted>\")",
+                ".field(\"token\", &self.token)",
+                "JwtPolicyReviewInput must remain underived",
+            ),
+            (
+                "validate_jwt_local_file_path(&policy_file).map_err(JwtPolicyInputError::PolicySource)?;",
+                "let _ = &policy_file;",
+                "reject Windows remote/device JWT file spellings",
+            ),
+            (
+                "validate_jwt_local_file_path(&public_jwk_file)\n            .map_err(JwtPolicyInputError::PublicKeySource)?;",
+                "let _ = &public_jwk_file;",
+                "reject Windows remote/device JWT file spellings",
+            ),
+            (
+                "validate_jwt_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;",
+                "let _ = token_file;",
+                "reject Windows remote/device JWT file spellings",
+            ),
+            (
+                "Prefix::UNC(_, _)",
+                "Prefix::Disk(_)",
+                "reject Windows remote/device JWT file spellings",
+            ),
+            (
+                "|| upper.starts_with(\"\\\\DEVICE\\\\\")",
+                "|| false",
+                "reject Windows remote/device JWT file spellings",
+            ),
+            (
+                "\"CON\" | \"PRN\" | \"AUX\" | \"NUL\" | \"CLOCK$\" | \"CONIN$\" | \"CONOUT$\"",
+                "\"CON\" | \"PRN\" | \"AUX\" | \"NULL\" | \"CLOCK$\" | \"CONIN$\" | \"CONOUT$\"",
+                "reject Windows remote/device JWT file spellings",
+            ),
+            (
+                "read_bounded_regular_file(self.policy_file, MAX_JWT_POLICY_BYTES)",
+                "read_bounded_regular_file(self.policy_file, usize::MAX)",
+                "bounded policy/key parsing",
+            ),
+            (
+                "read_bounded_regular_file(self.public_jwk_file, MAX_LOCAL_PUBLIC_JWK_BYTES)",
+                "read_bounded_regular_file(self.public_jwk_file, usize::MAX)",
+                "bounded policy/key parsing",
+            ),
+            (
+                ".read_bytes_with_limit(MAX_COMPACT_JWT_BYTES)",
+                ".read_bytes_with_limit(usize::MAX)",
+                "typed JWT evaluation",
+            ),
+            (
+                "Es256LocalPublicKey::from_jwk_json(public_jwk_source.into_owned())",
+                "Es256LocalPublicKey::from_jwk_json(Vec::new())",
+                "typed JWT evaluation",
+            ),
+            (
+                "review_compact_jwt(\n            &token,",
+                "review_compact_jwt(\n            &SecretCompactJwt::new(Vec::new()).unwrap(),",
+                "typed JWT evaluation",
+            ),
+        ] {
+            assert_mutation_fails(
+                AUTH_INPUT,
+                from,
+                to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                needle,
+            );
+        }
+    }
+
+    #[test]
+    fn jwt_policy_schema_and_error_surface_are_mutation_locked() {
+        for (from, to) in [
+            (
+                "const MAX_JWT_POLICY_BYTES: usize = 8 * 1024;",
+                "const MAX_JWT_POLICY_BYTES: usize = usize::MAX;",
+            ),
+            (
+                "const MAX_JWT_POLICY_BYTES: usize = 8 * 1024;",
+                "const MAX_JWT_POLICY_BYTES: usize = 16 * 1024;",
+            ),
+            ("#[serde(deny_unknown_fields)]", ""),
+            (
+                "    policy_revision: String,",
+                "    policy_revision: Option<String>,",
+            ),
+            (
+                "    expected_type: String,",
+                "    expected_type: Option<String>,",
+            ),
+            ("    InvalidToken,", "    InvalidToken(String),"),
+            (
+                "Self::InvalidToken => \"JWT token value is invalid\",",
+                "Self::InvalidToken => \"JWT token value could not be accepted\",",
+            ),
+        ] {
+            assert_mutation_fails(
+                AUTH_INPUT,
+                from,
+                to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                "local JWT CLI policy input must retain its exact bounded schema",
+            );
+        }
+        assert_mutation_fails(
+            AUTH_INPUT,
+            "            (&document.policy_reference, &document.policy_revision),",
+            "            \"unbound-policy-revision\",",
+            |source| inspect_auth_input_contract(source).unwrap(),
+            "bounded policy/key parsing",
+        );
     }
 
     #[test]
@@ -2374,9 +2875,9 @@ mod tests {
     fn source_selection_and_dispatch_cannot_read_before_validation() {
         for (from, to) in [
             ("let selected = usize::from(environment.is_some())", "let _ = std::env::var_os(\"PREMATURE\"); let selected = usize::from(environment.is_some())"),
-            ("ensure_opened_file_length(&file, MAX_AUTHORIZATION_CONTEXT_BYTES + 2)?;", "let _ = read_bounded_line_source(&mut file)?;"),
-            ("read_bounded_line_source(&mut input)\n", "{ let mut bytes = Vec::new(); input.read_to_end(&mut bytes).unwrap(); Ok(CredentialBytes::new(bytes)) }\n"),
-            ("Self::Environment(name) => read_environment(name),", "Self::Environment(name) => Ok(CredentialBytes::new(std::env::var_os(name).unwrap().into_encoded_bytes())),"),
+            ("ensure_opened_file_length(&file, max_bytes.saturating_add(2))?;", "let _ = read_bounded_line_source_with_limit(&mut file, max_bytes)?;"),
+            ("read_bounded_line_source_with_limit(&mut input, max_bytes)\n", "{ let mut bytes = Vec::new(); input.read_to_end(&mut bytes).unwrap(); Ok(CredentialBytes::new(bytes)) }\n"),
+            ("Self::Environment(name) => read_environment_with_limit(name, max_bytes),", "Self::Environment(name) => Ok(CredentialBytes::new(std::env::var_os(name).unwrap().into_encoded_bytes())),"),
         ] {
             assert_mutation_fails(AUTH_INPUT, from, to,
                 |source| inspect_auth_input_contract(source).unwrap(),
@@ -2395,7 +2896,7 @@ mod tests {
             (
                 "auth_env: Option<OsString>,",
                 "authorization: Option<String>,",
-                "exact root and resource-review",
+                "exact root, resource-review",
             ),
             (
                 "    auth_stdin: bool,",
@@ -2406,6 +2907,26 @@ mod tests {
                 "    #[cfg(feature = \"openapi-review\")]\n    #[arg(long, requires = \"profile\")]\n    openapi_review: bool,",
                 "    #[arg(long, requires = \"profile\")]\n    openapi_review: bool,",
                 "must remain an exact cfg-gated bool",
+            ),
+            (
+                "    #[cfg(feature = \"jwt-policy-review\")]\n    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"jwt_public_jwk\", \"jwt_token_source\"]\n    )]\n    jwt_policy: Option<PathBuf>,",
+                "    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"jwt_public_jwk\", \"jwt_token_source\"]\n    )]\n    jwt_policy: Option<PathBuf>,",
+                "private jwt-policy-review gate",
+            ),
+            (
+                "    jwt_token_env: Option<OsString>,",
+                "    jwt_token_env: Option<String>,",
+                "field inventory and types must remain exact",
+            ),
+            (
+                "        group = \"jwt_token_source\",\n        requires_all = [\"profile\", \"jwt_policy\", \"jwt_public_jwk\"],\n        conflicts_with_all = [\"jwt_token_file\", \"jwt_token_stdin\"]",
+                "        requires_all = [\"profile\", \"jwt_policy\", \"jwt_public_jwk\"],\n        conflicts_with_all = [\"jwt_token_file\", \"jwt_token_stdin\"]",
+                "complete-input requirements",
+            ),
+            (
+                "    #[cfg_attr(\n        feature = \"authorization-review\",\n        arg(conflicts_with_all = [\"authz_primary_stdin\", \"authz_peer_stdin\"])\n    )]",
+                "",
+                "stdin conflicts",
             ),
             (
                 "    #[cfg(feature = \"wordpress-review\")]\n    #[arg(long, requires = \"profile\")]\n    wordpress_review: bool,",
@@ -2473,6 +2994,21 @@ mod tests {
                 "after flag, progress, transport",
             ),
             (
+                "let jwt_policy_review_selected = jwt_policy.is_some()\n        || jwt_public_jwk.is_some()\n        || jwt_token_env.is_some()\n        || jwt_token_file.is_some()\n        || jwt_token_stdin;",
+                "let jwt_policy_review_selected = false;",
+                "exact union of all five JWT inputs",
+            ),
+            (
+                "        || jwt_token_file.is_some()\n        || jwt_token_stdin;",
+                "        || jwt_token_file.is_some();",
+                "exact union of all five JWT inputs",
+            ),
+            (
+                "scan_jwt_policy_review_flags_conflict(profile, jwt_policy_review_selected)",
+                "scan_jwt_policy_review_flags_conflict(profile, false)",
+                "exact union of all five JWT inputs",
+            ),
+            (
                 "conflicts_with_all = [\"report_format\", \"report_output\"]",
                 "conflicts_with = \"report_format\"",
                 "conflicting with both single-report output options",
@@ -2490,12 +3026,32 @@ mod tests {
             (
                 "        let prepared_ssrf_oast_review = ssrf_oast_review_input\n            .map(|input| input.prepare(&target))\n            .transpose()?;",
                 "        let prepared_ssrf_oast_review = ssrf_oast_review_input;",
-                "validate supplied-session and OAST non-secret policies",
+                "validate local JWT policy/public-key, supplied-session, and OAST non-secret inputs",
+            ),
+            (
+                "        let prepared_jwt_policy_review = jwt_policy_review_input\n            .map(auth_input::JwtPolicyReviewInput::prepare)\n            .transpose()?;",
+                "        let prepared_jwt_policy_review = jwt_policy_review_input;",
+                "validate local JWT policy/public-key, supplied-session, and OAST non-secret inputs",
+            ),
+            (
+                "auth_input::JwtPolicyReviewInput::select(",
+                "auth_input::JwtPolicyReviewInput::select_unchecked(",
+                "must select one local JWT policy",
+            ),
+            (
+                ".map(auth_input::PreparedJwtPolicyReviewInput::load)",
+                ".map(auth_input::PreparedJwtPolicyReviewInput::load_unchecked)",
+                "validate local JWT policy/public-key, supplied-session, and OAST non-secret inputs",
+            ),
+            (
+                "        let jwt_policy_review = prepared_jwt_policy_review\n            .map(auth_input::PreparedJwtPolicyReviewInput::load)\n            .transpose()\n            .inspect_err(|_| {\n                abort_report_bundle_after_failure(&mut report_bundle);\n            })?;",
+                "        let jwt_policy_review = prepared_jwt_policy_review\n            .map(auth_input::PreparedJwtPolicyReviewInput::load)\n            .transpose()?;",
+                "exact non-secret preparation, report preflight/reservation, secret-load, and failure-cleanup order",
             ),
             (
                 "        let wordpress_review = wordpress_review_input\n            .map(|input| input.load(&target))\n            .transpose()?;",
                 "        let wordpress_review = None;",
-                "WordPress local inputs must be selected without I/O and loaded exactly once",
+                "authorization, local JWT, and WordPress inputs must be selected without I/O",
             ),
             (
                 "let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
@@ -2531,6 +3087,14 @@ mod tests {
                 needle,
             );
         }
+
+        assert_mutation_fails(
+            CLI_MAIN,
+            "        preflight_report_output(report_output.as_deref())?;\n        let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;\n        // All flag, profile, target, and obvious report-output checks above\n        // precede every selected secret-source read in the CLI.\n        let root_authorization_context = authorization_source\n            .map(auth_input::AuthorizationInputSource::load)\n            .transpose()\n            .inspect_err(|_| {\n                abort_report_bundle_after_failure(&mut report_bundle);\n            })?;",
+            "        // Mutated only in the architecture regression: a secret read must not\n        // move ahead of report preflight and reservation.\n        let root_authorization_context = authorization_source\n            .map(auth_input::AuthorizationInputSource::load)\n            .transpose()\n            .inspect_err(|_| {\n                abort_report_bundle_after_failure(&mut report_bundle);\n            })?;\n        preflight_report_output(report_output.as_deref())?;\n        let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
+            |source| inspect_cli_auth_surface(source).unwrap(),
+            "exact non-secret preparation, report preflight/reservation, secret-load, and failure-cleanup order",
+        );
 
         let scan_args_offset = CLI_MAIN
             .find("struct ScanArgs")

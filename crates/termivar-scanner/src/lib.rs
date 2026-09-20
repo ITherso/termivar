@@ -48,6 +48,8 @@ pub mod error;
 pub mod experience;
 #[cfg(feature = "graphql-review")]
 pub(crate) mod graphql_review;
+#[cfg(feature = "jwt-policy-review")]
+pub mod jwt_policy_review;
 pub mod knowledge;
 #[cfg(feature = "legacy-scanner")]
 mod legacy_discovery;

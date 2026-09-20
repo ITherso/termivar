@@ -68,6 +68,7 @@ RELEASE_MEMBERS = (
 )
 EXCLUDED_FEATURES = (
     "api-adapter",
+    "jwt-policy-review",
     "legacy-scanner",
     "proxy-adapter",
     "secret-exposure-review",
@@ -106,6 +107,43 @@ TLS_OBSERVATION_LIMITATION = (
     "OCSP, CT and AIA retrieval are not performed. Repeated certificate bytes do not identify "
     "one connection, and one successful connection does not enumerate server support. Plain "
     "HTTP is not applicable; missing TLS metadata remains unavailable rather than a clean result."
+)
+JWT_POLICY_REVIEW_OPTIONS = (
+    "--jwt-policy",
+    "--jwt-public-jwk",
+    "--jwt-token-env",
+    "--jwt-token-file",
+    "--jwt-token-stdin",
+)
+JWT_POLICY_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--jwt-policy FILE",
+    "--jwt-public-jwk FILE",
+    "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin",
+)
+JWT_POLICY_REVIEW_LIMITATION = (
+    "Reviews one explicitly supplied compact JWS under a strict local policy and verifies "
+    "only ES256 against one explicitly supplied local P-256 public JWK. The V1 policy "
+    "requires a non-secret operator policy revision plus explicit intended typ, issuer, and "
+    "audience bindings; all three checks are mandatory. The revision must change when private "
+    "policy semantics change, and reports identify the exact public-key bytes with SHA-256 "
+    "without authenticating their source. The token is read from an explicitly selected "
+    "environment variable, local regular file, or stdin; Windows UNC, device, and named-pipe "
+    "namespaces are rejected before open, while mapped drives and mounted network filesystems "
+    "remain an operator trust boundary. The token is never "
+    "placed in argv, sent to the target, replayed, or used as authorization. Before the token "
+    "source is read, JWK intake validates only the closed public-JWK structure and canonical "
+    "32-byte x/y coordinates; curve membership and signature validity are decided by local "
+    "ES256 verification, and failure remains unauthenticated with local_signature=invalid. "
+    "The JWT evaluator performs zero target requests and no remote key retrieval; the "
+    "surrounding scan retains its ordinary authorized web-review requests. JWE, nested or compressed "
+    "JOSE, critical headers, unencoded payloads, unsecured or non-ES256 algorithms, jku, x5u, "
+    "embedded keys, and private JWK material are rejected or unsupported. Parsed, "
+    "policy-consistent, locally signature-verified, and target-accepted are distinct states; "
+    "target acceptance is not performed. Local signature verification establishes only the "
+    "relationship among the supplied token bytes, local policy, local clock, and supplied "
+    "public key; it does not authenticate the issuer or source, establish server acceptance, "
+    "or perform exploit or impact validation."
 )
 SUPPLIED_SESSION_OPTIONS = (
     "--session-policy",
@@ -632,6 +670,9 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require(re.search(rf"(?m)^\s*{re.escape(TLS_OBSERVATION_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled TLS observation")
+    for option in JWT_POLICY_REVIEW_OPTIONS:
+        require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
+                f"scan help unexpectedly exposes non-bundled local JWT-policy option {option}")
     for option in SUPPLIED_SESSION_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
                 f"scan help unexpectedly exposes non-bundled option {option}")
@@ -710,6 +751,39 @@ def _validate_tls_observation_surface(
     return tls
 
 
+def _validate_jwt_policy_review_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    jwt_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.jwt-policy-review"
+    ]
+    require(len(jwt_surfaces) == 1,
+            "packaged local JWT-policy surface identity changed")
+    jwt = jwt_surfaces[0]
+    require(jwt.get("label") == "Local JWT policy review"
+            and jwt.get("compile_feature") == "jwt-policy-review"
+            and jwt.get("build_state") == expected_state
+            and jwt.get("maturity") == "preview"
+            and jwt.get("implementation_status") == "implemented"
+            and jwt.get("group") == "optional"
+            and jwt.get("kind") == "scan_option"
+            and jwt.get("alias") is None
+            and jwt.get("documentation")
+            == "docs/internals/local-jwt-policy-review.md",
+            "packaged local JWT-policy surface metadata changed")
+    prerequisites = jwt.get("prerequisites")
+    require(isinstance(prerequisites, list)
+            and all(isinstance(value, str) for value in prerequisites)
+            and tuple(prerequisites) == JWT_POLICY_REVIEW_PREREQUISITES,
+            "packaged local JWT-policy opt-in contract changed")
+    require(jwt.get("limitation") == JWT_POLICY_REVIEW_LIMITATION,
+            "packaged local JWT-policy limitation changed")
+    require(f"[{expected_state}] {jwt['label']}" in text_value,
+            "local JWT-policy capability text and JSON views disagree")
+    return jwt
+
+
 def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> dict:
     text, _ = runner.run("capabilities-text", ["capabilities"], expected_stderr_empty=True)
     encoded, _ = runner.run(
@@ -770,6 +844,7 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "capabilities command surface identity changed")
     _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
     _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
+    _validate_jwt_policy_review_surface(surfaces, text_value, "not_compiled")
     session_surfaces = [
         surface for surface in surfaces
         if surface.get("key") == "option.supplied-session-review"
@@ -863,6 +938,14 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "maturity": "preview",
             "implementation_status": "implemented",
             "runtime_activation": "unavailable_in_release_bundle",
+        },
+        "jwt_policy_review_preview": {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "network_activity": "not_performed",
+            "target_acceptance": "not_performed",
         },
         "supplied_session_preview": {
             "build_state": "not_compiled",

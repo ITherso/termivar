@@ -134,6 +134,7 @@ untagged alpha.3 development composition also compiles the `wordpress-review`
 Preview. It does not activate any of them: WordPress still requires explicit
 `--profile web-review --wordpress-review`. Current alpha.3 excludes
 `supplied-session-review`, `secret-exposure-review`, `tls-observation`,
+`jwt-policy-review`,
 `ssrf-oast-review`, `legacy-scanner`, `api-adapter`, and `proxy-adapter`.
 Enabling the seven current member features individually can therefore produce
 the same member surface states while `release-bundle` remains `not_compiled`.
@@ -172,6 +173,44 @@ attestations. The historical `v0.10.0-alpha.1` archives and earlier pinned
 command; the published alpha.2 archives include it. Compiling
 `ssrf-oast-review` separately does not close corrective-maintenance F3, which
 remains deferred, out of scope, and unresolved.
+
+## Review one supplied JWT against a local policy
+
+The unreleased development source has a non-default `jwt-policy-review` feature.
+It is not part of the seven-member `release-bundle` or published alpha.2
+archives. Build a feature-specific executable:
+
+```bash
+cargo build --locked -p termivar-cli --no-default-features \
+  --features jwt-policy-review
+```
+
+Then select one strict local policy, one local ES256 public JWK, and exactly one
+token source:
+
+```bash
+termivar scan <AUTHORIZED_EXACT_ROOT> \
+  --profile web-review \
+  --jwt-policy jwt-policy.toml \
+  --jwt-public-jwk public-key.jwk \
+  --jwt-token-file compact-token.txt \
+  --report-dir jwt-assessment
+```
+
+Use `--jwt-token-env ENV_VAR` or `--jwt-token-stdin` instead of the file option
+when appropriate; never put the token in argv. The JWT evaluator is
+transport-free: it does not send or replay the token, retrieve a remote key, or
+add a target request. The surrounding scan retains its ordinary authorized web
+requests. It supports only bounded compact ES256 JWS input and one strict local
+P-256 public JWK. The V1 policy requires an explicit non-secret
+`policy_revision` plus intended `typ`, issuer, and
+audience bindings; none of these three checks can be disabled. Preflight
+validates its closed structure and canonical 32-byte coordinates, while curve
+membership and signature validity are decided by local verification. A parsed
+token is not thereby signature-verified, and local verification does not mean a
+target accepted the token. Target acceptance,
+issuer/source authentication, exploit execution, and impact validation are not
+performed. See the [local JWT policy review contract](internals/local-jwt-policy-review.md).
 
 ## Live assessment progress
 

@@ -30,6 +30,9 @@ pub(super) const SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
 pub(super) const SECRET_EXPOSURE_COMPARISON_SCHEMA: &str = "termivar-secret-exposure-comparison/v1";
 /// Additive, display-only passive TLS observation comparison section.
 pub(super) const TLS_OBSERVATION_COMPARISON_SCHEMA: &str = "termivar-tls-observation-comparison/v1";
+/// Additive, display-only local JWT policy comparison section.
+pub(super) const JWT_POLICY_REVIEW_COMPARISON_SCHEMA: &str =
+    "termivar-jwt-policy-review-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
@@ -198,6 +201,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tls_observation_comparison: Option<TlsObservationComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) jwt_policy_review_comparison: Option<JwtPolicyReviewComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) wordpress_review_comparison: Option<WordPressReviewComparison>,
     pub(super) only_in_after: Vec<ComparisonItem>,
     pub(super) only_in_before: Vec<ComparisonItem>,
@@ -239,6 +244,18 @@ pub(super) struct TlsObservationComparison {
     pub(super) coverage: WordPressFacetComparison,
     pub(super) certificate_observations: WordPressFacetComparison,
     pub(super) interpretation_limits: [&'static str; 5],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct JwtPolicyReviewComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) outcome: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 6],
 }
 
 #[derive(Debug, Serialize)]
@@ -377,6 +394,13 @@ pub(super) struct ImportedTlsObservationAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedJwtPolicyReviewAudit {
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+    pub(super) outcome: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SuppliedSessionResourceBinding {
     pub(super) evidence_reference: Option<String>,
     pub(super) response_bytes: u64,
@@ -460,6 +484,7 @@ struct ImportedDocument {
     supplied_session: Option<ImportedSuppliedSessionAudit>,
     secret_exposure: Option<ImportedSecretExposureAudit>,
     tls_observation: Option<ImportedTlsObservationAudit>,
+    jwt_policy_review: Option<ImportedJwtPolicyReviewAudit>,
     wordpress_review: Option<ImportedWordPressAudit>,
 }
 
@@ -489,6 +514,10 @@ fn compare_documents(
         before.tls_observation.as_ref(),
         after.tls_observation.as_ref(),
     );
+    let jwt_policy_review_comparison = compare_jwt_policy_review(
+        before.jwt_policy_review.as_ref(),
+        after.jwt_policy_review.as_ref(),
+    );
     let wordpress_review_comparison = compare_wordpress_reviews(
         before.wordpress_review.as_ref(),
         after.wordpress_review.as_ref(),
@@ -509,6 +538,7 @@ fn compare_documents(
         supplied_session_comparison,
         secret_exposure_comparison,
         tls_observation_comparison,
+        jwt_policy_review_comparison,
         wordpress_review_comparison,
         only_in_after: Vec::new(),
         only_in_before: Vec::new(),
@@ -753,6 +783,61 @@ fn compare_tls_observation(
             "Standard transport validation is scoped to a successful response connection and is not source authentication, a fresh signature check by this report, or worldwide trust.",
             "Revocation, AIA, CRL, OCSP, certificate-transparency, and active negotiation retrieval were not performed.",
             "A one-sided or changed certificate observation does not establish vulnerability, exploitation, impact, rotation quality, or remediation.",
+        ],
+    })
+}
+
+fn compare_jwt_policy_review(
+    before: Option<&ImportedJwtPolicyReviewAudit>,
+    after: Option<&ImportedJwtPolicyReviewAudit>,
+) -> Option<JwtPolicyReviewComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    Some(JwtPolicyReviewComparison {
+        schema: JWT_POLICY_REVIEW_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            paired_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Declared policy reference/revision, expected-claim selection, clock-skew allowance, or exact public-key-byte identity changes can change interpretation without any target behavior changing.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            paired_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "The local evaluation instant and explicit absence of external activity describe bounded review coverage; they do not establish continuous clock accuracy or target acceptance.",
+        ),
+        outcome: facet(
+            before.map(|audit| &audit.outcome),
+            after.map(|audit| &audit.outcome),
+            paired_status(
+                before.map(|audit| &audit.outcome),
+                after.map(|audit| &audit.outcome),
+            ),
+            "Parsing, local policy consistency, and local signature status are separate outcomes. A changed local outcome is not evidence that a target accepted a token or that authorization changed.",
+        ),
+        interpretation_limits: [
+            "The compact token, claim names and values, signature bytes, and verification-key material are not imported into this display-only comparison.",
+            "The operator policy revision must change when private policy semantics change; the public-key SHA-256 identifies bytes but authenticates neither key nor source.",
+            "Local parsing does not authenticate claims; local signature verification applies only to the explicitly supplied local public key.",
+            "Policy consistency is not target acceptance, authorization, exploitability, or impact.",
+            "The evaluator performed no target request, token forwarding, or remote-key retrieval.",
+            "A one-sided or changed audit does not establish vulnerability, remediation, or source authenticity.",
         ],
     })
 }
@@ -1209,6 +1294,9 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
     if let Some(tls_observation) = &document.tls_observation_comparison {
         write_tls_observation_comparison_markdown(&mut output, tls_observation)?;
     }
+    if let Some(jwt_policy_review) = &document.jwt_policy_review_comparison {
+        write_jwt_policy_review_comparison_markdown(&mut output, jwt_policy_review)?;
+    }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         write_wordpress_comparison_markdown(&mut output, wordpress)?;
     }
@@ -1424,6 +1512,50 @@ fn write_tls_observation_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### TLS observation interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_jwt_policy_review_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &JwtPolicyReviewComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Local JWT policy review differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str(
+        "\n\nThis section compares validated, value-free local JWT audit projections. It does not expose the token, claims, signature, or key; contact a target; or establish target acceptance, authorization, vulnerability, or remediation.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+        ("Outcome", &comparison.outcome),
+    ] {
+        output.push_fmt(format_args!("### JWT {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### JWT policy review interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

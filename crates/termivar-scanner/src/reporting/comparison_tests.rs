@@ -188,6 +188,49 @@ fn report_with_tls_observation(audit: Value) -> Value {
     document
 }
 
+fn jwt_policy_review_audit() -> Value {
+    json!({
+        "schema": "security.jwt-policy-review-audit/v1",
+        "policy": "termivar.jwt-local-policy/es256-v1",
+        "selected": true,
+        "parsing_status": "parsed",
+        "policy_status": "consistent",
+        "local_signature_status": "verified",
+        "target_acceptance_status": "not_performed",
+        "methodology": {
+            "algorithm": "es256",
+            "representation": "compact_jws",
+            "local_key_source": "explicit_operator_supplied_public_jwk",
+            "key_source_assurance": "operator_supplied_not_authenticated",
+            "token_carried_key_selection": "prohibited",
+            "operator_policy_reference": "synthetic-policy",
+            "operator_policy_revision": "synthetic-policy-v1",
+            "local_public_key_sha256": concat!("sha256:", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            "expected_type_selected": true,
+            "expected_issuer_selected": true,
+            "expected_audience_selected": true,
+            "required_claim_count": 2,
+            "require_expiration": true,
+            "allowed_clock_skew_seconds": 30,
+            "evaluation_time_unix_seconds": 1_700_000_000,
+            "clock_assurance": "local_system_clock_not_independently_verified"
+        },
+        "external_activity": {
+            "target_request_count": 0,
+            "remote_key_retrieval": "not_performed",
+            "token_forwarding": "not_performed"
+        },
+        "policy_violations": [],
+        "source_authentication": "not_established"
+    })
+}
+
+fn report_with_jwt_policy_review(audit: Value) -> Value {
+    let mut document = report(Vec::new());
+    document["jwt_policy_review"] = audit;
+    document
+}
+
 fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
@@ -276,6 +319,291 @@ fn imported_summary_accepts_a_complete_empty_assessment() {
     assert_eq!(summary.status(), "complete");
     assert_eq!(summary.subject_count(), 2);
     assert_eq!(summary.item_count(), 0);
+}
+
+#[test]
+fn jwt_policy_review_is_strict_feature_independent_value_free_and_self_compares() {
+    let document = report_with_jwt_policy_review(jwt_policy_review_audit());
+    let summary = import_assessment_summary(&bytes(&document)).unwrap();
+    assert_eq!(summary.item_count(), 0);
+
+    let comparison = compare(&document, &document);
+    assert_eq!(
+        comparison["before"]["optional_audits"]["jwt_policy_review"]["schema"],
+        "security.jwt-policy-review-audit/v1"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["schema"],
+        "termivar-jwt-policy-review-comparison/v1"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["status"],
+        "compared"
+    );
+    for facet in ["methodology", "coverage", "outcome"] {
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"][facet]["status"],
+            "unchanged"
+        );
+    }
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["before"]["local_key_source"],
+        "explicit_operator_supplied_public_jwk"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["before"]["key_source_assurance"],
+        "operator_supplied_not_authenticated"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["before"]
+            ["operator_policy_revision"],
+        "synthetic-policy-v1"
+    );
+    let serialized = serde_json::to_string(&comparison).unwrap();
+    for sentinel in [
+        "eyJhbGciOiJFUzI1NiJ9",
+        "synthetic-secret-claim-value",
+        "BEGIN PRIVATE KEY",
+    ] {
+        assert!(!serialized.contains(sentinel));
+    }
+    for group in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+
+    for format in [ComparisonFormat::Markdown, ComparisonFormat::Html] {
+        let output = compare_reports(&bytes(&document), &bytes(&document), format).unwrap();
+        assert!(output.contains("termivar-jwt-policy-review-comparison/v1"));
+        assert!(output.contains("target acceptance") || output.contains("Target acceptance"));
+        assert!(!output.contains("synthetic-secret-claim-value"));
+    }
+}
+
+#[test]
+fn jwt_policy_review_changes_are_partitioned_by_semantic_facet() {
+    let before = report_with_jwt_policy_review(jwt_policy_review_audit());
+
+    let mut methodology_changed = before.clone();
+    methodology_changed["jwt_policy_review"]["methodology"]["operator_policy_reference"] =
+        json!("alternate-policy");
+    let comparison = compare(&before, &methodology_changed);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+
+    for (field, replacement) in [
+        ("operator_policy_revision", json!("synthetic-policy-v2")),
+        (
+            "local_public_key_sha256",
+            json!(concat!(
+                "sha256:",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            )),
+        ),
+    ] {
+        let mut independently_changed = before.clone();
+        independently_changed["jwt_policy_review"]["methodology"][field] = replacement;
+        let comparison = compare(&before, &independently_changed);
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"]["methodology"]["status"], "changed",
+            "{field} must remain part of the methodology identity"
+        );
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+            "unchanged"
+        );
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"]["outcome"]["status"],
+            "unchanged"
+        );
+    }
+
+    let mut coverage_changed = before.clone();
+    coverage_changed["jwt_policy_review"]["methodology"]["evaluation_time_unix_seconds"] =
+        json!(1_700_000_001_i64);
+    let comparison = compare(&before, &coverage_changed);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+
+    let mut outcome_changed = before.clone();
+    outcome_changed["jwt_policy_review"]["local_signature_status"] = json!("invalid");
+    let comparison = compare(&before, &outcome_changed);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["outcome"]["status"],
+        "changed"
+    );
+    assert!(
+        comparison["jwt_policy_review_comparison"]["outcome"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("not evidence")
+    );
+
+    let missing = report(Vec::new());
+    let comparison = compare(&before, &missing);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["reason"],
+        "after_audit_missing"
+    );
+}
+
+#[test]
+fn jwt_policy_review_reader_rejects_contract_state_and_privacy_mutations() {
+    let valid = report_with_jwt_policy_review(jwt_policy_review_audit());
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+
+    for field in [
+        "schema",
+        "policy",
+        "selected",
+        "parsing_status",
+        "policy_status",
+        "local_signature_status",
+        "target_acceptance_status",
+        "methodology",
+        "external_activity",
+        "policy_violations",
+        "source_authentication",
+    ] {
+        let mut missing = valid.clone();
+        missing["jwt_policy_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            import_assessment_summary(&bytes(&missing)).is_err(),
+            "missing {field} must be rejected"
+        );
+    }
+    for (field, replacement) in [
+        ("schema", json!("security.jwt-policy-review-audit/v2")),
+        ("policy", json!("termivar.jwt-local-policy/none-v1")),
+        ("selected", json!(false)),
+        ("parsing_status", json!("decoded")),
+        ("policy_status", json!("accepted")),
+        ("local_signature_status", json!("trusted")),
+        ("target_acceptance_status", json!("accepted")),
+        ("source_authentication", json!("authenticated")),
+    ] {
+        let mut changed = valid.clone();
+        changed["jwt_policy_review"][field] = replacement;
+        assert!(
+            import_assessment_summary(&bytes(&changed)).is_err(),
+            "mutation of {field} must be rejected"
+        );
+    }
+    for (field, replacement) in [
+        ("algorithm", json!("none")),
+        ("representation", json!("jwe")),
+        ("local_key_source", json!("token_jwk")),
+        ("key_source_assurance", json!("authenticated")),
+        ("token_carried_key_selection", json!("allowed")),
+        ("operator_policy_reference", json!("Invalid Policy")),
+        ("operator_policy_revision", json!("Invalid Revision")),
+        ("local_public_key_sha256", json!("sha256:not-a-digest")),
+        ("expected_type_selected", json!(false)),
+        ("expected_issuer_selected", json!(false)),
+        ("expected_audience_selected", json!(false)),
+        ("required_claim_count", json!(17)),
+        ("allowed_clock_skew_seconds", json!(3601)),
+        (
+            "clock_assurance",
+            json!("network_time_independently_verified"),
+        ),
+    ] {
+        let mut changed = valid.clone();
+        changed["jwt_policy_review"]["methodology"][field] = replacement;
+        assert!(
+            import_assessment_summary(&bytes(&changed)).is_err(),
+            "methodology mutation of {field} must be rejected"
+        );
+    }
+    for (field, replacement) in [
+        ("target_request_count", json!(1)),
+        ("remote_key_retrieval", json!("performed")),
+        ("token_forwarding", json!("performed")),
+    ] {
+        let mut changed = valid.clone();
+        changed["jwt_policy_review"]["external_activity"][field] = replacement;
+        assert!(
+            import_assessment_summary(&bytes(&changed)).is_err(),
+            "external activity mutation of {field} must be rejected"
+        );
+    }
+    let mut bool_count = valid.clone();
+    bool_count["jwt_policy_review"]["methodology"]["required_claim_count"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&bool_count)).is_err());
+
+    let mut rejected = valid.clone();
+    rejected["jwt_policy_review"]["parsing_status"] = json!("rejected");
+    rejected["jwt_policy_review"]["parsing_rejection"] = json!("duplicate_json_key");
+    rejected["jwt_policy_review"]["policy_status"] = json!("not_evaluated");
+    rejected["jwt_policy_review"]["local_signature_status"] = json!("not_evaluated");
+    assert!(import_assessment_summary(&bytes(&rejected)).is_ok());
+    let mut rejected_without_reason = rejected.clone();
+    rejected_without_reason["jwt_policy_review"]
+        .as_object_mut()
+        .unwrap()
+        .remove("parsing_rejection");
+    assert!(import_assessment_summary(&bytes(&rejected_without_reason)).is_err());
+    let mut parsed_with_reason = valid.clone();
+    parsed_with_reason["jwt_policy_review"]["parsing_rejection"] = json!("duplicate_json_key");
+    assert!(import_assessment_summary(&bytes(&parsed_with_reason)).is_err());
+
+    let mut inconsistent = valid.clone();
+    inconsistent["jwt_policy_review"]["policy_status"] = json!("inconsistent");
+    inconsistent["jwt_policy_review"]["policy_violations"] =
+        json!([{"kind":"missing_required_claim","ordinal":1}]);
+    assert!(import_assessment_summary(&bytes(&inconsistent)).is_ok());
+    let mut duplicate = inconsistent.clone();
+    duplicate["jwt_policy_review"]["policy_violations"] = json!([
+        {"kind":"missing_required_claim","ordinal":1},
+        {"kind":"missing_required_claim","ordinal":1}
+    ]);
+    assert!(import_assessment_summary(&bytes(&duplicate)).is_err());
+    let mut mutually_exclusive = inconsistent.clone();
+    mutually_exclusive["jwt_policy_review"]["policy_violations"] = json!([
+        {"kind":"missing_issuer"},
+        {"kind":"issuer_mismatch"}
+    ]);
+    assert!(import_assessment_summary(&bytes(&mutually_exclusive)).is_err());
+    let mut invalid_ordinal = inconsistent.clone();
+    invalid_ordinal["jwt_policy_review"]["policy_violations"][0]["ordinal"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&invalid_ordinal)).is_err());
+    let mut secret_member = valid.clone();
+    secret_member["jwt_policy_review"]["raw_token"] = json!("synthetic-secret-claim-value");
+    assert!(import_assessment_summary(&bytes(&secret_member)).is_err());
 }
 
 #[test]

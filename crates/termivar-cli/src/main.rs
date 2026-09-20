@@ -411,6 +411,20 @@ fn scan_tls_observation_flags_conflict(
     }
 }
 
+/// Rejects local JWT policy review outside its explicit web-review contract.
+/// This runs before policy, key, token, output, or network acquisition.
+#[cfg(feature = "jwt-policy-review")]
+fn scan_jwt_policy_review_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("JWT policy review requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
 fn is_exact_origin_root(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https")
         && target.username().is_empty()
@@ -537,6 +551,63 @@ struct ScanArgs {
     #[cfg(feature = "tls-observation")]
     #[arg(long, requires = "profile")]
     tls_observation: bool,
+    /// Review one explicitly supplied compact JWT against a bounded local
+    /// policy and one local ES256 public JWK. The token is never sent to the
+    /// target and no remote key is retrieved.
+    #[cfg(feature = "jwt-policy-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["profile", "jwt_public_jwk", "jwt_token_source"]
+    )]
+    jwt_policy: Option<PathBuf>,
+    /// Read the explicitly trusted local public ES256 JWK used only for this
+    /// review. Private or remote key-selection material is rejected.
+    #[cfg(feature = "jwt-policy-review")]
+    #[arg(long, value_name = "FILE", requires_all = ["profile", "jwt_policy"])]
+    jwt_public_jwk: Option<PathBuf>,
+    /// Read the compact JWT from an explicitly named environment variable.
+    /// The variable name and value are never reported.
+    #[cfg(feature = "jwt-policy-review")]
+    #[arg(
+        long,
+        value_name = "ENV_VAR",
+        group = "jwt_token_source",
+        requires_all = ["profile", "jwt_policy", "jwt_public_jwk"],
+        conflicts_with_all = ["jwt_token_file", "jwt_token_stdin"]
+    )]
+    jwt_token_env: Option<OsString>,
+    /// Read the compact JWT once from a bounded regular file.
+    #[cfg(feature = "jwt-policy-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        group = "jwt_token_source",
+        requires_all = ["profile", "jwt_policy", "jwt_public_jwk"],
+        conflicts_with_all = ["jwt_token_env", "jwt_token_stdin"]
+    )]
+    jwt_token_file: Option<PathBuf>,
+    /// Read the compact JWT once from stdin.
+    #[cfg(feature = "jwt-policy-review")]
+    #[arg(
+        long,
+        group = "jwt_token_source",
+        requires_all = ["profile", "jwt_policy", "jwt_public_jwk"],
+        conflicts_with_all = ["jwt_token_env", "jwt_token_file", "auth_stdin"]
+    )]
+    #[cfg_attr(
+        feature = "authorization-review",
+        arg(conflicts_with_all = ["authz_primary_stdin", "authz_peer_stdin"])
+    )]
+    #[cfg_attr(
+        feature = "supplied-session-review",
+        arg(conflicts_with = "session_auth_stdin")
+    )]
+    #[cfg_attr(
+        feature = "ssrf-oast-review",
+        arg(conflicts_with = "oast_admin_token_stdin")
+    )]
+    jwt_token_stdin: bool,
     /// Interpret bounded WordPress component evidence already present in the
     /// assessment. This option adds no target requests and is compiled only
     /// with `wordpress-review`.
@@ -1084,6 +1155,16 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "jwt-policy-review")]
+        jwt_policy,
+        #[cfg(feature = "jwt-policy-review")]
+        jwt_public_jwk,
+        #[cfg(feature = "jwt-policy-review")]
+        jwt_token_env,
+        #[cfg(feature = "jwt-policy-review")]
+        jwt_token_file,
+        #[cfg(feature = "jwt-policy-review")]
+        jwt_token_stdin,
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
         #[cfg(feature = "wordpress-review")]
@@ -1201,6 +1282,21 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     }
     #[cfg(feature = "tls-observation")]
     if let Some(message) = scan_tls_observation_flags_conflict(profile, tls_observation) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "jwt-policy-review")]
+    let jwt_policy_review_selected = jwt_policy.is_some()
+        || jwt_public_jwk.is_some()
+        || jwt_token_env.is_some()
+        || jwt_token_file.is_some()
+        || jwt_token_stdin;
+    #[cfg(feature = "jwt-policy-review")]
+    if let Some(message) =
+        scan_jwt_policy_review_flags_conflict(profile, jwt_policy_review_selected)
+    {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -1376,6 +1472,12 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         )
         .into());
     }
+    #[cfg(feature = "jwt-policy-review")]
+    let jwt_policy_review_input = auth_input::JwtPolicyReviewInput::select(
+        jwt_policy,
+        jwt_public_jwk,
+        auth_input::AuthorizationSourceOptions::new(jwt_token_env, jwt_token_file, jwt_token_stdin),
+    )?;
     #[cfg(feature = "authorization-review")]
     let resource_authorization_input = auth_input::AuthorizationReviewInput::select(
         authorization_review_policy,
@@ -1477,6 +1579,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         let wordpress_review = wordpress_review_input
             .map(|input| input.load(&target))
             .transpose()?;
+        // The JWT policy and explicitly trusted public key are non-secret and
+        // validated before output reservation. The compact token remains
+        // unread until reservation succeeds below.
+        #[cfg(feature = "jwt-policy-review")]
+        let prepared_jwt_policy_review = jwt_policy_review_input
+            .map(auth_input::JwtPolicyReviewInput::prepare)
+            .transpose()?;
         // Validate the non-secret supplied-session policy before reserving any
         // externally visible output. The prepared value retains an unread
         // secret source until reservation succeeds below.
@@ -1522,6 +1631,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .inspect_err(|_| {
                 abort_report_bundle_after_failure(&mut report_bundle);
             })?;
+        #[cfg(feature = "jwt-policy-review")]
+        let jwt_policy_review = prepared_jwt_policy_review
+            .map(auth_input::PreparedJwtPolicyReviewInput::load)
+            .transpose()
+            .inspect_err(|_| {
+                abort_report_bundle_after_failure(&mut report_bundle);
+            })?;
 
         eprintln!("{DETERMINISTIC_SCAN_WARNING}");
         let execution = match assessment_scan::run_profile_scan(
@@ -1539,6 +1655,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 secret_exposure_review,
                 #[cfg(feature = "tls-observation")]
                 tls_observation,
+                #[cfg(feature = "jwt-policy-review")]
+                jwt_policy_review,
                 #[cfg(feature = "authorization-review")]
                 resource_authorization_review,
                 #[cfg(feature = "supplied-session-review")]
@@ -2066,6 +2184,14 @@ mod tests {
         assert!(!args.secret_exposure_review);
         #[cfg(feature = "tls-observation")]
         assert!(!args.tls_observation);
+        #[cfg(feature = "jwt-policy-review")]
+        {
+            assert_eq!(args.jwt_policy, None);
+            assert_eq!(args.jwt_public_jwk, None);
+            assert_eq!(args.jwt_token_env, None);
+            assert_eq!(args.jwt_token_file, None);
+            assert!(!args.jwt_token_stdin);
+        }
         #[cfg(feature = "wordpress-review")]
         {
             assert!(!args.wordpress_review);
@@ -2144,6 +2270,14 @@ mod tests {
         assert!(!args.secret_exposure_review);
         #[cfg(feature = "tls-observation")]
         assert!(!args.tls_observation);
+        #[cfg(feature = "jwt-policy-review")]
+        {
+            assert_eq!(args.jwt_policy, None);
+            assert_eq!(args.jwt_public_jwk, None);
+            assert_eq!(args.jwt_token_env, None);
+            assert_eq!(args.jwt_token_file, None);
+            assert!(!args.jwt_token_stdin);
+        }
         #[cfg(feature = "wordpress-review")]
         {
             assert!(!args.wordpress_review);
@@ -2496,6 +2630,122 @@ mod tests {
             "--profile",
             "web-review",
             "--tls-observation",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "jwt-policy-review")]
+    #[test]
+    fn jwt_policy_review_requires_complete_explicit_web_review_input() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--jwt-policy",
+            "--jwt-public-jwk",
+            "--jwt-token-env",
+            "--jwt-token-file",
+            "--jwt-token-stdin",
+        ] {
+            assert!(help.contains(flag));
+        }
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--jwt-policy",
+            "policy.toml",
+            "--jwt-public-jwk",
+            "public.jwk",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--jwt-policy",
+            "policy.toml",
+            "--jwt-public-jwk",
+            "public.jwk",
+            "--jwt-token-file",
+            "token.secret",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before file acquisition");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(
+            scan_jwt_policy_review_flags_conflict(baseline.profile, true),
+            Some("JWT policy review requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--jwt-policy",
+            "policy.toml",
+            "--jwt-public-jwk",
+            "public.jwk",
+            "--jwt-token-env",
+            "TERMIVAR_TEST_JWT",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert!(review.jwt_policy.is_some());
+        assert!(review.jwt_public_jwk.is_some());
+        assert!(review.jwt_token_env.is_some());
+        assert_eq!(
+            scan_jwt_policy_review_flags_conflict(review.profile, true),
+            None
+        );
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--jwt-policy",
+            "policy.toml",
+            "--jwt-public-jwk",
+            "public.jwk",
+            "--jwt-token-stdin",
+            "--auth-stdin",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(not(feature = "jwt-policy-review"))]
+    #[test]
+    fn default_cli_does_not_expose_jwt_policy_review() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--jwt-policy"));
+        assert!(!help.contains("--jwt-token"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--jwt-policy",
+            "policy.toml",
             "https://example.test/",
         ])
         .is_err());

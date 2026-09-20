@@ -2001,9 +2001,11 @@ dependencies = [
 name = "termivar-cli"
 version = "0.10.0-alpha.3"
 dependencies = [
+ "base64",
  "clap",
  "libc",
  "reqwest",
+ "ring",
  "same-file",
  "semver",
  "serde",
@@ -2016,6 +2018,7 @@ dependencies = [
  "termivar-proxy",
  "termivar-scanner",
  "tokio",
+ "toml",
  "url",
  "zeroize",
 ]
@@ -2110,6 +2113,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

@@ -1,9 +1,9 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
 use super::super::{
-    ImportedSecretExposureAudit, ImportedSuppliedSessionAudit, ImportedTlsObservationAudit,
-    ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit, SuppliedSessionResourceBinding,
-    WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
+    ImportedJwtPolicyReviewAudit, ImportedSecretExposureAudit, ImportedSuppliedSessionAudit,
+    ImportedTlsObservationAudit, ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit,
+    SuppliedSessionResourceBinding, WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
     WordPressAssetFingerprintResourceKey, WordPressComponentKey,
     WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY,
 };
@@ -39,6 +39,20 @@ const TLS_OBSERVATION_REVOCATION: &str = "not_checked";
 const TLS_OBSERVATION_VALIDATION_SCOPE: &str = "successful_https_response_connection/v1";
 const TLS_OBSERVATION_SOURCE_SCOPE: &str = "assessment_exact_origin_existing_connections/v1";
 const TLS_OBSERVATION_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
+const JWT_POLICY_REVIEW_AUDIT_SCHEMA: &str = "security.jwt-policy-review-audit/v1";
+const JWT_POLICY_REVIEW_POLICY: &str = "termivar.jwt-local-policy/es256-v1";
+const JWT_POLICY_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
+const JWT_POLICY_NOT_PERFORMED: &str = "not_performed";
+const JWT_POLICY_SOURCE_AUTHENTICATION: &str = "not_established";
+const JWT_POLICY_ALGORITHM: &str = "es256";
+const JWT_POLICY_REPRESENTATION: &str = "compact_jws";
+const JWT_POLICY_LOCAL_KEY_SOURCE: &str = "explicit_operator_supplied_public_jwk";
+const JWT_POLICY_KEY_SOURCE_ASSURANCE: &str = "operator_supplied_not_authenticated";
+const JWT_POLICY_TOKEN_KEY_SELECTION: &str = "prohibited";
+const MAX_JWT_POLICY_REFERENCE_BYTES: usize = 64;
+const MAX_JWT_REQUIRED_CLAIMS: u64 = 16;
+const MAX_JWT_CLOCK_SKEW_SECONDS: u64 = 3_600;
+const MAX_JWT_POLICY_VIOLATIONS: usize = MAX_JWT_REQUIRED_CLAIMS as usize + 5;
 const MAX_TLS_RESPONSES: u64 = 10_000;
 const MAX_TLS_RETAINED_LEAF_OBSERVATIONS: u64 = 16;
 const MAX_TLS_LEAF_CERTIFICATE_BYTES: u64 = 64 * 1024;
@@ -774,6 +788,298 @@ pub(super) fn validate_tls_observation(
         coverage,
         certificate_observations: Value::Array(certificate_observations),
     })
+}
+
+pub(super) fn validate_jwt_policy_review(
+    value: &Value,
+) -> Result<ImportedJwtPolicyReviewAudit, ComparisonError> {
+    const PARSE_REJECTIONS: [&str; 17] = [
+        "encrypted_token_unsupported",
+        "invalid_segment_count",
+        "empty_segment",
+        "invalid_base64_url",
+        "decoded_segment_too_large",
+        "malformed_json",
+        "duplicate_json_key",
+        "json_limit_exceeded",
+        "malformed_protected_header",
+        "unsecured_algorithm_unsupported",
+        "algorithm_unsupported",
+        "critical_header_unsupported",
+        "unencoded_payload_unsupported",
+        "compression_unsupported",
+        "nested_token_unsupported",
+        "key_metadata_unsupported",
+        "invalid_signature_length",
+    ];
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "parsing_status",
+            "policy_status",
+            "local_signature_status",
+            "target_acceptance_status",
+            "methodology",
+            "external_activity",
+            "policy_violations",
+            "source_authentication",
+        ],
+        &["parsing_rejection"],
+    )?;
+    check(string(fields, "schema")? == JWT_POLICY_REVIEW_AUDIT_SCHEMA)?;
+    check(string(fields, "policy")? == JWT_POLICY_REVIEW_POLICY)?;
+    check(boolean(fields, "selected")?)?;
+    let parsing_status = token(fields, "parsing_status", &["parsed", "rejected"])?;
+    let parsing_rejection = fields
+        .get("parsing_rejection")
+        .map(|value| {
+            let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+            check(PARSE_REJECTIONS.contains(&value))?;
+            Ok::<_, ComparisonError>(value)
+        })
+        .transpose()?;
+    let policy_status = token(
+        fields,
+        "policy_status",
+        &["not_evaluated", "consistent", "inconsistent"],
+    )?;
+    let local_signature_status = token(
+        fields,
+        "local_signature_status",
+        &["not_evaluated", "verified", "invalid"],
+    )?;
+    check(
+        token(
+            fields,
+            "target_acceptance_status",
+            &[JWT_POLICY_NOT_PERFORMED],
+        )? == JWT_POLICY_NOT_PERFORMED,
+    )?;
+    check(string(fields, "source_authentication")? == JWT_POLICY_SOURCE_AUTHENTICATION)?;
+
+    let methodology = object(required(fields, "methodology")?)?;
+    keys(
+        methodology,
+        &[
+            "algorithm",
+            "representation",
+            "local_key_source",
+            "key_source_assurance",
+            "token_carried_key_selection",
+            "operator_policy_reference",
+            "operator_policy_revision",
+            "local_public_key_sha256",
+            "expected_type_selected",
+            "expected_issuer_selected",
+            "expected_audience_selected",
+            "required_claim_count",
+            "require_expiration",
+            "allowed_clock_skew_seconds",
+            "evaluation_time_unix_seconds",
+            "clock_assurance",
+        ],
+        &[],
+    )?;
+    check(string(methodology, "algorithm")? == JWT_POLICY_ALGORITHM)?;
+    check(string(methodology, "representation")? == JWT_POLICY_REPRESENTATION)?;
+    check(string(methodology, "local_key_source")? == JWT_POLICY_LOCAL_KEY_SOURCE)?;
+    check(string(methodology, "key_source_assurance")? == JWT_POLICY_KEY_SOURCE_ASSURANCE)?;
+    check(string(methodology, "token_carried_key_selection")? == JWT_POLICY_TOKEN_KEY_SELECTION)?;
+    let policy_reference = text(
+        methodology,
+        "operator_policy_reference",
+        MAX_JWT_POLICY_REFERENCE_BYTES,
+    )?;
+    check(valid_jwt_policy_reference(policy_reference))?;
+    let policy_revision = text(
+        methodology,
+        "operator_policy_revision",
+        MAX_JWT_POLICY_REFERENCE_BYTES,
+    )?;
+    check(valid_jwt_policy_reference(policy_revision))?;
+    check(digest(
+        string(methodology, "local_public_key_sha256")?,
+        "sha256:",
+    ))?;
+    let expected_type_selected = boolean(methodology, "expected_type_selected")?;
+    let expected_issuer_selected = boolean(methodology, "expected_issuer_selected")?;
+    let expected_audience_selected = boolean(methodology, "expected_audience_selected")?;
+    check(expected_type_selected && expected_issuer_selected && expected_audience_selected)?;
+    let required_claim_count =
+        number(methodology, "required_claim_count", MAX_JWT_REQUIRED_CLAIMS)?;
+    let require_expiration = boolean(methodology, "require_expiration")?;
+    number(
+        methodology,
+        "allowed_clock_skew_seconds",
+        MAX_JWT_CLOCK_SKEW_SECONDS,
+    )?;
+    signed_number(methodology, "evaluation_time_unix_seconds")?;
+    check(string(methodology, "clock_assurance")? == JWT_POLICY_CLOCK_ASSURANCE)?;
+
+    let external = object(required(fields, "external_activity")?)?;
+    keys(
+        external,
+        &[
+            "target_request_count",
+            "remote_key_retrieval",
+            "token_forwarding",
+        ],
+        &[],
+    )?;
+    check(number(external, "target_request_count", 0)? == 0)?;
+    check(string(external, "remote_key_retrieval")? == JWT_POLICY_NOT_PERFORMED)?;
+    check(string(external, "token_forwarding")? == JWT_POLICY_NOT_PERFORMED)?;
+
+    let wire_violations = array(fields, "policy_violations")?;
+    check(wire_violations.len() <= MAX_JWT_POLICY_VIOLATIONS)?;
+    let mut unique = BTreeSet::new();
+    let mut exclusive_categories = BTreeSet::new();
+    let mut violations = Vec::with_capacity(wire_violations.len());
+    for value in wire_violations {
+        let row = object(value)?;
+        keys(row, &["kind"], &["ordinal"])?;
+        let kind = token(
+            row,
+            "kind",
+            &[
+                "missing_type",
+                "type_mismatch",
+                "missing_issuer",
+                "invalid_issuer_type",
+                "issuer_mismatch",
+                "missing_audience",
+                "invalid_audience_type",
+                "audience_mismatch",
+                "missing_required_claim",
+                "missing_expiration",
+                "invalid_expiration",
+                "expired",
+                "invalid_not_before",
+                "not_yet_valid",
+            ],
+        )?;
+        let ordinal = row
+            .get("ordinal")
+            .map(|_| number(row, "ordinal", MAX_JWT_REQUIRED_CLAIMS.saturating_sub(1)))
+            .transpose()?;
+        let (applicable, category) = match kind {
+            "missing_type" | "type_mismatch" => {
+                (ordinal.is_none() && expected_type_selected, Some("type"))
+            },
+            "missing_issuer" | "invalid_issuer_type" | "issuer_mismatch" => (
+                ordinal.is_none() && expected_issuer_selected,
+                Some("issuer"),
+            ),
+            "missing_audience" | "invalid_audience_type" | "audience_mismatch" => (
+                ordinal.is_none() && expected_audience_selected,
+                Some("audience"),
+            ),
+            "missing_required_claim" => (
+                ordinal.is_some_and(|ordinal| ordinal < required_claim_count),
+                None,
+            ),
+            "missing_expiration" => (ordinal.is_none() && require_expiration, Some("expiration")),
+            "invalid_expiration" | "expired" => (ordinal.is_none(), Some("expiration")),
+            "invalid_not_before" | "not_yet_valid" => (ordinal.is_none(), Some("not_before")),
+            _ => (false, None),
+        };
+        check(
+            applicable
+                && unique.insert((kind, ordinal))
+                && category.is_none_or(|category| exclusive_categories.insert(category)),
+        )?;
+        violations.push(canonical_value(value)?);
+    }
+    check(match parsing_status {
+        "rejected" => {
+            parsing_rejection.is_some()
+                && policy_status == "not_evaluated"
+                && local_signature_status == "not_evaluated"
+                && violations.is_empty()
+        },
+        "parsed" => {
+            parsing_rejection.is_none()
+                && matches!(local_signature_status, "verified" | "invalid")
+                && match policy_status {
+                    "consistent" => violations.is_empty(),
+                    "inconsistent" => !violations.is_empty(),
+                    _ => false,
+                }
+        },
+        _ => false,
+    })?;
+
+    let mut methodology_projection = Map::new();
+    for name in ["schema", "policy", "selected", "source_authentication"] {
+        methodology_projection.insert(name.to_owned(), canonical_value(required(fields, name)?)?);
+    }
+    for name in [
+        "algorithm",
+        "representation",
+        "local_key_source",
+        "key_source_assurance",
+        "token_carried_key_selection",
+        "operator_policy_reference",
+        "operator_policy_revision",
+        "local_public_key_sha256",
+        "expected_type_selected",
+        "expected_issuer_selected",
+        "expected_audience_selected",
+        "required_claim_count",
+        "require_expiration",
+        "allowed_clock_skew_seconds",
+    ] {
+        methodology_projection.insert(
+            name.to_owned(),
+            canonical_value(required(methodology, name)?)?,
+        );
+    }
+    let mut coverage = Map::new();
+    for name in ["evaluation_time_unix_seconds", "clock_assurance"] {
+        coverage.insert(
+            name.to_owned(),
+            canonical_value(required(methodology, name)?)?,
+        );
+    }
+    for name in [
+        "target_request_count",
+        "remote_key_retrieval",
+        "token_forwarding",
+    ] {
+        coverage.insert(name.to_owned(), canonical_value(required(external, name)?)?);
+    }
+    let mut outcome = Map::new();
+    for name in [
+        "parsing_status",
+        "parsing_rejection",
+        "policy_status",
+        "local_signature_status",
+        "target_acceptance_status",
+    ] {
+        if let Some(value) = fields.get(name) {
+            outcome.insert(name.to_owned(), canonical_value(value)?);
+        }
+    }
+    outcome.insert("policy_violations".to_owned(), Value::Array(violations));
+    Ok(ImportedJwtPolicyReviewAudit {
+        methodology: Value::Object(methodology_projection),
+        coverage: Value::Object(coverage),
+        outcome: Value::Object(outcome),
+    })
+}
+
+fn valid_jwt_policy_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_JWT_POLICY_REFERENCE_BYTES
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b'-' | b'_' | b'.'))
+        })
 }
 
 fn signed_number(

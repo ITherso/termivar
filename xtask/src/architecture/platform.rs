@@ -27,6 +27,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "authorization-review",
     "distributed",
     "graphql-review",
+    "jwt-policy-review",
     "legacy-scanner",
     "lua",
     "normalization-resilience",
@@ -54,6 +55,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "enterprise",
     "full",
     "graphql-review",
+    "jwt-policy-review",
     "legacy-scanner",
     "lua",
     "minimal",
@@ -84,6 +86,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "detection",
     "distributed",
     "graphql-review",
+    "jwt-policy-review",
     "legacy-scanner",
     "lua",
     "ml",
@@ -110,6 +113,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "detection",
     "distributed",
     "graphql-review",
+    "jwt-policy-review",
     "legacy-scanner",
     "lua",
     "ml",
@@ -138,6 +142,7 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "markup5ever_rcdom",
     "mlua",
     "regex",
+    "ring",
     "reqwest",
     "tokio",
     "tokio-util",
@@ -182,6 +187,7 @@ const OPTIONAL_CLI_DEPENDENCIES: &[&str] = &[
     "termivar-api",
     "termivar-artifact",
     "termivar-proxy",
+    "toml",
 ];
 const EXACT_CLI_FEATURES: &[&str] = &[
     "api-adapter",
@@ -189,6 +195,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "authorization-review",
     "default",
     "graphql-review",
+    "jwt-policy-review",
     "legacy-scanner",
     "normalization-resilience",
     "openapi-review",
@@ -238,6 +245,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("event_bus", "feature=\"legacy-scanner\""),
     ("error", "feature=\"legacy-scanner\""),
     ("graphql_review", "feature=\"graphql-review\""),
+    ("jwt_policy_review", "feature=\"jwt-policy-review\""),
     ("legacy_discovery", "feature=\"legacy-scanner\""),
     ("logging", "feature=\"legacy-scanner\""),
     (
@@ -1326,6 +1334,10 @@ fn cli_feature_violations(
             &["dep:reqwest", "termivar-scanner/legacy-scanner"][..],
         ),
         ("graphql-review", &["termivar-scanner/graphql-review"][..]),
+        (
+            "jwt-policy-review",
+            &["dep:toml", "termivar-scanner/jwt-policy-review"][..],
+        ),
         ("openapi-review", &["termivar-scanner/openapi-review"][..]),
         (
             "rest-review",
@@ -1618,6 +1630,23 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "scanning",
                 "core",
                 "dep:x509-parser",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "jwt-policy-review",
+            &[
+                "jwt-policy-review",
+                "scanning",
+                "core",
+                "dep:ring",
+                "dep:zeroize",
                 "dep:async-trait",
                 "dep:html5ever",
                 "dep:markup5ever_rcdom",
@@ -5172,6 +5201,7 @@ const EXACT_REPORTING_INHERENT_METHODS: &[(&str, &[&str])] = &[
         &[
             "available_formats",
             "compose_assessment",
+            "compose_assessment_with_jwt_policy_review",
             "generate",
             "generate_assessment",
         ],
@@ -5220,6 +5250,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentTlsObservationAuditDocument>",
             ),
             (
+                "jwt_policy_review",
+                "Option<AssessmentJwtPolicyReviewAuditDocument>",
+            ),
+            (
                 "wordpress_review",
                 "Option<AssessmentWordPressAuditDocument>",
             ),
@@ -5233,6 +5267,63 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
         ],
+    ),
+    (
+        "AssessmentJwtPolicyReviewAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy", "&'static str"),
+            ("selected", "bool"),
+            ("parsing_status", "&'static str"),
+            ("parsing_rejection", "Option<&'static str>"),
+            ("policy_status", "&'static str"),
+            ("local_signature_status", "&'static str"),
+            ("target_acceptance_status", "&'static str"),
+            ("methodology", "AssessmentJwtPolicyMethodologyDocument"),
+            ("external_activity", "AssessmentJwtExternalActivityDocument"),
+            (
+                "policy_violations",
+                "Vec<AssessmentJwtPolicyViolationDocument>",
+            ),
+            ("source_authentication", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentJwtPolicyMethodologyDocument",
+        &[],
+        &[
+            ("algorithm", "&'static str"),
+            ("representation", "&'static str"),
+            ("local_key_source", "&'static str"),
+            ("key_source_assurance", "&'static str"),
+            ("token_carried_key_selection", "&'static str"),
+            ("operator_policy_reference", "String"),
+            ("operator_policy_revision", "String"),
+            ("local_public_key_sha256", "String"),
+            ("expected_type_selected", "bool"),
+            ("expected_issuer_selected", "bool"),
+            ("expected_audience_selected", "bool"),
+            ("required_claim_count", "u64"),
+            ("require_expiration", "bool"),
+            ("allowed_clock_skew_seconds", "u64"),
+            ("evaluation_time_unix_seconds", "i64"),
+            ("clock_assurance", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentJwtExternalActivityDocument",
+        &[],
+        &[
+            ("target_request_count", "u64"),
+            ("remote_key_retrieval", "&'static str"),
+            ("token_forwarding", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentJwtPolicyViolationDocument",
+        &[],
+        &[("kind", "&'static str"), ("ordinal", "Option<u64>")],
     ),
     (
         "AssessmentSuppliedSessionAuditDocument",
@@ -6392,6 +6483,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "rest-review" => "feature=\"rest-review\"",
         "secret-exposure-review" => "feature=\"secret-exposure-review\"",
         "tls-observation" => "feature=\"tls-observation\"",
+        "jwt-policy-review" => "feature=\"jwt-policy-review\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
         _ => return false,
@@ -6439,6 +6531,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSecretExposureObservationDocument"
                 | "AssessmentTlsObservationAuditDocument"
                 | "AssessmentTlsLeafObservationDocument"
+                | "AssessmentJwtPolicyReviewAuditDocument"
+                | "AssessmentJwtPolicyMethodologyDocument"
+                | "AssessmentJwtExternalActivityDocument"
+                | "AssessmentJwtPolicyViolationDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -6548,6 +6644,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 "AssessmentTlsObservationAuditDocument"
                 | "AssessmentTlsLeafObservationDocument" => {
                     "all(feature=\"scanning\",feature=\"tls-observation\")"
+                },
+                "AssessmentJwtPolicyReviewAuditDocument"
+                | "AssessmentJwtPolicyMethodologyDocument"
+                | "AssessmentJwtExternalActivityDocument"
+                | "AssessmentJwtPolicyViolationDocument" => {
+                    "all(feature=\"scanning\",feature=\"jwt-policy-review\")"
                 },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
@@ -6668,6 +6770,11 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         )
                     } else if name == "AssessmentDocument" && field_name == "tls_observation" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "tls-observation")
+                    } else if name == "AssessmentDocument" && field_name == "jwt_policy_review" {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "jwt-policy-review",
+                        )
                     } else if name == "AssessmentDocument"
                         && matches!(
                             field_name.as_str(),
@@ -6677,8 +6784,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         )
                     {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "wordpress-review")
-                    } else if (name == "AssessmentSuppliedSessionAuditDocument"
-                        && matches!(field_name.as_str(), "cookie_policy" | "cookie_lifecycle"))
+                    } else if (name == "AssessmentJwtPolicyReviewAuditDocument"
+                        && field_name == "parsing_rejection")
+                        || (name == "AssessmentJwtPolicyViolationDocument"
+                            && field_name == "ordinal")
+                        || (name == "AssessmentSuppliedSessionAuditDocument"
+                            && matches!(field_name.as_str(), "cookie_policy" | "cookie_lifecycle"))
                         || (name == "AssessmentRestAuditDocument"
                             && matches!(
                                 field_name.as_str(),
@@ -7025,6 +7136,15 @@ fn reporting_public_api_violations(source: &str) -> Result<Vec<String>, syn::Err
                                         method.sig.ident
                                     ));
                                 }
+                            } else if owner == "ReportGenerator"
+                                && method.sig.ident == "compose_assessment_with_jwt_policy_review"
+                            {
+                                if !reporting_scanning_jwt_cfg_is_exact(&method.attrs) {
+                                    violations.push(
+                                        "reporting public method `ReportGenerator::compose_assessment_with_jwt_policy_review` must have exactly cfg(all(feature = \"scanning\", feature = \"jwt-policy-review\")) plus documentation"
+                                            .to_owned(),
+                                    );
+                                }
                             } else {
                                 reject_reporting_cfg_attributes(
                                     &method.attrs,
@@ -7310,6 +7430,19 @@ fn reporting_scanning_cfg_is_exact(attributes: &[Attribute]) -> bool {
         == 1
 }
 
+fn reporting_scanning_jwt_cfg_is_exact(attributes: &[Attribute]) -> bool {
+    attributes.iter().all(|attribute| {
+        attribute.path().is_ident("doc")
+            || (attribute.path().is_ident("cfg")
+                && cfg_predicate(attribute).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"jwt-policy-review\")"))
+    }) && attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("cfg"))
+        .count()
+        == 1
+}
+
 fn validate_reporting_public_constant(item: &syn::ItemConst, violations: &mut Vec<String>) {
     match item.ident.to_string().as_str() {
         "ASSESSMENT_REPORT_DOCUMENT_SCHEMA"
@@ -7503,6 +7636,18 @@ fn reporting_signature_matches(owner: &str, method: &str, signature: &syn::Signa
                     if simple_type_path(&argument.ty, "ScanProfileV1").is_some())
                 && assessment_bridge_return_is_exact(&signature.output)
         },
+        ("ReportGenerator", "compose_assessment_with_jwt_policy_review") => {
+            signature.constness.is_none()
+                && signature.inputs.len() == 3
+                && matches!(signature.inputs.first(), Some(syn::FnArg::Typed(argument))
+                    if simple_type_path(&argument.ty, "WebAssessmentRunReport").is_some())
+                && matches!(signature.inputs.iter().nth(1), Some(syn::FnArg::Typed(argument))
+                    if simple_type_path(&argument.ty, "ScanProfileV1").is_some())
+                && matches!(signature.inputs.iter().nth(2), Some(syn::FnArg::Typed(argument))
+                    if reporting_type_key(&argument.ty).as_deref()
+                        == Some("Option<JwtPolicyReviewAudit>"))
+                && assessment_bridge_return_is_exact(&signature.output)
+        },
         ("ReportGenerator", "generate_assessment") => {
             signature.constness.is_none()
                 && signature.inputs.len() == 2
@@ -7568,6 +7713,9 @@ fn validate_reporting_public_method_body(
         ("ReportGenerator", "compose_assessment") => {
             reporting_compose_assessment_body_matches(block)
         },
+        ("ReportGenerator", "compose_assessment_with_jwt_policy_review") => {
+            reporting_compose_assessment_with_jwt_body_matches(block)
+        },
         ("ReportGenerator", "generate_assessment") => {
             reporting_generate_assessment_body_matches(block)
         },
@@ -7589,6 +7737,31 @@ fn reporting_compose_assessment_body_matches(block: &syn::Block) -> bool {
         && reporting_expression_path_key(call.receiver.as_ref()).as_deref() == Some("report")
         && call.args.len() == 1
         && call.args.first().is_some_and(|argument| {
+            reporting_expression_path_key(argument).as_deref() == Some("profile")
+        })
+}
+
+fn reporting_compose_assessment_with_jwt_body_matches(block: &syn::Block) -> bool {
+    let Some(syn::Expr::MethodCall(attach)) = reporting_only_expression(block) else {
+        return false;
+    };
+    let syn::Expr::Try(composed) = attach.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(compose) = composed.expr.as_ref() else {
+        return false;
+    };
+    attach.method == "with_jwt_policy_review_audit"
+        && attach.turbofish.is_none()
+        && attach.args.len() == 1
+        && attach.args.first().is_some_and(|argument| {
+            reporting_expression_path_key(argument).as_deref() == Some("audit")
+        })
+        && compose.method == "into_assessment_report"
+        && compose.turbofish.is_none()
+        && reporting_expression_path_key(compose.receiver.as_ref()).as_deref() == Some("report")
+        && compose.args.len() == 1
+        && compose.args.first().is_some_and(|argument| {
             reporting_expression_path_key(argument).as_deref() == Some("profile")
         })
 }
@@ -9148,8 +9321,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 424_764;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xe444_ad97_4286_b07e_8ed1_5859_6238_9a66;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 445_200;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x746e_8002_acba_f2a3_5d40_7813_063a_88ad;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -9242,6 +9415,19 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::authorization_review::AuthorizationReviewOutcome",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
+    "crate::jwt_policy_review::JWT_POLICY_REVIEW_AUDIT_SCHEMA",
+    "crate::jwt_policy_review::JWT_POLICY_REVIEW_POLICY_ID",
+    "crate::jwt_policy_review::JwtClockAssurance",
+    "crate::jwt_policy_review::JwtExternalOperationStatus",
+    "crate::jwt_policy_review::JwtLocalSignatureStatus",
+    "crate::jwt_policy_review::JwtParseRejection",
+    "crate::jwt_policy_review::JwtParsingStatus",
+    "crate::jwt_policy_review::JwtPolicyReviewAudit",
+    "crate::jwt_policy_review::JwtPolicyStatus",
+    "crate::jwt_policy_review::JwtPolicyViolation",
+    "crate::jwt_policy_review::JwtTargetAcceptanceStatus",
+    "crate::jwt_policy_review::MAX_CLOCK_SKEW_SECONDS",
+    "crate::jwt_policy_review::MAX_REQUIRED_CLAIMS",
     "crate::rest_review::RestDocumentedResponseClass",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
@@ -9378,6 +9564,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentDecisionOverview::from_document",
+    "AssessmentJwtPolicyReviewAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS",
@@ -9394,6 +9581,19 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::TLS_OBSERVATION_SOURCE_SCOPE",
     "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE",
     "crate::web_runtime::WebAssessmentTlsObservationAudit",
+    "crate::jwt_policy_review::JWT_POLICY_REVIEW_AUDIT_SCHEMA",
+    "crate::jwt_policy_review::JWT_POLICY_REVIEW_POLICY_ID",
+    "crate::jwt_policy_review::JwtClockAssurance",
+    "crate::jwt_policy_review::JwtExternalOperationStatus",
+    "crate::jwt_policy_review::JwtLocalSignatureStatus",
+    "crate::jwt_policy_review::JwtParseRejection",
+    "crate::jwt_policy_review::JwtParsingStatus",
+    "crate::jwt_policy_review::JwtPolicyReviewAudit",
+    "crate::jwt_policy_review::JwtPolicyStatus",
+    "crate::jwt_policy_review::JwtPolicyViolation",
+    "crate::jwt_policy_review::JwtTargetAcceptanceStatus",
+    "crate::jwt_policy_review::MAX_CLOCK_SKEW_SECONDS",
+    "crate::jwt_policy_review::MAX_REQUIRED_CLAIMS",
     "crate::web_runtime::SECRET_EXPOSURE_AUDIT_SCHEMA",
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_ID",
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
@@ -9416,6 +9616,48 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentBasisLinkageDocument::from_basis",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
+    "JwtClockAssurance::LocalSystemClockNotIndependentlyVerified",
+    "JwtExternalOperationStatus::NotPerformed",
+    "JwtLocalSignatureStatus::Invalid",
+    "JwtLocalSignatureStatus::NotEvaluated",
+    "JwtLocalSignatureStatus::Verified",
+    "JwtParseRejection::AlgorithmUnsupported",
+    "JwtParseRejection::CompressionUnsupported",
+    "JwtParseRejection::CriticalHeaderUnsupported",
+    "JwtParseRejection::DecodedSegmentTooLarge",
+    "JwtParseRejection::DuplicateJsonKey",
+    "JwtParseRejection::EmptySegment",
+    "JwtParseRejection::EncryptedTokenUnsupported",
+    "JwtParseRejection::InvalidBase64Url",
+    "JwtParseRejection::InvalidSegmentCount",
+    "JwtParseRejection::InvalidSignatureLength",
+    "JwtParseRejection::JsonLimitExceeded",
+    "JwtParseRejection::KeyMetadataUnsupported",
+    "JwtParseRejection::MalformedJson",
+    "JwtParseRejection::MalformedProtectedHeader",
+    "JwtParseRejection::NestedTokenUnsupported",
+    "JwtParseRejection::UnencodedPayloadUnsupported",
+    "JwtParseRejection::UnsecuredAlgorithmUnsupported",
+    "JwtParsingStatus::Parsed",
+    "JwtParsingStatus::Rejected",
+    "JwtPolicyStatus::Consistent",
+    "JwtPolicyStatus::Inconsistent",
+    "JwtPolicyStatus::NotEvaluated",
+    "JwtPolicyViolation::AudienceMismatch",
+    "JwtPolicyViolation::Expired",
+    "JwtPolicyViolation::InvalidAudienceType",
+    "JwtPolicyViolation::InvalidExpiration",
+    "JwtPolicyViolation::InvalidIssuerType",
+    "JwtPolicyViolation::InvalidNotBefore",
+    "JwtPolicyViolation::IssuerMismatch",
+    "JwtPolicyViolation::MissingAudience",
+    "JwtPolicyViolation::MissingExpiration",
+    "JwtPolicyViolation::MissingIssuer",
+    "JwtPolicyViolation::MissingRequiredClaim",
+    "JwtPolicyViolation::MissingType",
+    "JwtPolicyViolation::NotYetValid",
+    "JwtPolicyViolation::TypeMismatch",
+    "JwtTargetAcceptanceStatus::NotPerformed",
     "AuthorizationReviewOutcome::BudgetExhausted",
     "AuthorizationReviewOutcome::Cancelled",
     "AuthorizationReviewOutcome::ContractMismatch",
@@ -9917,6 +10159,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentDecisionOverview::from_document",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
+    "AssessmentJwtPolicyReviewAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
@@ -9971,6 +10214,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "has_supported_wordfence_reference_query",
     "io::Error::other",
     "is_bidi_control",
+    "jwt_parse_rejection",
     "is_strict_https_reference",
     "is_wordfence_vulnerability_reference",
     "lowercase_hex",
@@ -10030,6 +10274,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "valid_opaque_assessment_reference",
     "valid_inventory_label",
     "valid_inventory_version",
+    "valid_jwt_policy_reference",
+    "valid_jwt_public_key_sha256",
     "valid_wordfence_raw_source_identity",
     "valid_wordfence_source_identity",
     "valid_wordpress_discovery_reference",
@@ -10126,10 +10372,12 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accepted_association_count",
+    "allowed_clock_skew_seconds",
     "alpn_protocol",
     "certificate_limit_rejection_count",
     "certificate_time_status",
     "cipher_suite",
+    "clock_assurance",
     "connection_reuse",
     "dns_san_count",
     "full_chain",
@@ -10154,21 +10402,42 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "standard_transport_validation_succeeded",
     "successful_https_response_count",
     "target_scheme",
+    "target_acceptance_status",
+    "target_request_count",
     "tls_info_unavailable_count",
     "tls_observation_audit",
+    "token_forwarding",
     "unretained_leaf_response_count",
+    "with_jwt_policy_review_audit",
     "cmp",
     "detector_class",
     "body_derived_projection_suppressed_response_count",
     "evaluated_response_count",
+    "evaluation_time_unix_seconds",
+    "expected_audience_selected",
+    "expected_issuer_selected",
+    "expected_type_selected",
+    "external_activity",
     "find_map",
     "interpreted_byte_count",
+    "is_ascii_lowercase",
+    "jwt_policy_review_audit",
+    "local_signature_status",
     "match_occurrence_count",
     "not_evaluated_response_count",
     "observations",
     "occurrence_count",
     "omitted_observation_count",
+    "operator_policy_reference",
+    "operator_policy_revision",
+    "local_public_key_sha256",
+    "parsing_status",
+    "policy_status",
+    "policy_violations",
     "response_count",
+    "remote_key_retrieval",
+    "require_expiration",
+    "required_claim_count",
     "secret_exposure_review_audit",
     "sort_by_key",
     "sort_by",
@@ -10418,6 +10687,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "map_or_else",
     "max",
     "metadata",
+    "methodology",
     "mode",
     "multipart_operation_count",
     "next",
@@ -10767,6 +11037,25 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::WebAssessmentTlsObservationAudit"
                 )
             });
+        let jwt_policy_review_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::jwt_policy_review::JWT_POLICY_REVIEW_AUDIT_SCHEMA"
+                        | "crate::jwt_policy_review::JWT_POLICY_REVIEW_POLICY_ID"
+                        | "crate::jwt_policy_review::JwtClockAssurance"
+                        | "crate::jwt_policy_review::JwtExternalOperationStatus"
+                        | "crate::jwt_policy_review::JwtLocalSignatureStatus"
+                        | "crate::jwt_policy_review::JwtParseRejection"
+                        | "crate::jwt_policy_review::JwtParsingStatus"
+                        | "crate::jwt_policy_review::JwtPolicyReviewAudit"
+                        | "crate::jwt_policy_review::JwtPolicyStatus"
+                        | "crate::jwt_policy_review::JwtPolicyViolation"
+                        | "crate::jwt_policy_review::JwtTargetAcceptanceStatus"
+                        | "crate::jwt_policy_review::MAX_CLOCK_SKEW_SECONDS"
+                        | "crate::jwt_policy_review::MAX_REQUIRED_CLAIMS"
+                )
+            });
         let supplied_session_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -10892,6 +11181,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"tls-observation\")")
+        } else if jwt_policy_review_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"jwt-policy-review\")")
         } else if supplied_session_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -10907,7 +11201,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, and WordPress audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -10979,6 +11273,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"rest-review\"")
                     | Some("feature=\"secret-exposure-review\"")
                     | Some("feature=\"tls-observation\"")
+                    | Some("feature=\"jwt-policy-review\"")
                     | Some("feature=\"supplied-session-review\"")
                     | Some("not(feature=\"supplied-session-review\")")
                     | Some("feature=\"wordpress-review\"")
@@ -10987,12 +11282,13 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
                     | Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
                     | Some("all(feature=\"scanning\",feature=\"tls-observation\")")
+                    | Some("all(feature=\"scanning\",feature=\"jwt-policy-review\")")
                     | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, and WordPress audit feature gates"
+                "reporting production source may contain only the exact scanning, supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, and WordPress audit feature gates"
                     .to_owned(),
             );
         }
@@ -11271,6 +11567,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
     let exact_internal_assessment_path = ALLOWED_REPORTING_QUALIFIED_PATHS.contains(&key.as_str())
         && (key.starts_with("crate::web_runtime::")
             || key.starts_with("crate::authorization_review::")
+            || key.starts_with("crate::jwt_policy_review::")
             || key.starts_with("crate::rest_review::")
             || key.starts_with("crate::supplied_session_review::")
             || key.starts_with("crate::wordpress_review::")
@@ -11742,6 +12039,14 @@ mod tests {
         features.insert(
             "tls-observation".to_owned(),
             vec!["scanning".to_owned(), "dep:x509-parser".to_owned()],
+        );
+        features.insert(
+            "jwt-policy-review".to_owned(),
+            vec![
+                "scanning".to_owned(),
+                "dep:ring".to_owned(),
+                "dep:zeroize".to_owned(),
+            ],
         );
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("openapi-review".to_owned(), vec!["scanning".to_owned()]);
@@ -12220,6 +12525,88 @@ mod tests {
                 .any(|violation| violation.contains("release-bundle")
                     && violation.contains("exactly"))
         );
+    }
+
+    #[test]
+    fn jwt_policy_review_is_isolated_non_bundled_and_in_compatibility_aggregates() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("jwt-policy-review").unwrap(),
+            &[
+                "scanning".to_owned(),
+                "dep:ring".to_owned(),
+                "dep:zeroize".to_owned(),
+            ]
+        );
+        let default = raw_feature_closure(&features, "default");
+        assert!(!default.contains("jwt-policy-review"));
+        assert!(!default.contains("dep:ring"));
+        for aggregate in ["full", "enterprise"] {
+            assert!(features
+                .get(aggregate)
+                .unwrap()
+                .iter()
+                .any(|member| member == "jwt-policy-review"));
+        }
+
+        features
+            .get_mut("jwt-policy-review")
+            .unwrap()
+            .retain(|member| member != "dep:ring");
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`jwt-policy-review` raw feature closure")
+                && violation.contains("dep:ring")
+        }));
+
+        let mut features = valid_feature_map();
+        features
+            .get_mut("jwt-policy-review")
+            .unwrap()
+            .retain(|member| member != "dep:zeroize");
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`jwt-policy-review` raw feature closure")
+                && violation.contains("dep:zeroize")
+        }));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert_eq!(
+            cli_features.get("jwt-policy-review").unwrap(),
+            &[
+                "dep:toml".to_owned(),
+                "termivar-scanner/jwt-policy-review".to_owned(),
+            ]
+        );
+        assert!(dependencies
+            .get("toml")
+            .is_some_and(|dependency| dependency.optional));
+        assert!(cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .all(|member| member != "jwt-policy-review"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("jwt-policy-review".to_owned());
+        assert!(
+            cli_feature_violations(&cli_features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        cli_features
+            .get_mut("jwt-policy-review")
+            .unwrap()
+            .retain(|member| member != "dep:toml");
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| {
+                violation.contains("jwt-policy-review") && violation.contains("dep:toml")
+            }));
     }
 
     #[test]
@@ -14358,6 +14745,16 @@ mod tests {
                 ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
                     report.into_assessment_report(profile)
                 }
+                #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+                pub fn compose_assessment_with_jwt_policy_review(
+                    report: WebAssessmentRunReport,
+                    profile: ScanProfileV1,
+                    audit: Option<JwtPolicyReviewAudit>,
+                ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+                    report
+                        .into_assessment_report(profile)?
+                        .with_jwt_policy_review_audit(audit)
+                }
                 #[cfg(feature = "scanning")]
                 pub fn generate_assessment(
                     report: &AssessmentRunReport,
@@ -14588,6 +14985,14 @@ mod tests {
                 TLS_OBSERVATION_CLOCK_ASSURANCE, TLS_OBSERVATION_POLICY_ID,
                 TLS_OBSERVATION_REVOCATION_STATUS, TLS_OBSERVATION_SOURCE_SCOPE,
                 TLS_OBSERVATION_VALIDATION_SCOPE,
+            };
+            #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+            use crate::jwt_policy_review::{
+                JwtClockAssurance, JwtExternalOperationStatus, JwtLocalSignatureStatus,
+                JwtParseRejection, JwtParsingStatus, JwtPolicyReviewAudit, JwtPolicyStatus,
+                JwtPolicyViolation, JwtTargetAcceptanceStatus, MAX_CLOCK_SKEW_SECONDS,
+                MAX_REQUIRED_CLAIMS, JWT_POLICY_REVIEW_AUDIT_SCHEMA,
+                JWT_POLICY_REVIEW_POLICY_ID,
             };
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             use crate::{
@@ -15129,6 +15534,9 @@ mod tests {
                 #[cfg(feature = "tls-observation")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 tls_observation: Option<AssessmentTlsObservationAuditDocument>,
+                #[cfg(feature = "jwt-policy-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                jwt_policy_review: Option<AssessmentJwtPolicyReviewAuditDocument>,
                 #[cfg(feature = "wordpress-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -15139,6 +15547,57 @@ mod tests {
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_asset_fingerprints: Option<AssessmentWordPressAssetFingerprintAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtPolicyReviewAuditDocument {
+                schema: &'static str,
+                policy: &'static str,
+                selected: bool,
+                parsing_status: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                parsing_rejection: Option<&'static str>,
+                policy_status: &'static str,
+                local_signature_status: &'static str,
+                target_acceptance_status: &'static str,
+                methodology: AssessmentJwtPolicyMethodologyDocument,
+                external_activity: AssessmentJwtExternalActivityDocument,
+                policy_violations: Vec<AssessmentJwtPolicyViolationDocument>,
+                source_authentication: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtPolicyMethodologyDocument {
+                algorithm: &'static str,
+                representation: &'static str,
+                local_key_source: &'static str,
+                key_source_assurance: &'static str,
+                token_carried_key_selection: &'static str,
+                operator_policy_reference: String,
+                operator_policy_revision: String,
+                local_public_key_sha256: String,
+                expected_type_selected: bool,
+                expected_issuer_selected: bool,
+                expected_audience_selected: bool,
+                required_claim_count: u64,
+                require_expiration: bool,
+                allowed_clock_skew_seconds: u64,
+                evaluation_time_unix_seconds: i64,
+                clock_assurance: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtExternalActivityDocument {
+                target_request_count: u64,
+                remote_key_retrieval: &'static str,
+                token_forwarding: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtPolicyViolationDocument {
+                kind: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                ordinal: Option<u64>,
             }
             #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
             #[derive(Serialize)]
@@ -16765,6 +17224,13 @@ mod tests {
                 vec!["termivar-scanner/tls-observation".to_owned()],
             ),
             (
+                "jwt-policy-review".to_owned(),
+                vec![
+                    "dep:toml".to_owned(),
+                    "termivar-scanner/jwt-policy-review".to_owned(),
+                ],
+            ),
+            (
                 "ssrf-oast-review".to_owned(),
                 vec!["termivar-scanner/ssrf-oast-review".to_owned()],
             ),
@@ -16817,7 +17283,8 @@ mod tests {
             ("reqwest".to_owned(), optional.clone()),
             ("termivar-api".to_owned(), optional.clone()),
             ("termivar-artifact".to_owned(), optional.clone()),
-            ("termivar-proxy".to_owned(), optional),
+            ("termivar-proxy".to_owned(), optional.clone()),
+            ("toml".to_owned(), optional),
             (
                 "termivar-scanner".to_owned(),
                 DependencyContract {
@@ -17158,6 +17625,7 @@ mod tests {
             "ssrf-oast-review",
             "supplied-session-review",
             "tls-observation",
+            "jwt-policy-review",
         ] {
             assert!(features
                 .get("release-bundle")
@@ -17267,6 +17735,9 @@ mod tests {
         assert!(dependencies
             .get("x509-parser")
             .is_some_and(|dependency| dependency.optional));
+        assert!(dependencies
+            .get("ring")
+            .is_some_and(|dependency| dependency.optional));
 
         dependencies.get_mut("mlua").unwrap().optional = false;
         assert_eq!(
@@ -17286,6 +17757,15 @@ mod tests {
         );
 
         dependencies.get_mut("zeroize").unwrap().optional = true;
+        dependencies.get_mut("ring").unwrap().optional = false;
+        assert_eq!(
+            scanner_dependency_violations(&dependencies),
+            vec![
+                "termivar-scanner feature-owned dependency `ring` must remain present and optional"
+            ]
+        );
+
+        dependencies.get_mut("ring").unwrap().optional = true;
         dependencies.get_mut("x509-parser").unwrap().optional = false;
         assert_eq!(
             scanner_dependency_violations(&dependencies),
@@ -17694,6 +18174,7 @@ mod tests {
             #[cfg(feature = "legacy-scanner")] pub mod event_bus;
             #[cfg(feature = "legacy-scanner")] pub mod error;
             #[cfg(feature = "graphql-review")] pub(crate) mod graphql_review;
+            #[cfg(feature = "jwt-policy-review")] pub mod jwt_policy_review;
             #[cfg(feature = "legacy-scanner")] mod legacy_discovery;
             #[cfg(feature = "legacy-scanner")] pub mod logging;
             #[cfg(any(feature = "platform-models", feature = "lua"))] mod lua_config;

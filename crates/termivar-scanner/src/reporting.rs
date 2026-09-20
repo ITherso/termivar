@@ -2,6 +2,13 @@
 
 pub mod comparison;
 
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+use crate::jwt_policy_review::{
+    JwtClockAssurance, JwtExternalOperationStatus, JwtLocalSignatureStatus, JwtParseRejection,
+    JwtParsingStatus, JwtPolicyReviewAudit, JwtPolicyStatus, JwtPolicyViolation,
+    JwtTargetAcceptanceStatus, JWT_POLICY_REVIEW_AUDIT_SCHEMA, JWT_POLICY_REVIEW_POLICY_ID,
+    MAX_CLOCK_SKEW_SECONDS, MAX_REQUIRED_CLAIMS,
+};
 #[cfg(all(feature = "scanning", feature = "rest-review"))]
 use crate::rest_review::RestDocumentedResponseClass;
 #[cfg(feature = "scanning")]
@@ -209,6 +216,20 @@ impl ReportGenerator {
         profile: ScanProfileV1,
     ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
         report.into_assessment_report(profile)
+    }
+
+    /// Composes the ordinary completed assessment and then attaches one
+    /// independently evaluated transport-free local JWT audit. No runtime or
+    /// network authority is created by this reporting bridge.
+    #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+    pub fn compose_assessment_with_jwt_policy_review(
+        report: WebAssessmentRunReport,
+        profile: ScanProfileV1,
+        audit: Option<JwtPolicyReviewAudit>,
+    ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+        report
+            .into_assessment_report(profile)?
+            .with_jwt_policy_review_audit(audit)
     }
 
     /// Renders one completed typed assessment through the existing bounded,
@@ -1169,6 +1190,45 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "jwt-policy-review")]
+    if let Some(audit) = &document.jwt_policy_review {
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "jwt_policy_review_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                "selected",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "informational",
+                "observation",
+                "",
+                "",
+                "",
+                "0",
+                &summary,
+                "local-jwt-policy-review",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         let evidence_count = audit.evidence_reference_count.to_string();
@@ -1883,6 +1943,34 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             output.push_str("</code></li>")?;
         }
         output.push_str("</ul><p class=\"wp-note\">Certificate names and DER bytes are not retained in this report. A digest identifies observed bytes; it is not source authentication. Active negotiation, chain enumeration, revocation retrieval, exploit execution, and impact validation were not performed.</p></section>")?;
+    }
+    #[cfg(feature = "jwt-policy-review")]
+    if let Some(audit) = &document.jwt_policy_review {
+        output.push_str(
+            "<section><h2>Local JWT policy review audit</h2>\
+<p class=\"wp-note\">Parsing, local policy consistency, signature verification against the explicitly supplied local public key, and target acceptance are separate states. This value-free audit retains no token, claim value, or key material. It performed no target request, remote-key retrieval, or token forwarding; target acceptance and source authentication are not established.</p><dl class=\"meta\">",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Value-free policy violations</h3><ul>")?;
+        if audit.policy_violations.is_empty() {
+            output.push_str("<li><code>none</code></li>")?;
+        }
+        for violation in &audit.policy_violations {
+            output.push_str("<li><code>")?;
+            let row = violation.ordinal.map_or_else(
+                || format!("kind={}", violation.kind),
+                |ordinal| format!("kind={};ordinal={ordinal}", violation.kind),
+            );
+            write_html_text(&mut output, &row)?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul></section>")?;
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
@@ -4139,6 +4227,30 @@ fn render_assessment_markdown(
         }
         output.push_str("\nCertificate names and DER bytes are not retained in this report. A digest identifies observed bytes; it is not source authentication. Active negotiation, chain enumeration, revocation retrieval, exploit execution, and impact validation were not performed.\n")?;
     }
+    #[cfg(feature = "jwt-policy-review")]
+    if let Some(audit) = &document.jwt_policy_review {
+        output.push_str(
+            "\n### Local JWT policy review audit\n\nParsing, local policy consistency, signature verification against the explicitly supplied local public key, and target acceptance are separate states. This value-free audit retains no token, claim value, or key material. It performed no target request, remote-key retrieval, or token forwarding; target acceptance and source authentication are not established.\n\n",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Value-free policy violations\n\n")?;
+        if audit.policy_violations.is_empty() {
+            output.push_str("- `none`\n")?;
+        }
+        for violation in &audit.policy_violations {
+            output.push_str("- ")?;
+            let row = violation.ordinal.map_or_else(
+                || format!("kind={}", violation.kind),
+                |ordinal| format!("kind={};ordinal={ordinal}", violation.kind),
+            );
+            write_markdown_code_span(&mut output, &row)?;
+            output.push_char('\n')?;
+        }
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         output.push_str("\n### WordPress evidence review audit\n\n")?;
@@ -4253,6 +4365,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "tls-observation")]
     #[serde(skip_serializing_if = "Option::is_none")]
     tls_observation: Option<AssessmentTlsObservationAuditDocument>,
+    #[cfg(feature = "jwt-policy-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jwt_policy_review: Option<AssessmentJwtPolicyReviewAuditDocument>,
     #[cfg(feature = "wordpress-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -4388,6 +4503,11 @@ impl<'a> AssessmentDocument<'a> {
                 .transpose()?,
             #[cfg(feature = "tls-observation")]
             tls_observation,
+            #[cfg(feature = "jwt-policy-review")]
+            jwt_policy_review: report
+                .jwt_policy_review_audit()
+                .map(AssessmentJwtPolicyReviewAuditDocument::from_audit)
+                .transpose()?,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: report
                 .wordpress_review_audit()
@@ -4460,6 +4580,10 @@ impl<'a> AssessmentDocument<'a> {
         }
         #[cfg(feature = "tls-observation")]
         if let Some(audit) = &self.tls_observation {
+            audit.validate()?;
+        }
+        #[cfg(feature = "jwt-policy-review")]
+        if let Some(audit) = &self.jwt_policy_review {
             audit.validate()?;
         }
         #[cfg(feature = "wordpress-review")]
@@ -5021,6 +5145,411 @@ impl AssessmentSecretExposureAuditDocument {
     fn wire_json(&self) -> Result<String, ReportError> {
         serde_json::to_string(self).map_err(|_| ReportError::Serialization)
     }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_POLICY_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_POLICY_EXTERNAL_NOT_PERFORMED: &str = "not_performed";
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_POLICY_SOURCE_AUTHENTICATION: &str = "not_established";
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_POLICY_ALGORITHM: &str = "es256";
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_POLICY_REPRESENTATION: &str = "compact_jws";
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_POLICY_LOCAL_KEY_SOURCE: &str = "explicit_operator_supplied_public_jwk";
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_POLICY_KEY_SOURCE_ASSURANCE: &str = "operator_supplied_not_authenticated";
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_POLICY_TOKEN_KEY_SELECTION: &str = "prohibited";
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const MAX_JWT_POLICY_VIOLATIONS: usize = MAX_REQUIRED_CLAIMS + 5;
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtPolicyReviewAuditDocument {
+    schema: &'static str,
+    policy: &'static str,
+    selected: bool,
+    parsing_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parsing_rejection: Option<&'static str>,
+    policy_status: &'static str,
+    local_signature_status: &'static str,
+    target_acceptance_status: &'static str,
+    methodology: AssessmentJwtPolicyMethodologyDocument,
+    external_activity: AssessmentJwtExternalActivityDocument,
+    policy_violations: Vec<AssessmentJwtPolicyViolationDocument>,
+    source_authentication: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtPolicyMethodologyDocument {
+    algorithm: &'static str,
+    representation: &'static str,
+    local_key_source: &'static str,
+    key_source_assurance: &'static str,
+    token_carried_key_selection: &'static str,
+    operator_policy_reference: String,
+    operator_policy_revision: String,
+    local_public_key_sha256: String,
+    expected_type_selected: bool,
+    expected_issuer_selected: bool,
+    expected_audience_selected: bool,
+    required_claim_count: u64,
+    require_expiration: bool,
+    allowed_clock_skew_seconds: u64,
+    evaluation_time_unix_seconds: i64,
+    clock_assurance: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtExternalActivityDocument {
+    target_request_count: u64,
+    remote_key_retrieval: &'static str,
+    token_forwarding: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtPolicyViolationDocument {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ordinal: Option<u64>,
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+impl AssessmentJwtPolicyReviewAuditDocument {
+    fn from_audit(audit: &JwtPolicyReviewAudit) -> Result<Self, ReportError> {
+        let (parsing_status, parsing_rejection) = match audit.parsing_status() {
+            JwtParsingStatus::Parsed => ("parsed", None),
+            JwtParsingStatus::Rejected(reason) => ("rejected", Some(jwt_parse_rejection(reason))),
+        };
+        let methodology = audit.methodology();
+        let external = audit.external_activity();
+        let policy_violations = audit
+            .policy_violations()
+            .iter()
+            .copied()
+            .map(jwt_policy_violation)
+            .collect::<Vec<_>>();
+        let document = Self {
+            schema: audit.schema(),
+            policy: audit.policy(),
+            selected: audit.selected(),
+            parsing_status,
+            parsing_rejection,
+            policy_status: match audit.policy_status() {
+                JwtPolicyStatus::NotEvaluated => "not_evaluated",
+                JwtPolicyStatus::Consistent => "consistent",
+                JwtPolicyStatus::Inconsistent => "inconsistent",
+            },
+            local_signature_status: match audit.local_signature_status() {
+                JwtLocalSignatureStatus::NotEvaluated => "not_evaluated",
+                JwtLocalSignatureStatus::Verified => "verified",
+                JwtLocalSignatureStatus::Invalid => "invalid",
+            },
+            target_acceptance_status: match audit.target_acceptance_status() {
+                JwtTargetAcceptanceStatus::NotPerformed => "not_performed",
+            },
+            methodology: AssessmentJwtPolicyMethodologyDocument {
+                algorithm: JWT_POLICY_ALGORITHM,
+                representation: JWT_POLICY_REPRESENTATION,
+                local_key_source: JWT_POLICY_LOCAL_KEY_SOURCE,
+                key_source_assurance: JWT_POLICY_KEY_SOURCE_ASSURANCE,
+                token_carried_key_selection: JWT_POLICY_TOKEN_KEY_SELECTION,
+                operator_policy_reference: methodology.operator_policy_reference().to_owned(),
+                operator_policy_revision: methodology.operator_policy_revision().to_owned(),
+                local_public_key_sha256: methodology.local_public_key_sha256().to_owned(),
+                expected_type_selected: methodology.expected_type_selected(),
+                expected_issuer_selected: methodology.expected_issuer_selected(),
+                expected_audience_selected: methodology.expected_audience_selected(),
+                required_claim_count: u64::from(methodology.required_claim_count()),
+                require_expiration: methodology.require_expiration(),
+                allowed_clock_skew_seconds: u64::from(methodology.allowed_clock_skew_seconds()),
+                evaluation_time_unix_seconds: methodology.evaluation_time_unix_seconds(),
+                clock_assurance: match methodology.clock_assurance() {
+                    JwtClockAssurance::LocalSystemClockNotIndependentlyVerified => {
+                        JWT_POLICY_CLOCK_ASSURANCE
+                    },
+                },
+            },
+            external_activity: AssessmentJwtExternalActivityDocument {
+                target_request_count: u64::from(external.target_request_count()),
+                remote_key_retrieval: match external.remote_key_retrieval() {
+                    JwtExternalOperationStatus::NotPerformed => JWT_POLICY_EXTERNAL_NOT_PERFORMED,
+                },
+                token_forwarding: match external.token_forwarding() {
+                    JwtExternalOperationStatus::NotPerformed => JWT_POLICY_EXTERNAL_NOT_PERFORMED,
+                },
+            },
+            policy_violations,
+            source_authentication: JWT_POLICY_SOURCE_AUTHENTICATION,
+        };
+        document.validate()?;
+        Ok(document)
+    }
+
+    fn validate(&self) -> Result<(), ReportError> {
+        if self.schema != JWT_POLICY_REVIEW_AUDIT_SCHEMA
+            || self.policy != JWT_POLICY_REVIEW_POLICY_ID
+            || !self.selected
+            || !valid_jwt_policy_reference(&self.methodology.operator_policy_reference)
+            || !valid_jwt_policy_reference(&self.methodology.operator_policy_revision)
+            || !valid_jwt_public_key_sha256(&self.methodology.local_public_key_sha256)
+            || self.methodology.algorithm != JWT_POLICY_ALGORITHM
+            || self.methodology.representation != JWT_POLICY_REPRESENTATION
+            || self.methodology.local_key_source != JWT_POLICY_LOCAL_KEY_SOURCE
+            || self.methodology.key_source_assurance != JWT_POLICY_KEY_SOURCE_ASSURANCE
+            || self.methodology.token_carried_key_selection != JWT_POLICY_TOKEN_KEY_SELECTION
+            || !self.methodology.expected_type_selected
+            || !self.methodology.expected_issuer_selected
+            || !self.methodology.expected_audience_selected
+            || self.methodology.required_claim_count
+                > u64::try_from(MAX_REQUIRED_CLAIMS).map_err(|_| ReportError::Serialization)?
+            || self.methodology.allowed_clock_skew_seconds > u64::from(MAX_CLOCK_SKEW_SECONDS)
+            || self.methodology.clock_assurance != JWT_POLICY_CLOCK_ASSURANCE
+            || self.external_activity.target_request_count != 0
+            || self.external_activity.remote_key_retrieval != JWT_POLICY_EXTERNAL_NOT_PERFORMED
+            || self.external_activity.token_forwarding != JWT_POLICY_EXTERNAL_NOT_PERFORMED
+            || self.target_acceptance_status != "not_performed"
+            || self.source_authentication != JWT_POLICY_SOURCE_AUTHENTICATION
+            || self.policy_violations.len() > MAX_JWT_POLICY_VIOLATIONS
+        {
+            return Err(ReportError::Serialization);
+        }
+        let state_valid = match self.parsing_status {
+            "rejected" => {
+                self.parsing_rejection.is_some()
+                    && self.policy_status == "not_evaluated"
+                    && self.local_signature_status == "not_evaluated"
+                    && self.policy_violations.is_empty()
+            },
+            "parsed" => {
+                self.parsing_rejection.is_none()
+                    && matches!(self.local_signature_status, "verified" | "invalid")
+                    && match self.policy_status {
+                        "consistent" => self.policy_violations.is_empty(),
+                        "inconsistent" => !self.policy_violations.is_empty(),
+                        _ => false,
+                    }
+            },
+            _ => false,
+        };
+        if !state_valid {
+            return Err(ReportError::Serialization);
+        }
+        if let Some(reason) = self.parsing_rejection {
+            if !JWT_PARSE_REJECTION_TOKENS.contains(&reason) {
+                return Err(ReportError::Serialization);
+            }
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        let mut exclusive_categories = std::collections::BTreeSet::new();
+        for violation in &self.policy_violations {
+            let (valid, category) = match violation.kind {
+                "missing_type" | "type_mismatch" => (
+                    violation.ordinal.is_none() && self.methodology.expected_type_selected,
+                    Some("type"),
+                ),
+                "missing_issuer" | "invalid_issuer_type" | "issuer_mismatch" => (
+                    violation.ordinal.is_none() && self.methodology.expected_issuer_selected,
+                    Some("issuer"),
+                ),
+                "missing_audience" | "invalid_audience_type" | "audience_mismatch" => (
+                    violation.ordinal.is_none() && self.methodology.expected_audience_selected,
+                    Some("audience"),
+                ),
+                "missing_required_claim" => (
+                    violation
+                        .ordinal
+                        .is_some_and(|ordinal| ordinal < self.methodology.required_claim_count),
+                    None,
+                ),
+                "missing_expiration" => (
+                    violation.ordinal.is_none() && self.methodology.require_expiration,
+                    Some("expiration"),
+                ),
+                "invalid_expiration" | "expired" => {
+                    (violation.ordinal.is_none(), Some("expiration"))
+                },
+                "invalid_not_before" | "not_yet_valid" => {
+                    (violation.ordinal.is_none(), Some("not_before"))
+                },
+                _ => (false, None),
+            };
+            if !valid
+                || !unique.insert((violation.kind, violation.ordinal))
+                || category.is_some_and(|category| !exclusive_categories.insert(category))
+            {
+                return Err(ReportError::Serialization);
+            }
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Audit schema", self.schema.to_owned()),
+            ("Policy", self.policy.to_owned()),
+            ("Selected", self.selected.to_string()),
+            ("Parsing status", self.parsing_status.to_owned()),
+            ("Policy status", self.policy_status.to_owned()),
+            (
+                "Local signature status",
+                self.local_signature_status.to_owned(),
+            ),
+            (
+                "Target acceptance status",
+                self.target_acceptance_status.to_owned(),
+            ),
+            (
+                "Operator policy reference",
+                self.methodology.operator_policy_reference.clone(),
+            ),
+            (
+                "Operator policy revision",
+                self.methodology.operator_policy_revision.clone(),
+            ),
+            (
+                "Local public key SHA-256",
+                self.methodology.local_public_key_sha256.clone(),
+            ),
+            ("Algorithm", self.methodology.algorithm.to_owned()),
+            ("Representation", self.methodology.representation.to_owned()),
+            (
+                "Local key source",
+                self.methodology.local_key_source.to_owned(),
+            ),
+            (
+                "Key source assurance",
+                self.methodology.key_source_assurance.to_owned(),
+            ),
+            (
+                "Token-carried key selection",
+                self.methodology.token_carried_key_selection.to_owned(),
+            ),
+            (
+                "Required claim count",
+                self.methodology.required_claim_count.to_string(),
+            ),
+            (
+                "Allowed clock skew seconds",
+                self.methodology.allowed_clock_skew_seconds.to_string(),
+            ),
+            (
+                "Evaluation time (Unix seconds)",
+                self.methodology.evaluation_time_unix_seconds.to_string(),
+            ),
+            (
+                "Policy violation count",
+                self.policy_violations.len().to_string(),
+            ),
+            (
+                "Target request count",
+                self.external_activity.target_request_count.to_string(),
+            ),
+            (
+                "Source authentication",
+                self.source_authentication.to_owned(),
+            ),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+const JWT_PARSE_REJECTION_TOKENS: [&str; 17] = [
+    "encrypted_token_unsupported",
+    "invalid_segment_count",
+    "empty_segment",
+    "invalid_base64_url",
+    "decoded_segment_too_large",
+    "malformed_json",
+    "duplicate_json_key",
+    "json_limit_exceeded",
+    "malformed_protected_header",
+    "unsecured_algorithm_unsupported",
+    "algorithm_unsupported",
+    "critical_header_unsupported",
+    "unencoded_payload_unsupported",
+    "compression_unsupported",
+    "nested_token_unsupported",
+    "key_metadata_unsupported",
+    "invalid_signature_length",
+];
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+fn jwt_parse_rejection(reason: JwtParseRejection) -> &'static str {
+    match reason {
+        JwtParseRejection::EncryptedTokenUnsupported => "encrypted_token_unsupported",
+        JwtParseRejection::InvalidSegmentCount => "invalid_segment_count",
+        JwtParseRejection::EmptySegment => "empty_segment",
+        JwtParseRejection::InvalidBase64Url => "invalid_base64_url",
+        JwtParseRejection::DecodedSegmentTooLarge => "decoded_segment_too_large",
+        JwtParseRejection::MalformedJson => "malformed_json",
+        JwtParseRejection::DuplicateJsonKey => "duplicate_json_key",
+        JwtParseRejection::JsonLimitExceeded => "json_limit_exceeded",
+        JwtParseRejection::MalformedProtectedHeader => "malformed_protected_header",
+        JwtParseRejection::UnsecuredAlgorithmUnsupported => "unsecured_algorithm_unsupported",
+        JwtParseRejection::AlgorithmUnsupported => "algorithm_unsupported",
+        JwtParseRejection::CriticalHeaderUnsupported => "critical_header_unsupported",
+        JwtParseRejection::UnencodedPayloadUnsupported => "unencoded_payload_unsupported",
+        JwtParseRejection::CompressionUnsupported => "compression_unsupported",
+        JwtParseRejection::NestedTokenUnsupported => "nested_token_unsupported",
+        JwtParseRejection::KeyMetadataUnsupported => "key_metadata_unsupported",
+        JwtParseRejection::InvalidSignatureLength => "invalid_signature_length",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+fn jwt_policy_violation(violation: JwtPolicyViolation) -> AssessmentJwtPolicyViolationDocument {
+    let (kind, ordinal) = match violation {
+        JwtPolicyViolation::MissingType => ("missing_type", None),
+        JwtPolicyViolation::TypeMismatch => ("type_mismatch", None),
+        JwtPolicyViolation::MissingIssuer => ("missing_issuer", None),
+        JwtPolicyViolation::InvalidIssuerType => ("invalid_issuer_type", None),
+        JwtPolicyViolation::IssuerMismatch => ("issuer_mismatch", None),
+        JwtPolicyViolation::MissingAudience => ("missing_audience", None),
+        JwtPolicyViolation::InvalidAudienceType => ("invalid_audience_type", None),
+        JwtPolicyViolation::AudienceMismatch => ("audience_mismatch", None),
+        JwtPolicyViolation::MissingRequiredClaim { ordinal } => {
+            ("missing_required_claim", Some(u64::from(ordinal)))
+        },
+        JwtPolicyViolation::MissingExpiration => ("missing_expiration", None),
+        JwtPolicyViolation::InvalidExpiration => ("invalid_expiration", None),
+        JwtPolicyViolation::Expired => ("expired", None),
+        JwtPolicyViolation::InvalidNotBefore => ("invalid_not_before", None),
+        JwtPolicyViolation::NotYetValid => ("not_yet_valid", None),
+    };
+    AssessmentJwtPolicyViolationDocument { kind, ordinal }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+fn valid_jwt_policy_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b'-' | b'_' | b'.'))
+        })
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+fn valid_jwt_public_key_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 #[cfg(all(feature = "scanning", feature = "tls-observation"))]
@@ -12511,6 +13040,8 @@ mod tests {
             secret_exposure_review: None,
             #[cfg(feature = "tls-observation")]
             tls_observation: None,
+            #[cfg(feature = "jwt-policy-review")]
+            jwt_policy_review: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
             #[cfg(feature = "wordpress-review")]
@@ -12624,6 +13155,175 @@ mod tests {
                 standard_transport_validation_succeeded: true,
             }],
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+    fn jwt_policy_review_audit_document() -> AssessmentJwtPolicyReviewAuditDocument {
+        AssessmentJwtPolicyReviewAuditDocument {
+            schema: JWT_POLICY_REVIEW_AUDIT_SCHEMA,
+            policy: JWT_POLICY_REVIEW_POLICY_ID,
+            selected: true,
+            parsing_status: "parsed",
+            parsing_rejection: None,
+            policy_status: "consistent",
+            local_signature_status: "verified",
+            target_acceptance_status: "not_performed",
+            methodology: AssessmentJwtPolicyMethodologyDocument {
+                algorithm: JWT_POLICY_ALGORITHM,
+                representation: JWT_POLICY_REPRESENTATION,
+                local_key_source: JWT_POLICY_LOCAL_KEY_SOURCE,
+                key_source_assurance: JWT_POLICY_KEY_SOURCE_ASSURANCE,
+                token_carried_key_selection: JWT_POLICY_TOKEN_KEY_SELECTION,
+                operator_policy_reference: "synthetic-policy".to_owned(),
+                operator_policy_revision: "synthetic-policy-v1".to_owned(),
+                local_public_key_sha256: format!("sha256:{}", "a".repeat(64)),
+                expected_type_selected: true,
+                expected_issuer_selected: true,
+                expected_audience_selected: true,
+                required_claim_count: 2,
+                require_expiration: true,
+                allowed_clock_skew_seconds: 30,
+                evaluation_time_unix_seconds: 1_700_000_000,
+                clock_assurance: JWT_POLICY_CLOCK_ASSURANCE,
+            },
+            external_activity: AssessmentJwtExternalActivityDocument {
+                target_request_count: 0,
+                remote_key_retrieval: JWT_POLICY_EXTERNAL_NOT_PERFORMED,
+                token_forwarding: JWT_POLICY_EXTERNAL_NOT_PERFORMED,
+            },
+            policy_violations: Vec::new(),
+            source_authentication: JWT_POLICY_SOURCE_AUTHENTICATION,
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+    #[test]
+    fn jwt_policy_review_audit_is_value_free_and_rendered_in_every_format() {
+        let mut document = observation_assessment_document("unrelated.observation@1");
+        document.jwt_policy_review = Some(jwt_policy_review_audit_document());
+
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("security.jwt-policy-review-audit/v1"));
+            assert!(rendered.contains("termivar.jwt-local-policy/es256-v1"));
+            assert!(rendered.contains("explicit_operator_supplied_public_jwk"));
+            assert!(rendered.contains("operator_supplied_not_authenticated"));
+            assert!(rendered.contains("not_performed"));
+            assert!(!rendered.contains("synthetic-secret-claim-value"));
+            assert!(!rendered.contains("BEGIN PRIVATE KEY"));
+        }
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &value["jwt_policy_review"];
+        assert_eq!(audit["parsing_status"], "parsed");
+        assert_eq!(audit["policy_status"], "consistent");
+        assert_eq!(audit["local_signature_status"], "verified");
+        assert_eq!(audit["target_acceptance_status"], "not_performed");
+        assert_eq!(audit["external_activity"]["target_request_count"], 0);
+        assert_eq!(audit["policy_violations"], serde_json::json!([]));
+        assert!(audit.get("parsing_rejection").is_none());
+        assert!(audit.get("raw_token").is_none());
+        assert!(audit.get("claims").is_none());
+        assert!(audit.get("verification_key").is_none());
+    }
+
+    #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
+    #[test]
+    fn jwt_policy_review_writer_rejects_boundary_and_state_mutations() {
+        let mut document = observation_assessment_document("unrelated.observation@1");
+        document.jwt_policy_review = Some(jwt_policy_review_audit_document());
+        assert!(render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).is_ok());
+
+        document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .methodology
+            .algorithm = "none";
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .methodology
+            .algorithm = JWT_POLICY_ALGORITHM;
+        document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .methodology
+            .expected_type_selected = false;
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .methodology
+            .expected_type_selected = true;
+        document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .methodology
+            .local_public_key_sha256 = "sha256:NOT-HEX".to_owned();
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .methodology
+            .local_public_key_sha256 = format!("sha256:{}", "a".repeat(64));
+        document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .external_activity
+            .target_request_count = 1;
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        let audit = document.jwt_policy_review.as_mut().unwrap();
+        audit.external_activity.target_request_count = 0;
+        audit.policy_status = "inconsistent";
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        let audit = document.jwt_policy_review.as_mut().unwrap();
+        audit.policy_violations = vec![AssessmentJwtPolicyViolationDocument {
+            kind: "missing_required_claim",
+            ordinal: Some(1),
+        }];
+        assert!(render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).is_ok());
+        document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .policy_violations
+            .push(AssessmentJwtPolicyViolationDocument {
+                kind: "missing_required_claim",
+                ordinal: Some(1),
+            });
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
     }
 
     #[cfg(all(feature = "scanning", feature = "tls-observation"))]

@@ -246,6 +246,7 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
             cfg!(feature = "authorization-review"),
         ),
         ("graphql-review", cfg!(feature = "graphql-review")),
+        ("jwt-policy-review", cfg!(feature = "jwt-policy-review")),
         ("legacy-scanner", cfg!(feature = "legacy-scanner")),
         (
             "normalization-resilience",
@@ -584,6 +585,24 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/existing-connection-tls-observation.md",
         ),
         surface!(
+            "option.jwt-policy-review",
+            "Local JWT policy review",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("jwt-policy-review"),
+            cfg!(feature = "jwt-policy-review"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &[
+                "--profile web-review",
+                "--jwt-policy FILE",
+                "--jwt-public-jwk FILE",
+                "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin",
+            ],
+            "Reviews one explicitly supplied compact JWS under a strict local policy and verifies only ES256 against one explicitly supplied local P-256 public JWK. The V1 policy requires a non-secret operator policy revision plus explicit intended typ, issuer, and audience bindings; all three checks are mandatory. The revision must change when private policy semantics change, and reports identify the exact public-key bytes with SHA-256 without authenticating their source. The token is read from an explicitly selected environment variable, local regular file, or stdin; Windows UNC, device, and named-pipe namespaces are rejected before open, while mapped drives and mounted network filesystems remain an operator trust boundary. The token is never placed in argv, sent to the target, replayed, or used as authorization. Before the token source is read, JWK intake validates only the closed public-JWK structure and canonical 32-byte x/y coordinates; curve membership and signature validity are decided by local ES256 verification, and failure remains unauthenticated with local_signature=invalid. The JWT evaluator performs zero target requests and no remote key retrieval; the surrounding scan retains its ordinary authorized web-review requests. JWE, nested or compressed JOSE, critical headers, unencoded payloads, unsecured or non-ES256 algorithms, jku, x5u, embedded keys, and private JWK material are rejected or unsupported. Parsed, policy-consistent, locally signature-verified, and target-accepted are distinct states; target acceptance is not performed. Local signature verification establishes only the relationship among the supplied token bytes, local policy, local clock, and supplied public key; it does not authenticate the issuer or source, establish server acceptance, or perform exploit or impact validation.",
+            "docs/internals/local-jwt-policy-review.md",
+        ),
+        surface!(
             "option.ssrf-oast-review",
             "SSRF OAST query review",
             SurfaceGroup::Optional,
@@ -832,7 +851,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 26);
+        assert_eq!(document.surfaces.len(), 27);
 
         let keys = document
             .surfaces
@@ -865,6 +884,7 @@ mod tests {
                 "option.resource-authorization-review",
                 "option.secret-exposure-review",
                 "option.tls-observation",
+                "option.jwt-policy-review",
                 "option.ssrf-oast-review",
                 "option.supplied-session-review",
                 "option.wordpress-review",
@@ -948,6 +968,7 @@ mod tests {
             ),
             ("option.secret-exposure-review", "secret-exposure-review"),
             ("option.tls-observation", "tls-observation"),
+            ("option.jwt-policy-review", "jwt-policy"),
             ("option.ssrf-oast-review", "ssrf-oast-review"),
             ("option.supplied-session-review", "session-policy"),
             ("option.wordpress-review", "wordpress-review"),
@@ -1063,6 +1084,12 @@ mod tests {
             (
                 "option.tls-observation",
                 Some("tls-observation"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.jwt-policy-review",
+                Some("jwt-policy-review"),
                 "preview",
                 "implemented",
             ),
@@ -1284,6 +1311,43 @@ mod tests {
             assert!(
                 tls.limitation.contains(required),
                 "missing TLS-observation limitation `{required}`"
+            );
+        }
+        let jwt = find("option.jwt-policy-review");
+        assert_eq!(
+            jwt.prerequisites,
+            [
+                "--profile web-review",
+                "--jwt-policy FILE",
+                "--jwt-public-jwk FILE",
+                "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin",
+            ]
+        );
+        assert_eq!(jwt.compile_feature, Some("jwt-policy-review"));
+        assert_eq!(
+            jwt.documentation,
+            "docs/internals/local-jwt-policy-review.md"
+        );
+        for required in [
+            "verifies only ES256",
+            "local P-256 public JWK",
+            "V1 policy requires a non-secret operator policy revision plus explicit intended typ, issuer, and audience bindings; all three checks are mandatory",
+            "revision must change when private policy semantics change",
+            "identify the exact public-key bytes with SHA-256 without authenticating their source",
+            "Windows UNC, device, and named-pipe namespaces are rejected before open",
+            "mapped drives and mounted network filesystems remain an operator trust boundary",
+            "never placed in argv, sent to the target, replayed, or used as authorization",
+            "JWT evaluator performs zero target requests and no remote key retrieval; the surrounding scan retains its ordinary authorized web-review requests",
+            "jku, x5u, embedded keys, and private JWK material",
+            "Parsed, policy-consistent, locally signature-verified, and target-accepted are distinct states",
+            "target acceptance is not performed",
+            "does not authenticate the issuer or source",
+            "establish server acceptance",
+            "exploit or impact validation",
+        ] {
+            assert!(
+                jwt.limitation.contains(required),
+                "missing local JWT-policy limitation `{required}`"
             );
         }
         let session = find("option.supplied-session-review");
