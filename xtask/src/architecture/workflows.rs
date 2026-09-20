@@ -239,6 +239,7 @@ const WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY: &str = r#"          - target: wordp
 const FIRST_USE_TEMP_PREFIX: &str = "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}";
 const PLATFORM_RUNTIME_OS_MATRIX: &str =
     "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]";
+const PLATFORM_RUNTIME_TIMEOUT: &str = "    timeout-minutes: 30";
 const REPORT_BUNDLE_SMOKE_GATE: &str = r#"      - name: Exercise single-run report bundle CLI
         run: cargo test --locked -p termivar-cli --test report_bundle_cli"#;
 const REPORT_VERIFICATION_SMOKE_GATE: &str = r#"      - name: Exercise offline report bundle verification CLI
@@ -799,6 +800,19 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     if runtime_jobs.len() != 1 || runtime_jobs[0].matches(PLATFORM_RUNTIME_OS_MATRIX).count() != 1 {
         violations.push(format!(
             "{TESTS_WORKFLOW}: supplied-session CLI requires the exact four-platform native runtime-smoke matrix"
+        ));
+    }
+    if !matches!(
+        runtime_jobs.as_slice(),
+        [job]
+            if job
+                .lines()
+                .filter(|line| *line == PLATFORM_RUNTIME_TIMEOUT)
+                .count()
+                == 1
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: platform runtime smoke requires the exact thirty-minute runtime budget"
         ));
     }
     if !job_has_exact_step(
@@ -2637,6 +2651,30 @@ mod tests {
             let violations =
                 capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), fixture)]);
             assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn platform_runtime_smoke_timeout_is_exact_and_guarded() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert_eq!(
+            valid
+                .lines()
+                .filter(|line| *line == PLATFORM_RUNTIME_TIMEOUT)
+                .count(),
+            1
+        );
+
+        for replacement in ["    timeout-minutes: 20", "    timeout-minutes: 300"] {
+            let mutation = valid.replacen(PLATFORM_RUNTIME_TIMEOUT, replacement, 1);
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("thirty-minute runtime budget"),
+                "{violations:?}"
+            );
         }
     }
 
