@@ -2657,16 +2657,21 @@ mod tests {
     #[test]
     fn platform_runtime_smoke_timeout_is_exact_and_guarded() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let jobs = named_job_blocks(&valid, "platform-runtime-smoke");
+        let [job] = jobs.as_slice() else {
+            panic!("expected exactly one platform runtime-smoke job");
+        };
         assert_eq!(
-            valid
-                .lines()
+            job.lines()
                 .filter(|line| *line == PLATFORM_RUNTIME_TIMEOUT)
                 .count(),
             1
         );
 
         for replacement in ["    timeout-minutes: 20", "    timeout-minutes: 300"] {
-            let mutation = valid.replacen(PLATFORM_RUNTIME_TIMEOUT, replacement, 1);
+            let mutated_job = job.replacen(PLATFORM_RUNTIME_TIMEOUT, replacement, 1);
+            assert_ne!(mutated_job, *job, "mutation must alter the job fixture");
+            let mutation = valid.replacen(job.as_str(), &mutated_job, 1);
             assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
             let violations =
                 capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
