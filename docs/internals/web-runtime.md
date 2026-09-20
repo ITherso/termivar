@@ -229,11 +229,12 @@ only after profile, policy-file, transport, source-conflict, and report-output
 preflight.
 
 The action dispatches primary candidate, peer candidate, primary replay, and
-peer replay against the same exact resource. All four bodyless `GET` legs use
-the parent redirect-disabled request broker, exact-origin authority,
-`RuntimeBudget`, response accounting, cancellation, and deadline, while the
-broker isolates principal connection state. The only principal-varying header
-is `Authorization`; there is no cookie, request body, arbitrary header, method
+peer replay against the same exact resource. The parent redirect-disabled
+request broker creates a fresh ambient-proxy-free connection pool for each of
+the four bodyless `GET` legs. Every pool remains governed by the same
+exact-origin authority, `RuntimeBudget`, response accounting, cancellation,
+deadline and evidence lifecycle. The only principal-varying header is
+`Authorization`; there is no cookie, request body, arbitrary header, method
 change, identifier mutation, or implicit retry. The child is capped at one
 resource, four requests, and one logical active verification: the passive
 stage collects both candidate views, then the active decision phase charges

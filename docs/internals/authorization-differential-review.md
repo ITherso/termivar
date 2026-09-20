@@ -232,8 +232,9 @@ assessment's `SharedWebRuntimeAuthority`, exact-origin policy, request broker,
 `RuntimeBudget`, response-byte accounting, cancellation token, deadline,
 executor/action catalog, defense validation, evidence registry, completeness
 lifecycle, stable identities, and final `AssessmentReport`. It does not create
-an independent authorization runtime, client, broker, budget, evidence store,
-URL normalizer, detached post-scan pass, or separately finalized report.
+an authority-independent authorization runtime, broker, budget, evidence store,
+URL normalizer, detached post-scan pass, or separately finalized report. The
+broker may create the governed per-leg client pools described below.
 
 The action selects one resource at most and executes one bodyless `GET`
 template in this exact order:
@@ -253,10 +254,11 @@ Each leg carries only fixed `Accept: application/json` plus the exact role's
 `Authorization` header. Candidate and replay use distinct scanner-owned
 correlation identities without changing the resource. Redirects and implicit
 retries remain disabled; there is no cookie jar, request body, method override,
-custom header mutation, or query mutation. Primary and peer connection state
-is isolated through the broker's governed isolation mechanism while accounting
-remains shared. The full child is capped at one selected resource, four request
-leases, and one logical active verification. An exhausted per-leg lease keeps
+custom header mutation, or query mutation. Primary and peer connection state is
+isolated by a fresh broker-owned pool for every leg, with ambient proxies
+disabled, while exact-origin authority, accounting, cancellation and evidence
+ownership remain shared. The full child is capped at one selected resource,
+four request leases, and one logical active verification. An exhausted per-leg lease keeps
 already charged evidence but makes the review incomplete and prevents a
 positive item. This capability-specific four-leg plan does not widen the
 authority-wide `RuntimeBudget` same-action-attempt default of three for

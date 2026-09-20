@@ -9816,15 +9816,19 @@ fn authorization(
             "contract_mismatch",
         ],
     )?;
-    optional_boolean(fields, "primary_stable")?;
-    optional_boolean(fields, "peer_stable")?;
-    optional_boolean(fields, "cross_resources_equivalent")?;
+    let primary_stable = optional_boolean(fields, "primary_stable")?;
+    let peer_stable = optional_boolean(fields, "peer_stable")?;
+    let cross_resources_equivalent = optional_boolean(fields, "cross_resources_equivalent")?;
     let positive = outcome == "stable_cross_principal_equivalence";
     check(
         count <= 1
             && boolean(fields, "item_projected")? == (count == 1)
             && positive == (count == 1)
-            && (!positive || requests == 4),
+            && (!positive
+                || (requests == 4
+                    && primary_stable == Some(true)
+                    && peer_stable == Some(true)
+                    && cross_resources_equivalent == Some(true))),
     )
 }
 
@@ -10003,6 +10007,61 @@ mod tests {
         audit["response_bytes"] = Value::from(10_u64);
         audit["cookie_lifecycle"]["unselected_update_response_count"] = Value::from(0_u64);
         audit
+    }
+
+    fn positive_authorization_audit() -> Value {
+        serde_json::json!({
+            "schema": "security.authorization-review-audit/v1",
+            "capability_id": AUTHORIZATION_CAPABILITY,
+            "policy_id": format!("authorization-policy-sha256:{}", "a".repeat(64)),
+            "selected_path_count": 1,
+            "ignored_path_count": 0,
+            "request_count": 4,
+            "outcome": "stable_cross_principal_equivalence",
+            "primary_stable": true,
+            "peer_stable": true,
+            "cross_resources_equivalent": true,
+            "item_projected": true,
+        })
+    }
+
+    #[test]
+    fn authorization_reader_binds_positive_outcome_to_relational_proofs() {
+        let valid = positive_authorization_audit();
+        assert_eq!(authorization(valid.as_object().unwrap(), 1), Ok(()));
+
+        for field in [
+            "primary_stable",
+            "peer_stable",
+            "cross_resources_equivalent",
+        ] {
+            for replacement in [
+                Value::Bool(false),
+                Value::Null,
+                Value::String("true".to_owned()),
+            ] {
+                let mut invalid = positive_authorization_audit();
+                invalid[field] = replacement;
+                assert_eq!(
+                    authorization(invalid.as_object().unwrap(), 1),
+                    Err(ComparisonError::InvalidDocument),
+                    "invalid {field} was accepted"
+                );
+            }
+
+            let mut missing = positive_authorization_audit();
+            missing.as_object_mut().unwrap().remove(field);
+            assert_eq!(
+                authorization(missing.as_object().unwrap(), 1),
+                Err(ComparisonError::InvalidDocument),
+                "missing {field} was accepted"
+            );
+        }
+
+        assert_eq!(
+            authorization(positive_authorization_audit().as_object().unwrap(), 0),
+            Err(ComparisonError::InvalidDocument)
+        );
     }
 
     #[test]

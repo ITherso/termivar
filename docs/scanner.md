@@ -275,6 +275,11 @@ replay, and peer replay. The four legs consume one logical active verification.
 That lease is charged when the primary replay begins; the peer replay is
 passive-accounted inside the same active decision phase.
 
+Each credentialed leg uses a fresh broker-owned connection pool with ambient
+proxies disabled. This prevents proxy state or connection reuse from joining
+the two operator-declared principals while preserving the parent exact-origin
+authority, request/byte accounting, cancellation and evidence lifecycle.
+
 Positive evidence requires stable successful primary and peer replays plus
 equivalence in `Status`, `Fields`, and value-sensitive `Resources` for both
 cross-principal rounds. Status or field shape alone is insufficient. A denied,

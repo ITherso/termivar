@@ -555,7 +555,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "one peer source: --authz-peer-env, --authz-peer-file, or --authz-peer-stdin",
                 "HTTPS, except numeric-loopback HTTP fixtures",
             ],
-            "Distinct principals are operator-provided; no identifier mutation or confirmed authorization claim.",
+            "Distinct principals are operator-provided. Each credentialed leg uses a fresh connection pool with ambient proxies disabled while sharing the parent exact-origin scope, accounting, cancellation, and evidence authority. No identifier mutation or confirmed authorization claim is performed.",
             "docs/internals/authorization-differential-review.md",
         ),
         surface!(
@@ -1273,6 +1273,10 @@ mod tests {
                 "one peer source: --authz-peer-env, --authz-peer-file, or --authz-peer-stdin",
                 "HTTPS, except numeric-loopback HTTP fixtures",
             ]
+        );
+        assert_eq!(
+            find("option.resource-authorization-review").limitation,
+            "Distinct principals are operator-provided. Each credentialed leg uses a fresh connection pool with ambient proxies disabled while sharing the parent exact-origin scope, accounting, cancellation, and evidence authority. No identifier mutation or confirmed authorization claim is performed."
         );
         let secret_exposure = find("option.secret-exposure-review");
         assert_eq!(

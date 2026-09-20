@@ -462,7 +462,8 @@ non-default scanner/CLI `authorization-review` feature and one explicit
 `security.authorization-review-policy/v1` file add exactly one native action
 to `WebAssessmentRuntime`. The operator supplies one exact-origin JSON `GET`
 resource plus distinct primary and peer credentials through the existing
-bounded env/file/stdin input boundary. The action uses the parent broker,
+bounded env/file/stdin input boundary. The parent broker creates a fresh
+ambient-proxy-free connection pool for each leg while retaining one shared
 `RuntimeBudget`, exact-origin authority, cancellation, deadline, evidence
 registry, completeness lifecycle, and final report for four ordered views:
 primary candidate, peer candidate, primary replay, and peer replay. Those four
@@ -470,9 +471,10 @@ dispatches are one logical active verification: the lease is charged when the
 primary replay begins, while the peer replay is passive-accounted in the same
 active decision phase.
 
-No separate authorization scanner, nested Standard runtime, direct client,
+No separate authorization scanner, nested Standard runtime,
 capability-owned authority or budget, detached pass, or independently finalized
-report exists. The only principal-varying request material is the complete
+report exists. The broker-owned per-leg clients do not create new authority.
+The only principal-varying request material is the complete
 `Authorization` header; requests are bodyless `GET`, carry no cookies, disable
 redirects and retries, and never mutate or enumerate identifiers. Positive
 projection requires both role replays and both cross-principal rounds to match

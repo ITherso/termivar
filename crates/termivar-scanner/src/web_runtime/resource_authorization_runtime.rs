@@ -685,11 +685,11 @@ impl DecisionActionExecutor for ResourceAuthorizationDecisionExecutor {
         let mut evidence = Vec::new();
         let mut response_bytes = 0_u64;
         let mut last_defense = None;
+        // Each role receives a fresh pool but retains the parent's exact policy
+        // and accounting broker. Cookie, redirect, retry, and connection-bound
+        // authentication state cannot cross roles.
         for role in roles {
-            // Each role receives a fresh pool but retains the parent's exact
-            // policy and accounting broker. Cookie, redirect, retry, and
-            // connection-bound authentication state cannot cross roles.
-            let isolated = match self.requests.isolated() {
+            let isolated = match self.requests.isolated_authorization_review() {
                 Ok(isolated) => isolated,
                 Err(_) => {
                     self.stop(AuthorizationReviewOutcome::Incomplete)?;

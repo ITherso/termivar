@@ -173,6 +173,7 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
           cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
+          cargo test --locked -p termivar-cli --no-default-features --features authorization-review
           cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review
           cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review
           cargo test --locked -p termivar-cli --no-default-features --features tls-observation
@@ -308,6 +309,8 @@ jobs:
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture
       - name: Exercise opt-in supplied-session review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture
+      - name: Exercise opt-in resource authorization review CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review --test authorization_review_cli -- --nocapture
       - name: Exercise opt-in passive secret-exposure review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture
       - name: Exercise opt-in passive TLS observation CLI

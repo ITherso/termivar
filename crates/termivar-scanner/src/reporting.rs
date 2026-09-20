@@ -7252,6 +7252,10 @@ impl AssessmentAuthorizationAuditDocument {
             || self.item_projected != (projected_count == 1)
             || positive != self.item_projected
             || (positive && usize::from(self.request_count) != MAX_AUTHORIZATION_REVIEW_REQUESTS)
+            || (positive
+                && (self.primary_stable != Some(true)
+                    || self.peer_stable != Some(true)
+                    || self.cross_resources_equivalent != Some(true)))
         {
             return Err(ReportError::Serialization);
         }
@@ -13664,6 +13668,58 @@ mod tests {
             },
             policy_violations: Vec::new(),
             source_authentication: JWT_POLICY_SOURCE_AUTHENTICATION,
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "authorization-review"))]
+    #[test]
+    fn positive_authorization_audit_requires_all_three_relational_proofs() {
+        let document = observation_assessment_document(RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID);
+        let valid = AssessmentAuthorizationAuditDocument {
+            schema: "security.authorization-review-audit/v1",
+            capability_id: RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
+            policy_id: format!("authorization-policy-sha256:{}", "a".repeat(64)),
+            selected_path_count: 1,
+            ignored_path_count: 0,
+            request_count: 4,
+            outcome: "stable_cross_principal_equivalence",
+            primary_stable: Some(true),
+            peer_stable: Some(true),
+            cross_resources_equivalent: Some(true),
+            item_projected: true,
+        };
+        assert_eq!(valid.validate(&document.items), Ok(()));
+
+        for (primary, peer, cross) in [
+            (None, Some(true), Some(true)),
+            (Some(false), Some(true), Some(true)),
+            (Some(true), None, Some(true)),
+            (Some(true), Some(false), Some(true)),
+            (Some(true), Some(true), None),
+            (Some(true), Some(true), Some(false)),
+        ] {
+            let invalid = AssessmentAuthorizationAuditDocument {
+                primary_stable: primary,
+                peer_stable: peer,
+                cross_resources_equivalent: cross,
+                ..AssessmentAuthorizationAuditDocument {
+                    schema: valid.schema,
+                    capability_id: valid.capability_id,
+                    policy_id: valid.policy_id.clone(),
+                    selected_path_count: valid.selected_path_count,
+                    ignored_path_count: valid.ignored_path_count,
+                    request_count: valid.request_count,
+                    outcome: valid.outcome,
+                    primary_stable: valid.primary_stable,
+                    peer_stable: valid.peer_stable,
+                    cross_resources_equivalent: valid.cross_resources_equivalent,
+                    item_projected: valid.item_projected,
+                }
+            };
+            assert_eq!(
+                invalid.validate(&document.items),
+                Err(ReportError::Serialization)
+            );
         }
     }
 

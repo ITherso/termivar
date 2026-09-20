@@ -254,6 +254,8 @@ const WORDPRESS_DISCOVERY_SMOKE_GATE: &str = r#"      - name: Exercise opt-in Wo
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture"#;
 const SUPPLIED_SESSION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in supplied-session review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture"#;
+const AUTHORIZATION_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in resource authorization review CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review --test authorization_review_cli -- --nocapture"#;
 const SECRET_EXPOSURE_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive secret-exposure review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture"#;
 const TLS_OBSERVATION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive TLS observation CLI
@@ -408,6 +410,7 @@ const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-
           cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
           cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
+          cargo test --locked -p termivar-cli --no-default-features --features authorization-review
           cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review
           cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review
           cargo test --locked -p termivar-cli --no-default-features --features tls-observation
@@ -843,6 +846,16 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact feature-minimal supplied-session CLI integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise opt-in resource authorization review CLI",
+        AUTHORIZATION_REVIEW_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact feature-minimal resource authorization CLI integration test"
         ));
     }
     if !job_has_exact_step(
@@ -3361,6 +3374,36 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("supplied-session CLI"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn authorization_review_runtime_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(AUTHORIZATION_REVIEW_SMOKE_GATE, "", 1),
+            valid.replacen(
+                AUTHORIZATION_REVIEW_SMOKE_GATE,
+                "      - name: Exercise opt-in resource authorization review CLI\n        run: cargo test --locked -p termivar-cli --all-features --test authorization_review_cli -- --nocapture",
+                1,
+            ),
+            valid.replacen(
+                AUTHORIZATION_REVIEW_SMOKE_GATE,
+                &format!("{AUTHORIZATION_REVIEW_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(
+                violations
+                    .iter()
+                    .filter(|violation| violation.contains("resource authorization CLI"))
+                    .count(),
+                1,
                 "{violations:?}"
             );
         }

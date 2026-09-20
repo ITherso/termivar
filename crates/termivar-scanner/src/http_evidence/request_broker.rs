@@ -50,7 +50,7 @@ use crate::supplied_session_review::{
     SUPPLIED_SESSION_HEALTH_ACTION_ID, SUPPLIED_SESSION_LOGIN_PAGE_ACTION_ID,
     SUPPLIED_SESSION_LOGIN_SUBMIT_ACTION_ID, SUPPLIED_SESSION_RESOURCE_ACTION_ID,
 };
-#[cfg(feature = "supplied-session-review")]
+#[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
 use crate::web_runtime::authenticated_transport_is_allowed;
 #[cfg(feature = "tls-observation")]
 use crate::web_runtime::TlsObservationCollector;
@@ -814,9 +814,9 @@ impl HttpRequestBroker {
     /// Creates a fresh connection pool under the same immutable policy and
     /// shared accounting authority.
     ///
-    /// Authorization-context comparisons use one isolated broker per leg so
-    /// connection-bound server state cannot bleed between principals while
-    /// every dispatch and body byte remains charged to the same runtime.
+    /// Callers use one isolated broker per leg when connection-bound server
+    /// state must not bleed between observations. Credential-bearing callers
+    /// must use their narrower no-proxy constructor below.
     pub(crate) fn isolated(&self) -> Result<Self, HttpEvidenceError> {
         Self::build(
             self.policy.clone(),
@@ -824,6 +824,36 @@ impl HttpRequestBroker {
             #[cfg(feature = "tls-observation")]
             self.tls_observation.clone(),
         )
+    }
+
+    /// Creates one fresh, ambient-proxy-free pool for a single authorization
+    /// comparison leg while retaining the parent's immutable target policy,
+    /// accounting authority, and optional TLS observation collector.
+    ///
+    /// Resource Authorization Review carries operator-supplied credentials.
+    /// Each role already receives a separate pool; disabling proxy discovery on
+    /// that pool also prevents those credentials from being delegated to an
+    /// ambient process proxy.
+    #[cfg(feature = "authorization-review")]
+    pub(crate) fn isolated_authorization_review(&self) -> Result<Self, HttpEvidenceError> {
+        let mut broker = Self::build(
+            self.policy.clone(),
+            self.accounting.clone(),
+            #[cfg(feature = "tls-observation")]
+            self.tls_observation.clone(),
+        )?;
+        let client = Client::builder()
+            .redirect(RedirectPolicy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy();
+        #[cfg(feature = "tls-observation")]
+        let client = if broker.tls_observation.is_some() {
+            client.tls_info(true)
+        } else {
+            client
+        };
+        broker.client = client.build().map_err(HttpEvidenceError::Client)?;
+        Ok(broker)
     }
 
     /// Creates the credentialed child pool only when the supplied-session
@@ -985,6 +1015,27 @@ impl HttpRequestBroker {
     /// move-only principal contract. No arbitrary header map, body, cookie, or
     /// alternate method is accepted by this seam.
     #[cfg(feature = "authorization-review")]
+    fn build_authorized_json_get_request(
+        &self,
+        target: &url::Url,
+        authorization: &str,
+    ) -> Result<reqwest::Request, HttpEvidenceError> {
+        self.validate_target(target)?;
+        let mut authorization = HeaderValue::from_str(authorization).map_err(|_| {
+            HttpEvidenceError::InvalidHeaderValue {
+                name: "authorization".to_owned(),
+            }
+        })?;
+        authorization.set_sensitive(true);
+        self.client
+            .request(Method::GET, target.clone())
+            .header(ACCEPT, "application/json")
+            .header(AUTHORIZATION, authorization)
+            .build()
+            .map_err(HttpEvidenceError::Request)
+    }
+
+    #[cfg(feature = "authorization-review")]
     pub(crate) async fn collect_authorized_json_get_for_runtime(
         &self,
         action_id: &str,
@@ -994,19 +1045,13 @@ impl HttpRequestBroker {
         target: &url::Url,
         authorization: &str,
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
-        self.validate_target(target)?;
-        let authorization = HeaderValue::from_str(authorization).map_err(|_| {
-            HttpEvidenceError::InvalidHeaderValue {
-                name: "authorization".to_owned(),
+        if !authenticated_transport_is_allowed(target) {
+            return Err(HttpEvidenceError::UnsupportedScheme {
+                scheme: target.scheme().to_owned(),
             }
-        })?;
-        let request = self
-            .client
-            .request(Method::GET, target.clone())
-            .header(ACCEPT, "application/json")
-            .header(AUTHORIZATION, authorization)
-            .build()
-            .map_err(HttpEvidenceError::Request)?;
+            .into());
+        }
+        let request = self.build_authorized_json_get_request(target, authorization)?;
         self.collect_built_request(&self.client, action_id, stage, origin, limits, request)
             .await
     }
@@ -1528,6 +1573,72 @@ mod tests {
         assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
     }
 
+    #[cfg(feature = "authorization-review")]
+    #[test]
+    fn authorization_request_marks_the_operator_credential_sensitive() {
+        let target = url::Url::parse("https://example.test/app/private").unwrap();
+        let broker = HttpRequestBroker::new_unmetered(
+            HttpEvidencePolicy::for_origin(target.clone()).unwrap(),
+        )
+        .unwrap()
+        .isolated_authorization_review()
+        .unwrap();
+        let credential = "Bearer SYNTHETIC-AUTHORIZATION-SECRET";
+        let request = broker
+            .build_authorized_json_get_request(&target, credential)
+            .unwrap();
+        let authorization = request.headers().get(AUTHORIZATION).unwrap();
+
+        assert!(authorization.is_sensitive());
+        assert_eq!(authorization.as_bytes(), credential.as_bytes());
+        assert!(!format!("{:?}", request.headers()).contains(credential));
+    }
+
+    #[cfg(feature = "authorization-review")]
+    #[tokio::test]
+    async fn authorization_broker_rechecks_protected_transport_before_dispatch() {
+        for raw_target in [
+            "http://example.test/app/private",
+            "http://localhost/app/private",
+            "http://192.0.2.1/app/private",
+        ] {
+            let target = url::Url::parse(raw_target).unwrap();
+            let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+            let broker = HttpRequestBroker::new_metered(
+                HttpEvidencePolicy::for_origin(target.clone()).unwrap(),
+                accounting.clone(),
+            )
+            .unwrap()
+            .isolated_authorization_review()
+            .unwrap();
+
+            let result = broker
+                .collect_authorized_json_get_for_runtime(
+                    "authorization-review-test",
+                    DecisionExecutionStage::Passive,
+                    Some(DecisionActionOrigin::Planned),
+                    DecisionExecutionLimits::new(),
+                    &target,
+                    "Bearer SYNTHETIC-AUTHORIZATION-SECRET",
+                )
+                .await;
+
+            let error = result
+                .err()
+                .expect("cleartext authorization must fail closed");
+            assert!(matches!(
+                &error,
+                HttpRequestBrokerError::Http(
+                    HttpEvidenceError::UnsupportedScheme { scheme }
+                ) if scheme == "http"
+            ));
+            assert_eq!(accounting.snapshot().total_requests(), 0);
+            let debug = format!("{error:?}");
+            assert!(!debug.contains(raw_target));
+            assert!(!debug.contains("SYNTHETIC-AUTHORIZATION-SECRET"));
+        }
+    }
+
     #[cfg(feature = "tls-observation")]
     #[test]
     fn isolated_brokers_retain_one_assessment_owned_tls_collector() {
@@ -1551,6 +1662,15 @@ mod tests {
             .tls_observation
             .as_ref()
             .is_some_and(|selected| selected.shares_state_with(&collector)));
+
+        #[cfg(feature = "authorization-review")]
+        {
+            let authorization = broker.isolated_authorization_review().unwrap();
+            assert!(authorization
+                .tls_observation
+                .as_ref()
+                .is_some_and(|selected| selected.shares_state_with(&collector)));
+        }
 
         #[cfg(feature = "supplied-session-review")]
         {

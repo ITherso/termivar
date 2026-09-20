@@ -3486,6 +3486,9 @@ async fn resource_authorization_positive_is_four_ordered_gets_one_active_and_one
         audit.outcome(),
         crate::authorization_review::AuthorizationReviewOutcome::StableCrossPrincipalEquivalence
     );
+    assert_eq!(audit.primary_stable(), Some(true));
+    assert_eq!(audit.peer_stable(), Some(true));
+    assert_eq!(audit.cross_resources_equivalent(), Some(true));
     assert!(audit.item_projected());
     let items = report
         .assessment_items()

@@ -161,6 +161,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         states["rest-review"]
     );
     assert_eq!(
+        surface_state(&document, "option.resource-authorization-review"),
+        states["authorization-review"]
+    );
+    assert_eq!(
         surface_state(&document, "option.secret-exposure-review"),
         states["secret-exposure-review"]
     );
@@ -184,6 +188,32 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.jwt-policy-review"),
         states["jwt-policy-review"]
     );
+    let authorization = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.resource-authorization-review")
+        .expect("resource-authorization surface");
+    assert_eq!(
+        authorization["documentation"],
+        "docs/internals/authorization-differential-review.md"
+    );
+    assert_eq!(
+        authorization["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--authorization-review-policy FILE",
+            "one primary source: --authz-primary-env, --authz-primary-file, or --authz-primary-stdin",
+            "one peer source: --authz-peer-env, --authz-peer-file, or --authz-peer-stdin",
+            "HTTPS, except numeric-loopback HTTP fixtures"
+        ])
+    );
+    let authorization_limit = "Distinct principals are operator-provided. Each credentialed leg uses a fresh connection pool with ambient proxies disabled while sharing the parent exact-origin scope, accounting, cancellation, and evidence authority. No identifier mutation or confirmed authorization claim is performed.";
+    assert_eq!(authorization["limitation"], authorization_limit);
+    let text_output = run(&binary(), &["capabilities"]);
+    assert_success(&text_output);
+    let text = String::from_utf8(text_output.stdout).expect("capabilities text must be UTF-8");
+    assert!(text.contains(&format!("    limit: {authorization_limit}")));
     let jwt = document["surfaces"]
         .as_array()
         .expect("surface array")

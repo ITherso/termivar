@@ -1782,6 +1782,10 @@ fn validate_authorization_audit(
         || audit.item_projected() != (projected_count == 1)
         || positive != audit.item_projected()
         || (positive && usize::from(audit.request_count()) != MAX_AUTHORIZATION_REVIEW_REQUESTS)
+        || (positive
+            && (audit.primary_stable() != Some(true)
+                || audit.peer_stable() != Some(true)
+                || audit.cross_resources_equivalent() != Some(true)))
     {
         return Err(AssessmentRunReportError::AuthorizationAuditMismatch);
     }

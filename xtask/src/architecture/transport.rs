@@ -611,6 +611,7 @@ impl<'ast> Visit<'ast> for OpenApiRuntimeDispatchVisitor {
                 | "collect_authorized_json_get_for_runtime"
                 | "collect_buffered_request_for_test"
                 | "collect_built_request"
+                | "isolated_authorization_review"
                 | "isolated"
         ) {
             self.violations.insert(format!(
@@ -649,6 +650,7 @@ impl<'ast> Visit<'ast> for OpenApiRuntimeDispatchVisitor {
                         | "collect_authorized_json_get_for_runtime"
                         | "collect_buffered_request_for_test"
                         | "collect_built_request"
+                        | "isolated_authorization_review"
                         | "execute"
                         | "send"
                         | "isolated"
@@ -826,7 +828,10 @@ impl<'ast> Visit<'ast> for NativeReviewForbiddenDispatchVisitor {
         }
         if matches!(
             method.as_str(),
-            "collect_for_runtime" | "collect_buffered_request_for_test" | "isolated"
+            "collect_for_runtime"
+                | "collect_buffered_request_for_test"
+                | "isolated_authorization_review"
+                | "isolated"
         ) || (method == "collect" && Self::requests_receiver(&call.receiver))
         {
             self.violations.insert(
@@ -854,6 +859,7 @@ impl<'ast> Visit<'ast> for NativeReviewForbiddenDispatchVisitor {
                     "collect"
                         | "collect_for_runtime"
                         | "collect_buffered_request_for_test"
+                        | "isolated_authorization_review"
                         | "isolated"
                 )
             }) {
@@ -1586,17 +1592,17 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
                 .to_owned(),
         );
     }
-    if broker.matches("Client::builder()").count() != 4
-        || broker.matches(".redirect(RedirectPolicy::none())").count() != 4
-        || broker.matches(".retry(reqwest::retry::never())").count() != 4
-        || broker.matches(".tls_info(true)").count() != 4
+    if broker.matches("Client::builder()").count() != 5
+        || broker.matches(".redirect(RedirectPolicy::none())").count() != 5
+        || broker.matches(".retry(reqwest::retry::never())").count() != 5
+        || broker.matches(".tls_info(true)").count() != 5
         || !broker.contains("#[cfg(all(test, feature = \"tls-observation\"))]")
         || !broker.contains("reqwest::Certificate::from_der(root_certificate_der)")
         || !broker.contains(".add_root_certificate(root_certificate)")
         || !broker.contains(".resolve(resolved_host, resolved_address)")
     {
         violations.push(
-            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, and selected supplied-session redirect-disabled, retry-free clients plus the exact cfg(test) owned trusted-root TLS seam"
+            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, selected authorization-review, and selected supplied-session redirect-disabled, retry-free clients plus the exact cfg(test) owned trusted-root TLS seam"
                 .to_owned(),
         );
     }
@@ -1605,7 +1611,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             .matches("let anonymous_no_proxy_client = Client::builder()")
             .count()
             != 1
-        || broker.matches(".no_proxy()").count() != 3
+        || broker.matches(".no_proxy()").count() != 4
         || broker.matches("&self.anonymous_no_proxy_client").count() != 1
         || !broker.contains(
             "self.anonymous_no_proxy_client\n            .request(Method::GET, target.clone())",
@@ -12480,6 +12486,7 @@ mod tests {
             "collect",
             "collect_for_runtime",
             "collect_buffered_request_for_test",
+            "isolated_authorization_review",
             "isolated",
         ] {
             for source in [

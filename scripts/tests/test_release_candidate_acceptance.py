@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import tomllib
 import unittest
+import urllib.parse
 from unittest import mock
 
 
@@ -77,6 +78,19 @@ EXPECTED_FEATURE_STATES = {
     "tls-observation": "not_compiled",
     "wordpress-review": "compiled",
 }
+EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--authorization-review-policy FILE",
+    "one primary source: --authz-primary-env, --authz-primary-file, or --authz-primary-stdin",
+    "one peer source: --authz-peer-env, --authz-peer-file, or --authz-peer-stdin",
+    "HTTPS, except numeric-loopback HTTP fixtures",
+)
+EXPECTED_AUTHORIZATION_REVIEW_LIMITATION = (
+    "Distinct principals are operator-provided. Each credentialed leg uses a fresh connection "
+    "pool with ambient proxies disabled while sharing the parent exact-origin scope, accounting, "
+    "cancellation, and evidence authority. No identifier mutation or confirmed authorization "
+    "claim is performed."
+)
 EXPECTED_SECRET_EXPOSURE_PREREQUISITES = (
     "--profile web-review",
     "--secret-exposure-review",
@@ -348,6 +362,90 @@ EXPECTED_FINGERPRINT_ORACLE = {
 
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+AUTHORIZATION_ORACLE_ORIGIN = "http://127.0.0.1:38123/"
+AUTHORIZATION_ORACLE_POLICY_ID = (
+    "authorization-policy-sha256:"
+    "cb8074a93e74c45a1995291b2d5c56f62f82fed96b5857589c4fc9e8e7f9f766"
+)
+EXPECTED_AUTHORIZATION_POLICY_DOCUMENT = {
+    "schema": "security.authorization-review-policy/v1",
+    "resource": "/authorization-resource",
+    "resource_handle": "packaged-account",
+    "expectation": "primary-only",
+    "method": "GET",
+    "comparison": {
+        "selected_paths": ["/data"],
+        "ignored_paths": ["/data/nonce"],
+        "unordered_array_paths": [],
+        "max_diff_paths": 8,
+    },
+}
+
+
+def independent_authorization_policy_document(source: bytes) -> dict:
+    """Parse and bind the package fixture to the independently reviewed policy."""
+    document = tomllib.loads(source.decode("utf-8"))
+    if document != EXPECTED_AUTHORIZATION_POLICY_DOCUMENT:
+        raise AssertionError("synthetic authorization policy contract changed")
+    comparison = document["comparison"]
+    selected = comparison["selected_paths"][0]
+    ignored = comparison["ignored_paths"][0]
+    if ignored == selected or not ignored.startswith(selected + "/"):
+        raise AssertionError("ignored policy path is not a strict selected descendant")
+    return document
+
+
+def independent_authorization_policy_id(origin: str) -> str:
+    """Test-only literal-policy oracle, independent of the package helper."""
+    parsed = urllib.parse.urlsplit(origin)
+    resource = f"{parsed.scheme}://{parsed.netloc}/authorization-resource".encode()
+
+    def framed(target, value: bytes) -> None:
+        target.update(len(value).to_bytes(8, "big"))
+        target.update(value)
+
+    def domain_digest(domain: bytes, value: bytes) -> bytes:
+        target = hashlib.sha256()
+        target.update(domain)
+        framed(target, value)
+        return target.digest()
+
+    def patterns(target, name: bytes, values: tuple[bytes, ...]) -> None:
+        framed(target, name)
+        target.update(len(values).to_bytes(8, "big"))
+        for value in values:
+            framed(target, value)
+
+    projection = hashlib.sha256()
+    projection.update(b"venom.api-visibility.projection-policy.v3\0")
+    framed(projection, b"v3")
+    framed(projection, b"v2")
+    patterns(projection, b"selected", (b"/data",))
+    patterns(projection, b"ignored", (b"/data/nonce",))
+    patterns(projection, b"unordered", ())
+    projection.update((8).to_bytes(2, "big"))
+
+    policy = hashlib.sha256()
+    policy.update(b"security.authorization-review-policy.identity.v1\0")
+    values = (
+        b"security.authorization-review-policy/v1",
+        b"security.authorization-differential/v1",
+        domain_digest(b"security.authorization-review-resource.v1\0", resource),
+        domain_digest(
+            b"security.authorization-review-handle.v1\0", b"packaged-account"),
+        b"primary-only",
+        b"GET",
+        projection.digest(),
+        (1).to_bytes(8, "big"),
+        (1).to_bytes(8, "big"),
+        (0).to_bytes(8, "big"),
+        (8).to_bytes(2, "big"),
+    )
+    for value in values:
+        framed(policy, value)
+    return "authorization-policy-sha256:" + policy.hexdigest()
 
 
 def tar_bytes(name: str = "termivar", *, extra: bool = False) -> bytes:
@@ -825,7 +923,8 @@ def mutate_actionable_html(html: str, mutation: str | None) -> str:
 
 def write_bundle(directory: Path, item_count: int = 2,
                  assessment: dict | None = None,
-                 actionable_mutation: str | None = None) -> bytes:
+                 actionable_mutation: str | None = None,
+                 html_override: bytes | None = None) -> bytes:
     directory.mkdir()
     if assessment is None:
         assessment = actionable_assessment()
@@ -836,7 +935,10 @@ def write_bundle(directory: Path, item_count: int = 2,
     elif actionable_mutation is not None:
         raise AssertionError("actionable mutation belongs to the generic fixture")
     else:
-        html = b"<!doctype html><html><body>bounded release fixture</body></html>"
+        html = (b"<!doctype html><html><body>bounded release fixture</body></html>"
+                if html_override is None else html_override)
+    if assessment is None and html_override is not None:
+        raise AssertionError("HTML override requires an explicit synthetic assessment")
     external = assessment.get("wordpress_review", {}).get("external_review")
     if isinstance(external, dict):
         notice = EXPECTED_WORDPRESS_NOTICE
@@ -878,6 +980,7 @@ def write_bundle(directory: Path, item_count: int = 2,
 
 class FakeServer:
     def __init__(self) -> None:
+        self.count_lock = contextlib.nullcontext()
         self.counts = {
             "root": 1, "example": 0, "unknown": 0,
             "unsupported": 0, "invalid": 0,
@@ -923,6 +1026,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "label": "SSRF OAST query review",
             "compile_feature": "ssrf-oast-review",
             "build_state": "compiled" if include_ssrf else "not_compiled",
+        },
+        {
+            "key": "option.resource-authorization-review",
+            "label": "Resource authorization review",
+            "compile_feature": "authorization-review",
+            "build_state": "compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES),
+            "limitation": EXPECTED_AUTHORIZATION_REVIEW_LIMITATION,
+            "documentation": "docs/internals/authorization-differential-review.md",
         },
         {
             "key": "option.secret-exposure-review",
@@ -1024,10 +1141,13 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
 
 
 def capabilities_text(document: dict) -> bytes:
-    states = "\n".join(
-        f"[{surface['build_state']}] {surface['label']}"
-        for surface in document["surfaces"]
-    )
+    lines = []
+    for surface in document["surfaces"]:
+        lines.append(f"[{surface['build_state']}] {surface['label']}")
+        limitation = surface.get("limitation")
+        if isinstance(limitation, str):
+            lines.append(f"    limit: {limitation}")
+    states = "\n".join(lines)
     return ("Termivar CLI capabilities\n"
             "runtime_execution: not_performed\n" + states + "\n").encode()
 
@@ -1842,6 +1962,103 @@ def external_wordpress_audit(feed: Path, profile: str | None) -> dict:
     }
 
 
+def authorization_assessment(
+        policy_id: str = AUTHORIZATION_ORACLE_POLICY_ID) -> dict:
+    """Independent literal positive wire document for packaged authorization review."""
+    assessment = actionable_assessment()
+    item = assessment["items"][1]
+    item.update({
+        "capability_id": "authorization.resource-cross-principal-equivalence@1",
+        "title": "Unexpected cross-principal resource equivalence observed",
+        "severity": None,
+        "confidence_ppm": 900000,
+        "fingerprint": "sha256:" + "1" * 64,
+        "evidence_count": 4,
+        "redacted_summary": (
+            "Under an operator-declared primary-only policy, two distinct authenticated "
+            "principal contexts repeatedly received equivalent selected JSON resource "
+            "representations."
+        ),
+        "category": "Authorization review",
+        "cwe": None,
+        "remediation": {
+            "id": "authorization.resource-policy-review@1",
+            "summary": (
+                "Review the intended resource-level authorization policy and verify "
+                "server-side ownership, tenant, and role checks for the selected resource."
+            ),
+        },
+        "evidence_references": [],
+        "control_evidence_references": ["evidence-0001", "evidence-0003"],
+        "candidate_evidence_references": ["evidence-0002", "evidence-0004"],
+    })
+    assessment["authorization_review"] = {
+        "schema": "security.authorization-review-audit/v1",
+        "capability_id": (
+            "authorization.resource-cross-principal-equivalence@1"
+        ),
+        "policy_id": policy_id,
+        "selected_path_count": 1,
+        "ignored_path_count": 1,
+        "request_count": 4,
+        "outcome": "stable_cross_principal_equivalence",
+        "primary_stable": True,
+        "peer_stable": True,
+        "cross_resources_equivalent": True,
+        "item_projected": True,
+    }
+    return assessment
+
+
+def authorization_html() -> bytes:
+    """Hand-written renderer-shaped HTML matching authorization_assessment()."""
+    replacements = (
+        ("CORS policy relationship warrants review",
+         "Unexpected cross-principal resource equivalence observed"),
+        ("A matched control and candidate differed under review policy.",
+         "Under an operator-declared primary-only policy, two distinct authenticated "
+         "principal contexts repeatedly received equivalent selected JSON resource "
+         "representations."),
+        ("<dt>Assessment target kind (resource location withheld)</dt>"
+         "<dd><code>assessment_subject</code></dd>",
+         "<dt>Assessment target kind (resource location withheld)</dt>"
+         "<dd><code>authorization_resource</code></dd>"),
+        ("Review the intended origin and credential relationship.",
+         "Review the intended resource-level authorization policy and verify server-side "
+         "ownership, tenant, and role checks for the selected resource."),
+        ("<dt>Severity</dt><dd><code>low</code></dd>",
+         "<dt>Severity</dt><dd>not assigned "
+         "<span>(unassigned does not mean low or zero)</span></dd>"),
+        ("<code>825000 ppm</code>", "<code>900000 ppm</code>"),
+        ("<code>cors.policy.relationship@1</code>",
+         "<code>authorization.resource-cross-principal-equivalence@1</code>"),
+        ("<code>cross-origin-policy</code>", "<code>Authorization review</code>"),
+        ("<dt>CWE</dt><dd><code>CWE-942</code></dd>",
+         '<dt>CWE</dt><dd><span class="empty">not applicable</span></dd>'),
+        ("<code>assessment-fingerprint-v1:1002</code>",
+         "<code>sha256:" + "1" * 64 + "</code>"),
+        ("<dt>Evidence reference count</dt><dd><code>2</code></dd>",
+         "<dt>Evidence reference count</dt><dd><code>4</code></dd>"),
+        ("<code>remediation.cors.policy@1</code>",
+         "<code>authorization.resource-policy-review@1</code>"),
+        ("<dt>Control evidence references</dt><dd><code>evidence-0002</code></dd>",
+         "<dt>Control evidence references</dt>"
+         "<dd><code>evidence-0001, evidence-0003</code></dd>"),
+        ("<dt>Candidate evidence references</dt><dd><code>evidence-0003</code></dd>",
+         "<dt>Candidate evidence references</dt>"
+         "<dd><code>evidence-0002, evidence-0004</code></dd>"),
+    )
+    html = ACTIONABLE_HTML
+    for before, after in replacements:
+        expected_count = (2 if before.startswith(
+            "<dt>Assessment target kind (resource location withheld)</dt>") else 1)
+        if html.count(before) != expected_count:
+            raise AssertionError(
+                f"synthetic authorization HTML anchor changed: {before}")
+        html = html.replace(before, after, 1)
+    return html.encode("utf-8")
+
+
 class FakeCommands:
     def __init__(self, root: Path, include_ssrf: bool = False,
                  extra_incomplete_request: bool = False,
@@ -1850,7 +2067,8 @@ class FakeCommands:
                  exposed_session_option: str | None = None,
                  progress_stderr: bytes | None = None,
                  discovery_mutation: str | None = None,
-                 actionable_mutation: str | None = None) -> None:
+                 actionable_mutation: str | None = None,
+                 authorization_mutation: str | None = None) -> None:
         self.root = root
         self.include_ssrf = include_ssrf
         self.extra_incomplete_request = extra_incomplete_request
@@ -1860,6 +2078,7 @@ class FakeCommands:
         self.progress_stderr = progress_stderr
         self.discovery_mutation = discovery_mutation
         self.actionable_mutation = actionable_mutation
+        self.authorization_mutation = authorization_mutation
         self.arguments: list[list[str]] = []
 
     def __call__(self, argv, directory, record):
@@ -1904,6 +2123,100 @@ class FakeCommands:
                 progress = (VALID_PROGRESS if self.progress_stderr is None
                             else self.progress_stderr)
                 stderr = progress + b"Report bundle completed\n"
+            elif destination.name == "authorization-review":
+                assert fixture is not None and target == fixture.origin
+                assert "--authorization-review-policy" in arguments
+                policy = Path(arguments[
+                    arguments.index("--authorization-review-policy") + 1])
+                primary = Path(arguments[arguments.index("--authz-primary-file") + 1])
+                peer = Path(arguments[arguments.index("--authz-peer-file") + 1])
+                assert policy.read_bytes() == runner.AUTHORIZATION_POLICY
+                independent_authorization_policy_document(policy.read_bytes())
+                assert primary.read_bytes() == runner.AUTHORIZATION_PRIMARY
+                assert peer.read_bytes() == runner.AUTHORIZATION_PEER
+                fixture.server.counts["root"] += 7
+                fixture.server.request_lines.extend((
+                    "GET / HTTP/1.1",
+                    "GET / HTTP/1.1",
+                    "GET / HTTP/1.1",
+                    "GET / HTTP/1.1",
+                    "GET /authorization-resource HTTP/1.1",
+                    "GET /authorization-resource HTTP/1.1",
+                    "GET /authorization-resource HTTP/1.1",
+                    "GET /authorization-resource HTTP/1.1",
+                ))
+                fixture.server.authorization_roles.extend(
+                    runner.AUTHORIZATION_REQUEST_ROLES)
+                fixture.server.authorization_cookie_headers.extend(
+                    (False, False, False, False))
+                fixture.server.request_authorization_roles.extend((
+                    "none", "none", "none", "none",
+                    *runner.AUTHORIZATION_REQUEST_ROLES,
+                ))
+                fixture.server.request_cookie_headers.extend(
+                    (False, False, False, False, False, False, False, False))
+                if self.authorization_mutation == "role_order":
+                    fixture.server.authorization_roles[1] = "primary"
+                elif self.authorization_mutation == "cookie_carryover":
+                    fixture.server.authorization_cookie_headers[1] = True
+                elif self.authorization_mutation == "ordinary_authorization_leak":
+                    fixture.server.request_authorization_roles[1] = "primary"
+                elif self.authorization_mutation == "ordinary_cookie_leak":
+                    fixture.server.request_cookie_headers[1] = True
+                assessment = authorization_assessment(
+                    independent_authorization_policy_id(fixture.origin))
+                audit = assessment["authorization_review"]
+                if self.authorization_mutation == "primary_false":
+                    audit["primary_stable"] = False
+                elif self.authorization_mutation == "missing_peer":
+                    audit.pop("peer_stable")
+                elif self.authorization_mutation == "request_count":
+                    audit["request_count"] = 3
+                elif self.authorization_mutation == "confirmed_item":
+                    assessment["items"][1]["disposition"] = "confirmed"
+                elif self.authorization_mutation == "duplicate_item":
+                    assessment["items"].append(copy.deepcopy(assessment["items"][1]))
+                    assessment["item_count"] = 3
+                elif self.authorization_mutation == "wrong_policy_id":
+                    audit["policy_id"] = "authorization-policy-sha256:" + "3" * 64
+                html = authorization_html()
+                if self.authorization_mutation == "generic_html":
+                    html = b"<!doctype html><html><body>generic but misleading</body></html>"
+                elif self.authorization_mutation == "escaped_path_bundle":
+                    escaped = json.dumps(str(policy), ensure_ascii=True)[1:-1]
+                    html = html.replace(
+                        b"</div>\n</main>",
+                        ("<p>" + escaped + "</p></div>\n</main>").encode("ascii"),
+                        1,
+                    )
+                elif self.authorization_mutation == "resource_url_bundle":
+                    resource_url = fixture.origin.rstrip("/") + "/authorization-resource"
+                    html = html.replace(
+                        b"</div>\n</main>",
+                        ("<p>" + resource_url + "</p></div>\n</main>").encode("ascii"),
+                        1,
+                    )
+                elif self.authorization_mutation == "selected_scalar_bundle":
+                    html = html.replace(
+                        b"</div>\n</main>",
+                        (b"<p>" + runner.AUTHORIZATION_SELECTED_VALUE_CANARY
+                         + b"</p></div>\n</main>"),
+                        1,
+                    )
+                write_bundle(
+                    destination, assessment=assessment, html_override=html)
+                stderr = b"Report bundle completed\n"
+                if self.authorization_mutation == "bare_token_stderr":
+                    stderr += runner.AUTHORIZATION_PRIMARY.strip().removeprefix(
+                        b"Bearer ")
+                elif self.authorization_mutation == "cookie_stderr":
+                    stderr += runner.AUTHORIZATION_COOKIE_CANARY.partition(b"=")[2]
+                elif self.authorization_mutation == "ignored_selector_stderr":
+                    stderr += b"/data/nonce"
+                elif self.authorization_mutation == "canonical_origin_stderr":
+                    stderr += fixture.origin.rstrip("/").encode("ascii")
+                elif self.authorization_mutation == "ignored_scalar_stderr":
+                    stderr += runner.AUTHORIZATION_IGNORED_PRIMARY_PREFIX + b"1"
             elif destination.name == "incomplete-must-not-exist":
                 assert fixture is not None and target.endswith("/example")
                 fixture.server.counts["example"] += 3
@@ -2377,6 +2690,14 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         result = self.validate(document)
         self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
         self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
+        self.assertEqual(result["authorization_review"], {
+            "build_state": "compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "explicit_opt_in",
+            "declared_credentialed_transport_contract":
+                "fresh_ambient_proxy_free_pool_per_leg",
+        })
         self.assertEqual(result["secret_exposure_preview"], {
             "build_state": "not_compiled",
             "maturity": "preview",
@@ -2403,6 +2724,93 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "implementation_status": "implemented",
             "runtime_activation": "unavailable_in_release_bundle",
         })
+
+    def test_pinned_authorization_surface_matches_the_named_producer_literals(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.resource-authorization-review",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = (
+            '\n            "docs/internals/authorization-differential-review.md",'
+        )
+        self.assertEqual(block.count(documentation), 1)
+        before_documentation = block.split(documentation, 1)[0]
+        limitation_line = before_documentation.splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_AUTHORIZATION_REVIEW_LIMITATION)
+
+        document = capabilities()
+        surface = next(surface for surface in document["surfaces"]
+                       if surface["key"] == "option.resource-authorization-review")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES)
+        self.assertEqual(surface["limitation"],
+                         EXPECTED_AUTHORIZATION_REVIEW_LIMITATION)
+
+    def test_authorization_surface_is_exact_and_fails_closed_on_mutations(self):
+        metadata_mutations = (
+            ("label", "Authorization scanner"),
+            ("compile_feature", "wordpress-review"),
+            ("build_state", "not_compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "authorization"),
+            ("documentation", "docs/authorization.md"),
+        )
+        for field, wrong in metadata_mutations:
+            with self.subTest(field=field):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"]
+                               == "option.resource-authorization-review")
+                surface[field] = wrong
+                self.assert_rejected(document,
+                                     "authorization-review surface metadata")
+
+        for wrong in (None, True, 4, {}, [True],
+                      ["--authorization-review-policy FILE"]):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"]
+                               == "option.resource-authorization-review")
+                surface["prerequisites"] = wrong
+                self.assert_rejected(document,
+                                     "authorization-review opt-in contract")
+
+        for old, new in (
+            ("fresh connection pool", "shared connection pool"),
+            ("ambient proxies disabled", "ambient proxies allowed"),
+            ("sharing the parent exact-origin scope, accounting, cancellation, and evidence authority",
+             "using independent scope and accounting"),
+            ("No identifier mutation or confirmed authorization claim is performed",
+             "Authorization bypass is confirmed"),
+        ):
+            with self.subTest(old=old):
+                self.assertEqual(EXPECTED_AUTHORIZATION_REVIEW_LIMITATION.count(old), 1)
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"]
+                               == "option.resource-authorization-review")
+                surface["limitation"] = surface["limitation"].replace(old, new)
+                self.assert_rejected(document, "authorization-review limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            surface for surface in missing["surfaces"]
+            if surface["key"] != "option.resource-authorization-review"
+        ]
+        self.assert_rejected(missing, "authorization-review surface identity")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"Resource authorization review", b"other")
+        self.assert_rejected(document, "text and JSON views disagree", text)
 
     def test_pinned_secret_exposure_surface_matches_the_named_producer_literals(self):
         source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
@@ -3228,7 +3636,8 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 omit_progress_help=False, omitted_wordpress_option=None,
                 exposed_session_option=None,
                 progress_stderr=None, discovery_mutation=None,
-                actionable_mutation=None, path_suffix=""):
+                actionable_mutation=None, authorization_mutation=None,
+                path_suffix=""):
         commands = FakeCommands(
             self.root,
             include_ssrf=include_ssrf,
@@ -3239,6 +3648,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
             progress_stderr=progress_stderr,
             discovery_mutation=discovery_mutation,
             actionable_mutation=actionable_mutation,
+            authorization_mutation=authorization_mutation,
         )
         with mock.patch.object(runner.platform, "system", return_value="Windows"), \
                 mock.patch.object(runner.platform, "machine", return_value="AMD64"), \
@@ -3251,6 +3661,142 @@ class CandidateOrchestrationTests(unittest.TestCase):
                 inspect=self.inspect,
             )
         return result, commands
+
+    def test_authorization_assessment_literal_and_relational_mutations(self):
+        self.assertEqual(
+            independent_authorization_policy_document(
+                runner.AUTHORIZATION_POLICY),
+            EXPECTED_AUTHORIZATION_POLICY_DOCUMENT,
+        )
+        for invalid in (
+                runner.AUTHORIZATION_POLICY.replace(
+                    b'selected_paths = ["/data"]',
+                    b'selected_paths = ["/data/account"]'),
+                runner.AUTHORIZATION_POLICY.replace(
+                    b'ignored_paths = ["/data/nonce"]',
+                    b'ignored_paths = ["/other/nonce"]')):
+            with self.subTest(invalid=invalid), self.assertRaises(AssertionError):
+                independent_authorization_policy_document(invalid)
+        self.assertEqual(
+            independent_authorization_policy_id(AUTHORIZATION_ORACLE_ORIGIN),
+            AUTHORIZATION_ORACLE_POLICY_ID,
+        )
+        self.assertEqual(
+            runner._expected_authorization_policy_id(AUTHORIZATION_ORACLE_ORIGIN),
+            AUTHORIZATION_ORACLE_POLICY_ID,
+        )
+        accepted = runner._validate_authorization_assessment(
+            authorization_assessment(), AUTHORIZATION_ORACLE_POLICY_ID)
+        self.assertEqual(accepted, {
+            "schema": "security.authorization-review-audit/v1",
+            "policy_id": AUTHORIZATION_ORACLE_POLICY_ID,
+            "outcome": "stable_cross_principal_equivalence",
+            "request_count": 4,
+            "selected_path_count": 1,
+            "ignored_path_count": 1,
+            "primary_stable": True,
+            "peer_stable": True,
+            "cross_resources_equivalent": True,
+            "authorization_item_count": 1,
+            "assessment_item_count": 2,
+            "item_disposition": "needs_review",
+            "item_claim_basis": "differential",
+            "maximum_authority": "knowledge_only",
+            "confirmation": "not_performed",
+        })
+
+        for field in (
+                "primary_stable", "peer_stable", "cross_resources_equivalent"):
+            for wrong in (False, None, "true", 1, []):
+                with self.subTest(field=field, wrong=wrong):
+                    document = authorization_assessment()
+                    document["authorization_review"][field] = wrong
+                    with self.assertRaisesRegex(
+                            runner.AcceptanceError,
+                            "authorization positive relation"):
+                        runner._validate_authorization_assessment(
+                            document, AUTHORIZATION_ORACLE_POLICY_ID)
+            missing = authorization_assessment()
+            missing["authorization_review"].pop(field)
+            with self.subTest(field=field, wrong="missing"), \
+                    self.assertRaisesRegex(
+                        runner.AcceptanceError, "audit field contract"):
+                runner._validate_authorization_assessment(
+                    missing, AUTHORIZATION_ORACLE_POLICY_ID)
+
+        for field, wrong in (
+                ("selected_path_count", True),
+                ("ignored_path_count", -1),
+                ("request_count", 3)):
+            document = authorization_assessment()
+            document["authorization_review"][field] = wrong
+            with self.subTest(field=field), self.assertRaisesRegex(
+                    runner.AcceptanceError, field):
+                runner._validate_authorization_assessment(
+                    document, AUTHORIZATION_ORACLE_POLICY_ID)
+
+        confirmed = authorization_assessment()
+        confirmed["items"][1]["disposition"] = "confirmed"
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "review-only claim"):
+            runner._validate_authorization_assessment(
+                confirmed, AUTHORIZATION_ORACLE_POLICY_ID)
+
+        duplicated = authorization_assessment()
+        duplicated["items"][1]["candidate_evidence_references"][1] = "evidence-0001"
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "evidence linkage"):
+            runner._validate_authorization_assessment(
+                duplicated, AUTHORIZATION_ORACLE_POLICY_ID)
+
+        wrong_policy = authorization_assessment(
+            "authorization-policy-sha256:" + "3" * 64)
+        with self.assertRaisesRegex(
+                runner.AcceptanceError, "audit identity"):
+            runner._validate_authorization_assessment(
+                wrong_policy, AUTHORIZATION_ORACLE_POLICY_ID)
+
+        extra = authorization_assessment()
+        unrelated = copy.deepcopy(extra["items"][0])
+        unrelated["capability_id"] = "unrelated.synthetic-observation@1"
+        unrelated["title"] = "Synthetic unrelated observation"
+        extra["items"].append(unrelated)
+        extra["item_count"] = 3
+        accepted_extra = runner._validate_authorization_assessment(
+            extra, AUTHORIZATION_ORACLE_POLICY_ID)
+        self.assertEqual(accepted_extra["authorization_item_count"], 1)
+        self.assertEqual(accepted_extra["assessment_item_count"], 3)
+
+    def test_authorization_mutations_are_reached_through_full_orchestration(self):
+        cases = (
+            ("primary_false", "authorization positive relation"),
+            ("missing_peer", "audit field contract"),
+            ("request_count", "request_count"),
+            ("confirmed_item", "review-only claim"),
+            ("duplicate_item", "item identity or cardinality"),
+            ("role_order", "principal leg order"),
+            ("cookie_carryover", "carried cookie state"),
+            ("ordinary_authorization_leak", "ordinary assessment traffic"),
+            ("ordinary_cookie_leak", "ordinary assessment traffic"),
+            ("wrong_policy_id", "audit identity"),
+            ("generic_html", "HTML"),
+            ("bare_token_stderr", "private marker"),
+            ("cookie_stderr", "private marker"),
+            ("ignored_selector_stderr", "private marker"),
+            ("escaped_path_bundle", "private marker"),
+            ("canonical_origin_stderr", "private marker"),
+            ("resource_url_bundle", "private marker"),
+            ("selected_scalar_bundle", "private marker"),
+            ("ignored_scalar_stderr", "private marker"),
+        )
+        for index, (mutation, expected) in enumerate(cases):
+            with self.subTest(mutation=mutation):
+                result, _ = self.execute(
+                    authorization_mutation=mutation,
+                    path_suffix=f"-authorization-{index}",
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(expected, result["failure"])
 
     def test_actionable_html_validator_accepts_independent_positive_and_empty_documents(self):
         positive = runner._validate_actionable_assessment_html(
@@ -3820,6 +4366,57 @@ class CandidateOrchestrationTests(unittest.TestCase):
             "mismatch_status": "not_verified",
             "mismatch_reason": "payload_digest_mismatch",
         })
+        authorization = result["application"]["authorization_review"]
+        self.assertEqual(authorization["schema"],
+                         "security.authorization-review-audit/v1")
+        self.assertEqual(
+            authorization["policy_id"],
+            independent_authorization_policy_id(EXPECTED_FIXTURE_ORIGIN),
+        )
+        self.assertEqual(authorization["outcome"],
+                         "stable_cross_principal_equivalence")
+        self.assertEqual(authorization["request_count"], 4)
+        self.assertTrue(authorization["primary_stable"])
+        self.assertTrue(authorization["peer_stable"])
+        self.assertTrue(authorization["cross_resources_equivalent"])
+        self.assertEqual(authorization["item_disposition"], "needs_review")
+        self.assertEqual(authorization["item_claim_basis"], "differential")
+        self.assertEqual(authorization["authorization_item_count"], 1)
+        self.assertEqual(authorization["assessment_item_count"], 2)
+        self.assertEqual(authorization["maximum_authority"], "knowledge_only")
+        self.assertEqual(authorization["confirmation"], "not_performed")
+        self.assertEqual(authorization["human_report"], {
+            "item_count": 2,
+            "disposition_counts": {
+                "confirmed": 0,
+                "needs_review": 1,
+                "informational": 1,
+            },
+            "item_headings_exact": True,
+            "zero_item_limitations_present": False,
+            "active_content": "absent",
+            "external_resources": "absent",
+            "secret_markers": "absent",
+        })
+        self.assertEqual(authorization["transport"], {
+            "ordinary_assessment_requests": 3,
+            "authorization_requests": 4,
+            "authorization_request_roles": [
+                "primary", "peer", "primary", "peer",
+            ],
+            "logical_active_verifications": 1,
+            "cookie_carryover_count": 0,
+            "ordinary_credential_carryover_count": 0,
+        })
+        self.assertEqual(authorization["bundle_verification"], "integrity_match")
+        self.assertTrue(authorization["offline_commands_after_fixture_shutdown"])
+        self.assertTrue(authorization["input_bytes_preserved"])
+        self.assertFalse(authorization["raw_credential_values_retained_in_evidence"])
+        self.assertEqual(
+            {group: authorization["self_comparison"][group]
+             for group in ("only_in_after", "only_in_before", "changed", "unchanged")},
+            {"only_in_after": 0, "only_in_before": 0, "changed": 0, "unchanged": 2},
+        )
         wordpress = result["application"]["wordpress_preview"]
         self.assertEqual(wordpress["inactive"], {
             "wordpress_audit_present": False,
@@ -4011,7 +4608,7 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertNotIn(str(self.root), encoded)
         self.assertNotIn("127.0.0.1", encoded)
         self.assertLessEqual(len(runner._encode_evidence(result)), runner.EVIDENCE_LIMIT)
-        self.assertEqual(len(commands.arguments), 54)
+        self.assertEqual(len(commands.arguments), 57)
         self.assertEqual(runner.first_use.digest_file(self.archive),
                          result["archive"]["archive_sha256"])
 

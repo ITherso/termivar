@@ -1976,6 +1976,9 @@ fn resource_authorization_review_contract_violations(
     let broker = fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_BROKER_SOURCE))?;
     let assessment = fs::read_to_string(workspace_root.join(WEB_ASSESSMENT_RUNTIME_SOURCE))?;
     let report = fs::read_to_string(workspace_root.join(ASSESSMENT_REPORT_SOURCE))?;
+    let reporting =
+        fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/reporting.rs"))?;
+    let audit_import = fs::read_to_string(workspace_root.join(REPORTING_AUDIT_IMPORT_SOURCE))?;
     let item = fs::read_to_string(workspace_root.join(ASSESSMENT_ITEM_SOURCE))?;
     let budget = fs::read_to_string(workspace_root.join(RUNTIME_BUDGET_SOURCE))?;
     let actions = fs::read_to_string(workspace_root.join(NATIVE_WEB_REVIEW_ACTION_SOURCE))?;
@@ -1986,6 +1989,8 @@ fn resource_authorization_review_contract_violations(
             broker: &broker,
             assessment: &assessment,
             report: &report,
+            reporting: &reporting,
+            audit_import: &audit_import,
             item: &item,
             budget: &budget,
             web_runtime: web_runtime_source,
@@ -2379,6 +2384,8 @@ struct ResourceAuthorizationSources<'a> {
     broker: &'a str,
     assessment: &'a str,
     report: &'a str,
+    reporting: &'a str,
+    audit_import: &'a str,
     item: &'a str,
     budget: &'a str,
     web_runtime: &'a str,
@@ -2410,6 +2417,8 @@ fn resource_authorization_review_source_contract_violations(
         broker,
         assessment,
         report,
+        reporting,
+        audit_import,
         item,
         budget,
         web_runtime,
@@ -2420,6 +2429,8 @@ fn resource_authorization_review_source_contract_violations(
     let compact_runtime = squash_ascii_whitespace(runtime);
     let compact_assessment = squash_ascii_whitespace(assessment);
     let compact_report = squash_ascii_whitespace(report);
+    let compact_reporting = squash_ascii_whitespace(reporting);
+    let compact_audit_import = squash_ascii_whitespace(audit_import);
     let compact_item = squash_ascii_whitespace(item);
     let compact_budget = squash_ascii_whitespace(budget);
     let compact_web_runtime = squash_ascii_whitespace(web_runtime);
@@ -2464,7 +2475,7 @@ fn resource_authorization_review_source_contract_violations(
         "letorigin=(transport_stage==DecisionExecutionStage::Passive).then_some(DecisionActionOrigin::Planned);",
         "fnfinalize(",
         "AssessmentCapabilityDescriptor::differential_review(",
-        ".isolated()",
+        "forroleinroles{letisolated=matchself.requests.isolated_authorization_review(){",
         "collect_authorized_json_get_for_runtime(",
         "request.case().action_id()!=RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID",
         "request.case().applies_hypothesis_transition()",
@@ -2638,6 +2649,29 @@ fn resource_authorization_review_source_contract_violations(
         ],
         "resource authorization audit must remain redacted, bounded, and embedded in the one assessment report",
     );
+    require_markers(
+        &mut violations,
+        &compact_report,
+        &["positive&&(audit.primary_stable()!=Some(true)||audit.peer_stable()!=Some(true)||audit.cross_resources_equivalent()!=Some(true))"],
+        "typed resource authorization report must bind its positive outcome to all three relational proofs",
+    );
+    require_markers(
+        &mut violations,
+        &compact_reporting,
+        &["positive&&(self.primary_stable!=Some(true)||self.peer_stable!=Some(true)||self.cross_resources_equivalent!=Some(true))"],
+        "resource authorization report writer must bind its positive outcome to all three relational proofs",
+    );
+    require_markers(
+        &mut violations,
+        &compact_audit_import,
+        &[
+            "letprimary_stable=optional_boolean(fields,\"primary_stable\")?;",
+            "letpeer_stable=optional_boolean(fields,\"peer_stable\")?;",
+            "letcross_resources_equivalent=optional_boolean(fields,\"cross_resources_equivalent\")?;",
+            "primary_stable==Some(true)&&peer_stable==Some(true)&&cross_resources_equivalent==Some(true)",
+        ],
+        "strict resource authorization reader must bind its positive outcome to all three relational proofs",
+    );
     if let Some(audit) = named_struct_source(runtime, "WebAssessmentAuthorizationAudit") {
         reject_markers(
             &mut violations,
@@ -2742,20 +2776,32 @@ fn resource_authorization_review_source_contract_violations(
         return violations;
     };
     let compact_method = squash_ascii_whitespace(method);
+    let authorization_request = named_function_source(broker, "build_authorized_json_get_request")
+        .map(squash_ascii_whitespace)
+        .unwrap_or_default();
     require_markers(
         &mut violations,
         &compact_method,
         &[
-        ".request(Method::GET,target.clone())",
-        ".header(ACCEPT,\"application/json\")",
-        ".header(AUTHORIZATION,authorization)",
+        "self.build_authorized_json_get_request(target,authorization)?;",
         "self.collect_built_request(&self.client,action_id,stage,origin,limits,request)",
+        ],
+        "shared authorization broker dispatch must use the closed request builder and parent collection seam",
+    );
+    require_markers(
+        &mut violations,
+        &authorization_request,
+        &[
+            ".request(Method::GET,target.clone())",
+            ".header(ACCEPT,\"application/json\")",
+            ".header(AUTHORIZATION,authorization)",
         ],
         "shared authorization broker seam must remain exact bodyless JSON GET with only the role credential",
     );
+    let complete_authorization_seam = format!("{compact_method}{authorization_request}");
     reject_markers(
         &mut violations,
-        &compact_method,
+        &complete_authorization_seam,
         &[
         "Method::POST",
         "Method::PUT",
@@ -2781,6 +2827,50 @@ fn resource_authorization_review_source_contract_violations(
             ".retry(reqwest::retry::never())",
         ],
         "the shared broker used by resource authorization review must remain redirect-disabled and retry-free",
+    );
+    let isolated_authorization = named_function_source(broker, "isolated_authorization_review")
+        .map(squash_ascii_whitespace)
+        .unwrap_or_default();
+    require_markers(
+        &mut violations,
+        &isolated_authorization,
+        &[
+            "Self::build(self.policy.clone(),self.accounting.clone(),",
+            ".redirect(RedirectPolicy::none())",
+            ".retry(reqwest::retry::never())",
+            ".no_proxy()",
+            "broker.client=client.build().map_err(HttpEvidenceError::Client)?",
+        ],
+        "resource authorization roles must use fresh no-proxy pools under the shared policy and accounting authority",
+    );
+    reject_markers(
+        &mut violations,
+        &isolated_authorization,
+        &[".proxy("],
+        "resource authorization isolated pools must not restore a manual proxy after disabling ambient proxies",
+    );
+    require_markers(
+        &mut violations,
+        &authorization_request,
+        &[
+            "self.validate_target(target)?;",
+            "authorization.set_sensitive(true);",
+            ".header(AUTHORIZATION,authorization)",
+        ],
+        "resource authorization request construction must revalidate scope and keep credentials debug-redacted",
+    );
+    let authorization_dispatch =
+        named_function_source(broker, "collect_authorized_json_get_for_runtime")
+            .map(squash_ascii_whitespace)
+            .unwrap_or_default();
+    require_markers(
+        &mut violations,
+        &authorization_dispatch,
+        &[
+            "if!authenticated_transport_is_allowed(target)",
+            "self.build_authorized_json_get_request(target,authorization)?;",
+        ],
+        "resource authorization dispatch must recheck protected transport before attaching credentials",
     );
     violations
 }
@@ -9407,8 +9497,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 460_867;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xed47_d9b9_7f47_437e_ea5a_3d8e_a954_6fd7;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 461_012;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x36fc_d7ad_9ad5_499d_33cc_c57b_1e37_deae;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -13045,6 +13135,10 @@ mod tests {
             include_str!("../../../crates/termivar-scanner/src/web_runtime/web_assessment.rs");
         let report =
             include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_report.rs");
+        let reporting = include_str!("../../../crates/termivar-scanner/src/reporting.rs");
+        let audit_import = include_str!(
+            "../../../crates/termivar-scanner/src/reporting/comparison/import/audits.rs"
+        );
         let item =
             include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_item.rs");
         let budget = include_str!("../../../crates/termivar-scanner/src/runtime_budget.rs");
@@ -13058,6 +13152,8 @@ mod tests {
             broker,
             assessment,
             report,
+            reporting,
+            audit_import,
             item,
             budget,
             web_runtime,
@@ -13180,7 +13276,7 @@ mod tests {
             }
         )
         .iter()
-        .any(|violation| violation.contains("bodyless JSON GET")));
+        .any(|violation| violation.contains("broker dispatch")));
 
         let request_body = broker.replacen(
             ".header(AUTHORIZATION, authorization)",
@@ -13318,6 +13414,111 @@ mod tests {
             .iter()
             .any(|violation| violation.contains(expected)));
         }
+
+        let ambient_proxy_pool =
+            runtime.replacen(".isolated_authorization_review()", ".isolated()", 1);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                runtime: &ambient_proxy_pool,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("one-action")));
+
+        let one_pool_for_one_role =
+            runtime.replacen("for role in roles {", "for role in [roles[0]] {", 1);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                runtime: &one_pool_for_one_role,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("one-action")));
+
+        let proxy_enabled_broker = broker.replace(".no_proxy()", "");
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &proxy_enabled_broker,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("no-proxy")));
+
+        let isolated_authorization =
+            named_function_source(broker, "isolated_authorization_review").unwrap();
+        let manually_proxied_authorization = isolated_authorization.replacen(
+            ".no_proxy()",
+            ".no_proxy().proxy(reqwest::Proxy::all(\"http://127.0.0.1:9\").unwrap())",
+            1,
+        );
+        let manually_proxied_broker =
+            broker.replacen(isolated_authorization, &manually_proxied_authorization, 1);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &manually_proxied_broker,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("manual proxy")));
+
+        let nonsensitive_broker = broker.replacen("authorization.set_sensitive(true);", "", 1);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &nonsensitive_broker,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("debug-redacted")));
+
+        let unprotected_transport_broker = broker.replacen(
+            "if !authenticated_transport_is_allowed(target)",
+            "if false",
+            1,
+        );
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                broker: &unprotected_transport_broker,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("protected transport")));
+
+        let unbound_typed_report =
+            report.replacen("audit.primary_stable() != Some(true)", "false", 1);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                report: &unbound_typed_report,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("typed resource authorization report")));
+
+        let unbound_writer = reporting.replacen("self.primary_stable != Some(true)", "false", 1);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                reporting: &unbound_writer,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("report writer")));
+
+        let unbound_reader = audit_import.replacen("primary_stable == Some(true)", "true", 1);
+        assert!(resource_authorization_review_source_contract_violations(
+            ResourceAuthorizationSources {
+                audit_import: &unbound_reader,
+                ..sources
+            }
+        )
+        .iter()
+        .any(|violation| violation.contains("strict resource authorization reader")));
 
         let double_charged_replay = runtime.replacen(
             "if role == AuthorizationViewRole::PrimaryReplay",

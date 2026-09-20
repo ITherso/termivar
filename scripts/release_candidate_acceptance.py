@@ -23,7 +23,7 @@ import shutil
 import stat
 import sys
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import first_use
 import report_bundle_example
@@ -77,6 +77,19 @@ EXCLUDED_FEATURES = (
     "tls-observation",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
+AUTHORIZATION_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--authorization-review-policy FILE",
+    "one primary source: --authz-primary-env, --authz-primary-file, or --authz-primary-stdin",
+    "one peer source: --authz-peer-env, --authz-peer-file, or --authz-peer-stdin",
+    "HTTPS, except numeric-loopback HTTP fixtures",
+)
+AUTHORIZATION_REVIEW_LIMITATION = (
+    "Distinct principals are operator-provided. Each credentialed leg uses a fresh connection "
+    "pool with ambient proxies disabled while sharing the parent exact-origin scope, accounting, "
+    "cancellation, and evidence authority. No identifier mutation or confirmed authorization "
+    "claim is performed."
+)
 SECRET_EXPOSURE_OPTION = "--secret-exposure-review"
 SECRET_EXPOSURE_PREREQUISITES = (
     "--profile web-review",
@@ -264,6 +277,125 @@ SYNTHETIC_COUNTS = {
     "unchanged": 1,
 }
 
+AUTHORIZATION_AUDIT_SCHEMA = "security.authorization-review-audit/v1"
+AUTHORIZATION_CAPABILITY_ID = (
+    "authorization.resource-cross-principal-equivalence@1"
+)
+AUTHORIZATION_OUTCOME = "stable_cross_principal_equivalence"
+AUTHORIZATION_POLICY = b'''schema = "security.authorization-review-policy/v1"\nresource = "/authorization-resource"\nresource_handle = "packaged-account"\nexpectation = "primary-only"\nmethod = "GET"\n\n[comparison]\nselected_paths = ["/data"]\nignored_paths = ["/data/nonce"]\nunordered_array_paths = []\nmax_diff_paths = 8\n'''
+AUTHORIZATION_PRIMARY = b"Bearer PACKAGE-PRIMARY-CONTEXT-7C3A19\n"
+AUTHORIZATION_PEER = b"Bearer PACKAGE-PEER-CONTEXT-82FD44\n"
+AUTHORIZATION_COOKIE_CANARY = b"package-authz-cookie=must-not-return"
+AUTHORIZATION_RESOURCE_PATH = b"/authorization-resource"
+AUTHORIZATION_SELECTED_VALUE_CANARY = b"PACKAGE-AUTHZ-SELECTED-SCALAR-CANARY-91C4"
+AUTHORIZATION_IGNORED_PRIMARY_PREFIX = b"PACKAGE-AUTHZ-IGNORED-PRIMARY-CANARY-"
+AUTHORIZATION_IGNORED_PEER_PREFIX = b"PACKAGE-AUTHZ-IGNORED-PEER-CANARY-"
+AUTHORIZATION_REQUEST_ROLES = ("primary", "peer", "primary", "peer")
+
+
+def _update_sha256_framed(digest: object, value: bytes) -> None:
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
+def _domain_sha256(domain: bytes, value: bytes) -> bytes:
+    digest = hashlib.sha256()
+    digest.update(domain)
+    _update_sha256_framed(digest, value)
+    return digest.digest()
+
+
+def _update_authorization_pattern_list(
+        digest: object, name: bytes, patterns: tuple[bytes, ...]) -> None:
+    _update_sha256_framed(digest, name)
+    digest.update(len(patterns).to_bytes(8, "big"))
+    for pattern in patterns:
+        _update_sha256_framed(digest, pattern)
+
+
+def _expected_authorization_policy_id(origin: str) -> str:
+    """Independent oracle for the one literal packaged authorization policy."""
+    parsed = urlsplit(origin)
+    require(parsed.scheme in {"http", "https"} and parsed.netloc
+            and parsed.path == "/" and not parsed.query and not parsed.fragment,
+            "authorization fixture origin is not an exact root origin")
+    resource = (
+        f"{parsed.scheme}://{parsed.netloc}/authorization-resource".encode("ascii")
+    )
+
+    projection = hashlib.sha256()
+    projection.update(b"venom.api-visibility.projection-policy.v3\0")
+    _update_sha256_framed(projection, b"v3")
+    _update_sha256_framed(projection, b"v2")
+    _update_authorization_pattern_list(projection, b"selected", (b"/data",))
+    _update_authorization_pattern_list(
+        projection, b"ignored", (b"/data/nonce",))
+    _update_authorization_pattern_list(projection, b"unordered", ())
+    projection.update((8).to_bytes(2, "big"))
+
+    resource_digest = _domain_sha256(
+        b"security.authorization-review-resource.v1\0", resource)
+    handle_digest = _domain_sha256(
+        b"security.authorization-review-handle.v1\0", b"packaged-account")
+    policy = hashlib.sha256()
+    policy.update(b"security.authorization-review-policy.identity.v1\0")
+    for value in (
+            b"security.authorization-review-policy/v1",
+            b"security.authorization-differential/v1",
+            resource_digest,
+            handle_digest,
+            b"primary-only",
+            b"GET",
+            projection.digest(),
+            (1).to_bytes(8, "big"),
+            (1).to_bytes(8, "big"),
+            (0).to_bytes(8, "big"),
+            (8).to_bytes(2, "big")):
+        _update_sha256_framed(policy, value)
+    return f"authorization-policy-sha256:{policy.hexdigest()}"
+
+
+def _json_string_content_marker(value: str) -> bytes:
+    encoded = json.dumps(value, ensure_ascii=True)
+    require(encoded.startswith('"') and encoded.endswith('"'),
+            "authorization path marker JSON encoding changed")
+    return encoded[1:-1].encode("ascii")
+
+
+def _authorization_private_markers(
+        prepared: dict, fixture_origin: str) -> tuple[bytes, ...]:
+    parsed_origin = urlsplit(fixture_origin)
+    canonical_origin = f"{parsed_origin.scheme}://{parsed_origin.netloc}"
+    resource_url = urljoin(
+        fixture_origin, AUTHORIZATION_RESOURCE_PATH.decode("ascii").lstrip("/"))
+    markers = [
+        AUTHORIZATION_PRIMARY.strip(),
+        AUTHORIZATION_PEER.strip(),
+        AUTHORIZATION_PRIMARY.strip().removeprefix(b"Bearer "),
+        AUTHORIZATION_PEER.strip().removeprefix(b"Bearer "),
+        AUTHORIZATION_COOKIE_CANARY,
+        AUTHORIZATION_COOKIE_CANARY.partition(b"=")[2],
+        AUTHORIZATION_RESOURCE_PATH,
+        b"/data",
+        b"/data/account",
+        b"/data/nonce",
+        b"packaged-account",
+        AUTHORIZATION_SELECTED_VALUE_CANARY,
+        AUTHORIZATION_IGNORED_PRIMARY_PREFIX,
+        AUTHORIZATION_IGNORED_PEER_PREFIX,
+        fixture_origin.encode("utf-8"),
+        _json_string_content_marker(fixture_origin),
+        canonical_origin.encode("utf-8"),
+        _json_string_content_marker(canonical_origin),
+        resource_url.encode("utf-8"),
+        _json_string_content_marker(resource_url),
+    ]
+    for path in prepared["paths"].values():
+        rendered = str(path)
+        markers.extend((rendered.encode("utf-8"),
+                        _json_string_content_marker(rendered)))
+    return tuple(dict.fromkeys(markers))
+
 ACTIONABLE_DISPOSITION_ORDER = ("confirmed", "needs_review", "informational")
 ACTIONABLE_HEADINGS = (
     "Decision overview",
@@ -312,6 +444,7 @@ PACKAGED_ACTIONABLE_TARGET_KINDS_BY_CAPABILITY = {
     "web.passive.x-content-type-options.missing@1": "assessment_subject",
     "passive.header.hsts.missing@1": "assessment_subject",
     "cors.policy.relationship@1": "assessment_subject",
+    AUTHORIZATION_CAPABILITY_ID: "authorization_resource",
 }
 ACTIONABLE_ITEM_JSON_FIELDS = frozenset({
     "schema",
@@ -728,6 +861,41 @@ def _validate_secret_exposure_surface(
     return secret
 
 
+def _validate_authorization_review_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    authorization_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.resource-authorization-review"
+    ]
+    require(len(authorization_surfaces) == 1,
+            "packaged authorization-review surface identity changed")
+    authorization = authorization_surfaces[0]
+    require(authorization.get("label") == "Resource authorization review"
+            and authorization.get("compile_feature") == "authorization-review"
+            and authorization.get("build_state") == expected_state
+            and authorization.get("maturity") == "preview"
+            and authorization.get("implementation_status") == "implemented"
+            and authorization.get("group") == "optional"
+            and authorization.get("kind") == "scan_option"
+            and authorization.get("alias") is None
+            and authorization.get("documentation")
+            == "docs/internals/authorization-differential-review.md",
+            "packaged authorization-review surface metadata changed")
+    prerequisites = authorization.get("prerequisites")
+    require(isinstance(prerequisites, list)
+            and all(isinstance(value, str) for value in prerequisites)
+            and tuple(prerequisites) == AUTHORIZATION_REVIEW_PREREQUISITES,
+            "packaged authorization-review opt-in contract changed")
+    require(authorization.get("limitation") == AUTHORIZATION_REVIEW_LIMITATION,
+            "packaged authorization-review limitation changed")
+    require(f"[{expected_state}] {authorization['label']}" in text_value,
+            "authorization-review capability text and JSON views disagree")
+    require(f"    limit: {AUTHORIZATION_REVIEW_LIMITATION}" in text_value,
+            "authorization-review capability limitation is absent from text output")
+    return authorization
+
+
 def _validate_tls_observation_surface(
         surfaces: list, text_value: str, expected_state: str) -> dict:
     tls_surfaces = [
@@ -852,6 +1020,7 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
                 "capabilities text and JSON views disagree")
     require("command.capabilities" in surface_keys,
             "capabilities command surface identity changed")
+    _validate_authorization_review_surface(surfaces, text_value, "compiled")
     _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
     _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
     _validate_jwt_policy_review_surface(surfaces, text_value, "not_compiled")
@@ -937,6 +1106,14 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
         "composition_marker": "release-bundle",
         "compiled_members": list(RELEASE_MEMBERS),
         "excluded_features": list(EXCLUDED_FEATURES),
+        "authorization_review": {
+            "build_state": "compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "explicit_opt_in",
+            "declared_credentialed_transport_contract":
+                "fresh_ambient_proxy_free_pool_per_leg",
+        },
         "secret_exposure_preview": {
             "build_state": "not_compiled",
             "maturity": "preview",
@@ -2050,6 +2227,129 @@ WORDPRESS_FINGERPRINT_CUSTOM_ASSET_PATHS = (
 
 
 @contextmanager
+def _authorization_fixture():
+    """Serve one exact JSON resource without retaining credential values."""
+    primary_digest = hashlib.sha256(AUTHORIZATION_PRIMARY.strip()).digest()
+    peer_digest = hashlib.sha256(AUTHORIZATION_PEER.strip()).digest()
+
+    class AuthorizationHandler(first_use.StaticHandler):
+        def handle(self) -> None:
+            self.request.settimeout(1.0)
+            request = bytearray()
+            try:
+                while (b"\r\n\r\n" not in request
+                       and len(request) < first_use.HEADER_LIMIT):
+                    chunk = self.request.recv(
+                        min(1024, first_use.HEADER_LIMIT - len(request)))
+                    if not chunk:
+                        return
+                    request.extend(chunk)
+                if b"\r\n\r\n" not in request:
+                    self.server.note("invalid")
+                    return
+                lines = bytes(request).split(b"\r\n")
+                words = lines[0].split(b" ")
+                if len(words) != 3 or words[2] not in (b"HTTP/1.0", b"HTTP/1.1"):
+                    self.server.note("invalid")
+                    return
+                method, path = words[:2]
+                headers: dict[bytes, bytes] = {}
+                duplicate = False
+                for line in lines[1:]:
+                    if not line:
+                        break
+                    name, separator, value = line.partition(b":")
+                    key = name.strip().lower()
+                    if not separator or not key or key in headers:
+                        duplicate = True
+                        break
+                    headers[key] = value.strip()
+                if duplicate:
+                    self.server.note("invalid")
+                    return
+                role = "none"
+                authorization = headers.get(b"authorization")
+                if authorization is not None:
+                    observed = hashlib.sha256(authorization).digest()
+                    if observed == primary_digest:
+                        role = "primary"
+                    elif observed == peer_digest:
+                        role = "peer"
+                    else:
+                        role = "unknown"
+                with self.server.count_lock:
+                    self.server.request_lines.append(
+                        lines[0].decode("ascii", errors="replace"))
+                    self.server.request_authorization_roles.append(role)
+                    self.server.request_cookie_headers.append(b"cookie" in headers)
+                    if path == AUTHORIZATION_RESOURCE_PATH:
+                        self.server.authorization_roles.append(role)
+                        self.server.authorization_cookie_headers.append(b"cookie" in headers)
+                        sequence = len(self.server.authorization_roles)
+                    else:
+                        sequence = 0
+                if method not in (b"GET", b"HEAD"):
+                    code, reason, body, media, category = (
+                        405, "Method Not Allowed", first_use.METHOD_REFUSED,
+                        "text/html; charset=utf-8", "unsupported")
+                elif path == b"/":
+                    code, reason, body, media, category = (
+                        200, "OK", first_use.DOCUMENT,
+                        "text/html; charset=utf-8", "root")
+                elif path != AUTHORIZATION_RESOURCE_PATH:
+                    code, reason, body, media, category = (
+                        404, "Not Found", first_use.NOT_FOUND,
+                        "text/html; charset=utf-8", "unknown")
+                elif role not in {"primary", "peer"}:
+                    code, reason, body, media, category = (
+                        401, "Unauthorized", b'{"error":"unauthorized"}',
+                        "application/json", "root")
+                else:
+                    body = json.dumps({
+                        "data": {
+                            "account": {
+                                "id": AUTHORIZATION_SELECTED_VALUE_CANARY.decode("ascii"),
+                            },
+                            "nonce": (
+                                (AUTHORIZATION_IGNORED_PRIMARY_PREFIX
+                                 if role == "primary"
+                                 else AUTHORIZATION_IGNORED_PEER_PREFIX).decode("ascii")
+                                + str(sequence)
+                            ),
+                        },
+                    }, separators=(",", ":")).encode("ascii")
+                    code, reason, media, category = (
+                        200, "OK", "application/json", "root")
+                self.server.note(category)
+                response_headers = (
+                    f"HTTP/1.1 {code} {reason}\r\n"
+                    f"Content-Type: {media}\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n"
+                )
+                if path == AUTHORIZATION_RESOURCE_PATH and sequence == 1:
+                    response_headers += (
+                        f"Set-Cookie: {AUTHORIZATION_COOKIE_CANARY.decode('ascii')}; "
+                        "Path=/; HttpOnly\r\n"
+                    )
+                self.request.sendall(
+                    response_headers.encode("ascii") + b"\r\n"
+                    + (b"" if method == b"HEAD" else body))
+            except (OSError, TimeoutError):
+                return
+
+    fixture = first_use.Fixture()
+    fixture.server.RequestHandlerClass = AuthorizationHandler
+    fixture.server.request_lines = []
+    fixture.server.request_authorization_roles = []
+    fixture.server.request_cookie_headers = []
+    fixture.server.authorization_roles = []
+    fixture.server.authorization_cookie_headers = []
+    with fixture:
+        yield fixture
+
+
+@contextmanager
 def _wordpress_fixture():
     """Reuse the repository loopback fixture with fixed WordPress-shaped bytes."""
     expected_paths = {
@@ -2383,6 +2683,30 @@ def _wordpress_fingerprint_fixture():
 def _write_new_input(path: Path, data: bytes) -> None:
     with path.open("xb") as output:
         require(output.write(data) == len(data), "synthetic WordPress input write was incomplete")
+
+
+def _prepare_authorization_inputs(work: Path) -> dict:
+    directory = work / "authorization-inputs"
+    directory.mkdir(mode=0o700)
+    values = {
+        "policy": AUTHORIZATION_POLICY,
+        "primary": AUTHORIZATION_PRIMARY,
+        "peer": AUTHORIZATION_PEER,
+    }
+    paths = {}
+    snapshots = {}
+    for name, data in values.items():
+        suffix = ".toml" if name == "policy" else ".txt"
+        path = directory / f"{name}{suffix}"
+        with path.open("xb") as output:
+            require(output.write(data) == len(data),
+                    "synthetic authorization input write was incomplete")
+        paths[name] = path
+        snapshots[name] = {
+            "bytes": len(data),
+            "sha256": first_use.digest_bytes(data),
+        }
+    return {"paths": paths, "snapshots": snapshots}
 
 
 def _prepare_wordpress_inputs(work: Path, origin: str) -> dict:
@@ -2958,6 +3282,263 @@ def _run_wordpress_scan(runner: CandidateRunner, work: Path, fixture, identifier
         "html": html,
         "snapshot": _snapshot_files(bundle_path),
         "request_trace": trace,
+    }
+
+
+def _validate_authorization_assessment(
+        document: object, expected_policy_id: str) -> dict:
+    require(isinstance(document, dict),
+            "packaged authorization assessment is not a JSON object")
+    items = document.get("items")
+    item_count = document.get("item_count")
+    require(isinstance(items, list)
+            and all(isinstance(item, dict) for item in items)
+            and isinstance(item_count, int)
+            and not isinstance(item_count, bool)
+            and item_count == len(items),
+            "packaged authorization assessment item cardinality changed")
+    audit = document.get("authorization_review")
+    require(isinstance(audit, dict),
+            "packaged authorization audit is missing or invalid")
+    require(set(audit) == {
+        "schema", "capability_id", "policy_id", "selected_path_count",
+        "ignored_path_count", "request_count", "outcome", "primary_stable",
+        "peer_stable", "cross_resources_equivalent", "item_projected",
+    }, "packaged authorization audit field contract changed")
+    policy_id = audit.get("policy_id")
+    require(audit.get("schema") == AUTHORIZATION_AUDIT_SCHEMA
+            and audit.get("capability_id") == AUTHORIZATION_CAPABILITY_ID
+            and policy_id == expected_policy_id,
+            "packaged authorization audit identity changed")
+    for field, expected in (
+            ("selected_path_count", 1), ("ignored_path_count", 1),
+            ("request_count", 4)):
+        value = audit.get(field)
+        require(isinstance(value, int) and not isinstance(value, bool)
+                and value == expected,
+                f"packaged authorization audit {field} changed")
+    require(audit.get("outcome") == AUTHORIZATION_OUTCOME
+            and audit.get("primary_stable") is True
+            and audit.get("peer_stable") is True
+            and audit.get("cross_resources_equivalent") is True
+            and audit.get("item_projected") is True,
+            "packaged authorization positive relation changed")
+    matching = [
+        item for item in items
+        if isinstance(item, dict)
+        and item.get("capability_id") == AUTHORIZATION_CAPABILITY_ID
+    ]
+    require(len(matching) == 1,
+            "packaged authorization item identity or cardinality changed")
+    item = matching[0]
+    remediation = item.get("remediation")
+    require(item.get("schema") == "venom-assessment-item/v1"
+            and item.get("title")
+            == "Unexpected cross-principal resource equivalence observed"
+            and isinstance(item.get("subject_reference"), str)
+            and re.fullmatch(r"subject-[0-9]{4}", item["subject_reference"])
+            is not None
+            and isinstance(item.get("fingerprint"), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", item["fingerprint"])
+            is not None
+            and isinstance(remediation, dict)
+            and remediation.get("id") == "authorization.resource-policy-review@1"
+            and item.get("disposition") == "needs_review"
+            and item.get("claim_basis") == "differential"
+            and item.get("category") == "Authorization review"
+            and item.get("severity") is None
+            and item.get("cwe") is None
+            and item.get("case_reference") is None
+            and item.get("outcome_reference") is None
+            and item.get("verification_stage") is None,
+            "packaged authorization item exceeded its review-only claim")
+    direct = item.get("evidence_references")
+    control = item.get("control_evidence_references")
+    candidate = item.get("candidate_evidence_references")
+    evidence_count = item.get("evidence_count")
+    require(isinstance(direct, list) and direct == []
+            and isinstance(control, list) and len(control) == 2
+            and isinstance(candidate, list) and len(candidate) == 2
+            and all(isinstance(value, str) for value in (*control, *candidate))
+            and len(set((*control, *candidate))) == 4
+            and isinstance(evidence_count, int)
+            and not isinstance(evidence_count, bool)
+            and evidence_count == 4,
+            "packaged authorization evidence linkage changed")
+    require(not any(
+        isinstance(row, dict) and row.get("disposition") == "confirmed"
+        for row in items
+    ), "packaged authorization scenario unexpectedly projected a confirmed item")
+    return {
+        "schema": audit["schema"],
+        "policy_id": policy_id,
+        "outcome": audit["outcome"],
+        "request_count": audit["request_count"],
+        "selected_path_count": audit["selected_path_count"],
+        "ignored_path_count": audit["ignored_path_count"],
+        "primary_stable": audit["primary_stable"],
+        "peer_stable": audit["peer_stable"],
+        "cross_resources_equivalent": audit["cross_resources_equivalent"],
+        "authorization_item_count": len(matching),
+        "assessment_item_count": item_count,
+        "item_disposition": item["disposition"],
+        "item_claim_basis": item["claim_basis"],
+        "maximum_authority": "knowledge_only",
+        "confirmation": "not_performed",
+    }
+
+
+def _authorization_inputs_unchanged(prepared: dict) -> bool:
+    return all(
+        path.is_file()
+        and not path.is_symlink()
+        and path.stat().st_size == prepared["snapshots"][name]["bytes"]
+        and first_use.digest_file(path) == prepared["snapshots"][name]["sha256"]
+        for name, path in prepared["paths"].items()
+    )
+
+
+def _run_authorization_fixture_acceptance(
+        runner: CandidateRunner, work: Path, expected_version: str) -> dict:
+    fixture = runner.fixture
+    require(fixture is not None, "authorization fixture runner is unavailable")
+    require(fixture.server.snapshot() == {
+        "root": 1, "example": 0, "unknown": 0,
+        "unsupported": 0, "invalid": 0,
+    }, "authorization fixture readiness accounting changed")
+    prepared = _prepare_authorization_inputs(work)
+    bundle_path = work / "authorization-review"
+    stdout, stderr = runner.run("authorization-review-scan", [
+        "scan", fixture.origin, "--profile", "web-review",
+        "--authorization-review-policy", str(prepared["paths"]["policy"]),
+        "--authz-primary-file", str(prepared["paths"]["primary"]),
+        "--authz-peer-file", str(prepared["paths"]["peer"]),
+        "--report-dir", str(bundle_path),
+    ], expected_stderr_empty=False)
+    require(stdout == b"", "packaged authorization scan wrote a report to stdout")
+    secret_markers = _authorization_private_markers(prepared, fixture.origin)
+    require(not any(marker in stdout + stderr for marker in secret_markers),
+            "packaged authorization process output exposed a private marker")
+    bundle = report_bundle_example.validate_bundle(bundle_path)
+    require(bundle["producer"] == {"product": "Termivar", "version": expected_version},
+            "authorization bundle producer identity changed")
+    assessment_bytes = report_bundle_example.read_regular_file(
+        bundle_path / "assessment.json", report_bundle_example.REPORT_LIMIT,
+        "packaged authorization assessment")
+    assessment = _parse_json(assessment_bytes, "packaged authorization assessment")
+    expected_policy_id = _expected_authorization_policy_id(fixture.origin)
+    summary = _validate_authorization_assessment(assessment, expected_policy_id)
+    authorization_html = report_bundle_example.read_regular_file(
+        bundle_path / "assessment.html", report_bundle_example.REPORT_LIMIT,
+        "packaged authorization HTML")
+    human_report = _validate_actionable_assessment_html(
+        assessment, authorization_html)
+    for entry in bundle_path.iterdir():
+        data = report_bundle_example.read_regular_file(
+            entry,
+            (report_bundle_example.MANIFEST_LIMIT if entry.name == "manifest.json"
+             else report_bundle_example.REPORT_LIMIT),
+            "packaged authorization bundle entry",
+        )
+        require(not any(marker in data for marker in secret_markers),
+                "packaged authorization bundle exposed a private marker")
+    require(_authorization_inputs_unchanged(prepared),
+            "packaged authorization scan changed an input")
+    with fixture.server.count_lock:
+        request_lines = tuple(fixture.server.request_lines)
+        request_authorization_roles = tuple(
+            fixture.server.request_authorization_roles)
+        request_cookie_headers = tuple(fixture.server.request_cookie_headers)
+        roles = tuple(fixture.server.authorization_roles)
+        cookie_headers = tuple(fixture.server.authorization_cookie_headers)
+    resource_trace = tuple(
+        line for line in request_lines
+        if line == "GET /authorization-resource HTTP/1.1"
+    )
+    require(len(request_lines) == 8
+            and len(request_authorization_roles) == len(request_lines)
+            and len(request_cookie_headers) == len(request_lines)
+            and request_lines.count("GET / HTTP/1.1") == 4
+            and len(resource_trace) == 4,
+            "packaged authorization fixture request trace changed")
+    require(roles == AUTHORIZATION_REQUEST_ROLES,
+            "packaged authorization principal leg order changed")
+    require(cookie_headers == (False, False, False, False),
+            "packaged authorization isolated legs carried cookie state")
+    ordinary_indexes = tuple(
+        index for index, line in enumerate(request_lines)
+        if line != "GET /authorization-resource HTTP/1.1"
+    )
+    require(all(request_authorization_roles[index] == "none"
+                and request_cookie_headers[index] is False
+                for index in ordinary_indexes),
+            "packaged ordinary assessment traffic carried authorization context")
+    record = next(
+        (row for row in runner.records if row["id"] == "authorization-review-scan"),
+        None,
+    )
+    require(isinstance(record, dict)
+            and record.get("fixture_requests") == {
+                "root": 7, "example": 0, "unknown": 0,
+                "unsupported": 0, "invalid": 0,
+            }, "packaged authorization request accounting changed")
+    return {
+        "bundle_path": bundle_path,
+        "bundle_snapshot": _snapshot_files(bundle_path),
+        "assessment_json_sha256": bundle["assessment_json_sha256"],
+        "assessment_item_count": bundle["assessment"]["item_count"],
+        "prepared": prepared,
+        "summary": summary,
+        "human_report": human_report,
+        "transport": {
+            "ordinary_assessment_requests": 3,
+            "authorization_requests": 4,
+            "authorization_request_roles": list(roles),
+            "logical_active_verifications": 1,
+            "cookie_carryover_count": sum(cookie_headers),
+            "ordinary_credential_carryover_count": sum(
+                request_authorization_roles[index] != "none"
+                or request_cookie_headers[index]
+                for index in ordinary_indexes),
+        },
+    }
+
+
+def _run_authorization_offline_acceptance(
+        runner: CandidateRunner, state: dict) -> dict:
+    bundle_path = state["bundle_path"]
+    verify_stdout, _ = runner.run("authorization-review-verify", [
+        "report", "verify", "--dir", str(bundle_path), "--format", "json",
+    ], expected_stderr_empty=True)
+    verification = _parse_json(
+        verify_stdout, "packaged authorization Report Verify output")
+    _validate_verification(verification, "integrity_match")
+    compare_stdout, _ = runner.run("authorization-review-self-compare", [
+        "report", "compare", "--before", str(bundle_path / "assessment.json"),
+        "--after", str(bundle_path / "assessment.json"), "--same-scope",
+        "--format", "json",
+    ], expected_stderr_empty=True)
+    comparison = report_bundle_example.validate_self_comparison(
+        compare_stdout, state["assessment_item_count"],
+        state["assessment_json_sha256"])
+    require(_snapshot_files(bundle_path) == state["bundle_snapshot"],
+            "authorization offline commands changed bundle bytes")
+    require(_authorization_inputs_unchanged(state["prepared"]),
+            "authorization offline commands changed an input")
+    records = {record["id"]: record for record in runner.records}
+    for identifier in (
+            "authorization-review-verify", "authorization-review-self-compare"):
+        require("fixture_requests" not in records[identifier],
+                "authorization offline command retained a live fixture")
+    return {
+        **state["summary"],
+        "human_report": state["human_report"],
+        "transport": state["transport"],
+        "bundle_verification": verification["status"],
+        "self_comparison": comparison,
+        "offline_commands_after_fixture_shutdown": True,
+        "input_bytes_preserved": True,
+        "raw_credential_values_retained_in_evidence": False,
     }
 
 
@@ -4763,6 +5344,13 @@ def run_acceptance(archive: Path, target: str, archive_ref: str, source_sha: str
             result["capabilities"] = _validate_capabilities(runner, expected_version)
             result["application"] = _run_fixture_acceptance(
                 runner, work, expected_version)
+        with _authorization_fixture() as fixture:
+            runner.fixture = fixture
+            authorization_state = _run_authorization_fixture_acceptance(
+                runner, work, expected_version)
+        runner.fixture = None
+        result["application"]["authorization_review"] = (
+            _run_authorization_offline_acceptance(runner, authorization_state))
         with _wordpress_fixture() as fixture:
             runner.fixture = fixture
             wordpress_state = _run_wordpress_fixture_acceptance(
