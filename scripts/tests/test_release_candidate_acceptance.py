@@ -150,35 +150,45 @@ EXPECTED_SUPPLIED_SESSION_OPTIONS = (
     "--session-auth-file",
     "--session-auth-stdin",
     "--session-cookie-file",
+    "--session-login-file",
 )
 EXPECTED_SUPPLIED_SESSION_PREREQUISITES = (
     "--profile web-review",
     "--session-policy FILE",
     "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
     "V2: --session-cookie-file FILE",
-    "optional --wordpress-supplied-session when also compiled with wordpress-review",
+    "V3: --session-login-file FILE",
+    "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
     "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
 )
 EXPECTED_SUPPLIED_SESSION_LIMITATION = (
-    "One explicitly supplied principal and strict local V1 authorization_header or V2 "
-    "cookie_jar policy authorize bounded bodyless application GETs through a "
-    "context-isolated, no-proxy child of the existing assessment broker. Structured "
-    "health checks qualify bounded checkpoint coverage rather than authenticate the "
-    "principal. When both review features and --wordpress-supplied-session are selected, "
-    "complete health-qualified session-resource HTML may nominate public WordPress "
-    "metadata that the WordPress broker retrieves anonymously; the credential is not "
-    "sent to metadata or fingerprint requests, and authenticated-page fingerprint "
-    "acquisition is not selected in this slice. Session loss, a selected response-cookie "
-    "update, or an unusable "
-    "response-cookie classification stops later session work without anonymous fallback. "
-    "No response cookie update is applied, no refresh occurs, and the session epoch stays "
-    "fixed. Cookie host/domain/path/Secure/expiry applicability is intersected with "
-    "operator application authority; Domain never expands it. HttpOnly and SameSite are "
-    "preserved facts, not browser CSRF emulation. The client sends no request body or "
-    "non-GET method, but application-defined GET handling can still have server-side "
-    "effects; the operator must authorize every selected resource. No browser-profile "
-    "import, login, automatic refresh, OAuth, MFA, exploit, or impact validation occurs "
-    "in this slice."
+    "One explicitly supplied principal and strict local V1 authorization_header, V2 supplied "
+    "cookie_jar, or V3 bounded_form_login policy authorizes a context-isolated, no-proxy "
+    "child of the existing assessment broker. V1 and V2 perform only bounded bodyless "
+    "application GETs. V3 performs one anonymous exact-application login-page GET and at "
+    "most one explicit application/x-www-form-urlencoded POST with credentials from "
+    "--session-login-file and one exact hidden CSRF field; redirects and retries are "
+    "disabled, and an ambiguous POST outcome is not resubmitted. V3 has no pre-session "
+    "cookie and admits only the policy-declared host-only session cookies from that login "
+    "response. The structured startup JSON health predicate is the sole login-success "
+    "oracle; status, response text, or receiving a cookie alone is insufficient. V3 "
+    "permits at most three resources while the unchanged total remains at most nine "
+    "supplied-session requests. Health checkpoints qualify bounded coverage rather than "
+    "authenticate the principal. When a V1/V2 policy, both review features, and "
+    "--wordpress-supplied-session are selected, complete health-qualified session-resource "
+    "HTML may nominate public WordPress metadata that the WordPress broker retrieves "
+    "anonymously; the credential is not sent to metadata or fingerprint requests, and "
+    "authenticated-page fingerprint acquisition is not selected. Session loss, a "
+    "selected post-login response-cookie "
+    "update, or an unusable response-cookie classification stops later session work "
+    "without anonymous fallback. Outside initial V3 session establishment no response "
+    "cookie update is applied; no automatic renewal occurs. Cookie host/domain/path/Secure/"
+    "expiry applicability is intersected with operator application authority; Domain never "
+    "expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. "
+    "Application-defined GET handling and the explicitly authorized login POST can have "
+    "server-side effects. No browser-profile import, form discovery, credential guessing, "
+    "OAuth, MFA bypass, exploit, or impact validation occurs. WordPress supplied-session "
+    "composition remains limited to V1/V2; V3 is rejected before its secret file is read."
 )
 EXPECTED_WORDPRESS_OPTIONS = (
     "--wordpress-review",
@@ -2751,6 +2761,11 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             (
                 "prerequisites",
                 [value for value in EXPECTED_SUPPLIED_SESSION_PREREQUISITES
+                 if value != "V3: --session-login-file FILE"],
+            ),
+            (
+                "prerequisites",
+                [value for value in EXPECTED_SUPPLIED_SESSION_PREREQUISITES
                  if not value.startswith("optional --wordpress-supplied-session")],
             ),
             (
@@ -2763,15 +2778,15 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             (
                 "limitation",
                 EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
-                    "application-defined GET handling can still have server-side effects; "
-                    "the operator must authorize every selected resource",
-                    "GET requests are side-effect-free",
+                    "Application-defined GET handling and the explicitly authorized login "
+                    "POST can have server-side effects.",
+                    "All requests are side-effect-free.",
                 ),
             ),
             (
                 "limitation",
                 EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
-                    "Session loss, a selected response-cookie update, or an unusable "
+                    "Session loss, a selected post-login response-cookie update, or an unusable "
                     "response-cookie classification stops later session work without "
                     "anonymous fallback.",
                     "Session loss stops later session work.",
@@ -2780,9 +2795,52 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             (
                 "limitation",
                 EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
-                    "No response cookie update is applied, no refresh occurs, and the "
-                    "session epoch stays fixed.",
+                    "Outside initial V3 session establishment no response cookie update is "
+                    "applied; no automatic renewal occurs.",
                     "Response cookie updates are applied automatically.",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "one anonymous exact-application login-page GET and at most one explicit "
+                    "application/x-www-form-urlencoded POST",
+                    "one discovered login page and retried POSTs",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "one exact hidden CSRF field",
+                    "an optional CSRF field",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "V3 has no pre-session cookie",
+                    "V3 accepts a pre-session cookie",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "startup JSON health predicate is the sole login-success oracle",
+                    "receiving a cookie is the login-success oracle",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "at most nine supplied-session requests",
+                    "at most 90 supplied-session requests",
+                ),
+            ),
+            (
+                "limitation",
+                EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
+                    "V3 permits at most three resources",
+                    "V3 permits at most 30 resources",
                 ),
             ),
             (
@@ -2802,9 +2860,9 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             (
                 "limitation",
                 EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
-                    "the credential is not sent to metadata or fingerprint requests, and "
-                    "authenticated-page fingerprint acquisition is not selected in this slice",
-                    "the credential is sent to metadata and authenticated-page fingerprints",
+                    "WordPress supplied-session composition remains limited to V1/V2; V3 is "
+                    "rejected before its secret file is read.",
+                    "WordPress supplied-session composition accepts V3.",
                 ),
             ),
         )

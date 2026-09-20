@@ -86,11 +86,13 @@ use super::{
 };
 #[cfg(feature = "supplied-session-review")]
 use super::{
-    SuppliedSessionAuditOutcome, SuppliedSessionHealthCheckpointPhase,
-    SuppliedSessionHealthOutcome, SuppliedSessionResourceOutcome,
+    SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionHealthCheckpointPhase,
+    SuppliedSessionHealthOutcome, SuppliedSessionLoginFormOutcome,
+    SuppliedSessionLoginSubmitOutcome, SuppliedSessionResourceOutcome,
     WebAssessmentSuppliedSessionAudit, MAX_SUPPLIED_SESSION_CHECKPOINTS,
     MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
 };
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
@@ -99,8 +101,8 @@ use crate::authorization_review::{
 };
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{
-    SuppliedSessionCredentialMechanism, MAX_SUPPLIED_SESSION_COOKIES,
-    MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
+    SuppliedSessionCredentialAcquisition, SuppliedSessionCredentialMechanism,
+    MAX_SUPPLIED_SESSION_COOKIES, MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
 };
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::{
@@ -1091,6 +1093,9 @@ const fn valid_v1_supplied_session_outcome(outcome: SuppliedSessionAuditOutcome)
         outcome,
         SuppliedSessionAuditOutcome::CredentialUpdateRequired
             | SuppliedSessionAuditOutcome::CredentialUpdateUnusable
+            | SuppliedSessionAuditOutcome::LoginFormUnavailable
+            | SuppliedSessionAuditOutcome::LoginSubmitUnavailable
+            | SuppliedSessionAuditOutcome::LoginCookieUnavailable
     )
 }
 
@@ -1107,6 +1112,9 @@ const fn valid_v2_cookie_lifecycle_outcome(
         SuppliedSessionAuditOutcome::CredentialUpdateUnusable => {
             selected_update_response_count == 0 && update_classification_failure_count == 1
         },
+        SuppliedSessionAuditOutcome::LoginFormUnavailable
+        | SuppliedSessionAuditOutcome::LoginSubmitUnavailable
+        | SuppliedSessionAuditOutcome::LoginCookieUnavailable => false,
         _ => selected_update_response_count == 0 && update_classification_failure_count == 0,
     }
 }
@@ -1121,6 +1129,344 @@ const fn valid_v2_cookie_lifecycle_accounting(
     selected_update_response_count <= dispatched_request_count
         && (unselected_update_response_count as u16 + update_classification_failure_count as u16)
             <= dispatched_request_count as u16
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn valid_v3_cookie_lifecycle_accounting(
+    selected_update_response_count: u8,
+    unselected_update_response_count: u8,
+    update_classification_failure_count: u8,
+    dispatched_request_count: u8,
+    login_request_count: u8,
+) -> bool {
+    let Some(update_eligible_request_count) =
+        dispatched_request_count.checked_sub(login_request_count)
+    else {
+        return false;
+    };
+    valid_v2_cookie_lifecycle_accounting(
+        selected_update_response_count,
+        unselected_update_response_count,
+        update_classification_failure_count,
+        update_eligible_request_count,
+    )
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn valid_v3_cookie_lifecycle_outcome(
+    outcome: SuppliedSessionAuditOutcome,
+    selected_update_response_count: u8,
+    update_classification_failure_count: u8,
+) -> bool {
+    match outcome {
+        SuppliedSessionAuditOutcome::CredentialUpdateRequired => {
+            selected_update_response_count == 1 && update_classification_failure_count == 0
+        },
+        SuppliedSessionAuditOutcome::CredentialUpdateUnusable => {
+            selected_update_response_count == 0 && update_classification_failure_count == 1
+        },
+        _ => selected_update_response_count == 0 && update_classification_failure_count == 0,
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn valid_v3_login_audit(
+    audit: &WebAssessmentSuppliedSessionAudit,
+    lifecycle_initial_epoch: u8,
+    lifecycle_final_epoch: u8,
+) -> bool {
+    let Some(login) = audit.login() else {
+        return false;
+    };
+    let page_contract = valid_v3_login_page_contract(
+        login.form_outcome(),
+        login.form_error_code(),
+        login.page_dispatched(),
+        login.page_status(),
+        login.page_body_state(),
+    );
+    let submit_contract = valid_v3_login_submit_contract(
+        login.submit_outcome(),
+        login.submit_dispatched(),
+        login.attempt_count(),
+        login.submit_status(),
+        login.submit_body_state(),
+        login.acquired_cookie_count(),
+    );
+    let startup_authenticated = audit.checkpoints().first().is_some_and(|checkpoint| {
+        checkpoint.phase() == SuppliedSessionHealthCheckpointPhase::Startup
+            && checkpoint.outcome() == SuppliedSessionHealthOutcome::Healthy
+    });
+    let startup_cookie_update_stopped_transition = audit.checkpoints().len() == 1
+        && audit
+            .resources()
+            .iter()
+            .all(|resource| resource.outcome() == SuppliedSessionResourceOutcome::NotDispatched)
+        && matches!(
+            audit.outcome(),
+            SuppliedSessionAuditOutcome::CredentialUpdateRequired
+                | SuppliedSessionAuditOutcome::CredentialUpdateUnusable
+        );
+    let epoch_transition_is_valid = valid_v3_login_epoch_transition(
+        login.final_epoch(),
+        startup_authenticated,
+        startup_cookie_update_stopped_transition,
+    );
+    let outcome_contract = valid_v3_login_outcome_contract(
+        audit.outcome(),
+        login.form_outcome(),
+        login.submit_outcome(),
+    );
+    let dispatch_contract = valid_v3_login_dispatch_contract(
+        login.form_outcome(),
+        login.page_dispatched(),
+        login.submit_dispatched(),
+        login.response_bytes(),
+    );
+    let outcome_epoch_contract = match audit.outcome() {
+        SuppliedSessionAuditOutcome::LoginFormUnavailable => login.final_epoch() == 0,
+        SuppliedSessionAuditOutcome::LoginSubmitUnavailable => login.final_epoch() == 0,
+        SuppliedSessionAuditOutcome::LoginCookieUnavailable => login.final_epoch() == 0,
+        _ => true,
+    };
+    valid_supplied_session_reference(login.login_reference(), "supplied-session-login-sha256:")
+        && login.max_attempts() == 1
+        && login.attempt_count() <= login.max_attempts()
+        && login.initial_epoch() == 0
+        && epoch_transition_is_valid
+        && lifecycle_initial_epoch == login.initial_epoch()
+        && lifecycle_final_epoch == login.final_epoch()
+        && !login.pre_session_cookie_applied()
+        && page_contract
+        && submit_contract
+        && outcome_contract
+        && dispatch_contract
+        && outcome_epoch_contract
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn valid_v3_login_page_contract(
+    form_outcome: SuppliedSessionLoginFormOutcome,
+    form_error_code: Option<&str>,
+    page_dispatched: bool,
+    page_status: Option<u16>,
+    page_body_state: SuppliedSessionBodyState,
+) -> bool {
+    if page_status.is_some_and(|status| !(100..=599).contains(&status)) {
+        return false;
+    }
+    match form_outcome {
+        SuppliedSessionLoginFormOutcome::Matched => {
+            page_dispatched
+                && page_status == Some(200)
+                && page_body_state == SuppliedSessionBodyState::Complete
+                && form_error_code.is_none()
+        },
+        SuppliedSessionLoginFormOutcome::IneligibleResponse => {
+            page_dispatched
+                && page_status.is_some()
+                && matches!(
+                    page_body_state,
+                    SuppliedSessionBodyState::Complete | SuppliedSessionBodyState::Incomplete
+                )
+                && matches!(
+                    form_error_code,
+                    Some(
+                        "ineligible_response"
+                            | "pre_session_cookie_unsupported"
+                            | "inexact_final_target"
+                    )
+                )
+        },
+        SuppliedSessionLoginFormOutcome::Missing => {
+            page_dispatched
+                && page_status == Some(200)
+                && page_body_state == SuppliedSessionBodyState::Complete
+                && matches!(form_error_code, Some("missing_form" | "missing_csrf"))
+        },
+        SuppliedSessionLoginFormOutcome::Ambiguous => {
+            page_dispatched
+                && page_status == Some(200)
+                && page_body_state == SuppliedSessionBodyState::Complete
+                && matches!(form_error_code, Some("ambiguous_form" | "ambiguous_csrf"))
+        },
+        SuppliedSessionLoginFormOutcome::Invalid
+            if form_error_code == Some("invalid_descriptor") =>
+        {
+            !page_dispatched
+                && page_status.is_none()
+                && page_body_state == SuppliedSessionBodyState::Unavailable
+        },
+        SuppliedSessionLoginFormOutcome::Invalid => {
+            page_dispatched
+                && page_status == Some(200)
+                && page_body_state == SuppliedSessionBodyState::Complete
+                && matches!(
+                    form_error_code,
+                    Some("invalid_form_contract" | "invalid_csrf" | "invalid_form_body")
+                )
+        },
+        SuppliedSessionLoginFormOutcome::TransportFailed => {
+            page_status.is_none()
+                && page_body_state == SuppliedSessionBodyState::Unavailable
+                && form_error_code == Some("transport_failed")
+        },
+        SuppliedSessionLoginFormOutcome::RuntimeLimit => {
+            page_status.is_none()
+                && page_body_state == SuppliedSessionBodyState::Unavailable
+                && form_error_code == Some("runtime_limit")
+        },
+        SuppliedSessionLoginFormOutcome::Cancelled => {
+            page_status.is_none()
+                && page_body_state == SuppliedSessionBodyState::Unavailable
+                && form_error_code == Some("cancelled")
+        },
+        SuppliedSessionLoginFormOutcome::NotEvaluated => false,
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn valid_v3_login_submit_contract(
+    submit_outcome: SuppliedSessionLoginSubmitOutcome,
+    submit_dispatched: bool,
+    attempt_count: u8,
+    submit_status: Option<u16>,
+    submit_body_state: SuppliedSessionBodyState,
+    acquired_cookie_count: u8,
+) -> bool {
+    if submit_status.is_some_and(|status| !(100..=599).contains(&status)) {
+        return false;
+    }
+    match submit_outcome {
+        SuppliedSessionLoginSubmitOutcome::CookieAcquired => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status == Some(200)
+                && submit_body_state == SuppliedSessionBodyState::Complete
+                && acquired_cookie_count > 0
+        },
+        SuppliedSessionLoginSubmitOutcome::CookieUnavailable => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status == Some(200)
+                && submit_body_state == SuppliedSessionBodyState::Complete
+                && acquired_cookie_count == 0
+        },
+        SuppliedSessionLoginSubmitOutcome::HttpError => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status
+                    .is_some_and(|status| status != 200 && !(300..400).contains(&status))
+                && submit_body_state == SuppliedSessionBodyState::Complete
+                && acquired_cookie_count == 0
+        },
+        SuppliedSessionLoginSubmitOutcome::RedirectRefused => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status.is_some_and(|status| (300..400).contains(&status))
+                && matches!(
+                    submit_body_state,
+                    SuppliedSessionBodyState::Complete | SuppliedSessionBodyState::Incomplete
+                )
+                && acquired_cookie_count == 0
+        },
+        SuppliedSessionLoginSubmitOutcome::Incomplete => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status.is_some_and(|status| !(300..400).contains(&status))
+                && submit_body_state == SuppliedSessionBodyState::Incomplete
+                && acquired_cookie_count == 0
+        },
+        SuppliedSessionLoginSubmitOutcome::TransportFailed
+        | SuppliedSessionLoginSubmitOutcome::RuntimeLimit
+        | SuppliedSessionLoginSubmitOutcome::Cancelled => {
+            attempt_count == u8::from(submit_dispatched)
+                && submit_status.is_none()
+                && submit_body_state == SuppliedSessionBodyState::Unavailable
+                && acquired_cookie_count == 0
+        },
+        SuppliedSessionLoginSubmitOutcome::NotDispatched => {
+            !submit_dispatched
+                && attempt_count == 0
+                && submit_status.is_none()
+                && submit_body_state == SuppliedSessionBodyState::Unavailable
+                && acquired_cookie_count == 0
+        },
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn valid_v3_login_outcome_contract(
+    audit_outcome: SuppliedSessionAuditOutcome,
+    form_outcome: SuppliedSessionLoginFormOutcome,
+    submit_outcome: SuppliedSessionLoginSubmitOutcome,
+) -> bool {
+    match audit_outcome {
+        SuppliedSessionAuditOutcome::LoginFormUnavailable => {
+            form_outcome != SuppliedSessionLoginFormOutcome::Matched
+                && form_outcome != SuppliedSessionLoginFormOutcome::NotEvaluated
+                && submit_outcome == SuppliedSessionLoginSubmitOutcome::NotDispatched
+        },
+        SuppliedSessionAuditOutcome::LoginSubmitUnavailable => {
+            form_outcome == SuppliedSessionLoginFormOutcome::Matched
+                && !matches!(
+                    submit_outcome,
+                    SuppliedSessionLoginSubmitOutcome::CookieAcquired
+                        | SuppliedSessionLoginSubmitOutcome::CookieUnavailable
+                )
+        },
+        SuppliedSessionAuditOutcome::LoginCookieUnavailable => {
+            form_outcome == SuppliedSessionLoginFormOutcome::Matched
+                && submit_outcome == SuppliedSessionLoginSubmitOutcome::CookieUnavailable
+        },
+        SuppliedSessionAuditOutcome::RuntimeLimit => {
+            form_outcome == SuppliedSessionLoginFormOutcome::RuntimeLimit
+                || submit_outcome == SuppliedSessionLoginSubmitOutcome::RuntimeLimit
+                || submit_outcome == SuppliedSessionLoginSubmitOutcome::CookieAcquired
+        },
+        SuppliedSessionAuditOutcome::Cancelled => {
+            form_outcome == SuppliedSessionLoginFormOutcome::Cancelled
+                || submit_outcome == SuppliedSessionLoginSubmitOutcome::Cancelled
+                || submit_outcome == SuppliedSessionLoginSubmitOutcome::CookieAcquired
+        },
+        _ => submit_outcome == SuppliedSessionLoginSubmitOutcome::CookieAcquired,
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn valid_v3_form_cookie_count_contract(
+    declared_count: u8,
+    secure_count: u8,
+    submit_outcome: SuppliedSessionLoginSubmitOutcome,
+    acquired_cookie_count: u8,
+) -> bool {
+    (secure_count == 0 || secure_count == declared_count)
+        && (submit_outcome != SuppliedSessionLoginSubmitOutcome::CookieAcquired
+            || acquired_cookie_count == declared_count)
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn valid_v3_login_dispatch_contract(
+    form_outcome: SuppliedSessionLoginFormOutcome,
+    page_dispatched: bool,
+    submit_dispatched: bool,
+    response_bytes: u64,
+) -> bool {
+    (!submit_dispatched || form_outcome == SuppliedSessionLoginFormOutcome::Matched)
+        && (page_dispatched || submit_dispatched || response_bytes == 0)
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn valid_v3_login_epoch_transition(
+    final_epoch: u8,
+    startup_authenticated: bool,
+    startup_cookie_update_stopped_transition: bool,
+) -> bool {
+    match final_epoch {
+        1 => startup_authenticated,
+        0 => !startup_authenticated || startup_cookie_update_stopped_transition,
+        _ => false,
+    }
 }
 
 #[cfg(feature = "supplied-session-review")]
@@ -1153,16 +1499,25 @@ fn validate_supplied_session_audit(
         .filter(|resource| resource.outcome() == SuppliedSessionResourceOutcome::Committed)
         .count();
     let child_response_bytes = audit
-        .checkpoints()
-        .iter()
-        .map(|checkpoint| checkpoint.response_bytes())
-        .chain(
+        .login()
+        .map_or(0, |login| login.response_bytes())
+        .checked_add(
             audit
-                .resources()
+                .checkpoints()
                 .iter()
-                .map(|resource| resource.response_bytes()),
-        )
-        .try_fold(0_u64, u64::checked_add);
+                .map(|checkpoint| checkpoint.response_bytes())
+                .chain(
+                    audit
+                        .resources()
+                        .iter()
+                        .map(|resource| resource.response_bytes()),
+                )
+                .try_fold(0_u64, u64::checked_add)
+                .ok_or(AssessmentRunReportError::SuppliedSessionAuditMismatch)?,
+        );
+    let login_request_count = audit.login().map_or(0_u8, |login| {
+        u8::from(login.page_dispatched()).saturating_add(u8::from(login.submit_dispatched()))
+    });
     let cookie_contract_is_valid = match (
         audit.schema(),
         audit.credential_mechanism(),
@@ -1174,7 +1529,12 @@ fn validate_supplied_session_audit(
             SuppliedSessionCredentialMechanism::AuthorizationHeader,
             None,
             None,
-        ) => valid_v1_supplied_session_outcome(audit.outcome()),
+        ) => {
+            audit.credential_acquisition()
+                == SuppliedSessionCredentialAcquisition::SuppliedAuthorization
+                && audit.login().is_none()
+                && valid_v1_supplied_session_outcome(audit.outcome())
+        },
         (
             SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
             SuppliedSessionCredentialMechanism::CookieJar,
@@ -1182,7 +1542,10 @@ fn validate_supplied_session_audit(
             Some(lifecycle),
         ) => {
             let declared = usize::from(policy.declared_count());
-            (1..=MAX_SUPPLIED_SESSION_COOKIES).contains(&declared)
+            audit.credential_acquisition()
+                == SuppliedSessionCredentialAcquisition::SuppliedCookieJar
+                && audit.login().is_none()
+                && (1..=MAX_SUPPLIED_SESSION_COOKIES).contains(&declared)
                 && usize::from(policy.host_only_count())
                     .checked_add(usize::from(policy.domain_count()))
                     == Some(declared)
@@ -1214,6 +1577,51 @@ fn validate_supplied_session_audit(
                     lifecycle.update_classification_failure_count(),
                 )
         },
+        (
+            SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+            SuppliedSessionCredentialMechanism::CookieJar,
+            Some(policy),
+            Some(lifecycle),
+        ) => {
+            let declared = usize::from(policy.declared_count());
+            audit.credential_acquisition() == SuppliedSessionCredentialAcquisition::BoundedFormLogin
+                && selected_resource_count <= MAX_SUPPLIED_SESSION_RESOURCES.saturating_sub(1)
+                && (1..=MAX_SUPPLIED_SESSION_COOKIES).contains(&declared)
+                && usize::from(policy.host_only_count()) == declared
+                && policy.domain_count() == 0
+                && audit.login().is_some_and(|login| {
+                    valid_v3_form_cookie_count_contract(
+                        policy.declared_count(),
+                        policy.secure_count(),
+                        login.submit_outcome(),
+                        login.acquired_cookie_count(),
+                    )
+                })
+                && usize::from(policy.http_only_count()) == declared
+                && usize::from(policy.session_count()) == declared
+                && policy.persistent_count() == 0
+                && policy.same_site_missing_count() == 0
+                && policy.same_site_none_count() == 0
+                && usize::from(policy.same_site_strict_count())
+                    .checked_add(usize::from(policy.same_site_lax_count()))
+                    == Some(declared)
+                && policy.update_policy().as_str() == "stop_on_selected_cookie"
+                && policy.browser_semantics() == "attributes_preserved_not_browser_csrf_emulation"
+                && valid_v3_cookie_lifecycle_accounting(
+                    lifecycle.selected_update_response_count(),
+                    lifecycle.unselected_update_response_count(),
+                    lifecycle.update_classification_failure_count(),
+                    audit.dispatched_request_count(),
+                    login_request_count,
+                )
+                && lifecycle.updates_applied() == 0
+                && valid_v3_cookie_lifecycle_outcome(
+                    audit.outcome(),
+                    lifecycle.selected_update_response_count(),
+                    lifecycle.update_classification_failure_count(),
+                )
+                && valid_v3_login_audit(audit, lifecycle.initial_epoch(), lifecycle.final_epoch())
+        },
         _ => false,
     };
     if !cookie_contract_is_valid
@@ -1233,6 +1641,7 @@ fn validate_supplied_session_audit(
                 .checkpoints()
                 .len()
                 .checked_add(dispatched_resource_count)
+                .and_then(|count| count.checked_add(usize::from(login_request_count)))
                 .ok_or(AssessmentRunReportError::SuppliedSessionAuditMismatch)?
         || child_response_bytes != Some(audit.response_bytes())
         || !valid_supplied_session_response_limit(
@@ -2034,6 +2443,9 @@ mod tests {
         for outcome in [
             SuppliedSessionAuditOutcome::CredentialUpdateRequired,
             SuppliedSessionAuditOutcome::CredentialUpdateUnusable,
+            SuppliedSessionAuditOutcome::LoginFormUnavailable,
+            SuppliedSessionAuditOutcome::LoginSubmitUnavailable,
+            SuppliedSessionAuditOutcome::LoginCookieUnavailable,
         ] {
             assert!(!valid_v1_supplied_session_outcome(outcome));
         }
@@ -2051,8 +2463,169 @@ mod tests {
             0,
             1,
         ));
+        for outcome in [
+            SuppliedSessionAuditOutcome::LoginFormUnavailable,
+            SuppliedSessionAuditOutcome::LoginSubmitUnavailable,
+            SuppliedSessionAuditOutcome::LoginCookieUnavailable,
+        ] {
+            assert!(!valid_v2_cookie_lifecycle_outcome(outcome, 0, 0));
+        }
+        assert!(valid_v3_cookie_lifecycle_outcome(
+            SuppliedSessionAuditOutcome::LoginCookieUnavailable,
+            0,
+            0,
+        ));
+        assert!(!valid_v3_cookie_lifecycle_outcome(
+            SuppliedSessionAuditOutcome::LoginCookieUnavailable,
+            1,
+            0,
+        ));
         assert!(valid_v2_cookie_lifecycle_accounting(1, 1, 0, 1));
         assert!(!valid_v2_cookie_lifecycle_accounting(0, 1, 1, 1));
+        assert!(valid_v3_cookie_lifecycle_accounting(0, 3, 0, 5, 2));
+        assert!(!valid_v3_cookie_lifecycle_accounting(0, 4, 0, 5, 2));
+        assert!(!valid_v3_cookie_lifecycle_accounting(0, 0, 0, 1, 2));
+
+        assert!(valid_v3_login_outcome_contract(
+            SuppliedSessionAuditOutcome::RuntimeLimit,
+            SuppliedSessionLoginFormOutcome::RuntimeLimit,
+            SuppliedSessionLoginSubmitOutcome::NotDispatched,
+        ));
+        assert!(valid_v3_login_outcome_contract(
+            SuppliedSessionAuditOutcome::Cancelled,
+            SuppliedSessionLoginFormOutcome::Matched,
+            SuppliedSessionLoginSubmitOutcome::Cancelled,
+        ));
+        assert!(valid_v3_login_outcome_contract(
+            SuppliedSessionAuditOutcome::RuntimeLimit,
+            SuppliedSessionLoginFormOutcome::Matched,
+            SuppliedSessionLoginSubmitOutcome::CookieAcquired,
+        ));
+        for outcome in [
+            SuppliedSessionAuditOutcome::RuntimeLimit,
+            SuppliedSessionAuditOutcome::Cancelled,
+        ] {
+            assert!(!valid_v3_login_outcome_contract(
+                outcome,
+                SuppliedSessionLoginFormOutcome::Missing,
+                SuppliedSessionLoginSubmitOutcome::NotDispatched,
+            ));
+        }
+
+        assert!(valid_v3_login_page_contract(
+            SuppliedSessionLoginFormOutcome::Invalid,
+            Some("invalid_descriptor"),
+            false,
+            None,
+            SuppliedSessionBodyState::Unavailable,
+        ));
+        assert!(!valid_v3_login_page_contract(
+            SuppliedSessionLoginFormOutcome::Invalid,
+            Some("invalid_descriptor"),
+            true,
+            None,
+            SuppliedSessionBodyState::Unavailable,
+        ));
+        assert!(valid_v3_login_page_contract(
+            SuppliedSessionLoginFormOutcome::Missing,
+            Some("missing_csrf"),
+            true,
+            Some(200),
+            SuppliedSessionBodyState::Complete,
+        ));
+        assert!(!valid_v3_login_page_contract(
+            SuppliedSessionLoginFormOutcome::Missing,
+            Some("missing_csrf"),
+            true,
+            Some(404),
+            SuppliedSessionBodyState::Unavailable,
+        ));
+        assert!(!valid_v3_login_page_contract(
+            SuppliedSessionLoginFormOutcome::RuntimeLimit,
+            Some("runtime_limit"),
+            true,
+            Some(200),
+            SuppliedSessionBodyState::Complete,
+        ));
+        assert!(!valid_v3_login_page_contract(
+            SuppliedSessionLoginFormOutcome::IneligibleResponse,
+            Some("inexact_final_target"),
+            true,
+            Some(600),
+            SuppliedSessionBodyState::Complete,
+        ));
+        assert!(valid_v3_login_submit_contract(
+            SuppliedSessionLoginSubmitOutcome::RuntimeLimit,
+            true,
+            1,
+            None,
+            SuppliedSessionBodyState::Unavailable,
+            0,
+        ));
+        assert!(!valid_v3_login_submit_contract(
+            SuppliedSessionLoginSubmitOutcome::RuntimeLimit,
+            true,
+            1,
+            Some(200),
+            SuppliedSessionBodyState::Complete,
+            0,
+        ));
+        assert!(!valid_v3_login_submit_contract(
+            SuppliedSessionLoginSubmitOutcome::HttpError,
+            true,
+            1,
+            Some(99),
+            SuppliedSessionBodyState::Complete,
+            0,
+        ));
+        assert!(valid_v3_form_cookie_count_contract(
+            1,
+            0,
+            SuppliedSessionLoginSubmitOutcome::CookieAcquired,
+            1,
+        ));
+        assert!(valid_v3_form_cookie_count_contract(
+            2,
+            2,
+            SuppliedSessionLoginSubmitOutcome::CookieAcquired,
+            2,
+        ));
+        assert!(!valid_v3_form_cookie_count_contract(
+            2,
+            1,
+            SuppliedSessionLoginSubmitOutcome::CookieAcquired,
+            2,
+        ));
+        assert!(!valid_v3_form_cookie_count_contract(
+            2,
+            2,
+            SuppliedSessionLoginSubmitOutcome::CookieAcquired,
+            1,
+        ));
+        assert!(valid_v3_login_dispatch_contract(
+            SuppliedSessionLoginFormOutcome::Matched,
+            true,
+            true,
+            32,
+        ));
+        assert!(!valid_v3_login_dispatch_contract(
+            SuppliedSessionLoginFormOutcome::Missing,
+            true,
+            true,
+            32,
+        ));
+        assert!(valid_v3_login_dispatch_contract(
+            SuppliedSessionLoginFormOutcome::Invalid,
+            false,
+            false,
+            0,
+        ));
+        assert!(!valid_v3_login_dispatch_contract(
+            SuppliedSessionLoginFormOutcome::Invalid,
+            false,
+            false,
+            1,
+        ));
     }
 
     #[test]
@@ -2597,5 +3170,18 @@ mod tests {
             assert!(!output.contains("credential"));
             assert!(!output.contains(PRIVATE_EXACT_ORIGIN));
         }
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn form_login_epoch_requires_health_or_the_exact_pre_transition_cookie_stop() {
+        assert!(valid_v3_login_epoch_transition(1, true, false));
+        assert!(!valid_v3_login_epoch_transition(1, false, false));
+
+        assert!(valid_v3_login_epoch_transition(0, false, false));
+        assert!(valid_v3_login_epoch_transition(0, true, true));
+        assert!(!valid_v3_login_epoch_transition(0, true, false));
+
+        assert!(!valid_v3_login_epoch_transition(2, true, true));
     }
 }

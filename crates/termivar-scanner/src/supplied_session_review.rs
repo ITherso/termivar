@@ -19,10 +19,14 @@ use zeroize::Zeroizing;
 pub const SUPPLIED_SESSION_POLICY_SCHEMA: &str = "security.supplied-session-policy/v1";
 /// Strict V2 supplied-cookie policy schema.
 pub const SUPPLIED_SESSION_COOKIE_POLICY_SCHEMA: &str = "security.supplied-session-policy/v2";
+/// Strict V3 bounded form-login policy schema.
+pub const SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA: &str = "security.supplied-session-policy/v3";
 /// Maximum accepted policy bytes.
 pub const HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES: usize = 64 * 1024;
 /// Maximum accepted supplied-cookie secret bytes.
 pub const HARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES: usize = 16 * 1024;
+/// Maximum accepted username/password secret bytes for one form-login attempt.
+pub const HARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES: usize = 8 * 1024;
 /// Maximum supplied cookies declared by V2.
 pub const MAX_SUPPLIED_SESSION_COOKIES: usize = 8;
 /// Maximum composed `Cookie` request-header bytes.
@@ -42,6 +46,10 @@ pub const MAX_SUPPLIED_SESSION_WALL_TIME_MS: u64 = 10_000;
 
 pub(crate) const SUPPLIED_SESSION_HEALTH_ACTION_ID: &str = "web.review.supplied-session.health";
 pub(crate) const SUPPLIED_SESSION_RESOURCE_ACTION_ID: &str = "web.review.supplied-session.resource";
+pub(crate) const SUPPLIED_SESSION_LOGIN_PAGE_ACTION_ID: &str =
+    "web.review.supplied-session.login-page";
+pub(crate) const SUPPLIED_SESSION_LOGIN_SUBMIT_ACTION_ID: &str =
+    "web.review.supplied-session.login-submit";
 
 const MAX_PRINCIPAL_ALIAS_BYTES: usize = 128;
 const MAX_HEALTH_FIELD_BYTES: usize = 128;
@@ -50,12 +58,27 @@ const MAX_AUTHORIZATION_HEADER_BYTES: usize = 8 * 1024;
 const MAX_COOKIE_ID_BYTES: usize = 128;
 const MAX_COOKIE_NAME_BYTES: usize = 128;
 const MAX_COOKIE_VALUE_BYTES: usize = 4 * 1024;
+const MAX_LOGIN_USERNAME_BYTES: usize = 256;
+const MAX_LOGIN_PASSWORD_BYTES: usize = 4 * 1024;
+const MAX_LOGIN_FIELD_BYTES: usize = 128;
+const MAX_LOGIN_CSRF_VALUE_BYTES: usize = 2 * 1024;
+// Every UTF-8 byte may expand to one `%XX` triplet. Three field names, three
+// values, three `=` separators, and two `&` separators form the closed V3 body.
+const MAX_LOGIN_FORM_BODY_BYTES: usize = (MAX_LOGIN_FIELD_BYTES * 3
+    + MAX_LOGIN_USERNAME_BYTES
+    + MAX_LOGIN_PASSWORD_BYTES
+    + MAX_LOGIN_CSRF_VALUE_BYTES)
+    * 3
+    + 5;
 const POLICY_REFERENCE_DOMAIN: &[u8] = b"security.supplied-session-policy.reference.v1\0";
 const COOKIE_POLICY_REFERENCE_DOMAIN: &[u8] = b"security.supplied-session-policy.reference.v2\0";
+const FORM_LOGIN_POLICY_REFERENCE_DOMAIN: &[u8] =
+    b"security.supplied-session-policy.reference.v3\0";
 const APPLICATION_REFERENCE_DOMAIN: &[u8] = b"security.supplied-session-application.reference.v1\0";
 const HEALTH_FIELD_REFERENCE_DOMAIN: &[u8] =
     b"security.supplied-session-health-field.reference.v1\0";
 const RESOURCE_REFERENCE_DOMAIN: &[u8] = b"security.supplied-session-resource.reference.v1\0";
+const LOGIN_REFERENCE_DOMAIN: &[u8] = b"security.supplied-session-login.reference.v1\0";
 const REQUEST_DESCRIPTOR_REFERENCE_DOMAIN: &[u8] =
     b"security.supplied-session-request-descriptor.reference.v1\0";
 const SUPPLIED_SESSION_PRINCIPAL_REFERENCE: &str = "supplied-session-principal-0001";
@@ -69,6 +92,8 @@ pub enum SuppliedSessionPolicyVersion {
     V1,
     /// Supplied-cookie policy V2.
     V2,
+    /// One bounded form login that establishes a cookie session.
+    V3,
 }
 
 impl SuppliedSessionPolicyVersion {
@@ -77,6 +102,31 @@ impl SuppliedSessionPolicyVersion {
         match self {
             Self::V1 => SUPPLIED_SESSION_POLICY_SCHEMA,
             Self::V2 => SUPPLIED_SESSION_COOKIE_POLICY_SCHEMA,
+            Self::V3 => SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA,
+        }
+    }
+}
+
+/// How the credential used for protected requests is established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SuppliedSessionCredentialAcquisition {
+    /// The caller supplied a complete Authorization value.
+    SuppliedAuthorization,
+    /// The caller supplied a bounded cookie jar.
+    SuppliedCookieJar,
+    /// One explicit form login established the bounded cookie jar.
+    BoundedFormLogin,
+}
+
+impl SuppliedSessionCredentialAcquisition {
+    /// Exact stable wire token.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SuppliedAuthorization => "supplied_authorization",
+            Self::SuppliedCookieJar => "supplied_cookie_jar",
+            Self::BoundedFormLogin => "bounded_form_login",
         }
     }
 }
@@ -187,6 +237,9 @@ pub enum SuppliedSessionPolicyError {
     /// Cookie metadata was unsafe, out of scope, duplicated, or internally inconsistent.
     #[error("supplied-session cookie metadata is invalid")]
     InvalidCookieMetadata,
+    /// Form-login paths, field bindings, acquisition, or attempt limit were invalid.
+    #[error("supplied-session form-login policy is invalid")]
+    InvalidFormLogin,
     /// A policy limit was zero, inconsistent, or above a compiled maximum.
     #[error("supplied-session limits are invalid")]
     InvalidLimits,
@@ -226,6 +279,24 @@ pub enum SuppliedSessionCookieError {
     /// Applicable cookie pairs exceeded the request-header ceiling.
     #[error("supplied-session cookie header exceeds its compiled byte limit")]
     HeaderTooLarge,
+}
+
+/// Static, redaction-safe form credential validation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum SuppliedSessionFormCredentialError {
+    /// Secret input exceeded its compiled byte limit.
+    #[error("supplied-session form credential exceeds its compiled byte limit")]
+    SecretTooLarge,
+    /// Secret rows, identifiers, values, or their exact declared set were invalid.
+    #[error("supplied-session form credential is malformed")]
+    MalformedSecret,
+    /// The selected policy does not admit bounded form login.
+    #[error("supplied-session form credential does not match the selected policy")]
+    PolicyMismatch,
+    /// The extracted form token was absent, malformed, or too large.
+    #[error("supplied-session login form token is invalid")]
+    InvalidCsrfToken,
 }
 
 /// One move-only complete `Authorization` header value.
@@ -485,6 +556,76 @@ impl SuppliedSessionCookies {
         Ok(cookies)
     }
 
+    /// Acquires the exact host-only session-cookie set declared by a V3 policy.
+    ///
+    /// This sealed transition accepts no Domain, persistence, extension, or
+    /// undeclared cookie fields. Only copied cookie values enter the guarded
+    /// backing allocation; response header bytes remain transport-owned.
+    pub(crate) fn from_form_login_set_cookie_fields<'a, I>(
+        policy: &SuppliedSessionPolicy,
+        fields: I,
+        now_unix_seconds: i64,
+    ) -> Result<Self, SuppliedSessionCookieError>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        if policy.version != SuppliedSessionPolicyVersion::V3
+            || policy.credential_acquisition
+                != SuppliedSessionCredentialAcquisition::BoundedFormLogin
+            || policy.cookies.is_empty()
+        {
+            return Err(SuppliedSessionCookieError::PolicyMismatch);
+        }
+        let mut backing = Zeroizing::new(Vec::new());
+        let mut ranges: Vec<Option<Range<usize>>> =
+            (0..policy.cookies.len()).map(|_| None).collect();
+        let mut field_count = 0_usize;
+        let mut total_bytes = 0_usize;
+        for raw in fields {
+            field_count = field_count.saturating_add(1);
+            total_bytes = total_bytes.saturating_add(raw.len());
+            if field_count > MAX_SUPPLIED_SESSION_COOKIES
+                || raw.is_empty()
+                || raw.len() > MAX_COOKIE_VALUE_BYTES.saturating_add(1024)
+                || total_bytes > HARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES
+            {
+                return Err(SuppliedSessionCookieError::MalformedSecret);
+            }
+            let parsed = parse_form_login_set_cookie(raw, policy)?;
+            if ranges[parsed.metadata_index].is_some() {
+                return Err(SuppliedSessionCookieError::MalformedSecret);
+            }
+            let start = backing.len();
+            backing.extend_from_slice(parsed.value);
+            let end = backing.len();
+            ranges[parsed.metadata_index] = Some(start..end);
+        }
+        if field_count != policy.cookies.len() || ranges.iter().any(Option::is_none) {
+            return Err(SuppliedSessionCookieError::MalformedSecret);
+        }
+        let values = ranges
+            .into_iter()
+            .enumerate()
+            .map(|(metadata_index, range)| SuppliedSessionCookieValue {
+                metadata_index,
+                range: range.expect("the exact V3 cookie set was checked above"),
+            })
+            .collect::<Vec<_>>();
+        let cookies = Self {
+            backing,
+            values,
+            policy_reference: policy.policy_reference.clone(),
+            principal_alias: policy.principal_alias.clone(),
+        };
+        if !policy
+            .execution_targets()
+            .all(|target| cookies.has_applicable_cookie(policy, target, now_unix_seconds))
+        {
+            return Err(SuppliedSessionCookieError::IncompleteInitialCoverage);
+        }
+        Ok(cookies)
+    }
+
     /// Number of secret cookie values retained by this jar.
     pub fn cookie_count(&self) -> usize {
         self.values.len()
@@ -562,8 +703,10 @@ impl SuppliedSessionCookies {
     }
 
     fn matches_policy(&self, policy: &SuppliedSessionPolicy) -> bool {
-        policy.version == SuppliedSessionPolicyVersion::V2
-            && policy.credential_mechanism == SuppliedSessionCredentialMechanism::CookieJar
+        matches!(
+            policy.version,
+            SuppliedSessionPolicyVersion::V2 | SuppliedSessionPolicyVersion::V3
+        ) && policy.credential_mechanism == SuppliedSessionCredentialMechanism::CookieJar
             && self.policy_reference == policy.policy_reference
             && self.principal_alias == policy.principal_alias
             && self.values.len() == policy.cookies.len()
@@ -583,6 +726,112 @@ impl SuppliedSessionCookies {
             )
         })
     }
+}
+
+struct ParsedFormLoginCookie<'a> {
+    metadata_index: usize,
+    value: &'a [u8],
+}
+
+fn parse_form_login_set_cookie<'a>(
+    raw: &'a [u8],
+    policy: &SuppliedSessionPolicy,
+) -> Result<ParsedFormLoginCookie<'a>, SuppliedSessionCookieError> {
+    let mut segments = raw.split(|byte| *byte == b';');
+    let pair = trim_cookie_segment(
+        segments
+            .next()
+            .ok_or(SuppliedSessionCookieError::MalformedSecret)?,
+    );
+    let equals = pair
+        .iter()
+        .position(|byte| *byte == b'=')
+        .ok_or(SuppliedSessionCookieError::MalformedSecret)?;
+    let name = std::str::from_utf8(&pair[..equals])
+        .map_err(|_| SuppliedSessionCookieError::MalformedSecret)?;
+    let value = &pair[equals + 1..];
+    if name.is_empty()
+        || value.is_empty()
+        || value.len() > MAX_COOKIE_VALUE_BYTES
+        || !value.iter().copied().all(cookie_octet)
+    {
+        return Err(SuppliedSessionCookieError::MalformedSecret);
+    }
+    let mut path = None;
+    let mut secure = false;
+    let mut http_only = false;
+    let mut same_site = None;
+    for raw_attribute in segments {
+        let attribute = trim_cookie_segment(raw_attribute);
+        if attribute.is_empty() {
+            return Err(SuppliedSessionCookieError::MalformedSecret);
+        }
+        let (attribute_name, attribute_value) = attribute
+            .iter()
+            .position(|byte| *byte == b'=')
+            .map_or((attribute, None), |offset| {
+                (&attribute[..offset], Some(&attribute[offset + 1..]))
+            });
+        if attribute_name.eq_ignore_ascii_case(b"path") {
+            let candidate = attribute_value.ok_or(SuppliedSessionCookieError::MalformedSecret)?;
+            if path.replace(candidate).is_some() {
+                return Err(SuppliedSessionCookieError::MalformedSecret);
+            }
+        } else if attribute_name.eq_ignore_ascii_case(b"secure") {
+            if attribute_value.is_some() || secure {
+                return Err(SuppliedSessionCookieError::MalformedSecret);
+            }
+            secure = true;
+        } else if attribute_name.eq_ignore_ascii_case(b"httponly") {
+            if attribute_value.is_some() || http_only {
+                return Err(SuppliedSessionCookieError::MalformedSecret);
+            }
+            http_only = true;
+        } else if attribute_name.eq_ignore_ascii_case(b"samesite") {
+            let candidate = attribute_value.ok_or(SuppliedSessionCookieError::MalformedSecret)?;
+            if same_site.replace(candidate).is_some() {
+                return Err(SuppliedSessionCookieError::MalformedSecret);
+            }
+        } else {
+            return Err(SuppliedSessionCookieError::MalformedSecret);
+        }
+    }
+    let path = path.ok_or(SuppliedSessionCookieError::MalformedSecret)?;
+    let same_site = same_site.ok_or(SuppliedSessionCookieError::MalformedSecret)?;
+    let mut matching_metadata = policy.cookies.iter().enumerate().filter(|(_, cookie)| {
+        cookie.name == name
+            && path == cookie.path.as_bytes()
+            && secure == cookie.secure
+            && http_only == cookie.http_only
+            && same_site.eq_ignore_ascii_case(cookie.same_site.as_str().as_bytes())
+    });
+    let metadata_index = matching_metadata
+        .next()
+        .map(|(index, _)| index)
+        .ok_or(SuppliedSessionCookieError::MalformedSecret)?;
+    if matching_metadata.next().is_some() {
+        return Err(SuppliedSessionCookieError::MalformedSecret);
+    }
+    Ok(ParsedFormLoginCookie {
+        metadata_index,
+        value,
+    })
+}
+
+fn trim_cookie_segment(mut value: &[u8]) -> &[u8] {
+    while value
+        .first()
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+    {
+        value = &value[1..];
+    }
+    while value
+        .last()
+        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+    {
+        value = &value[..value.len() - 1];
+    }
+    value
 }
 
 impl fmt::Debug for SuppliedSessionCookies {
@@ -661,8 +910,10 @@ pub struct SuppliedSessionPolicy {
     health_json_field: String,
     resources: Vec<SuppliedSessionResource>,
     credential_mechanism: SuppliedSessionCredentialMechanism,
+    credential_acquisition: SuppliedSessionCredentialAcquisition,
     cookie_update_policy: Option<SuppliedSessionCookieUpdatePolicy>,
     cookies: Vec<SuppliedSessionCookieMetadata>,
+    login: Option<SuppliedSessionLoginPolicy>,
     policy_reference: String,
     application_reference: String,
     principal_reference: String,
@@ -678,6 +929,236 @@ struct SuppliedSessionResource {
     reference: String,
 }
 
+/// One prevalidated runtime input: either a ready outbound credential or the
+/// guarded values needed for the single bounded login transition.
+pub enum SuppliedSessionRuntimeInput {
+    /// An already supplied Authorization value or cookie jar.
+    Ready(SuppliedSessionCredential),
+    /// One username/password pair for a policy-bound form login.
+    FormLogin(SuppliedSessionFormCredential),
+}
+
+impl SuppliedSessionRuntimeInput {
+    /// Whether this runtime input is exactly compatible with the policy.
+    pub fn matches_policy(&self, policy: &SuppliedSessionPolicy) -> bool {
+        match self {
+            Self::Ready(credential) => {
+                policy.version() != SuppliedSessionPolicyVersion::V3
+                    && policy.credential_mechanism() == credential.mechanism()
+            },
+            Self::FormLogin(credential) => credential.matches_policy(policy),
+        }
+    }
+}
+
+impl From<SuppliedSessionCredential> for SuppliedSessionRuntimeInput {
+    fn from(value: SuppliedSessionCredential) -> Self {
+        Self::Ready(value)
+    }
+}
+
+impl From<SuppliedSessionAuthorization> for SuppliedSessionRuntimeInput {
+    fn from(value: SuppliedSessionAuthorization) -> Self {
+        Self::Ready(SuppliedSessionCredential::Authorization(value))
+    }
+}
+
+impl From<SuppliedSessionCookies> for SuppliedSessionRuntimeInput {
+    fn from(value: SuppliedSessionCookies) -> Self {
+        Self::Ready(SuppliedSessionCredential::SuppliedCookies(value))
+    }
+}
+
+impl From<SuppliedSessionFormCredential> for SuppliedSessionRuntimeInput {
+    fn from(value: SuppliedSessionFormCredential) -> Self {
+        Self::FormLogin(value)
+    }
+}
+
+impl fmt::Debug for SuppliedSessionRuntimeInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ready(_) => formatter.write_str("SuppliedSessionRuntimeInput::Ready(<redacted>)"),
+            Self::FormLogin(_) => {
+                formatter.write_str("SuppliedSessionRuntimeInput::FormLogin(<redacted>)")
+            },
+        }
+    }
+}
+
+/// Move-only username/password pair for one bounded form-login attempt.
+pub struct SuppliedSessionFormCredential {
+    backing: Zeroizing<Vec<u8>>,
+    username: Range<usize>,
+    password: Range<usize>,
+    policy_reference: String,
+    principal_alias: String,
+}
+
+impl SuppliedSessionFormCredential {
+    /// Parses exactly `username<TAB>value` and `password<TAB>value` rows.
+    pub fn parse_tsv(
+        policy: &SuppliedSessionPolicy,
+        source: impl Into<Vec<u8>>,
+    ) -> Result<Self, SuppliedSessionFormCredentialError> {
+        if policy.version != SuppliedSessionPolicyVersion::V3
+            || policy.credential_acquisition
+                != SuppliedSessionCredentialAcquisition::BoundedFormLogin
+        {
+            return Err(SuppliedSessionFormCredentialError::PolicyMismatch);
+        }
+        let backing = Zeroizing::new(source.into());
+        if backing.is_empty() || backing.starts_with(&[0xef, 0xbb, 0xbf]) {
+            return Err(SuppliedSessionFormCredentialError::MalformedSecret);
+        }
+        if backing.len() > HARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES {
+            return Err(SuppliedSessionFormCredentialError::SecretTooLarge);
+        }
+        let mut username = None;
+        let mut password = None;
+        let mut cursor = 0_usize;
+        while cursor < backing.len() {
+            let physical_end = backing[cursor..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(backing.len(), |offset| cursor + offset);
+            let mut line_end = physical_end;
+            if line_end > cursor && backing[line_end - 1] == b'\r' {
+                line_end -= 1;
+            }
+            if line_end == cursor {
+                return Err(SuppliedSessionFormCredentialError::MalformedSecret);
+            }
+            let line = &backing[cursor..line_end];
+            let Some(tab_offset) = line.iter().position(|byte| *byte == b'\t') else {
+                return Err(SuppliedSessionFormCredentialError::MalformedSecret);
+            };
+            if line[tab_offset + 1..].contains(&b'\t') {
+                return Err(SuppliedSessionFormCredentialError::MalformedSecret);
+            }
+            let label = &line[..tab_offset];
+            let value_start = cursor
+                .checked_add(tab_offset)
+                .and_then(|value| value.checked_add(1))
+                .ok_or(SuppliedSessionFormCredentialError::MalformedSecret)?;
+            let value = &backing[value_start..line_end];
+            let maximum = match label {
+                b"username" if username.is_none() => MAX_LOGIN_USERNAME_BYTES,
+                b"password" if password.is_none() => MAX_LOGIN_PASSWORD_BYTES,
+                _ => return Err(SuppliedSessionFormCredentialError::MalformedSecret),
+            };
+            if value.is_empty()
+                || value.len() > maximum
+                || value
+                    .iter()
+                    .any(|byte| matches!(*byte, b'\0' | b'\r' | b'\n' | b'\t'))
+                || std::str::from_utf8(value).is_err()
+            {
+                return Err(SuppliedSessionFormCredentialError::MalformedSecret);
+            }
+            let range = value_start..line_end;
+            match label {
+                b"username" => username = Some(range),
+                b"password" => password = Some(range),
+                _ => unreachable!("the exact labels were matched above"),
+            }
+            cursor = if physical_end == backing.len() {
+                backing.len()
+            } else {
+                physical_end + 1
+            };
+        }
+        let (Some(username), Some(password)) = (username, password) else {
+            return Err(SuppliedSessionFormCredentialError::MalformedSecret);
+        };
+        Ok(Self {
+            backing,
+            username,
+            password,
+            policy_reference: policy.policy_reference.clone(),
+            principal_alias: policy.principal_alias.clone(),
+        })
+    }
+
+    fn value(&self, range: Range<usize>) -> &str {
+        std::str::from_utf8(&self.backing[range])
+            .expect("form credential UTF-8 was validated at construction")
+    }
+
+    pub(crate) fn matches_policy(&self, policy: &SuppliedSessionPolicy) -> bool {
+        policy.version == SuppliedSessionPolicyVersion::V3
+            && policy.credential_acquisition
+                == SuppliedSessionCredentialAcquisition::BoundedFormLogin
+            && self.policy_reference == policy.policy_reference
+            && self.principal_alias == policy.principal_alias
+    }
+
+    pub(crate) fn compose_form_body(
+        &self,
+        policy: &SuppliedSessionPolicy,
+        csrf: &str,
+    ) -> Result<SuppliedSessionFormBody, SuppliedSessionFormCredentialError> {
+        if !self.matches_policy(policy)
+            || csrf.is_empty()
+            || csrf.len() > MAX_LOGIN_CSRF_VALUE_BYTES
+            || csrf
+                .bytes()
+                .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
+        {
+            return Err(SuppliedSessionFormCredentialError::InvalidCsrfToken);
+        }
+        let (Some(csrf_field), Some(username_field), Some(password_field)) = (
+            policy.login_csrf_field(),
+            policy.login_username_field(),
+            policy.login_password_field(),
+        ) else {
+            return Err(SuppliedSessionFormCredentialError::PolicyMismatch);
+        };
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        serializer.append_pair(csrf_field, csrf);
+        serializer.append_pair(username_field, self.value(self.username.clone()));
+        serializer.append_pair(password_field, self.value(self.password.clone()));
+        let body = serializer.finish();
+        if body.len() > MAX_LOGIN_FORM_BODY_BYTES {
+            return Err(SuppliedSessionFormCredentialError::SecretTooLarge);
+        }
+        Ok(SuppliedSessionFormBody {
+            value: Zeroizing::new(body),
+        })
+    }
+}
+
+impl fmt::Debug for SuppliedSessionFormCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SuppliedSessionFormCredential(<redacted>)")
+    }
+}
+
+/// Move-only encoded form body exposed only to the broker boundary.
+pub(crate) struct SuppliedSessionFormBody {
+    value: Zeroizing<String>,
+}
+
+impl SuppliedSessionFormBody {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.value.as_bytes()
+    }
+}
+
+impl fmt::Debug for SuppliedSessionFormBody {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SuppliedSessionFormBody(<redacted>)")
+    }
+}
+
+struct SuppliedSessionLoginPolicy {
+    url: Url,
+    username_field: String,
+    password_field: String,
+    csrf_field: String,
+    max_attempts: u8,
+}
+
 impl SuppliedSessionPolicy {
     /// Parses and resolves a strict policy beneath `application_url`.
     pub fn parse_toml(
@@ -690,16 +1171,25 @@ impl SuppliedSessionPolicy {
         validate_application_url(application_url)?;
         let source =
             std::str::from_utf8(source).map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)?;
-        match toml::from_str::<WirePolicy>(source) {
-            Ok(wire) => Self::from_v1_wire(application_url, wire),
-            Err(_) => {
-                let wire: WireCookiePolicy = toml::from_str(source)
-                    .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)?;
-                if wire.schema == SUPPLIED_SESSION_POLICY_SCHEMA {
-                    return Err(SuppliedSessionPolicyError::MalformedPolicy);
-                }
-                Self::from_v2_wire(application_url, wire)
+        let value: toml::Value =
+            toml::from_str(source).map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)?;
+        let schema = value
+            .get("schema")
+            .and_then(toml::Value::as_str)
+            .ok_or(SuppliedSessionPolicyError::MalformedPolicy)?;
+        match schema {
+            SUPPLIED_SESSION_POLICY_SCHEMA => toml::from_str::<WirePolicy>(source)
+                .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
+                .and_then(|wire| Self::from_v1_wire(application_url, wire)),
+            SUPPLIED_SESSION_COOKIE_POLICY_SCHEMA => toml::from_str::<WireCookiePolicy>(source)
+                .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
+                .and_then(|wire| Self::from_v2_wire(application_url, wire)),
+            SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA => {
+                toml::from_str::<WireFormLoginPolicy>(source)
+                    .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
+                    .and_then(|wire| Self::from_v3_wire(application_url, wire))
             },
+            _ => Err(SuppliedSessionPolicyError::UnsupportedSchema),
         }
     }
 
@@ -770,8 +1260,10 @@ impl SuppliedSessionPolicy {
             health_json_field: wire.health_json_field.clone(),
             resources,
             credential_mechanism,
+            credential_acquisition: SuppliedSessionCredentialAcquisition::SuppliedAuthorization,
             cookie_update_policy: None,
             cookies: Vec::new(),
+            login: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -912,8 +1404,112 @@ impl SuppliedSessionPolicy {
             health_json_field: wire.health_json_field.clone(),
             resources,
             credential_mechanism,
+            credential_acquisition: SuppliedSessionCredentialAcquisition::SuppliedCookieJar,
             cookie_update_policy: Some(cookie_update_policy),
             cookies,
+            login: None,
+            policy_reference,
+            application_reference: reference(
+                APPLICATION_REFERENCE_DOMAIN,
+                application_url.as_str(),
+                "supplied-session-application-sha256",
+            ),
+            principal_reference: SUPPLIED_SESSION_PRINCIPAL_REFERENCE.to_owned(),
+            health_field_reference: reference(
+                HEALTH_FIELD_REFERENCE_DOMAIN,
+                &wire.health_json_field,
+                "supplied-session-health-field-sha256",
+            ),
+            max_session_requests: wire.max_session_requests,
+            max_total_response_bytes: wire.max_total_response_bytes,
+            max_response_body_bytes: wire.max_response_body_bytes,
+            max_wall_time_ms: wire.max_wall_time_ms,
+        })
+    }
+
+    fn from_v3_wire(
+        application_url: &Url,
+        wire: WireFormLoginPolicy,
+    ) -> Result<Self, SuppliedSessionPolicyError> {
+        if wire.schema != SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA
+            || wire.credential_mechanism != "cookie_jar"
+            || wire.credential_acquisition != "bounded_form_login"
+            || wire.max_login_attempts != 1
+        {
+            return Err(SuppliedSessionPolicyError::InvalidFormLogin);
+        }
+        let cookie_update_policy = match wire.cookie_update_policy.as_str() {
+            "stop_on_selected_cookie" => SuppliedSessionCookieUpdatePolicy::StopOnSelectedCookie,
+            _ => return Err(SuppliedSessionPolicyError::UnsupportedCookieUpdatePolicy),
+        };
+        validate_token(&wire.principal_alias, MAX_PRINCIPAL_ALIAS_BYTES)
+            .map_err(|_| SuppliedSessionPolicyError::InvalidPrincipalAlias)?;
+        validate_token(&wire.health_json_field, MAX_HEALTH_FIELD_BYTES)
+            .map_err(|_| SuppliedSessionPolicyError::InvalidHealthField)?;
+        for field in [&wire.username_field, &wire.password_field, &wire.csrf_field] {
+            validate_html_field_name(field)?;
+        }
+        if wire.username_field == wire.password_field
+            || wire.username_field == wire.csrf_field
+            || wire.password_field == wire.csrf_field
+            || wire.resources.is_empty()
+            || wire.resources.len() > MAX_SUPPLIED_SESSION_RESOURCES.saturating_sub(1)
+        {
+            return Err(SuppliedSessionPolicyError::InvalidFormLogin);
+        }
+        validate_form_login_policy_limits(
+            wire.resources.len(),
+            wire.max_session_requests,
+            wire.max_total_response_bytes,
+            wire.max_response_body_bytes,
+            wire.max_wall_time_ms,
+        )?;
+        if wire.login_method != "post" || wire.login_encoding != "application/x-www-form-urlencoded"
+        {
+            return Err(SuppliedSessionPolicyError::InvalidFormLogin);
+        }
+        let login_url = resolve_login_path(application_url, &wire.login_path)?;
+        let health_url = resolve_safe_path(application_url, &wire.health_path)?;
+        let mut seen_resources = std::collections::BTreeSet::new();
+        let mut resources = Vec::with_capacity(wire.resources.len());
+        for raw in &wire.resources {
+            let url = resolve_safe_path(application_url, raw)?;
+            if url == health_url
+                || url == login_url
+                || !seen_resources.insert(url.as_str().to_owned())
+            {
+                return Err(SuppliedSessionPolicyError::InvalidPath);
+            }
+            resources.push(SuppliedSessionResource {
+                reference: reference(
+                    RESOURCE_REFERENCE_DOMAIN,
+                    url.as_str(),
+                    "supplied-session-resource-sha256",
+                ),
+                url,
+            });
+        }
+        let cookies = validate_v3_cookie_metadata(application_url, &health_url, &resources, &wire)?;
+        let policy_reference =
+            form_login_policy_reference(application_url, &wire, cookie_update_policy);
+        Ok(Self {
+            version: SuppliedSessionPolicyVersion::V3,
+            application_url: application_url.clone(),
+            principal_alias: wire.principal_alias,
+            health_url,
+            health_json_field: wire.health_json_field.clone(),
+            resources,
+            credential_mechanism: SuppliedSessionCredentialMechanism::CookieJar,
+            credential_acquisition: SuppliedSessionCredentialAcquisition::BoundedFormLogin,
+            cookie_update_policy: Some(cookie_update_policy),
+            cookies,
+            login: Some(SuppliedSessionLoginPolicy {
+                url: login_url,
+                username_field: wire.username_field,
+                password_field: wire.password_field,
+                csrf_field: wire.csrf_field,
+                max_attempts: wire.max_login_attempts,
+            }),
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -976,6 +1572,11 @@ impl SuppliedSessionPolicy {
         self.credential_mechanism
     }
 
+    /// How the protected-request credential is established.
+    pub const fn credential_acquisition(&self) -> SuppliedSessionCredentialAcquisition {
+        self.credential_acquisition
+    }
+
     /// V2 response-cookie update behavior, absent for V1.
     pub const fn cookie_update_policy(&self) -> Option<SuppliedSessionCookieUpdatePolicy> {
         self.cookie_update_policy
@@ -1015,6 +1616,30 @@ impl SuppliedSessionPolicy {
         &self.health_json_field
     }
 
+    pub(crate) fn login_url(&self) -> Option<&Url> {
+        self.login.as_ref().map(|login| &login.url)
+    }
+
+    pub(crate) fn login_username_field(&self) -> Option<&str> {
+        self.login
+            .as_ref()
+            .map(|login| login.username_field.as_str())
+    }
+
+    pub(crate) fn login_password_field(&self) -> Option<&str> {
+        self.login
+            .as_ref()
+            .map(|login| login.password_field.as_str())
+    }
+
+    pub(crate) fn login_csrf_field(&self) -> Option<&str> {
+        self.login.as_ref().map(|login| login.csrf_field.as_str())
+    }
+
+    pub(crate) fn max_login_attempts(&self) -> Option<u8> {
+        self.login.as_ref().map(|login| login.max_attempts)
+    }
+
     pub(crate) fn execution_resources(&self) -> impl ExactSizeIterator<Item = (&Url, &str)> {
         self.resources
             .iter()
@@ -1049,8 +1674,10 @@ impl fmt::Debug for SuppliedSessionPolicy {
             .field("version", &self.version)
             .field("resource_count", &self.resources.len())
             .field("credential_mechanism", &self.credential_mechanism)
+            .field("credential_acquisition", &self.credential_acquisition)
             .field("cookie_update_policy", &self.cookie_update_policy)
             .field("cookie_count", &self.cookies.len())
+            .field("login", &self.login.as_ref().map(|_| "<validated>"))
             .field("policy_reference", &self.policy_reference)
             .field("application_reference", &self.application_reference)
             .field("principal_reference", &self.principal_reference)
@@ -1065,6 +1692,8 @@ impl fmt::Debug for SuppliedSessionPolicy {
 /// Closed request purpose checked at both construction and broker dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SuppliedSessionRequestPurpose {
+    LoginPage,
+    LoginSubmit,
     Health,
     Resource,
 }
@@ -1086,6 +1715,42 @@ pub(crate) struct SuppliedSessionRequestDescriptor {
 }
 
 impl SuppliedSessionRequestDescriptor {
+    pub(crate) fn login_page(policy: &SuppliedSessionPolicy) -> Option<Self> {
+        Self::login(policy, SuppliedSessionRequestPurpose::LoginPage)
+    }
+
+    pub(crate) fn login_submit(policy: &SuppliedSessionPolicy) -> Option<Self> {
+        Self::login(policy, SuppliedSessionRequestPurpose::LoginSubmit)
+    }
+
+    fn login(
+        policy: &SuppliedSessionPolicy,
+        purpose: SuppliedSessionRequestPurpose,
+    ) -> Option<Self> {
+        let target = policy.login_url()?.clone();
+        let target_reference = reference(
+            LOGIN_REFERENCE_DOMAIN,
+            target.as_str(),
+            "supplied-session-login-sha256",
+        );
+        let descriptor = Self {
+            application_url: policy.application_url.clone(),
+            target: target.clone(),
+            target_reference,
+            purpose,
+            credential_mechanism: policy.credential_mechanism,
+            policy_reference: policy.policy_reference.clone(),
+            purpose_binding: request_descriptor_reference(
+                &policy.application_url,
+                &target,
+                purpose,
+                policy.credential_mechanism,
+                &policy.policy_reference,
+            ),
+        };
+        descriptor.validate_against(policy).then_some(descriptor)
+    }
+
     pub(crate) fn health(policy: &SuppliedSessionPolicy) -> Self {
         let purpose = SuppliedSessionRequestPurpose::Health;
         let descriptor = Self {
@@ -1155,13 +1820,29 @@ impl SuppliedSessionRequestDescriptor {
                 .path()
                 .bytes()
                 .any(|byte| matches!(byte, b'%' | b'\\'))
-            && !self.target.path().split('/').any(action_or_admin_segment)
+            && (matches!(
+                self.purpose,
+                SuppliedSessionRequestPurpose::LoginPage
+                    | SuppliedSessionRequestPurpose::LoginSubmit
+            ) || !self.target.path().split('/').any(action_or_admin_segment))
             && self.target_reference
-                == reference(
-                    RESOURCE_REFERENCE_DOMAIN,
-                    self.target.as_str(),
-                    "supplied-session-resource-sha256",
-                )
+                == if matches!(
+                    self.purpose,
+                    SuppliedSessionRequestPurpose::LoginPage
+                        | SuppliedSessionRequestPurpose::LoginSubmit
+                ) {
+                    reference(
+                        LOGIN_REFERENCE_DOMAIN,
+                        self.target.as_str(),
+                        "supplied-session-login-sha256",
+                    )
+                } else {
+                    reference(
+                        RESOURCE_REFERENCE_DOMAIN,
+                        self.target.as_str(),
+                        "supplied-session-resource-sha256",
+                    )
+                }
             && self.purpose_binding
                 == request_descriptor_reference(
                     &self.application_url,
@@ -1178,6 +1859,11 @@ impl SuppliedSessionRequestDescriptor {
             && self.application_url == policy.application_url
             && self.credential_mechanism == policy.credential_mechanism
             && match self.purpose {
+                SuppliedSessionRequestPurpose::LoginPage
+                | SuppliedSessionRequestPurpose::LoginSubmit => {
+                    policy.version == SuppliedSessionPolicyVersion::V3
+                        && policy.login_url() == Some(&self.target)
+                },
                 SuppliedSessionRequestPurpose::Health => {
                     self.target == policy.health_url
                         && self.target_reference
@@ -1258,6 +1944,31 @@ struct WireCookiePolicy {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct WireFormLoginPolicy {
+    schema: String,
+    principal_alias: String,
+    credential_mechanism: String,
+    credential_acquisition: String,
+    cookie_update_policy: String,
+    login_path: String,
+    login_method: String,
+    login_encoding: String,
+    username_field: String,
+    password_field: String,
+    csrf_field: String,
+    max_login_attempts: u8,
+    health_path: String,
+    health_json_field: String,
+    resources: Vec<String>,
+    cookies: Vec<WireCookieMetadata>,
+    max_session_requests: u8,
+    max_total_response_bytes: u64,
+    max_response_body_bytes: usize,
+    max_wall_time_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireCookieMetadata {
     id: String,
     name: String,
@@ -1299,6 +2010,113 @@ fn validate_policy_limits(
     } else {
         Ok(())
     }
+}
+
+fn validate_form_login_policy_limits(
+    resource_count: usize,
+    max_session_requests: u8,
+    max_total_response_bytes: u64,
+    max_response_body_bytes: usize,
+    max_wall_time_ms: u64,
+) -> Result<(), SuppliedSessionPolicyError> {
+    let minimum_requests = 3_usize
+        .checked_add(
+            resource_count
+                .checked_mul(2)
+                .ok_or(SuppliedSessionPolicyError::InvalidLimits)?,
+        )
+        .ok_or(SuppliedSessionPolicyError::InvalidLimits)?;
+    if usize::from(max_session_requests) != minimum_requests
+        || max_session_requests > MAX_SUPPLIED_SESSION_REQUESTS
+        || max_total_response_bytes == 0
+        || max_total_response_bytes > MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES
+        || max_response_body_bytes == 0
+        || max_response_body_bytes > MAX_SUPPLIED_SESSION_RESPONSE_BODY_BYTES
+        || u64::try_from(max_response_body_bytes).unwrap_or(u64::MAX) > max_total_response_bytes
+        || max_wall_time_ms == 0
+        || max_wall_time_ms > MAX_SUPPLIED_SESSION_WALL_TIME_MS
+    {
+        Err(SuppliedSessionPolicyError::InvalidLimits)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_html_field_name(value: &str) -> Result<(), SuppliedSessionPolicyError> {
+    if value.is_empty()
+        || value.len() > MAX_LOGIN_FIELD_BYTES
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'[' | b']')
+        })
+    {
+        Err(SuppliedSessionPolicyError::InvalidFormLogin)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_v3_cookie_metadata(
+    application_url: &Url,
+    health_url: &Url,
+    resources: &[SuppliedSessionResource],
+    wire: &WireFormLoginPolicy,
+) -> Result<Vec<SuppliedSessionCookieMetadata>, SuppliedSessionPolicyError> {
+    if wire.cookies.is_empty() || wire.cookies.len() > MAX_SUPPLIED_SESSION_COOKIES {
+        return Err(SuppliedSessionPolicyError::InvalidCookieCount);
+    }
+    let canonical_host = application_url
+        .host_str()
+        .ok_or(SuppliedSessionPolicyError::InvalidApplication)?;
+    let expected_secure = application_url.scheme() == "https";
+    let mut seen_ids = std::collections::BTreeSet::new();
+    let mut seen_tuples = std::collections::BTreeSet::new();
+    let mut cookies = Vec::with_capacity(wire.cookies.len());
+    for cookie in &wire.cookies {
+        validate_token(&cookie.id, MAX_COOKIE_ID_BYTES)
+            .map_err(|_| SuppliedSessionPolicyError::InvalidCookieMetadata)?;
+        if cookie.name.is_empty()
+            || cookie.name.len() > MAX_COOKIE_NAME_BYTES
+            || !cookie.name.bytes().all(http_token_byte)
+            || cookie.name.starts_with('$')
+            || cookie.domain != canonical_host
+            || !cookie.host_only
+            || cookie.secure != expected_secure
+            || !cookie.http_only
+            || cookie.expires_unix_seconds.is_some()
+        {
+            return Err(SuppliedSessionPolicyError::InvalidCookieMetadata);
+        }
+        validate_cookie_path(&cookie.path)?;
+        let same_site = parse_cookie_same_site(&cookie.same_site)?;
+        if !matches!(
+            same_site,
+            SuppliedSessionCookieSameSite::Strict | SuppliedSessionCookieSameSite::Lax
+        ) || !cookie_path_matches(&cookie.path, health_url.path())
+            || !resources
+                .iter()
+                .all(|resource| cookie_path_matches(&cookie.path, resource.url.path()))
+            || !seen_ids.insert(cookie.id.clone())
+            || !seen_tuples.insert((
+                cookie.name.clone(),
+                cookie.domain.clone(),
+                cookie.path.clone(),
+            ))
+        {
+            return Err(SuppliedSessionPolicyError::InvalidCookieMetadata);
+        }
+        cookies.push(SuppliedSessionCookieMetadata {
+            id: cookie.id.clone(),
+            name: cookie.name.clone(),
+            domain: cookie.domain.clone(),
+            host_only: true,
+            path: cookie.path.clone(),
+            secure: cookie.secure,
+            http_only: true,
+            same_site,
+            expires_unix_seconds: None,
+        });
+    }
+    Ok(cookies)
 }
 
 fn validate_cookie_path(path: &str) -> Result<(), SuppliedSessionPolicyError> {
@@ -1430,6 +2248,27 @@ fn validate_application_url(application: &Url) -> Result<(), SuppliedSessionPoli
 }
 
 fn resolve_safe_path(application: &Url, raw: &str) -> Result<Url, SuppliedSessionPolicyError> {
+    resolve_bounded_path(application, raw, false)
+}
+
+fn resolve_login_path(application: &Url, raw: &str) -> Result<Url, SuppliedSessionPolicyError> {
+    let target = resolve_bounded_path(application, raw, true)?;
+    if raw
+        .split('/')
+        .skip(1)
+        .filter(|segment| !segment.is_empty())
+        .any(login_disallowed_action_segment)
+    {
+        return Err(SuppliedSessionPolicyError::InvalidPath);
+    }
+    Ok(target)
+}
+
+fn resolve_bounded_path(
+    application: &Url,
+    raw: &str,
+    allow_action_segment: bool,
+) -> Result<Url, SuppliedSessionPolicyError> {
     if raw.is_empty()
         || raw.len() > MAX_POLICY_PATH_BYTES
         || !raw.starts_with('/')
@@ -1450,11 +2289,12 @@ fn resolve_safe_path(application: &Url, raw: &str) -> Result<Url, SuppliedSessio
     {
         return Err(SuppliedSessionPolicyError::InvalidPath);
     }
-    if raw
-        .split('/')
-        .skip(1)
-        .filter(|segment| !segment.is_empty())
-        .any(action_or_admin_segment)
+    if !allow_action_segment
+        && raw
+            .split('/')
+            .skip(1)
+            .filter(|segment| !segment.is_empty())
+            .any(action_or_admin_segment)
     {
         return Err(SuppliedSessionPolicyError::InvalidPath);
     }
@@ -1495,6 +2335,27 @@ fn action_or_admin_segment(segment: &str) -> bool {
         })
 }
 
+fn login_disallowed_action_segment(segment: &str) -> bool {
+    segment
+        .split(['-', '_', '.'])
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            matches!(
+                token.to_ascii_lowercase().as_str(),
+                "logout"
+                    | "action"
+                    | "actions"
+                    | "delete"
+                    | "remove"
+                    | "update"
+                    | "create"
+                    | "edit"
+                    | "upload"
+                    | "download"
+            )
+        })
+}
+
 fn request_descriptor_reference(
     application: &Url,
     target: &Url,
@@ -1509,6 +2370,8 @@ fn request_descriptor_reference(
     hash_field(
         &mut hasher,
         match purpose {
+            SuppliedSessionRequestPurpose::LoginPage => b"login_page",
+            SuppliedSessionRequestPurpose::LoginSubmit => b"login_submit",
             SuppliedSessionRequestPurpose::Health => b"health",
             SuppliedSessionRequestPurpose::Resource => b"resource",
         },
@@ -1601,6 +2464,60 @@ fn cookie_policy_reference(
                 hash_field(&mut hasher, b"persistent");
                 hash_field(&mut hasher, &expires.to_be_bytes());
             },
+            None => hash_field(&mut hasher, b"session"),
+        }
+    }
+    hash_field(&mut hasher, &[wire.max_session_requests]);
+    hash_field(&mut hasher, &wire.max_total_response_bytes.to_be_bytes());
+    hash_field(
+        &mut hasher,
+        &u64::try_from(wire.max_response_body_bytes)
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    hash_field(&mut hasher, &wire.max_wall_time_ms.to_be_bytes());
+    format!("supplied-session-policy-sha256:{}", hex(hasher.finalize()))
+}
+
+fn form_login_policy_reference(
+    application: &Url,
+    wire: &WireFormLoginPolicy,
+    update_policy: SuppliedSessionCookieUpdatePolicy,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(FORM_LOGIN_POLICY_REFERENCE_DOMAIN);
+    for value in [
+        SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA,
+        application.as_str(),
+        "cookie_jar",
+        "bounded_form_login",
+        update_policy.as_str(),
+        wire.login_path.as_str(),
+        wire.login_method.as_str(),
+        wire.login_encoding.as_str(),
+        wire.username_field.as_str(),
+        wire.password_field.as_str(),
+        wire.csrf_field.as_str(),
+        wire.health_path.as_str(),
+        wire.health_json_field.as_str(),
+    ] {
+        hash_field(&mut hasher, value.as_bytes());
+    }
+    hash_field(&mut hasher, &[wire.max_login_attempts]);
+    for resource in &wire.resources {
+        hash_field(&mut hasher, resource.as_bytes());
+    }
+    for cookie in &wire.cookies {
+        hash_field(&mut hasher, cookie.id.as_bytes());
+        hash_field(&mut hasher, cookie.name.as_bytes());
+        hash_field(&mut hasher, cookie.domain.as_bytes());
+        hash_field(&mut hasher, &[u8::from(cookie.host_only)]);
+        hash_field(&mut hasher, cookie.path.as_bytes());
+        hash_field(&mut hasher, &[u8::from(cookie.secure)]);
+        hash_field(&mut hasher, &[u8::from(cookie.http_only)]);
+        hash_field(&mut hasher, cookie.same_site.as_bytes());
+        match cookie.expires_unix_seconds {
+            Some(expires) => hash_field(&mut hasher, &expires.to_be_bytes()),
             None => hash_field(&mut hasher, b"session"),
         }
     }
@@ -1713,6 +2630,39 @@ expires_unix_seconds = 4102444800
 "#
     }
 
+    fn form_login_policy() -> &'static [u8] {
+        br#"schema = "security.supplied-session-policy/v3"
+principal_alias = "fixture-user"
+credential_mechanism = "cookie_jar"
+credential_acquisition = "bounded_form_login"
+cookie_update_policy = "stop_on_selected_cookie"
+login_path = "/app/login"
+login_method = "post"
+login_encoding = "application/x-www-form-urlencoded"
+username_field = "user"
+password_field = "pass"
+csrf_field = "csrf"
+max_login_attempts = 1
+health_path = "/app/session-health"
+health_json_field = "authenticated"
+resources = ["/app/private-one", "/app/private-two"]
+max_session_requests = 7
+max_total_response_bytes = 262144
+max_response_body_bytes = 65536
+max_wall_time_ms = 10000
+
+[[cookies]]
+id = "generated-session"
+name = "session"
+domain = "example.test"
+host_only = true
+path = "/app/"
+secure = true
+http_only = true
+same_site = "lax"
+"#
+    }
+
     #[test]
     fn policy_is_strict_bounded_and_path_scoped() {
         let application = Url::parse("https://example.test/app/").unwrap();
@@ -1800,6 +2750,215 @@ expires_unix_seconds = 4102444800
             SuppliedSessionPolicy::parse_toml(&application, too_few.as_bytes()).unwrap_err(),
             SuppliedSessionPolicyError::InvalidLimits
         );
+    }
+
+    #[test]
+    fn form_login_policy_preserves_a_closed_one_attempt_transition() {
+        let application = Url::parse("https://example.test/app/").unwrap();
+        let parsed = SuppliedSessionPolicy::parse_toml(&application, form_login_policy()).unwrap();
+        assert_eq!(parsed.version(), SuppliedSessionPolicyVersion::V3);
+        assert_eq!(parsed.schema(), SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA);
+        assert_eq!(
+            parsed.credential_mechanism(),
+            SuppliedSessionCredentialMechanism::CookieJar
+        );
+        assert_eq!(
+            parsed.credential_acquisition(),
+            SuppliedSessionCredentialAcquisition::BoundedFormLogin
+        );
+        assert_eq!(parsed.max_login_attempts(), Some(1));
+        assert_eq!(parsed.resource_count(), 2);
+        assert_eq!(parsed.max_session_requests(), 7);
+        assert_eq!(
+            parsed.login_url().unwrap().as_str(),
+            "https://example.test/app/login"
+        );
+        assert_eq!(parsed.login_username_field(), Some("user"));
+        assert_eq!(parsed.login_password_field(), Some("pass"));
+        assert_eq!(parsed.login_csrf_field(), Some("csrf"));
+        assert_eq!(parsed.cookie_summary().unwrap().cookie_count(), 1);
+        assert!(parsed
+            .policy_reference()
+            .starts_with("supplied-session-policy-sha256:"));
+
+        let page = SuppliedSessionRequestDescriptor::login_page(&parsed).unwrap();
+        let submit = SuppliedSessionRequestDescriptor::login_submit(&parsed).unwrap();
+        assert_eq!(page.purpose(), SuppliedSessionRequestPurpose::LoginPage);
+        assert_eq!(submit.purpose(), SuppliedSessionRequestPurpose::LoginSubmit);
+        assert!(page.validate_against(&parsed));
+        assert!(submit.validate_against(&parsed));
+        assert_eq!(page.target(), submit.target());
+        assert_eq!(page.target_reference(), submit.target_reference());
+
+        for (needle, replacement) in [
+            ("max_login_attempts = 1", "max_login_attempts = 2"),
+            ("login_method = \"post\"", "login_method = \"get\""),
+            (
+                "login_encoding = \"application/x-www-form-urlencoded\"",
+                "login_encoding = \"multipart/form-data\"",
+            ),
+            (
+                "login_path = \"/app/login\"",
+                "login_path = \"/app/logout\"",
+            ),
+            ("host_only = true", "host_only = false"),
+            ("secure = true", "secure = false"),
+            ("http_only = true", "http_only = false"),
+        ] {
+            let changed =
+                std::str::from_utf8(form_login_policy())
+                    .unwrap()
+                    .replacen(needle, replacement, 1);
+            assert!(
+                SuppliedSessionPolicy::parse_toml(&application, changed.as_bytes()).is_err(),
+                "mutation unexpectedly accepted: {needle} -> {replacement}"
+            );
+        }
+    }
+
+    #[test]
+    fn form_login_secret_and_generated_cookie_are_bounded_and_redacted() {
+        let application = Url::parse("https://example.test/app/").unwrap();
+        let parsed = SuppliedSessionPolicy::parse_toml(&application, form_login_policy()).unwrap();
+        let credential = SuppliedSessionFormCredential::parse_tsv(
+            &parsed,
+            b"username\tUSER-CANARY\npassword\tPASSWORD-CANARY\n".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            format!("{credential:?}"),
+            "SuppliedSessionFormCredential(<redacted>)"
+        );
+        assert!(!format!("{credential:?}").contains("CANARY"));
+        assert!(SuppliedSessionRuntimeInput::from(credential).matches_policy(&parsed));
+
+        let credential = SuppliedSessionFormCredential::parse_tsv(
+            &parsed,
+            b"username\tUSER CANARY\npassword\tPASSWORD&CANARY\n".to_vec(),
+        )
+        .unwrap();
+        let body = credential
+            .compose_form_body(&parsed, "CSRF+/=CANARY")
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(body.as_bytes()).unwrap(),
+            "csrf=CSRF%2B%2F%3DCANARY&user=USER+CANARY&pass=PASSWORD%26CANARY"
+        );
+        assert!(!format!("{body:?}").contains("CANARY"));
+
+        let worst_case_credential = SuppliedSessionFormCredential::parse_tsv(
+            &parsed,
+            format!(
+                "username\t{}\npassword\t{}\n",
+                "%".repeat(MAX_LOGIN_USERNAME_BYTES),
+                "%".repeat(MAX_LOGIN_PASSWORD_BYTES)
+            )
+            .into_bytes(),
+        )
+        .unwrap();
+        let worst_case_body = worst_case_credential
+            .compose_form_body(&parsed, &"%".repeat(MAX_LOGIN_CSRF_VALUE_BYTES))
+            .unwrap();
+        assert!(worst_case_body.as_bytes().len() > 10_624);
+        assert!(worst_case_body.as_bytes().len() <= MAX_LOGIN_FORM_BODY_BYTES);
+
+        for invalid in [
+            b"username\tONLY\n".as_slice(),
+            b"password\tPASS\nusername\tUSER\nextra\tVALUE\n".as_slice(),
+            b"username\tONE\nusername\tTWO\npassword\tPASS\n".as_slice(),
+            b"username\tUSER\npassword\tBAD\tVALUE\n".as_slice(),
+            b"\xef\xbb\xbfusername\tUSER\npassword\tPASS\n".as_slice(),
+        ] {
+            assert!(SuppliedSessionFormCredential::parse_tsv(&parsed, invalid.to_vec()).is_err());
+        }
+
+        let cookies = SuppliedSessionCookies::from_form_login_set_cookie_fields(
+            &parsed,
+            [b"session=SESSION-CANARY; Path=/app/; Secure; HttpOnly; SameSite=Lax".as_slice()],
+            2_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(cookies.cookie_count(), 1);
+        assert!(!format!("{cookies:?}").contains("CANARY"));
+        let health = SuppliedSessionRequestDescriptor::health(&parsed);
+        assert_eq!(
+            cookies
+                .sensitive_header_for_target(&parsed, health.target(), 2_000_000_000)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "session=SESSION-CANARY"
+        );
+
+        for invalid in [
+            b"session=VALUE; Path=/app/; Secure; SameSite=Lax".as_slice(),
+            b"session=VALUE; Path=/app/; Secure; HttpOnly; SameSite=None".as_slice(),
+            b"session=VALUE; Domain=example.test; Path=/app/; Secure; HttpOnly; SameSite=Lax"
+                .as_slice(),
+            b"session=VALUE; Path=/app/; Secure; HttpOnly; SameSite=Lax; Max-Age=10".as_slice(),
+            b"other=VALUE; Path=/app/; Secure; HttpOnly; SameSite=Lax".as_slice(),
+        ] {
+            assert!(SuppliedSessionCookies::from_form_login_set_cookie_fields(
+                &parsed,
+                [invalid],
+                2_000_000_000,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn form_login_generated_cookies_with_one_name_are_bound_by_exact_path() {
+        let application = Url::parse("https://example.test/app/").unwrap();
+        let two_cookie_policy = [
+            form_login_policy(),
+            br#"
+[[cookies]]
+id = "generated-root-session"
+name = "session"
+domain = "example.test"
+host_only = true
+path = "/"
+secure = true
+http_only = true
+same_site = "lax"
+"#,
+        ]
+        .concat();
+        let parsed = SuppliedSessionPolicy::parse_toml(&application, &two_cookie_policy).unwrap();
+        assert_eq!(parsed.cookie_summary().unwrap().cookie_count(), 2);
+
+        // Response field order does not select policy metadata. The complete
+        // attribute tuple binds each value, and outbound cookie order remains
+        // the RFC path-length order used by supplied-cookie sessions.
+        let cookies = SuppliedSessionCookies::from_form_login_set_cookie_fields(
+            &parsed,
+            [
+                b"session=ROOT-CANARY; Path=/; Secure; HttpOnly; SameSite=Lax".as_slice(),
+                b"session=APP-CANARY; Path=/app/; Secure; HttpOnly; SameSite=Lax".as_slice(),
+            ],
+            2_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(cookies.cookie_count(), 2);
+        let health = SuppliedSessionRequestDescriptor::health(&parsed);
+        assert_eq!(
+            cookies
+                .sensitive_header_for_target(&parsed, health.target(), 2_000_000_000)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "session=APP-CANARY; session=ROOT-CANARY"
+        );
+        assert!(SuppliedSessionCookies::from_form_login_set_cookie_fields(
+            &parsed,
+            [
+                b"session=ONE; Path=/app/; Secure; HttpOnly; SameSite=Lax".as_slice(),
+                b"session=TWO; Path=/app/; Secure; HttpOnly; SameSite=Lax".as_slice(),
+            ],
+            2_000_000_000,
+        )
+        .is_err());
     }
 
     #[test]

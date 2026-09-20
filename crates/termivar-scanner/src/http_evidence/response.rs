@@ -3,7 +3,9 @@ use reqwest::{header::HeaderMap, StatusCode, Url};
 use super::{json_compatible_media_type, normalized_media_type};
 
 #[cfg(feature = "supplied-session-review")]
-use crate::supplied_session_review::SuppliedSessionPolicy;
+use crate::supplied_session_review::{
+    SuppliedSessionCookieError, SuppliedSessionCookies, SuppliedSessionPolicy,
+};
 
 #[cfg(feature = "supplied-session-review")]
 const MAX_SUPPLIED_SESSION_SET_COOKIE_FIELDS: usize = 16;
@@ -241,6 +243,37 @@ impl CollectedHttpResponse {
             selected_count: selected,
             unselected_count: unselected,
         }
+    }
+
+    /// Whether any response cookie was present. V3's initial login-page GET
+    /// deliberately does not support pre-authentication cookie state.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) fn supplied_session_has_set_cookie_fields(&self) -> bool {
+        self.headers
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .next()
+            .is_some()
+    }
+
+    /// Acquires the exact policy-declared host-only V3 session cookies.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) fn supplied_session_form_login_cookies(
+        &self,
+        policy: &SuppliedSessionPolicy,
+        now_unix_seconds: i64,
+    ) -> Result<SuppliedSessionCookies, SuppliedSessionCookieError> {
+        if !self.body_complete() || self.status() != 200 {
+            return Err(SuppliedSessionCookieError::MalformedSecret);
+        }
+        SuppliedSessionCookies::from_form_login_set_cookie_fields(
+            policy,
+            self.headers
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+                .map(reqwest::header::HeaderValue::as_bytes),
+            now_unix_seconds,
+        )
     }
 
     /// Reuses the current bounded defense observer without exposing response

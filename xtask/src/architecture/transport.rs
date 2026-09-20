@@ -40,6 +40,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     "crates/termivar-scanner/src/web_runtime/assessment_defense.rs",
     "crates/termivar-scanner/src/http_evidence.rs",
     "crates/termivar-scanner/src/http_evidence/form_controls.rs",
+    SUPPLIED_SESSION_LOGIN_FORM_SOURCE,
     "crates/termivar-scanner/src/http_evidence/policy.rs",
     "crates/termivar-scanner/src/http_evidence/probe.rs",
     "crates/termivar-scanner/src/http_evidence/response.rs",
@@ -105,6 +106,8 @@ const ASSESSMENT_REVIEW_PROJECTION_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/assessment_review_projection.rs";
 const HTTP_REVIEW_RESPONSE_SOURCE: &str =
     "crates/termivar-scanner/src/http_evidence/review_response.rs";
+const SUPPLIED_SESSION_LOGIN_FORM_SOURCE: &str =
+    "crates/termivar-scanner/src/http_evidence/login_form.rs";
 const NATIVE_REVIEW_ACTION_SOURCE: &str =
     "crates/termivar-scanner/src/web_actions/native_review.rs";
 const NATIVE_REVIEW_DECISION_SOURCE: &str =
@@ -1574,9 +1577,12 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
         || !http_evidence.contains("SuppliedSessionCookieUpdateClassification::Unusable")
         || !http_evidence.contains("SuppliedSessionCookieUpdateClassification::Selected")
         || !http_evidence.contains("SuppliedSessionCookieUpdateClassification::UnselectedOnly")
+        || !http_evidence.contains("pub(crate) fn supplied_session_form_login_cookies(")
+        || !http_evidence.contains("if !self.body_complete() || self.status() != 200")
+        || !http_evidence.contains("SuppliedSessionCookies::from_form_login_set_cookie_fields(")
     {
         violations.push(
-            "supplied-session Set-Cookie handling must remain bounded, value-free, complete-body-only, policy-selected, and fail closed"
+            "supplied-session Set-Cookie handling and V3 login-cookie acquisition must remain bounded, value-free, complete-body-only, policy-selected, and fail closed"
                 .to_owned(),
         );
     }
@@ -1625,10 +1631,18 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
         || broker
             .matches(".supplied_session_no_proxy_client\n            .as_ref()")
             .count()
-            != 1
+            != 3
         || !broker.contains("!authenticated_transport_is_allowed(target)")
         || broker
             .matches("pub(crate) async fn collect_supplied_session_get_for_runtime(")
+            .count()
+            != 1
+        || broker
+            .matches("pub(crate) async fn collect_supplied_session_login_page_for_runtime(")
+            .count()
+            != 1
+        || broker
+            .matches("pub(crate) async fn collect_supplied_session_login_submit_for_runtime(")
             .count()
             != 1
         || !broker.contains("!descriptor.validate_against(policy)")
@@ -1643,7 +1657,21 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
         || broker.contains("reqwest::cookie")
     {
         violations.push(
-            "the shared broker's supplied-session client must remain an opt-in isolated, scanner-owned Authorization-or-cookie GET no-proxy pool with mechanism binding, sensitive headers, no automatic cookie store, and dispatch-time protected-transport validation"
+            "the shared broker's supplied-session client must remain an opt-in isolated, scanner-owned Authorization-or-cookie GET plus exact V3 anonymous login GET/stateful POST no-proxy pool with mechanism binding, sensitive headers, no automatic cookie store, and dispatch-time protected-transport validation"
+                .to_owned(),
+        );
+    }
+    if !broker.contains(
+        "descriptor.purpose() != SuppliedSessionRequestPurpose::LoginPage\n            || stage != DecisionExecutionStage::Passive\n            || origin != Some(DecisionActionOrigin::Bootstrap)",
+    ) || !broker.contains(
+        ".request(Method::GET, descriptor.target().clone())\n            .header(ACCEPT, \"text/html\")",
+    ) || !broker.contains(
+        "descriptor.purpose() != SuppliedSessionRequestPurpose::LoginSubmit\n            || stage != DecisionExecutionStage::Active\n            || origin.is_some()",
+    ) || !broker.contains(
+        ".request(Method::POST, descriptor.target().clone())\n            .header(ACCEPT, \"text/html, application/json\")\n            .header(CONTENT_TYPE, \"application/x-www-form-urlencoded\")\n            .body(body.as_bytes().to_vec())",
+    ) {
+        violations.push(
+            "the supplied-session V3 broker seam must preserve its exact anonymous bootstrap GET and single explicit active form POST descriptor, origin, method, content type, and guarded body bindings"
                 .to_owned(),
         );
     }
@@ -9530,7 +9558,8 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             ) | (
                 "crates/termivar-scanner/src/http_evidence.rs",
                 "form_controls"
-            ) | ("crates/termivar-scanner/src/http_evidence.rs", "policy")
+            ) | ("crates/termivar-scanner/src/http_evidence.rs", "login_form")
+                | ("crates/termivar-scanner/src/http_evidence.rs", "policy")
                 | ("crates/termivar-scanner/src/http_evidence.rs", "probe")
                 | ("crates/termivar-scanner/src/http_evidence.rs", "response")
                 | (
@@ -9720,8 +9749,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "ssrf_oast_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "ssrf-oast-review")
-        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
-            && module == "supplied_session_runtime"
+        } else if (self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "supplied_session_runtime")
+            || (self.source == "crates/termivar-scanner/src/http_evidence.rs"
+                && module == "login_form")
         {
             attributes_are_exact_cfg_feature(&item.attrs, "supplied-session-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
@@ -14492,6 +14523,14 @@ mod tests {
                 "Set-Cookie handling",
             ),
             (
+                http.replace(
+                    "SuppliedSessionCookies::from_form_login_set_cookie_fields(",
+                    "SuppliedSessionCookies::from_unchecked_response_fields(",
+                ),
+                broker.to_owned(),
+                "login-cookie acquisition",
+            ),
+            (
                 http.clone(),
                 broker.replace(".redirect(RedirectPolicy::none())", ""),
                 "redirect-disabled",
@@ -14526,6 +14565,22 @@ mod tests {
                     "else if let Some(cookies) = credential.cookies_unchecked()",
                 ),
                 "scanner-owned Authorization-or-cookie",
+            ),
+            (
+                http.clone(),
+                broker.replace(
+                    "descriptor.purpose() != SuppliedSessionRequestPurpose::LoginPage",
+                    "descriptor.purpose() != SuppliedSessionRequestPurpose::Resource",
+                ),
+                "exact anonymous bootstrap GET",
+            ),
+            (
+                http.clone(),
+                broker.replace(
+                    ".request(Method::POST, descriptor.target().clone())",
+                    ".request(Method::GET, descriptor.target().clone())",
+                ),
+                "single explicit active form POST",
             ),
             (
                 http.clone(),

@@ -52,13 +52,16 @@ SYNTHETIC_SESSION_CAPABILITY = {
         "--session-policy FILE",
         "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
         "V2: --session-cookie-file FILE",
-        "optional --wordpress-supplied-session when also compiled with wordpress-review",
+        "V3: --session-login-file FILE",
+        "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
         "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
     ],
     "limitation": (
         "complete health-qualified session-resource HTML may nominate public WordPress "
         "metadata; the credential is not sent to metadata or fingerprint requests; "
-        "authenticated-page fingerprint acquisition is not selected"
+        "authenticated-page fingerprint acquisition is not selected; WordPress "
+        "supplied-session composition remains limited to V1/V2; V3 is rejected before "
+        "its secret file is read"
     ),
 }
 DISCOVERY_METHOD = {
@@ -1633,6 +1636,29 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             "capabilities do not report compiled WordPress discovery",
         ):
             runner._validate_discovery_capability(wrong_field)
+
+        missing_v3 = copy.deepcopy(document)
+        missing_v3["surfaces"][1]["prerequisites"].remove(
+            "V3: --session-login-file FILE"
+        )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "capabilities do not report compiled supplied-session review",
+        ):
+            runner._validate_discovery_capability(missing_v3)
+
+        widened_wordpress = copy.deepcopy(document)
+        widened_wordpress["surfaces"][1]["limitation"] = (
+            widened_wordpress["surfaces"][1]["limitation"].replace(
+                "composition remains limited to V1/V2",
+                "composition accepts V1/V2/V3",
+            )
+        )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "capabilities omit the supplied-session WordPress authority boundary",
+        ):
+            runner._validate_discovery_capability(widened_wordpress)
 
     def test_discovery_capability_rejects_missing_duplicate_or_uncompiled_rows(self):
         valid_row = {

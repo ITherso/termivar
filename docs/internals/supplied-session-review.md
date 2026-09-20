@@ -7,13 +7,19 @@ does nothing unless the operator supplies both a policy and one out-of-band
 credential source.
 
 The V1 policy accepts one complete `Authorization` header value. The V2 policy
-accepts one small scanner-owned cookie jar from an explicit local file. Neither
-mode loads a browser profile, discovers a login form, applies response cookie
-updates, refreshes a credential, performs OAuth or MFA, sends a request body or
-non-GET method, or enables an existing active vulnerability family under the
-supplied credential. Application-defined `GET` handling can still have
-server-side effects, so the operator must authorize every selected resource. A
-principal alias is an operator assertion, not authenticated identity.
+accepts one small scanner-owned cookie jar from an explicit local file. The V3
+policy accepts one username/password pair from an explicit local file and uses
+it only for one bounded form-login transition: one anonymous `GET` of the exact
+declared login page, followed by at most one explicit
+`application/x-www-form-urlencoded` `POST` to that same URL. V3 does not discover
+forms, guess credentials, retry an ambiguous submission, bypass MFA/CAPTCHA, or
+perform OAuth. V1 and V2 still send no body or non-`GET` method. None of the
+three modes loads a browser profile, automatically renews a session, or enables
+an existing active vulnerability family under the selected credential.
+Application-defined `GET` handling and the explicitly authorized V3 login
+`POST` can have server-side effects, so the operator must authorize the whole
+selected sequence. A principal alias is an operator assertion, not
+authenticated identity.
 
 ## Build and invoke
 
@@ -46,16 +52,32 @@ termivar scan https://app.example.test/app/ \
   --report-dir ./assessment-cookie-session
 ```
 
-The policy and credential mechanism must agree, and exactly one credential
-source is required. There is no raw credential argument, cookie environment
-source, browser import, or cookie stdin source. HTTP is refused except for
-numeric-loopback development fixtures; `Secure` cookies still require HTTPS,
-including on loopback.
+A V3 policy instead requires exactly one `--session-login-file`:
+
+```bash
+termivar scan https://app.example.test/app/ \
+  --profile web-review \
+  --session-policy ./form-login-policy.toml \
+  --session-login-file ./form-login.secret.tsv \
+  --report-dir ./assessment-form-login
+```
+
+The policy and credential acquisition mechanism must agree, and exactly one
+credential source is required. V1/V2/V3 source mismatches and V3 combined with
+`--wordpress-supplied-session` are rejected after policy validation but before
+output reservation or secret-file acquisition. There is no raw credential
+argument, cookie environment source, browser import, or cookie stdin source.
+HTTP is refused except for numeric-loopback development fixtures; `Secure`
+cookies still require HTTPS, including on loopback.
 
 For V1, the secret source contains the complete bounded header value, for
 example a scheme and its credentials. Its bytes must not contain control
 characters. The value is never a target, a scope grant, a principal identifier,
 or a report field. V2 instead uses the ID-bound cookie rows described below.
+V3's bounded TSV contains exactly one `username<TAB>value` and one
+`password<TAB>value` row. It has no field-name freedom and neither value is
+placed in argv, diagnostics, evidence or reports. The file is limited to 8 KiB,
+the username to 256 UTF-8 bytes and the password to 4 KiB.
 
 ## Policy V1
 
@@ -151,23 +173,99 @@ application authority; a Domain declaration never grants another target host.
 `HttpOnly` and `SameSite` are preserved facts, not a claim that this non-browser
 client reproduces browser script or CSRF behavior.
 
+## Policy V3 and bounded form login
+
+V3 keeps the same exact application, health predicate, response-byte and
+wall-time authority, but establishes the cookie jar through one explicit login
+transition. This two-resource example uses seven requests: login-page `GET`,
+login `POST`, startup health, and one resource/health pair per resource.
+
+```toml
+schema = "security.supplied-session-policy/v3"
+principal_alias = "fixture-reader"
+credential_mechanism = "cookie_jar"
+credential_acquisition = "bounded_form_login"
+cookie_update_policy = "stop_on_selected_cookie"
+login_path = "/app/login"
+login_method = "post"
+login_encoding = "application/x-www-form-urlencoded"
+username_field = "username"
+password_field = "password"
+csrf_field = "csrf_token"
+max_login_attempts = 1
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private", "/app/private-2"]
+max_session_requests = 7
+max_total_response_bytes = 131072
+max_response_body_bytes = 32768
+max_wall_time_ms = 5000
+
+[[cookies]]
+id = "generated-session"
+name = "session"
+domain = "app.example.test"
+host_only = true
+path = "/app/"
+secure = true
+http_only = true
+same_site = "lax"
+```
+
+V3 admits one to three resources. Its exact request count is
+`3 + (2 * resource_count)` and remains within the unchanged nine-request hard
+ceiling. It begins without a cookie. The login page is one anonymous, complete,
+untruncated status-200 UTF-8 `text/html` representation of at most 64 KiB and
+2,048 DOM nodes. Exactly one eligible form must have no `action` or an action
+exactly equal to the configured login path, an explicit `POST` method, and no
+`enctype` or exactly `application/x-www-form-urlencoded`. It must contain
+exactly the configured enabled username input (default/text), password input
+(`type=password`) and hidden CSRF input. The CSRF value is required, bounded to
+2,048 UTF-8 bytes, guarded in memory and never serialized. Missing, duplicate,
+disabled, wrong-type, malformed, partial or over-limit input authorizes no
+submission. Returning this operator-selected field is login plumbing, not a
+test or claim that the application resists CSRF.
+
+The form body contains only the three configured fields and values. The same
+exact login URL receives at most one POST. Redirect following and retry are
+disabled; a timeout or other ambiguous outcome is not resubmitted. There is no
+pre-session cookie, Authorization value, ambient cookie store, credential
+guessing, login-path discovery or fallback form selection.
+
+Only response cookies matching the policy's declared host-only application
+cookie metadata may establish the scanner-owned jar. V3 accepts session cookies
+only: the exact application host, an applicable safe path, `Secure` matching
+the selected scheme, `HttpOnly`, `SameSite=Strict|Lax`, and no expiry. The
+operator's application scope remains narrower than cookie protocol scope. A
+cookie response, successful status or familiar page text does not establish
+login success. After the form transition, the existing complete JSON startup
+health predicate is the sole success oracle. Only then does the lifecycle move
+from pre-authentication epoch zero to authenticated epoch one and begin resource
+collection.
+
 ## Execution and evidence
 
 The runtime creates a context-isolated, redirect-disabled, no-proxy child of the
-existing assessment broker. It sends only the configured V1 authorization value
-or request-applicable V2 cookie pairs to the exact selected application and
-never forwards them across a redirect. It does not enable reqwest's automatic
-cookie store. A startup health check gates collection. Each dispatched resource
-is followed by a deterministic health checkpoint before it can become committed
-authenticated coverage; loss stops later supplied-session work. There is no
-silent anonymous retry or refresh.
+existing assessment broker. It sends only the configured V1 authorization value,
+request-applicable V2 cookie pairs, or the V3 jar established by the single
+bounded login transition to the exact selected application and never forwards
+them across a redirect. It does not enable reqwest's automatic cookie store.
+V1/V2 start with the supplied credential at epoch one. V3 records its anonymous
+login-page GET and explicit login POST separately, starts at epoch zero without
+a cookie, and can reach epoch one only after a valid cookie transition and the
+independent startup JSON health check. Each dispatched resource is followed by
+a deterministic health checkpoint before it can become committed authenticated
+coverage; loss stops later supplied-session work. There is no silent anonymous
+retry, POST retry or automatic refresh.
 
-Every V2 response is checked for bounded `Set-Cookie` fields before its body can
-be committed. An update to a selected cookie stops later supplied-session work
-with `credential_update_required`; malformed, over-limit or otherwise unusable
-update metadata stops with `credential_update_unusable`. An unselected response
-cookie is counted but not applied. In every case response updates remain
-unapplied, `refresh_performed` remains false, and the session epoch remains one.
+Every V2 response and every V3 response after initial session establishment is
+checked for bounded `Set-Cookie` fields before its body can be committed. An
+update to a selected cookie stops later supplied-session work with
+`credential_update_required`; malformed, over-limit or otherwise unusable update
+metadata stops with `credential_update_unusable`. An unselected response cookie
+is counted but not applied. Outside the initial V3 login response, response
+updates remain unapplied and automatic renewal remains absent. V1/V2 keep epoch
+one; successful V3 establishment changes only epoch zero to epoch one.
 
 Each complete `200` resource response remains a body-free staged observation
 until its immediately following health checkpoint is both healthy and committed.
@@ -175,13 +273,19 @@ Only then does it count as authenticated `committed` coverage. If that checkpoin
 is unhealthy or unavailable, the response remains `health_unqualified`, counts
 as dispatched activity, and does not count as authenticated coverage.
 
-The central report adds `security.supplied-session-audit/v1` for V1 or
-`security.supplied-session-audit/v2` for V2. It records opaque
+The central report adds `security.supplied-session-audit/v1` for V1,
+`security.supplied-session-audit/v2` for V2, or
+`security.supplied-session-audit/v3` for V3. It records opaque
 policy, application, principal and resource references; the operator-declared
 assurance; checkpoint and resource outcomes; and reconciled request/byte counts.
 V2 additionally records only non-secret cookie-policy aggregates and value-free
 selected/unselected/unusable update counts; it never records cookie names,
 values, domains, paths, source file locations or response fields.
+V3 additionally records a login reference, bounded page/CSRF/submission/cookie
+outcomes, attempt and acquired-cookie counts, response-byte accounting, the
+zero-to-one epoch transition when established, and that no pre-session cookie
+was applied. It never records the username, password, CSRF value, form body,
+cookie values, field names, raw login URL or secret-file path.
 The configured response-byte limit and an exact exceeded flag are separate from
 the unclamped transport count because the broker charges a final delivered chunk
 even when only the bounded prefix is retained.
@@ -195,7 +299,9 @@ impact validation remain `not_performed`. An empty or interrupted authenticated
 coverage window is not proof that the application denied access or is secure.
 Offline Verify checks bundle integrity; Compare describes audit/context and
 coverage changes without treating logout or a different principal as
-remediation.
+remediation. A changed credential-acquisition mode or login lifecycle is likewise
+a context/methodology change, not proof that target access was added, removed or
+fixed.
 
 ### Explicit WordPress consumer
 
@@ -207,8 +313,10 @@ When the executable is compiled with both `supplied-session-review` and
   --wordpress-supplied-session
 ```
 
-The usual supplied-session policy and exactly one matching credential source
-remain mandatory. This composition interprets only complete selected resource
+The usual V1 or V2 supplied-session policy and exactly one matching credential
+source remain mandatory. V3 is rejected before its login secret is opened; its
+WordPress consumer is intentionally deferred to S02. The current composition
+interprets only complete selected resource
 HTML whose immediately following health checkpoint and S01 resource evidence
 were committed. It binds the observation to the policy, application, principal,
 credential mechanism and fixed epoch. A login response, incompatible application,
@@ -235,11 +343,17 @@ HTTP-library buffers or every downstream copy is erased. See
 
 ## Protocol references
 
-The boundaries follow the current [OWASP Session Management Cheat
+The boundaries follow the current [OWASP Authentication Cheat
+Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html),
+[OWASP CSRF Prevention Cheat
+Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html),
+and [OWASP Session Management Cheat
 Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
-for encrypted session transport and scoped session handling, and [RFC
+for TLS-protected login, an explicit anti-CSRF input and scoped session handling,
+and [RFC
 9110](https://www.rfc-editor.org/rfc/rfc9110.html) for HTTP semantics. V2 applies
 the domain/path/Secure and ordering rules used from [RFC
 6265](https://www.rfc-editor.org/rfc/rfc6265.html) only inside the operator's
-narrower application authority. These references define protocol expectations,
-not proof that an observed principal or session is authentic.
+narrower application authority; V3 narrows this further to declared host-only
+session cookies. These references define protocol expectations, not proof that
+an observed principal or session is authentic.

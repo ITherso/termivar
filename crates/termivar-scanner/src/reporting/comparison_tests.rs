@@ -2232,6 +2232,295 @@ fn supplied_session_audit() -> Value {
     })
 }
 
+fn supplied_session_form_login_audit() -> Value {
+    let mut audit = supplied_session_audit();
+    audit["schema"] = json!("security.supplied-session-audit/v3");
+    audit["credential_mechanism"] = json!("cookie_jar");
+    audit["credential_acquisition"] = json!("bounded_form_login");
+    audit["cookie_policy"] = json!({
+        "declared_count":1,
+        "host_only_count":1,
+        "domain_count":0,
+        "secure_count":0,
+        "http_only_count":1,
+        "session_count":1,
+        "persistent_count":0,
+        "same_site_missing_count":0,
+        "same_site_strict_count":0,
+        "same_site_lax_count":1,
+        "same_site_none_count":0,
+        "update_policy":"stop_on_selected_cookie",
+        "browser_semantics":"attributes_preserved_not_browser_csrf_emulation"
+    });
+    audit["cookie_lifecycle"] = json!({
+        "initial_epoch":0,
+        "final_epoch":1,
+        "selected_update_response_count":0,
+        "unselected_update_response_count":0,
+        "update_classification_failure_count":0,
+        "updates_applied":0
+    });
+    audit["login"] = json!({
+        "login_reference":format!("supplied-session-login-sha256:{}", "9".repeat(64)),
+        "max_attempts":1,
+        "attempt_count":1,
+        "page_dispatched":true,
+        "page_status":200,
+        "page_body_state":"complete",
+        "form_outcome":"matched",
+        "submit_dispatched":true,
+        "submit_status":200,
+        "submit_body_state":"complete",
+        "submit_outcome":"cookie_acquired",
+        "acquired_cookie_count":1,
+        "response_bytes":54,
+        "initial_epoch":0,
+        "final_epoch":1,
+        "pre_session_cookie_applied":false
+    });
+    audit["dispatched_request_count"] = json!(5);
+    audit["response_bytes"] = json!(113);
+    audit
+}
+
+fn supplied_session_form_login_failure_audit() -> Value {
+    let mut audit = supplied_session_form_login_audit();
+    audit["outcome"] = json!("login_form_unavailable");
+    audit["coverage"] = json!("none");
+    audit["checkpoints"] = json!([]);
+    audit["resources"][0]["evidence_reference"] = Value::Null;
+    audit["resources"][0]["outcome"] = json!("not_dispatched");
+    audit["resources"][0]["status"] = Value::Null;
+    audit["resources"][0]["response_bytes"] = json!(0);
+    audit["dispatched_resource_count"] = json!(0);
+    audit["committed_resource_count"] = json!(0);
+    audit["dispatched_request_count"] = json!(1);
+    audit["response_bytes"] = json!(41);
+    audit["cookie_lifecycle"]["final_epoch"] = json!(0);
+    audit["login"]["attempt_count"] = json!(0);
+    audit["login"]["form_outcome"] = json!("missing");
+    audit["login"]["form_error_code"] = json!("missing_csrf");
+    audit["login"]["submit_dispatched"] = json!(false);
+    audit["login"]["submit_status"] = Value::Null;
+    audit["login"]["submit_body_state"] = json!("unavailable");
+    audit["login"]["submit_outcome"] = json!("not_dispatched");
+    audit["login"]["acquired_cookie_count"] = json!(0);
+    audit["login"]["response_bytes"] = json!(41);
+    audit["login"]["final_epoch"] = json!(0);
+    audit
+}
+
+fn supplied_session_form_login_cookie_failure_audit() -> Value {
+    let mut audit = supplied_session_form_login_audit();
+    audit["outcome"] = json!("login_cookie_unavailable");
+    audit["coverage"] = json!("none");
+    audit["checkpoints"] = json!([]);
+    audit["resources"][0]["evidence_reference"] = Value::Null;
+    audit["resources"][0]["outcome"] = json!("not_dispatched");
+    audit["resources"][0]["status"] = Value::Null;
+    audit["resources"][0]["response_bytes"] = json!(0);
+    audit["dispatched_resource_count"] = json!(0);
+    audit["committed_resource_count"] = json!(0);
+    audit["dispatched_request_count"] = json!(2);
+    audit["response_bytes"] = json!(54);
+    audit["cookie_lifecycle"]["final_epoch"] = json!(0);
+    audit["login"]["submit_outcome"] = json!("cookie_unavailable");
+    audit["login"]["acquired_cookie_count"] = json!(0);
+    audit["login"]["final_epoch"] = json!(0);
+    audit
+}
+
+#[test]
+fn supplied_session_form_login_v3_is_strict_value_free_and_epoch_aware() {
+    let success = supplied_session_form_login_audit();
+    let mut success_document = report(Vec::new());
+    success_document["supplied_session"] = success.clone();
+    let self_comparison = compare(&success_document, &success_document);
+    assert_eq!(
+        self_comparison["supplied_session_comparison"]["context"]["before"]
+            ["credential_acquisition"],
+        "bounded_form_login"
+    );
+    assert_eq!(
+        self_comparison["supplied_session_comparison"]["context"]["before"]["session_epoch"],
+        1
+    );
+    assert_eq!(
+        self_comparison["supplied_session_comparison"]["health_and_coverage"]["before"]["login"]
+            ["submit_outcome"],
+        "cookie_acquired"
+    );
+    for group_name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(group(&self_comparison, group_name).is_empty());
+    }
+
+    let failure = supplied_session_form_login_failure_audit();
+    let mut failure_document = report(Vec::new());
+    failure_document["supplied_session"] = failure.clone();
+    let failure_comparison = compare(&failure_document, &failure_document);
+    assert_eq!(
+        failure_comparison["supplied_session_comparison"]["context"]["before"]["session_epoch"],
+        0
+    );
+    assert_eq!(
+        failure_comparison["supplied_session_comparison"]["health_and_coverage"]["before"]["login"]
+            ["form_error_code"],
+        "missing_csrf"
+    );
+
+    let cookie_failure = supplied_session_form_login_cookie_failure_audit();
+    let mut cookie_failure_document = report(Vec::new());
+    cookie_failure_document["supplied_session"] = cookie_failure;
+    let cookie_failure_comparison = compare(&cookie_failure_document, &cookie_failure_document);
+    assert_eq!(
+        cookie_failure_comparison["supplied_session_comparison"]["context"]["before"]
+            ["session_epoch"],
+        0
+    );
+    assert_eq!(
+        cookie_failure_comparison["supplied_session_comparison"]["health_and_coverage"]["before"]
+            ["login"]["submit_outcome"],
+        "cookie_unavailable"
+    );
+    assert_eq!(
+        cookie_failure_comparison["supplied_session_comparison"]["health_and_coverage"]["before"]
+            ["checkpoints"],
+        json!([])
+    );
+    assert_eq!(
+        cookie_failure_comparison["supplied_session_comparison"]["health_and_coverage"]["before"]
+            ["resources"][0]["outcome"],
+        "not_dispatched"
+    );
+
+    for forged_outcome in ["runtime_limit", "cancelled"] {
+        let mut invalid = failure_document.clone();
+        invalid["supplied_session"]["outcome"] = json!(forged_outcome);
+        assert!(
+            compare_reports(&bytes(&invalid), SAMPLE, ComparisonFormat::Json).is_err(),
+            "missing form state was accepted as {forged_outcome}"
+        );
+    }
+
+    let mut unavailable_body = failure_document.clone();
+    unavailable_body["supplied_session"]["login"]["form_outcome"] = json!("ineligible_response");
+    unavailable_body["supplied_session"]["login"]["form_error_code"] =
+        json!("inexact_final_target");
+    unavailable_body["supplied_session"]["login"]["page_body_state"] = json!("unavailable");
+    assert!(
+        compare_reports(&bytes(&unavailable_body), SAMPLE, ComparisonFormat::Json,).is_err(),
+        "response-backed form outcome accepted an unavailable body"
+    );
+
+    let mut unavailable_redirect = supplied_session_form_login_cookie_failure_audit();
+    unavailable_redirect["outcome"] = json!("login_submit_unavailable");
+    unavailable_redirect["login"]["submit_outcome"] = json!("redirect_refused");
+    unavailable_redirect["login"]["submit_status"] = json!(302);
+    unavailable_redirect["login"]["submit_body_state"] = json!("unavailable");
+    let mut unavailable_redirect_document = report(Vec::new());
+    unavailable_redirect_document["supplied_session"] = unavailable_redirect;
+    assert!(
+        compare_reports(
+            &bytes(&unavailable_redirect_document),
+            SAMPLE,
+            ComparisonFormat::Json,
+        )
+        .is_err(),
+        "response-backed redirect accepted an unavailable body"
+    );
+
+    let mut overcounted_updates = success_document.clone();
+    overcounted_updates["supplied_session"]["cookie_lifecycle"]
+        ["unselected_update_response_count"] = json!(4);
+    assert!(
+        compare_reports(&bytes(&overcounted_updates), SAMPLE, ComparisonFormat::Json,).is_err(),
+        "login GET/POST were accepted as cookie-update-eligible responses"
+    );
+
+    let mut startup_cookie_stop = success.clone();
+    startup_cookie_stop["outcome"] = json!("credential_update_required");
+    startup_cookie_stop["coverage"] = json!("none");
+    startup_cookie_stop["checkpoints"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(1);
+    startup_cookie_stop["resources"][0]["evidence_reference"] = Value::Null;
+    startup_cookie_stop["resources"][0]["outcome"] = json!("not_dispatched");
+    startup_cookie_stop["resources"][0]["status"] = Value::Null;
+    startup_cookie_stop["resources"][0]["response_bytes"] = json!(0);
+    startup_cookie_stop["dispatched_resource_count"] = json!(0);
+    startup_cookie_stop["committed_resource_count"] = json!(0);
+    startup_cookie_stop["dispatched_request_count"] = json!(3);
+    startup_cookie_stop["response_bytes"] = json!(71);
+    startup_cookie_stop["cookie_lifecycle"]["final_epoch"] = json!(0);
+    startup_cookie_stop["cookie_lifecycle"]["selected_update_response_count"] = json!(1);
+    startup_cookie_stop["login"]["final_epoch"] = json!(0);
+    let mut startup_cookie_stop_document = report(Vec::new());
+    startup_cookie_stop_document["supplied_session"] = startup_cookie_stop;
+    let startup_cookie_stop_comparison =
+        compare(&startup_cookie_stop_document, &startup_cookie_stop_document);
+    assert_eq!(
+        startup_cookie_stop_comparison["supplied_session_comparison"]["context"]["before"]
+            ["session_epoch"],
+        0
+    );
+
+    let changed_epoch = compare(&failure_document, &success_document);
+    assert_eq!(
+        changed_epoch["supplied_session_comparison"]["status"],
+        "not_compared"
+    );
+    assert_eq!(
+        changed_epoch["supplied_session_comparison"]["context"]["changed_fields"],
+        json!(["session_epoch"])
+    );
+    for group_name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(group(&changed_epoch, group_name).is_empty());
+    }
+
+    for (label, mutation) in [
+        ("secret field", ("login", "password", json!("S07-secret"))),
+        (
+            "wrong acquisition",
+            (
+                "root",
+                "credential_acquisition",
+                json!("supplied_cookie_jar"),
+            ),
+        ),
+        ("false epoch", ("login", "initial_epoch", json!(1))),
+        ("extra attempt", ("login", "attempt_count", json!(2))),
+        (
+            "missing cookie",
+            ("login", "acquired_cookie_count", json!(0)),
+        ),
+    ] {
+        let mut invalid = success_document.clone();
+        if mutation.0 == "root" {
+            invalid["supplied_session"][mutation.1] = mutation.2;
+        } else {
+            invalid["supplied_session"][mutation.0][mutation.1] = mutation.2;
+        }
+        assert!(
+            compare_reports(&bytes(&invalid), SAMPLE, ComparisonFormat::Json).is_err(),
+            "accepted invalid V3 supplied-session mutation: {label}"
+        );
+    }
+
+    let mut forged_healthy_epoch_zero = success_document.clone();
+    forged_healthy_epoch_zero["supplied_session"]["login"]["final_epoch"] = json!(0);
+    forged_healthy_epoch_zero["supplied_session"]["cookie_lifecycle"]["final_epoch"] = json!(0);
+    assert!(
+        compare_reports(
+            &bytes(&forged_healthy_epoch_zero),
+            SAMPLE,
+            ComparisonFormat::Json,
+        )
+        .is_err(),
+        "accepted a healthy complete V3 audit at session epoch zero"
+    );
+}
+
 #[test]
 fn supplied_session_audit_is_a_strict_feature_independent_audit_only_snapshot() {
     let audit = supplied_session_audit();

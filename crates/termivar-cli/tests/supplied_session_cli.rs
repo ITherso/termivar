@@ -7,10 +7,13 @@
 use std::{
     fs,
     io::{Read, Write},
-    net::{SocketAddr, TcpListener},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -25,6 +28,12 @@ const BROAD_COOKIE: &str = "BROAD-COOKIE-PROCESS-CANARY-0123456789";
 const NARROW_COOKIE: &str = "NARROW-COOKIE-PROCESS-CANARY-9876543210";
 const ALTERNATE_BROAD_COOKIE: &str = "ALTERNATE-BROAD-COOKIE-PROCESS-CANARY";
 const ALTERNATE_NARROW_COOKIE: &str = "ALTERNATE-NARROW-COOKIE-PROCESS-CANARY";
+const LOGIN_USERNAME: &str = "FORM-USERNAME-PROCESS-CANARY";
+const LOGIN_PASSWORD: &str = "FORM-PASSWORD-PROCESS-CANARY";
+const LOGIN_CSRF: &str = "FORM-CSRF-PROCESS-CANARY";
+const LOGIN_COOKIE: &str = "FORM-COOKIE-PROCESS-CANARY";
+const LOGIN_APP_COOKIE: &str = "FORM-APP-COOKIE-PROCESS-CANARY";
+const LOGIN_ROOT_COOKIE: &str = "FORM-ROOT-COOKIE-PROCESS-CANARY";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuthorizationClass {
@@ -37,20 +46,50 @@ enum AuthorizationClass {
 enum CookieClass {
     Expected,
     Alternate,
+    LoginExpected,
+    LoginTwoPathExpected,
+    Absent,
+    Unexpected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormBodyClass {
+    Expected,
     Absent,
     Unexpected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RequestRecord {
+    method: String,
     target: String,
     authorization: AuthorizationClass,
     cookie: CookieClass,
+    form_content_type: bool,
+    form_body: FormBodyClass,
 }
 
 struct TestServer {
     application_url: String,
     requests: Arc<Mutex<Vec<RequestRecord>>>,
+    shutdown: Option<(Arc<AtomicBool>, thread::JoinHandle<()>, SocketAddr)>,
+}
+
+impl TestServer {
+    fn stop(&mut self) {
+        let Some((shutdown, worker, address)) = self.shutdown.take() else {
+            return;
+        };
+        shutdown.store(true, Ordering::Release);
+        let _ = TcpStream::connect(address);
+        worker.join().expect("join stopped loopback fixture");
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 fn termivar() -> Command {
@@ -75,88 +114,54 @@ fn serve<F>(handler: F) -> TestServer
 where
     F: Fn(usize, &str, AuthorizationClass, CookieClass) -> Vec<u8> + Send + Sync + 'static,
 {
+    serve_requests(
+        move |sequence, record| {
+            handler(
+                sequence,
+                &record.target,
+                record.authorization,
+                record.cookie,
+            )
+        },
+        false,
+    )
+}
+
+fn serve_form_login<F>(handler: F) -> TestServer
+where
+    F: Fn(usize, &RequestRecord) -> Vec<u8> + Send + Sync + 'static,
+{
+    serve_requests(handler, true)
+}
+
+fn serve_requests<F>(handler: F, stoppable: bool) -> TestServer
+where
+    F: Fn(usize, &RequestRecord) -> Vec<u8> + Send + Sync + 'static,
+{
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback fixture");
     let address: SocketAddr = listener.local_addr().expect("read fixture address");
     let requests = Arc::new(Mutex::new(Vec::new()));
     let thread_requests = Arc::clone(&requests);
     let handler = Arc::new(handler);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let thread_shutdown = Arc::clone(&shutdown);
 
-    thread::spawn(move || {
+    let worker = thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else {
                 break;
             };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let mut buffer = [0_u8; 32 * 1024];
-            let mut bytes_read = 0_usize;
-            while bytes_read < buffer.len()
-                && !buffer[..bytes_read]
-                    .windows(4)
-                    .any(|window| window == b"\r\n\r\n")
-            {
-                match stream.read(&mut buffer[bytes_read..]) {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => bytes_read += read,
-                }
+            if thread_shutdown.load(Ordering::Acquire) {
+                break;
             }
-            let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-            let target = request
-                .lines()
-                .next()
-                .and_then(|line| line.split_whitespace().nth(1))
-                .unwrap_or("/")
-                .to_owned();
-            let authorization = request
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("authorization")
-                        .then(|| value.trim())
-                })
-                .map_or(AuthorizationClass::Absent, |value| {
-                    if value == AUTHORIZATION {
-                        AuthorizationClass::Expected
-                    } else {
-                        AuthorizationClass::Unexpected
-                    }
-                });
-            let cookie = request
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("cookie").then(|| value.trim())
-                })
-                .map_or(CookieClass::Absent, |value| {
-                    let expected = if target == "/app/private" {
-                        format!("session={NARROW_COOKIE}; session={BROAD_COOKIE}")
-                    } else {
-                        format!("session={BROAD_COOKIE}")
-                    };
-                    let alternate = if target == "/app/private" {
-                        format!(
-                            "session={ALTERNATE_NARROW_COOKIE}; session={ALTERNATE_BROAD_COOKIE}"
-                        )
-                    } else {
-                        format!("session={ALTERNATE_BROAD_COOKIE}")
-                    };
-                    if value == expected {
-                        CookieClass::Expected
-                    } else if value == alternate {
-                        CookieClass::Alternate
-                    } else {
-                        CookieClass::Unexpected
-                    }
-                });
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let record = read_request_record(&mut stream);
             let sequence = {
                 let mut records = thread_requests.lock().expect("request trace lock");
-                records.push(RequestRecord {
-                    target: target.clone(),
-                    authorization,
-                    cookie,
-                });
+                records.push(record.clone());
                 records.len()
             };
-            let response = handler(sequence, &target, authorization, cookie);
+            let response = handler(sequence, &record);
             let _ = stream.write_all(&response);
             let _ = stream.flush();
         }
@@ -165,6 +170,114 @@ where
     TestServer {
         application_url: format!("http://{address}/app/"),
         requests,
+        shutdown: stoppable.then_some((shutdown, worker, address)),
+    }
+}
+
+fn read_request_record(stream: &mut TcpStream) -> RequestRecord {
+    const MAX_REQUEST_BYTES: usize = 32 * 1024;
+    let mut buffer = [0_u8; MAX_REQUEST_BYTES];
+    let mut bytes_read = 0_usize;
+    let header_end = loop {
+        if let Some(offset) = buffer[..bytes_read]
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+        {
+            break offset + 4;
+        }
+        if bytes_read == buffer.len() {
+            break bytes_read;
+        }
+        match stream.read(&mut buffer[bytes_read..]) {
+            Ok(0) | Err(_) => break bytes_read,
+            Ok(read) => bytes_read += read,
+        }
+    };
+    let headers = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0)
+        .min(buffer.len().saturating_sub(header_end));
+    let expected_end = header_end.saturating_add(content_length);
+    while bytes_read < expected_end {
+        match stream.read(&mut buffer[bytes_read..expected_end]) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => bytes_read += read,
+        }
+    }
+
+    let mut request_line = headers.lines().next().unwrap_or("").split_whitespace();
+    let method = request_line.next().unwrap_or("").to_owned();
+    let target = request_line.next().unwrap_or("/").to_owned();
+    let authorization = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("authorization")
+                .then(|| value.trim())
+        })
+        .map_or(AuthorizationClass::Absent, |value| {
+            if value == AUTHORIZATION {
+                AuthorizationClass::Expected
+            } else {
+                AuthorizationClass::Unexpected
+            }
+        });
+    let cookie = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("cookie").then(|| value.trim())
+        })
+        .map_or(CookieClass::Absent, |value| {
+            let expected = if target == "/app/private" {
+                format!("session={NARROW_COOKIE}; session={BROAD_COOKIE}")
+            } else {
+                format!("session={BROAD_COOKIE}")
+            };
+            let alternate = if target == "/app/private" {
+                format!("session={ALTERNATE_NARROW_COOKIE}; session={ALTERNATE_BROAD_COOKIE}")
+            } else {
+                format!("session={ALTERNATE_BROAD_COOKIE}")
+            };
+            let login_two_path = format!("session={LOGIN_APP_COOKIE}; session={LOGIN_ROOT_COOKIE}");
+            if value.strip_prefix("session=") == Some(LOGIN_COOKIE) {
+                CookieClass::LoginExpected
+            } else if value == login_two_path {
+                CookieClass::LoginTwoPathExpected
+            } else if value == expected {
+                CookieClass::Expected
+            } else if value == alternate {
+                CookieClass::Alternate
+            } else {
+                CookieClass::Unexpected
+            }
+        });
+    let form_content_type = headers
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case("content-type: application/x-www-form-urlencoded"));
+    let body = &buffer[header_end..bytes_read];
+    let expected_form = format!("csrf={LOGIN_CSRF}&user={LOGIN_USERNAME}&pass={LOGIN_PASSWORD}");
+    let form_body = if body.is_empty() {
+        FormBodyClass::Absent
+    } else if body == expected_form.as_bytes() {
+        FormBodyClass::Expected
+    } else {
+        FormBodyClass::Unexpected
+    };
+    RequestRecord {
+        method,
+        target,
+        authorization,
+        cookie,
+        form_content_type,
+        form_body,
     }
 }
 
@@ -263,6 +376,60 @@ same_site = "strict"
     )
 }
 
+fn form_login_policy(host: &str) -> String {
+    format!(
+        r#"schema = "security.supplied-session-policy/v3"
+principal_alias = "fixture-form-login-reader"
+credential_mechanism = "cookie_jar"
+credential_acquisition = "bounded_form_login"
+cookie_update_policy = "stop_on_selected_cookie"
+login_path = "/app/login"
+login_method = "post"
+login_encoding = "application/x-www-form-urlencoded"
+username_field = "user"
+password_field = "pass"
+csrf_field = "csrf"
+max_login_attempts = 1
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private"]
+max_session_requests = 5
+max_total_response_bytes = 131072
+max_response_body_bytes = 32768
+max_wall_time_ms = 5000
+
+[[cookies]]
+id = "generated-session"
+name = "session"
+domain = "{host}"
+host_only = true
+path = "/app/"
+secure = false
+http_only = true
+same_site = "lax"
+"#
+    )
+}
+
+fn form_login_two_path_cookie_policy(host: &str) -> String {
+    format!(
+        concat!(
+            "{}",
+            "\n[[cookies]]\n",
+            "id = \"generated-narrow-session\"\n",
+            "name = \"session\"\n",
+            "domain = \"{}\"\n",
+            "host_only = true\n",
+            "path = \"/\"\n",
+            "secure = false\n",
+            "http_only = true\n",
+            "same_site = \"strict\"\n"
+        ),
+        form_login_policy(host),
+        host
+    )
+}
+
 fn write_inputs(parent: &Path) -> (PathBuf, PathBuf) {
     let policy_path = parent.join("session-policy.toml");
     let authorization_path = parent.join("authorization.secret");
@@ -287,6 +454,23 @@ fn write_cookie_inputs(parent: &Path, application_url: &str) -> (PathBuf, PathBu
     )
     .expect("write synthetic cookie secret");
     (policy_path, cookie_path)
+}
+
+fn write_form_login_inputs(parent: &Path, application_url: &str) -> (PathBuf, PathBuf) {
+    let host = url::Url::parse(application_url)
+        .expect("parse fixture application URL")
+        .host_str()
+        .expect("fixture URL has host")
+        .to_owned();
+    let policy_path = parent.join("form-login-session-policy.toml");
+    let login_path = parent.join("form-login.secret.tsv");
+    fs::write(&policy_path, form_login_policy(&host)).expect("write synthetic form-login policy");
+    fs::write(
+        &login_path,
+        format!("username\t{LOGIN_USERNAME}\r\npassword\t{LOGIN_PASSWORD}\n"),
+    )
+    .expect("write synthetic form-login secret");
+    (policy_path, login_path)
 }
 
 fn scan_bundle(
@@ -339,6 +523,47 @@ fn scan_cookie_bundle(
         .expect("run supplied-cookie assessment")
 }
 
+fn scan_form_login_bundle(
+    server: &TestServer,
+    policy_path: &Path,
+    login_path: &Path,
+    destination: &Path,
+) -> Output {
+    termivar()
+        .args([
+            "scan",
+            &server.application_url,
+            "--profile",
+            "web-review",
+            "--format",
+            "json",
+            "--progress",
+        ])
+        .arg("--session-policy")
+        .arg(policy_path)
+        .arg("--session-login-file")
+        .arg(login_path)
+        .arg("--report-dir")
+        .arg(destination)
+        .output()
+        .expect("run supplied form-login assessment")
+}
+
+fn final_progress_metric(stderr: &[u8], key: &str) -> u64 {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let value = line.split_whitespace().find_map(|field| {
+                field
+                    .strip_prefix(key)
+                    .and_then(|value| value.parse::<u64>().ok())
+            })?;
+            line.contains("state=completed").then_some(value)
+        })
+        .unwrap_or_else(|| panic!("completed progress record omitted {key}"))
+}
+
 fn read_assessment(destination: &Path) -> (Vec<u8>, Value) {
     let bytes = fs::read(destination.join("assessment.json")).expect("read assessment JSON");
     let document = serde_json::from_slice(&bytes).expect("parse assessment JSON");
@@ -355,6 +580,12 @@ fn assert_no_private_values(bytes: &[u8]) {
         NARROW_COOKIE,
         ALTERNATE_BROAD_COOKIE,
         ALTERNATE_NARROW_COOKIE,
+        LOGIN_USERNAME,
+        LOGIN_PASSWORD,
+        LOGIN_CSRF,
+        LOGIN_COOKIE,
+        LOGIN_APP_COOKIE,
+        LOGIN_ROOT_COOKIE,
         RESPONSE_CANARY,
         #[cfg(feature = "secret-exposure-review")]
         AUTHENTICATED_SECRET_SHAPE,
@@ -362,10 +593,48 @@ fn assert_no_private_values(bytes: &[u8]) {
         "/app/alice-private",
         "/app/bob-private",
         "/app/health",
+        "/app/login",
         "rotated-cookie-canary",
     ] {
         assert!(!rendered.contains(private), "output retained private input");
     }
+}
+
+fn assert_complete_v3_diagnostic_login(audit: &Value) {
+    assert_eq!(audit["schema"], "security.supplied-session-audit/v3");
+    assert_eq!(audit["credential_mechanism"], "cookie_jar");
+    assert_eq!(audit["credential_acquisition"], "bounded_form_login");
+    assert_eq!(audit["outcome"], "complete");
+    assert_eq!(audit["coverage"], "complete");
+    assert_eq!(audit["selected_resource_count"], 1);
+    assert_eq!(audit["dispatched_resource_count"], 1);
+    assert_eq!(audit["committed_resource_count"], 1);
+    assert_eq!(audit["dispatched_request_count"], 5);
+    assert_eq!(audit["cookie_lifecycle"]["initial_epoch"], 0);
+    assert_eq!(audit["cookie_lifecycle"]["final_epoch"], 1);
+    assert_eq!(audit["cookie_lifecycle"]["updates_applied"], 0);
+    let login = &audit["login"];
+    assert!(login["login_reference"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("supplied-session-login-sha256:")));
+    assert_eq!(login["max_attempts"], 1);
+    assert_eq!(login["attempt_count"], 1);
+    assert_eq!(login["page_dispatched"], true);
+    assert_eq!(login["page_status"], 200);
+    assert_eq!(login["page_body_state"], "complete");
+    assert_eq!(login["form_outcome"], "matched");
+    assert!(login.get("form_error_code").is_none());
+    assert_eq!(login["submit_dispatched"], true);
+    assert_eq!(login["submit_status"], 200);
+    assert_eq!(login["submit_body_state"], "complete");
+    assert_eq!(login["submit_outcome"], "cookie_acquired");
+    assert_eq!(login["acquired_cookie_count"], 1);
+    assert!(login["response_bytes"]
+        .as_u64()
+        .is_some_and(|value| value > 0));
+    assert_eq!(login["initial_epoch"], 0);
+    assert_eq!(login["final_epoch"], 1);
+    assert_eq!(login["pre_session_cookie_applied"], false);
 }
 
 #[cfg(feature = "secret-exposure-review")]
@@ -543,6 +812,94 @@ fn invalid_policy_precedes_output_reservation_and_secret_acquisition() {
         "policy validation did not precede output reservation: {stderr}"
     );
     assert!(!stderr.contains("PRIVATE-MISSING-AUTHORIZATION"));
+    assert_eq!(
+        fs::read(&blocked_destination).expect("read unchanged sentinel"),
+        b"existing sentinel"
+    );
+}
+
+#[test]
+fn form_login_policy_mismatch_precedes_output_reservation_and_secret_acquisition() {
+    let directory = tempfile::tempdir().expect("create private form-login preflight fixture");
+    let policy_path = directory.path().join("form-login-policy.toml");
+    let missing_authorization = directory
+        .path()
+        .join("PRIVATE-MISSING-FORM-LOGIN-AUTHORIZATION");
+    let blocked_destination = directory.path().join("blocked-form-login-destination");
+    fs::write(&policy_path, form_login_policy("127.0.0.1")).expect("write valid form-login policy");
+    fs::write(&blocked_destination, b"existing sentinel").expect("reserve sentinel path");
+
+    let output = termivar()
+        .args([
+            "scan",
+            "http://127.0.0.1:9/app/",
+            "--profile",
+            "web-review",
+            "--session-policy",
+        ])
+        .arg(&policy_path)
+        .arg("--session-auth-file")
+        .arg(&missing_authorization)
+        .arg("--report-dir")
+        .arg(&blocked_destination)
+        .output()
+        .expect("run form-login acquisition mismatch");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("bounded UTF-8 diagnostic");
+    assert!(
+        stderr.contains("CredentialMechanismMismatch"),
+        "acquisition mismatch did not precede output reservation: {stderr}"
+    );
+    assert!(!stderr.contains("PRIVATE-MISSING-FORM-LOGIN-AUTHORIZATION"));
+    assert_eq!(
+        fs::read(&blocked_destination).expect("read unchanged sentinel"),
+        b"existing sentinel"
+    );
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
+fn wordpress_form_login_policy_conflict_precedes_output_and_login_secret_acquisition() {
+    let directory = tempfile::tempdir().expect("create private WordPress form-login fixture");
+    let policy_path = directory.path().join("form-login-policy.toml");
+    let missing_login = directory
+        .path()
+        .join("PRIVATE-MISSING-WORDPRESS-FORM-LOGIN");
+    let blocked_destination = directory
+        .path()
+        .join("blocked-wordpress-form-login-destination");
+    fs::write(&policy_path, form_login_policy("127.0.0.1")).expect("write valid form-login policy");
+    fs::write(&blocked_destination, b"existing sentinel").expect("reserve sentinel path");
+
+    let output = termivar()
+        .args([
+            "scan",
+            "http://127.0.0.1:9/app/",
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-supplied-session",
+            "--session-policy",
+        ])
+        .arg(&policy_path)
+        .arg("--session-login-file")
+        .arg(&missing_login)
+        .arg("--report-dir")
+        .arg(&blocked_destination)
+        .output()
+        .expect("run WordPress form-login policy refusal");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("bounded UTF-8 diagnostic");
+    assert!(
+        stderr.contains("does not support bounded form-login policies"),
+        "WordPress/V3 policy conflict was not reported: {stderr}"
+    );
+    assert!(!stderr.contains("PRIVATE-MISSING-WORDPRESS-FORM-LOGIN"));
     assert_eq!(
         fs::read(&blocked_destination).expect("read unchanged sentinel"),
         b"existing sentinel"
@@ -793,6 +1150,671 @@ fn assert_bundle_verify_and_self_compare_are_offline(
     );
 }
 
+fn valid_form_login_page() -> String {
+    format!(
+        concat!(
+            "<form action=\"/app/login\" method=\"post\">",
+            "<input name=\"user\">",
+            "<input type=\"password\" name=\"pass\">",
+            "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
+            "</form>"
+        ),
+        LOGIN_CSRF
+    )
+}
+
+#[test]
+fn supplied_form_login_real_cli_acquires_one_cookie_then_uses_existing_health_contract() {
+    let mut server = serve_form_login(|_, record| {
+        match (
+            record.method.as_str(),
+            record.target.as_str(),
+            record.authorization,
+            record.cookie,
+            record.form_content_type,
+            record.form_body,
+        ) {
+            (
+                "GET",
+                "/app/login",
+                AuthorizationClass::Absent,
+                CookieClass::Absent,
+                false,
+                FormBodyClass::Absent,
+            ) => html_ok(&valid_form_login_page()),
+            (
+                "POST",
+                "/app/login",
+                AuthorizationClass::Absent,
+                CookieClass::Absent,
+                true,
+                FormBodyClass::Expected,
+            ) => response(
+                "200 OK",
+                "application/json",
+                r#"{"login":"received"}"#,
+                &format!(
+                    "Set-Cookie: session={LOGIN_COOKIE}; Path=/app/; HttpOnly; SameSite=Lax\r\n"
+                ),
+            ),
+            (
+                "GET",
+                "/app/health",
+                AuthorizationClass::Absent,
+                CookieClass::LoginExpected,
+                false,
+                FormBodyClass::Absent,
+            ) => json_ok(r#"{"authenticated":true}"#),
+            (
+                "GET",
+                "/app/private",
+                AuthorizationClass::Absent,
+                CookieClass::LoginExpected,
+                false,
+                FormBodyClass::Absent,
+            ) => json_ok(&format!(r#"{{"record":"{RESPONSE_CANARY}-FORM-LOGIN"}}"#)),
+            (
+                "GET",
+                target,
+                AuthorizationClass::Absent,
+                CookieClass::Absent,
+                false,
+                FormBodyClass::Absent,
+            ) if target.starts_with("/app/") => {
+                html_ok("<main>ordinary anonymous form-login fixture</main>")
+            },
+            _ => response(
+                "401 Unauthorized",
+                "application/json",
+                r#"{"error":true}"#,
+                "",
+            ),
+        }
+    });
+    let parent = tempfile::tempdir().expect("create private form-login fixture directory");
+    let (policy_path, login_path) = write_form_login_inputs(parent.path(), &server.application_url);
+    let destination = parent.path().join("form-login-bundle");
+    let output = scan_form_login_bundle(&server, &policy_path, &login_path, &destination);
+    assert!(
+        output.status.success(),
+        "form-login scan failed with {:?}:\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_no_private_values(&output.stdout);
+    assert_no_private_values(&output.stderr);
+    assert_eq!(
+        final_progress_metric(&output.stderr, "accounted_active_verifications="),
+        2,
+        "the authorized login POST must add exactly one active verification to the ordinary plan"
+    );
+
+    let (assessment_bytes, assessment) = read_assessment(&destination);
+    assert_no_private_values(&assessment_bytes);
+    assert_bundle_has_no_private_values(&destination);
+    let audit = &assessment["supplied_session"];
+    assert_eq!(audit["schema"], "security.supplied-session-audit/v3");
+    assert_eq!(audit["credential_mechanism"], "cookie_jar");
+    assert_eq!(audit["credential_acquisition"], "bounded_form_login");
+    assert_eq!(audit["outcome"], "complete");
+    assert_eq!(audit["coverage"], "complete");
+    assert_eq!(audit["selected_resource_count"], 1);
+    assert_eq!(audit["dispatched_resource_count"], 1);
+    assert_eq!(audit["committed_resource_count"], 1);
+    assert_eq!(audit["dispatched_request_count"], 5);
+    assert_eq!(audit["checkpoints"].as_array().unwrap().len(), 2);
+    assert_eq!(audit["resources"].as_array().unwrap().len(), 1);
+    assert_eq!(audit["resources"][0]["outcome"], "committed");
+    assert_eq!(audit["resources"][0]["epoch"], 1);
+    assert_typed_evidence_reference(
+        &audit["resources"][0]["evidence_reference"],
+        "supplied-session-resource-evidence-sha256:",
+    );
+    let login = &audit["login"];
+    assert_eq!(login["max_attempts"], 1);
+    assert_eq!(login["attempt_count"], 1);
+    assert_eq!(login["page_dispatched"], true);
+    assert_eq!(login["page_status"], 200);
+    assert_eq!(login["page_body_state"], "complete");
+    assert_eq!(login["form_outcome"], "matched");
+    assert!(login.get("form_error_code").is_none());
+    assert_eq!(login["submit_dispatched"], true);
+    assert_eq!(login["submit_status"], 200);
+    assert_eq!(login["submit_body_state"], "complete");
+    assert_eq!(login["submit_outcome"], "cookie_acquired");
+    assert_eq!(login["acquired_cookie_count"], 1);
+    assert_eq!(login["initial_epoch"], 0);
+    assert_eq!(login["final_epoch"], 1);
+    assert_eq!(login["pre_session_cookie_applied"], false);
+    assert_eq!(audit["cookie_lifecycle"]["initial_epoch"], 0);
+    assert_eq!(audit["cookie_lifecycle"]["final_epoch"], 1);
+    assert_eq!(audit["cookie_lifecycle"]["updates_applied"], 0);
+    assert_eq!(audit["exploit_execution"], "not_performed");
+    assert_eq!(audit["impact_validation"], "not_performed");
+
+    let records = server.requests.lock().unwrap().clone();
+    let session_records = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.target.as_str(),
+                "/app/login" | "/app/health" | "/app/private"
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(session_records.len(), 5);
+    assert_eq!(
+        session_records
+            .iter()
+            .map(|record| (record.method.as_str(), record.target.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("GET", "/app/login"),
+            ("POST", "/app/login"),
+            ("GET", "/app/health"),
+            ("GET", "/app/private"),
+            ("GET", "/app/health"),
+        ]
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.method == "POST")
+            .count(),
+        1
+    );
+    for record in &session_records[..2] {
+        assert_eq!(record.authorization, AuthorizationClass::Absent);
+        assert_eq!(record.cookie, CookieClass::Absent);
+    }
+    assert_eq!(session_records[0].form_body, FormBodyClass::Absent);
+    assert!(!session_records[0].form_content_type);
+    assert_eq!(session_records[1].form_body, FormBodyClass::Expected);
+    assert!(session_records[1].form_content_type);
+    for record in &session_records[2..] {
+        assert_eq!(record.method, "GET");
+        assert_eq!(record.authorization, AuthorizationClass::Absent);
+        assert_eq!(record.cookie, CookieClass::LoginExpected);
+        assert_eq!(record.form_body, FormBodyClass::Absent);
+        assert!(!record.form_content_type);
+    }
+    assert!(records.iter().any(|record| {
+        record.target == "/app/"
+            && record.method == "GET"
+            && record.authorization == AuthorizationClass::Absent
+            && record.cookie == CookieClass::Absent
+    }));
+    assert!(records
+        .iter()
+        .all(|record| record.authorization != AuthorizationClass::Unexpected));
+    assert!(records
+        .iter()
+        .all(|record| record.cookie != CookieClass::Unexpected));
+
+    server.stop();
+    assert_bundle_verify_and_self_compare_are_offline(&server, &destination, &assessment);
+}
+
+#[test]
+fn supplied_form_login_real_cli_binds_same_name_cookies_by_exact_path() {
+    let mut server = serve_form_login(|_, record| {
+        match (
+            record.method.as_str(),
+            record.target.as_str(),
+            record.authorization,
+            record.cookie,
+            record.form_content_type,
+            record.form_body,
+        ) {
+            (
+                "GET",
+                "/app/login",
+                AuthorizationClass::Absent,
+                CookieClass::Absent,
+                false,
+                FormBodyClass::Absent,
+            ) => html_ok(&valid_form_login_page()),
+            (
+                "POST",
+                "/app/login",
+                AuthorizationClass::Absent,
+                CookieClass::Absent,
+                true,
+                FormBodyClass::Expected,
+            ) => response(
+                "200 OK",
+                "application/json",
+                r#"{"login":"received"}"#,
+                &format!(
+                    concat!(
+                        "Set-Cookie: session={}; Path=/; ",
+                        "HttpOnly; SameSite=Strict\r\n",
+                        "Set-Cookie: session={}; Path=/app/; ",
+                        "HttpOnly; SameSite=Lax\r\n"
+                    ),
+                    LOGIN_ROOT_COOKIE, LOGIN_APP_COOKIE
+                ),
+            ),
+            (
+                "GET",
+                "/app/health",
+                AuthorizationClass::Absent,
+                CookieClass::LoginTwoPathExpected,
+                false,
+                FormBodyClass::Absent,
+            ) => json_ok(r#"{"authenticated":true}"#),
+            (
+                "GET",
+                "/app/private",
+                AuthorizationClass::Absent,
+                CookieClass::LoginTwoPathExpected,
+                false,
+                FormBodyClass::Absent,
+            ) => json_ok(&format!(r#"{{"record":"{RESPONSE_CANARY}-TWO-PATH"}}"#)),
+            (
+                "GET",
+                target,
+                AuthorizationClass::Absent,
+                CookieClass::Absent,
+                false,
+                FormBodyClass::Absent,
+            ) if target.starts_with("/app/") => {
+                html_ok("<main>ordinary anonymous two-path fixture</main>")
+            },
+            _ => response(
+                "401 Unauthorized",
+                "application/json",
+                r#"{"error":true}"#,
+                "",
+            ),
+        }
+    });
+    let parent = tempfile::tempdir().expect("create private two-path form-login fixture");
+    let (policy_path, login_path) = write_form_login_inputs(parent.path(), &server.application_url);
+    let host = url::Url::parse(&server.application_url)
+        .expect("parse fixture application URL")
+        .host_str()
+        .expect("fixture URL has host")
+        .to_owned();
+    fs::write(&policy_path, form_login_two_path_cookie_policy(&host))
+        .expect("write two-path form-login policy");
+    let destination = parent.path().join("form-login-two-path-bundle");
+    let output = scan_form_login_bundle(&server, &policy_path, &login_path, &destination);
+    assert!(
+        output.status.success(),
+        "two-path form-login scan failed with {:?}: stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_no_private_values(&output.stdout);
+    assert_no_private_values(&output.stderr);
+
+    let (assessment_bytes, assessment) = read_assessment(&destination);
+    assert_no_private_values(&assessment_bytes);
+    assert_bundle_has_no_private_values(&destination);
+    let audit = &assessment["supplied_session"];
+    assert_eq!(audit["schema"], "security.supplied-session-audit/v3");
+    assert_eq!(audit["outcome"], "complete");
+    assert_eq!(audit["coverage"], "complete");
+    assert_eq!(audit["dispatched_request_count"], 5);
+    assert_eq!(audit["committed_resource_count"], 1);
+    assert_eq!(audit["cookie_policy"]["declared_count"], 2);
+    assert_eq!(audit["cookie_policy"]["host_only_count"], 2);
+    assert_eq!(audit["login"]["attempt_count"], 1);
+    assert_eq!(audit["login"]["submit_outcome"], "cookie_acquired");
+    assert_eq!(audit["login"]["acquired_cookie_count"], 2);
+    assert_eq!(audit["login"]["initial_epoch"], 0);
+    assert_eq!(audit["login"]["final_epoch"], 1);
+
+    let records = server.requests.lock().unwrap().clone();
+    let session_records = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.target.as_str(),
+                "/app/login" | "/app/health" | "/app/private"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(session_records.len(), 5);
+    assert_eq!(
+        session_records
+            .iter()
+            .map(|record| (
+                record.method.as_str(),
+                record.target.as_str(),
+                record.cookie
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("GET", "/app/login", CookieClass::Absent),
+            ("POST", "/app/login", CookieClass::Absent),
+            ("GET", "/app/health", CookieClass::LoginTwoPathExpected),
+            ("GET", "/app/private", CookieClass::LoginTwoPathExpected),
+            ("GET", "/app/health", CookieClass::LoginTwoPathExpected),
+        ]
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.method == "POST")
+            .count(),
+        1
+    );
+    assert!(records
+        .iter()
+        .all(|record| record.authorization == AuthorizationClass::Absent));
+    assert!(records
+        .iter()
+        .all(|record| record.cookie != CookieClass::Unexpected));
+
+    server.stop();
+    assert_bundle_verify_and_self_compare_are_offline(&server, &destination, &assessment);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FormLoginFailureFixture {
+    WrongCredentials,
+    MissingCsrf,
+    DuplicateCsrf,
+    PreSessionCookie,
+    Redirect,
+}
+
+impl FormLoginFailureFixture {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::WrongCredentials => "wrong-credentials",
+            Self::MissingCsrf => "missing-csrf",
+            Self::DuplicateCsrf => "duplicate-csrf",
+            Self::PreSessionCookie => "pre-session-cookie",
+            Self::Redirect => "redirect",
+        }
+    }
+
+    const fn expected_outcome(self) -> &'static str {
+        match self {
+            Self::WrongCredentials => "login_cookie_unavailable",
+            Self::MissingCsrf | Self::DuplicateCsrf | Self::PreSessionCookie => {
+                "login_form_unavailable"
+            },
+            Self::Redirect => "login_submit_unavailable",
+        }
+    }
+
+    const fn expected_form(self) -> (&'static str, Option<&'static str>) {
+        match self {
+            Self::WrongCredentials | Self::Redirect => ("matched", None),
+            Self::MissingCsrf => ("missing", Some("missing_csrf")),
+            Self::DuplicateCsrf => ("ambiguous", Some("ambiguous_csrf")),
+            Self::PreSessionCookie => (
+                "ineligible_response",
+                Some("pre_session_cookie_unsupported"),
+            ),
+        }
+    }
+
+    const fn expected_submit(self) -> (bool, &'static str) {
+        match self {
+            Self::WrongCredentials => (true, "cookie_unavailable"),
+            Self::Redirect => (true, "redirect_refused"),
+            Self::MissingCsrf | Self::DuplicateCsrf | Self::PreSessionCookie => {
+                (false, "not_dispatched")
+            },
+        }
+    }
+}
+
+#[test]
+fn supplied_form_login_real_cli_stops_on_bounded_acquisition_failures_without_secret_leakage() {
+    for fixture in [
+        FormLoginFailureFixture::WrongCredentials,
+        FormLoginFailureFixture::MissingCsrf,
+        FormLoginFailureFixture::DuplicateCsrf,
+        FormLoginFailureFixture::PreSessionCookie,
+        FormLoginFailureFixture::Redirect,
+    ] {
+        let mut server = serve_form_login(move |_, record| {
+            match (record.method.as_str(), record.target.as_str()) {
+                ("GET", "/app/login") => match fixture {
+                    FormLoginFailureFixture::MissingCsrf => html_ok(concat!(
+                        "<form action=\"/app/login\" method=\"post\">",
+                        "<input name=\"user\"><input type=\"password\" name=\"pass\">",
+                        "</form>"
+                    )),
+                    FormLoginFailureFixture::DuplicateCsrf => html_ok(&format!(
+                        concat!(
+                            "<form action=\"/app/login\" method=\"post\">",
+                            "<input name=\"user\"><input type=\"password\" name=\"pass\">",
+                            "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
+                            "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
+                            "</form>"
+                        ),
+                        LOGIN_CSRF, LOGIN_CSRF
+                    )),
+                    FormLoginFailureFixture::PreSessionCookie => response(
+                        "200 OK",
+                        "text/html; charset=utf-8",
+                        &valid_form_login_page(),
+                        &format!("Set-Cookie: session={LOGIN_COOKIE}; Path=/app/; HttpOnly\r\n"),
+                    ),
+                    _ => html_ok(&valid_form_login_page()),
+                },
+                ("POST", "/app/login") => match fixture {
+                    FormLoginFailureFixture::WrongCredentials => html_ok(&valid_form_login_page()),
+                    FormLoginFailureFixture::Redirect => response(
+                        "302 Found",
+                        "text/html; charset=utf-8",
+                        "redirect refused",
+                        "Location: /app/private\r\n",
+                    ),
+                    _ => panic!("{} must not submit a login form", fixture.name()),
+                },
+                ("GET", target) if target.starts_with("/app/") => {
+                    html_ok("<main>ordinary anonymous failure fixture</main>")
+                },
+                _ => response(
+                    "405 Method Not Allowed",
+                    "text/plain; charset=utf-8",
+                    "method refused",
+                    "",
+                ),
+            }
+        });
+        let parent = tempfile::tempdir().expect("create private form-login failure fixture");
+        let (policy_path, login_path) =
+            write_form_login_inputs(parent.path(), &server.application_url);
+        let destination = parent.path().join(format!("{}-bundle", fixture.name()));
+        let output = scan_form_login_bundle(&server, &policy_path, &login_path, &destination);
+        assert!(
+            output.status.success(),
+            "{} scan unexpectedly failed: stdout={} stderr={}",
+            fixture.name(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_no_private_values(&output.stdout);
+        assert_no_private_values(&output.stderr);
+        let submit_dispatched = fixture.expected_submit().0;
+        assert_eq!(
+            final_progress_metric(&output.stderr, "accounted_active_verifications="),
+            1 + u64::from(submit_dispatched),
+            "{} must retain the ordinary active action and charge one more only for a login POST",
+            fixture.name()
+        );
+        let (assessment_bytes, assessment) = read_assessment(&destination);
+        assert_no_private_values(&assessment_bytes);
+        assert_bundle_has_no_private_values(&destination);
+        let audit = &assessment["supplied_session"];
+        assert_eq!(audit["schema"], "security.supplied-session-audit/v3");
+        assert_eq!(audit["credential_acquisition"], "bounded_form_login");
+        assert_eq!(audit["outcome"], fixture.expected_outcome());
+        assert_eq!(audit["coverage"], "none");
+        assert_eq!(audit["committed_resource_count"], 0);
+        assert_eq!(audit["cookie_lifecycle"]["initial_epoch"], 0);
+        assert_eq!(audit["cookie_lifecycle"]["final_epoch"], 0);
+        assert_eq!(audit["cookie_lifecycle"]["updates_applied"], 0);
+        let login = &audit["login"];
+        assert_eq!(login["page_dispatched"], true);
+        assert_eq!(login["page_status"], 200);
+        assert_eq!(login["page_body_state"], "complete");
+        let (form_outcome, form_error) = fixture.expected_form();
+        assert_eq!(login["form_outcome"], form_outcome);
+        match form_error {
+            Some(code) => assert_eq!(login["form_error_code"], code),
+            None => assert!(login.get("form_error_code").is_none()),
+        }
+        let (submit_dispatched, submit_outcome) = fixture.expected_submit();
+        assert_eq!(login["submit_dispatched"], submit_dispatched);
+        assert_eq!(login["submit_outcome"], submit_outcome);
+        assert_eq!(login["attempt_count"], u8::from(submit_dispatched));
+        assert_eq!(login["acquired_cookie_count"], 0);
+        assert_eq!(login["initial_epoch"], 0);
+        assert_eq!(login["final_epoch"], 0);
+        assert_eq!(login["pre_session_cookie_applied"], false);
+
+        let records = server.requests.lock().unwrap().clone();
+        let login_records = records
+            .iter()
+            .filter(|record| record.target == "/app/login")
+            .collect::<Vec<_>>();
+        assert_eq!(login_records.len(), 1 + usize::from(submit_dispatched));
+        assert_eq!(login_records[0].method, "GET");
+        assert_eq!(login_records[0].authorization, AuthorizationClass::Absent);
+        assert_eq!(login_records[0].cookie, CookieClass::Absent);
+        assert_eq!(login_records[0].form_body, FormBodyClass::Absent);
+        if submit_dispatched {
+            assert_eq!(login_records[1].method, "POST");
+            assert_eq!(login_records[1].authorization, AuthorizationClass::Absent);
+            assert_eq!(login_records[1].cookie, CookieClass::Absent);
+            assert!(login_records[1].form_content_type);
+            assert_eq!(login_records[1].form_body, FormBodyClass::Expected);
+        }
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.method == "POST")
+                .count(),
+            usize::from(submit_dispatched)
+        );
+        assert!(records
+            .iter()
+            .all(|record| record.authorization == AuthorizationClass::Absent));
+        assert!(records
+            .iter()
+            .all(|record| record.cookie == CookieClass::Absent));
+        server.stop();
+    }
+}
+
+#[test]
+fn supplied_form_login_real_cli_times_out_one_submit_without_reposting() {
+    let mut server =
+        serve_form_login(
+            |_, record| match (record.method.as_str(), record.target.as_str()) {
+                ("GET", "/app/login") => html_ok(&valid_form_login_page()),
+                ("POST", "/app/login") => {
+                    thread::sleep(Duration::from_millis(2_000));
+                    response(
+                        "200 OK",
+                        "application/json",
+                        r#"{"login":"received-too-late"}"#,
+                        &format!(
+                        "Set-Cookie: session={LOGIN_COOKIE}; Path=/app/; HttpOnly; SameSite=Lax\r\n"
+                    ),
+                    )
+                },
+                ("GET", target) if target.starts_with("/app/") => {
+                    html_ok("<main>ordinary anonymous timeout fixture</main>")
+                },
+                _ => response(
+                    "405 Method Not Allowed",
+                    "text/plain; charset=utf-8",
+                    "method refused",
+                    "",
+                ),
+            },
+        );
+    let parent = tempfile::tempdir().expect("create private form-login timeout fixture");
+    let (policy_path, login_path) = write_form_login_inputs(parent.path(), &server.application_url);
+    let bounded_policy = fs::read_to_string(&policy_path)
+        .expect("read form-login timeout policy")
+        .replace("max_wall_time_ms = 5000", "max_wall_time_ms = 1000");
+    fs::write(&policy_path, bounded_policy).expect("write form-login timeout policy");
+    let destination = parent.path().join("form-login-timeout-bundle");
+    let output = scan_form_login_bundle(&server, &policy_path, &login_path, &destination);
+    assert!(
+        output.status.success(),
+        "timed-out form-login scan failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_no_private_values(&output.stdout);
+    assert_no_private_values(&output.stderr);
+
+    let (assessment_bytes, assessment) = read_assessment(&destination);
+    assert_no_private_values(&assessment_bytes);
+    assert_bundle_has_no_private_values(&destination);
+    let audit = &assessment["supplied_session"];
+    assert_eq!(audit["schema"], "security.supplied-session-audit/v3");
+    assert_eq!(audit["outcome"], "runtime_limit");
+    assert_eq!(audit["coverage"], "none");
+    assert_eq!(audit["selected_resource_count"], 1);
+    assert_eq!(audit["dispatched_resource_count"], 0);
+    assert_eq!(audit["committed_resource_count"], 0);
+    assert_eq!(audit["dispatched_request_count"], 2);
+    assert!(audit["checkpoints"].as_array().unwrap().is_empty());
+    assert_eq!(audit["resources"].as_array().unwrap().len(), 1);
+    assert_eq!(audit["resources"][0]["outcome"], "not_dispatched");
+    let login = &audit["login"];
+    assert_eq!(login["page_dispatched"], true);
+    assert_eq!(login["form_outcome"], "matched");
+    assert_eq!(login["submit_dispatched"], true);
+    assert_eq!(login["submit_outcome"], "runtime_limit");
+    assert_eq!(login["submit_body_state"], "unavailable");
+    assert_eq!(login["attempt_count"], 1);
+    assert_eq!(login["acquired_cookie_count"], 0);
+    assert_eq!(login["initial_epoch"], 0);
+    assert_eq!(login["final_epoch"], 0);
+    assert_eq!(audit["cookie_lifecycle"]["initial_epoch"], 0);
+    assert_eq!(audit["cookie_lifecycle"]["final_epoch"], 0);
+    assert_eq!(audit["cookie_lifecycle"]["updates_applied"], 0);
+
+    let records = server.requests.lock().unwrap().clone();
+    let login_records = records
+        .iter()
+        .filter(|record| record.target == "/app/login")
+        .collect::<Vec<_>>();
+    assert_eq!(login_records.len(), 2);
+    assert_eq!(login_records[0].method, "GET");
+    assert_eq!(login_records[0].form_body, FormBodyClass::Absent);
+    assert_eq!(login_records[1].method, "POST");
+    assert_eq!(login_records[1].form_body, FormBodyClass::Expected);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.method == "POST")
+            .count(),
+        1,
+        "a timed-out non-idempotent login submit must never be replayed"
+    );
+    assert!(records
+        .iter()
+        .all(|record| { !matches!(record.target.as_str(), "/app/health" | "/app/private") }));
+    assert!(records
+        .iter()
+        .all(|record| record.authorization == AuthorizationClass::Absent));
+    assert!(records
+        .iter()
+        .all(|record| record.cookie == CookieClass::Absent));
+
+    server.stop();
+    assert_bundle_verify_and_self_compare_are_offline(&server, &destination, &assessment);
+}
+
 #[test]
 fn supplied_cookie_real_cli_preserves_scope_order_and_offline_contracts() {
     let server = serve(
@@ -975,6 +1997,8 @@ fn supplied_cookie_started_runtime_failure_retains_v2_value_free_audit_contract(
     let audit = &document["assessment"]["report"]["supplied_session_audit"];
     assert_eq!(audit["schema"], "security.supplied-session-audit/v2");
     assert_eq!(audit["credential_mechanism"], "cookie_jar");
+    assert!(audit.get("credential_acquisition").is_none());
+    assert!(audit.get("login").is_none());
     assert_eq!(audit["outcome"], "credential_update_required");
     assert_eq!(audit["cookie_policy"]["declared_count"], 2);
     assert_eq!(audit["cookie_policy"]["host_only_count"], 2);
@@ -1032,6 +2056,160 @@ fn supplied_cookie_started_runtime_failure_retains_v2_value_free_audit_contract(
     let text = String::from_utf8(text_output.stdout).expect("text diagnostic is UTF-8");
     assert!(text.contains("outcome=credential_update_required coverage=none"));
     assert!(!text.contains("outcome=unknown"));
+}
+
+#[test]
+fn supplied_form_login_started_runtime_failure_retains_v3_value_free_audit_contract() {
+    let mut server = serve_form_login(|_, record| {
+        match (
+            record.method.as_str(),
+            record.target.as_str(),
+            record.cookie,
+        ) {
+            ("GET", "/app/login", CookieClass::Absent) => html_ok(&valid_form_login_page()),
+            ("POST", "/app/login", CookieClass::Absent) => response(
+                "200 OK",
+                "application/json",
+                r#"{"login":"received"}"#,
+                &format!(
+                    "Set-Cookie: session={LOGIN_COOKIE}; Path=/app/; HttpOnly; SameSite=Lax\r\n"
+                ),
+            ),
+            ("GET", "/app/health", CookieClass::LoginExpected) => {
+                json_ok(r#"{"authenticated":true}"#)
+            },
+            ("GET", "/app/private", CookieClass::LoginExpected) => {
+                json_ok(&format!(r#"{{"record":"{RESPONSE_CANARY}"}}"#))
+            },
+            ("GET", "/app/", CookieClass::Absent) => {
+                // The form-login child has completed. Failing the ordinary root
+                // now exercises the started-runtime-failure diagnostic path.
+                Vec::new()
+            },
+            _ => response(
+                "401 Unauthorized",
+                "application/json",
+                r#"{"error":true}"#,
+                "",
+            ),
+        }
+    });
+    let parent = tempfile::tempdir().expect("create private V3 started-failure fixture");
+    let (policy_path, login_path) = write_form_login_inputs(parent.path(), &server.application_url);
+    let output = termivar()
+        .args([
+            "scan",
+            &server.application_url,
+            "--profile",
+            "web-review",
+            "--format",
+            "json",
+        ])
+        .arg("--session-policy")
+        .arg(&policy_path)
+        .arg("--session-login-file")
+        .arg(&login_path)
+        .output()
+        .expect("run form-login started-failure assessment");
+
+    assert!(
+        !output.status.success(),
+        "started failure must return nonzero"
+    );
+    assert_no_private_values(&output.stdout);
+    assert_no_private_values(&output.stderr);
+    let document: Value = serde_json::from_slice(&output.stdout)
+        .expect("started failure emits bounded diagnostic JSON before returning nonzero");
+    assert_eq!(document["schema_version"], "web-assessment/v2");
+    assert_eq!(document["disposition"], "failed");
+    assert!(document["incomplete_reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "started_runtime_failure"));
+    assert_complete_v3_diagnostic_login(
+        &document["assessment"]["report"]["supplied_session_audit"],
+    );
+    server.stop();
+}
+
+#[test]
+fn supplied_form_login_incomplete_runtime_retains_v3_value_free_audit_contract() {
+    let query = (0..65)
+        .map(|index| format!("parameter_{index:02}=value"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let root_html = format!("<a href=\"/app/child?{query}\">bounded child</a>");
+    let mut server = serve_form_login(move |_, record| {
+        match (
+            record.method.as_str(),
+            record.target.as_str(),
+            record.cookie,
+        ) {
+            ("GET", "/app/login", CookieClass::Absent) => html_ok(&valid_form_login_page()),
+            ("POST", "/app/login", CookieClass::Absent) => response(
+                "200 OK",
+                "application/json",
+                r#"{"login":"received"}"#,
+                &format!(
+                    "Set-Cookie: session={LOGIN_COOKIE}; Path=/app/; HttpOnly; SameSite=Lax\r\n"
+                ),
+            ),
+            ("GET", "/app/health", CookieClass::LoginExpected) => {
+                json_ok(r#"{"authenticated":true}"#)
+            },
+            ("GET", "/app/private", CookieClass::LoginExpected) => {
+                json_ok(&format!(r#"{{"record":"{RESPONSE_CANARY}"}}"#))
+            },
+            ("GET", "/app/", CookieClass::Absent) => html_ok(&root_html),
+            ("GET", target, CookieClass::Absent) if target.starts_with("/app/child?") => {
+                html_ok("<main>bounded child</main>")
+            },
+            _ => response(
+                "401 Unauthorized",
+                "application/json",
+                r#"{"error":true}"#,
+                "",
+            ),
+        }
+    });
+    let parent = tempfile::tempdir().expect("create private V3 incomplete fixture");
+    let (policy_path, login_path) = write_form_login_inputs(parent.path(), &server.application_url);
+    let output = termivar()
+        .args([
+            "scan",
+            &server.application_url,
+            "--profile",
+            "web-review",
+            "--format",
+            "json",
+        ])
+        .arg("--session-policy")
+        .arg(&policy_path)
+        .arg("--session-login-file")
+        .arg(&login_path)
+        .output()
+        .expect("run form-login incomplete assessment");
+
+    assert!(
+        !output.status.success(),
+        "incomplete run must return nonzero"
+    );
+    assert_no_private_values(&output.stdout);
+    assert_no_private_values(&output.stderr);
+    let document: Value = serde_json::from_slice(&output.stdout)
+        .expect("incomplete run emits bounded diagnostic JSON before returning nonzero");
+    assert_eq!(document["schema_version"], "web-assessment/v2");
+    assert_eq!(document["disposition"], "incomplete");
+    assert!(document["incomplete_reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "query_parameter_name_limit"));
+    assert_complete_v3_diagnostic_login(
+        &document["assessment"]["report"]["supplied_session_audit"],
+    );
+    server.stop();
 }
 
 #[test]

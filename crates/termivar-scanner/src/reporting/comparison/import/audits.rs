@@ -26,6 +26,7 @@ const OPENAPI_CAPABILITY: &str = "api.openapi-contract-observed@1";
 const AUTHORIZATION_CAPABILITY: &str = "authorization.resource-cross-principal-equivalence@1";
 const SUPPLIED_SESSION_AUDIT_SCHEMA_V1: &str = "security.supplied-session-audit/v1";
 const SUPPLIED_SESSION_AUDIT_SCHEMA_V2: &str = "security.supplied-session-audit/v2";
+const SUPPLIED_SESSION_AUDIT_SCHEMA_V3: &str = "security.supplied-session-audit/v3";
 const SUPPLIED_SESSION_CAPABILITY: &str = "session.supplied-context-assessment@1";
 const SECRET_EXPOSURE_AUDIT_SCHEMA: &str = "security.passive-secret-exposure-audit/v1";
 const SECRET_EXPOSURE_POLICY: &str = "termivar.passive-secret-exposure/v1";
@@ -1251,7 +1252,7 @@ pub(super) fn validate_supplied_session(
 ) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
     let fields = object(value)?;
     let schema = string(fields, "schema")?;
-    let cookie_v2 = match schema {
+    let (cookie_audit, form_v3) = match schema {
         SUPPLIED_SESSION_AUDIT_SCHEMA_V1 => {
             keys(
                 fields,
@@ -1284,7 +1285,7 @@ pub(super) fn validate_supplied_session(
                 ],
                 &[],
             )?;
-            false
+            (false, false)
         },
         SUPPLIED_SESSION_AUDIT_SCHEMA_V2 => {
             keys(
@@ -1320,7 +1321,45 @@ pub(super) fn validate_supplied_session(
                 ],
                 &[],
             )?;
-            true
+            (true, false)
+        },
+        SUPPLIED_SESSION_AUDIT_SCHEMA_V3 => {
+            keys(
+                fields,
+                &[
+                    "schema",
+                    "capability_id",
+                    "policy_reference",
+                    "application_reference",
+                    "principal_reference",
+                    "principal_alias",
+                    "principal_assurance",
+                    "credential_mechanism",
+                    "credential_acquisition",
+                    "cookie_policy",
+                    "cookie_lifecycle",
+                    "login",
+                    "health_oracle",
+                    "outcome",
+                    "coverage",
+                    "checkpoints",
+                    "resources",
+                    "selected_resource_count",
+                    "dispatched_resource_count",
+                    "committed_resource_count",
+                    "dispatched_request_count",
+                    "response_bytes",
+                    "response_byte_limit",
+                    "response_byte_limit_exceeded",
+                    "refresh_performed",
+                    "anonymous_fallback_performed",
+                    "continuous_authentication_established",
+                    "exploit_execution",
+                    "impact_validation",
+                ],
+                &[],
+            )?;
+            (true, true)
         },
         _ => return Err(ComparisonError::InvalidDocument),
     };
@@ -1343,17 +1382,24 @@ pub(super) fn validate_supplied_session(
         128,
     )?))?;
     check(token(fields, "principal_assurance", &["operator_declared"])? == "operator_declared")?;
-    let credential_mechanism = if cookie_v2 {
+    let credential_mechanism = if cookie_audit {
         token(fields, "credential_mechanism", &["cookie_jar"])?
     } else {
         token(fields, "credential_mechanism", &["authorization_header"])?
     };
     check(
-        (!cookie_v2 && credential_mechanism == "authorization_header")
-            || (cookie_v2 && credential_mechanism == "cookie_jar"),
+        (!cookie_audit && credential_mechanism == "authorization_header")
+            || (cookie_audit && credential_mechanism == "cookie_jar"),
     )?;
-    if cookie_v2 {
-        validate_supplied_session_cookie_policy(required(fields, "cookie_policy")?)?;
+    let cookie_policy = cookie_audit
+        .then(|| validate_supplied_session_cookie_policy(required(fields, "cookie_policy")?))
+        .transpose()?;
+    if form_v3 {
+        validate_supplied_session_form_cookie_policy(required(fields, "cookie_policy")?)?;
+        check(
+            token(fields, "credential_acquisition", &["bounded_form_login"])?
+                == "bounded_form_login",
+        )?;
     }
     validate_supplied_session_health_oracle(required(fields, "health_oracle")?)?;
     let outcome = token(
@@ -1368,13 +1414,35 @@ pub(super) fn validate_supplied_session(
             "cancelled",
             "credential_update_required",
             "credential_update_unusable",
+            "login_form_unavailable",
+            "login_submit_unavailable",
+            "login_cookie_unavailable",
         ],
     )?;
+    let login_outcome = matches!(
+        outcome,
+        "login_form_unavailable" | "login_submit_unavailable" | "login_cookie_unavailable"
+    );
+    let cookie_update_outcome = matches!(
+        outcome,
+        "credential_update_required" | "credential_update_unusable"
+    );
+    check(if form_v3 {
+        true
+    } else if cookie_audit {
+        !login_outcome
+    } else {
+        !login_outcome && !cookie_update_outcome
+    })?;
     let coverage = token(fields, "coverage", &["complete", "partial", "none"])?;
     let selected_resource_count = number(
         fields,
         "selected_resource_count",
-        MAX_SUPPLIED_SESSION_RESOURCES,
+        if form_v3 {
+            MAX_SUPPLIED_SESSION_RESOURCES - 1
+        } else {
+            MAX_SUPPLIED_SESSION_RESOURCES
+        },
     )?;
     let dispatched_resource_count = number(
         fields,
@@ -1391,10 +1459,11 @@ pub(super) fn validate_supplied_session(
         "dispatched_request_count",
         MAX_SUPPLIED_SESSION_REQUESTS,
     )?;
-    let cookie_lifecycle = if cookie_v2 {
+    let cookie_lifecycle = if cookie_audit {
         Some(validate_supplied_session_cookie_lifecycle(
             required(fields, "cookie_lifecycle")?,
             dispatched_request_count,
+            if form_v3 { 0 } else { 1 },
         )?)
     } else {
         None
@@ -1428,8 +1497,42 @@ pub(super) fn validate_supplied_session(
         validated_checkpoints.push(validated);
     }
 
+    let validated_login = if form_v3 {
+        Some(validate_supplied_session_login(
+            required(fields, "login")?,
+            outcome,
+            validated_checkpoints.first(),
+            cookie_policy
+                .ok_or(ComparisonError::InvalidDocument)?
+                .declared_count,
+        )?)
+    } else {
+        None
+    };
+    if form_v3 {
+        let login = validated_login.ok_or(ComparisonError::InvalidDocument)?;
+        let lifecycle = cookie_lifecycle.ok_or(ComparisonError::InvalidDocument)?;
+        let update_eligible_request_count = dispatched_request_count
+            .checked_sub(login.dispatched_request_count)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        check(
+            lifecycle.selected_update_response_count <= update_eligible_request_count
+                && lifecycle
+                    .unselected_update_response_count
+                    .checked_add(lifecycle.update_classification_failure_count)
+                    .is_some_and(|count| count <= update_eligible_request_count),
+        )?;
+    }
+
     let resources = array(fields, "resources")?;
-    check((1..=MAX_SUPPLIED_SESSION_RESOURCES as usize).contains(&resources.len()))?;
+    check(
+        (1..=if form_v3 {
+            MAX_SUPPLIED_SESSION_RESOURCES as usize - 1
+        } else {
+            MAX_SUPPLIED_SESSION_RESOURCES as usize
+        })
+            .contains(&resources.len()),
+    )?;
     let mut resource_references = BTreeSet::new();
     let mut resource_evidence_references = BTreeSet::new();
     let mut dispatched_resources = 0_u64;
@@ -1462,9 +1565,17 @@ pub(super) fn validate_supplied_session(
             && dispatched_request_count
                 == dispatched_resource_count
                     .checked_add(checkpoints.len() as u64)
+                    .and_then(|count| {
+                        count.checked_add(
+                            validated_login.map_or(0, |login| login.dispatched_request_count),
+                        )
+                    })
                     .ok_or(ComparisonError::InvalidDocument)?
             && checkpoint_response_bytes
                 .checked_add(resource_response_bytes)
+                .and_then(|bytes| {
+                    bytes.checked_add(validated_login.map_or(0, |login| login.response_bytes))
+                })
                 .ok_or(ComparisonError::InvalidDocument)?
                 == response_bytes
             && response_byte_limit_exceeded == (response_bytes > response_byte_limit),
@@ -1526,7 +1637,33 @@ pub(super) fn validate_supplied_session(
         _ => false,
     })?;
     validate_supplied_session_outcome(outcome, &validated_checkpoints, &validated_resources)?;
+    if form_v3 {
+        let login = validated_login.ok_or(ComparisonError::InvalidDocument)?;
+        let startup_authenticated = validated_checkpoints.first().is_some_and(|checkpoint| {
+            checkpoint.phase == "startup" && checkpoint.outcome == "healthy"
+        });
+        check(
+            login.final_epoch == 1
+                || !startup_authenticated
+                || (matches!(
+                    outcome,
+                    "credential_update_required" | "credential_update_unusable"
+                ) && validated_checkpoints.len() == 1
+                    && dispatched_resource_count == 0
+                    && validated_resources
+                        .iter()
+                        .all(|resource| resource.outcome == "not_dispatched")),
+        )?;
+    }
     if let Some(lifecycle) = cookie_lifecycle {
+        check(
+            !form_v3
+                || validated_login.is_some_and(|login| {
+                    lifecycle.initial_epoch == 0
+                        && lifecycle.final_epoch == login.final_epoch
+                        && (login.final_epoch == 1 || dispatched_resource_count == 0)
+                }),
+        )?;
         check(match outcome {
             "credential_update_required" => {
                 lifecycle.selected_update_response_count == 1
@@ -1553,8 +1690,22 @@ pub(super) fn validate_supplied_session(
     check(string(fields, "exploit_execution")? == "not_performed")?;
     check(string(fields, "impact_validation")? == "not_performed")?;
     check(count(items, SUPPLIED_SESSION_CAPABILITY) == 0)?;
-    let session_epoch = Value::from(1_u64);
-    let context_fields: &[&str] = if cookie_v2 {
+    let session_epoch = Value::from(validated_login.map_or(1, |login| login.final_epoch));
+    let context_fields: &[&str] = if form_v3 {
+        &[
+            "schema",
+            "capability_id",
+            "policy_reference",
+            "application_reference",
+            "principal_reference",
+            "principal_alias",
+            "principal_assurance",
+            "credential_mechanism",
+            "credential_acquisition",
+            "health_oracle",
+            "cookie_policy",
+        ]
+    } else if cookie_audit {
         &[
             "schema",
             "capability_id",
@@ -1580,7 +1731,16 @@ pub(super) fn validate_supplied_session(
             "health_oracle",
         ]
     };
-    let health_fields: &[&str] = if cookie_v2 {
+    let health_fields: &[&str] = if form_v3 {
+        &[
+            "outcome",
+            "coverage",
+            "login",
+            "checkpoints",
+            "resources",
+            "cookie_lifecycle",
+        ]
+    } else if cookie_audit {
         &[
             "outcome",
             "coverage",
@@ -1638,13 +1798,42 @@ pub(super) fn validate_supplied_session(
     })
 }
 
+fn validate_supplied_session_form_cookie_policy(value: &Value) -> Result<(), ComparisonError> {
+    let fields = object(value)?;
+    let declared = number(fields, "declared_count", MAX_SUPPLIED_SESSION_COOKIES)?;
+    let secure = number(fields, "secure_count", declared)?;
+    check(declared > 0)?;
+    check(number(fields, "host_only_count", declared)? == declared)?;
+    check(number(fields, "domain_count", declared)? == 0)?;
+    check(secure == 0 || secure == declared)?;
+    check(number(fields, "http_only_count", declared)? == declared)?;
+    check(number(fields, "session_count", declared)? == declared)?;
+    check(number(fields, "persistent_count", declared)? == 0)?;
+    check(number(fields, "same_site_missing_count", declared)? == 0)?;
+    check(number(fields, "same_site_none_count", declared)? == 0)?;
+    check(
+        number(fields, "same_site_strict_count", declared)?.checked_add(number(
+            fields,
+            "same_site_lax_count",
+            declared,
+        )?) == Some(declared),
+    )
+}
+
 fn valid_supplied_session_principal_alias(value: &str) -> bool {
     value.bytes().all(|byte| {
         byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
     })
 }
 
-fn validate_supplied_session_cookie_policy(value: &Value) -> Result<(), ComparisonError> {
+#[derive(Clone, Copy)]
+struct ValidatedSuppliedSessionCookiePolicy {
+    declared_count: u64,
+}
+
+fn validate_supplied_session_cookie_policy(
+    value: &Value,
+) -> Result<ValidatedSuppliedSessionCookiePolicy, ComparisonError> {
     let fields = object(value)?;
     keys(
         fields,
@@ -1696,18 +1885,25 @@ fn validate_supplied_session_cookie_policy(value: &Value) -> Result<(), Comparis
             "browser_semantics",
             &["attributes_preserved_not_browser_csrf_emulation"],
         )? == "attributes_preserved_not_browser_csrf_emulation",
-    )
+    )?;
+    Ok(ValidatedSuppliedSessionCookiePolicy {
+        declared_count: declared,
+    })
 }
 
 #[derive(Clone, Copy)]
 struct ValidatedSuppliedSessionCookieLifecycle {
+    initial_epoch: u64,
+    final_epoch: u64,
     selected_update_response_count: u64,
+    unselected_update_response_count: u64,
     update_classification_failure_count: u64,
 }
 
 fn validate_supplied_session_cookie_lifecycle(
     value: &Value,
     dispatched_request_count: u64,
+    expected_initial_epoch: u64,
 ) -> Result<ValidatedSuppliedSessionCookieLifecycle, ComparisonError> {
     let fields = object(value)?;
     keys(
@@ -1722,8 +1918,10 @@ fn validate_supplied_session_cookie_lifecycle(
         ],
         &[],
     )?;
-    check(number(fields, "initial_epoch", 1)? == 1)?;
-    check(number(fields, "final_epoch", 1)? == 1)?;
+    let initial_epoch = number(fields, "initial_epoch", 1)?;
+    let final_epoch = number(fields, "final_epoch", 1)?;
+    check(initial_epoch == expected_initial_epoch)?;
+    check(expected_initial_epoch == 0 || final_epoch == 1)?;
     let selected_update_response_count = number(
         fields,
         "selected_update_response_count",
@@ -1746,9 +1944,274 @@ fn validate_supplied_session_cookie_lifecycle(
     )?;
     check(number(fields, "updates_applied", 0)? == 0)?;
     Ok(ValidatedSuppliedSessionCookieLifecycle {
+        initial_epoch,
+        final_epoch,
         selected_update_response_count,
+        unselected_update_response_count,
         update_classification_failure_count,
     })
+}
+
+#[derive(Clone, Copy)]
+struct ValidatedSuppliedSessionLogin {
+    dispatched_request_count: u64,
+    response_bytes: u64,
+    final_epoch: u64,
+}
+
+fn validate_supplied_session_login(
+    value: &Value,
+    audit_outcome: &str,
+    startup: Option<&ValidatedSuppliedSessionCheckpoint<'_>>,
+    declared_cookie_count: u64,
+) -> Result<ValidatedSuppliedSessionLogin, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "login_reference",
+            "max_attempts",
+            "attempt_count",
+            "page_dispatched",
+            "page_status",
+            "page_body_state",
+            "form_outcome",
+            "submit_dispatched",
+            "submit_status",
+            "submit_body_state",
+            "submit_outcome",
+            "acquired_cookie_count",
+            "response_bytes",
+            "initial_epoch",
+            "final_epoch",
+            "pre_session_cookie_applied",
+        ],
+        &["form_error_code"],
+    )?;
+    check(digest(
+        text(fields, "login_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-login-sha256:",
+    ))?;
+    check(number(fields, "max_attempts", 1)? == 1)?;
+    let attempt_count = number(fields, "attempt_count", 1)?;
+    let page_dispatched = boolean(fields, "page_dispatched")?;
+    let page_status = optional_http_status(fields, "page_status")?;
+    let page_body_state = token(
+        fields,
+        "page_body_state",
+        &["complete", "incomplete", "unavailable"],
+    )?;
+    let form_outcome = token(
+        fields,
+        "form_outcome",
+        &[
+            "matched",
+            "ineligible_response",
+            "missing",
+            "ambiguous",
+            "invalid",
+            "transport_failed",
+            "runtime_limit",
+            "cancelled",
+            "not_evaluated",
+        ],
+    )?;
+    let form_error_code = match fields.get("form_error_code") {
+        None => None,
+        Some(Value::String(value)) if !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES => {
+            Some(value.as_str())
+        },
+        Some(_) => return Err(ComparisonError::InvalidDocument),
+    };
+    check(matches!(
+        (form_outcome, form_error_code),
+        ("matched", None)
+            | ("not_evaluated", None)
+            | (
+                "ineligible_response",
+                Some(
+                    "ineligible_response"
+                        | "pre_session_cookie_unsupported"
+                        | "inexact_final_target"
+                )
+            )
+            | ("missing", Some("missing_form" | "missing_csrf"))
+            | ("ambiguous", Some("ambiguous_form" | "ambiguous_csrf"))
+            | (
+                "invalid",
+                Some(
+                    "invalid_form_contract"
+                        | "invalid_csrf"
+                        | "invalid_descriptor"
+                        | "invalid_form_body"
+                )
+            )
+            | ("transport_failed", Some("transport_failed"))
+            | ("runtime_limit", Some("runtime_limit"))
+            | ("cancelled", Some("cancelled"))
+    ))?;
+    check(match form_outcome {
+        "matched" => page_dispatched && page_status == Some(200) && page_body_state == "complete",
+        "ineligible_response" => {
+            page_dispatched
+                && page_status.is_some()
+                && matches!(page_body_state, "complete" | "incomplete")
+        },
+        "missing" | "ambiguous" => {
+            page_dispatched && page_status == Some(200) && page_body_state == "complete"
+        },
+        "invalid" if form_error_code == Some("invalid_descriptor") => {
+            !page_dispatched && page_status.is_none() && page_body_state == "unavailable"
+        },
+        "invalid" => page_dispatched && page_status == Some(200) && page_body_state == "complete",
+        "transport_failed" | "runtime_limit" | "cancelled" => {
+            page_status.is_none() && page_body_state == "unavailable"
+        },
+        "not_evaluated" => {
+            !page_dispatched && page_status.is_none() && page_body_state == "unavailable"
+        },
+        _ => false,
+    })?;
+
+    let submit_dispatched = boolean(fields, "submit_dispatched")?;
+    let submit_status = optional_http_status(fields, "submit_status")?;
+    let submit_body_state = token(
+        fields,
+        "submit_body_state",
+        &["complete", "incomplete", "unavailable"],
+    )?;
+    let submit_outcome = token(
+        fields,
+        "submit_outcome",
+        &[
+            "cookie_acquired",
+            "cookie_unavailable",
+            "http_error",
+            "redirect_refused",
+            "incomplete",
+            "transport_failed",
+            "runtime_limit",
+            "cancelled",
+            "not_dispatched",
+        ],
+    )?;
+    let acquired_cookie_count = number(
+        fields,
+        "acquired_cookie_count",
+        MAX_SUPPLIED_SESSION_COOKIES,
+    )?;
+    check(!submit_dispatched || form_outcome == "matched")?;
+    check(match submit_outcome {
+        "cookie_acquired" => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status == Some(200)
+                && submit_body_state == "complete"
+                && acquired_cookie_count == declared_cookie_count
+        },
+        "cookie_unavailable" => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status == Some(200)
+                && submit_body_state == "complete"
+                && acquired_cookie_count == 0
+        },
+        "http_error" => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status
+                    .is_some_and(|status| status != 200 && !(300..400).contains(&status))
+                && submit_body_state == "complete"
+                && acquired_cookie_count == 0
+        },
+        "redirect_refused" => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status.is_some_and(|status| (300..400).contains(&status))
+                && matches!(submit_body_state, "complete" | "incomplete")
+                && acquired_cookie_count == 0
+        },
+        "incomplete" => {
+            submit_dispatched
+                && attempt_count == 1
+                && submit_status.is_some_and(|status| !(300..400).contains(&status))
+                && submit_body_state == "incomplete"
+                && acquired_cookie_count == 0
+        },
+        "transport_failed" | "runtime_limit" | "cancelled" => {
+            attempt_count == u64::from(submit_dispatched)
+                && submit_status.is_none()
+                && submit_body_state == "unavailable"
+                && acquired_cookie_count == 0
+        },
+        "not_dispatched" => {
+            !submit_dispatched
+                && attempt_count == 0
+                && submit_status.is_none()
+                && submit_body_state == "unavailable"
+                && acquired_cookie_count == 0
+        },
+        _ => false,
+    })?;
+
+    let initial_epoch = number(fields, "initial_epoch", 1)?;
+    let final_epoch = number(fields, "final_epoch", 1)?;
+    let startup_authenticated = startup
+        .is_some_and(|checkpoint| checkpoint.phase == "startup" && checkpoint.outcome == "healthy");
+    check(
+        initial_epoch == 0
+            && match final_epoch {
+                0 => true,
+                1 => submit_outcome == "cookie_acquired" && startup_authenticated,
+                _ => false,
+            },
+    )?;
+    check(!boolean(fields, "pre_session_cookie_applied")?)?;
+    check(match audit_outcome {
+        "login_form_unavailable" => {
+            final_epoch == 0
+                && submit_outcome == "not_dispatched"
+                && !matches!(form_outcome, "matched" | "not_evaluated")
+        },
+        "login_submit_unavailable" => {
+            final_epoch == 0
+                && form_outcome == "matched"
+                && !matches!(submit_outcome, "cookie_acquired" | "cookie_unavailable")
+        },
+        "login_cookie_unavailable" => {
+            final_epoch == 0 && form_outcome == "matched" && submit_outcome == "cookie_unavailable"
+        },
+        "runtime_limit" => {
+            form_outcome == "runtime_limit"
+                || submit_outcome == "runtime_limit"
+                || submit_outcome == "cookie_acquired"
+        },
+        "cancelled" => {
+            form_outcome == "cancelled"
+                || submit_outcome == "cancelled"
+                || submit_outcome == "cookie_acquired"
+        },
+        _ => submit_outcome == "cookie_acquired",
+    })?;
+    let response_bytes = number(fields, "response_bytes", u64::MAX)?;
+    check(page_dispatched || submit_dispatched || response_bytes == 0)?;
+    Ok(ValidatedSuppliedSessionLogin {
+        dispatched_request_count: u64::from(page_dispatched) + u64::from(submit_dispatched),
+        response_bytes,
+        final_epoch,
+    })
+}
+
+fn optional_http_status(
+    fields: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<u64>, ComparisonError> {
+    if required(fields, field)?.is_null() {
+        return Ok(None);
+    }
+    let status = number(fields, field, 599)?;
+    check(status >= 100)?;
+    Ok(Some(status))
 }
 
 fn validate_supplied_session_health_oracle(value: &Value) -> Result<(), ComparisonError> {
@@ -2150,6 +2613,9 @@ fn validate_supplied_session_outcome(
                 || credential_response_stopped_after_resource
                 || credential_response_stopped_during_post_health,
         ),
+        "login_form_unavailable" | "login_submit_unavailable" | "login_cookie_unavailable" => {
+            check(startup_not_completed && checkpoint_count == 0)
+        },
         _ => Err(ComparisonError::InvalidDocument),
     }
 }
@@ -9599,6 +10065,38 @@ mod tests {
             validate_supplied_session(&wrong_v1_mechanism, &BTreeMap::new()),
             Err(ComparisonError::InvalidDocument)
         );
+
+        for login_outcome in [
+            "login_form_unavailable",
+            "login_submit_unavailable",
+            "login_cookie_unavailable",
+        ] {
+            for mut legacy in [
+                complete_supplied_session_audit(),
+                complete_cookie_supplied_session_audit(),
+            ] {
+                legacy["outcome"] = Value::String(login_outcome.to_owned());
+                legacy["coverage"] = Value::String("none".to_owned());
+                legacy["checkpoints"] = serde_json::json!([]);
+                legacy["resources"][0]["evidence_reference"] = Value::Null;
+                legacy["resources"][0]["outcome"] = Value::String("not_dispatched".to_owned());
+                legacy["resources"][0]["status"] = Value::Null;
+                legacy["resources"][0]["response_bytes"] = Value::from(0_u64);
+                legacy["dispatched_resource_count"] = Value::from(0_u64);
+                legacy["committed_resource_count"] = Value::from(0_u64);
+                legacy["dispatched_request_count"] = Value::from(0_u64);
+                legacy["response_bytes"] = Value::from(0_u64);
+                if legacy["schema"] == SUPPLIED_SESSION_AUDIT_SCHEMA_V2 {
+                    legacy["cookie_lifecycle"]["unselected_update_response_count"] =
+                        Value::from(0_u64);
+                }
+                assert_eq!(
+                    validate_supplied_session(&legacy, &BTreeMap::new()),
+                    Err(ComparisonError::InvalidDocument),
+                    "legacy reader accepted V3-only outcome {login_outcome}"
+                );
+            }
+        }
     }
 
     #[test]

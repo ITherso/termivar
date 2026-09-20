@@ -179,11 +179,13 @@ pub use supplied_session_runtime::{
     SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCookieLifecycleAudit,
     SuppliedSessionCookiePolicyAudit, SuppliedSessionCoverage,
     SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleAudit,
-    SuppliedSessionHealthOracleKind, SuppliedSessionHealthOutcome, SuppliedSessionPredicateOutcome,
+    SuppliedSessionHealthOracleKind, SuppliedSessionHealthOutcome, SuppliedSessionLoginFormOutcome,
+    SuppliedSessionLoginSubmitOutcome, SuppliedSessionPredicateOutcome,
     SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
     WebAssessmentSuppliedSessionAudit, WebAssessmentSuppliedSessionCheckpointAudit,
     WebAssessmentSuppliedSessionResourceAudit, SUPPLIED_SESSION_AUDIT_SCHEMA,
     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
 };
 #[cfg(feature = "tls-observation")]
 pub use tls_observation::{

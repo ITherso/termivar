@@ -22,7 +22,8 @@ use termivar_scanner::rest_review::RestDocumentedResponseClass;
 use termivar_scanner::ssrf_oast_review::{SsrfOastAdminToken, SsrfOastReviewPolicy};
 #[cfg(feature = "supplied-session-review")]
 use termivar_scanner::supplied_session_review::{
-    SuppliedSessionCredential, SuppliedSessionCredentialMechanism, SuppliedSessionPolicy,
+    SuppliedSessionCredentialAcquisition, SuppliedSessionCredentialMechanism,
+    SuppliedSessionPolicy, SuppliedSessionRuntimeInput,
 };
 #[cfg(feature = "wordpress-review")]
 use termivar_scanner::web_runtime::WordPressPageScope;
@@ -46,9 +47,10 @@ use termivar_scanner::web_runtime::{
 use termivar_scanner::web_runtime::{
     SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCoverage,
     SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleKind,
-    SuppliedSessionHealthOutcome, SuppliedSessionPredicateOutcome,
+    SuppliedSessionHealthOutcome, SuppliedSessionLoginFormOutcome,
+    SuppliedSessionLoginSubmitOutcome, SuppliedSessionPredicateOutcome,
     SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
-    WebAssessmentSuppliedSessionAudit,
+    WebAssessmentSuppliedSessionAudit, SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
 };
 #[cfg(feature = "authorization-review")]
 use termivar_scanner::web_runtime::{
@@ -333,9 +335,13 @@ struct SuppliedSessionAuditRecord {
     principal_assurance: SuppliedSessionPrincipalAssurance,
     credential_mechanism: SuppliedSessionCredentialMechanism,
     #[serde(skip_serializing_if = "Option::is_none")]
+    credential_acquisition: Option<SuppliedSessionCredentialAcquisition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cookie_policy: Option<SuppliedSessionCookiePolicyRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cookie_lifecycle: Option<SuppliedSessionCookieLifecycleRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login: Option<SuppliedSessionLoginRecord>,
     health_oracle: SuppliedSessionHealthOracleRecord,
     outcome: SuppliedSessionAuditOutcome,
     coverage: SuppliedSessionCoverage,
@@ -386,6 +392,29 @@ struct SuppliedSessionCookieLifecycleRecord {
 
 #[cfg(feature = "supplied-session-review")]
 #[derive(Serialize)]
+struct SuppliedSessionLoginRecord {
+    login_reference: String,
+    max_attempts: u8,
+    attempt_count: u8,
+    page_dispatched: bool,
+    page_status: Option<u16>,
+    page_body_state: SuppliedSessionBodyState,
+    form_outcome: SuppliedSessionLoginFormOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    form_error_code: Option<&'static str>,
+    submit_dispatched: bool,
+    submit_status: Option<u16>,
+    submit_body_state: SuppliedSessionBodyState,
+    submit_outcome: SuppliedSessionLoginSubmitOutcome,
+    acquired_cookie_count: u8,
+    response_bytes: u64,
+    initial_epoch: u8,
+    final_epoch: u8,
+    pre_session_cookie_applied: bool,
+}
+
+#[cfg(feature = "supplied-session-review")]
+#[derive(Serialize)]
 struct SuppliedSessionHealthOracleRecord {
     kind: SuppliedSessionHealthOracleKind,
     field_reference: String,
@@ -431,6 +460,8 @@ impl SuppliedSessionAuditRecord {
             principal_alias: audit.principal_alias().to_owned(),
             principal_assurance: audit.principal_assurance(),
             credential_mechanism: audit.credential_mechanism(),
+            credential_acquisition: (audit.schema() == SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA)
+                .then(|| audit.credential_acquisition()),
             cookie_policy: audit
                 .cookie_policy()
                 .map(|policy| SuppliedSessionCookiePolicyRecord {
@@ -458,6 +489,25 @@ impl SuppliedSessionAuditRecord {
                         .update_classification_failure_count(),
                     updates_applied: lifecycle.updates_applied(),
                 }
+            }),
+            login: audit.login().map(|login| SuppliedSessionLoginRecord {
+                login_reference: login.login_reference().to_owned(),
+                max_attempts: login.max_attempts(),
+                attempt_count: login.attempt_count(),
+                page_dispatched: login.page_dispatched(),
+                page_status: login.page_status(),
+                page_body_state: login.page_body_state(),
+                form_outcome: login.form_outcome(),
+                form_error_code: login.form_error_code(),
+                submit_dispatched: login.submit_dispatched(),
+                submit_status: login.submit_status(),
+                submit_body_state: login.submit_body_state(),
+                submit_outcome: login.submit_outcome(),
+                acquired_cookie_count: login.acquired_cookie_count(),
+                response_bytes: login.response_bytes(),
+                initial_epoch: login.initial_epoch(),
+                final_epoch: login.final_epoch(),
+                pre_session_cookie_applied: login.pre_session_cookie_applied(),
             }),
             health_oracle: SuppliedSessionHealthOracleRecord {
                 kind: audit.health_oracle().kind(),
@@ -806,7 +856,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "supplied-session-review")]
-    pub(crate) supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionCredential)>,
+    pub(crate) supplied_session_review:
+        Option<(SuppliedSessionPolicy, SuppliedSessionRuntimeInput)>,
     #[cfg(feature = "ssrf-oast-review")]
     pub(crate) ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "wordpress-review")]
@@ -1078,7 +1129,7 @@ struct WebReviewRunOptions {
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "supplied-session-review")]
-    supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionCredential)>,
+    supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionRuntimeInput)>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "wordpress-review")]
@@ -2228,6 +2279,21 @@ fn render_text(document: &WebAssessmentDocument) -> String {
                     audit.response_byte_limit,
                     audit.response_byte_limit_exceeded,
                 ));
+                if let (Some(acquisition), Some(login)) =
+                    (audit.credential_acquisition, audit.login.as_ref())
+                {
+                    lines.push(format!(
+                        "supplied session login: acquisition={} form_outcome={} submit_outcome={} attempts={} acquired_cookies={} initial_epoch={} final_epoch={} response_bytes={}",
+                        acquisition.as_str(),
+                        supplied_session_login_form_outcome_code(login.form_outcome),
+                        supplied_session_login_submit_outcome_code(login.submit_outcome),
+                        login.attempt_count,
+                        login.acquired_cookie_count,
+                        login.initial_epoch,
+                        login.final_epoch,
+                        login.response_bytes,
+                    ));
+                }
             }
             #[cfg(feature = "authorization-review")]
             if let Some(audit) = &report.authorization_review_audit {
@@ -2296,6 +2362,45 @@ const fn supplied_session_audit_outcome_code(value: SuppliedSessionAuditOutcome)
         SuppliedSessionAuditOutcome::Cancelled => "cancelled",
         SuppliedSessionAuditOutcome::CredentialUpdateRequired => "credential_update_required",
         SuppliedSessionAuditOutcome::CredentialUpdateUnusable => "credential_update_unusable",
+        SuppliedSessionAuditOutcome::LoginFormUnavailable => "login_form_unavailable",
+        SuppliedSessionAuditOutcome::LoginSubmitUnavailable => "login_submit_unavailable",
+        SuppliedSessionAuditOutcome::LoginCookieUnavailable => "login_cookie_unavailable",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn supplied_session_login_form_outcome_code(
+    value: SuppliedSessionLoginFormOutcome,
+) -> &'static str {
+    match value {
+        SuppliedSessionLoginFormOutcome::Matched => "matched",
+        SuppliedSessionLoginFormOutcome::IneligibleResponse => "ineligible_response",
+        SuppliedSessionLoginFormOutcome::Missing => "missing",
+        SuppliedSessionLoginFormOutcome::Ambiguous => "ambiguous",
+        SuppliedSessionLoginFormOutcome::Invalid => "invalid",
+        SuppliedSessionLoginFormOutcome::TransportFailed => "transport_failed",
+        SuppliedSessionLoginFormOutcome::RuntimeLimit => "runtime_limit",
+        SuppliedSessionLoginFormOutcome::Cancelled => "cancelled",
+        SuppliedSessionLoginFormOutcome::NotEvaluated => "not_evaluated",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+const fn supplied_session_login_submit_outcome_code(
+    value: SuppliedSessionLoginSubmitOutcome,
+) -> &'static str {
+    match value {
+        SuppliedSessionLoginSubmitOutcome::CookieAcquired => "cookie_acquired",
+        SuppliedSessionLoginSubmitOutcome::CookieUnavailable => "cookie_unavailable",
+        SuppliedSessionLoginSubmitOutcome::HttpError => "http_error",
+        SuppliedSessionLoginSubmitOutcome::RedirectRefused => "redirect_refused",
+        SuppliedSessionLoginSubmitOutcome::Incomplete => "incomplete",
+        SuppliedSessionLoginSubmitOutcome::TransportFailed => "transport_failed",
+        SuppliedSessionLoginSubmitOutcome::RuntimeLimit => "runtime_limit",
+        SuppliedSessionLoginSubmitOutcome::Cancelled => "cancelled",
+        SuppliedSessionLoginSubmitOutcome::NotDispatched => "not_dispatched",
         _ => "unknown",
     }
 }
@@ -2344,8 +2449,10 @@ mod tests {
             principal_alias: "fixture-reader".to_owned(),
             principal_assurance: SuppliedSessionPrincipalAssurance::OperatorDeclared,
             credential_mechanism: SuppliedSessionCredentialMechanism::AuthorizationHeader,
+            credential_acquisition: None,
             cookie_policy: None,
             cookie_lifecycle: None,
+            login: None,
             health_oracle: SuppliedSessionHealthOracleRecord {
                 kind: SuppliedSessionHealthOracleKind::JsonBooleanTrue,
                 field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),
@@ -3316,8 +3423,10 @@ lifetime_ms = 5000
             assert_eq!(audit["schema"], "security.supplied-session-audit/v1");
             assert_eq!(audit["principal_alias"], "fixture-reader");
             assert_eq!(audit["health_oracle"]["kind"], "json_boolean_true");
+            assert!(audit.get("credential_acquisition").is_none());
             assert!(audit.get("cookie_policy").is_none());
             assert!(audit.get("cookie_lifecycle").is_none());
+            assert!(audit.get("login").is_none());
             assert_eq!(audit["response_byte_limit"], 65_536);
             assert_eq!(audit["response_byte_limit_exceeded"], false);
             assert_eq!(audit["exploit_execution"], "not_performed");
@@ -3333,6 +3442,24 @@ lifetime_ms = 5000
                     SuppliedSessionAuditOutcome::CredentialUpdateUnusable
                 ),
                 "credential_update_unusable"
+            );
+            assert_eq!(
+                supplied_session_audit_outcome_code(
+                    SuppliedSessionAuditOutcome::LoginFormUnavailable
+                ),
+                "login_form_unavailable"
+            );
+            assert_eq!(
+                supplied_session_audit_outcome_code(
+                    SuppliedSessionAuditOutcome::LoginSubmitUnavailable
+                ),
+                "login_submit_unavailable"
+            );
+            assert_eq!(
+                supplied_session_audit_outcome_code(
+                    SuppliedSessionAuditOutcome::LoginCookieUnavailable
+                ),
+                "login_cookie_unavailable"
             );
         }
         assert!(!rendered.contains(SECRET));

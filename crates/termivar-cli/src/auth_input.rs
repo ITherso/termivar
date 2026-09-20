@@ -3,7 +3,8 @@
 //! This module is the only CLI boundary that reads credential material. It
 //! never accepts a credential as a command-line value, never serializes or
 //! logs one, and converts bounded bytes directly into scanner-owned root,
-//! role-bound two-principal, or OAST administrator-secret contracts.
+//! supplied-session, role-bound two-principal, or OAST administrator-secret
+//! contracts.
 
 #[cfg(any(feature = "supplied-session-review", feature = "jwt-policy-review"))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,7 +17,7 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-#[cfg(feature = "jwt-policy-review")]
+#[cfg(any(feature = "jwt-policy-review", feature = "supplied-session-review"))]
 use std::path::Path;
 
 #[cfg(feature = "jwt-policy-review")]
@@ -34,11 +35,17 @@ use termivar_scanner::authorization_review::{
 use termivar_scanner::ssrf_oast_review::{
     SsrfOastAdminToken, SsrfOastReviewPolicy, MAX_SSRF_OAST_REVIEW_POLICY_BYTES,
 };
+#[cfg(all(
+    feature = "supplied-session-review",
+    any(feature = "wordpress-review", test)
+))]
+use termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion;
 #[cfg(feature = "supplied-session-review")]
 use termivar_scanner::supplied_session_review::{
-    SuppliedSessionAuthorization, SuppliedSessionCookies, SuppliedSessionCredential,
-    SuppliedSessionCredentialMechanism, SuppliedSessionPolicy,
-    HARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES, HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES,
+    SuppliedSessionAuthorization, SuppliedSessionCookies, SuppliedSessionCredentialAcquisition,
+    SuppliedSessionFormCredential, SuppliedSessionPolicy, SuppliedSessionRuntimeInput,
+    HARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES, HARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES,
+    HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES,
 };
 use termivar_scanner::{
     web_runtime::WebAssessmentRootAuthorizationContext, DEFAULT_MAX_PAYLOAD_ARTIFACT_BYTES,
@@ -263,11 +270,10 @@ impl JwtPolicyReviewInput {
         let token = AuthorizationInputSource::select(token.environment, token.file, token.stdin)
             .map_err(|_| JwtPolicyInputError::ConflictingTokenSources)?
             .ok_or(JwtPolicyInputError::MissingTokenSource)?;
-        validate_jwt_local_file_path(&policy_file).map_err(JwtPolicyInputError::PolicySource)?;
-        validate_jwt_local_file_path(&public_jwk_file)
-            .map_err(JwtPolicyInputError::PublicKeySource)?;
+        validate_local_file_path(&policy_file).map_err(JwtPolicyInputError::PolicySource)?;
+        validate_local_file_path(&public_jwk_file).map_err(JwtPolicyInputError::PublicKeySource)?;
         if let AuthorizationInputSource::File(token_file) = &token {
-            validate_jwt_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;
+            validate_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;
         }
         Ok(Some(Self {
             policy_file,
@@ -317,16 +323,16 @@ impl JwtPolicyReviewInput {
     }
 }
 
-/// Rejects Windows remote and device spellings before any JWT input is opened.
+/// Rejects Windows remote and device spellings before a guarded local input is opened.
 ///
 /// This is deliberately a lexical Windows guard. It does not claim to detect a
 /// mapped drive, a local path backed by a network filesystem, or a parent that
 /// changes after selection; the existing trusted-parent assumption still
 /// applies to every accepted path.
-#[cfg(feature = "jwt-policy-review")]
-fn validate_jwt_local_file_path(path: &Path) -> Result<(), AuthorizationInputError> {
+#[cfg(any(feature = "jwt-policy-review", feature = "supplied-session-review"))]
+fn validate_local_file_path(path: &Path) -> Result<(), AuthorizationInputError> {
     #[cfg(windows)]
-    if windows_jwt_path_is_remote_or_special(path) {
+    if windows_path_is_remote_or_special(path) {
         return Err(AuthorizationInputError::SourceUnavailable);
     }
 
@@ -336,8 +342,11 @@ fn validate_jwt_local_file_path(path: &Path) -> Result<(), AuthorizationInputErr
     Ok(())
 }
 
-#[cfg(all(feature = "jwt-policy-review", windows))]
-fn windows_jwt_path_is_remote_or_special(path: &Path) -> bool {
+#[cfg(all(
+    any(feature = "jwt-policy-review", feature = "supplied-session-review"),
+    windows
+))]
+fn windows_path_is_remote_or_special(path: &Path) -> bool {
     use std::path::{Component, Prefix};
 
     let first = path.components().next();
@@ -369,7 +378,10 @@ fn windows_jwt_path_is_remote_or_special(path: &Path) -> bool {
     })
 }
 
-#[cfg(all(feature = "jwt-policy-review", windows))]
+#[cfg(all(
+    any(feature = "jwt-policy-review", feature = "supplied-session-review"),
+    windows
+))]
 fn windows_path_component_is_special(component: &std::ffi::OsStr) -> bool {
     let component = component.to_string_lossy();
     if component.contains(':') {
@@ -513,14 +525,16 @@ pub(crate) struct PreparedSuppliedSessionInput {
 enum SuppliedSessionSecretSource {
     Authorization(AuthorizationInputSource),
     Cookies(PathBuf),
+    FormLogin(PathBuf),
 }
 
 #[cfg(feature = "supplied-session-review")]
 impl SuppliedSessionSecretSource {
-    const fn mechanism(&self) -> SuppliedSessionCredentialMechanism {
+    const fn acquisition(&self) -> SuppliedSessionCredentialAcquisition {
         match self {
-            Self::Authorization(_) => SuppliedSessionCredentialMechanism::AuthorizationHeader,
-            Self::Cookies(_) => SuppliedSessionCredentialMechanism::CookieJar,
+            Self::Authorization(_) => SuppliedSessionCredentialAcquisition::SuppliedAuthorization,
+            Self::Cookies(_) => SuppliedSessionCredentialAcquisition::SuppliedCookieJar,
+            Self::FormLogin(_) => SuppliedSessionCredentialAcquisition::BoundedFormLogin,
         }
     }
 }
@@ -531,6 +545,7 @@ impl fmt::Debug for SuppliedSessionSecretSource {
         let kind = match self {
             Self::Authorization(_) => "authorization",
             Self::Cookies(_) => "cookies",
+            Self::FormLogin(_) => "form_login",
         };
         formatter
             .debug_struct("SuppliedSessionSecretSource")
@@ -569,30 +584,38 @@ impl SuppliedSessionInput {
         policy_file: Option<PathBuf>,
         authorization: AuthorizationSourceOptions,
         cookie_file: Option<PathBuf>,
+        login_file: Option<PathBuf>,
     ) -> Result<Option<Self>, SuppliedSessionInputError> {
         let any_selected = policy_file.is_some()
             || authorization.environment.is_some()
             || authorization.file.is_some()
             || authorization.stdin
-            || cookie_file.is_some();
+            || cookie_file.is_some()
+            || login_file.is_some();
         if !any_selected {
             return Ok(None);
         }
         let policy_file = policy_file.ok_or(SuppliedSessionInputError::MissingPolicy)?;
+        validate_local_file_path(&policy_file).map_err(SuppliedSessionInputError::PolicySource)?;
         let authorization = AuthorizationInputSource::select(
             authorization.environment,
             authorization.file,
             authorization.stdin,
         )
         .map_err(|_| SuppliedSessionInputError::ConflictingCredentialSources)?;
-        let secret = match (authorization, cookie_file) {
-            (Some(source), None) => SuppliedSessionSecretSource::Authorization(source),
-            (None, Some(path)) => SuppliedSessionSecretSource::Cookies(path),
-            (None, None) => return Err(SuppliedSessionInputError::MissingCredentialSource),
-            (Some(_), Some(_)) => {
-                return Err(SuppliedSessionInputError::ConflictingCredentialSources)
-            },
+        let secret = match (authorization, cookie_file, login_file) {
+            (Some(source), None, None) => SuppliedSessionSecretSource::Authorization(source),
+            (None, Some(path), None) => SuppliedSessionSecretSource::Cookies(path),
+            (None, None, Some(path)) => SuppliedSessionSecretSource::FormLogin(path),
+            (None, None, None) => return Err(SuppliedSessionInputError::MissingCredentialSource),
+            _ => return Err(SuppliedSessionInputError::ConflictingCredentialSources),
         };
+        if let SuppliedSessionSecretSource::Authorization(AuthorizationInputSource::File(path))
+        | SuppliedSessionSecretSource::Cookies(path)
+        | SuppliedSessionSecretSource::FormLogin(path) = &secret
+        {
+            validate_local_file_path(path).map_err(SuppliedSessionInputError::CredentialSource)?;
+        }
         Ok(Some(Self {
             policy_file,
             secret,
@@ -610,7 +633,7 @@ impl SuppliedSessionInput {
                 .map_err(SuppliedSessionInputError::PolicySource)?;
         let policy = SuppliedSessionPolicy::parse_toml(target, policy_source.as_slice())
             .map_err(|_| SuppliedSessionInputError::InvalidPolicy)?;
-        if policy.credential_mechanism() != self.secret.mechanism() {
+        if policy.credential_acquisition() != self.secret.acquisition() {
             return Err(SuppliedSessionInputError::CredentialMechanismMismatch);
         }
         Ok(PreparedSuppliedSessionInput {
@@ -622,12 +645,20 @@ impl SuppliedSessionInput {
 
 #[cfg(feature = "supplied-session-review")]
 impl PreparedSuppliedSessionInput {
+    /// Policy generation is non-secret and may be used for cross-capability
+    /// preflight before any credential source or output destination is opened.
+    #[cfg(any(feature = "wordpress-review", test))]
+    pub(crate) const fn policy_version(&self) -> SuppliedSessionPolicyVersion {
+        self.policy.version()
+    }
+
     /// Reads the selected secret exactly once after all non-secret preflight
     /// and output reservation have succeeded.
     pub(crate) fn load(
         self,
-    ) -> Result<(SuppliedSessionPolicy, SuppliedSessionCredential), SuppliedSessionInputError> {
-        let credential = match self.secret {
+    ) -> Result<(SuppliedSessionPolicy, SuppliedSessionRuntimeInput), SuppliedSessionInputError>
+    {
+        let runtime_input = match self.secret {
             SuppliedSessionSecretSource::Authorization(source) => {
                 let authorization = source
                     .read_bytes()
@@ -636,7 +667,7 @@ impl PreparedSuppliedSessionInput {
                         SuppliedSessionAuthorization::new(bytes.into_owned())
                             .map_err(|_| SuppliedSessionInputError::InvalidCredentialValue)
                     })?;
-                SuppliedSessionCredential::Authorization(authorization)
+                SuppliedSessionRuntimeInput::from(authorization)
             },
             SuppliedSessionSecretSource::Cookies(path) => {
                 let bytes =
@@ -650,10 +681,19 @@ impl PreparedSuppliedSessionInput {
                 let cookies =
                     SuppliedSessionCookies::parse_tsv(&self.policy, bytes.into_owned(), now)
                         .map_err(|_| SuppliedSessionInputError::InvalidCredentialValue)?;
-                SuppliedSessionCredential::SuppliedCookies(cookies)
+                SuppliedSessionRuntimeInput::from(cookies)
+            },
+            SuppliedSessionSecretSource::FormLogin(path) => {
+                let bytes =
+                    read_bounded_regular_file(path, HARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES)
+                        .map_err(SuppliedSessionInputError::CredentialSource)?;
+                let credential =
+                    SuppliedSessionFormCredential::parse_tsv(&self.policy, bytes.into_owned())
+                        .map_err(|_| SuppliedSessionInputError::InvalidCredentialValue)?;
+                SuppliedSessionRuntimeInput::from(credential)
             },
         };
-        Ok((self.policy, credential))
+        Ok((self.policy, runtime_input))
     }
 }
 
@@ -683,7 +723,7 @@ impl fmt::Display for SuppliedSessionInputError {
             Self::PolicySource(_) => "supplied-session policy must be a bounded regular UTF-8 file",
             Self::InvalidPolicy => "supplied-session policy is invalid",
             Self::CredentialMechanismMismatch => {
-                "supplied-session credential source does not match the selected policy mechanism"
+                "supplied-session credential source does not match the selected policy acquisition"
             },
             Self::CredentialSource(_) => "supplied-session credential source could not be loaded",
             Self::InvalidCredentialValue => "supplied-session credential value is invalid",
@@ -1407,7 +1447,7 @@ allowed_clock_skew_seconds = 0
             r"C:\termivar\policy.toml:stream",
         ] {
             assert_eq!(
-                validate_jwt_local_file_path(Path::new(rejected)),
+                validate_local_file_path(Path::new(rejected)),
                 Err(AuthorizationInputError::SourceUnavailable),
                 "special JWT file spelling was accepted"
             );
@@ -1421,7 +1461,7 @@ allowed_clock_skew_seconds = 0
             r"relative\com10.toml",
             r"relative\pipeline.toml",
         ] {
-            assert_eq!(validate_jwt_local_file_path(Path::new(accepted)), Ok(()));
+            assert_eq!(validate_local_file_path(Path::new(accepted)), Ok(()));
         }
 
         let local_policy = PathBuf::from(r"C:\termivar\policy.toml");
@@ -2072,11 +2112,46 @@ expires_unix_seconds = 4102444800
     }
 
     #[cfg(feature = "supplied-session-review")]
+    fn valid_supplied_form_login_policy() -> &'static str {
+        r#"schema = "security.supplied-session-policy/v3"
+principal_alias = "fixture-login-reader"
+credential_mechanism = "cookie_jar"
+credential_acquisition = "bounded_form_login"
+cookie_update_policy = "stop_on_selected_cookie"
+login_path = "/app/login"
+login_method = "post"
+login_encoding = "application/x-www-form-urlencoded"
+username_field = "username"
+password_field = "password"
+csrf_field = "csrf_token"
+max_login_attempts = 1
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private"]
+max_session_requests = 5
+max_total_response_bytes = 131072
+max_response_body_bytes = 32768
+max_wall_time_ms = 5000
+
+[[cookies]]
+id = "fixture-session"
+name = "session"
+domain = "127.0.0.1"
+host_only = true
+path = "/app/"
+secure = false
+http_only = true
+same_site = "lax"
+"#
+    }
+
+    #[cfg(feature = "supplied-session-review")]
     #[test]
     fn supplied_session_selection_is_complete_and_redacted() {
         assert!(SuppliedSessionInput::select(
             None,
             AuthorizationSourceOptions::new(None, None, false),
+            None,
             None,
         )
         .unwrap()
@@ -2085,6 +2160,7 @@ expires_unix_seconds = 4102444800
             SuppliedSessionInput::select(
                 Some(PathBuf::from("PRIVATE-POLICY-PATH")),
                 AuthorizationSourceOptions::new(None, None, false),
+                None,
                 None,
             )
             .unwrap_err(),
@@ -2099,6 +2175,7 @@ expires_unix_seconds = 4102444800
                     false,
                 ),
                 None,
+                None,
             )
             .unwrap_err(),
             SuppliedSessionInputError::MissingPolicy
@@ -2112,6 +2189,7 @@ expires_unix_seconds = 4102444800
                     false,
                 ),
                 None,
+                None,
             )
             .unwrap_err(),
             SuppliedSessionInputError::ConflictingCredentialSources
@@ -2124,6 +2202,7 @@ expires_unix_seconds = 4102444800
                 None,
                 false,
             ),
+            None,
             None,
         )
         .unwrap()
@@ -2163,6 +2242,7 @@ expires_unix_seconds = 4102444800
             Some(policy_path),
             AuthorizationSourceOptions::new(None, Some(secret_path), false),
             None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -2184,6 +2264,7 @@ expires_unix_seconds = 4102444800
                 Some(directory.path().join("SECRET-MUST-NOT-BE-OPENED")),
                 false,
             ),
+            None,
             None,
         )
         .unwrap()
@@ -2210,6 +2291,7 @@ expires_unix_seconds = 4102444800
             Some(policy_path.clone()),
             AuthorizationSourceOptions::new(None, None, false),
             Some(cookie_path),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -2225,13 +2307,10 @@ expires_unix_seconds = 4102444800
         );
         let (policy, credential) = prepared.load().unwrap();
         assert_eq!(
-            policy.credential_mechanism(),
-            SuppliedSessionCredentialMechanism::CookieJar
+            policy.credential_acquisition(),
+            SuppliedSessionCredentialAcquisition::SuppliedCookieJar
         );
-        assert_eq!(
-            credential.mechanism(),
-            SuppliedSessionCredentialMechanism::CookieJar
-        );
+        assert!(credential.matches_policy(&policy));
         let rendered = format!("{policy:?} {credential:?}");
         assert!(!rendered.contains(COOKIE));
         assert!(!rendered.contains("COOKIE-INPUT-CANARY"));
@@ -2240,6 +2319,7 @@ expires_unix_seconds = 4102444800
         let mismatch = SuppliedSessionInput::select(
             Some(policy_path),
             AuthorizationSourceOptions::new(None, Some(missing_authorization), false),
+            None,
             None,
         )
         .unwrap()
@@ -2260,10 +2340,259 @@ expires_unix_seconds = 4102444800
                     false,
                 ),
                 Some(PathBuf::from("PRIVATE-COOKIE")),
+                None,
             )
             .unwrap_err(),
             SuppliedSessionInputError::ConflictingCredentialSources
         );
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn supplied_session_form_login_is_loaded_only_for_the_exact_v3_acquisition() {
+        const USERNAME: &str = "LOGIN-USER-CANARY-MUST-NOT-LEAK";
+        const PASSWORD: &str = "LOGIN-PASSWORD-CANARY-MUST-NOT-LEAK";
+        let directory = tempfile::tempdir().unwrap();
+        let policy_path = directory.path().join("form-login-policy.toml");
+        let login_path = directory.path().join("form-login.secret.tsv");
+        std::fs::write(&policy_path, valid_supplied_form_login_policy()).unwrap();
+        std::fs::write(
+            &login_path,
+            format!("username\t{USERNAME}\r\npassword\t{PASSWORD}\r\n"),
+        )
+        .unwrap();
+
+        let unopened_login = directory.path().join("PRIVATE-LOGIN-PREFLIGHT-ONLY");
+        let prepared_without_secret_read = SuppliedSessionInput::select(
+            Some(policy_path.clone()),
+            AuthorizationSourceOptions::new(None, None, false),
+            None,
+            Some(unopened_login.clone()),
+        )
+        .unwrap()
+        .unwrap()
+        .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+        .unwrap();
+        assert_eq!(
+            prepared_without_secret_read.policy_version(),
+            SuppliedSessionPolicyVersion::V3
+        );
+        assert!(!unopened_login.exists());
+
+        let input = SuppliedSessionInput::select(
+            Some(policy_path.clone()),
+            AuthorizationSourceOptions::new(None, None, false),
+            None,
+            Some(login_path),
+        )
+        .unwrap()
+        .unwrap();
+        let debug = format!("{input:?}");
+        assert!(!debug.contains("form-login-policy.toml"));
+        assert!(!debug.contains("form-login.secret.tsv"));
+        let prepared = input
+            .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+            .unwrap();
+        assert_eq!(prepared.policy_version(), SuppliedSessionPolicyVersion::V3);
+        let (policy, runtime_input) = prepared.load().unwrap();
+        assert_eq!(
+            policy.credential_acquisition(),
+            SuppliedSessionCredentialAcquisition::BoundedFormLogin
+        );
+        assert!(runtime_input.matches_policy(&policy));
+        let rendered = format!("{policy:?} {runtime_input:?}");
+        for canary in [USERNAME, PASSWORD, "LOGIN-USER", "LOGIN-PASSWORD"] {
+            assert!(!rendered.contains(canary));
+        }
+
+        let malformed_path = directory.path().join("malformed-login.secret.tsv");
+        std::fs::write(
+            &malformed_path,
+            "username\tPRIVATE-MALFORMED-CANARY\npassword\t\n",
+        )
+        .unwrap();
+        let malformed = SuppliedSessionInput::select(
+            Some(policy_path.clone()),
+            AuthorizationSourceOptions::new(None, None, false),
+            None,
+            Some(malformed_path),
+        )
+        .unwrap()
+        .unwrap()
+        .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+        .unwrap()
+        .load()
+        .unwrap_err();
+        assert_eq!(malformed, SuppliedSessionInputError::InvalidCredentialValue);
+        assert!(!malformed.to_string().contains("PRIVATE-MALFORMED-CANARY"));
+
+        let missing_login = directory.path().join("PRIVATE-LOGIN-MUST-NOT-BE-OPENED");
+        let v2_with_login = SuppliedSessionInput::select(
+            Some(directory.path().join("cookie-policy.toml")),
+            AuthorizationSourceOptions::new(None, None, false),
+            None,
+            Some(missing_login.clone()),
+        )
+        .unwrap()
+        .unwrap();
+        std::fs::write(
+            directory.path().join("cookie-policy.toml"),
+            valid_supplied_cookie_policy(),
+        )
+        .unwrap();
+        assert_eq!(
+            v2_with_login
+                .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+                .unwrap_err(),
+            SuppliedSessionInputError::CredentialMechanismMismatch
+        );
+        assert!(!missing_login.exists());
+
+        let v1_policy_path = directory.path().join("authorization-policy.toml");
+        std::fs::write(&v1_policy_path, valid_supplied_session_policy()).unwrap();
+        for mismatched in [
+            SuppliedSessionInput::select(
+                Some(v1_policy_path.clone()),
+                AuthorizationSourceOptions::new(None, None, false),
+                None,
+                Some(directory.path().join("PRIVATE-V1-LOGIN-MUST-NOT-BE-OPENED")),
+            )
+            .unwrap()
+            .unwrap(),
+            SuppliedSessionInput::select(
+                Some(v1_policy_path),
+                AuthorizationSourceOptions::new(None, None, false),
+                Some(
+                    directory
+                        .path()
+                        .join("PRIVATE-V1-COOKIE-MUST-NOT-BE-OPENED"),
+                ),
+                None,
+            )
+            .unwrap()
+            .unwrap(),
+        ] {
+            assert_eq!(
+                mismatched
+                    .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+                    .unwrap_err(),
+                SuppliedSessionInputError::CredentialMechanismMismatch
+            );
+        }
+
+        let v3_with_cookie = SuppliedSessionInput::select(
+            Some(policy_path.clone()),
+            AuthorizationSourceOptions::new(None, None, false),
+            Some(directory.path().join("PRIVATE-COOKIE-MUST-NOT-BE-OPENED")),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            v3_with_cookie
+                .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+                .unwrap_err(),
+            SuppliedSessionInputError::CredentialMechanismMismatch
+        );
+        let v3_with_authorization = SuppliedSessionInput::select(
+            Some(policy_path),
+            AuthorizationSourceOptions::new(
+                None,
+                Some(directory.path().join("PRIVATE-AUTH-MUST-NOT-BE-OPENED")),
+                false,
+            ),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            v3_with_authorization
+                .prepare(&url::Url::parse("http://127.0.0.1:8123/app/").unwrap())
+                .unwrap_err(),
+            SuppliedSessionInputError::CredentialMechanismMismatch
+        );
+
+        assert_eq!(
+            SuppliedSessionInput::select(
+                Some(PathBuf::from("PRIVATE-POLICY")),
+                AuthorizationSourceOptions::new(
+                    None,
+                    Some(PathBuf::from("PRIVATE-AUTHORIZATION")),
+                    false,
+                ),
+                None,
+                Some(PathBuf::from("PRIVATE-LOGIN")),
+            )
+            .unwrap_err(),
+            SuppliedSessionInputError::ConflictingCredentialSources
+        );
+        assert_eq!(
+            SuppliedSessionInput::select(
+                Some(PathBuf::from("PRIVATE-POLICY")),
+                AuthorizationSourceOptions::new(None, None, false),
+                Some(PathBuf::from("PRIVATE-COOKIE")),
+                Some(PathBuf::from("PRIVATE-LOGIN")),
+            )
+            .unwrap_err(),
+            SuppliedSessionInputError::ConflictingCredentialSources
+        );
+    }
+
+    #[cfg(all(feature = "supplied-session-review", windows))]
+    #[test]
+    fn supplied_session_form_login_rejects_remote_and_special_paths_before_open() {
+        let remote_policy_error = SuppliedSessionInput::select(
+            Some(PathBuf::from(r"\\server\share\session-policy.toml")),
+            AuthorizationSourceOptions::new(None, None, false),
+            None,
+            Some(PathBuf::from(r"C:\termivar\form-login.secret.tsv")),
+        )
+        .unwrap_err();
+        assert_eq!(
+            remote_policy_error,
+            SuppliedSessionInputError::PolicySource(AuthorizationInputError::SourceUnavailable)
+        );
+
+        for rejected in [
+            r"\\server\share\form-login.secret.tsv",
+            r"\\?\UNC\server\share\form-login.secret.tsv",
+            r"\\.\pipe\termivar-login-must-not-open",
+            r"\\?\GLOBALROOT\Device\NamedPipe\termivar-login-must-not-open",
+            r"C:\termivar\NUL",
+            r"C:\termivar\login.secret.tsv:stream",
+        ] {
+            let error = SuppliedSessionInput::select(
+                Some(PathBuf::from("PRIVATE-POLICY-MUST-NOT-OPEN")),
+                AuthorizationSourceOptions::new(None, None, false),
+                None,
+                Some(PathBuf::from(rejected)),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error,
+                SuppliedSessionInputError::CredentialSource(
+                    AuthorizationInputError::SourceUnavailable
+                ),
+                "remote or special form-login path was accepted"
+            );
+            assert!(!format!("{error:?}").contains("termivar-login-must-not-open"));
+        }
+
+        for accepted in [
+            r"C:\termivar\form-login.secret.tsv",
+            r"C:termivar\relative-form-login.secret.tsv",
+            r"\\?\C:\termivar\form-login.secret.tsv",
+            r"relative\form-login.secret.tsv",
+        ] {
+            assert!(SuppliedSessionInput::select(
+                Some(PathBuf::from("PRIVATE-POLICY-MUST-NOT-OPEN")),
+                AuthorizationSourceOptions::new(None, None, false),
+                None,
+                Some(PathBuf::from(accepted)),
+            )
+            .is_ok());
+        }
     }
 
     #[cfg(feature = "ssrf-oast-review")]

@@ -44,6 +44,8 @@ use crate::{
 use crate::runtime_budget::RequestAccountingBroker;
 
 mod form_controls;
+#[cfg(feature = "supplied-session-review")]
+mod login_form;
 pub(crate) mod passive_review;
 mod policy;
 mod probe;
@@ -52,6 +54,11 @@ mod response;
 mod review_response;
 
 use form_controls::{extract_form_control_names, FormControlExtraction};
+#[cfg(feature = "supplied-session-review")]
+pub(crate) use login_form::{
+    extract_supplied_session_login_csrf, SuppliedSessionLoginCsrfToken,
+    SuppliedSessionLoginFormError,
+};
 use passive_review::{project_passive_response, PassiveResponseProjection};
 use policy::forbidden_request_header;
 pub use policy::{

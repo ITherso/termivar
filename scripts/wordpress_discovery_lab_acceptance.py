@@ -7451,7 +7451,8 @@ def _validate_discovery_capability(document: Any) -> None:
             "--session-policy FILE",
             "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
             "V2: --session-cookie-file FILE",
-            "optional --wordpress-supplied-session when also compiled with wordpress-review",
+            "V3: --session-login-file FILE",
+            "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
         ],
         "capabilities do not report compiled supplied-session review",
@@ -7462,7 +7463,9 @@ def _validate_discovery_capability(document: Any) -> None:
         and "health-qualified session-resource HTML may nominate public WordPress metadata"
         in limitation
         and "credential is not sent to metadata or fingerprint requests" in limitation
-        and "authenticated-page fingerprint acquisition is not selected" in limitation,
+        and "authenticated-page fingerprint acquisition is not selected" in limitation
+        and "WordPress supplied-session composition remains limited to V1/V2" in limitation
+        and "V3 is rejected before its secret file is read" in limitation,
         "capabilities omit the supplied-session WordPress authority boundary",
     )
 
@@ -7483,7 +7486,8 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             and "--wordpress-fingerprints" in scan_help
             and "--wordpress-supplied-session" in scan_help
             and "--session-policy" in scan_help
-            and "--session-cookie-file" in scan_help,
+            and "--session-cookie-file" in scan_help
+            and "--session-login-file" in scan_help,
             "feature-enabled scan help omits WordPress/session integration")
     capabilities = parse_json(
         runner.run([binary, "capabilities", "--format", "json"],

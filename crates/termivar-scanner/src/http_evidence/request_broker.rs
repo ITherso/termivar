@@ -12,7 +12,11 @@ use termivar_core::{EntityId, EvidenceId, EvidenceKind, EvidenceValue};
 #[cfg(feature = "wordpress-review")]
 use reqwest::header::ACCEPT_ENCODING;
 
-#[cfg(any(feature = "graphql-review", feature = "authorization-review"))]
+#[cfg(any(
+    feature = "graphql-review",
+    feature = "authorization-review",
+    feature = "supplied-session-review"
+))]
 use reqwest::header::ACCEPT;
 #[cfg(any(
     feature = "graphql-review",
@@ -24,7 +28,7 @@ use reqwest::Method;
 
 #[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
 use reqwest::header::AUTHORIZATION;
-#[cfg(feature = "graphql-review")]
+#[cfg(any(feature = "graphql-review", feature = "supplied-session-review"))]
 use reqwest::header::CONTENT_TYPE;
 #[cfg(feature = "supplied-session-review")]
 use reqwest::header::COOKIE;
@@ -41,9 +45,10 @@ use crate::wordpress_review::{
 use crate::supplied_session_review::SuppliedSessionAuthorization;
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{
-    SuppliedSessionCredential, SuppliedSessionPolicy, SuppliedSessionRequestDescriptor,
-    SuppliedSessionRequestPurpose, SUPPLIED_SESSION_HEALTH_ACTION_ID,
-    SUPPLIED_SESSION_RESOURCE_ACTION_ID,
+    SuppliedSessionCredential, SuppliedSessionFormBody, SuppliedSessionPolicy,
+    SuppliedSessionRequestDescriptor, SuppliedSessionRequestPurpose,
+    SUPPLIED_SESSION_HEALTH_ACTION_ID, SUPPLIED_SESSION_LOGIN_PAGE_ACTION_ID,
+    SUPPLIED_SESSION_LOGIN_SUBMIT_ACTION_ID, SUPPLIED_SESSION_RESOURCE_ACTION_ID,
 };
 #[cfg(feature = "supplied-session-review")]
 use crate::web_runtime::authenticated_transport_is_allowed;
@@ -1035,6 +1040,10 @@ impl HttpRequestBroker {
                 SUPPLIED_SESSION_RESOURCE_ACTION_ID,
                 origin == Some(DecisionActionOrigin::Planned),
             ),
+            SuppliedSessionRequestPurpose::LoginPage
+            | SuppliedSessionRequestPurpose::LoginSubmit => {
+                return Err(SuppliedSessionRequestError::InvalidDescriptor);
+            },
         };
         let target = descriptor.target();
         if !descriptor.validate_against(policy)
@@ -1078,6 +1087,89 @@ impl HttpRequestBroker {
         self.collect_built_request(client, action_id, stage, origin, limits, request)
             .await
             .map_err(Into::into)
+    }
+
+    /// Dispatches the exact anonymous login-page GET selected by a V3 policy.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) async fn collect_supplied_session_login_page_for_runtime(
+        &self,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        policy: &SuppliedSessionPolicy,
+    ) -> Result<CollectedHttpResponse, SuppliedSessionRequestError> {
+        if !descriptor.validate_against(policy)
+            || descriptor.purpose() != SuppliedSessionRequestPurpose::LoginPage
+            || stage != DecisionExecutionStage::Passive
+            || origin != Some(DecisionActionOrigin::Bootstrap)
+            || !authenticated_transport_is_allowed(descriptor.target())
+        {
+            return Err(SuppliedSessionRequestError::InvalidDescriptor);
+        }
+        self.validate_target(descriptor.target())?;
+        let client = self
+            .supplied_session_no_proxy_client
+            .as_ref()
+            .ok_or(SuppliedSessionRequestError::InvalidDescriptor)?;
+        let request = client
+            .request(Method::GET, descriptor.target().clone())
+            .header(ACCEPT, "text/html")
+            .build()
+            .map_err(HttpEvidenceError::Request)?;
+        self.collect_built_request(
+            client,
+            SUPPLIED_SESSION_LOGIN_PAGE_ACTION_ID,
+            stage,
+            origin,
+            limits,
+            request,
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Dispatches one exact stateful form POST. There is no retry or redirect.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) async fn collect_supplied_session_login_submit_for_runtime(
+        &self,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        policy: &SuppliedSessionPolicy,
+        body: &SuppliedSessionFormBody,
+    ) -> Result<CollectedHttpResponse, SuppliedSessionRequestError> {
+        if !descriptor.validate_against(policy)
+            || descriptor.purpose() != SuppliedSessionRequestPurpose::LoginSubmit
+            || stage != DecisionExecutionStage::Active
+            || origin.is_some()
+            || !authenticated_transport_is_allowed(descriptor.target())
+        {
+            return Err(SuppliedSessionRequestError::InvalidDescriptor);
+        }
+        self.validate_target(descriptor.target())?;
+        let client = self
+            .supplied_session_no_proxy_client
+            .as_ref()
+            .ok_or(SuppliedSessionRequestError::InvalidDescriptor)?;
+        let request = client
+            .request(Method::POST, descriptor.target().clone())
+            .header(ACCEPT, "text/html, application/json")
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(body.as_bytes().to_vec())
+            .build()
+            .map_err(HttpEvidenceError::Request)?;
+        self.collect_built_request(
+            client,
+            SUPPLIED_SESSION_LOGIN_SUBMIT_ACTION_ID,
+            stage,
+            origin,
+            limits,
+            request,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     #[cfg(test)]

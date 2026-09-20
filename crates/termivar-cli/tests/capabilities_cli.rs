@@ -312,7 +312,8 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "--session-policy FILE",
             "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
             "V2: --session-cookie-file FILE",
-            "optional --wordpress-supplied-session when also compiled with wordpress-review",
+            "V3: --session-login-file FILE",
+            "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS"
         ])
     );
@@ -321,23 +322,37 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         .expect("supplied-session limitation");
     for required in [
         "context-isolated, no-proxy",
-        "health checks qualify",
+        "Health checkpoints qualify",
         "without anonymous fallback",
-        "no request body or non-GET method",
-        "GET handling can still have server-side effects",
-        "operator must authorize every selected resource",
-        "strict local V1 authorization_header or V2 cookie_jar policy",
-        "selected response-cookie update",
-        "unusable response-cookie classification",
-        "No response cookie update is applied, no refresh occurs",
-        "host/domain/path/Secure/expiry",
-        "Domain never expands it",
-        "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
-        "No browser-profile import, login, automatic refresh, OAuth, MFA",
-        "exploit, or impact validation",
+        "V1 authorization_header, V2 supplied cookie_jar, or V3 bounded_form_login policy",
+        "V1 and V2 perform only bounded bodyless application GETs",
+        "one anonymous exact-application login-page GET",
+        "at most one explicit application/x-www-form-urlencoded POST",
+        "credentials from --session-login-file",
+        "one exact hidden CSRF field",
+        "redirects and retries are disabled",
+        "ambiguous POST outcome is not resubmitted",
+        "no pre-session cookie",
+        "policy-declared host-only session cookie",
+        "startup JSON health predicate is the sole login-success oracle",
+        "receiving a cookie alone is insufficient",
+        "at most three resources",
+        "at most nine supplied-session requests",
         "health-qualified session-resource HTML may nominate public WordPress metadata",
         "credential is not sent to metadata or fingerprint requests",
         "authenticated-page fingerprint acquisition is not selected",
+        "selected post-login response-cookie update",
+        "unusable response-cookie classification",
+        "Outside initial V3 session establishment no response cookie update is applied",
+        "no automatic renewal occurs",
+        "host/domain/path/Secure/expiry",
+        "Domain never expands it",
+        "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
+        "explicitly authorized login POST can have server-side effects",
+        "No browser-profile import, form discovery, credential guessing, OAuth, MFA bypass",
+        "exploit, or impact validation",
+        "WordPress supplied-session composition remains limited to V1/V2",
+        "V3 is rejected before its secret file is read",
     ] {
         assert!(
             session_limit.contains(required),
@@ -537,6 +552,11 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         surface_state(&document, "option.supplied-session-review") == "compiled",
         scan.contains("--session-cookie-file"),
         "supplied-session cookie source/help drift"
+    );
+    assert_eq!(
+        surface_state(&document, "option.supplied-session-review") == "compiled",
+        scan.contains("--session-login-file"),
+        "supplied-session login source/help drift"
     );
     for option in [
         "--jwt-public-jwk",

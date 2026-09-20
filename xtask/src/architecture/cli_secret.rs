@@ -60,6 +60,7 @@ const CLI_AUTH_FIELDS: &[&str] = &[
     "session_auth_file",
     "session_auth_stdin",
     "session_cookie_file",
+    "session_login_file",
     "session_policy",
 ];
 const CLI_SCAN_FIELDS: &[&str] = &[
@@ -112,6 +113,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "session_auth_file",
     "session_auth_stdin",
     "session_cookie_file",
+    "session_login_file",
     "session_policy",
     "ssrf_oast_policy",
     "ssrf_oast_review",
@@ -601,7 +603,7 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         ),
         (
             "PreparedSuppliedSessionInput",
-            &["load"][..],
+            &["load", "policy_version"][..],
             "formatter.debug_struct(\"PreparedSuppliedSessionInput\").field(\"policy\",&\"<validated>\").field(\"secret\",&\"<redacted>\").finish()",
         ),
         (
@@ -639,9 +641,18 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         "pub(crate)structAuthorizationReviewInput{policy_file:PathBuf,primary:AuthorizationInputSource,peer:AuthorizationInputSource,}",
         "pub(crate)structJwtPolicyReviewInput{policy_file:PathBuf,public_jwk_file:PathBuf,token:AuthorizationInputSource,}",
         "pub(crate)structPreparedJwtPolicyReviewInput{policy:JwtLocalPolicy,public_key:Es256LocalPublicKey,token:AuthorizationInputSource,}",
-        "validate_jwt_local_file_path(&policy_file).map_err(JwtPolicyInputError::PolicySource)?;",
-        "validate_jwt_local_file_path(&public_jwk_file).map_err(JwtPolicyInputError::PublicKeySource)?;",
-        "ifletAuthorizationInputSource::File(token_file)=&token{validate_jwt_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;}",
+        "enumSuppliedSessionSecretSource{Authorization(AuthorizationInputSource),Cookies(PathBuf),FormLogin(PathBuf),}",
+        "Self::FormLogin(_)=>SuppliedSessionCredentialAcquisition::BoundedFormLogin",
+        "pub(crate)structSuppliedSessionInput{policy_file:PathBuf,secret:SuppliedSessionSecretSource,}",
+        "pub(crate)structPreparedSuppliedSessionInput{policy:SuppliedSessionPolicy,secret:SuppliedSessionSecretSource,}",
+        "letsecret=match(authorization,cookie_file,login_file){(Some(source),None,None)=>SuppliedSessionSecretSource::Authorization(source),(None,Some(path),None)=>SuppliedSessionSecretSource::Cookies(path),(None,None,Some(path))=>SuppliedSessionSecretSource::FormLogin(path),(None,None,None)=>returnErr(SuppliedSessionInputError::MissingCredentialSource),_=>returnErr(SuppliedSessionInputError::ConflictingCredentialSources),};",
+        "validate_local_file_path(&policy_file).map_err(SuppliedSessionInputError::PolicySource)?;",
+        "ifletSuppliedSessionSecretSource::Authorization(AuthorizationInputSource::File(path))|SuppliedSessionSecretSource::Cookies(path)|SuppliedSessionSecretSource::FormLogin(path)=&secret{validate_local_file_path(path).map_err(SuppliedSessionInputError::CredentialSource)?;}",
+        "ifpolicy.credential_acquisition()!=self.secret.acquisition(){returnErr(SuppliedSessionInputError::CredentialMechanismMismatch);}",
+        "SuppliedSessionSecretSource::FormLogin(path)=>{letbytes=read_bounded_regular_file(path,HARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES).map_err(SuppliedSessionInputError::CredentialSource)?;letcredential=SuppliedSessionFormCredential::parse_tsv(&self.policy,bytes.into_owned()).map_err(|_|SuppliedSessionInputError::InvalidCredentialValue)?;SuppliedSessionRuntimeInput::from(credential)}",
+        "validate_local_file_path(&policy_file).map_err(JwtPolicyInputError::PolicySource)?;",
+        "validate_local_file_path(&public_jwk_file).map_err(JwtPolicyInputError::PublicKeySource)?;",
+        "ifletAuthorizationInputSource::File(token_file)=&token{validate_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;}",
         "Prefix::UNC(_,_)|Prefix::VerbatimUNC(_,_)|Prefix::DeviceNS(_)|Prefix::Verbatim(_)=>returntrue,",
         "upper.starts_with(\"\\\\??\\\\\")||upper.starts_with(\"\\\\DEVICE\\\\\")||upper.starts_with(\"\\\\GLOBAL??\\\\\")||upper.starts_with(\"\\\\GLOBALROOT\\\\\")||upper.starts_with(\"\\\\PIPE\\\\\")",
         "\"CON\"|\"PRN\"|\"AUX\"|\"NUL\"|\"CLOCK$\"|\"CONIN$\"|\"CONOUT$\"",
@@ -664,7 +675,7 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
     ] {
         if !compact.contains(marker) {
             violations.push(format!(
-                "CLI protected review inputs must reject Windows remote/device JWT file spellings before opening and reuse the sole bounded secret loader while preserving bounded policy/key parsing, stdin isolation, distinct role construction, and typed JWT evaluation: missing `{marker}`"
+                "CLI protected review inputs must reject guarded Windows remote/device file spellings before opening and reuse the sole bounded secret loader while preserving bounded policy/key parsing, stdin isolation, distinct role construction, typed JWT evaluation, and exact V3 form-login source matching/loading: missing `{marker}`"
             ));
         }
     }
@@ -806,6 +817,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("session_auth_file", "Option", Some("PathBuf")),
         ("session_auth_stdin", "bool", None),
         ("session_cookie_file", "Option", Some("PathBuf")),
+        ("session_login_file", "Option", Some("PathBuf")),
         ("authz_primary_env", "Option", Some("OsString")),
         ("authz_primary_file", "Option", Some("PathBuf")),
         ("authz_primary_stdin", "bool", None),
@@ -852,6 +864,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 || name.starts_with("jwt_")
                 || name.starts_with("session_auth")
                 || name.as_str() == "session_cookie_file"
+                || name.as_str() == "session_login_file"
                 || name.as_str() == "session_policy"
         })
         .cloned()
@@ -998,6 +1011,63 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         if !exact {
             violations.push(format!(
                 "CLI `{name}` must retain its exact private jwt-policy-review gate, local-only source type, complete-input requirements, and stdin conflicts"
+            ));
+        }
+    }
+    for (name, expected_type, expected_arg, expected_cfg_attrs) in [
+        (
+            "session_policy",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"profile\",conflicts_with_all=[\"auth_env\",\"auth_file\",\"auth_stdin\"]",
+            &["feature=\"authorization-review\",arg(conflicts_with=\"authorization_review_policy\")"][..],
+        ),
+        (
+            "session_auth_env",
+            ("Option", Some("OsString")),
+            "long,value_name=\"ENV_VAR\",requires=\"session_policy\",conflicts_with_all=[\"session_auth_file\",\"session_auth_stdin\",\"session_cookie_file\",\"session_login_file\"]",
+            &[][..],
+        ),
+        (
+            "session_auth_file",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"session_policy\",conflicts_with_all=[\"session_auth_env\",\"session_auth_stdin\",\"session_cookie_file\",\"session_login_file\"]",
+            &[][..],
+        ),
+        (
+            "session_auth_stdin",
+            ("bool", None),
+            "long,requires=\"session_policy\",conflicts_with_all=[\"session_auth_env\",\"session_auth_file\",\"session_cookie_file\",\"session_login_file\",\"auth_stdin\"]",
+            &[
+                "feature=\"authorization-review\",arg(conflicts_with_all=[\"authz_primary_stdin\",\"authz_peer_stdin\"])",
+                "feature=\"ssrf-oast-review\",arg(conflicts_with=\"oast_admin_token_stdin\")",
+            ][..],
+        ),
+        (
+            "session_cookie_file",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"session_policy\",conflicts_with_all=[\"session_auth_env\",\"session_auth_file\",\"session_auth_stdin\",\"session_login_file\"]",
+            &[][..],
+        ),
+        (
+            "session_login_file",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"session_policy\",conflicts_with_all=[\"session_auth_env\",\"session_auth_file\",\"session_auth_stdin\",\"session_cookie_file\"]",
+            &[][..],
+        ),
+    ] {
+        let exact = fields.get(name).is_some_and(|field| {
+            let type_matches = match expected_type {
+                (outer, Some(inner)) => is_one_argument_type(&field.ty, outer, inner),
+                (plain, None) => is_plain_type(&field.ty, plain),
+            };
+            type_matches
+                && exact_cfg_feature_attribute(&field.attrs, "supplied-session-review")
+                && exact_arg_attribute(&field.attrs, expected_arg)
+                && exact_cfg_attr_attributes(&field.attrs, expected_cfg_attrs)
+        });
+        if !exact {
+            violations.push(format!(
+                "CLI `{name}` must retain its exact private supplied-session gate, out-of-band type, policy requirement, and pairwise source conflicts"
             ));
         }
     }
@@ -1255,6 +1325,23 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
+    let supplied_session_selection = "letsupplied_session_selected=session_policy.is_some()||session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some();";
+    let supplied_session_input = "auth_input::SuppliedSessionInput::select(session_policy,auth_input::AuthorizationSourceOptions::new(session_auth_env,session_auth_file,session_auth_stdin,),session_cookie_file,session_login_file,)?";
+    if compact.matches(supplied_session_selection).count() != 1
+        || compact.matches(supplied_session_input).count() != 1
+    {
+        violations.push(
+            "CLI must bind the exact V1/V2/V3 supplied-session source union and select one policy-compatible out-of-band source without reading it"
+                .to_owned(),
+        );
+    }
+    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{(selected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3).then_some(\"`--wordpress-supplied-session`doesnotsupportboundedform-loginpolicies\")}";
+    if compact.matches(wordpress_v3_preflight).count() != 1 {
+        violations.push(
+            "CLI must reject WordPress composition with a prepared V3 policy before output reservation or form-login secret acquisition"
+                .to_owned(),
+        );
+    }
     if !compact.contains("letprepared_jwt_policy_review=jwt_policy_review_input.map(auth_input::JwtPolicyReviewInput::prepare).transpose()?")
         || !compact.contains(".map(auth_input::PreparedJwtPolicyReviewInput::load)")
         || !compact.contains("letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?")
@@ -1333,6 +1420,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "load",
         "prepare",
         "prepare",
+        "scan_wordpress_supplied_session_policy_conflict",
         "prepare",
         "preflight_report_output",
         "reserve_report_bundle",
@@ -1374,6 +1462,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "letwordpress_review=wordpress_review_input.map(|input|input.load(&target)).transpose()?;",
         "letprepared_jwt_policy_review=jwt_policy_review_input.map(auth_input::JwtPolicyReviewInput::prepare).transpose()?;",
         "letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?;",
+        "scan_wordpress_supplied_session_policy_conflict(wordpress_supplied_session,prepared.policy_version(),)",
         "letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?;",
         "preflight_report_output(report_output.as_deref())?;",
         "letmutreport_bundle=report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
@@ -2350,6 +2439,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "wordpress_review_target_conflict",
         "scan_resource_authorization_flags_conflict",
         "scan_supplied_session_flags_conflict",
+        "scan_wordpress_supplied_session_policy_conflict",
         "select",
         "scan_authorization_flags_conflict",
         "is_exact_origin_root",
@@ -2919,6 +3009,16 @@ mod tests {
                 "field inventory and types must remain exact",
             ),
             (
+                "    session_login_file: Option<PathBuf>,",
+                "    session_login_file: Option<String>,",
+                "field inventory and types must remain exact",
+            ),
+            (
+                "        conflicts_with_all = [\n            \"session_auth_env\",\n            \"session_auth_file\",\n            \"session_auth_stdin\",\n            \"session_cookie_file\"\n        ]\n    )]\n    session_login_file: Option<PathBuf>,",
+                "        conflicts_with_all = [\n            \"session_auth_env\",\n            \"session_auth_file\",\n            \"session_auth_stdin\"\n        ]\n    )]\n    session_login_file: Option<PathBuf>,",
+                "private supplied-session gate",
+            ),
+            (
                 "        group = \"jwt_token_source\",\n        requires_all = [\"profile\", \"jwt_policy\", \"jwt_public_jwk\"],\n        conflicts_with_all = [\"jwt_token_file\", \"jwt_token_stdin\"]",
                 "        requires_all = [\"profile\", \"jwt_policy\", \"jwt_public_jwk\"],\n        conflicts_with_all = [\"jwt_token_file\", \"jwt_token_stdin\"]",
                 "complete-input requirements",
@@ -3007,6 +3107,16 @@ mod tests {
                 "scan_jwt_policy_review_flags_conflict(profile, jwt_policy_review_selected)",
                 "scan_jwt_policy_review_flags_conflict(profile, false)",
                 "exact union of all five JWT inputs",
+            ),
+            (
+                "        || session_cookie_file.is_some()\n        || session_login_file.is_some();",
+                "        || session_cookie_file.is_some();",
+                "exact V1/V2/V3 supplied-session source union",
+            ),
+            (
+                "SuppliedSessionPolicyVersion::V3)\n        .then_some(\"`--wordpress-supplied-session` does not support bounded form-login policies\")",
+                "SuppliedSessionPolicyVersion::V2)\n        .then_some(\"`--wordpress-supplied-session` does not support bounded form-login policies\")",
+                "reject WordPress composition with a prepared V3 policy",
             ),
             (
                 "conflicts_with_all = [\"report_format\", \"report_output\"]",
@@ -3166,6 +3276,21 @@ mod tests {
                 ".debug_struct(\"PreparedSuppliedSessionInput\")\n            .field(\"policy\", &\"<validated>\")\n            .field(\"secret\", &\"<redacted>\")",
                 ".debug_struct(\"PreparedSuppliedSessionInput\")\n            .field(\"policy\", &self.policy)\n            .field(\"secret\", &self.secret)",
                 "value-free redacted Debug",
+            ),
+            (
+                "(None, None, Some(path)) => SuppliedSessionSecretSource::FormLogin(path),",
+                "(None, None, Some(path)) => SuppliedSessionSecretSource::Cookies(path),",
+                "exact V3 form-login source matching/loading",
+            ),
+            (
+                "if policy.credential_acquisition() != self.secret.acquisition() {",
+                "if false {",
+                "exact V3 form-login source matching/loading",
+            ),
+            (
+                "read_bounded_regular_file(path, HARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES)",
+                "read_bounded_regular_file(path, usize::MAX)",
+                "exact V3 form-login source matching/loading",
             ),
         ] {
             assert_mutation_fails(

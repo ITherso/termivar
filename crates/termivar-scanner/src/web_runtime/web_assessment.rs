@@ -120,8 +120,10 @@ use crate::ssrf_oast_review::{
     select_observed_query_candidate, SsrfOastAdminToken, SsrfOastReviewPolicy,
     SsrfOastTerminalState,
 };
+#[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+use crate::supplied_session_review::SuppliedSessionPolicyVersion;
 #[cfg(feature = "supplied-session-review")]
-use crate::supplied_session_review::{SuppliedSessionCredential, SuppliedSessionPolicy};
+use crate::supplied_session_review::{SuppliedSessionPolicy, SuppliedSessionRuntimeInput};
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::WordPressReviewInputs;
 use crate::{
@@ -1781,6 +1783,9 @@ pub enum WebAssessmentRuntimeError {
         "WordPress supplied-session integration requires WordPress review, metadata discovery, and a supplied session"
     )]
     WordPressSuppliedSessionRequiresInputs,
+    #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+    #[error("WordPress supplied-session integration does not support bounded form-login policies")]
+    WordPressSuppliedSessionUnsupportedPolicy,
     #[cfg(feature = "wordpress-review")]
     #[error("WordPress context root does not match the exact assessment target")]
     WordPressContextRootMismatch,
@@ -1884,6 +1889,9 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
             Self::WordPressSuppliedSessionRequiresInputs => formatter
                 .write_str("WebAssessmentRuntimeError::WordPressSuppliedSessionRequiresInputs"),
+            #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+            Self::WordPressSuppliedSessionUnsupportedPolicy => formatter
+                .write_str("WebAssessmentRuntimeError::WordPressSuppliedSessionUnsupportedPolicy"),
             #[cfg(feature = "wordpress-review")]
             Self::WordPressContextRootMismatch => {
                 formatter.write_str("WebAssessmentRuntimeError::WordPressContextRootMismatch")
@@ -1971,7 +1979,7 @@ pub struct WebAssessmentRuntimeBuilder {
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
     #[cfg(feature = "supplied-session-review")]
-    supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionCredential)>,
+    supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionRuntimeInput)>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewInputs>,
     #[cfg(feature = "wordpress-review")]
@@ -2122,12 +2130,12 @@ impl WebAssessmentRuntimeBuilder {
     pub fn with_supplied_session_review<C>(
         mut self,
         policy: SuppliedSessionPolicy,
-        credential: C,
+        input: C,
     ) -> Self
     where
-        C: Into<SuppliedSessionCredential>,
+        C: Into<SuppliedSessionRuntimeInput>,
     {
-        self.supplied_session_review = Some((policy, credential.into()));
+        self.supplied_session_review = Some((policy, input.into()));
         self
     }
     /// Enables transport-free WordPress interpretation over the already
@@ -2261,6 +2269,15 @@ impl WebAssessmentRuntimeBuilder {
                 || self.supplied_session_review.is_none())
         {
             return Err(WebAssessmentRuntimeError::WordPressSuppliedSessionRequiresInputs);
+        }
+        #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+        if self.wordpress_supplied_session
+            && self
+                .supplied_session_review
+                .as_ref()
+                .is_some_and(|(policy, _)| policy.version() == SuppliedSessionPolicyVersion::V3)
+        {
+            return Err(WebAssessmentRuntimeError::WordPressSuppliedSessionUnsupportedPolicy);
         }
         #[cfg(feature = "wordpress-review")]
         if self.wordpress_review.is_some() && !wordpress_application_target_is_valid(&self.target) {

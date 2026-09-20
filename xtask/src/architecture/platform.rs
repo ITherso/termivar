@@ -2114,23 +2114,43 @@ fn supplied_session_review_source_contract_violations(
             "pubconstMAX_SUPPLIED_SESSION_WALL_TIME_MS:u64=10_000;",
             "pubconstSUPPLIED_SESSION_POLICY_SCHEMA:&str=\"security.supplied-session-policy/v1\";",
             "pubconstSUPPLIED_SESSION_COOKIE_POLICY_SCHEMA:&str=\"security.supplied-session-policy/v2\";",
+            "pubconstSUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA:&str=\"security.supplied-session-policy/v3\";",
             "pubconstHARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES:usize=16*1024;",
+            "pubconstHARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES:usize=8*1024;",
             "pubconstMAX_SUPPLIED_SESSION_COOKIES:usize=8;",
             "pubconstMAX_SUPPLIED_SESSION_COOKIE_HEADER_BYTES:usize=8*1024;",
             "pubenumSuppliedSessionCredentialMechanism{",
             "AuthorizationHeader,",
             "CookieJar,",
+            "pubenumSuppliedSessionCredentialAcquisition{",
+            "SuppliedAuthorization,",
+            "SuppliedCookieJar,",
+            "BoundedFormLogin,",
+            "Self::BoundedFormLogin=>\"bounded_form_login\"",
             "SuppliedSessionAuthorization(<redacted>)",
             "debug_struct(\"SuppliedSessionCookies\").field(\"values\",&\"<redacted>\")",
             "SuppliedSessionCredential::Authorization(<redacted>)",
             "SuppliedSessionCredential::SuppliedCookies(<redacted>)",
+            "SuppliedSessionRuntimeInput::Ready(<redacted>)",
+            "SuppliedSessionRuntimeInput::FormLogin(<redacted>)",
+            "pubstructSuppliedSessionFormCredential{",
+            "pubfnparse_tsv(",
+            "Self::FormLogin(credential)=>credential.matches_policy(policy)",
             "fnfrom_v1_wire(",
             "\"authorization_header\"=>SuppliedSessionCredentialMechanism::AuthorizationHeader",
             "cookie_update_policy:None,cookies:Vec::new(),",
             "fnfrom_v2_wire(",
             "\"cookie_jar\"=>SuppliedSessionCredentialMechanism::CookieJar",
             "\"stop_on_selected_cookie\"=>SuppliedSessionCookieUpdatePolicy::StopOnSelectedCookie",
-            "pubfnparse_tsv(",
+            "fnfrom_v3_wire(",
+            "wire.credential_acquisition!=\"bounded_form_login\"",
+            "wire.max_login_attempts!=1",
+            "wire.resources.len()>MAX_SUPPLIED_SESSION_RESOURCES.saturating_sub(1)",
+            "validate_form_login_policy_limits(",
+            "wire.login_method!=\"post\"",
+            "wire.login_encoding!=\"application/x-www-form-urlencoded\"",
+            "credential_acquisition:SuppliedSessionCredentialAcquisition::BoundedFormLogin",
+            "pub(crate)fnfrom_form_login_set_cookie_fields",
             "pub(crate)fnsensitive_header_for_target(",
             "expires_unix_seconds.is_some_and(|expires|expires<=now_unix_seconds)",
             "Self::CookieJar=>\"cookie_jar\"",
@@ -2142,7 +2162,7 @@ fn supplied_session_review_source_contract_violations(
             "supplied-session-application-sha256:",
             "supplied-session-principal-0001",
         ],
-        "supplied-session policy lost its bounded versioned Authorization/cookie input, mechanism binding, redaction, or opaque-reference contract",
+        "supplied-session policy lost its bounded versioned Authorization/cookie/form-login input, acquisition/mechanism binding, redaction, or opaque-reference contract",
     );
     reject_markers(
         &mut violations,
@@ -2166,11 +2186,23 @@ fn supplied_session_review_source_contract_violations(
         &[
             "security.supplied-session-audit/v1",
             "security.supplied-session-audit/v2",
+            "security.supplied-session-audit/v3",
             "session.supplied-context-assessment@1",
             "authority.requests().isolated_supplied_session()",
             "collect_supplied_session_get_for_runtime(",
+            "collect_supplied_session_login_page_for_runtime(",
+            "collect_supplied_session_login_submit_for_runtime(",
+            "SuppliedSessionRuntimeInput::FormLogin(form_credential)=>",
+            "state.begin_login(&policy,login_page);",
+            "Continue::Yes=>state.mark_login_authenticated()",
+            "initial_epoch:0",
+            "final_epoch:0",
+            "pre_session_cookie_applied:false",
             "SuppliedSessionAuditOutcome::CredentialUpdateRequired",
             "SuppliedSessionAuditOutcome::CredentialUpdateUnusable",
+            "SuppliedSessionAuditOutcome::LoginFormUnavailable",
+            "SuppliedSessionAuditOutcome::LoginSubmitUnavailable",
+            "SuppliedSessionAuditOutcome::LoginCookieUnavailable",
             "cookie_update_stop_outcome(",
             "selected_update_response_count:",
             "unselected_update_response_count:",
@@ -2198,6 +2230,8 @@ fn supplied_session_review_source_contract_violations(
         &compact_broker,
         &[
             "collect_supplied_session_get_for_runtime(",
+            "collect_supplied_session_login_page_for_runtime(",
+            "collect_supplied_session_login_submit_for_runtime(",
             "!descriptor.validate_against(policy)",
             "descriptor.credential_mechanism()!=policy.credential_mechanism()",
             "descriptor.credential_mechanism()!=credential.mechanism()",
@@ -2206,6 +2240,11 @@ fn supplied_session_review_source_contract_violations(
             "authorization.set_sensitive(true);",
             "request=request.header(AUTHORIZATION,authorization);",
             "request=request.header(COOKIE,cookie);",
+            ".request(Method::GET,descriptor.target().clone()).header(ACCEPT,\"text/html\")",
+            ".request(Method::POST,descriptor.target().clone())",
+            ".header(ACCEPT,\"text/html,application/json\")",
+            ".header(CONTENT_TYPE,\"application/x-www-form-urlencoded\")",
+            ".body(body.as_bytes().to_vec())",
             "SuppliedSessionRequestError::InvalidDescriptor",
         ],
         "the existing broker must retain the private mechanism-bound supplied-session dispatch seam",
@@ -2252,13 +2291,17 @@ fn supplied_session_review_source_contract_violations(
             "AssessmentSuppliedSessionAuditDocument::from_audit",
             "SUPPLIED_SESSION_AUDIT_SCHEMA",
             "SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
+            "SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
             "SUPPLIED_SESSION_CAPABILITY_ID",
+            "constfnsupplied_session_credential_acquisition_token(value:SuppliedSessionCredentialAcquisition,)->&'staticstr{value.as_str()}",
             "SuppliedSessionCredentialMechanism::AuthorizationHeader=>\"authorization_header\"",
             "SuppliedSessionCredentialMechanism::CookieJar=>\"cookie_jar\"",
             "SuppliedSessionAuditOutcome::CredentialUpdateRequired=>\"credential_update_required\"",
             "SuppliedSessionAuditOutcome::CredentialUpdateUnusable=>\"credential_update_unusable\"",
             "cookie_policy:audit.cookie_policy().map(",
             "cookie_lifecycle:audit.cookie_lifecycle().map(",
+            "login:audit.login().map(",
+            "pre_session_cookie_applied:login.pre_session_cookie_applied()",
             "updates_applied:lifecycle.updates_applied()",
             "SuppliedSessionResourceOutcome::HealthUnqualified=>\"health_unqualified\"",
             "self.response_byte_limit_exceeded!=(self.response_bytes>self.response_byte_limit)",
@@ -2280,20 +2323,25 @@ fn supplied_session_review_source_contract_violations(
         &[
             "constSUPPLIED_SESSION_AUDIT_SCHEMA_V1:&str=\"security.supplied-session-audit/v1\";",
             "constSUPPLIED_SESSION_AUDIT_SCHEMA_V2:&str=\"security.supplied-session-audit/v2\";",
+            "constSUPPLIED_SESSION_AUDIT_SCHEMA_V3:&str=\"security.supplied-session-audit/v3\";",
             "constSUPPLIED_SESSION_CAPABILITY:&str=\"session.supplied-context-assessment@1\";",
             "constMAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT:u64=256*1024;",
             "pub(super)fnvalidate_supplied_session(",
             "token(fields,\"credential_mechanism\",&[\"authorization_header\"])?",
             "token(fields,\"credential_mechanism\",&[\"cookie_jar\"])?",
-            "validate_supplied_session_cookie_policy(required(fields,\"cookie_policy\")?)?;",
+            "token(fields,\"credential_acquisition\",&[\"bounded_form_login\"])?",
+            "then(||validate_supplied_session_cookie_policy(required(fields,\"cookie_policy\")?)).transpose()?",
+            "validate_supplied_session_form_cookie_policy(required(fields,\"cookie_policy\")?)?;",
             "validate_supplied_session_cookie_lifecycle(",
+            "validate_supplied_session_login(",
+            "check(!boolean(fields,\"pre_session_cookie_applied\")?)?;",
             "token(fields,\"update_policy\",&[\"stop_on_selected_cookie\"])?",
             "check(!boolean(fields,\"refresh_performed\")?)?;",
             "\"health_unqualified\"=>{check(status==Some(200))?;(true,false)}",
             "response_byte_limit_exceeded==(response_bytes>response_byte_limit)",
             "check(count(items,SUPPLIED_SESSION_CAPABILITY)==0)",
         ],
-        "strict supplied-session reader lost its exact versioned schemas, V1/V2 mechanism split, cookie lifecycle, limits, vocabulary, or audit-only rule",
+        "strict supplied-session reader lost its exact versioned schemas, V1/V2/V3 acquisition and mechanism split, login/cookie lifecycle, limits, vocabulary, or audit-only rule",
     );
     violations
 }
@@ -4121,8 +4169,11 @@ const ALLOWED_QUALIFIED_SCANNER_MACROS: &[&str] = &[
     "tokio::try_join",
 ];
 
-const ALLOWED_IMPORTED_SCANNER_MACROS: &[(&str, &str)] =
-    &[("html5ever::ns", "ns"), ("serde_json::json", "json")];
+const ALLOWED_IMPORTED_SCANNER_MACROS: &[(&str, &str)] = &[
+    ("html5ever::local_name", "local_name"),
+    ("html5ever::ns", "ns"),
+    ("serde_json::json", "json"),
+];
 
 fn reporting_whole_crate_closure_violations(
     scanner_source: &Path,
@@ -5337,6 +5388,7 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("principal_alias", "String"),
             ("principal_assurance", "&'static str"),
             ("credential_mechanism", "&'static str"),
+            ("credential_acquisition", "Option<&'static str>"),
             (
                 "cookie_policy",
                 "Option<AssessmentSuppliedSessionCookiePolicyDocument>",
@@ -5345,6 +5397,7 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "cookie_lifecycle",
                 "Option<AssessmentSuppliedSessionCookieLifecycleDocument>",
             ),
+            ("login", "Option<AssessmentSuppliedSessionLoginDocument>"),
             (
                 "health_oracle",
                 "AssessmentSuppliedSessionHealthOracleDocument",
@@ -5402,6 +5455,29 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("unselected_update_response_count", "u8"),
             ("update_classification_failure_count", "u8"),
             ("updates_applied", "u8"),
+        ],
+    ),
+    (
+        "AssessmentSuppliedSessionLoginDocument",
+        &[],
+        &[
+            ("login_reference", "String"),
+            ("max_attempts", "u8"),
+            ("attempt_count", "u8"),
+            ("page_dispatched", "bool"),
+            ("page_status", "Option<u16>"),
+            ("page_body_state", "&'static str"),
+            ("form_outcome", "&'static str"),
+            ("form_error_code", "Option<&'static str>"),
+            ("submit_dispatched", "bool"),
+            ("submit_status", "Option<u16>"),
+            ("submit_body_state", "&'static str"),
+            ("submit_outcome", "&'static str"),
+            ("acquired_cookie_count", "u8"),
+            ("response_bytes", "u64"),
+            ("initial_epoch", "u8"),
+            ("final_epoch", "u8"),
+            ("pre_session_cookie_applied", "bool"),
         ],
     ),
     (
@@ -6520,6 +6596,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSuppliedSessionAuditDocument"
                 | "AssessmentSuppliedSessionCookiePolicyDocument"
                 | "AssessmentSuppliedSessionCookieLifecycleDocument"
+                | "AssessmentSuppliedSessionLoginDocument"
                 | "AssessmentSuppliedSessionHealthOracleDocument"
                 | "AssessmentSuppliedSessionCheckpointDocument"
                 | "AssessmentSuppliedSessionResourceDocument"
@@ -6622,6 +6699,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 "AssessmentSuppliedSessionAuditDocument"
                 | "AssessmentSuppliedSessionCookiePolicyDocument"
                 | "AssessmentSuppliedSessionCookieLifecycleDocument"
+                | "AssessmentSuppliedSessionLoginDocument"
                 | "AssessmentSuppliedSessionHealthOracleDocument"
                 | "AssessmentSuppliedSessionCheckpointDocument"
                 | "AssessmentSuppliedSessionResourceDocument" => {
@@ -6789,7 +6867,15 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         || (name == "AssessmentJwtPolicyViolationDocument"
                             && field_name == "ordinal")
                         || (name == "AssessmentSuppliedSessionAuditDocument"
-                            && matches!(field_name.as_str(), "cookie_policy" | "cookie_lifecycle"))
+                            && matches!(
+                                field_name.as_str(),
+                                "credential_acquisition"
+                                    | "cookie_policy"
+                                    | "cookie_lifecycle"
+                                    | "login"
+                            ))
+                        || (name == "AssessmentSuppliedSessionLoginDocument"
+                            && field_name == "form_error_code")
                         || (name == "AssessmentRestAuditDocument"
                             && matches!(
                                 field_name.as_str(),
@@ -9321,8 +9407,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 445_200;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x746e_8002_acba_f2a3_5d40_7813_063a_88ad;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 460_867;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xed47_d9b9_7f47_437e_ea5a_3d8e_a954_6fd7;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -9431,6 +9517,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::rest_review::RestDocumentedResponseClass",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
+    "crate::supplied_session_review::SuppliedSessionCredentialAcquisition",
     "crate::supplied_session_review::SuppliedSessionCredentialMechanism",
     "crate::web_runtime::AssessmentBasis",
     "crate::web_runtime::AssessmentRunReport",
@@ -9468,6 +9555,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
     "crate::web_runtime::SuppliedSessionBodyState",
@@ -9475,6 +9563,8 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SuppliedSessionHealthCheckpointPhase",
     "crate::web_runtime::SuppliedSessionHealthOracleKind",
     "crate::web_runtime::SuppliedSessionHealthOutcome",
+    "crate::web_runtime::SuppliedSessionLoginFormOutcome",
+    "crate::web_runtime::SuppliedSessionLoginSubmitOutcome",
     "crate::web_runtime::SuppliedSessionPredicateOutcome",
     "crate::web_runtime::SuppliedSessionPrincipalAssurance",
     "crate::web_runtime::SuppliedSessionResourceOutcome",
@@ -9683,6 +9773,9 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionAuditOutcome::Complete",
     "SuppliedSessionAuditOutcome::CredentialUpdateRequired",
     "SuppliedSessionAuditOutcome::CredentialUpdateUnusable",
+    "SuppliedSessionAuditOutcome::LoginCookieUnavailable",
+    "SuppliedSessionAuditOutcome::LoginFormUnavailable",
+    "SuppliedSessionAuditOutcome::LoginSubmitUnavailable",
     "SuppliedSessionAuditOutcome::ResourceUnavailable",
     "SuppliedSessionAuditOutcome::RuntimeLimit",
     "SuppliedSessionAuditOutcome::SessionLost",
@@ -9695,6 +9788,9 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionCoverage::Partial",
     "SuppliedSessionCredentialMechanism::AuthorizationHeader",
     "SuppliedSessionCredentialMechanism::CookieJar",
+    "SuppliedSessionCredentialAcquisition::BoundedFormLogin",
+    "SuppliedSessionCredentialAcquisition::SuppliedAuthorization",
+    "SuppliedSessionCredentialAcquisition::SuppliedCookieJar",
     "SuppliedSessionHealthCheckpointPhase::Startup",
     "SuppliedSessionHealthCheckpointPhase::SubjectBoundary",
     "SuppliedSessionHealthCheckpointPhase::Terminal",
@@ -9702,6 +9798,24 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionHealthOutcome::Healthy",
     "SuppliedSessionHealthOutcome::Indeterminate",
     "SuppliedSessionHealthOutcome::Unhealthy",
+    "SuppliedSessionLoginFormOutcome::Ambiguous",
+    "SuppliedSessionLoginFormOutcome::Cancelled",
+    "SuppliedSessionLoginFormOutcome::IneligibleResponse",
+    "SuppliedSessionLoginFormOutcome::Invalid",
+    "SuppliedSessionLoginFormOutcome::Matched",
+    "SuppliedSessionLoginFormOutcome::Missing",
+    "SuppliedSessionLoginFormOutcome::NotEvaluated",
+    "SuppliedSessionLoginFormOutcome::RuntimeLimit",
+    "SuppliedSessionLoginFormOutcome::TransportFailed",
+    "SuppliedSessionLoginSubmitOutcome::Cancelled",
+    "SuppliedSessionLoginSubmitOutcome::CookieAcquired",
+    "SuppliedSessionLoginSubmitOutcome::CookieUnavailable",
+    "SuppliedSessionLoginSubmitOutcome::HttpError",
+    "SuppliedSessionLoginSubmitOutcome::Incomplete",
+    "SuppliedSessionLoginSubmitOutcome::NotDispatched",
+    "SuppliedSessionLoginSubmitOutcome::RedirectRefused",
+    "SuppliedSessionLoginSubmitOutcome::RuntimeLimit",
+    "SuppliedSessionLoginSubmitOutcome::TransportFailed",
     "SuppliedSessionPredicateOutcome::Matched",
     "SuppliedSessionPredicateOutcome::NotEvaluated",
     "SuppliedSessionPredicateOutcome::NotMatched",
@@ -9983,6 +10097,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
     "crate::web_runtime::SuppliedSessionBodyState",
@@ -9990,6 +10105,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::SuppliedSessionHealthCheckpointPhase",
     "crate::web_runtime::SuppliedSessionHealthOracleKind",
     "crate::web_runtime::SuppliedSessionHealthOutcome",
+    "crate::web_runtime::SuppliedSessionLoginFormOutcome",
+    "crate::web_runtime::SuppliedSessionLoginSubmitOutcome",
     "crate::web_runtime::SuppliedSessionPredicateOutcome",
     "crate::web_runtime::SuppliedSessionPrincipalAssurance",
     "crate::web_runtime::SuppliedSessionResourceOutcome",
@@ -10010,6 +10127,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::rest_review::RestDocumentedResponseClass",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
+    "crate::supplied_session_review::SuppliedSessionCredentialAcquisition",
     "crate::supplied_session_review::SuppliedSessionCredentialMechanism",
     "crate::wordpress_review::MAX_WORDPRESS_ADVISORY_RECORDS",
     "crate::wordpress_review::MAX_WORDPRESS_ASSET_FINGERPRINT_ASSET_BYTES",
@@ -10134,6 +10252,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "u64::checked_add",
     "u64::try_from",
     "u8::MAX",
+    "u8::from",
     "u8::try_from",
     "usize::MAX",
     "usize::from",
@@ -10163,6 +10282,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
+    "AssessmentSuppliedSessionLoginDocument::validate",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentOpenApiAuditDocument::from_audit",
     "AssessmentRestAuditDocument::from_audit",
@@ -10256,9 +10376,12 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "supplied_session_body_state_token",
     "supplied_session_checkpoint_phase_token",
     "supplied_session_coverage_token",
+    "supplied_session_credential_acquisition_token",
     "supplied_session_credential_mechanism_token",
     "supplied_session_health_oracle_kind_token",
     "supplied_session_health_outcome_token",
+    "supplied_session_login_form_outcome_token",
+    "supplied_session_login_submit_outcome_token",
     "supplied_session_predicate_outcome_token",
     "supplied_session_principal_assurance_token",
     "supplied_session_resource_outcome_token",
@@ -10267,6 +10390,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "u32::from",
     "u64::from",
     "u64::try_from",
+    "u8::from",
     "u8::try_from",
     "usize::from",
     "usize::try_from",
@@ -10443,14 +10567,25 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "sort_by",
     "then_with",
     "browser_semantics",
+    "acquired_cookie_count",
+    "attempt_count",
     "cookie_lifecycle",
     "cookie_policy",
+    "credential_acquisition",
     "declared_count",
     "domain_count",
     "final_epoch",
+    "form_error_code",
+    "form_outcome",
     "host_only_count",
     "http_only_count",
     "initial_epoch",
+    "login",
+    "login_reference",
+    "max_attempts",
+    "page_body_state",
+    "page_dispatched",
+    "page_status",
     "persistent_count",
     "same_site_lax_count",
     "same_site_missing_count",
@@ -10463,6 +10598,11 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "update_classification_failure_count",
     "update_policy",
     "updates_applied",
+    "pre_session_cookie_applied",
+    "submit_body_state",
+    "submit_dispatched",
+    "submit_outcome",
+    "submit_status",
     "acquisition",
     "after_subject_count",
     "anonymous_fallback_performed",
@@ -10664,6 +10804,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "is_empty",
     "is_disjoint",
     "is_err",
+    "is_ok",
     "is_none",
     "is_none_or",
     "is_some",
@@ -10739,6 +10880,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "run_report",
     "saturating_add",
     "saturating_mul",
+    "saturating_sub",
     "schema",
     "selected_operation_identity",
     "selected_path_count",
@@ -11062,12 +11204,14 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 path.as_str(),
                 "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES"
                     | "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES"
+                    | "crate::supplied_session_review::SuppliedSessionCredentialAcquisition"
                     | "crate::supplied_session_review::SuppliedSessionCredentialMechanism"
                     | "crate::web_runtime::MAX_SUPPLIED_SESSION_CHECKPOINTS"
                     | "crate::web_runtime::MAX_SUPPLIED_SESSION_REQUESTS"
                     | "crate::web_runtime::MAX_SUPPLIED_SESSION_RESOURCES"
                     | "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA"
+                    | "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID"
                     | "crate::web_runtime::SuppliedSessionAuditOutcome"
                     | "crate::web_runtime::SuppliedSessionBodyState"
@@ -11075,6 +11219,8 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::SuppliedSessionHealthCheckpointPhase"
                     | "crate::web_runtime::SuppliedSessionHealthOracleKind"
                     | "crate::web_runtime::SuppliedSessionHealthOutcome"
+                    | "crate::web_runtime::SuppliedSessionLoginFormOutcome"
+                    | "crate::web_runtime::SuppliedSessionLoginSubmitOutcome"
                     | "crate::web_runtime::SuppliedSessionPredicateOutcome"
                     | "crate::web_runtime::SuppliedSessionPrincipalAssurance"
                     | "crate::web_runtime::SuppliedSessionResourceOutcome"
@@ -12720,7 +12866,7 @@ mod tests {
             });
         assert!(violations.iter().any(|violation| {
             violation.contains("strict supplied-session reader")
-                && violation.contains("V1/V2 mechanism split")
+                && violation.contains("V1/V2/V3 acquisition and mechanism split")
         }));
 
         let widened_v1_policy = core.replacen(
@@ -12734,9 +12880,65 @@ mod tests {
                 core: &widened_v1_policy,
                 ..sources
             });
+        assert!(violations.iter().any(|violation| {
+            violation.contains("versioned Authorization/cookie/form-login input")
+        }));
+
+        let widened_v3_policy = core.replace(
+            "wire.resources.len() > MAX_SUPPLIED_SESSION_RESOURCES.saturating_sub(1)",
+            "wire.resources.len() > MAX_SUPPLIED_SESSION_RESOURCES",
+        );
+        assert_ne!(widened_v3_policy, core);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                core: &widened_v3_policy,
+                ..sources
+            });
+        assert!(violations.iter().any(|violation| {
+            violation.contains("versioned Authorization/cookie/form-login input")
+        }));
+
+        let bypassed_login_health = runtime.replace(
+            "Continue::Yes => state.mark_login_authenticated(),",
+            "Continue::Yes => {},",
+        );
+        assert_ne!(bypassed_login_health, runtime);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                runtime: &bypassed_login_health,
+                ..sources
+            });
         assert!(violations
             .iter()
-            .any(|violation| { violation.contains("versioned Authorization/cookie input") }));
+            .any(|violation| violation.contains("supplied-session runtime")));
+
+        let widened_v3_reader = audit_import.replace(
+            "token(fields, \"credential_acquisition\", &[\"bounded_form_login\"])?",
+            "token(fields, \"credential_acquisition\", &[\"bounded_form_login\", \"supplied_cookie_jar\"])?",
+        );
+        assert_ne!(widened_v3_reader, audit_import);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                audit_import: &widened_v3_reader,
+                ..sources
+            });
+        assert!(violations
+            .iter()
+            .any(|violation| { violation.contains("V1/V2/V3 acquisition and mechanism split") }));
+
+        let changed_login_method = broker.replace(
+            ".request(Method::POST, descriptor.target().clone())",
+            ".request(Method::GET, descriptor.target().clone())",
+        );
+        assert_ne!(changed_login_method, broker);
+        let violations =
+            supplied_session_review_source_contract_violations(SuppliedSessionSources {
+                broker: &changed_login_method,
+                ..sources
+            });
+        assert!(violations
+            .iter()
+            .any(|violation| violation.contains("dispatch seam")));
 
         let omitted_cookie_expiry = core.replace(
             ".is_some_and(|expires| expires <= now_unix_seconds)",
@@ -12750,7 +12952,7 @@ mod tests {
             });
         assert!(violations.iter().any(|violation| {
             violation.contains("fail closed on expiry")
-                || violation.contains("versioned Authorization/cookie input")
+                || violation.contains("versioned Authorization/cookie/form-login input")
         }));
 
         let automatic_cookie_store =
@@ -15009,18 +15211,20 @@ mod tests {
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             use crate::{
                 supplied_session_review::{
-                    SuppliedSessionCredentialMechanism, MAX_SUPPLIED_SESSION_COOKIES,
-                    MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
+                    SuppliedSessionCredentialAcquisition, SuppliedSessionCredentialMechanism,
+                    MAX_SUPPLIED_SESSION_COOKIES, MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
                 },
                 web_runtime::{
                     SuppliedSessionAuditOutcome, SuppliedSessionBodyState,
                     SuppliedSessionCoverage, SuppliedSessionHealthCheckpointPhase,
                     SuppliedSessionHealthOracleKind, SuppliedSessionHealthOutcome,
+                    SuppliedSessionLoginFormOutcome, SuppliedSessionLoginSubmitOutcome,
                     SuppliedSessionPredicateOutcome, SuppliedSessionPrincipalAssurance,
                     SuppliedSessionResourceOutcome, WebAssessmentSuppliedSessionAudit,
                     MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
                     MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+                    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
                 },
             };
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -15703,9 +15907,13 @@ mod tests {
                 principal_assurance: &'static str,
                 credential_mechanism: &'static str,
                 #[serde(skip_serializing_if = "Option::is_none")]
+                credential_acquisition: Option<&'static str>,
+                #[serde(skip_serializing_if = "Option::is_none")]
                 cookie_policy: Option<AssessmentSuppliedSessionCookiePolicyDocument>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 cookie_lifecycle: Option<AssessmentSuppliedSessionCookieLifecycleDocument>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                login: Option<AssessmentSuppliedSessionLoginDocument>,
                 health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
                 outcome: &'static str,
                 coverage: &'static str,
@@ -15750,6 +15958,28 @@ mod tests {
                 unselected_update_response_count: u8,
                 update_classification_failure_count: u8,
                 updates_applied: u8,
+            }
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            #[derive(Serialize)]
+            struct AssessmentSuppliedSessionLoginDocument {
+                login_reference: String,
+                max_attempts: u8,
+                attempt_count: u8,
+                page_dispatched: bool,
+                page_status: Option<u16>,
+                page_body_state: &'static str,
+                form_outcome: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                form_error_code: Option<&'static str>,
+                submit_dispatched: bool,
+                submit_status: Option<u16>,
+                submit_body_state: &'static str,
+                submit_outcome: &'static str,
+                acquired_cookie_count: u8,
+                response_bytes: u64,
+                initial_epoch: u8,
+                final_epoch: u8,
+                pre_session_cookie_applied: bool,
             }
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             #[derive(Serialize)]

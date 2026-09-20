@@ -49,18 +49,19 @@ use crate::{
 #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
 use crate::{
     supplied_session_review::{
-        SuppliedSessionCredentialMechanism, MAX_SUPPLIED_SESSION_COOKIES,
-        MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
+        SuppliedSessionCredentialAcquisition, SuppliedSessionCredentialMechanism,
+        MAX_SUPPLIED_SESSION_COOKIES, MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
     },
     web_runtime::{
         SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionCoverage,
         SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleKind,
-        SuppliedSessionHealthOutcome, SuppliedSessionPredicateOutcome,
+        SuppliedSessionHealthOutcome, SuppliedSessionLoginFormOutcome,
+        SuppliedSessionLoginSubmitOutcome, SuppliedSessionPredicateOutcome,
         SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
         WebAssessmentSuppliedSessionAudit, MAX_SUPPLIED_SESSION_CHECKPOINTS,
         MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES,
         SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
-        SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
     },
 };
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -6092,9 +6093,13 @@ struct AssessmentSuppliedSessionAuditDocument {
     principal_assurance: &'static str,
     credential_mechanism: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    credential_acquisition: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cookie_policy: Option<AssessmentSuppliedSessionCookiePolicyDocument>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cookie_lifecycle: Option<AssessmentSuppliedSessionCookieLifecycleDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login: Option<AssessmentSuppliedSessionLoginDocument>,
     health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
     outcome: &'static str,
     coverage: &'static str,
@@ -6141,6 +6146,234 @@ struct AssessmentSuppliedSessionCookieLifecycleDocument {
     unselected_update_response_count: u8,
     update_classification_failure_count: u8,
     updates_applied: u8,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+#[derive(Serialize)]
+struct AssessmentSuppliedSessionLoginDocument {
+    login_reference: String,
+    max_attempts: u8,
+    attempt_count: u8,
+    page_dispatched: bool,
+    page_status: Option<u16>,
+    page_body_state: &'static str,
+    form_outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    form_error_code: Option<&'static str>,
+    submit_dispatched: bool,
+    submit_status: Option<u16>,
+    submit_body_state: &'static str,
+    submit_outcome: &'static str,
+    acquired_cookie_count: u8,
+    response_bytes: u64,
+    initial_epoch: u8,
+    final_epoch: u8,
+    pre_session_cookie_applied: bool,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+impl AssessmentSuppliedSessionLoginDocument {
+    fn validate(
+        &self,
+        audit_outcome: &str,
+        startup: Option<&AssessmentSuppliedSessionCheckpointDocument>,
+    ) -> Result<(), ReportError> {
+        let page_status_is_valid = self
+            .page_status
+            .is_none_or(|status| (100..=599).contains(&status));
+        let submit_status_is_valid = self
+            .submit_status
+            .is_none_or(|status| (100..=599).contains(&status));
+        let form_error_matches = matches!(
+            (self.form_outcome, self.form_error_code),
+            ("matched", None)
+                | ("not_evaluated", None)
+                | (
+                    "ineligible_response",
+                    Some(
+                        "ineligible_response"
+                            | "pre_session_cookie_unsupported"
+                            | "inexact_final_target"
+                    )
+                )
+                | ("missing", Some("missing_form" | "missing_csrf"))
+                | ("ambiguous", Some("ambiguous_form" | "ambiguous_csrf"))
+                | (
+                    "invalid",
+                    Some(
+                        "invalid_form_contract"
+                            | "invalid_csrf"
+                            | "invalid_descriptor"
+                            | "invalid_form_body"
+                    )
+                )
+                | ("transport_failed", Some("transport_failed"))
+                | ("runtime_limit", Some("runtime_limit"))
+                | ("cancelled", Some("cancelled"))
+        );
+        let page_state_is_valid = match self.form_outcome {
+            "matched" => {
+                self.page_dispatched
+                    && self.page_status == Some(200)
+                    && self.page_body_state == "complete"
+            },
+            "ineligible_response" => {
+                self.page_dispatched
+                    && self.page_status.is_some()
+                    && matches!(self.page_body_state, "complete" | "incomplete")
+            },
+            "missing" | "ambiguous" => {
+                self.page_dispatched
+                    && self.page_status == Some(200)
+                    && self.page_body_state == "complete"
+            },
+            "invalid" if self.form_error_code == Some("invalid_descriptor") => {
+                !self.page_dispatched
+                    && self.page_status.is_none()
+                    && self.page_body_state == "unavailable"
+            },
+            "invalid" => {
+                self.page_dispatched
+                    && self.page_status == Some(200)
+                    && self.page_body_state == "complete"
+            },
+            "transport_failed" | "runtime_limit" | "cancelled" => {
+                self.page_status.is_none() && self.page_body_state == "unavailable"
+            },
+            "not_evaluated" => {
+                !self.page_dispatched
+                    && self.page_status.is_none()
+                    && self.page_body_state == "unavailable"
+            },
+            _ => false,
+        };
+        let submit_state_is_valid = match self.submit_outcome {
+            "cookie_acquired" => {
+                self.submit_dispatched
+                    && self.attempt_count == 1
+                    && self.submit_status == Some(200)
+                    && self.submit_body_state == "complete"
+                    && self.acquired_cookie_count > 0
+            },
+            "cookie_unavailable" => {
+                self.submit_dispatched
+                    && self.attempt_count == 1
+                    && self.submit_status == Some(200)
+                    && self.submit_body_state == "complete"
+                    && self.acquired_cookie_count == 0
+            },
+            "http_error" => {
+                self.submit_dispatched
+                    && self.attempt_count == 1
+                    && self
+                        .submit_status
+                        .is_some_and(|status| status != 200 && !(300..400).contains(&status))
+                    && self.submit_body_state == "complete"
+                    && self.acquired_cookie_count == 0
+            },
+            "redirect_refused" => {
+                self.submit_dispatched
+                    && self.attempt_count == 1
+                    && self
+                        .submit_status
+                        .is_some_and(|status| (300..400).contains(&status))
+                    && matches!(self.submit_body_state, "complete" | "incomplete")
+                    && self.acquired_cookie_count == 0
+            },
+            "incomplete" => {
+                self.submit_dispatched
+                    && self.attempt_count == 1
+                    && self
+                        .submit_status
+                        .is_some_and(|status| !(300..400).contains(&status))
+                    && self.submit_body_state == "incomplete"
+                    && self.acquired_cookie_count == 0
+            },
+            "transport_failed" | "runtime_limit" | "cancelled" => {
+                self.attempt_count == u8::from(self.submit_dispatched)
+                    && self.submit_status.is_none()
+                    && self.submit_body_state == "unavailable"
+                    && self.acquired_cookie_count == 0
+            },
+            "not_dispatched" => {
+                !self.submit_dispatched
+                    && self.attempt_count == 0
+                    && self.submit_status.is_none()
+                    && self.submit_body_state == "unavailable"
+                    && self.acquired_cookie_count == 0
+            },
+            _ => false,
+        };
+        let startup_authenticated = startup.is_some_and(|checkpoint| {
+            checkpoint.phase == "startup"
+                && checkpoint.outcome == "healthy"
+                && checkpoint.predicate == "matched"
+        });
+        let epoch_is_valid = self.initial_epoch == 0
+            && match self.final_epoch {
+                0 => true,
+                1 => self.submit_outcome == "cookie_acquired" && startup_authenticated,
+                _ => false,
+            };
+        let outcome_is_valid = match audit_outcome {
+            "login_form_unavailable" => {
+                self.final_epoch == 0
+                    && self.submit_outcome == "not_dispatched"
+                    && !matches!(self.form_outcome, "matched" | "not_evaluated")
+            },
+            "login_submit_unavailable" => {
+                self.final_epoch == 0
+                    && self.form_outcome == "matched"
+                    && !matches!(
+                        self.submit_outcome,
+                        "cookie_acquired" | "cookie_unavailable"
+                    )
+            },
+            "login_cookie_unavailable" => {
+                self.final_epoch == 0
+                    && self.form_outcome == "matched"
+                    && self.submit_outcome == "cookie_unavailable"
+            },
+            "runtime_limit" => {
+                self.form_outcome == "runtime_limit"
+                    || self.submit_outcome == "runtime_limit"
+                    || self.submit_outcome == "cookie_acquired"
+            },
+            "cancelled" => {
+                self.form_outcome == "cancelled"
+                    || self.submit_outcome == "cancelled"
+                    || self.submit_outcome == "cookie_acquired"
+            },
+            _ => self.submit_outcome == "cookie_acquired",
+        };
+        if !valid_supplied_session_reference(
+            &self.login_reference,
+            "supplied-session-login-sha256:",
+        ) || self.max_attempts != 1
+            || self.attempt_count > self.max_attempts
+            || !page_status_is_valid
+            || !submit_status_is_valid
+            || !matches!(
+                self.page_body_state,
+                "complete" | "incomplete" | "unavailable"
+            )
+            || !matches!(
+                self.submit_body_state,
+                "complete" | "incomplete" | "unavailable"
+            )
+            || !form_error_matches
+            || !page_state_is_valid
+            || (self.submit_dispatched && self.form_outcome != "matched")
+            || !submit_state_is_valid
+            || !epoch_is_valid
+            || !outcome_is_valid
+            || self.pre_session_cookie_applied
+            || (!self.page_dispatched && !self.submit_dispatched && self.response_bytes != 0)
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
@@ -6195,6 +6428,10 @@ impl AssessmentSuppliedSessionAuditDocument {
             credential_mechanism: supplied_session_credential_mechanism_token(
                 audit.credential_mechanism(),
             ),
+            credential_acquisition: (audit.schema() == SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA)
+                .then(|| {
+                    supplied_session_credential_acquisition_token(audit.credential_acquisition())
+                }),
             cookie_policy: audit.cookie_policy().map(|policy| {
                 AssessmentSuppliedSessionCookiePolicyDocument {
                     declared_count: policy.declared_count(),
@@ -6223,6 +6460,29 @@ impl AssessmentSuppliedSessionAuditDocument {
                     updates_applied: lifecycle.updates_applied(),
                 }
             }),
+            login: audit
+                .login()
+                .map(|login| AssessmentSuppliedSessionLoginDocument {
+                    login_reference: login.login_reference().to_owned(),
+                    max_attempts: login.max_attempts(),
+                    attempt_count: login.attempt_count(),
+                    page_dispatched: login.page_dispatched(),
+                    page_status: login.page_status(),
+                    page_body_state: supplied_session_body_state_token(login.page_body_state()),
+                    form_outcome: supplied_session_login_form_outcome_token(login.form_outcome()),
+                    form_error_code: login.form_error_code(),
+                    submit_dispatched: login.submit_dispatched(),
+                    submit_status: login.submit_status(),
+                    submit_body_state: supplied_session_body_state_token(login.submit_body_state()),
+                    submit_outcome: supplied_session_login_submit_outcome_token(
+                        login.submit_outcome(),
+                    ),
+                    acquired_cookie_count: login.acquired_cookie_count(),
+                    response_bytes: login.response_bytes(),
+                    initial_epoch: login.initial_epoch(),
+                    final_epoch: login.final_epoch(),
+                    pre_session_cookie_applied: login.pre_session_cookie_applied(),
+                }),
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: supplied_session_health_oracle_kind_token(audit.health_oracle().kind()),
                 field_reference: audit.health_oracle().field_reference().to_owned(),
@@ -6322,18 +6582,61 @@ impl AssessmentSuppliedSessionAuditDocument {
             .collect::<std::collections::BTreeSet<_>>();
         let response_bytes = checkpoint_response_bytes
             .zip(resource_response_bytes)
-            .and_then(|(checkpoints, resources)| checkpoints.checked_add(resources));
+            .and_then(|(checkpoints, resources)| checkpoints.checked_add(resources))
+            .and_then(|existing| {
+                existing.checked_add(self.login.as_ref().map_or(0, |login| login.response_bytes))
+            });
+        let login_dispatched_requests = self.login.as_ref().map_or(0_usize, |login| {
+            usize::from(login.page_dispatched) + usize::from(login.submit_dispatched)
+        });
+        let v3_epoch_transition_is_valid = match (self.schema, self.login.as_ref()) {
+            (SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, Some(login)) => {
+                let startup_authenticated = self.checkpoints.first().is_some_and(|checkpoint| {
+                    checkpoint.phase == "startup"
+                        && checkpoint.outcome == "healthy"
+                        && checkpoint.predicate == "matched"
+                });
+                login.final_epoch == 1
+                    || !startup_authenticated
+                    || (matches!(
+                        self.outcome,
+                        "credential_update_required" | "credential_update_unusable"
+                    ) && self.checkpoints.len() == 1
+                        && dispatched_resources == 0
+                        && self
+                            .resources
+                            .iter()
+                            .all(|resource| resource.outcome == "not_dispatched"))
+            },
+            (SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, None) => false,
+            _ => true,
+        };
         let cookie_contract_is_valid = match (
             self.schema,
             self.credential_mechanism,
+            self.credential_acquisition,
             self.cookie_policy.as_ref(),
             self.cookie_lifecycle.as_ref(),
+            self.login.as_ref(),
         ) {
-            (SUPPLIED_SESSION_AUDIT_SCHEMA, "authorization_header", None, None) => !matches!(
-                self.outcome,
-                "credential_update_required" | "credential_update_unusable"
-            ),
-            (SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, "cookie_jar", Some(policy), Some(lifecycle)) => {
+            (SUPPLIED_SESSION_AUDIT_SCHEMA, "authorization_header", None, None, None, None) => {
+                !matches!(
+                    self.outcome,
+                    "credential_update_required"
+                        | "credential_update_unusable"
+                        | "login_form_unavailable"
+                        | "login_submit_unavailable"
+                        | "login_cookie_unavailable"
+                )
+            },
+            (
+                SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+                "cookie_jar",
+                None,
+                Some(policy),
+                Some(lifecycle),
+                None,
+            ) => {
                 let declared = usize::from(policy.declared_count);
                 let dispatched_requests = usize::from(self.dispatched_request_count);
                 (1..=MAX_SUPPLIED_SESSION_COOKIES).contains(&declared)
@@ -6373,6 +6676,67 @@ impl AssessmentSuppliedSessionAuditDocument {
                             lifecycle.selected_update_response_count == 0
                                 && lifecycle.update_classification_failure_count == 1
                         },
+                        "login_form_unavailable"
+                        | "login_submit_unavailable"
+                        | "login_cookie_unavailable" => false,
+                        _ => {
+                            lifecycle.selected_update_response_count == 0
+                                && lifecycle.update_classification_failure_count == 0
+                        },
+                    }
+            },
+            (
+                SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+                "cookie_jar",
+                Some("bounded_form_login"),
+                Some(policy),
+                Some(lifecycle),
+                Some(login),
+            ) => {
+                let declared = usize::from(policy.declared_count);
+                let dispatched_requests = usize::from(self.dispatched_request_count);
+                let update_eligible_requests =
+                    dispatched_requests.checked_sub(login_dispatched_requests);
+                (1..=MAX_SUPPLIED_SESSION_COOKIES).contains(&declared)
+                    && usize::from(policy.host_only_count) == declared
+                    && policy.domain_count == 0
+                    && (usize::from(policy.secure_count) == 0
+                        || usize::from(policy.secure_count) == declared)
+                    && usize::from(policy.http_only_count) == declared
+                    && usize::from(policy.session_count) == declared
+                    && policy.persistent_count == 0
+                    && policy.same_site_missing_count == 0
+                    && usize::from(policy.same_site_strict_count)
+                        .checked_add(usize::from(policy.same_site_lax_count))
+                        == Some(declared)
+                    && policy.same_site_none_count == 0
+                    && policy.update_policy == "stop_on_selected_cookie"
+                    && policy.browser_semantics == "attributes_preserved_not_browser_csrf_emulation"
+                    && lifecycle.initial_epoch == 0
+                    && lifecycle.final_epoch == login.final_epoch
+                    && update_eligible_requests.is_some_and(|eligible| {
+                        usize::from(lifecycle.selected_update_response_count) <= eligible
+                            && usize::from(lifecycle.unselected_update_response_count)
+                                .checked_add(usize::from(
+                                    lifecycle.update_classification_failure_count,
+                                ))
+                                .is_some_and(|count| count <= eligible)
+                    })
+                    && lifecycle.updates_applied == 0
+                    && login
+                        .validate(self.outcome, self.checkpoints.first())
+                        .is_ok()
+                    && (login.submit_outcome != "cookie_acquired"
+                        || login.acquired_cookie_count == policy.declared_count)
+                    && match self.outcome {
+                        "credential_update_required" => {
+                            lifecycle.selected_update_response_count == 1
+                                && lifecycle.update_classification_failure_count == 0
+                        },
+                        "credential_update_unusable" => {
+                            lifecycle.selected_update_response_count == 0
+                                && lifecycle.update_classification_failure_count == 1
+                        },
                         _ => {
                             lifecycle.selected_update_response_count == 0
                                 && lifecycle.update_classification_failure_count == 0
@@ -6382,6 +6746,7 @@ impl AssessmentSuppliedSessionAuditDocument {
             _ => false,
         };
         if !cookie_contract_is_valid
+            || !v3_epoch_transition_is_valid
             || self.capability_id != SUPPLIED_SESSION_CAPABILITY_ID
             || !valid_supplied_session_reference(
                 &self.policy_reference,
@@ -6401,6 +6766,8 @@ impl AssessmentSuppliedSessionAuditDocument {
             )
             || self.resources.is_empty()
             || self.resources.len() > MAX_SUPPLIED_SESSION_RESOURCES
+            || (self.schema == SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA
+                && self.resources.len() > MAX_SUPPLIED_SESSION_RESOURCES.saturating_sub(1))
             || self.checkpoints.len() > MAX_SUPPLIED_SESSION_CHECKPOINTS
             || usize::from(self.selected_resource_count) != self.resources.len()
             || usize::from(self.dispatched_resource_count) != dispatched_resources
@@ -6411,7 +6778,11 @@ impl AssessmentSuppliedSessionAuditDocument {
             || self.response_byte_limit > MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES
             || self.response_byte_limit_exceeded != (self.response_bytes > self.response_byte_limit)
             || usize::from(self.dispatched_request_count)
-                != self.checkpoints.len().saturating_add(dispatched_resources)
+                != self
+                    .checkpoints
+                    .len()
+                    .saturating_add(dispatched_resources)
+                    .saturating_add(login_dispatched_requests)
             || response_bytes != Some(self.response_bytes)
             || unique_resource_references.len() != self.resources.len()
             || unique_checkpoint_evidence_references.len() != checkpoint_evidence_reference_count
@@ -6429,12 +6800,19 @@ impl AssessmentSuppliedSessionAuditDocument {
                     | "cancelled"
                     | "credential_update_required"
                     | "credential_update_unusable"
+                    | "login_form_unavailable"
+                    | "login_submit_unavailable"
+                    | "login_cookie_unavailable"
             )
             || !matches!(self.coverage, "complete" | "partial" | "none")
             || (self.coverage == "complete" && self.outcome != "complete")
             || (matches!(
                 self.outcome,
-                "credential_update_required" | "credential_update_unusable"
+                "credential_update_required"
+                    | "credential_update_unusable"
+                    | "login_form_unavailable"
+                    | "login_submit_unavailable"
+                    | "login_cookie_unavailable"
             ) && self.coverage == "complete")
             || self.exploit_execution != "not_performed"
             || self.impact_validation != "not_performed"
@@ -6545,6 +6923,9 @@ impl AssessmentSuppliedSessionAuditDocument {
             ("Exploit execution", self.exploit_execution.to_owned()),
             ("Impact validation", self.impact_validation.to_owned()),
         ];
+        if let Some(acquisition) = self.credential_acquisition {
+            metadata.push(("Credential acquisition", acquisition.to_owned()));
+        }
         if let Some(policy) = self.cookie_policy.as_ref() {
             metadata.extend([
                 ("Declared cookies", policy.declared_count.to_string()),
@@ -6596,6 +6977,52 @@ impl AssessmentSuppliedSessionAuditDocument {
                 ),
             ]);
         }
+        if let Some(login) = self.login.as_ref() {
+            metadata.extend([
+                ("Login reference", login.login_reference.clone()),
+                ("Login attempt limit", login.max_attempts.to_string()),
+                ("Login attempt count", login.attempt_count.to_string()),
+                ("Login page dispatched", login.page_dispatched.to_string()),
+                (
+                    "Login page status",
+                    login
+                        .page_status
+                        .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                ),
+                ("Login page body state", login.page_body_state.to_owned()),
+                ("Login form outcome", login.form_outcome.to_owned()),
+                (
+                    "Login form error code",
+                    login.form_error_code.unwrap_or("none").to_owned(),
+                ),
+                (
+                    "Login submit dispatched",
+                    login.submit_dispatched.to_string(),
+                ),
+                (
+                    "Login submit status",
+                    login
+                        .submit_status
+                        .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                ),
+                (
+                    "Login submit body state",
+                    login.submit_body_state.to_owned(),
+                ),
+                ("Login submit outcome", login.submit_outcome.to_owned()),
+                (
+                    "Acquired cookie count",
+                    login.acquired_cookie_count.to_string(),
+                ),
+                ("Login response bytes", login.response_bytes.to_string()),
+                ("Login initial epoch", login.initial_epoch.to_string()),
+                ("Login final epoch", login.final_epoch.to_string()),
+                (
+                    "Pre-session cookie applied",
+                    login.pre_session_cookie_applied.to_string(),
+                ),
+            ]);
+        }
         metadata
     }
 
@@ -6642,6 +7069,13 @@ const fn supplied_session_credential_mechanism_token(
 }
 
 #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_credential_acquisition_token(
+    value: SuppliedSessionCredentialAcquisition,
+) -> &'static str {
+    value.as_str()
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
 const fn supplied_session_health_oracle_kind_token(
     value: SuppliedSessionHealthOracleKind,
 ) -> &'static str {
@@ -6661,6 +7095,43 @@ const fn supplied_session_audit_outcome_token(value: SuppliedSessionAuditOutcome
         SuppliedSessionAuditOutcome::Cancelled => "cancelled",
         SuppliedSessionAuditOutcome::CredentialUpdateRequired => "credential_update_required",
         SuppliedSessionAuditOutcome::CredentialUpdateUnusable => "credential_update_unusable",
+        SuppliedSessionAuditOutcome::LoginFormUnavailable => "login_form_unavailable",
+        SuppliedSessionAuditOutcome::LoginSubmitUnavailable => "login_submit_unavailable",
+        SuppliedSessionAuditOutcome::LoginCookieUnavailable => "login_cookie_unavailable",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_login_form_outcome_token(
+    value: SuppliedSessionLoginFormOutcome,
+) -> &'static str {
+    match value {
+        SuppliedSessionLoginFormOutcome::Matched => "matched",
+        SuppliedSessionLoginFormOutcome::IneligibleResponse => "ineligible_response",
+        SuppliedSessionLoginFormOutcome::Missing => "missing",
+        SuppliedSessionLoginFormOutcome::Ambiguous => "ambiguous",
+        SuppliedSessionLoginFormOutcome::Invalid => "invalid",
+        SuppliedSessionLoginFormOutcome::TransportFailed => "transport_failed",
+        SuppliedSessionLoginFormOutcome::RuntimeLimit => "runtime_limit",
+        SuppliedSessionLoginFormOutcome::Cancelled => "cancelled",
+        SuppliedSessionLoginFormOutcome::NotEvaluated => "not_evaluated",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+const fn supplied_session_login_submit_outcome_token(
+    value: SuppliedSessionLoginSubmitOutcome,
+) -> &'static str {
+    match value {
+        SuppliedSessionLoginSubmitOutcome::CookieAcquired => "cookie_acquired",
+        SuppliedSessionLoginSubmitOutcome::CookieUnavailable => "cookie_unavailable",
+        SuppliedSessionLoginSubmitOutcome::HttpError => "http_error",
+        SuppliedSessionLoginSubmitOutcome::RedirectRefused => "redirect_refused",
+        SuppliedSessionLoginSubmitOutcome::Incomplete => "incomplete",
+        SuppliedSessionLoginSubmitOutcome::TransportFailed => "transport_failed",
+        SuppliedSessionLoginSubmitOutcome::RuntimeLimit => "runtime_limit",
+        SuppliedSessionLoginSubmitOutcome::Cancelled => "cancelled",
+        SuppliedSessionLoginSubmitOutcome::NotDispatched => "not_dispatched",
     }
 }
 
@@ -13906,8 +14377,10 @@ mod tests {
             principal_alias: "fixture-user".to_owned(),
             principal_assurance: "operator_declared",
             credential_mechanism: "authorization_header",
+            credential_acquisition: None,
             cookie_policy: None,
             cookie_lifecycle: None,
+            login: None,
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: "json_boolean_true",
                 field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),
@@ -13999,6 +14472,120 @@ mod tests {
             update_classification_failure_count: 0,
             updates_applied: 0,
         });
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    fn complete_form_login_supplied_session_audit_document(
+    ) -> AssessmentSuppliedSessionAuditDocument {
+        let mut document = complete_cookie_supplied_session_audit_document();
+        document.schema = SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA;
+        document.credential_acquisition = Some("bounded_form_login");
+        document.cookie_policy = Some(AssessmentSuppliedSessionCookiePolicyDocument {
+            declared_count: 1,
+            host_only_count: 1,
+            domain_count: 0,
+            secure_count: 0,
+            http_only_count: 1,
+            session_count: 1,
+            persistent_count: 0,
+            same_site_missing_count: 0,
+            same_site_strict_count: 0,
+            same_site_lax_count: 1,
+            same_site_none_count: 0,
+            update_policy: "stop_on_selected_cookie",
+            browser_semantics: "attributes_preserved_not_browser_csrf_emulation",
+        });
+        document.cookie_lifecycle = Some(AssessmentSuppliedSessionCookieLifecycleDocument {
+            initial_epoch: 0,
+            final_epoch: 1,
+            selected_update_response_count: 0,
+            unselected_update_response_count: 0,
+            update_classification_failure_count: 0,
+            updates_applied: 0,
+        });
+        document.login = Some(AssessmentSuppliedSessionLoginDocument {
+            login_reference: format!("supplied-session-login-sha256:{}", "9".repeat(64)),
+            max_attempts: 1,
+            attempt_count: 1,
+            page_dispatched: true,
+            page_status: Some(200),
+            page_body_state: "complete",
+            form_outcome: "matched",
+            form_error_code: None,
+            submit_dispatched: true,
+            submit_status: Some(200),
+            submit_body_state: "complete",
+            submit_outcome: "cookie_acquired",
+            acquired_cookie_count: 1,
+            response_bytes: 54,
+            initial_epoch: 0,
+            final_epoch: 1,
+            pre_session_cookie_applied: false,
+        });
+        document.dispatched_request_count = 5;
+        document.response_bytes = 113;
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    fn unavailable_form_login_supplied_session_audit_document(
+    ) -> AssessmentSuppliedSessionAuditDocument {
+        let mut document = complete_form_login_supplied_session_audit_document();
+        document.outcome = "login_form_unavailable";
+        document.coverage = "none";
+        document.checkpoints.clear();
+        document.resources[0].evidence_reference = None;
+        document.resources[0].outcome = "not_dispatched";
+        document.resources[0].status = None;
+        document.resources[0].response_bytes = 0;
+        document.dispatched_resource_count = 0;
+        document.committed_resource_count = 0;
+        document.dispatched_request_count = 1;
+        document.response_bytes = 41;
+        document.cookie_lifecycle.as_mut().unwrap().final_epoch = 0;
+        document.login = Some(AssessmentSuppliedSessionLoginDocument {
+            login_reference: format!("supplied-session-login-sha256:{}", "9".repeat(64)),
+            max_attempts: 1,
+            attempt_count: 0,
+            page_dispatched: true,
+            page_status: Some(200),
+            page_body_state: "complete",
+            form_outcome: "missing",
+            form_error_code: Some("missing_csrf"),
+            submit_dispatched: false,
+            submit_status: None,
+            submit_body_state: "unavailable",
+            submit_outcome: "not_dispatched",
+            acquired_cookie_count: 0,
+            response_bytes: 41,
+            initial_epoch: 0,
+            final_epoch: 0,
+            pre_session_cookie_applied: false,
+        });
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    fn unavailable_form_login_cookie_supplied_session_audit_document(
+    ) -> AssessmentSuppliedSessionAuditDocument {
+        let mut document = complete_form_login_supplied_session_audit_document();
+        document.outcome = "login_cookie_unavailable";
+        document.coverage = "none";
+        document.checkpoints.clear();
+        document.resources[0].evidence_reference = None;
+        document.resources[0].outcome = "not_dispatched";
+        document.resources[0].status = None;
+        document.resources[0].response_bytes = 0;
+        document.dispatched_resource_count = 0;
+        document.committed_resource_count = 0;
+        document.dispatched_request_count = 2;
+        document.response_bytes = 54;
+        document.cookie_lifecycle.as_mut().unwrap().final_epoch = 0;
+        let login = document.login.as_mut().unwrap();
+        login.submit_outcome = "cookie_unavailable";
+        login.acquired_cookie_count = 0;
+        login.final_epoch = 0;
         document
     }
 
@@ -15395,6 +15982,155 @@ mod tests {
 
     #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
     #[test]
+    fn form_login_supplied_session_audit_is_value_free_and_keeps_the_epoch_transition() {
+        let mut document = observation_assessment_document("test.observation@1");
+        document.supplied_session = Some(complete_form_login_supplied_session_audit_document());
+        document.validate().unwrap();
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &parsed["supplied_session"];
+        assert_eq!(audit["schema"], SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA);
+        assert_eq!(audit["credential_mechanism"], "cookie_jar");
+        assert_eq!(audit["credential_acquisition"], "bounded_form_login");
+        assert_eq!(audit["login"]["max_attempts"], 1);
+        assert_eq!(audit["login"]["attempt_count"], 1);
+        assert_eq!(audit["login"]["form_outcome"], "matched");
+        assert_eq!(audit["login"]["submit_outcome"], "cookie_acquired");
+        assert_eq!(audit["login"]["initial_epoch"], 0);
+        assert_eq!(audit["login"]["final_epoch"], 1);
+        assert_eq!(audit["cookie_lifecycle"]["initial_epoch"], 0);
+        assert_eq!(audit["cookie_lifecycle"]["final_epoch"], 1);
+        assert_eq!(audit["dispatched_request_count"], 5);
+        assert_eq!(audit["response_bytes"], 113);
+        for forbidden in [
+            "S07-username-secret",
+            "S07-password-secret",
+            "S07-csrf-secret",
+            "session-cookie-secret",
+            "username_field",
+            "password_field",
+            "csrf_field",
+        ] {
+            assert!(!json.contains(forbidden));
+        }
+
+        for format in [
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("bounded_form_login"));
+            assert!(rendered.contains("cookie_acquired"));
+            assert!(rendered.contains("supplied-session-login-sha256:"));
+            assert!(!rendered.contains("S07-password-secret"));
+        }
+
+        let mut invalid = complete_form_login_supplied_session_audit_document();
+        invalid.login.as_mut().unwrap().initial_epoch = 1;
+        assert_eq!(invalid.validate(&[]), Err(ReportError::Serialization));
+        let mut invalid = complete_form_login_supplied_session_audit_document();
+        invalid.login.as_mut().unwrap().acquired_cookie_count = 0;
+        assert_eq!(invalid.validate(&[]), Err(ReportError::Serialization));
+        let mut invalid = complete_form_login_supplied_session_audit_document();
+        invalid.login.as_mut().unwrap().form_error_code = Some("S07-password-secret");
+        assert_eq!(invalid.validate(&[]), Err(ReportError::Serialization));
+        let mut invalid = complete_form_login_supplied_session_audit_document();
+        invalid.login = None;
+        assert_eq!(invalid.validate(&[]), Err(ReportError::Serialization));
+        let mut invalid = complete_form_login_supplied_session_audit_document();
+        invalid
+            .cookie_lifecycle
+            .as_mut()
+            .unwrap()
+            .unselected_update_response_count = 4;
+        assert_eq!(invalid.validate(&[]), Err(ReportError::Serialization));
+
+        let failed_login = unavailable_form_login_supplied_session_audit_document();
+        failed_login.validate(&[]).unwrap();
+        let failure_json = failed_login.wire_json().unwrap();
+        let failure: serde_json::Value = serde_json::from_str(&failure_json).unwrap();
+        assert_eq!(failure["outcome"], "login_form_unavailable");
+        assert_eq!(failure["coverage"], "none");
+        assert_eq!(failure["login"]["form_outcome"], "missing");
+        assert_eq!(failure["login"]["form_error_code"], "missing_csrf");
+        assert_eq!(failure["login"]["submit_outcome"], "not_dispatched");
+        assert_eq!(failure["login"]["final_epoch"], 0);
+        assert_eq!(failure["cookie_lifecycle"]["final_epoch"], 0);
+        assert_eq!(failure["dispatched_request_count"], 1);
+        assert_eq!(failure["response_bytes"], 41);
+        for forbidden in [
+            "S07-username-secret",
+            "S07-password-secret",
+            "S07-csrf-secret",
+            "session-cookie-secret",
+        ] {
+            assert!(!failure_json.contains(forbidden));
+        }
+
+        for forged_outcome in ["runtime_limit", "cancelled"] {
+            let mut invalid = unavailable_form_login_supplied_session_audit_document();
+            invalid.outcome = forged_outcome;
+            assert_eq!(
+                invalid.validate(&[]),
+                Err(ReportError::Serialization),
+                "missing form state was accepted as {forged_outcome}"
+            );
+        }
+
+        let mut unavailable_body = unavailable_form_login_supplied_session_audit_document();
+        let login = unavailable_body.login.as_mut().unwrap();
+        login.form_outcome = "ineligible_response";
+        login.form_error_code = Some("inexact_final_target");
+        login.page_body_state = "unavailable";
+        assert_eq!(
+            unavailable_body.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+
+        let unavailable_cookie = unavailable_form_login_cookie_supplied_session_audit_document();
+        unavailable_cookie.validate(&[]).unwrap();
+        let unavailable_cookie_json = unavailable_cookie.wire_json().unwrap();
+        let unavailable_cookie_value: serde_json::Value =
+            serde_json::from_str(&unavailable_cookie_json).unwrap();
+        assert_eq!(
+            unavailable_cookie_value["outcome"],
+            "login_cookie_unavailable"
+        );
+        assert_eq!(
+            unavailable_cookie_value["login"]["submit_outcome"],
+            "cookie_unavailable"
+        );
+        assert_eq!(
+            unavailable_cookie_value["checkpoints"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            unavailable_cookie_value["resources"][0]["outcome"],
+            "not_dispatched"
+        );
+
+        let mut unavailable_redirect =
+            unavailable_form_login_cookie_supplied_session_audit_document();
+        unavailable_redirect.outcome = "login_submit_unavailable";
+        let login = unavailable_redirect.login.as_mut().unwrap();
+        login.submit_outcome = "redirect_refused";
+        login.submit_status = Some(302);
+        login.submit_body_state = "unavailable";
+        assert_eq!(
+            unavailable_redirect.validate(&[]),
+            Err(ReportError::Serialization)
+        );
+
+        let mut forged_epoch = complete_form_login_supplied_session_audit_document();
+        forged_epoch.login.as_mut().unwrap().final_epoch = 0;
+        forged_epoch.cookie_lifecycle.as_mut().unwrap().final_epoch = 0;
+        assert_eq!(forged_epoch.validate(&[]), Err(ReportError::Serialization));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
     fn supplied_session_writer_keeps_v1_and_v2_cookie_contracts_disjoint() {
         let mut v1_with_cookie_fields = complete_supplied_session_audit_document();
         let v2 = complete_cookie_supplied_session_audit_document();
@@ -15441,6 +16177,36 @@ mod tests {
             false_update_outcome.validate(&[]),
             Err(ReportError::Serialization)
         );
+
+        for login_outcome in [
+            "login_form_unavailable",
+            "login_submit_unavailable",
+            "login_cookie_unavailable",
+        ] {
+            let mut v1 = complete_supplied_session_audit_document();
+            let mut v2 = complete_cookie_supplied_session_audit_document();
+            for document in [&mut v1, &mut v2] {
+                document.outcome = login_outcome;
+                document.coverage = "none";
+                document.checkpoints.clear();
+                document.resources[0].evidence_reference = None;
+                document.resources[0].outcome = "not_dispatched";
+                document.resources[0].status = None;
+                document.resources[0].response_bytes = 0;
+                document.dispatched_resource_count = 0;
+                document.committed_resource_count = 0;
+                document.dispatched_request_count = 0;
+                document.response_bytes = 0;
+                if let Some(lifecycle) = document.cookie_lifecycle.as_mut() {
+                    lifecycle.unselected_update_response_count = 0;
+                }
+                assert_eq!(
+                    document.validate(&[]),
+                    Err(ReportError::Serialization),
+                    "legacy schema accepted V3-only outcome {login_outcome}"
+                );
+            }
+        }
     }
 
     #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]

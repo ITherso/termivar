@@ -15,14 +15,17 @@ use termivar_core::{
 use super::{authority::SharedWebRuntimeAuthority, RuntimeExecution};
 use crate::{
     http_evidence::{
-        CollectedHttpResponse, HttpRequestBroker, SuppliedSessionCookieUpdateClassification,
-        SuppliedSessionCookieUpdateObservation, SuppliedSessionRequestError,
+        extract_supplied_session_login_csrf, CollectedHttpResponse, HttpRequestBroker,
+        SuppliedSessionCookieUpdateClassification, SuppliedSessionCookieUpdateObservation,
+        SuppliedSessionLoginCsrfToken, SuppliedSessionLoginFormError, SuppliedSessionRequestError,
     },
     supplied_session_review::{
         SuppliedSessionCookieSummary, SuppliedSessionCookieUpdatePolicy, SuppliedSessionCredential,
-        SuppliedSessionCredentialMechanism, SuppliedSessionPolicy, SuppliedSessionPolicyVersion,
+        SuppliedSessionCredentialAcquisition, SuppliedSessionCredentialMechanism,
+        SuppliedSessionFormBody, SuppliedSessionPolicy, SuppliedSessionPolicyVersion,
         SuppliedSessionRequestDescriptor, SuppliedSessionRequestPurpose,
-        MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_RESOURCES,
+        SuppliedSessionRuntimeInput, MAX_SUPPLIED_SESSION_CHECKPOINTS,
+        MAX_SUPPLIED_SESSION_RESOURCES,
     },
     DecisionActionOrigin, DecisionExecutionLimits, DecisionExecutionStage, KnowledgeBase,
 };
@@ -127,6 +130,8 @@ impl CommittedSuppliedSessionResourceReceipt {
 pub const SUPPLIED_SESSION_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v1";
 /// Strict saved-audit schema for supplied-cookie sessions.
 pub const SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v2";
+/// Strict saved-audit schema for one bounded form-login transition.
+pub const SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v3";
 /// Stable capability identity. This audit-only V1 emits no assessment item.
 pub const SUPPLIED_SESSION_CAPABILITY_ID: &str = "session.supplied-context-assessment@1";
 
@@ -147,6 +152,8 @@ const RESOURCE_COMMIT_EVIDENCE_METHOD_V1: &str = "descriptor-bound-complete-auth
 const HEALTH_COMMIT_EVIDENCE_METHOD_V1: &str = "descriptor-bound-health-authorization-get";
 const RESOURCE_COMMIT_EVIDENCE_METHOD_V2: &str = "descriptor-bound-complete-supplied-cookie-get";
 const HEALTH_COMMIT_EVIDENCE_METHOD_V2: &str = "descriptor-bound-health-supplied-cookie-get";
+const RESOURCE_COMMIT_EVIDENCE_METHOD_V3: &str = "descriptor-bound-complete-form-login-cookie-get";
+const HEALTH_COMMIT_EVIDENCE_METHOD_V3: &str = "descriptor-bound-health-form-login-cookie-get";
 const SUPPLIED_SESSION_NON_BROWSER_COOKIE_SEMANTICS: &str =
     "attributes_preserved_not_browser_csrf_emulation";
 
@@ -200,6 +207,122 @@ pub enum SuppliedSessionAuditOutcome {
     CredentialUpdateRequired,
     /// A response cookie update could not be classified within V2's bounds.
     CredentialUpdateUnusable,
+    /// The explicit login page did not yield one admissible form/token.
+    LoginFormUnavailable,
+    /// The single stateful login submission could not complete.
+    LoginSubmitUnavailable,
+    /// The login response did not yield the exact declared cookie set.
+    LoginCookieUnavailable,
+}
+
+/// Value-free result of selecting the one policy-bound login form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SuppliedSessionLoginFormOutcome {
+    Matched,
+    IneligibleResponse,
+    Missing,
+    Ambiguous,
+    Invalid,
+    TransportFailed,
+    RuntimeLimit,
+    Cancelled,
+    NotEvaluated,
+}
+
+/// Value-free result of the single login POST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SuppliedSessionLoginSubmitOutcome {
+    CookieAcquired,
+    CookieUnavailable,
+    HttpError,
+    RedirectRefused,
+    Incomplete,
+    TransportFailed,
+    RuntimeLimit,
+    Cancelled,
+    NotDispatched,
+}
+
+/// Redaction-safe V3 acquisition record. Epoch one is established only after
+/// the existing startup health checkpoint matches and commits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SuppliedSessionLoginAudit {
+    login_reference: String,
+    max_attempts: u8,
+    attempt_count: u8,
+    page_dispatched: bool,
+    page_status: Option<u16>,
+    page_body_state: SuppliedSessionBodyState,
+    form_outcome: SuppliedSessionLoginFormOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    form_error_code: Option<&'static str>,
+    submit_dispatched: bool,
+    submit_status: Option<u16>,
+    submit_body_state: SuppliedSessionBodyState,
+    submit_outcome: SuppliedSessionLoginSubmitOutcome,
+    acquired_cookie_count: u8,
+    response_bytes: u64,
+    initial_epoch: u8,
+    final_epoch: u8,
+    pre_session_cookie_applied: bool,
+}
+
+impl SuppliedSessionLoginAudit {
+    pub fn login_reference(&self) -> &str {
+        &self.login_reference
+    }
+    pub const fn max_attempts(&self) -> u8 {
+        self.max_attempts
+    }
+    pub const fn attempt_count(&self) -> u8 {
+        self.attempt_count
+    }
+    pub const fn page_dispatched(&self) -> bool {
+        self.page_dispatched
+    }
+    pub const fn page_status(&self) -> Option<u16> {
+        self.page_status
+    }
+    pub const fn page_body_state(&self) -> SuppliedSessionBodyState {
+        self.page_body_state
+    }
+    pub const fn form_outcome(&self) -> SuppliedSessionLoginFormOutcome {
+        self.form_outcome
+    }
+    pub const fn form_error_code(&self) -> Option<&'static str> {
+        self.form_error_code
+    }
+    pub const fn submit_dispatched(&self) -> bool {
+        self.submit_dispatched
+    }
+    pub const fn submit_status(&self) -> Option<u16> {
+        self.submit_status
+    }
+    pub const fn submit_body_state(&self) -> SuppliedSessionBodyState {
+        self.submit_body_state
+    }
+    pub const fn submit_outcome(&self) -> SuppliedSessionLoginSubmitOutcome {
+        self.submit_outcome
+    }
+    pub const fn acquired_cookie_count(&self) -> u8 {
+        self.acquired_cookie_count
+    }
+    pub const fn response_bytes(&self) -> u64 {
+        self.response_bytes
+    }
+    pub const fn initial_epoch(&self) -> u8 {
+        self.initial_epoch
+    }
+    pub const fn final_epoch(&self) -> u8 {
+        self.final_epoch
+    }
+    pub const fn pre_session_cookie_applied(&self) -> bool {
+        self.pre_session_cookie_applied
+    }
 }
 
 /// Authenticated resource coverage established by committed resource responses and checkpoints.
@@ -469,6 +592,8 @@ pub struct WebAssessmentSuppliedSessionAudit {
     principal_alias: String,
     principal_assurance: SuppliedSessionPrincipalAssurance,
     credential_mechanism: SuppliedSessionCredentialMechanism,
+    #[serde(skip_serializing_if = "legacy_credential_acquisition")]
+    credential_acquisition: SuppliedSessionCredentialAcquisition,
     health_oracle: SuppliedSessionHealthOracleAudit,
     outcome: SuppliedSessionAuditOutcome,
     coverage: SuppliedSessionCoverage,
@@ -490,6 +615,16 @@ pub struct WebAssessmentSuppliedSessionAudit {
     cookie_policy: Option<SuppliedSessionCookiePolicyAudit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cookie_lifecycle: Option<SuppliedSessionCookieLifecycleAudit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login: Option<SuppliedSessionLoginAudit>,
+}
+
+const fn legacy_credential_acquisition(value: &SuppliedSessionCredentialAcquisition) -> bool {
+    matches!(
+        value,
+        SuppliedSessionCredentialAcquisition::SuppliedAuthorization
+            | SuppliedSessionCredentialAcquisition::SuppliedCookieJar
+    )
 }
 
 impl WebAssessmentSuppliedSessionAudit {
@@ -517,6 +652,9 @@ impl WebAssessmentSuppliedSessionAudit {
     }
     pub const fn credential_mechanism(&self) -> SuppliedSessionCredentialMechanism {
         self.credential_mechanism
+    }
+    pub const fn credential_acquisition(&self) -> SuppliedSessionCredentialAcquisition {
+        self.credential_acquisition
     }
     pub const fn health_oracle(&self) -> &SuppliedSessionHealthOracleAudit {
         &self.health_oracle
@@ -577,12 +715,17 @@ impl WebAssessmentSuppliedSessionAudit {
     pub const fn cookie_lifecycle(&self) -> Option<&SuppliedSessionCookieLifecycleAudit> {
         self.cookie_lifecycle.as_ref()
     }
+    pub const fn login(&self) -> Option<&SuppliedSessionLoginAudit> {
+        self.login.as_ref()
+    }
 }
 
 pub(super) struct SuppliedSessionRuntimeConfig {
     policy: SuppliedSessionPolicy,
-    credential: SuppliedSessionCredential,
+    input: SuppliedSessionRuntimeInput,
     requests: HttpRequestBroker,
+    login_page: Option<SuppliedSessionRequestDescriptor>,
+    login_submit: Option<SuppliedSessionRequestDescriptor>,
     health: SuppliedSessionRequestDescriptor,
     resources: Vec<(SuppliedSessionRequestDescriptor, String)>,
 }
@@ -594,10 +737,10 @@ impl SuppliedSessionRuntimeConfig {
         authority: &SharedWebRuntimeAuthority,
     ) -> Result<Self, ()>
     where
-        C: Into<SuppliedSessionCredential>,
+        C: Into<SuppliedSessionRuntimeInput>,
     {
-        let credential = credential.into();
-        if policy.credential_mechanism() != credential.mechanism() {
+        let input = credential.into();
+        if !input.matches_policy(&policy) {
             return Err(());
         }
         let requests = authority
@@ -605,6 +748,14 @@ impl SuppliedSessionRuntimeConfig {
             .isolated_supplied_session()
             .map_err(|_| ())?;
         let health = SuppliedSessionRequestDescriptor::health(&policy);
+        let (login_page, login_submit) = if policy.version() == SuppliedSessionPolicyVersion::V3 {
+            (
+                Some(SuppliedSessionRequestDescriptor::login_page(&policy).ok_or(())?),
+                Some(SuppliedSessionRequestDescriptor::login_submit(&policy).ok_or(())?),
+            )
+        } else {
+            (None, None)
+        };
         let resources = policy
             .execution_resources()
             .map(|(target, reference)| {
@@ -615,8 +766,10 @@ impl SuppliedSessionRuntimeConfig {
             .ok_or(())?;
         Ok(Self {
             policy,
-            credential,
+            input,
             requests,
+            login_page,
+            login_submit,
             health,
             resources,
         })
@@ -627,33 +780,95 @@ impl SuppliedSessionRuntimeConfig {
         authority: &SharedWebRuntimeAuthority,
         resource_observer: Option<&dyn SuppliedSessionCommittedResourceObserver>,
     ) -> WebAssessmentSuppliedSessionAudit {
-        let selected_resource_count = u8::try_from(self.resources.len()).unwrap_or(u8::MAX);
+        let Self {
+            policy,
+            input,
+            requests,
+            login_page,
+            login_submit,
+            health,
+            resources,
+        } = self;
+        let selected_resource_count = u8::try_from(resources.len()).unwrap_or(u8::MAX);
         let timing = authority.start();
         let local_deadline = tokio::time::Instant::now()
-            .checked_add(Duration::from_millis(self.policy.max_wall_time_ms()));
+            .checked_add(Duration::from_millis(policy.max_wall_time_ms()));
         let deadline = earliest_deadline(timing.deadline(), local_deadline);
-        let mut state = ExecutionState::new(&self.policy, selected_resource_count);
-        if resource_observer
-            .is_some_and(|observer| observer.begin(&self.policy, &self.resources).is_err())
-        {
+        let mut state = ExecutionState::new(&policy, selected_resource_count);
+        if resource_observer.is_some_and(|observer| observer.begin(&policy, &resources).is_err()) {
             resource_observer.expect("observer remains present").fail();
         }
+
+        let credential = match input {
+            SuppliedSessionRuntimeInput::Ready(credential) => credential,
+            SuppliedSessionRuntimeInput::FormLogin(form_credential) => {
+                let (Some(login_page), Some(login_submit)) =
+                    (login_page.as_ref(), login_submit.as_ref())
+                else {
+                    state.outcome = SuppliedSessionAuditOutcome::LoginFormUnavailable;
+                    state.add_not_dispatched(&resources);
+                    return state.finish(policy);
+                };
+                state.begin_login(&policy, login_page);
+                let acquisition_context = LoginDispatchContext {
+                    authority,
+                    requests: &requests,
+                    policy: &policy,
+                    deadline,
+                };
+                let login_page_result =
+                    dispatch_login_page(&acquisition_context, login_page, state.dispatch_budget())
+                        .await;
+                let csrf = match state.record_login_page(login_page_result, &policy) {
+                    Ok(csrf) => csrf,
+                    Err(outcome) => {
+                        state.outcome = outcome;
+                        state.add_not_dispatched(&resources);
+                        return state.finish(policy);
+                    },
+                };
+                let body = match form_credential.compose_form_body(&policy, csrf.as_str()) {
+                    Ok(body) => body,
+                    Err(_) => {
+                        state.mark_login_form_body_invalid();
+                        state.outcome = SuppliedSessionAuditOutcome::LoginFormUnavailable;
+                        state.add_not_dispatched(&resources);
+                        return state.finish(policy);
+                    },
+                };
+                let login_submit_result = dispatch_login_submit(
+                    &acquisition_context,
+                    login_submit,
+                    &body,
+                    state.dispatch_budget(),
+                )
+                .await;
+                match state.record_login_submit(login_submit_result, &policy) {
+                    Ok(credential) => credential,
+                    Err(outcome) => {
+                        state.outcome = outcome;
+                        state.add_not_dispatched(&resources);
+                        return state.finish(policy);
+                    },
+                }
+            },
+        };
         let dispatch_context = DispatchContext {
             authority,
-            requests: &self.requests,
-            credential: &self.credential,
-            policy: &self.policy,
+            requests: &requests,
+            credential: &credential,
+            policy: &policy,
             deadline,
         };
         let resource_commit_context = ResourceCommitContext {
-            policy: &self.policy,
+            policy: &policy,
             knowledge: authority.knowledge(),
             observer: resource_observer,
         };
 
         let startup = dispatch(
             &dispatch_context,
-            &self.health,
+            &health,
             state.dispatch_budget(),
             DecisionActionOrigin::Bootstrap,
             SuppliedSessionRequestPurpose::Health,
@@ -661,21 +876,21 @@ impl SuppliedSessionRuntimeConfig {
         .await;
         match state.record_health(
             startup,
-            &self.health,
+            &health,
             SuppliedSessionHealthCheckpointPhase::Startup,
             0,
-            &self.policy,
+            &policy,
             authority.knowledge(),
         ) {
-            Continue::Yes => {},
+            Continue::Yes => state.mark_login_authenticated(),
             Continue::No(outcome) => {
                 state.outcome = outcome;
-                state.add_not_dispatched(&self.resources);
-                return state.finish(self.policy);
+                state.add_not_dispatched(&resources);
+                return state.finish(policy);
             },
         }
 
-        for (index, (descriptor, reference)) in self.resources.iter().enumerate() {
+        for (index, (descriptor, reference)) in resources.iter().enumerate() {
             let sequence = u8::try_from(index).unwrap_or(u8::MAX);
             let resource = dispatch(
                 &dispatch_context,
@@ -695,19 +910,19 @@ impl SuppliedSessionRuntimeConfig {
                 ResourceContinuation::AwaitingHealth(staged) => staged,
                 ResourceContinuation::No(outcome) => {
                     state.outcome = outcome;
-                    state.add_not_dispatched(&self.resources[index + 1..]);
-                    return state.finish(self.policy);
+                    state.add_not_dispatched(&resources[index + 1..]);
+                    return state.finish(policy);
                 },
             };
 
-            let phase = if index + 1 == self.resources.len() {
+            let phase = if index + 1 == resources.len() {
                 SuppliedSessionHealthCheckpointPhase::Terminal
             } else {
                 SuppliedSessionHealthCheckpointPhase::SubjectBoundary
             };
-            let health = dispatch(
+            let health_result = dispatch(
                 &dispatch_context,
-                &self.health,
+                &health,
                 state.dispatch_budget_with_pending_resource(staged),
                 DecisionActionOrigin::Planned,
                 SuppliedSessionRequestPurpose::Health,
@@ -715,11 +930,11 @@ impl SuppliedSessionRuntimeConfig {
             .await;
             let after_subject_count = u8::try_from(index + 1).unwrap_or(u8::MAX);
             match state.record_health(
-                health,
-                &self.health,
+                health_result,
+                &health,
                 phase,
                 after_subject_count,
-                &self.policy,
+                &policy,
                 authority.knowledge(),
             ) {
                 Continue::Yes => {
@@ -731,8 +946,8 @@ impl SuppliedSessionRuntimeConfig {
                         resource_commit_context,
                     ) {
                         state.outcome = outcome;
-                        state.add_not_dispatched(&self.resources[index + 1..]);
-                        return state.finish(self.policy);
+                        state.add_not_dispatched(&resources[index + 1..]);
+                        return state.finish(policy);
                     }
                 },
                 Continue::No(outcome) => {
@@ -741,26 +956,27 @@ impl SuppliedSessionRuntimeConfig {
                         descriptor,
                         reference,
                         staged,
-                        &self.policy,
+                        &policy,
                         authority.knowledge(),
                     );
                     if let Some(observer) = resource_observer {
                         observer.discard_response(sequence);
                     }
                     state.outcome = outcome;
-                    state.add_not_dispatched(&self.resources[index + 1..]);
-                    return state.finish(self.policy);
+                    state.add_not_dispatched(&resources[index + 1..]);
+                    return state.finish(policy);
                 },
             }
         }
         state.outcome = SuppliedSessionAuditOutcome::Complete;
-        state.finish(self.policy)
+        state.finish(policy)
     }
 }
 
 struct ExecutionState {
     checkpoints: Vec<WebAssessmentSuppliedSessionCheckpointAudit>,
     resources: Vec<WebAssessmentSuppliedSessionResourceAudit>,
+    login: Option<SuppliedSessionLoginAudit>,
     outcome: SuppliedSessionAuditOutcome,
     selected_resource_count: u8,
     response_bytes: u64,
@@ -779,9 +995,212 @@ impl ExecutionState {
         Self {
             checkpoints: Vec::with_capacity(MAX_SUPPLIED_SESSION_CHECKPOINTS),
             resources: Vec::with_capacity(MAX_SUPPLIED_SESSION_RESOURCES),
+            login: None,
             outcome: SuppliedSessionAuditOutcome::RuntimeLimit,
             selected_resource_count,
             response_bytes: 0,
+        }
+    }
+
+    fn begin_login(
+        &mut self,
+        policy: &SuppliedSessionPolicy,
+        descriptor: &SuppliedSessionRequestDescriptor,
+    ) {
+        debug_assert_eq!(policy.version(), SuppliedSessionPolicyVersion::V3);
+        debug_assert_eq!(
+            descriptor.purpose(),
+            SuppliedSessionRequestPurpose::LoginPage
+        );
+        self.login = Some(SuppliedSessionLoginAudit {
+            login_reference: descriptor.target_reference().to_owned(),
+            max_attempts: policy.max_login_attempts().unwrap_or(0),
+            attempt_count: 0,
+            page_dispatched: false,
+            page_status: None,
+            page_body_state: SuppliedSessionBodyState::Unavailable,
+            form_outcome: SuppliedSessionLoginFormOutcome::NotEvaluated,
+            form_error_code: None,
+            submit_dispatched: false,
+            submit_status: None,
+            submit_body_state: SuppliedSessionBodyState::Unavailable,
+            submit_outcome: SuppliedSessionLoginSubmitOutcome::NotDispatched,
+            acquired_cookie_count: 0,
+            response_bytes: 0,
+            initial_epoch: 0,
+            final_epoch: 0,
+            pre_session_cookie_applied: false,
+        });
+    }
+
+    fn record_login_page(
+        &mut self,
+        dispatch: DispatchResult,
+        policy: &SuppliedSessionPolicy,
+    ) -> Result<SuppliedSessionLoginCsrfToken, SuppliedSessionAuditOutcome> {
+        let login = self
+            .login
+            .as_mut()
+            .expect("V3 login state is initialized before page dispatch");
+        match dispatch {
+            DispatchResult::Response {
+                response,
+                bytes,
+                exact_target,
+                cookie_update: _,
+            } => {
+                login.page_dispatched = true;
+                login.page_status = Some(response.status());
+                login.page_body_state = if response.body_complete() {
+                    SuppliedSessionBodyState::Complete
+                } else {
+                    SuppliedSessionBodyState::Incomplete
+                };
+                login.response_bytes = login.response_bytes.saturating_add(bytes);
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                if !exact_target || response.supplied_session_has_set_cookie_fields() {
+                    login.form_outcome = SuppliedSessionLoginFormOutcome::IneligibleResponse;
+                    login.form_error_code = Some(if exact_target {
+                        "pre_session_cookie_unsupported"
+                    } else {
+                        "inexact_final_target"
+                    });
+                    return Err(SuppliedSessionAuditOutcome::LoginFormUnavailable);
+                }
+                match extract_supplied_session_login_csrf(&response, policy) {
+                    Ok(token) => {
+                        login.form_outcome = SuppliedSessionLoginFormOutcome::Matched;
+                        Ok(token)
+                    },
+                    Err(error) => {
+                        login.form_outcome = login_form_outcome(error);
+                        login.form_error_code = Some(error.as_str());
+                        Err(SuppliedSessionAuditOutcome::LoginFormUnavailable)
+                    },
+                }
+            },
+            DispatchResult::Transport { bytes, dispatched } => {
+                login.page_dispatched = dispatched;
+                login.form_outcome = SuppliedSessionLoginFormOutcome::TransportFailed;
+                login.form_error_code = Some("transport_failed");
+                login.response_bytes = login.response_bytes.saturating_add(bytes);
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                Err(SuppliedSessionAuditOutcome::LoginFormUnavailable)
+            },
+            DispatchResult::RuntimeLimit { bytes, dispatched } => {
+                login.page_dispatched = dispatched;
+                login.form_outcome = SuppliedSessionLoginFormOutcome::RuntimeLimit;
+                login.form_error_code = Some("runtime_limit");
+                login.response_bytes = login.response_bytes.saturating_add(bytes);
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                Err(SuppliedSessionAuditOutcome::RuntimeLimit)
+            },
+            DispatchResult::Cancelled { bytes, dispatched } => {
+                login.page_dispatched = dispatched;
+                login.form_outcome = SuppliedSessionLoginFormOutcome::Cancelled;
+                login.form_error_code = Some("cancelled");
+                login.response_bytes = login.response_bytes.saturating_add(bytes);
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                Err(SuppliedSessionAuditOutcome::Cancelled)
+            },
+            DispatchResult::InvalidDescriptor => {
+                login.form_outcome = SuppliedSessionLoginFormOutcome::Invalid;
+                login.form_error_code = Some("invalid_descriptor");
+                Err(SuppliedSessionAuditOutcome::LoginFormUnavailable)
+            },
+        }
+    }
+
+    fn mark_login_form_body_invalid(&mut self) {
+        if let Some(login) = self.login.as_mut() {
+            login.form_outcome = SuppliedSessionLoginFormOutcome::Invalid;
+            login.form_error_code = Some("invalid_form_body");
+        }
+    }
+
+    fn record_login_submit(
+        &mut self,
+        dispatch: DispatchResult,
+        policy: &SuppliedSessionPolicy,
+    ) -> Result<SuppliedSessionCredential, SuppliedSessionAuditOutcome> {
+        let login = self
+            .login
+            .as_mut()
+            .expect("V3 login state is initialized before submit dispatch");
+        match dispatch {
+            DispatchResult::Response {
+                response,
+                bytes,
+                exact_target,
+                cookie_update: _,
+            } => {
+                login.submit_dispatched = true;
+                login.attempt_count = 1;
+                login.submit_status = Some(response.status());
+                login.submit_body_state = if response.body_complete() {
+                    SuppliedSessionBodyState::Complete
+                } else {
+                    SuppliedSessionBodyState::Incomplete
+                };
+                login.response_bytes = login.response_bytes.saturating_add(bytes);
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                if !exact_target || (300..400).contains(&response.status()) {
+                    login.submit_outcome = SuppliedSessionLoginSubmitOutcome::RedirectRefused;
+                    return Err(SuppliedSessionAuditOutcome::LoginSubmitUnavailable);
+                }
+                if !response.body_complete() {
+                    login.submit_outcome = SuppliedSessionLoginSubmitOutcome::Incomplete;
+                    return Err(SuppliedSessionAuditOutcome::LoginSubmitUnavailable);
+                }
+                if response.status() != 200 {
+                    login.submit_outcome = SuppliedSessionLoginSubmitOutcome::HttpError;
+                    return Err(SuppliedSessionAuditOutcome::LoginSubmitUnavailable);
+                }
+                login.submit_outcome = SuppliedSessionLoginSubmitOutcome::CookieUnavailable;
+                let now = unix_time_seconds()
+                    .ok_or(SuppliedSessionAuditOutcome::LoginCookieUnavailable)?;
+                let cookies = response
+                    .supplied_session_form_login_cookies(policy, now)
+                    .map_err(|_| SuppliedSessionAuditOutcome::LoginCookieUnavailable)?;
+                login.acquired_cookie_count =
+                    u8::try_from(cookies.cookie_count()).unwrap_or(u8::MAX);
+                login.submit_outcome = SuppliedSessionLoginSubmitOutcome::CookieAcquired;
+                Ok(SuppliedSessionCredential::SuppliedCookies(cookies))
+            },
+            DispatchResult::Transport { bytes, dispatched } => {
+                login.submit_dispatched = dispatched;
+                login.attempt_count = u8::from(dispatched);
+                login.submit_outcome = SuppliedSessionLoginSubmitOutcome::TransportFailed;
+                login.response_bytes = login.response_bytes.saturating_add(bytes);
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                Err(SuppliedSessionAuditOutcome::LoginSubmitUnavailable)
+            },
+            DispatchResult::RuntimeLimit { bytes, dispatched } => {
+                login.submit_dispatched = dispatched;
+                login.attempt_count = u8::from(dispatched);
+                login.submit_outcome = SuppliedSessionLoginSubmitOutcome::RuntimeLimit;
+                login.response_bytes = login.response_bytes.saturating_add(bytes);
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                Err(SuppliedSessionAuditOutcome::RuntimeLimit)
+            },
+            DispatchResult::Cancelled { bytes, dispatched } => {
+                login.submit_dispatched = dispatched;
+                login.attempt_count = u8::from(dispatched);
+                login.submit_outcome = SuppliedSessionLoginSubmitOutcome::Cancelled;
+                login.response_bytes = login.response_bytes.saturating_add(bytes);
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                Err(SuppliedSessionAuditOutcome::Cancelled)
+            },
+            DispatchResult::InvalidDescriptor => {
+                login.submit_outcome = SuppliedSessionLoginSubmitOutcome::NotDispatched;
+                Err(SuppliedSessionAuditOutcome::LoginSubmitUnavailable)
+            },
+        }
+    }
+
+    fn mark_login_authenticated(&mut self) {
+        if let Some(login) = self.login.as_mut() {
+            login.final_epoch = 1;
         }
     }
 
@@ -791,9 +1210,13 @@ impl ExecutionState {
             .iter()
             .filter(|resource| resource.outcome != SuppliedSessionResourceOutcome::NotDispatched)
             .count();
+        let login_requests = self.login.as_ref().map_or(0, |login| {
+            u8::from(login.page_dispatched).saturating_add(u8::from(login.submit_dispatched))
+        });
         u8::try_from(self.checkpoints.len())
             .unwrap_or(u8::MAX)
             .saturating_add(u8::try_from(dispatched_resources).unwrap_or(u8::MAX))
+            .saturating_add(login_requests)
     }
 
     fn dispatch_budget(&self) -> DispatchBudget {
@@ -1100,9 +1523,9 @@ impl ExecutionState {
         let cookie_policy = policy
             .cookie_summary()
             .map(|summary| cookie_policy_audit(summary, &policy));
-        let cookie_lifecycle = cookie_policy
-            .is_some()
-            .then(|| cookie_lifecycle_audit(&self.checkpoints, &self.resources));
+        let cookie_lifecycle = cookie_policy.is_some().then(|| {
+            cookie_lifecycle_audit(&self.checkpoints, &self.resources, self.login.as_ref())
+        });
         let dispatched_resource_count = u8::try_from(
             self.resources
                 .iter()
@@ -1128,9 +1551,7 @@ impl ExecutionState {
         } else {
             SuppliedSessionCoverage::Partial
         };
-        let dispatched_request_count = u8::try_from(self.checkpoints.len())
-            .unwrap_or(u8::MAX)
-            .saturating_add(dispatched_resource_count);
+        let dispatched_request_count = self.dispatched_request_count();
         debug_assert_eq!(
             self.resources.len(),
             usize::from(self.selected_resource_count)
@@ -1160,10 +1581,15 @@ impl ExecutionState {
         }));
         debug_assert_eq!(
             self.response_bytes,
-            self.checkpoints
-                .iter()
-                .map(WebAssessmentSuppliedSessionCheckpointAudit::response_bytes)
-                .sum::<u64>()
+            self.login
+                .as_ref()
+                .map_or(0, SuppliedSessionLoginAudit::response_bytes)
+                .saturating_add(
+                    self.checkpoints
+                        .iter()
+                        .map(WebAssessmentSuppliedSessionCheckpointAudit::response_bytes)
+                        .sum::<u64>()
+                )
                 .saturating_add(
                     self.resources
                         .iter()
@@ -1175,6 +1601,7 @@ impl ExecutionState {
             schema: match policy.version() {
                 SuppliedSessionPolicyVersion::V1 => SUPPLIED_SESSION_AUDIT_SCHEMA,
                 SuppliedSessionPolicyVersion::V2 => SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+                SuppliedSessionPolicyVersion::V3 => SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
             },
             capability_id: SUPPLIED_SESSION_CAPABILITY_ID,
             policy_reference: policy.policy_reference().to_owned(),
@@ -1183,6 +1610,7 @@ impl ExecutionState {
             principal_alias: policy.principal_alias().to_owned(),
             principal_assurance: SuppliedSessionPrincipalAssurance::OperatorDeclared,
             credential_mechanism: policy.credential_mechanism(),
+            credential_acquisition: policy.credential_acquisition(),
             health_oracle: SuppliedSessionHealthOracleAudit {
                 kind: SuppliedSessionHealthOracleKind::JsonBooleanTrue,
                 field_reference: policy.health_field_reference().to_owned(),
@@ -1205,6 +1633,7 @@ impl ExecutionState {
             impact_validation_performed: false,
             cookie_policy,
             cookie_lifecycle,
+            login: self.login,
         }
     }
 }
@@ -1234,6 +1663,7 @@ fn cookie_policy_audit(
 fn cookie_lifecycle_audit(
     checkpoints: &[WebAssessmentSuppliedSessionCheckpointAudit],
     resources: &[WebAssessmentSuppliedSessionResourceAudit],
+    login: Option<&SuppliedSessionLoginAudit>,
 ) -> SuppliedSessionCookieLifecycleAudit {
     let updates = checkpoints
         .iter()
@@ -1255,8 +1685,8 @@ fn cookie_lifecycle_audit(
         }
     }
     SuppliedSessionCookieLifecycleAudit {
-        initial_epoch: 1,
-        final_epoch: 1,
+        initial_epoch: login.map_or(1, SuppliedSessionLoginAudit::initial_epoch),
+        final_epoch: login.map_or(1, SuppliedSessionLoginAudit::final_epoch),
         selected_update_response_count,
         unselected_update_response_count,
         update_classification_failure_count,
@@ -1320,6 +1750,13 @@ struct DispatchContext<'a> {
     deadline: Option<tokio::time::Instant>,
 }
 
+struct LoginDispatchContext<'a> {
+    authority: &'a SharedWebRuntimeAuthority,
+    requests: &'a HttpRequestBroker,
+    policy: &'a SuppliedSessionPolicy,
+    deadline: Option<tokio::time::Instant>,
+}
+
 #[derive(Clone, Copy)]
 struct DispatchBudget {
     accounted_response_bytes: u64,
@@ -1331,6 +1768,143 @@ struct HealthCheckpointPosition {
     sequence: u8,
     phase: SuppliedSessionHealthCheckpointPhase,
     after_subject_count: u8,
+}
+
+async fn dispatch_login_page(
+    context: &LoginDispatchContext<'_>,
+    descriptor: &SuppliedSessionRequestDescriptor,
+    budget: DispatchBudget,
+) -> DispatchResult {
+    if descriptor.purpose() != SuppliedSessionRequestPurpose::LoginPage {
+        return DispatchResult::InvalidDescriptor;
+    }
+    let Some(limits) = login_dispatch_limits(context, budget) else {
+        return if context.authority.cancellation().is_cancelled() {
+            DispatchResult::Cancelled {
+                bytes: 0,
+                dispatched: false,
+            }
+        } else {
+            DispatchResult::RuntimeLimit {
+                bytes: 0,
+                dispatched: false,
+            }
+        };
+    };
+    let before = context.authority.request_accounting().snapshot();
+    let execution = context
+        .requests
+        .collect_supplied_session_login_page_for_runtime(
+            DecisionExecutionStage::Passive,
+            Some(DecisionActionOrigin::Bootstrap),
+            limits,
+            descriptor,
+            context.policy,
+        );
+    let result = super::await_execution(
+        context.authority.cancellation(),
+        context.deadline,
+        execution,
+    )
+    .await;
+    login_dispatch_result(context, descriptor, before, result)
+}
+
+async fn dispatch_login_submit(
+    context: &LoginDispatchContext<'_>,
+    descriptor: &SuppliedSessionRequestDescriptor,
+    body: &SuppliedSessionFormBody,
+    budget: DispatchBudget,
+) -> DispatchResult {
+    if descriptor.purpose() != SuppliedSessionRequestPurpose::LoginSubmit {
+        return DispatchResult::InvalidDescriptor;
+    }
+    let Some(limits) = login_dispatch_limits(context, budget) else {
+        return if context.authority.cancellation().is_cancelled() {
+            DispatchResult::Cancelled {
+                bytes: 0,
+                dispatched: false,
+            }
+        } else {
+            DispatchResult::RuntimeLimit {
+                bytes: 0,
+                dispatched: false,
+            }
+        };
+    };
+    let before = context.authority.request_accounting().snapshot();
+    let execution = context
+        .requests
+        .collect_supplied_session_login_submit_for_runtime(
+            DecisionExecutionStage::Active,
+            None,
+            limits,
+            descriptor,
+            context.policy,
+            body,
+        );
+    let result = super::await_execution(
+        context.authority.cancellation(),
+        context.deadline,
+        execution,
+    )
+    .await;
+    login_dispatch_result(context, descriptor, before, result)
+}
+
+fn login_dispatch_limits(
+    context: &LoginDispatchContext<'_>,
+    budget: DispatchBudget,
+) -> Option<DecisionExecutionLimits> {
+    if context.authority.cancellation().is_cancelled()
+        || context
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        || budget.accounted_response_bytes >= context.policy.max_total_response_bytes()
+        || budget.dispatched_requests >= context.policy.max_session_requests()
+    {
+        return None;
+    }
+    let remaining = context
+        .policy
+        .max_total_response_bytes()
+        .saturating_sub(budget.accounted_response_bytes);
+    let response_limit =
+        remaining.min(u64::try_from(context.policy.max_response_body_bytes()).unwrap_or(u64::MAX));
+    (response_limit > 0)
+        .then(|| DecisionExecutionLimits::new().with_max_response_body_bytes(response_limit))
+}
+
+fn login_dispatch_result(
+    context: &LoginDispatchContext<'_>,
+    descriptor: &SuppliedSessionRequestDescriptor,
+    before: crate::runtime_budget::RequestAccountingSnapshot,
+    result: RuntimeExecution<Result<CollectedHttpResponse, SuppliedSessionRequestError>>,
+) -> DispatchResult {
+    let after = context.authority.request_accounting().snapshot();
+    let dispatched = after.total_requests() > before.total_requests();
+    let bytes = after
+        .response_bytes()
+        .saturating_sub(before.response_bytes());
+    match result {
+        RuntimeExecution::Completed(Ok(response)) => DispatchResult::Response {
+            exact_target: response.final_url() == descriptor.target(),
+            response: Box::new(response),
+            bytes,
+            cookie_update: None,
+        },
+        RuntimeExecution::Completed(Err(SuppliedSessionRequestError::RuntimeLimit)) => {
+            DispatchResult::RuntimeLimit { bytes, dispatched }
+        },
+        RuntimeExecution::Completed(Err(SuppliedSessionRequestError::Http)) => {
+            DispatchResult::Transport { bytes, dispatched }
+        },
+        RuntimeExecution::Completed(Err(SuppliedSessionRequestError::InvalidDescriptor)) => {
+            DispatchResult::InvalidDescriptor
+        },
+        RuntimeExecution::Cancelled => DispatchResult::Cancelled { bytes, dispatched },
+        RuntimeExecution::WallTimeExceeded => DispatchResult::RuntimeLimit { bytes, dispatched },
+    }
 }
 
 async fn dispatch(
@@ -1439,7 +2013,10 @@ fn response_cookie_update(
     response: &CollectedHttpResponse,
     exact_target: bool,
 ) -> Option<SuppliedSessionResponseCookieUpdate> {
-    if policy.version() != SuppliedSessionPolicyVersion::V2 {
+    if !matches!(
+        policy.version(),
+        SuppliedSessionPolicyVersion::V2 | SuppliedSessionPolicyVersion::V3
+    ) {
         return None;
     }
     if !exact_target {
@@ -1450,6 +2027,30 @@ fn response_cookie_update(
         });
     }
     Some(response.supplied_session_cookie_updates(policy).into())
+}
+
+fn login_form_outcome(error: SuppliedSessionLoginFormError) -> SuppliedSessionLoginFormOutcome {
+    match error {
+        SuppliedSessionLoginFormError::IneligibleResponse => {
+            SuppliedSessionLoginFormOutcome::IneligibleResponse
+        },
+        SuppliedSessionLoginFormError::MissingForm | SuppliedSessionLoginFormError::MissingCsrf => {
+            SuppliedSessionLoginFormOutcome::Missing
+        },
+        SuppliedSessionLoginFormError::AmbiguousForm
+        | SuppliedSessionLoginFormError::AmbiguousCsrf => {
+            SuppliedSessionLoginFormOutcome::Ambiguous
+        },
+        SuppliedSessionLoginFormError::InvalidFormContract
+        | SuppliedSessionLoginFormError::InvalidCsrf => SuppliedSessionLoginFormOutcome::Invalid,
+    }
+}
+
+fn unix_time_seconds() -> Option<i64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
 }
 
 impl From<SuppliedSessionCookieUpdateObservation> for SuppliedSessionResponseCookieUpdate {
@@ -1944,6 +2545,7 @@ fn health_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static str
     match policy.version() {
         SuppliedSessionPolicyVersion::V1 => HEALTH_COMMIT_EVIDENCE_METHOD_V1,
         SuppliedSessionPolicyVersion::V2 => HEALTH_COMMIT_EVIDENCE_METHOD_V2,
+        SuppliedSessionPolicyVersion::V3 => HEALTH_COMMIT_EVIDENCE_METHOD_V3,
     }
 }
 
@@ -1951,6 +2553,7 @@ fn resource_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static s
     match policy.version() {
         SuppliedSessionPolicyVersion::V1 => RESOURCE_COMMIT_EVIDENCE_METHOD_V1,
         SuppliedSessionPolicyVersion::V2 => RESOURCE_COMMIT_EVIDENCE_METHOD_V2,
+        SuppliedSessionPolicyVersion::V3 => RESOURCE_COMMIT_EVIDENCE_METHOD_V3,
     }
 }
 
@@ -1959,7 +2562,10 @@ fn append_cookie_update_binding(
     binding: &mut String,
     update: Option<SuppliedSessionResponseCookieUpdate>,
 ) {
-    if policy.version() != SuppliedSessionPolicyVersion::V2 {
+    if !matches!(
+        policy.version(),
+        SuppliedSessionPolicyVersion::V2 | SuppliedSessionPolicyVersion::V3
+    ) {
         return;
     }
     let update = update.unwrap_or(SuppliedSessionResponseCookieUpdate {
@@ -2231,7 +2837,9 @@ fn strict_top_level_boolean(bytes: &[u8], field: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::supplied_session_review::{SuppliedSessionAuthorization, SuppliedSessionCookies};
+    use crate::supplied_session_review::{
+        SuppliedSessionAuthorization, SuppliedSessionCookies, SuppliedSessionFormCredential,
+    };
     use crate::web_runtime::{WebAssessmentRuntimeBuilder, WebAssessmentRuntimeError};
     #[cfg(feature = "wordpress-review")]
     use crate::wordpress_review::WordPressReviewInputs;
@@ -2296,6 +2904,43 @@ same_site = "lax"
             1,
         )
         .unwrap()
+    }
+
+    fn form_login_policy(application: &url::Url) -> SuppliedSessionPolicy {
+        let bytes = format!(
+            r#"schema = "security.supplied-session-policy/v3"
+principal_alias = "login-fixture-principal"
+credential_mechanism = "cookie_jar"
+credential_acquisition = "bounded_form_login"
+cookie_update_policy = "stop_on_selected_cookie"
+login_path = "/app/login"
+login_method = "post"
+login_encoding = "application/x-www-form-urlencoded"
+username_field = "user"
+password_field = "pass"
+csrf_field = "csrf"
+max_login_attempts = 1
+health_path = "/app/session-health"
+health_json_field = "authenticated"
+resources = ["/app/private"]
+max_session_requests = 5
+max_total_response_bytes = 65536
+max_response_body_bytes = 16384
+max_wall_time_ms = 5000
+
+[[cookies]]
+id = "generated-session"
+name = "session"
+domain = "{}"
+host_only = true
+path = "/app/"
+secure = false
+http_only = true
+same_site = "lax"
+"#,
+            application.host_str().unwrap()
+        );
+        SuppliedSessionPolicy::parse_toml(application, bytes.as_bytes()).unwrap()
     }
 
     fn committed_health_qualification(
@@ -2742,6 +3387,26 @@ max_wall_time_ms = 5000
             WebAssessmentRuntimeError::WordPressSuppliedSessionRequiresInputs
         ));
 
+        let form_application = url::Url::parse("http://127.0.0.1:8123/app/").unwrap();
+        let form_policy = form_login_policy(&form_application);
+        let form_credential = SuppliedSessionFormCredential::parse_tsv(
+            &form_policy,
+            b"username\tUSER-RUNTIME-CANARY\npassword\tPASSWORD-RUNTIME-CANARY\n".to_vec(),
+        )
+        .unwrap();
+        let unsupported_form_login = WebAssessmentRuntimeBuilder::new(form_application)
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .with_wordpress_discovery()
+            .with_supplied_session_review(form_policy, form_credential)
+            .with_wordpress_supplied_session()
+            .build()
+            .err()
+            .expect("V3 form-login policy must not reach the WordPress session consumer");
+        assert!(matches!(
+            unsupported_form_login,
+            WebAssessmentRuntimeError::WordPressSuppliedSessionUnsupportedPolicy
+        ));
+
         WebAssessmentRuntimeBuilder::new(application.clone())
             .with_wordpress_review(WordPressReviewInputs::new(None, None))
             .with_wordpress_discovery()
@@ -2895,6 +3560,15 @@ max_wall_time_ms = 5000
                 .sum::<u64>()
         );
         let saved = serde_json::to_string(audit).unwrap();
+        let direct = serde_json::to_value(audit).unwrap();
+        assert_eq!(
+            direct.get("schema").and_then(serde_json::Value::as_str),
+            Some(SUPPLIED_SESSION_AUDIT_SCHEMA)
+        );
+        assert!(!direct
+            .as_object()
+            .unwrap()
+            .contains_key("credential_acquisition"));
         assert_eq!(audit.principal_alias(), "fixture-principal");
         assert!(saved.contains(r#""principal_alias":"fixture-principal""#));
         for forbidden in [
@@ -3078,6 +3752,243 @@ max_wall_time_ms = 5000
         server.abort();
     }
 
+    #[tokio::test]
+    async fn bounded_form_login_uses_one_stateful_attempt_then_existing_health_oracle() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::new(Mutex::new(
+            Vec::<(String, String, bool, bool, bool, String)>::new(),
+        ));
+        let server_observed = observed.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut request = Vec::new();
+                let header_end = loop {
+                    if let Some(offset) =
+                        request.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        break offset + 4;
+                    }
+                    let mut chunk = [0_u8; 1024];
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 || request.len() > 16 * 1024 {
+                        break request.len();
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                };
+                let header_text = String::from_utf8_lossy(&request[..header_end]).into_owned();
+                let content_length = header_text
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length: ")
+                            .or_else(|| line.strip_prefix("Content-Length: "))
+                    })
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                while request.len() < header_end.saturating_add(content_length) {
+                    let mut chunk = [0_u8; 1024];
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 || request.len() > 24 * 1024 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                let request_line = header_text.lines().next().unwrap_or("");
+                let mut parts = request_line.split_ascii_whitespace();
+                let method = parts.next().unwrap_or("").to_owned();
+                let path = parts.next().unwrap_or("").to_owned();
+                let has_cookie = header_text.lines().any(|line| {
+                    line.eq_ignore_ascii_case("cookie: session=SESSION-RUNTIME-CANARY")
+                });
+                let has_authorization = header_text
+                    .lines()
+                    .any(|line| line.to_ascii_lowercase().starts_with("authorization:"));
+                let is_form_encoded = header_text.lines().any(|line| {
+                    line.eq_ignore_ascii_case("content-type: application/x-www-form-urlencoded")
+                });
+                let body = String::from_utf8_lossy(&request[header_end..]).into_owned();
+                server_observed.lock().await.push((
+                    method.clone(),
+                    path.clone(),
+                    has_cookie,
+                    has_authorization,
+                    is_form_encoded,
+                    body.clone(),
+                ));
+
+                let (status, media_type, extra_headers, response_body) =
+                    match (method.as_str(), path.as_str()) {
+                        ("GET", "/app/login") => (
+                            "200 OK",
+                            "text/html",
+                            "",
+                            concat!(
+                            "<form action=\"/app/login\" method=\"post\">",
+                            "<input name=\"user\">",
+                            "<input type=\"password\" name=\"pass\">",
+                            "<input type=\"hidden\" name=\"csrf\" value=\"CSRF-RUNTIME-CANARY\">",
+                            "</form>"
+                        ),
+                        ),
+                        ("POST", "/app/login") => (
+                            "200 OK",
+                            "application/json",
+                            concat!(
+                                "Set-Cookie: session=SESSION-RUNTIME-CANARY; ",
+                                "Path=/app/; HttpOnly; SameSite=Lax\r\n"
+                            ),
+                            r#"{"login":"received"}"#,
+                        ),
+                        ("GET", "/app/session-health") if has_cookie => (
+                            "200 OK",
+                            "application/json",
+                            "",
+                            r#"{"authenticated":true}"#,
+                        ),
+                        ("GET", "/app/session-health") => (
+                            "200 OK",
+                            "application/json",
+                            "",
+                            r#"{"authenticated":false}"#,
+                        ),
+                        ("GET", "/app/private") if has_cookie => (
+                            "200 OK",
+                            "text/html",
+                            "",
+                            "PRIVATE-FORM-LOGIN-BODY-MUST-NOT-BE-RETAINED",
+                        ),
+                        _ => ("200 OK", "text/html", "", "<title>public root</title>"),
+                    };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: {media_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let application = url::Url::parse(&format!("http://{address}/app/")).unwrap();
+        let policy = form_login_policy(&application);
+        let credential = SuppliedSessionFormCredential::parse_tsv(
+            &policy,
+            b"username\tUSER-RUNTIME-CANARY\npassword\tPASSWORD-RUNTIME-CANARY\n".to_vec(),
+        )
+        .unwrap();
+        let mut runtime = WebAssessmentRuntimeBuilder::new(application)
+            .with_supplied_session_review(policy, credential)
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.supplied_session_audit().unwrap();
+        assert_eq!(audit.schema(), SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA);
+        assert_eq!(
+            audit.credential_acquisition(),
+            SuppliedSessionCredentialAcquisition::BoundedFormLogin
+        );
+        assert_eq!(audit.outcome(), SuppliedSessionAuditOutcome::Complete);
+        assert_eq!(audit.coverage(), SuppliedSessionCoverage::Complete);
+        assert_eq!(audit.dispatched_request_count(), 5);
+        assert_eq!(audit.committed_resource_count(), 1);
+        let login = audit.login().unwrap();
+        assert_eq!(login.max_attempts(), 1);
+        assert_eq!(login.attempt_count(), 1);
+        assert!(login.page_dispatched());
+        assert_eq!(
+            login.form_outcome(),
+            SuppliedSessionLoginFormOutcome::Matched
+        );
+        assert_eq!(login.form_error_code(), None);
+        assert!(login.submit_dispatched());
+        assert_eq!(
+            login.submit_outcome(),
+            SuppliedSessionLoginSubmitOutcome::CookieAcquired
+        );
+        assert_eq!(login.acquired_cookie_count(), 1);
+        assert_eq!(login.initial_epoch(), 0);
+        assert_eq!(login.final_epoch(), 1);
+        assert!(!login.pre_session_cookie_applied());
+        let lifecycle = audit.cookie_lifecycle().unwrap();
+        assert_eq!(lifecycle.initial_epoch(), 0);
+        assert_eq!(lifecycle.final_epoch(), 1);
+        assert_eq!(lifecycle.updates_applied(), 0);
+        assert_eq!(report.usage().active_verifications(), 1);
+        assert_eq!(
+            audit.response_bytes(),
+            login
+                .response_bytes()
+                .saturating_add(
+                    audit
+                        .checkpoints()
+                        .iter()
+                        .map(WebAssessmentSuppliedSessionCheckpointAudit::response_bytes)
+                        .sum::<u64>()
+                )
+                .saturating_add(
+                    audit
+                        .resources()
+                        .iter()
+                        .map(WebAssessmentSuppliedSessionResourceAudit::response_bytes)
+                        .sum::<u64>()
+                )
+        );
+
+        let observed = observed.lock().await.clone();
+        assert!(
+            observed.len() >= 6,
+            "session child plus public root must run"
+        );
+        assert_eq!(observed[0].0, "GET");
+        assert_eq!(observed[0].1, "/app/login");
+        assert!(!observed[0].2 && !observed[0].3 && !observed[0].4);
+        assert_eq!(observed[1].0, "POST");
+        assert_eq!(observed[1].1, "/app/login");
+        assert!(!observed[1].2 && !observed[1].3 && observed[1].4);
+        assert_eq!(
+            observed[1].5,
+            "csrf=CSRF-RUNTIME-CANARY&user=USER-RUNTIME-CANARY&pass=PASSWORD-RUNTIME-CANARY"
+        );
+        assert_eq!(observed[2].1, "/app/session-health");
+        assert!(observed[2].2 && !observed[2].3);
+        assert_eq!(observed[3].1, "/app/private");
+        assert!(observed[3].2 && !observed[3].3);
+        assert_eq!(observed[4].1, "/app/session-health");
+        assert!(observed[4].2 && !observed[4].3);
+        assert_eq!(observed[5].1, "/app/");
+        assert!(!observed[5].2 && !observed[5].3);
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|request| request.0 == "POST" && request.1 == "/app/login")
+                .count(),
+            1
+        );
+
+        let saved = serde_json::to_string(audit).unwrap();
+        let direct = serde_json::to_value(audit).unwrap();
+        assert_eq!(
+            direct
+                .get("credential_acquisition")
+                .and_then(serde_json::Value::as_str),
+            Some("bounded_form_login")
+        );
+        for forbidden in [
+            "USER-RUNTIME-CANARY",
+            "PASSWORD-RUNTIME-CANARY",
+            "CSRF-RUNTIME-CANARY",
+            "SESSION-RUNTIME-CANARY",
+            "PRIVATE-FORM-LOGIN-BODY-MUST-NOT-BE-RETAINED",
+            "/app/login",
+            "/app/private",
+        ] {
+            assert!(!saved.contains(forbidden));
+        }
+        server.abort();
+    }
+
     async fn run_cookie_update_fixture(
         set_cookie: &'static str,
         update_path: &'static str,
@@ -3185,6 +4096,15 @@ max_wall_time_ms = 5000
             .skip(2)
             .all(|(_, has_cookie, _)| !has_cookie));
         let saved = serde_json::to_string(&audit).unwrap();
+        let direct = serde_json::to_value(&audit).unwrap();
+        assert_eq!(
+            direct.get("schema").and_then(serde_json::Value::as_str),
+            Some(SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA)
+        );
+        assert!(!direct
+            .as_object()
+            .unwrap()
+            .contains_key("credential_acquisition"));
         for forbidden in [
             "COOKIE-RUNTIME-CANARY",
             "ROTATED-SECRET",
