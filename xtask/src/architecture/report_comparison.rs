@@ -657,6 +657,8 @@ impl ComparisonVisitor<'_> {
                     | "crate::wordpress_version::ProfiledVersionKey"
                     | "crate::wordpress_version::WordPressComparisonProfile"
             );
+        let exact_inert_ip_address = self.relative == "reporting/comparison/import/audits.rs"
+            && matches!(joined.as_str(), "std::net::IpAddr");
         if parts.first().is_some_and(|root| {
             (root == "crate" && !exact_inert_wordpress_version)
                 || root.starts_with("termivar_")
@@ -683,6 +685,7 @@ impl ComparisonVisitor<'_> {
             ));
         }
         if parts.first().is_some_and(|root| root == "std")
+            && !exact_inert_ip_address
             && ![
                 "std::collections::BTreeMap",
                 "std::collections::BTreeSet",
@@ -741,6 +744,7 @@ impl ComparisonVisitor<'_> {
                     "super::MAX_LEGACY_AUDIT_TEXT_BYTES",
                     "super::super::ImportedWordPressAudit",
                     "super::super::ImportedControlReferenceMappingAudit",
+                    "super::super::ImportedReconSnapshotAudit",
                     "super::super::ImportedJwtPolicyReviewAudit",
                     "super::super::ImportedSecretExposureAudit",
                     "super::super::ImportedSuppliedSessionAudit",
@@ -760,6 +764,7 @@ impl ComparisonVisitor<'_> {
                     "super::ControlReferenceMappingComparison",
                     "super::ItemProjection",
                     "super::JwtPolicyReviewComparison",
+                    "super::ReconSnapshotImportComparison",
                     "super::SecretExposureComparison",
                     "super::SourceMetadata",
                     "super::SuppliedSessionComparison",
@@ -1126,6 +1131,36 @@ mod tests {
             let violations =
                 source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
             assert!(!violations.is_empty(), "accepted `{addition}`");
+        }
+    }
+
+    #[test]
+    fn recon_snapshot_import_uses_only_inert_display_projections() {
+        for addition in [
+            "use super::super::ImportedReconSnapshotAudit;",
+            "use std::net::IpAddr;",
+            "use super::ReconSnapshotImportComparison;",
+        ] {
+            let relative = if addition.contains("ReconSnapshotImportComparison") {
+                "reporting/comparison/html.rs"
+            } else {
+                "reporting/comparison/import/audits.rs"
+            };
+            let violations = source_violations(relative, addition).unwrap();
+            assert!(
+                violations.is_empty(),
+                "rejected exact inert recon projection `{addition}`: {violations:?}"
+            );
+        }
+
+        for addition in [
+            "use crate::recon_snapshot::ReconSnapshot;",
+            "use std::net::TcpStream;",
+            "fn escape() { let _ = reqwest::Client::new(); }",
+        ] {
+            let violations =
+                source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
+            assert!(!violations.is_empty(), "accepted authority `{addition}`");
         }
     }
 

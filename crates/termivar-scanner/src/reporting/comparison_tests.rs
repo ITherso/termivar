@@ -35,6 +35,80 @@ fn report(items: Vec<Value>) -> Value {
     })
 }
 
+fn recon_snapshot_import_audit() -> Value {
+    json!({
+        "schema":"security.recon-snapshot-import-audit/v1",
+        "policy":"termivar.recon-snapshot-import/v1",
+        "selected":true,
+        "input":{
+            "source_schema":"security.recon-snapshot/v1",
+            "byte_length":731,
+            "sha256":format!("sha256:{:064x}", 41)
+        },
+        "snapshot":{"id":"owned-lab-snapshot","revision":"r1"},
+        "sources":[{
+            "source_id":"source-ct",
+            "namespace":"owned-lab.ct",
+            "revision":"r1",
+            "provider_time":null,
+            "observed_time":"2026-09-20T12:00:00Z",
+            "collection_method":"recorded_fixture",
+            "completeness":"partial_as_declared",
+            "origin":"owned local fixture",
+            "rights":{
+                "status":"permitted_as_declared",
+                "attribution":"Termivar task-owned fixture",
+                "notice":null
+            }
+        }],
+        "records":[
+            {
+                "kind":"ct_name",
+                "record_id":"record-name",
+                "source_ids":["source-ct"],
+                "name":"api.owned.example"
+            },
+            {
+                "kind":"service_banner_product",
+                "record_id":"record-product",
+                "source_ids":["source-ct"],
+                "host":"api.owned.example",
+                "port":443,
+                "transport":"tcp",
+                "product":"owned-fixture-service",
+                "version":null
+            }
+        ],
+        "accounting":{
+            "source_count":1,
+            "record_count":2,
+            "source_association_count":2,
+            "prepared_index_bytes":640
+        },
+        "external_activity":{
+            "target_request_count":0,
+            "provider_request_count":0,
+            "archive_processing":"not_performed",
+            "decompression":"not_performed"
+        },
+        "claim_limits":{
+            "record_interpretation":"source_qualified_hypotheses_only",
+            "source_authentication":"not_established",
+            "asset_ownership":"not_established",
+            "current_reachability":"not_established",
+            "scan_authority":"not_granted",
+            "vulnerability":"not_established",
+            "impact":"not_established"
+        }
+    })
+}
+
+fn report_with_recon_snapshot_import() -> Value {
+    let mut document = report(Vec::new());
+    document["recon_snapshot_import"] = recon_snapshot_import_audit();
+    document
+}
+
 fn control_reference_sources() -> Vec<Value> {
     vec![
         json!({
@@ -7544,6 +7618,231 @@ fn control_reference_revision_projections_are_methodology_not_target_changes() {
         .note
         .contains("not target observations"));
     assert!(comparison.reference_set.note.contains("remediation"));
+}
+
+#[test]
+fn recon_snapshot_import_is_strict_feature_independent_and_self_compares() {
+    let document = report_with_recon_snapshot_import();
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let comparison: Value =
+        serde_json::from_str(&compare_reports(&bytes, &bytes, ComparisonFormat::Json).unwrap())
+            .unwrap();
+    let audit = &comparison["recon_snapshot_import_comparison"];
+    assert_eq!(
+        audit["schema"],
+        "termivar-recon-snapshot-import-comparison/v1"
+    );
+    assert_eq!(audit["status"], "compared");
+    assert_eq!(audit["methodology"]["status"], "unchanged");
+    assert_eq!(audit["provenance_and_sources"]["status"], "unchanged");
+    assert_eq!(audit["coverage_and_accounting"]["status"], "unchanged");
+    assert_eq!(audit["hypotheses"]["status"], "unchanged");
+    assert_eq!(comparison["only_in_after"], json!([]));
+    assert_eq!(comparison["only_in_before"], json!([]));
+    assert_eq!(comparison["changed"], json!([]));
+    assert_eq!(comparison["unchanged"], json!([]));
+
+    let markdown = compare_reports(&bytes, &bytes, ComparisonFormat::Markdown).unwrap();
+    assert!(markdown.contains("Reconnaissance snapshot import differences"));
+    let html = compare_reports(&bytes, &bytes, ComparisonFormat::Html).unwrap();
+    assert!(html.contains("Reconnaissance snapshot import differences"));
+}
+
+#[test]
+fn selected_empty_recon_hypothesis_set_remains_valid_and_self_compares() {
+    let mut document = report_with_recon_snapshot_import();
+    document["recon_snapshot_import"]["records"] = json!([]);
+    document["recon_snapshot_import"]["accounting"]["record_count"] = json!(0);
+    document["recon_snapshot_import"]["accounting"]["source_association_count"] = json!(0);
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let comparison: Value =
+        serde_json::from_str(&compare_reports(&bytes, &bytes, ComparisonFormat::Json).unwrap())
+            .unwrap();
+    let audit = &comparison["recon_snapshot_import_comparison"];
+    assert_eq!(audit["status"], "compared");
+    assert_eq!(audit["coverage_and_accounting"]["status"], "unchanged");
+    assert_eq!(audit["hypotheses"]["status"], "unchanged");
+    for group in ["only_in_after", "only_in_before", "changed", "unchanged"] {
+        assert_eq!(comparison[group], json!([]), "{group}");
+    }
+}
+
+#[test]
+fn recon_snapshot_import_separates_provenance_coverage_and_hypothesis_changes() {
+    let before = report_with_recon_snapshot_import();
+    let mut after = before.clone();
+    after["recon_snapshot_import"]["input"]["sha256"] = json!(format!("sha256:{:064x}", 42));
+    after["recon_snapshot_import"]["snapshot"]["revision"] = json!("r2");
+    after["recon_snapshot_import"]["records"][0]["name"] = json!("www.owned.example");
+    let comparison: Value = serde_json::from_str(
+        &compare_reports(
+            &serde_json::to_vec(&before).unwrap(),
+            &serde_json::to_vec(&after).unwrap(),
+            ComparisonFormat::Json,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let audit = &comparison["recon_snapshot_import_comparison"];
+    assert_eq!(audit["status"], "compared");
+    assert_eq!(audit["methodology"]["status"], "unchanged");
+    assert_eq!(audit["provenance_and_sources"]["status"], "changed");
+    assert_eq!(audit["coverage_and_accounting"]["status"], "unchanged");
+    assert_eq!(audit["hypotheses"]["status"], "changed");
+    assert_eq!(comparison["only_in_after"], json!([]));
+    assert_eq!(comparison["only_in_before"], json!([]));
+    assert_eq!(comparison["changed"], json!([]));
+}
+
+#[test]
+fn absent_and_selected_recon_snapshot_import_are_not_comparable() {
+    let absent = report(Vec::new());
+    let selected = report_with_recon_snapshot_import();
+    let comparison: Value = serde_json::from_str(
+        &compare_reports(
+            &serde_json::to_vec(&absent).unwrap(),
+            &serde_json::to_vec(&selected).unwrap(),
+            ComparisonFormat::Json,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        comparison["recon_snapshot_import_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["recon_snapshot_import_comparison"]["reason"],
+        "before_audit_missing"
+    );
+
+    let reverse: Value = serde_json::from_str(
+        &compare_reports(
+            &serde_json::to_vec(&selected).unwrap(),
+            &serde_json::to_vec(&absent).unwrap(),
+            ComparisonFormat::Json,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        reverse["recon_snapshot_import_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        reverse["recon_snapshot_import_comparison"]["reason"],
+        "after_audit_missing"
+    );
+}
+
+#[test]
+fn recon_snapshot_import_reports_coverage_changes_from_valid_source_cardinality() {
+    let before = report_with_recon_snapshot_import();
+    let mut after = before.clone();
+    after["recon_snapshot_import"]["records"] = json!([]);
+    after["recon_snapshot_import"]["accounting"]["record_count"] = json!(0);
+    after["recon_snapshot_import"]["accounting"]["source_association_count"] = json!(0);
+    let comparison: Value = serde_json::from_str(
+        &compare_reports(
+            &serde_json::to_vec(&before).unwrap(),
+            &serde_json::to_vec(&after).unwrap(),
+            ComparisonFormat::Json,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        comparison["recon_snapshot_import_comparison"]["coverage_and_accounting"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["recon_snapshot_import_comparison"]["hypotheses"]["status"],
+        "changed"
+    );
+}
+
+#[test]
+fn recon_snapshot_import_rejects_authority_accounting_and_identity_mutations() {
+    let valid = report_with_recon_snapshot_import();
+    let reject = |document: &Value| {
+        assert_eq!(
+            import_assessment_summary(&serde_json::to_vec(document).unwrap()).unwrap_err(),
+            ComparisonError::InvalidDocument
+        );
+    };
+
+    let mut value = valid.clone();
+    value["recon_snapshot_import"]["schema"] = json!("security.recon-snapshot-import-audit/v2");
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["input"]["byte_length"] = json!(true);
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["input"]["byte_length"] = json!(1);
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["input"]["sha256"] = json!("sha256:00");
+    reject(&value);
+    value = valid.clone();
+    let duplicate_source = value["recon_snapshot_import"]["sources"][0].clone();
+    value["recon_snapshot_import"]["sources"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate_source);
+    value["recon_snapshot_import"]["accounting"]["source_count"] = json!(2);
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["records"][0]["source_ids"] = json!(["unknown-source"]);
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["accounting"]["record_count"] = json!(1);
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["accounting"]["prepared_index_bytes"] = json!(1);
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["sources"][0]["observed_time"] = json!("2026-09-20T12:00:00Z\n");
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["sources"][0]["provider_time"] = json!("zamán");
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["sources"][0]["origin"] = json!(" owned local fixture");
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["sources"][0]["rights"]["attribution"] =
+        json!("Termivar\ttask-owned fixture");
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["records"][1]["product"] = json!("owned-fixture-service ");
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["records"][0] = json!({
+        "kind":"dns_history",
+        "record_id":"record-name",
+        "source_ids":["source-ct"],
+        "name":"api.owned.example",
+        "address":"2001:0db8::1"
+    });
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["external_activity"]["target_request_count"] = json!(1);
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["external_activity"]["provider_request_count"] = json!(1);
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["external_activity"]["archive_processing"] = json!("performed");
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["external_activity"]["decompression"] = json!("performed");
+    reject(&value);
+    value = valid.clone();
+    value["recon_snapshot_import"]["claim_limits"]["scan_authority"] = json!("granted");
+    reject(&value);
+    value = valid;
+    value["recon_snapshot_import"]["unexpected"] = json!(0);
+    reject(&value);
 }
 
 #[cfg(feature = "scanning")]

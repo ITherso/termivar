@@ -242,6 +242,22 @@ schema consistency, not catalogue truth, source authenticity, applicability or
 control fulfilment. See
 [Versioned control-reference mapping](control-reference-mapping.md).
 
+## Local reconnaissance snapshot import
+
+The non-default `recon-snapshot-import` scanner/CLI feature remains outside
+`default` and `release-bundle`. Explicit `--profile web-review
+--recon-snapshot FILE` opens one hardened regular local file and strictly parses
+the bounded `security.recon-snapshot/v1` document before output reservation,
+credential acquisition, or runtime construction.
+
+The typed snapshot bypasses WebAssessmentRuntime planning and transport. Only
+after ordinary composition completes is it attached as an optional
+`security.recon-snapshot-import-audit/v1` section. Imported CT names, historical
+DNS associations, banner product hints and reputation labels stay linked to
+their unverified source declarations. They create no subjects, knowledge
+authority, broker permits, assessment items/findings, requests, or verification
+claims. See [Local reconnaissance snapshot import](recon-snapshot-import.md).
+
 ## WordPress evidence review
 
 The non-default `wordpress-review` scanner/CLI feature adds no work by itself.
@@ -862,6 +878,7 @@ The following matrix separates build availability from actual execution:
 | Local JWT policy review | scanner and CLI opt-in (`jwt-policy-review`) plus explicit local policy with a non-secret revision and mandatory intended `typ`, issuer and audience bindings, local public JWK and one env/file/stdin token source | after local preflight/output reservation and before the target scan, one bounded transport-free evaluator parses the compact JWS, applies the local claim/time policy and verifies ES256 against the supplied P-256 public key; the local evaluator adds no target request and retrieves no remote key. Without the separate target-acceptance option it never forwards/replays the token, and only the value-free local audit is attached during final composition after the ordinary assessment completes | no | Preview, development-only; only compact ES256 JWS and strict local public JWK are supported, all three identity-context checks are mandatory, methodology compares the declared policy revision and exact public-key-byte identifier, parsed/policy/signature/target states are distinct, no finding is added, and the feature is outside `release-bundle` |
 | JWT target acceptance review | scanner and CLI opt-in (`jwt-target-acceptance-review`, which includes `jwt-policy-review`) plus the complete local JWT selection and explicit `--jwt-target-acceptance-policy FILE` | after local eligibility, one strict policy authorizes one exact-origin application-contained JSON GET; six ordered valid/anonymous/invalid candidate/replay legs run sequentially through fresh no-proxy pools under the shared parent broker, with the two invalid legs admitted only after their same-stage passive controls | no | Preview, development-only; at most six requests/two active requests, 64 KiB retained/interpreted per response and 256 KiB total, exact charged bytes retained separately, complete committed JSON-compatible 200/401/403 boolean-marker classification only, value-free audit, no finding/Confirmed claim, and outside `release-bundle` |
 | Versioned control-reference mapping | scanner and CLI opt-in (`control-reference-mapping`) plus explicit `--profile web-review --control-reference-mapping` | after ordinary composition completes, maps completed typed items to the built-in versioned finite catalogue; adds zero target/provider requests or source retrievals and does not mutate item authority | no | Preview, development-only; OWASP Top 10:2025 mappings plus bibliographic/technical-context source records, no score/pass/fail/certification/legal conclusion, Compare methodology-only for catalogue/source changes, Verify integrity/schema only, and outside `release-bundle` |
+| Local reconnaissance snapshot import | scanner and CLI opt-in (`recon-snapshot-import`) plus explicit `--profile web-review --recon-snapshot FILE` | validates one bounded hardened local JSON input before output/secret/network work, then attaches source-qualified hypotheses only after ordinary composition; it never enters planner/broker/runtime authority | no | Preview, development-only; 1 MiB input, 1,024 sources, 1,024 records, 4,096 source associations and 4 MiB prepared index; zero target/provider requests, no source authentication/asset truth/scan authorization, and outside `release-bundle` |
 | WordPress evidence review and metadata discovery | scanner and CLI opt-in (`wordpress-review`), compiled by the current untagged alpha.3 `release-bundle`, plus optional bounded local context/catalogue; the session consumer additionally requires `supplied-session-review`, policy V1/V2 and `--wordpress-supplied-session` | review-only interprets complete exact-root HTML and supplied declarations with zero added requests; explicit `--wordpress-discovery` may issue at most twelve anonymous, bodyless, same-origin metadata GET attempts through the same broker/budget; optional observed page scope reuses up to three eligible committed anonymous secondary-page responses without fetching pages; the V1/V2 session consumer may nominate public metadata only from health-qualified committed resource HTML and never forwards credentials or selects authenticated-page fingerprints; V3 is rejected before secret acquisition | no | Preview, development-only; absent from the default build and published alpha.2 archives; zero active verifications, at most one root-surface item plus one distinct metadata-source response-outcome item; advisory decisions are audit-only and no exploit/impact validation occurs |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
@@ -889,15 +906,15 @@ The normal CLI dependency additionally enables `reporting` for the explicit
 completed `web-review` path; this does not alter no-profile execution or its
 wire contract.
 The stock untagged alpha.3 `release-bundle` capability inventory now reports
-18 known feature identities: the marker plus seven compiled members and ten
+19 known feature identities: the marker plus seven compiled members and eleven
 excluded features. The eight compiled identities remain `release-bundle`,
 `artifact-adapter`, `normalization-resilience`, `graphql-review`,
 `openapi-review`, `rest-review`, `authorization-review`, and
-`wordpress-review`. The ten excluded identities are `api-adapter`,
+`wordpress-review`. The eleven excluded identities are `api-adapter`,
 `control-reference-mapping`, `jwt-policy-review`,
 `jwt-target-acceptance-review`, `legacy-scanner`,
-`proxy-adapter`, `secret-exposure-review`, `ssrf-oast-review`,
-`supplied-session-review`, and `tls-observation`.
+`proxy-adapter`, `recon-snapshot-import`, `secret-exposure-review`,
+`ssrf-oast-review`, `supplied-session-review`, and `tls-observation`.
 `default` remains empty;
 this inventory is build truth, not runtime activation or publication status.
 `LuaEngineConfig` is a small shared support type reachable through either

@@ -22,6 +22,7 @@ const FEATURE_NAMES: &[&str] = &[
     "normalization-resilience",
     "openapi-review",
     "proxy-adapter",
+    "recon-snapshot-import",
     "release-bundle",
     "rest-review",
     "secret-exposure-review",
@@ -146,6 +147,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         ),
         ("openapi-review", cfg!(feature = "openapi-review")),
         ("proxy-adapter", cfg!(feature = "proxy-adapter")),
+        (
+            "recon-snapshot-import",
+            cfg!(feature = "recon-snapshot-import"),
+        ),
         ("release-bundle", cfg!(feature = "release-bundle")),
         ("rest-review", cfg!(feature = "rest-review")),
         (
@@ -177,6 +182,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
     assert_eq!(
         surface_state(&document, "option.control-reference-mapping"),
         states["control-reference-mapping"]
+    );
+    assert_eq!(
+        surface_state(&document, "option.recon-snapshot"),
+        states["recon-snapshot-import"]
     );
     assert_eq!(
         surface_state(&document, "option.secret-exposure-review"),
@@ -244,11 +253,39 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
     );
     let control_mapping_limit = "Maps only completed typed assessment items to a built-in, versioned finite control-reference catalogue and schedules zero target or provider requests. V1 embeds attributed OWASP Top 10:2025 identifiers and exact title references with original Termivar rationale. PCI DSS v4.0.1 and ISO/IEC 27001:2022 with Amendment 1:2024 are bibliographic rights_deferred sources with no embedded control mappings. KVKK Law No. 6698 Article 12 and Guide No. 72 (April 2025) are relevant technical context only; applicability is not established and the output is not legal advice. A mapped relationship is not a score, pass/fail result, certification, or compliance determination; absence of an assessment item is not control fulfilment. Mapping never raises severity, disposition, or claim authority. Report Compare classifies catalogue or source changes as methodology changes rather than target or remediation changes. Report Verify checks bundle integrity and schema consistency, not catalogue truth, source authenticity, applicability, or control fulfilment. The feature requires explicit --profile web-review and --control-reference-mapping, remains development-only, and is outside default, release-bundle, and published alpha.2 archives.";
     assert_eq!(control_mapping["limitation"], control_mapping_limit);
+    let recon_snapshot = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.recon-snapshot")
+        .expect("recon-snapshot surface");
+    assert_eq!(
+        recon_snapshot["documentation"],
+        "docs/internals/recon-snapshot-import.md"
+    );
+    assert_eq!(
+        recon_snapshot["prerequisites"],
+        serde_json::json!(["--profile web-review", "--recon-snapshot FILE"])
+    );
+    let recon_limit = recon_snapshot["limitation"]
+        .as_str()
+        .expect("recon-snapshot limitation");
+    for required in [
+        "source-qualified asset hypotheses",
+        "zero target or provider requests",
+        "do not authenticate their producer, rights, freshness, completeness, or truth",
+        "cannot create scan subjects, broker permits, assessment items, findings, or authorization",
+        "No archive, decompression, provider retrieval, implicit file search, or live validation",
+        "outside default, release-bundle, and published alpha.2 archives",
+    ] {
+        assert!(recon_limit.contains(required), "missing `{required}`");
+    }
     let text_output = run(&binary(), &["capabilities"]);
     assert_success(&text_output);
     let text = String::from_utf8(text_output.stdout).expect("capabilities text must be UTF-8");
     assert!(text.contains(&format!("    limit: {authorization_limit}")));
     assert!(text.contains(&format!("    limit: {control_mapping_limit}")));
+    assert!(text.contains(&format!("    limit: {recon_limit}")));
     let jwt = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -647,6 +684,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
             "option.control-reference-mapping",
             "--control-reference-mapping",
         ),
+        ("option.recon-snapshot", "--recon-snapshot"),
         ("option.secret-exposure-review", "--secret-exposure-review"),
         ("option.tls-observation", "--tls-observation"),
         ("option.jwt-policy-review", "--jwt-policy"),
@@ -804,6 +842,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "control-reference-mapping",
         "legacy-scanner",
         "proxy-adapter",
+        "recon-snapshot-import",
         "secret-exposure-review",
         "ssrf-oast-review",
         "supplied-session-review",
@@ -831,7 +870,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                10
+                11
             );
         },
         "rest-only" => {
@@ -880,6 +919,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "control-reference-mapping" || !compiled(feature) }));
+        },
+        "recon-snapshot-import-only" => {
+            assert!(compiled("recon-snapshot-import"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "recon-snapshot-import" || !compiled(feature) }));
         },
         "bundle-members-individual" => {
             assert!(!compiled("release-bundle"));

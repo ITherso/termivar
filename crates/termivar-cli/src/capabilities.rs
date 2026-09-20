@@ -262,6 +262,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
         ),
         ("openapi-review", cfg!(feature = "openapi-review")),
         ("proxy-adapter", cfg!(feature = "proxy-adapter")),
+        (
+            "recon-snapshot-import",
+            cfg!(feature = "recon-snapshot-import"),
+        ),
         ("release-bundle", cfg!(feature = "release-bundle")),
         ("rest-review", cfg!(feature = "rest-review")),
         (
@@ -580,6 +584,19 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/control-reference-mapping.md",
         ),
         surface!(
+            "option.recon-snapshot",
+            "Local reconnaissance snapshot import",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("recon-snapshot-import"),
+            cfg!(feature = "recon-snapshot-import"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &["--profile web-review", "--recon-snapshot FILE"],
+            "Imports one explicit bounded local security.recon-snapshot/v1 regular JSON file as source-qualified asset hypotheses and schedules zero target or provider requests. V1 admits only certificate-transparency names, DNS-history associations, structured service-banner product hints, and reputation labels with explicit source, observation, completeness, origin, and operator-declared rights metadata. Exact input byte length and SHA-256 identify the supplied bytes but do not authenticate their producer, rights, freshness, completeness, or truth. Imported records cannot create scan subjects, broker permits, assessment items, findings, or authorization to contact a named asset; historical association is not current ownership or scan authorization. No archive, decompression, provider retrieval, implicit file search, or live validation occurs. Report Compare separates snapshot/source changes from hypothesis and coverage changes; Verify checks bundle integrity and schema consistency, not source authenticity or asset truth. The feature requires explicit --profile web-review and --recon-snapshot FILE, remains development-only, and is outside default, release-bundle, and published alpha.2 archives.",
+            "docs/internals/recon-snapshot-import.md",
+        ),
+        surface!(
             "option.secret-exposure-review",
             "Passive response secret-exposure review",
             SurfaceGroup::Optional,
@@ -893,7 +910,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 29);
+        assert_eq!(document.surfaces.len(), 30);
 
         let keys = document
             .surfaces
@@ -925,6 +942,7 @@ mod tests {
                 "option.rest-review",
                 "option.resource-authorization-review",
                 "option.control-reference-mapping",
+                "option.recon-snapshot",
                 "option.secret-exposure-review",
                 "option.tls-observation",
                 "option.jwt-policy-review",
@@ -1014,6 +1032,7 @@ mod tests {
                 "option.control-reference-mapping",
                 "control-reference-mapping",
             ),
+            ("option.recon-snapshot", "recon-snapshot"),
             ("option.secret-exposure-review", "secret-exposure-review"),
             ("option.tls-observation", "tls-observation"),
             ("option.jwt-policy-review", "jwt-policy"),
@@ -1130,6 +1149,12 @@ mod tests {
             (
                 "option.control-reference-mapping",
                 Some("control-reference-mapping"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.recon-snapshot",
+                Some("recon-snapshot-import"),
                 "preview",
                 "implemented",
             ),
@@ -1373,6 +1398,35 @@ mod tests {
             assert!(
                 control_mapping.limitation.contains(required),
                 "missing control-reference-mapping limitation `{required}`"
+            );
+        }
+        let recon_snapshot = find("option.recon-snapshot");
+        assert_eq!(
+            recon_snapshot.prerequisites,
+            ["--profile web-review", "--recon-snapshot FILE"]
+        );
+        assert_eq!(
+            recon_snapshot.compile_feature,
+            Some("recon-snapshot-import")
+        );
+        assert_eq!(
+            recon_snapshot.documentation,
+            "docs/internals/recon-snapshot-import.md"
+        );
+        for required in [
+            "one explicit bounded local security.recon-snapshot/v1 regular JSON file",
+            "source-qualified asset hypotheses",
+            "zero target or provider requests",
+            "certificate-transparency names, DNS-history associations, structured service-banner product hints, and reputation labels",
+            "Exact input byte length and SHA-256 identify the supplied bytes but do not authenticate",
+            "cannot create scan subjects, broker permits, assessment items, findings, or authorization",
+            "No archive, decompression, provider retrieval, implicit file search, or live validation",
+            "requires explicit --profile web-review and --recon-snapshot FILE",
+            "outside default, release-bundle, and published alpha.2 archives",
+        ] {
+            assert!(
+                recon_snapshot.limitation.contains(required),
+                "missing recon-snapshot limitation `{required}`"
             );
         }
         let secret_exposure = find("option.secret-exposure-review");

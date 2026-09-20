@@ -20,6 +20,7 @@ use syn::{
 };
 
 const AUTH_INPUT_SOURCE: &str = "crates/termivar-cli/src/auth_input.rs";
+const RECON_INPUT_SOURCE: &str = "crates/termivar-cli/src/recon_input.rs";
 const CLI_MAIN_SOURCE: &str = "crates/termivar-cli/src/main.rs";
 const SCANNER_CONTEXT_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs";
@@ -91,6 +92,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "oast_admin_token_file",
     "oast_admin_token_stdin",
     "openapi_review",
+    "recon_snapshot",
     "rest_review",
     "secret_exposure_review",
     "tls_observation",
@@ -125,11 +127,13 @@ const CLI_SCAN_FIELDS: &[&str] = &[
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let auth_input = fs::read_to_string(workspace_root.join(AUTH_INPUT_SOURCE))?;
+    let recon_input = fs::read_to_string(workspace_root.join(RECON_INPUT_SOURCE))?;
     let cli_main = fs::read_to_string(workspace_root.join(CLI_MAIN_SOURCE))?;
     let scanner_context = fs::read_to_string(workspace_root.join(SCANNER_CONTEXT_SOURCE))?;
     let payload_strategy = fs::read_to_string(workspace_root.join(PAYLOAD_STRATEGY_SOURCE))?;
 
     let mut violations = inspect_auth_input_contract(&auth_input)?;
+    violations.extend(inspect_recon_input_contract(&recon_input)?);
     violations.extend(inspect_cli_auth_surface(&cli_main)?);
     violations.extend(inspect_scanner_context_validation(
         &scanner_context,
@@ -169,6 +173,11 @@ fn protected_type_cross_source_violations(
             workspace_root.join("crates/termivar-cli/src"),
             CLI_MAIN_SOURCE,
             &["Cli", "Commands", "ScanArgs"][..],
+        ),
+        (
+            workspace_root.join("crates/termivar-cli/src"),
+            RECON_INPUT_SOURCE,
+            &["ReconSnapshotInput", "ReconSnapshotInputError"][..],
         ),
         (
             workspace_root.join("crates/termivar-scanner/src"),
@@ -247,6 +256,178 @@ fn external_protected_type_violations(
     }
     visitor.visit_file(&syntax);
     Ok(visitor.violations)
+}
+
+fn inspect_recon_input_contract(source: &str) -> Result<Vec<String>, syn::Error> {
+    let production = source
+        .split_once("#[cfg(test)]")
+        .map_or(source, |(value, _)| value);
+    let syntax = syn::parse_file(production)?;
+    let compact = compact_source(production);
+    let mut violations = Vec::new();
+
+    let input_shape_is_exact = syntax.items.iter().any(|item| {
+        let Item::Struct(item) = item else {
+            return false;
+        };
+        let Fields::Named(fields) = &item.fields else {
+            return false;
+        };
+        item.ident == "ReconSnapshotInput"
+            && is_pub_crate(&item.vis)
+            && !has_derive_attribute(&item.attrs)
+            && fields.named.len() == 1
+            && fields.named.first().is_some_and(|field| {
+                matches!(field.vis, Visibility::Inherited)
+                    && field.ident.as_ref().is_some_and(|ident| ident == "path")
+                    && is_plain_type(&field.ty, "PathBuf")
+            })
+    });
+    if !input_shape_is_exact
+        || explicit_trait_impls(&syntax, "ReconSnapshotInput")
+            != BTreeSet::from(["Debug".to_owned()])
+    {
+        violations.push(
+            "ReconSnapshotInput must remain one underived crate-private PathBuf selection with only redacted Debug"
+                .to_owned(),
+        );
+    }
+
+    let required_fragments = [
+        "pub(crate)constfnnew(path:PathBuf)->Self{Self{path}}",
+        "pub(crate)fnload(self)->Result<ReconSnapshot,ReconSnapshotInputError>{",
+        "validate_explicit_local_file_path(&self.path)?;",
+        "auth_input::open_regular_file(self.path).map_err(map_open_error)?;",
+        ".metadata().map_err(|_|ReconSnapshotInputError::Unavailable)?.len();",
+        "MAX_RECON_SNAPSHOT_BYTES.checked_add(1)",
+        ".take(u64::try_from(retained_limit).unwrap_or(u64::MAX)).read_to_end(&mutbytes)",
+        "ifbytes.len()>MAX_RECON_SNAPSHOT_BYTES{returnErr(ReconSnapshotInputError::TooLarge);}",
+        "parse_recon_snapshot(&bytes).map_err(|_|ReconSnapshotInputError::InvalidDocument)",
+        ".field(\"path\",&\"<redacted>\")",
+    ];
+    for fragment in required_fragments {
+        if !compact.contains(fragment) {
+            violations.push(format!(
+                "recon snapshot local-input contract is missing exact fragment `{fragment}`"
+            ));
+        }
+    }
+    if compact
+        .matches("auth_input::open_regular_file(self.path)")
+        .count()
+        != 1
+        || compact.matches("parse_recon_snapshot(&bytes)").count() != 1
+        || compact.contains("self.path.clone()")
+    {
+        violations.push(
+            "recon snapshot input must validate, open once by ownership, bound one read, and parse once"
+                .to_owned(),
+        );
+    }
+    let ordered = [
+        "validate_explicit_local_file_path(&self.path)?;",
+        "auth_input::open_regular_file(self.path)",
+        ".metadata()",
+        ".take(u64::try_from(retained_limit)",
+        ".read_to_end(&mutbytes)",
+        "ifbytes.len()>MAX_RECON_SNAPSHOT_BYTES",
+        "parse_recon_snapshot(&bytes)",
+    ]
+    .into_iter()
+    .filter_map(|fragment| compact.find(fragment))
+    .collect::<Vec<_>>();
+    if ordered.len() != 7 || !ordered.windows(2).all(|pair| pair[0] < pair[1]) {
+        violations.push(
+            "recon snapshot input validation, single open, metadata bound, capped read, post-read bound, and parse order changed"
+                .to_owned(),
+        );
+    }
+
+    let mut authority = ReconInputAuthorityVisitor::default();
+    authority.visit_file(&syntax);
+    violations.extend(
+        authority.violations.into_iter().map(|name| {
+            format!("recon snapshot input gained forbidden ambient authority `{name}`")
+        }),
+    );
+    for forbidden in [
+        ".canonicalize(",
+        "read_dir(",
+        "include_bytes!(",
+        "include_str!(",
+        "option_env!(",
+    ] {
+        if compact.contains(forbidden) {
+            violations.push(format!(
+                "recon snapshot input gained forbidden search or compile-time read `{forbidden}`"
+            ));
+        }
+    }
+    Ok(violations)
+}
+
+#[derive(Default)]
+struct ReconInputAuthorityVisitor {
+    violations: BTreeSet<String>,
+}
+
+impl ReconInputAuthorityVisitor {
+    fn inspect_identifier(&mut self, identifier: &str) {
+        if matches!(
+            identifier,
+            "env"
+                | "fs"
+                | "net"
+                | "process"
+                | "thread"
+                | "tokio"
+                | "reqwest"
+                | "File"
+                | "OpenOptions"
+                | "Command"
+                | "TcpListener"
+                | "TcpStream"
+                | "ToSocketAddrs"
+                | "UdpSocket"
+                | "UnixDatagram"
+                | "UnixStream"
+        ) {
+            self.violations.insert(identifier.to_owned());
+        }
+    }
+
+    fn inspect_use_tree(&mut self, tree: &syn::UseTree) {
+        match tree {
+            syn::UseTree::Path(path) => {
+                self.inspect_identifier(&path.ident.to_string());
+                self.inspect_use_tree(path.tree.as_ref());
+            },
+            syn::UseTree::Name(name) => self.inspect_identifier(&name.ident.to_string()),
+            syn::UseTree::Rename(rename) => self.inspect_identifier(&rename.ident.to_string()),
+            syn::UseTree::Group(group) => {
+                for item in &group.items {
+                    self.inspect_use_tree(item);
+                }
+            },
+            syn::UseTree::Glob(_) => {
+                self.violations.insert("glob import".to_owned());
+            },
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ReconInputAuthorityVisitor {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        self.inspect_use_tree(&item.tree);
+        visit::visit_item_use(self, item);
+    }
+
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        for segment in &path.segments {
+            self.inspect_identifier(&segment.ident.to_string());
+        }
+        visit::visit_path(self, path);
+    }
 }
 
 struct ProtectedUseAliasVisitor<'a> {
@@ -836,6 +1017,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("oast_admin_token_file", "Option", Some("PathBuf")),
         ("oast_admin_token_stdin", "bool", None),
         ("openapi_review", "bool", None),
+        ("recon_snapshot", "Option", Some("PathBuf")),
         ("rest_review", "bool", None),
         ("secret_exposure_review", "bool", None),
         ("tls_observation", "bool", None),
@@ -1174,6 +1356,30 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
+    if fields.get("recon_snapshot").is_none_or(|field| {
+        !is_one_argument_type(&field.ty, "Option", "PathBuf")
+            || !exact_cfg_feature_attribute(&field.attrs, "recon-snapshot-import")
+            || !exact_arg_attribute(
+                &field.attrs,
+                "long,value_name=\"FILE\",requires=\"profile\"",
+            )
+    }) {
+        violations.push(
+            "CLI `recon_snapshot` must remain an exact feature-gated local path requiring an explicit profile"
+                .to_owned(),
+        );
+    }
+
+    if !compact.contains(
+        "fnscan_recon_snapshot_flags_conflict(profile:Option<CliScanProfile>,selected:bool,)->Option<&'staticstr>{ifselected&&profile!=Some(CliScanProfile::WebReview){Some(\"`--recon-snapshot`requires`--profileweb-review`\")}else{None}}",
+    ) || compact.matches("fnscan_recon_snapshot_flags_conflict(").count() != 1
+    {
+        violations.push(
+            "CLI reconnaissance snapshot validation must retain the exact web-review-only, value-free preflight"
+                .to_owned(),
+        );
+    }
+
     if fields.get("progress").is_none_or(|field| {
         !is_plain_type(&field.ty, "bool")
             || !exact_arg_attribute(&field.attrs, "long,requires=\"profile\"")
@@ -1505,6 +1711,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_flags_conflict",
         "scan_rest_review_flags_conflict",
         "scan_control_reference_mapping_flags_conflict",
+        "scan_recon_snapshot_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
@@ -1526,6 +1733,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "authorization_context_transport_is_allowed",
         "for_builtin",
         "with_defense_enforcement_enabled",
+        "load",
         "load",
         "prepare",
         "prepare",
@@ -1552,10 +1760,37 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
+    if compact
+        .matches("scan_recon_snapshot_flags_conflict(profile,recon_snapshot.is_some())")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI reconnaissance snapshot validation must receive the exact selected path state before any input or network work"
+                .to_owned(),
+        );
+    }
+    if compact
+        .matches(
+            "letrecon_snapshot_input=recon_snapshot.map(recon_input::ReconSnapshotInput::new);",
+        )
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI reconnaissance snapshot path must be selected exactly once without opening it before the typed load boundary"
+                .to_owned(),
+        );
+    }
     if !contains_ordered_subsequence(&ordered, &expected)
         || ordered
             .iter()
             .filter(|name| name.as_str() == "scan_control_reference_mapping_flags_conflict")
+            .count()
+            != 1
+        || ordered
+            .iter()
+            .filter(|name| name.as_str() == "scan_recon_snapshot_flags_conflict")
             .count()
             != 1
         || ordered
@@ -1567,7 +1802,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 6
+            != 7
         || ordered
             .iter()
             .filter(|name| name.as_str() == "prepare")
@@ -1585,6 +1820,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     }
     let typed_boundary_order = [
         "letwordpress_review=wordpress_review_input.map(|input|input.load(&target)).transpose()?;",
+        "letrecon_snapshot=recon_snapshot_input.map(recon_input::ReconSnapshotInput::load).transpose()?;",
         "letprepared_jwt_policy_review={#[cfg(feature=\"jwt-target-acceptance-review\")]{jwt_policy_review_input.map(|input|input.prepare(&target)).transpose()?}#[cfg(not(feature=\"jwt-target-acceptance-review\"))]{jwt_policy_review_input.map(auth_input::JwtPolicyReviewInput::prepare).transpose()?}};",
         "letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?;",
         "scan_wordpress_supplied_session_policy_conflict(wordpress_supplied_session,prepared.policy_version(),)",
@@ -2712,6 +2948,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_flags_conflict",
         "scan_rest_review_flags_conflict",
         "scan_control_reference_mapping_flags_conflict",
+        "scan_recon_snapshot_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
@@ -2815,6 +3052,7 @@ mod tests {
     use super::*;
 
     const AUTH_INPUT: &str = include_str!("../../../crates/termivar-cli/src/auth_input.rs");
+    const RECON_INPUT: &str = include_str!("../../../crates/termivar-cli/src/recon_input.rs");
     const CLI_MAIN: &str = include_str!("../../../crates/termivar-cli/src/main.rs");
     const SCANNER_CONTEXT: &str = include_str!(
         "../../../crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs"
@@ -2843,11 +3081,52 @@ mod tests {
     fn checked_in_secret_boundary_is_accepted() {
         let violations = inspect_auth_input_contract(AUTH_INPUT).unwrap();
         assert!(violations.is_empty(), "{violations:#?}");
+        let violations = inspect_recon_input_contract(RECON_INPUT).unwrap();
+        assert!(violations.is_empty(), "{violations:#?}");
         assert!(inspect_cli_auth_surface(CLI_MAIN).unwrap().is_empty());
         assert!(
             inspect_scanner_context_validation(SCANNER_CONTEXT, PAYLOAD_STRATEGY)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn recon_snapshot_loader_is_single_read_bounded_redacted_and_authority_closed() {
+        assert_mutation_fails(
+            RECON_INPUT,
+            "pub(crate) fn load(self)",
+            "pub(crate) fn load(&self)",
+            |source| inspect_recon_input_contract(source).unwrap(),
+            "local-input contract",
+        );
+        assert_mutation_fails(
+            RECON_INPUT,
+            "parse_recon_snapshot(&bytes).map_err(|_| ReconSnapshotInputError::InvalidDocument)",
+            "let _duplicate = auth_input::open_regular_file(self.path);\n        parse_recon_snapshot(&bytes).map_err(|_| ReconSnapshotInputError::InvalidDocument)",
+            |source| inspect_recon_input_contract(source).unwrap(),
+            "open once",
+        );
+        assert_mutation_fails(
+            RECON_INPUT,
+            "use std::{fmt, io::Read, path::PathBuf};",
+            "use std::{fmt, fs as storage, io::Read, path::PathBuf};",
+            |source| inspect_recon_input_contract(source).unwrap(),
+            "forbidden ambient authority `fs`",
+        );
+        assert_mutation_fails(
+            RECON_INPUT,
+            ".take(u64::try_from(retained_limit).unwrap_or(u64::MAX))",
+            "",
+            |source| inspect_recon_input_contract(source).unwrap(),
+            "local-input contract",
+        );
+        assert_mutation_fails(
+            RECON_INPUT,
+            ".field(\"path\", &\"<redacted>\")",
+            ".field(\"path\", &self.path)",
+            |source| inspect_recon_input_contract(source).unwrap(),
+            "local-input contract",
         );
     }
 

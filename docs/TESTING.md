@@ -307,6 +307,14 @@ runner-local values into the README as capacity claims.
 
 ## Before a pull request
 
+Recon snapshot acceptance uses literal source-qualified fixtures and the actual
+feature-enabled CLI. Option-off/on runs must have identical target request traces
+and assessment-item projections; imported trap hosts must receive no connection.
+Malformed and oversized inputs fail before output reservation and target traffic.
+Bundle Verify and self/controlled Compare run after fixture shutdown through
+feature-independent saved readers. Parser unit tests independently mutate
+duplicate keys, identities/references, closed values and each aggregate bound.
+
 At minimum:
 
 ```bash

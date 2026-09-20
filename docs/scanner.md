@@ -332,6 +332,21 @@ legal advice or compliance determinations; an absent item does not establish
 control fulfilment. See
 [Versioned control-reference mapping](internals/control-reference-mapping.md).
 
+### Optional local reconnaissance snapshot import
+
+The non-default `recon-snapshot-import` feature and explicit
+`--profile web-review --recon-snapshot FILE` select one strict local
+`security.recon-snapshot/v1` document. The file is fully bounded and validated
+before output reservation, credential reads, or runtime construction. Its
+source-qualified hypotheses are attached only after the ordinary assessment
+completes, so they cannot create subjects, broker permits, target/provider
+requests, assessment items, findings, or scan authorization.
+
+The audit preserves exact input byte identity separately from unverified source
+metadata and reports its 1 MiB input, 1,024-source, 1,024-record, 4,096-source-
+association and 4 MiB prepared-index bounds. See
+[Local reconnaissance snapshot import](internals/recon-snapshot-import.md).
+
 ## Internal domain facades
 
 The scanner's responsibility-dense domains are split behind their existing
@@ -495,6 +510,7 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | `ml` | Serializable external-model records; no learning, clustering, classification, or execution | Experimental |
 | `monitoring` | Caller-supplied performance records and comparisons; no telemetry collector | Experimental |
 | `control-reference-mapping` | Non-default development-only local mapping of completed typed assessment items to one built-in finite versioned reference catalogue; zero target/provider requests, no item-authority change, no score/pass/fail/certification/legal/compliance conclusion | Preview |
+| `recon-snapshot-import` | Non-default development-only strict import of one explicit bounded local reconnaissance snapshot; source-qualified hypotheses only, zero target/provider requests, no target/item/finding/authorization creation | Preview |
 | `compliance` | Caller-supplied audit/catalog records; no compliance determination | Experimental |
 | `threat-intel` | Caller-supplied feed/rule records and catalogs; no correlation or alert engine | Experimental |
 | `full` / `research` | Historical all-opt-in compatibility aggregates; not supported product tiers | Experimental |

@@ -26,6 +26,8 @@ mod auth_input;
 mod capabilities;
 mod decision_scan;
 mod progress;
+#[cfg(feature = "recon-snapshot-import")]
+mod recon_input;
 mod report_bundle;
 mod report_compare;
 mod report_verify;
@@ -440,6 +442,21 @@ fn scan_control_reference_mapping_flags_conflict(
     }
 }
 
+/// Rejects local reconnaissance-snapshot import outside its explicit
+/// web-review contract. This runs before opening the selected file, reserving
+/// output, or constructing any runtime/network authority.
+#[cfg(feature = "recon-snapshot-import")]
+fn scan_recon_snapshot_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--recon-snapshot` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
 /// Rejects local JWT policy review outside its explicit web-review contract.
 /// This runs before policy, key, token, output, or network acquisition.
 #[cfg(feature = "jwt-policy-review")]
@@ -586,6 +603,12 @@ struct ScanArgs {
     #[cfg(feature = "control-reference-mapping")]
     #[arg(long, requires = "profile")]
     control_reference_mapping: bool,
+    /// Import one explicit bounded local reconnaissance snapshot as
+    /// source-qualified asset hypotheses. Imported records add no target or
+    /// provider requests and cannot expand assessment scope.
+    #[cfg(feature = "recon-snapshot-import")]
+    #[arg(long, value_name = "FILE", requires = "profile")]
+    recon_snapshot: Option<PathBuf>,
     /// Review one explicitly supplied compact JWT against a bounded local
     /// policy and one local ES256 public JWK. The token is never sent to the
     /// target and no remote key is retrieved.
@@ -1257,6 +1280,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         tls_observation,
         #[cfg(feature = "control-reference-mapping")]
         control_reference_mapping,
+        #[cfg(feature = "recon-snapshot-import")]
+        recon_snapshot,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy,
         #[cfg(feature = "jwt-policy-review")]
@@ -1397,6 +1422,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     if let Some(message) =
         scan_control_reference_mapping_flags_conflict(profile, control_reference_mapping)
     {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "recon-snapshot-import")]
+    if let Some(message) = scan_recon_snapshot_flags_conflict(profile, recon_snapshot.is_some()) {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -1677,6 +1709,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .with_discovery_layout_path(wordpress_layout)
             .with_asset_fingerprint_catalog_path(wordpress_fingerprints)
     });
+    #[cfg(feature = "recon-snapshot-import")]
+    let recon_snapshot_input = recon_snapshot.map(recon_input::ReconSnapshotInput::new);
     #[cfg(feature = "authorization-review")]
     if resource_authorization_input.is_some()
         && !authorization_context_transport_is_allowed(&target)
@@ -1725,6 +1759,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         #[cfg(feature = "wordpress-review")]
         let wordpress_review = wordpress_review_input
             .map(|input| input.load(&target))
+            .transpose()?;
+        // Reconnaissance snapshots are inert non-secret local inputs. Their
+        // complete bounded structure is validated exactly once before output
+        // reservation, credential acquisition, or runtime construction.
+        #[cfg(feature = "recon-snapshot-import")]
+        let recon_snapshot = recon_snapshot_input
+            .map(recon_input::ReconSnapshotInput::load)
             .transpose()?;
         // The JWT policy and explicitly trusted public key are non-secret and
         // validated before output reservation. The compact token remains
@@ -1843,6 +1884,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 tls_observation,
                 #[cfg(feature = "control-reference-mapping")]
                 control_reference_mapping,
+                #[cfg(feature = "recon-snapshot-import")]
+                recon_snapshot,
                 #[cfg(feature = "jwt-policy-review")]
                 jwt_policy_review,
                 #[cfg(feature = "jwt-target-acceptance-review")]
@@ -2883,6 +2926,92 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[cfg(feature = "recon-snapshot-import")]
+    #[test]
+    fn recon_snapshot_is_explicit_web_review_only() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--recon-snapshot <FILE>"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--recon-snapshot",
+            "snapshot.json",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--recon-snapshot",
+            "snapshot.json",
+            "https://example.test/",
+        ])
+        .expect("semantic profile guard runs before local input acquisition");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(
+            baseline.recon_snapshot.as_deref(),
+            Some(std::path::Path::new("snapshot.json"))
+        );
+        assert_eq!(
+            scan_recon_snapshot_flags_conflict(baseline.profile, baseline.recon_snapshot.is_some(),),
+            Some("`--recon-snapshot` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--recon-snapshot",
+            "snapshot.json",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(
+            review.recon_snapshot.as_deref(),
+            Some(std::path::Path::new("snapshot.json"))
+        );
+        assert_eq!(
+            scan_recon_snapshot_flags_conflict(review.profile, review.recon_snapshot.is_some()),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "recon-snapshot-import"))]
+    #[test]
+    fn default_cli_does_not_expose_recon_snapshot() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--recon-snapshot"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--recon-snapshot",
+            "snapshot.json",
+            "https://example.test/",
+        ])
+        .is_err());
     }
 
     #[cfg(not(feature = "control-reference-mapping"))]

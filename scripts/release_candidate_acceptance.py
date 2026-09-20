@@ -73,6 +73,7 @@ EXCLUDED_FEATURES = (
     "jwt-target-acceptance-review",
     "legacy-scanner",
     "proxy-adapter",
+    "recon-snapshot-import",
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
@@ -113,6 +114,27 @@ CONTROL_REFERENCE_MAPPING_LIMITATION = (
     "source authenticity, applicability, or control fulfilment. The feature requires "
     "explicit --profile web-review and --control-reference-mapping, remains development-only, "
     "and is outside default, release-bundle, and published alpha.2 archives."
+)
+RECON_SNAPSHOT_OPTION = "--recon-snapshot"
+RECON_SNAPSHOT_PREREQUISITES = (
+    "--profile web-review",
+    "--recon-snapshot FILE",
+)
+RECON_SNAPSHOT_LIMITATION = (
+    "Imports one explicit bounded local security.recon-snapshot/v1 regular JSON file as "
+    "source-qualified asset hypotheses and schedules zero target or provider requests. V1 "
+    "admits only certificate-transparency names, DNS-history associations, structured "
+    "service-banner product hints, and reputation labels with explicit source, observation, "
+    "completeness, origin, and operator-declared rights metadata. Exact input byte length and "
+    "SHA-256 identify the supplied bytes but do not authenticate their producer, rights, "
+    "freshness, completeness, or truth. Imported records cannot create scan subjects, broker "
+    "permits, assessment items, findings, or authorization to contact a named asset; historical "
+    "association is not current ownership or scan authorization. No archive, decompression, "
+    "provider retrieval, implicit file search, or live validation occurs. Report Compare "
+    "separates snapshot/source changes from hypothesis and coverage changes; Verify checks "
+    "bundle integrity and schema consistency, not source authenticity or asset truth. The "
+    "feature requires explicit --profile web-review and --recon-snapshot FILE, remains "
+    "development-only, and is outside default, release-bundle, and published alpha.2 archives."
 )
 SECRET_EXPOSURE_OPTION = "--secret-exposure-review"
 SECRET_EXPOSURE_PREREQUISITES = (
@@ -879,6 +901,9 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require(re.search(rf"(?m)^\s*{re.escape(CONTROL_REFERENCE_MAPPING_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled control-reference mapping")
+    require(re.search(rf"(?m)^\s*{re.escape(RECON_SNAPSHOT_OPTION)}(?:\s|$)",
+                      scan_text) is None,
+            "scan help unexpectedly exposes non-bundled recon snapshot import")
     for option in SUPPLIED_SESSION_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
                 f"scan help unexpectedly exposes non-bundled option {option}")
@@ -992,6 +1017,41 @@ def _validate_control_reference_mapping_surface(
     require(f"    limit: {CONTROL_REFERENCE_MAPPING_LIMITATION}" in text_value,
             "control-reference-mapping limitation is absent from text output")
     return mapping
+
+
+def _validate_recon_snapshot_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    recon_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.recon-snapshot"
+    ]
+    require(len(recon_surfaces) == 1,
+            "packaged recon-snapshot surface identity changed")
+    recon = recon_surfaces[0]
+    require(recon.get("label") == "Local reconnaissance snapshot import"
+            and recon.get("compile_feature") == "recon-snapshot-import"
+            and recon.get("build_state") == expected_state
+            and recon.get("maturity") == "preview"
+            and recon.get("implementation_status") == "implemented"
+            and recon.get("group") == "optional"
+            and recon.get("kind") == "scan_option"
+            and recon.get("alias") is None
+            and recon.get("documentation")
+            == "docs/internals/recon-snapshot-import.md",
+            "packaged recon-snapshot surface metadata changed")
+    prerequisites = recon.get("prerequisites")
+    require(isinstance(prerequisites, list)
+            and all(isinstance(value, str) for value in prerequisites)
+            and tuple(prerequisites) == RECON_SNAPSHOT_PREREQUISITES,
+            "packaged recon-snapshot opt-in contract changed")
+    require(recon.get("limitation") == RECON_SNAPSHOT_LIMITATION,
+            "packaged recon-snapshot limitation changed")
+    require(f"[{expected_state}] {recon['label']}" in text_value,
+            "recon-snapshot capability text and JSON views disagree")
+    require(f"    limit: {RECON_SNAPSHOT_LIMITATION}" in text_value,
+            "recon-snapshot limitation is absent from text output")
+    return recon
 
 
 def _validate_tls_observation_surface(
@@ -1153,6 +1213,7 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "capabilities command surface identity changed")
     _validate_authorization_review_surface(surfaces, text_value, "compiled")
     _validate_control_reference_mapping_surface(surfaces, text_value, "not_compiled")
+    _validate_recon_snapshot_surface(surfaces, text_value, "not_compiled")
     _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
     _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
     _validate_jwt_policy_review_surface(surfaces, text_value, "not_compiled")
@@ -1257,6 +1318,15 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "claim_authority": "unchanged",
             "catalogue_changes": "methodology",
             "verification_scope": "integrity_and_schema_not_truth",
+        },
+        "recon_snapshot_import_preview": {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "target_requests": 0,
+            "provider_requests": 0,
+            "scope_authority": "unchanged",
         },
         "secret_exposure_preview": {
             "build_state": "not_compiled",

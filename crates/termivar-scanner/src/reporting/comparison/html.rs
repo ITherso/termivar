@@ -3,9 +3,9 @@
 use super::super::{write_html_text, RenderBuffer, ReportError};
 use super::{
     ComparisonDocument, ComparisonError, ComparisonItem, ControlReferenceMappingComparison,
-    ItemProjection, JwtPolicyReviewComparison, SecretExposureComparison, SourceMetadata,
-    SuppliedSessionComparison, TlsObservationComparison, WordPressEntityChanges,
-    WordPressFacetComparison, WordPressReviewComparison,
+    ItemProjection, JwtPolicyReviewComparison, ReconSnapshotImportComparison,
+    SecretExposureComparison, SourceMetadata, SuppliedSessionComparison, TlsObservationComparison,
+    WordPressEntityChanges, WordPressFacetComparison, WordPressReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -47,6 +47,9 @@ pub(super) fn render(
     }
     if let Some(comparison) = &document.control_reference_mapping_comparison {
         control_reference_mapping(&mut output, comparison)?;
+    }
+    if let Some(comparison) = &document.recon_snapshot_import_comparison {
+        recon_snapshot_import(&mut output, comparison)?;
     }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         wordpress_review(&mut output, wordpress)?;
@@ -309,6 +312,61 @@ fn control_reference_mapping(
     }
     output.push_str(
         "<details><summary>Control-reference mapping interpretation limits</summary><ul>",
+    )?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn recon_snapshot_import(
+    output: &mut RenderBuffer,
+    comparison: &ReconSnapshotImportComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"recon-snapshot-import-differences\"><h2 id=\"recon-snapshot-import-differences\">Reconnaissance snapshot import differences</h2><p class=\"muted\">Validated inert local snapshot projections are compared separately from target observations. Source, coverage, and hypothesis changes are imported-context differences, not target changes, findings, scan authorization, vulnerability, or remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Methodology", comparison.methodology.status.as_str()),
+        (
+            "Provenance and sources",
+            comparison.provenance_and_sources.status.as_str(),
+        ),
+        (
+            "Coverage and accounting",
+            comparison.coverage_and_accounting.status.as_str(),
+        ),
+        ("Hypotheses", comparison.hypotheses.status.as_str()),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str("</span>. Audit presence changes do not establish asset appearance, disappearance, vulnerability, or remediation.</p>")?;
+    }
+    for (label, facet) in [
+        ("Recon import methodology", &comparison.methodology),
+        (
+            "Recon provenance and sources",
+            &comparison.provenance_and_sources,
+        ),
+        (
+            "Recon coverage and accounting",
+            &comparison.coverage_and_accounting,
+        ),
+        ("Recon hypotheses", &comparison.hypotheses),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str(
+        "<details><summary>Reconnaissance snapshot interpretation limits</summary><ul>",
     )?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;

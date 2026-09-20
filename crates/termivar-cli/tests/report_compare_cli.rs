@@ -86,6 +86,59 @@ fn synthetic_report(items: Vec<Value>) -> Vec<u8> {
     .unwrap()
 }
 
+fn synthetic_empty_recon_snapshot_report() -> Vec<u8> {
+    let mut report: Value = serde_json::from_slice(&synthetic_report(Vec::new())).unwrap();
+    report["recon_snapshot_import"] = json!({
+        "schema":"security.recon-snapshot-import-audit/v1",
+        "policy":"termivar.recon-snapshot-import/v1",
+        "selected":true,
+        "input":{
+            "source_schema":"security.recon-snapshot/v1",
+            "byte_length":512,
+            "sha256":format!("sha256:{}", "a".repeat(64))
+        },
+        "snapshot":{"id":"synthetic-empty-snapshot","revision":"r1"},
+        "sources":[{
+            "source_id":"owned-source",
+            "namespace":"owned.fixture",
+            "revision":"r1",
+            "provider_time":null,
+            "observed_time":"2026-09-20T12:00:00Z",
+            "collection_method":"owned_fixture",
+            "completeness":"unknown",
+            "origin":"owned local fixture",
+            "rights":{
+                "status":"permitted_as_declared",
+                "attribution":"Termivar synthetic test fixture",
+                "notice":null
+            }
+        }],
+        "records":[],
+        "accounting":{
+            "source_count":1,
+            "record_count":0,
+            "source_association_count":0,
+            "prepared_index_bytes":256
+        },
+        "external_activity":{
+            "target_request_count":0,
+            "provider_request_count":0,
+            "archive_processing":"not_performed",
+            "decompression":"not_performed"
+        },
+        "claim_limits":{
+            "record_interpretation":"source_qualified_hypotheses_only",
+            "source_authentication":"not_established",
+            "asset_ownership":"not_established",
+            "current_reachability":"not_established",
+            "scan_authority":"not_granted",
+            "vulnerability":"not_established",
+            "impact":"not_established"
+        }
+    });
+    serde_json::to_vec(&report).unwrap()
+}
+
 fn synthetic_supplied_session_audit_v1() -> Value {
     json!({
         "schema": "security.supplied-session-audit/v1",
@@ -234,6 +287,41 @@ fn assert_refused(output: &Output) {
     assert!(!error.is_empty());
     assert!(!error.contains("PRIVATE"), "{error}");
     assert!(!error.contains("deterministic scan"), "{error}");
+}
+
+#[test]
+fn actual_feature_independent_cli_self_compares_selected_empty_recon_snapshot_audit() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory
+        .path()
+        .join("synthetic-empty-recon-assessment.json");
+    fs::write(&path, synthetic_empty_recon_snapshot_report()).unwrap();
+    let output = compare(&path, &path, Some("json"), None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schema"], "termivar-report-comparison/v1");
+    for group in ["only_in_after", "only_in_before", "changed", "unchanged"] {
+        assert_eq!(document[group], json!([]), "{group}");
+    }
+    let recon = &document["recon_snapshot_import_comparison"];
+    assert_eq!(
+        recon["schema"],
+        "termivar-recon-snapshot-import-comparison/v1"
+    );
+    assert_eq!(recon["status"], "compared");
+    for facet in [
+        "methodology",
+        "provenance_and_sources",
+        "coverage_and_accounting",
+        "hypotheses",
+    ] {
+        assert_eq!(recon[facet]["status"], "unchanged", "{facet}");
+    }
 }
 
 #[test]

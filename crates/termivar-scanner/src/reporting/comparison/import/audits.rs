@@ -1,7 +1,7 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
 use super::super::{
-    ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit,
+    ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit, ImportedReconSnapshotAudit,
     ImportedSecretExposureAudit, ImportedSuppliedSessionAudit, ImportedTlsObservationAudit,
     ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit, SuppliedSessionResourceBinding,
     WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
@@ -19,7 +19,10 @@ use crate::wordpress_version::{
 use serde_json::Map;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 pub(super) const REST_CAPABILITY: &str = "api.rest-readonly-surface-observed@1";
 pub(super) const WORDPRESS_CAPABILITY: &str = "technology.wordpress-surface-observed@1";
@@ -63,6 +66,20 @@ const CONTROL_REFERENCE_SOURCE_VERIFIED_AT: &str = "2026-09-20";
 const MAX_CONTROL_REFERENCE_MAPPING_RELATIONSHIPS: u64 = 4_096;
 const MAX_CONTROL_REFERENCE_MAPPING_LINKS: u64 = 16_384;
 const MAX_CONTROL_REFERENCE_LINKS_PER_ITEM: usize = 8;
+const RECON_SNAPSHOT_IMPORT_AUDIT_SCHEMA: &str = "security.recon-snapshot-import-audit/v1";
+const RECON_SNAPSHOT_SOURCE_SCHEMA: &str = "security.recon-snapshot/v1";
+const RECON_SNAPSHOT_IMPORT_POLICY: &str = "termivar.recon-snapshot-import/v1";
+const MAX_RECON_SNAPSHOT_SOURCES: u64 = 1_024;
+const MAX_RECON_SNAPSHOT_RECORDS: u64 = 1_024;
+const MAX_RECON_SNAPSHOT_ASSOCIATIONS: u64 = 4_096;
+const MAX_RECON_SNAPSHOT_INPUT_BYTES: u64 = 1_048_576;
+const MAX_RECON_SNAPSHOT_PREPARED_INDEX_BYTES: u64 = 4 * 1_024 * 1_024;
+const MAX_RECON_SNAPSHOT_TIMESTAMP_BYTES: usize = 96;
+const MAX_RECON_SNAPSHOT_ORIGIN_BYTES: usize = 2_048;
+const MAX_RECON_SNAPSHOT_RIGHTS_TEXT_BYTES: usize = 4_096;
+const MAX_RECON_SNAPSHOT_PRODUCT_BYTES: usize = 256;
+const MAX_RECON_SNAPSHOT_VERSION_BYTES: usize = 128;
+const MAX_RECON_SNAPSHOT_LABEL_BYTES: usize = 256;
 
 #[derive(Clone, Copy)]
 struct ExpectedControlReferenceRule {
@@ -1091,6 +1108,379 @@ pub(super) fn validate_control_reference_mapping(
         coverage: canonical_value(required(fields, "coverage")?)?,
         reference_set,
     })
+}
+
+pub(super) fn validate_recon_snapshot_import(
+    value: &Value,
+) -> Result<ImportedReconSnapshotAudit, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "input",
+            "snapshot",
+            "sources",
+            "records",
+            "accounting",
+            "external_activity",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == RECON_SNAPSHOT_IMPORT_AUDIT_SCHEMA)?;
+    check(string(fields, "policy")? == RECON_SNAPSHOT_IMPORT_POLICY)?;
+    check(boolean(fields, "selected")?)?;
+
+    let input = object(required(fields, "input")?)?;
+    keys(input, &["source_schema", "byte_length", "sha256"], &[])?;
+    check(string(input, "source_schema")? == RECON_SNAPSHOT_SOURCE_SCHEMA)?;
+    let input_bytes = number(input, "byte_length", MAX_RECON_SNAPSHOT_INPUT_BYTES)?;
+    check(input_bytes > 0)?;
+    check(digest(string(input, "sha256")?, "sha256:"))?;
+
+    let snapshot = object(required(fields, "snapshot")?)?;
+    keys(snapshot, &["id", "revision"], &[])?;
+    let snapshot_id = text(snapshot, "id", MAX_IDENTIFIER_BYTES)?;
+    let snapshot_revision = text(snapshot, "revision", MAX_IDENTIFIER_BYTES)?;
+    identifier(snapshot_id)?;
+    identifier(snapshot_revision)?;
+    let mut minimum_input_payload_bytes = 0_u64;
+    add_recon_input_text(&mut minimum_input_payload_bytes, snapshot_id)?;
+    add_recon_input_text(&mut minimum_input_payload_bytes, snapshot_revision)?;
+
+    let wire_sources = array(fields, "sources")?;
+    check(!wire_sources.is_empty() && wire_sources.len() as u64 <= MAX_RECON_SNAPSHOT_SOURCES)?;
+    let mut source_ids = BTreeSet::new();
+    let mut normalized_sources = BTreeMap::new();
+    for value in wire_sources {
+        let source = object(value)?;
+        keys(
+            source,
+            &[
+                "source_id",
+                "namespace",
+                "revision",
+                "provider_time",
+                "observed_time",
+                "collection_method",
+                "completeness",
+                "origin",
+                "rights",
+            ],
+            &[],
+        )?;
+        let source_id = text(source, "source_id", MAX_IDENTIFIER_BYTES)?;
+        let namespace = text(source, "namespace", MAX_IDENTIFIER_BYTES)?;
+        let revision = text(source, "revision", MAX_IDENTIFIER_BYTES)?;
+        identifier(source_id)?;
+        identifier(namespace)?;
+        identifier(revision)?;
+        check(source_ids.insert(source_id.to_owned()))?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, source_id)?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, namespace)?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, revision)?;
+        if let Some(provider_time) =
+            optional_text(source, "provider_time", MAX_RECON_SNAPSHOT_TIMESTAMP_BYTES)?
+        {
+            recon_ascii_text(provider_time, MAX_RECON_SNAPSHOT_TIMESTAMP_BYTES)?;
+            add_recon_input_text(&mut minimum_input_payload_bytes, provider_time)?;
+        }
+        let observed_time = text(source, "observed_time", MAX_RECON_SNAPSHOT_TIMESTAMP_BYTES)?;
+        recon_ascii_text(observed_time, MAX_RECON_SNAPSHOT_TIMESTAMP_BYTES)?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, observed_time)?;
+        let collection_method = text(source, "collection_method", MAX_IDENTIFIER_BYTES)?;
+        identifier(collection_method)?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, collection_method)?;
+        let completeness = token(
+            source,
+            "completeness",
+            &["complete_as_declared", "partial_as_declared", "unknown"],
+        )?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, completeness)?;
+        let origin = text(source, "origin", MAX_RECON_SNAPSHOT_ORIGIN_BYTES)?;
+        recon_text(origin, MAX_RECON_SNAPSHOT_ORIGIN_BYTES)?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, origin)?;
+        let rights = object(required(source, "rights")?)?;
+        keys(rights, &["status", "attribution", "notice"], &[])?;
+        let rights_status = token(
+            rights,
+            "status",
+            &["permitted_as_declared", "restricted_as_declared", "unknown"],
+        )?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, rights_status)?;
+        if let Some(attribution) =
+            optional_text(rights, "attribution", MAX_RECON_SNAPSHOT_RIGHTS_TEXT_BYTES)?
+        {
+            recon_text(attribution, MAX_RECON_SNAPSHOT_RIGHTS_TEXT_BYTES)?;
+            add_recon_input_text(&mut minimum_input_payload_bytes, attribution)?;
+        }
+        if let Some(notice) = optional_text(rights, "notice", MAX_RECON_SNAPSHOT_RIGHTS_TEXT_BYTES)?
+        {
+            recon_text(notice, MAX_RECON_SNAPSHOT_RIGHTS_TEXT_BYTES)?;
+            add_recon_input_text(&mut minimum_input_payload_bytes, notice)?;
+        }
+        check(
+            normalized_sources
+                .insert(source_id.to_owned(), canonical_value(value)?)
+                .is_none(),
+        )?;
+    }
+
+    let wire_records = array(fields, "records")?;
+    check(wire_records.len() as u64 <= MAX_RECON_SNAPSHOT_RECORDS)?;
+    let mut record_ids = BTreeSet::new();
+    let mut normalized_records = BTreeMap::new();
+    let mut association_count = 0_u64;
+    for value in wire_records {
+        let record = object(value)?;
+        let kind = token(
+            record,
+            "kind",
+            &[
+                "ct_name",
+                "dns_history",
+                "service_banner_product",
+                "reputation_label",
+            ],
+        )?;
+        match kind {
+            "ct_name" => keys(record, &["kind", "record_id", "source_ids", "name"], &[])?,
+            "dns_history" => keys(
+                record,
+                &["kind", "record_id", "source_ids", "name", "address"],
+                &[],
+            )?,
+            "service_banner_product" => keys(
+                record,
+                &[
+                    "kind",
+                    "record_id",
+                    "source_ids",
+                    "host",
+                    "port",
+                    "transport",
+                    "product",
+                    "version",
+                ],
+                &[],
+            )?,
+            "reputation_label" => keys(
+                record,
+                &["kind", "record_id", "source_ids", "subject", "label"],
+                &[],
+            )?,
+            _ => return Err(ComparisonError::InvalidDocument),
+        }
+        let record_id = text(record, "record_id", MAX_IDENTIFIER_BYTES)?;
+        identifier(record_id)?;
+        check(record_ids.insert(record_id.to_owned()))?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, kind)?;
+        add_recon_input_text(&mut minimum_input_payload_bytes, record_id)?;
+        let wire_source_ids = array(record, "source_ids")?;
+        check(!wire_source_ids.is_empty())?;
+        association_count = association_count
+            .checked_add(wire_source_ids.len() as u64)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        check(association_count <= MAX_RECON_SNAPSHOT_ASSOCIATIONS)?;
+        let mut record_source_ids = BTreeSet::new();
+        for source_id in wire_source_ids {
+            let source_id = source_id.as_str().ok_or(ComparisonError::InvalidDocument)?;
+            check(source_id.len() <= MAX_IDENTIFIER_BYTES && source_ids.contains(source_id))?;
+            check(record_source_ids.insert(source_id.to_owned()))?;
+            add_recon_input_text(&mut minimum_input_payload_bytes, source_id)?;
+        }
+        match kind {
+            "ct_name" => {
+                let name = text(record, "name", 253)?;
+                check(valid_recon_name(name, true))?;
+                add_recon_input_text(&mut minimum_input_payload_bytes, name)?;
+            },
+            "dns_history" => {
+                let name = text(record, "name", 253)?;
+                check(valid_recon_name(name, false))?;
+                add_recon_input_text(&mut minimum_input_payload_bytes, name)?;
+                let address = text(record, "address", 64)?;
+                let parsed_address = address
+                    .parse::<IpAddr>()
+                    .map_err(|_| ComparisonError::InvalidDocument)?;
+                check(parsed_address.to_string() == address)?;
+                add_recon_input_text(&mut minimum_input_payload_bytes, address)?;
+            },
+            "service_banner_product" => {
+                let host = text(record, "host", 253)?;
+                check(host.parse::<IpAddr>().is_ok() || valid_recon_name(host, false))?;
+                add_recon_input_text(&mut minimum_input_payload_bytes, host)?;
+                let port = number(record, "port", u64::from(u16::MAX))?;
+                check(port > 0)?;
+                let transport = token(record, "transport", &["tcp", "udp"])?;
+                add_recon_input_text(&mut minimum_input_payload_bytes, transport)?;
+                let product = text(record, "product", MAX_RECON_SNAPSHOT_PRODUCT_BYTES)?;
+                recon_text(product, MAX_RECON_SNAPSHOT_PRODUCT_BYTES)?;
+                add_recon_input_text(&mut minimum_input_payload_bytes, product)?;
+                if let Some(version) =
+                    optional_text(record, "version", MAX_RECON_SNAPSHOT_VERSION_BYTES)?
+                {
+                    recon_text(version, MAX_RECON_SNAPSHOT_VERSION_BYTES)?;
+                    add_recon_input_text(&mut minimum_input_payload_bytes, version)?;
+                }
+            },
+            "reputation_label" => {
+                let subject = text(record, "subject", 253)?;
+                check(subject.parse::<IpAddr>().is_ok() || valid_recon_name(subject, false))?;
+                add_recon_input_text(&mut minimum_input_payload_bytes, subject)?;
+                let label = text(record, "label", MAX_RECON_SNAPSHOT_LABEL_BYTES)?;
+                recon_text(label, MAX_RECON_SNAPSHOT_LABEL_BYTES)?;
+                add_recon_input_text(&mut minimum_input_payload_bytes, label)?;
+            },
+            _ => return Err(ComparisonError::InvalidDocument),
+        }
+        let mut normalized = canonical_value(value)?;
+        let normalized_object = normalized
+            .as_object_mut()
+            .ok_or(ComparisonError::InvalidDocument)?;
+        normalized_object.insert(
+            "source_ids".to_owned(),
+            Value::Array(record_source_ids.into_iter().map(Value::String).collect()),
+        );
+        check(
+            normalized_records
+                .insert(record_id.to_owned(), normalized)
+                .is_none(),
+        )?;
+    }
+
+    let accounting = object(required(fields, "accounting")?)?;
+    keys(
+        accounting,
+        &[
+            "source_count",
+            "record_count",
+            "source_association_count",
+            "prepared_index_bytes",
+        ],
+        &[],
+    )?;
+    check(
+        number(accounting, "source_count", MAX_RECON_SNAPSHOT_SOURCES)? == source_ids.len() as u64,
+    )?;
+    check(
+        number(accounting, "record_count", MAX_RECON_SNAPSHOT_RECORDS)? == record_ids.len() as u64,
+    )?;
+    check(
+        number(
+            accounting,
+            "source_association_count",
+            MAX_RECON_SNAPSHOT_ASSOCIATIONS,
+        )? == association_count,
+    )?;
+    let prepared_index_bytes = number(
+        accounting,
+        "prepared_index_bytes",
+        MAX_RECON_SNAPSHOT_PREPARED_INDEX_BYTES,
+    )?;
+    let prepared_index_minimum = recon_prepared_index_minimum(
+        source_ids.iter().map(String::as_str),
+        record_ids.iter().map(String::as_str),
+        association_count,
+    )?;
+    check(prepared_index_bytes >= prepared_index_minimum)?;
+    check(input_bytes >= minimum_input_payload_bytes)?;
+
+    let external = object(required(fields, "external_activity")?)?;
+    keys(
+        external,
+        &[
+            "target_request_count",
+            "provider_request_count",
+            "archive_processing",
+            "decompression",
+        ],
+        &[],
+    )?;
+    check(number(external, "target_request_count", 0)? == 0)?;
+    check(number(external, "provider_request_count", 0)? == 0)?;
+    check(string(external, "archive_processing")? == "not_performed")?;
+    check(string(external, "decompression")? == "not_performed")?;
+
+    let claims = object(required(fields, "claim_limits")?)?;
+    keys(
+        claims,
+        &[
+            "record_interpretation",
+            "source_authentication",
+            "asset_ownership",
+            "current_reachability",
+            "scan_authority",
+            "vulnerability",
+            "impact",
+        ],
+        &[],
+    )?;
+    check(string(claims, "record_interpretation")? == "source_qualified_hypotheses_only")?;
+    for name in [
+        "source_authentication",
+        "asset_ownership",
+        "current_reachability",
+        "vulnerability",
+        "impact",
+    ] {
+        check(string(claims, name)? == "not_established")?;
+    }
+    check(string(claims, "scan_authority")? == "not_granted")?;
+
+    let methodology = selected_object(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "external_activity",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    let mut provenance = Map::new();
+    provenance.insert(
+        "input".to_owned(),
+        canonical_value(required(fields, "input")?)?,
+    );
+    provenance.insert(
+        "snapshot".to_owned(),
+        canonical_value(required(fields, "snapshot")?)?,
+    );
+    provenance.insert(
+        "sources".to_owned(),
+        Value::Array(normalized_sources.into_values().collect()),
+    );
+    Ok(ImportedReconSnapshotAudit {
+        methodology,
+        provenance_and_sources: Value::Object(provenance),
+        coverage_and_accounting: canonical_value(required(fields, "accounting")?)?,
+        hypotheses: Value::Array(normalized_records.into_values().collect()),
+    })
+}
+
+fn valid_recon_name(value: &str, wildcard: bool) -> bool {
+    let value = if wildcard {
+        value.strip_prefix("*.").unwrap_or(value)
+    } else {
+        value
+    };
+    !value.is_empty()
+        && value.len() <= 253
+        && value.is_ascii()
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
 }
 
 pub(super) fn validate_secret_exposure(
@@ -10098,6 +10488,53 @@ fn inert_url(value: &str) -> Result<(), ComparisonError> {
             && url.username().is_empty()
             && url.password().is_none(),
     )
+}
+
+fn recon_text(value: &str, maximum: usize) -> Result<&str, ComparisonError> {
+    check(
+        !value.is_empty()
+            && value.len() <= maximum
+            && !value.chars().next().is_some_and(char::is_whitespace)
+            && !value.chars().next_back().is_some_and(char::is_whitespace)
+            && !value.chars().any(char::is_control),
+    )?;
+    Ok(value)
+}
+
+fn recon_ascii_text(value: &str, maximum: usize) -> Result<&str, ComparisonError> {
+    let value = recon_text(value, maximum)?;
+    check(value.is_ascii())?;
+    Ok(value)
+}
+
+fn add_recon_input_text(total: &mut u64, value: &str) -> Result<(), ComparisonError> {
+    let bytes = u64::try_from(value.len()).map_err(|_| ComparisonError::InvalidDocument)?;
+    *total = total
+        .checked_add(bytes)
+        .ok_or(ComparisonError::InvalidDocument)?;
+    Ok(())
+}
+
+fn recon_prepared_index_minimum<'a>(
+    source_ids: impl IntoIterator<Item = &'a str>,
+    record_ids: impl IntoIterator<Item = &'a str>,
+    association_count: u64,
+) -> Result<u64, ComparisonError> {
+    // The producer's platform-specific accounting is intentionally
+    // conservative. This wire check uses only a portable strict lower bound:
+    // one non-empty index container, every retained key byte, and one resolved
+    // source-index unit per association.
+    let mut total = 1_u64;
+    for identifier in source_ids.into_iter().chain(record_ids) {
+        total = total
+            .checked_add(
+                u64::try_from(identifier.len()).map_err(|_| ComparisonError::InvalidDocument)?,
+            )
+            .ok_or(ComparisonError::InvalidDocument)?;
+    }
+    total
+        .checked_add(association_count)
+        .ok_or(ComparisonError::InvalidDocument)
 }
 
 fn external_text(value: &str, maximum: usize, allow_empty: bool) -> Result<&str, ComparisonError> {

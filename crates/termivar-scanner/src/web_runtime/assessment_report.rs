@@ -108,6 +108,8 @@ use crate::authorization_review::{
 };
 #[cfg(feature = "control-reference-mapping")]
 use crate::control_reference_mapping::{map_control_references, ControlReferenceMappingAudit};
+#[cfg(feature = "recon-snapshot-import")]
+use crate::recon_snapshot::ReconSnapshot;
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{
     SuppliedSessionCredentialAcquisition, SuppliedSessionCredentialMechanism,
@@ -263,6 +265,8 @@ pub struct AssessmentRunReport {
     jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "control-reference-mapping")]
     control_reference_mapping: Option<ControlReferenceMappingAudit>,
+    #[cfg(feature = "recon-snapshot-import")]
+    recon_snapshot: Option<ReconSnapshot>,
 }
 
 #[derive(Default)]
@@ -460,6 +464,8 @@ impl AssessmentRunReport {
             jwt_policy_review: None,
             #[cfg(feature = "control-reference-mapping")]
             control_reference_mapping: None,
+            #[cfg(feature = "recon-snapshot-import")]
+            recon_snapshot: None,
         })
     }
 
@@ -613,6 +619,27 @@ impl AssessmentRunReport {
     #[cfg(feature = "control-reference-mapping")]
     pub const fn control_reference_mapping_audit(&self) -> Option<&ControlReferenceMappingAudit> {
         self.control_reference_mapping.as_ref()
+    }
+
+    /// Attaches one previously bounded, transport-free local reconnaissance
+    /// snapshot. The imported records remain inert source-qualified hypotheses
+    /// and cannot mint assessment items, subjects, or network authority.
+    #[cfg(feature = "recon-snapshot-import")]
+    pub(crate) fn with_recon_snapshot(
+        mut self,
+        audit: ReconSnapshot,
+    ) -> Result<Self, AssessmentRunReportError> {
+        if self.recon_snapshot.is_some() {
+            return Err(AssessmentRunReportError::ReconSnapshotAuditMismatch);
+        }
+        self.recon_snapshot = Some(audit);
+        Ok(self)
+    }
+
+    /// Returns the optional transport-free reconnaissance snapshot audit.
+    #[cfg(feature = "recon-snapshot-import")]
+    pub const fn recon_snapshot_audit(&self) -> Option<&ReconSnapshot> {
+        self.recon_snapshot.as_ref()
     }
 }
 
@@ -1275,6 +1302,11 @@ impl fmt::Debug for AssessmentRunReport {
         debug.field(
             "control_reference_mapping_audit_present",
             &self.control_reference_mapping.is_some(),
+        );
+        #[cfg(feature = "recon-snapshot-import")]
+        debug.field(
+            "recon_snapshot_audit_present",
+            &self.recon_snapshot.is_some(),
         );
         debug.finish()
     }
@@ -2092,6 +2124,11 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "control-reference-mapping")]
     #[error("control-reference mapping audit does not match completed assessment items")]
     ControlReferenceMappingAuditMismatch,
+    /// The optional bounded local reconnaissance snapshot was attached more
+    /// than once or otherwise violated the report composition contract.
+    #[cfg(feature = "recon-snapshot-import")]
+    #[error("reconnaissance snapshot audit does not match the report composition contract")]
+    ReconSnapshotAuditMismatch,
 }
 
 fn build_run_report(
@@ -2990,6 +3027,54 @@ mod tests {
         assert!(report.items().is_empty());
         assert_eq!(report.subject_count(), 1);
         assert_eq!(report.item_count(), 0);
+    }
+
+    #[cfg(feature = "recon-snapshot-import")]
+    #[test]
+    fn recon_snapshot_attachment_preserves_assessment_truth_and_is_single_use() {
+        let bytes = br#"{
+            "schema":"security.recon-snapshot/v1",
+            "snapshot_id":"synthetic-empty-snapshot",
+            "snapshot_revision":"revision-1",
+            "sources":[{
+                "source_id":"synthetic-source",
+                "namespace":"owned.fixture",
+                "revision":"source-r1",
+                "provider_time":null,
+                "observed_time":"2026-09-20T10:30:00Z",
+                "collection_method":"owned-offline-fixture",
+                "completeness":"unknown",
+                "origin":"owned fixture",
+                "rights":{"status":"permitted_as_declared","attribution":null,"notice":null}
+            }],
+            "records":[]
+        }"#;
+        let first = crate::recon_snapshot::parse_recon_snapshot(bytes).unwrap();
+        let duplicate = crate::recon_snapshot::parse_recon_snapshot(bytes).unwrap();
+        let report = AssessmentRunReport::new(
+            complete_run_report(PRIVATE_CANONICAL_TARGET, PRIVATE_EXACT_ORIGIN),
+            root_item_set(PRIVATE_EXACT_ORIGIN),
+            completed_truth(PRIVATE_CANONICAL_TARGET),
+        )
+        .unwrap();
+        let run_target = report.run_report().target().to_owned();
+        let subject_count = report.subject_count();
+        let item_count = report.item_count();
+
+        let report = report.with_recon_snapshot(first).unwrap();
+        assert_eq!(report.run_report().target(), run_target);
+        assert_eq!(report.subject_count(), subject_count);
+        assert_eq!(report.item_count(), item_count);
+        assert_eq!(
+            report
+                .recon_snapshot_audit()
+                .map(|audit| audit.record_count()),
+            Some(0)
+        );
+        assert_eq!(
+            report.with_recon_snapshot(duplicate).unwrap_err(),
+            AssessmentRunReportError::ReconSnapshotAuditMismatch
+        );
     }
 
     #[test]

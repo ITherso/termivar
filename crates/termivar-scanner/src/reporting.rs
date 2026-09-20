@@ -8,6 +8,12 @@ use crate::control_reference_mapping::{
     CONTROL_REFERENCE_MAPPING_CATALOGUE_ID, CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION,
     CONTROL_REFERENCE_MAPPING_POLICY_ID,
 };
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+use crate::recon_snapshot::{
+    ReconSnapshot, ReconnaissanceRecordValue, MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES,
+    MAX_RECONNAISSANCE_SNAPSHOT_RECORDS, MAX_RECONNAISSANCE_SNAPSHOT_SOURCES,
+    MAX_RECONNAISSANCE_SNAPSHOT_SOURCE_ASSOCIATIONS,
+};
 
 #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
 use crate::jwt_policy_review::{
@@ -134,6 +140,8 @@ pub const REPORT_DOCUMENT_SCHEMA: &str = "venom-rendered-run/v1";
 pub const ASSESSMENT_REPORT_DOCUMENT_SCHEMA: &str = "venom-rendered-assessment/v1";
 /// Maximum UTF-8 bytes returned by one render operation.
 pub const MAX_RENDERED_REPORT_BYTES: usize = 16 * 1_024 * 1_024;
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+const RECON_SNAPSHOT_IMPORT_AUDIT_SCHEMA: &str = "security.recon-snapshot-import-audit/v1";
 
 const REPORT_FORMATS: [ReportFormat; 4] = [
     ReportFormat::Json,
@@ -263,6 +271,18 @@ impl ReportGenerator {
         report: AssessmentRunReport,
     ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
         report.with_control_reference_mapping()
+    }
+
+    /// Attaches one explicitly supplied, already validated local
+    /// reconnaissance snapshot after the ordinary assessment has completed.
+    /// Imported hypotheses do not become subjects, assessment items, or
+    /// transport authority.
+    #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+    pub fn attach_recon_snapshot(
+        report: AssessmentRunReport,
+        audit: ReconSnapshot,
+    ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+        report.with_recon_snapshot(audit)
     }
 
     /// Renders one completed typed assessment through the existing bounded,
@@ -1318,6 +1338,46 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "recon-snapshot-import")]
+    if let Some(audit) = &document.recon_snapshot_import {
+        let evidence_count = audit.accounting.record_count.to_string();
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "recon_snapshot_import_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                "selected",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "informational",
+                "observation",
+                "",
+                "",
+                "",
+                &evidence_count,
+                &summary,
+                "offline-reconnaissance-snapshot-import",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         let evidence_count = audit.evidence_reference_count.to_string();
@@ -2161,6 +2221,30 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             }
         }
         output.push_str("</ul><p class=\"wp-note\">Framework identifiers and short titles are source-qualified references. Rights-deferred sources are bibliographic context only, and KVKK material is relevant technical context rather than legal advice or a compliance conclusion. No target or provider request was performed for this mapping.</p></section>")?;
+    }
+    #[cfg(feature = "recon-snapshot-import")]
+    if let Some(audit) = &document.recon_snapshot_import {
+        output.push_str("<section><h2>Offline reconnaissance snapshot import</h2><p class=\"wp-note\">Imported names, addresses, product hints, and reputation labels are source-qualified hypotheses only. The input digest identifies supplied bytes; it does not authenticate a source, establish asset ownership, authorize scanning, prove current reachability, or create a finding.</p><dl class=\"meta\">")?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Declared sources</h3><ul>")?;
+        for source in &audit.sources {
+            output.push_str("<li><code>")?;
+            write_html_text(&mut output, &source.presentation())?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul><h3>Source-qualified hypotheses</h3><ul>")?;
+        for record in &audit.records {
+            output.push_str("<li><code>")?;
+            write_html_text(&mut output, &record.presentation())?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul><p class=\"wp-note\">This import performed no target request, provider request, archive processing, or decompression. It did not add assessment subjects or items.</p></section>")?;
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
@@ -4541,6 +4625,28 @@ fn render_assessment_markdown(
         }
         output.push_str("\nFramework identifiers and short titles are source-qualified references. Rights-deferred sources are bibliographic context only, and KVKK material is relevant technical context rather than legal advice or a compliance conclusion. No target or provider request was performed for this mapping.\n")?;
     }
+    #[cfg(feature = "recon-snapshot-import")]
+    if let Some(audit) = &document.recon_snapshot_import {
+        output.push_str("\n### Offline reconnaissance snapshot import\n\nImported names, addresses, product hints, and reputation labels are source-qualified hypotheses only. The input digest identifies supplied bytes; it does not authenticate a source, establish asset ownership, authorize scanning, prove current reachability, or create a finding.\n\n")?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Declared sources\n\n")?;
+        for source in &audit.sources {
+            output.push_str("- ")?;
+            write_markdown_code_span(&mut output, &source.presentation())?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Source-qualified hypotheses\n\n")?;
+        for record in &audit.records {
+            output.push_str("- ")?;
+            write_markdown_code_span(&mut output, &record.presentation())?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\nThis import performed no target request, provider request, archive processing, or decompression. It did not add assessment subjects or items.\n")?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         output.push_str("\n### WordPress evidence review audit\n\n")?;
@@ -4661,6 +4767,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "control-reference-mapping")]
     #[serde(skip_serializing_if = "Option::is_none")]
     control_reference_mapping: Option<AssessmentControlReferenceMappingAuditDocument>,
+    #[cfg(feature = "recon-snapshot-import")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recon_snapshot_import: Option<AssessmentReconSnapshotImportAuditDocument>,
     #[cfg(feature = "wordpress-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -4821,6 +4930,11 @@ impl<'a> AssessmentDocument<'a> {
                 .control_reference_mapping_audit()
                 .map(AssessmentControlReferenceMappingAuditDocument::from_audit)
                 .transpose()?,
+            #[cfg(feature = "recon-snapshot-import")]
+            recon_snapshot_import: report
+                .recon_snapshot_audit()
+                .map(AssessmentReconSnapshotImportAuditDocument::from_audit)
+                .transpose()?,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: report
                 .wordpress_review_audit()
@@ -4902,6 +5016,10 @@ impl<'a> AssessmentDocument<'a> {
         #[cfg(feature = "control-reference-mapping")]
         if let Some(audit) = &self.control_reference_mapping {
             audit.validate(&self.items)?;
+        }
+        #[cfg(feature = "recon-snapshot-import")]
+        if let Some(audit) = &self.recon_snapshot_import {
+            audit.validate()?;
         }
         #[cfg(feature = "wordpress-review")]
         if let Some(audit) = &self.wordpress_review {
@@ -7091,6 +7209,478 @@ impl AssessmentControlReferenceMappingAuditDocument {
     fn wire_json(&self) -> Result<String, ReportError> {
         serde_json::to_string(self).map_err(|_| ReportError::Serialization)
     }
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+struct AssessmentReconSnapshotImportAuditDocument {
+    schema: &'static str,
+    policy: &'static str,
+    selected: bool,
+    input: AssessmentReconSnapshotInputDocument,
+    snapshot: AssessmentReconSnapshotIdentityDocument,
+    sources: Vec<AssessmentReconSnapshotSourceDocument>,
+    records: Vec<AssessmentReconSnapshotRecordDocument>,
+    accounting: AssessmentReconSnapshotAccountingDocument,
+    external_activity: AssessmentReconSnapshotExternalActivityDocument,
+    claim_limits: AssessmentReconSnapshotClaimLimitsDocument,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+struct AssessmentReconSnapshotInputDocument {
+    source_schema: &'static str,
+    byte_length: u64,
+    sha256: String,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+struct AssessmentReconSnapshotIdentityDocument {
+    id: String,
+    revision: String,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+struct AssessmentReconSnapshotSourceDocument {
+    source_id: String,
+    namespace: String,
+    revision: String,
+    provider_time: Option<String>,
+    observed_time: String,
+    collection_method: String,
+    completeness: &'static str,
+    origin: String,
+    rights: AssessmentReconSnapshotRightsDocument,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+struct AssessmentReconSnapshotRightsDocument {
+    status: &'static str,
+    attribution: Option<String>,
+    notice: Option<String>,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AssessmentReconSnapshotRecordDocument {
+    CtName {
+        record_id: String,
+        source_ids: Vec<String>,
+        name: String,
+    },
+    DnsHistory {
+        record_id: String,
+        source_ids: Vec<String>,
+        name: String,
+        address: String,
+    },
+    ServiceBannerProduct {
+        record_id: String,
+        source_ids: Vec<String>,
+        host: String,
+        port: u16,
+        transport: &'static str,
+        product: String,
+        version: Option<String>,
+    },
+    ReputationLabel {
+        record_id: String,
+        source_ids: Vec<String>,
+        subject: String,
+        label: String,
+    },
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+impl AssessmentReconSnapshotRecordDocument {
+    fn record_id(&self) -> &str {
+        match self {
+            Self::CtName { record_id, .. }
+            | Self::DnsHistory { record_id, .. }
+            | Self::ServiceBannerProduct { record_id, .. }
+            | Self::ReputationLabel { record_id, .. } => record_id,
+        }
+    }
+
+    fn source_ids(&self) -> &[String] {
+        match self {
+            Self::CtName { source_ids, .. }
+            | Self::DnsHistory { source_ids, .. }
+            | Self::ServiceBannerProduct { source_ids, .. }
+            | Self::ReputationLabel { source_ids, .. } => source_ids,
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::CtName { .. } => "ct_name",
+            Self::DnsHistory { .. } => "dns_history",
+            Self::ServiceBannerProduct { .. } => "service_banner_product",
+            Self::ReputationLabel { .. } => "reputation_label",
+        }
+    }
+
+    fn presentation(&self) -> String {
+        match self {
+            Self::CtName {
+                record_id,
+                source_ids,
+                name,
+            } => format!(
+                "record_id={record_id};kind=ct_name;source_ids={};name={name}",
+                source_ids.join(",")
+            ),
+            Self::DnsHistory {
+                record_id,
+                source_ids,
+                name,
+                address,
+            } => format!(
+                "record_id={record_id};kind=dns_history;source_ids={};name={name};address={address}",
+                source_ids.join(",")
+            ),
+            Self::ServiceBannerProduct {
+                record_id,
+                source_ids,
+                host,
+                port,
+                transport,
+                product,
+                version,
+            } => format!(
+                "record_id={record_id};kind=service_banner_product;source_ids={};host={host};port={port};transport={transport};product={product};version={}",
+                source_ids.join(","),
+                version.as_deref().unwrap_or("not_declared")
+            ),
+            Self::ReputationLabel {
+                record_id,
+                source_ids,
+                subject,
+                label,
+            } => format!(
+                "record_id={record_id};kind=reputation_label;source_ids={};subject={subject};label={label}",
+                source_ids.join(",")
+            ),
+        }
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+struct AssessmentReconSnapshotAccountingDocument {
+    source_count: u64,
+    record_count: u64,
+    source_association_count: u64,
+    prepared_index_bytes: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+struct AssessmentReconSnapshotExternalActivityDocument {
+    target_request_count: u64,
+    provider_request_count: u64,
+    archive_processing: &'static str,
+    decompression: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+#[derive(Serialize)]
+struct AssessmentReconSnapshotClaimLimitsDocument {
+    record_interpretation: &'static str,
+    source_authentication: &'static str,
+    asset_ownership: &'static str,
+    current_reachability: &'static str,
+    scan_authority: &'static str,
+    vulnerability: &'static str,
+    impact: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+impl AssessmentReconSnapshotSourceDocument {
+    fn presentation(&self) -> String {
+        format!(
+            "source_id={};namespace={};revision={};provider_time={};observed_time={};collection_method={};completeness={};origin={};rights_status={};attribution={};notice={}",
+            self.source_id,
+            self.namespace,
+            self.revision,
+            self.provider_time.as_deref().unwrap_or("not_declared"),
+            self.observed_time,
+            self.collection_method,
+            self.completeness,
+            self.origin,
+            self.rights.status,
+            self.rights.attribution.as_deref().unwrap_or("not_declared"),
+            self.rights.notice.as_deref().unwrap_or("not_declared"),
+        )
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+impl AssessmentReconSnapshotImportAuditDocument {
+    fn from_audit(audit: &ReconSnapshot) -> Result<Self, ReportError> {
+        let mut sources = audit
+            .sources()
+            .iter()
+            .map(|source| AssessmentReconSnapshotSourceDocument {
+                source_id: source.source_id().to_owned(),
+                namespace: source.namespace().to_owned(),
+                revision: source.revision().to_owned(),
+                provider_time: source.provider_time().map(str::to_owned),
+                observed_time: source.observed_time().to_owned(),
+                collection_method: source.collection_method().to_owned(),
+                completeness: source.completeness().as_str(),
+                origin: source.origin().to_owned(),
+                rights: AssessmentReconSnapshotRightsDocument {
+                    status: source.rights().status().as_str(),
+                    attribution: source.rights().attribution().map(str::to_owned),
+                    notice: source.rights().notice().map(str::to_owned),
+                },
+            })
+            .collect::<Vec<_>>();
+        sources.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+
+        let mut records = audit
+            .records()
+            .iter()
+            .map(|record| {
+                let record_id = record.record_id().to_owned();
+                let source_ids = record.source_ids().to_vec();
+                match record.value() {
+                    ReconnaissanceRecordValue::CtName(value) => {
+                        AssessmentReconSnapshotRecordDocument::CtName {
+                            record_id,
+                            source_ids,
+                            name: value.name().to_owned(),
+                        }
+                    },
+                    ReconnaissanceRecordValue::DnsHistory(value) => {
+                        AssessmentReconSnapshotRecordDocument::DnsHistory {
+                            record_id,
+                            source_ids,
+                            name: value.name().to_owned(),
+                            address: value.address().to_string(),
+                        }
+                    },
+                    ReconnaissanceRecordValue::ServiceBannerProduct(value) => {
+                        AssessmentReconSnapshotRecordDocument::ServiceBannerProduct {
+                            record_id,
+                            source_ids,
+                            host: value.host().to_owned(),
+                            port: value.port(),
+                            transport: value.transport().as_str(),
+                            product: value.product().to_owned(),
+                            version: value.version().map(str::to_owned),
+                        }
+                    },
+                    ReconnaissanceRecordValue::ReputationLabel(value) => {
+                        AssessmentReconSnapshotRecordDocument::ReputationLabel {
+                            record_id,
+                            source_ids,
+                            subject: value.subject().to_owned(),
+                            label: value.label().to_owned(),
+                        }
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| left.record_id().cmp(right.record_id()));
+        let external = audit.external_activity();
+        let document = Self {
+            schema: RECON_SNAPSHOT_IMPORT_AUDIT_SCHEMA,
+            policy: audit.policy(),
+            selected: true,
+            input: AssessmentReconSnapshotInputDocument {
+                source_schema: audit.schema(),
+                byte_length: audit.input().byte_length(),
+                sha256: format!("sha256:{}", audit.input().sha256_hex()),
+            },
+            snapshot: AssessmentReconSnapshotIdentityDocument {
+                id: audit.snapshot_id().to_owned(),
+                revision: audit.snapshot_revision().to_owned(),
+            },
+            sources,
+            records,
+            accounting: AssessmentReconSnapshotAccountingDocument {
+                source_count: u64::try_from(audit.source_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                record_count: u64::try_from(audit.record_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                source_association_count: u64::try_from(audit.source_association_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                prepared_index_bytes: u64::try_from(audit.prepared_index_bytes())
+                    .map_err(|_| ReportError::Serialization)?,
+            },
+            external_activity: AssessmentReconSnapshotExternalActivityDocument {
+                target_request_count: u64::from(external.target_request_count()),
+                provider_request_count: u64::from(external.provider_request_count()),
+                archive_processing: external.archive_processing().as_str(),
+                decompression: external.decompression().as_str(),
+            },
+            claim_limits: AssessmentReconSnapshotClaimLimitsDocument {
+                record_interpretation: audit.claim_limit().as_str(),
+                source_authentication: "not_established",
+                asset_ownership: "not_established",
+                current_reachability: "not_established",
+                scan_authority: "not_granted",
+                vulnerability: "not_established",
+                impact: "not_established",
+            },
+        };
+        document.validate()?;
+        Ok(document)
+    }
+
+    fn validate(&self) -> Result<(), ReportError> {
+        let source_count =
+            u64::try_from(self.sources.len()).map_err(|_| ReportError::Serialization)?;
+        let record_count =
+            u64::try_from(self.records.len()).map_err(|_| ReportError::Serialization)?;
+        let mut source_ids = std::collections::BTreeSet::new();
+        let sources_valid = !self.sources.is_empty()
+            && self.sources.len() <= MAX_RECONNAISSANCE_SNAPSHOT_SOURCES
+            && self.sources.iter().all(|source| {
+                source_ids.insert(source.source_id.as_str())
+                    && valid_recon_report_text(&source.source_id, 128)
+                    && valid_recon_report_text(&source.namespace, 128)
+                    && valid_recon_report_text(&source.revision, 128)
+                    && source
+                        .provider_time
+                        .as_deref()
+                        .is_none_or(|value| valid_recon_report_text(value, 96))
+                    && valid_recon_report_text(&source.observed_time, 96)
+                    && valid_recon_report_text(&source.collection_method, 128)
+                    && matches!(
+                        source.completeness,
+                        "complete_as_declared" | "partial_as_declared" | "unknown"
+                    )
+                    && valid_recon_report_text(&source.origin, 2_048)
+                    && matches!(
+                        source.rights.status,
+                        "permitted_as_declared" | "restricted_as_declared" | "unknown"
+                    )
+                    && source
+                        .rights
+                        .attribution
+                        .as_deref()
+                        .is_none_or(|value| valid_recon_report_text(value, 4_096))
+                    && source
+                        .rights
+                        .notice
+                        .as_deref()
+                        .is_none_or(|value| valid_recon_report_text(value, 4_096))
+            });
+        let mut record_ids = std::collections::BTreeSet::new();
+        let mut association_count = 0_u64;
+        let records_valid = self.records.len() <= MAX_RECONNAISSANCE_SNAPSHOT_RECORDS
+            && self.records.iter().all(|record| {
+                let references = record.source_ids();
+                let mut unique_references = std::collections::BTreeSet::new();
+                let count = u64::try_from(references.len()).ok();
+                association_count = count
+                    .and_then(|count| association_count.checked_add(count))
+                    .unwrap_or(u64::MAX);
+                record_ids.insert(record.record_id())
+                    && valid_recon_report_text(record.record_id(), 128)
+                    && !references.is_empty()
+                    && references.iter().all(|source_id| {
+                        unique_references.insert(source_id.as_str())
+                            && source_ids.contains(source_id.as_str())
+                    })
+                    && matches!(
+                        record.kind(),
+                        "ct_name" | "dns_history" | "service_banner_product" | "reputation_label"
+                    )
+                    && record.presentation().len() <= 8_192
+            });
+        if self.schema != RECON_SNAPSHOT_IMPORT_AUDIT_SCHEMA
+            || self.policy != "termivar.recon-snapshot-import/v1"
+            || !self.selected
+            || self.input.source_schema != "security.recon-snapshot/v1"
+            || self.input.byte_length == 0
+            || self.input.byte_length > 1_048_576
+            || !valid_recon_report_sha256(&self.input.sha256)
+            || !valid_recon_report_text(&self.snapshot.id, 128)
+            || !valid_recon_report_text(&self.snapshot.revision, 128)
+            || !sources_valid
+            || !records_valid
+            || association_count > MAX_RECONNAISSANCE_SNAPSHOT_SOURCE_ASSOCIATIONS as u64
+            || self.accounting.source_count != source_count
+            || self.accounting.record_count != record_count
+            || self.accounting.source_association_count != association_count
+            || self.accounting.prepared_index_bytes
+                > MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES as u64
+            || self.external_activity.target_request_count != 0
+            || self.external_activity.provider_request_count != 0
+            || self.external_activity.archive_processing != "not_performed"
+            || self.external_activity.decompression != "not_performed"
+            || self.claim_limits.record_interpretation != "source_qualified_hypotheses_only"
+            || self.claim_limits.source_authentication != "not_established"
+            || self.claim_limits.asset_ownership != "not_established"
+            || self.claim_limits.current_reachability != "not_established"
+            || self.claim_limits.scan_authority != "not_granted"
+            || self.claim_limits.vulnerability != "not_established"
+            || self.claim_limits.impact != "not_established"
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> [(&'static str, String); 13] {
+        [
+            ("Audit schema", self.schema.to_owned()),
+            ("Policy", self.policy.to_owned()),
+            ("Source schema", self.input.source_schema.to_owned()),
+            ("Input bytes", self.input.byte_length.to_string()),
+            ("Input SHA-256", self.input.sha256.clone()),
+            ("Snapshot ID", self.snapshot.id.clone()),
+            ("Snapshot revision", self.snapshot.revision.clone()),
+            ("Declared sources", self.accounting.source_count.to_string()),
+            (
+                "Hypothesis records",
+                self.accounting.record_count.to_string(),
+            ),
+            (
+                "Source associations",
+                self.accounting.source_association_count.to_string(),
+            ),
+            (
+                "Prepared index bytes",
+                self.accounting.prepared_index_bytes.to_string(),
+            ),
+            (
+                "Additional target requests",
+                self.external_activity.target_request_count.to_string(),
+            ),
+            (
+                "Provider requests",
+                self.external_activity.provider_request_count.to_string(),
+            ),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+fn valid_recon_report_text(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum_bytes && !value.chars().any(char::is_control)
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+fn valid_recon_report_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 #[cfg(all(feature = "scanning", feature = "tls-observation"))]
@@ -15062,6 +15652,8 @@ mod tests {
             jwt_policy_review: None,
             #[cfg(feature = "control-reference-mapping")]
             control_reference_mapping: None,
+            #[cfg(feature = "recon-snapshot-import")]
+            recon_snapshot_import: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
             #[cfg(feature = "wordpress-review")]
@@ -15253,6 +15845,63 @@ mod tests {
         assert!(html.contains("Versioned control-reference mapping audit"));
         assert!(markdown.contains("Versioned control-reference mapping audit"));
         assert!(csv.contains("control_reference_mapping_audit"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+    #[test]
+    fn selected_empty_recon_snapshot_is_rendered_safely_in_every_format() {
+        let snapshot = crate::recon_snapshot::parse_recon_snapshot(
+            br#"{
+                "schema":"security.recon-snapshot/v1",
+                "snapshot_id":"synthetic-empty-snapshot",
+                "snapshot_revision":"revision-1",
+                "sources":[{
+                    "source_id":"synthetic-source",
+                    "namespace":"owned.fixture",
+                    "revision":"source-r1",
+                    "provider_time":null,
+                    "observed_time":"2026-09-20T10:30:00Z",
+                    "collection_method":"owned-offline-fixture",
+                    "completeness":"unknown",
+                    "origin":"</script><script>synthetic_recon_inert()</script>",
+                    "rights":{"status":"permitted_as_declared","attribution":null,"notice":null}
+                }],
+                "records":[]
+            }"#,
+        )
+        .unwrap();
+        let mut document = observation_assessment_document("unmapped.fixture-capability@1");
+        document.items.clear();
+        document.item_count = 0;
+        document.recon_snapshot_import =
+            Some(AssessmentReconSnapshotImportAuditDocument::from_audit(&snapshot).unwrap());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["recon_snapshot_import"]["selected"], true);
+        assert_eq!(
+            value["recon_snapshot_import"]["records"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            value["recon_snapshot_import"]["claim_limits"]["scan_authority"],
+            "not_granted"
+        );
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(html.contains("Offline reconnaissance snapshot import"));
+        assert!(markdown.contains("Offline reconnaissance snapshot import"));
+        assert!(csv.contains("recon_snapshot_import_audit"));
+        assert!(!html.contains("<script>synthetic_recon_inert()</script>"));
+        let hostile_markdown_line = markdown
+            .lines()
+            .find(|line| line.contains("<script>synthetic_recon_inert()</script>"))
+            .expect("the declared source remains visible in a Markdown code span");
+        assert!(hostile_markdown_line.starts_with("- `"));
+        assert!(hostile_markdown_line.ends_with('`'));
     }
 
     #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]

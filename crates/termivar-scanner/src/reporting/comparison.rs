@@ -36,6 +36,9 @@ pub(super) const JWT_POLICY_REVIEW_COMPARISON_SCHEMA: &str =
 /// Additive, display-only control-reference mapping comparison section.
 pub(super) const CONTROL_REFERENCE_MAPPING_COMPARISON_SCHEMA: &str =
     "termivar-control-reference-mapping-comparison/v1";
+/// Additive, display-only local reconnaissance snapshot comparison section.
+pub(super) const RECON_SNAPSHOT_IMPORT_COMPARISON_SCHEMA: &str =
+    "termivar-recon-snapshot-import-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
@@ -208,6 +211,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) control_reference_mapping_comparison: Option<ControlReferenceMappingComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) recon_snapshot_import_comparison: Option<ReconSnapshotImportComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) wordpress_review_comparison: Option<WordPressReviewComparison>,
     pub(super) only_in_after: Vec<ComparisonItem>,
     pub(super) only_in_before: Vec<ComparisonItem>,
@@ -275,6 +280,19 @@ pub(super) struct ControlReferenceMappingComparison {
     pub(super) coverage: WordPressFacetComparison,
     pub(super) reference_set: WordPressFacetComparison,
     pub(super) interpretation_limits: [&'static str; 5],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ReconSnapshotImportComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) provenance_and_sources: WordPressFacetComparison,
+    pub(super) coverage_and_accounting: WordPressFacetComparison,
+    pub(super) hypotheses: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 6],
 }
 
 #[derive(Debug, Serialize)]
@@ -428,6 +446,14 @@ pub(super) struct ImportedControlReferenceMappingAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedReconSnapshotAudit {
+    pub(super) methodology: Value,
+    pub(super) provenance_and_sources: Value,
+    pub(super) coverage_and_accounting: Value,
+    pub(super) hypotheses: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SuppliedSessionResourceBinding {
     pub(super) evidence_reference: Option<String>,
     pub(super) response_bytes: u64,
@@ -513,6 +539,7 @@ struct ImportedDocument {
     tls_observation: Option<ImportedTlsObservationAudit>,
     jwt_policy_review: Option<ImportedJwtPolicyReviewAudit>,
     control_reference_mapping: Option<ImportedControlReferenceMappingAudit>,
+    recon_snapshot_import: Option<ImportedReconSnapshotAudit>,
     wordpress_review: Option<ImportedWordPressAudit>,
 }
 
@@ -550,6 +577,10 @@ fn compare_documents(
         before.control_reference_mapping.as_ref(),
         after.control_reference_mapping.as_ref(),
     );
+    let recon_snapshot_import_comparison = compare_recon_snapshot_import(
+        before.recon_snapshot_import.as_ref(),
+        after.recon_snapshot_import.as_ref(),
+    );
     let wordpress_review_comparison = compare_wordpress_reviews(
         before.wordpress_review.as_ref(),
         after.wordpress_review.as_ref(),
@@ -572,6 +603,7 @@ fn compare_documents(
         tls_observation_comparison,
         jwt_policy_review_comparison,
         control_reference_mapping_comparison,
+        recon_snapshot_import_comparison,
         wordpress_review_comparison,
         only_in_after: Vec::new(),
         only_in_before: Vec::new(),
@@ -965,6 +997,70 @@ fn compare_control_reference_mapping(
             "A mapping relationship does not establish organizational applicability, control fulfilment, compliance, certification, legal noncompliance, or source authenticity.",
             "An unmapped item means only that no exact rule in this finite catalogue matched; absence of a finding or mapping establishes no control outcome.",
             "One-sided or changed mapping audits can result from catalogue, source, methodology, coverage, or source-item changes and never by themselves prove target change or remediation.",
+        ],
+    })
+}
+
+fn compare_recon_snapshot_import(
+    before: Option<&ImportedReconSnapshotAudit>,
+    after: Option<&ImportedReconSnapshotAudit>,
+) -> Option<ReconSnapshotImportComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    Some(ReconSnapshotImportComparison {
+        schema: RECON_SNAPSHOT_IMPORT_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            paired_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Parser policy, external-activity declaration, or claim-limit changes are methodology changes; exact-input identity is compared with provenance and sources. None establishes a target, vulnerability, or remediation change.",
+        ),
+        provenance_and_sources: facet(
+            before.map(|audit| &audit.provenance_and_sources),
+            after.map(|audit| &audit.provenance_and_sources),
+            paired_status(
+                before.map(|audit| &audit.provenance_and_sources),
+                after.map(|audit| &audit.provenance_and_sources),
+            ),
+            "Snapshot identity and source declarations are operator-supplied provenance. Differences do not authenticate either source, establish freshness, or authorize scanning a named asset.",
+        ),
+        coverage_and_accounting: facet(
+            before.map(|audit| &audit.coverage_and_accounting),
+            after.map(|audit| &audit.coverage_and_accounting),
+            paired_status(
+                before.map(|audit| &audit.coverage_and_accounting),
+                after.map(|audit| &audit.coverage_and_accounting),
+            ),
+            "Source, record, association, and prepared-index counts describe the bounded imported snapshot only. Equal counts do not prove equal content or complete provider coverage.",
+        ),
+        hypotheses: facet(
+            before.map(|audit| &audit.hypotheses),
+            after.map(|audit| &audit.hypotheses),
+            paired_status(
+                before.map(|audit| &audit.hypotheses),
+                after.map(|audit| &audit.hypotheses),
+            ),
+            "Added, removed, or changed imported hypotheses are source-data differences, not target changes, newly discovered vulnerabilities, verified remediation, ownership, or reachability results.",
+        ),
+        interpretation_limits: [
+            "The imported snapshot is inert local reference material and performed no target request, provider request, archive processing, or decompression.",
+            "Names, addresses, service-product hints, and reputation labels remain source-qualified hypotheses and never become assessment items or broker authority.",
+            "Exact-input SHA-256 identifies supplied bytes; it is not a signature, source authentication, rights verification, freshness proof, or completeness proof.",
+            "A certificate name or historical DNS address does not establish current ownership, authorization, reachability, or tenant association.",
+            "One-sided audit presence is not comparable and does not establish asset appearance, disappearance, vulnerability, or remediation.",
+            "Hypothesis differences must be reviewed with their declared sources and limitations; they do not create a scan permit.",
         ],
     })
 }
@@ -1430,6 +1526,9 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
             control_reference_mapping,
         )?;
     }
+    if let Some(recon_snapshot) = &document.recon_snapshot_import_comparison {
+        write_recon_snapshot_import_comparison_markdown(&mut output, recon_snapshot)?;
+    }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         write_wordpress_comparison_markdown(&mut output, wordpress)?;
     }
@@ -1743,6 +1842,52 @@ fn write_control_reference_mapping_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### Control-reference mapping interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_recon_snapshot_import_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &ReconSnapshotImportComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Reconnaissance snapshot import differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str("\n\nThis section compares validated inert local snapshot projections. Source, coverage, and hypothesis changes are imported-context differences, not target changes, findings, authorization, vulnerability, or remediation.\n\n")?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Provenance and sources", &comparison.provenance_and_sources),
+        (
+            "Coverage and accounting",
+            &comparison.coverage_and_accounting,
+        ),
+        ("Hypotheses", &comparison.hypotheses),
+    ] {
+        output.push_fmt(format_args!("### Recon snapshot {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### Reconnaissance snapshot interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

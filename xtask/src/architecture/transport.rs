@@ -5420,7 +5420,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 16
+                fields.len() == 17
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -5473,6 +5473,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                         .is_some_and(|field| {
                             is_generic_of_idents(field, "Option", &["ControlReferenceMappingAudit"])
                         })
+                    && fields.get("recon_snapshot").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["ReconSnapshot"])
+                    })
                     && fields.get("ssrf_oast_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
                     })
@@ -5506,6 +5509,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "control_reference_mapping").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "control-reference-mapping")
             })
+            && private_named_field(item, "recon_snapshot").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "recon-snapshot-import")
+            })
             && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
             })
@@ -5520,7 +5526,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance and independently attached local JWT-policy and offline control-reference mapping audits; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
         ));
     }
 
@@ -13531,7 +13537,21 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(
-            violations.contains("offline control-reference mapping audits"),
+            violations.contains("offline control-reference mapping"),
+            "{violations}"
+        );
+
+        let missing_recon_snapshot_audit = report_source.replacen(
+            "    #[cfg(feature = \"recon-snapshot-import\")]\n    recon_snapshot: Option<ReconSnapshot>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_recon_snapshot_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_recon_snapshot_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("inert reconnaissance snapshot audits"),
             "{violations}"
         );
 

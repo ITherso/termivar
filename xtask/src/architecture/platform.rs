@@ -36,6 +36,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "oast-correlation",
     "oast-native-provider",
     "openapi-review",
+    "recon-snapshot-import",
     "rest-review",
     "secret-exposure-review",
     "ssrf-oast-review",
@@ -69,6 +70,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "oast-correlation",
     "oast-native-provider",
     "openapi-review",
+    "recon-snapshot-import",
     "rest-review",
     "secret-exposure-review",
     "ssrf-oast-review",
@@ -100,6 +102,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "normalization-resilience",
     "oast-correlation",
     "openapi-review",
+    "recon-snapshot-import",
     "rest-review",
     "secret-exposure-review",
     "platform-models",
@@ -129,6 +132,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "normalization-resilience",
     "oast-correlation",
     "openapi-review",
+    "recon-snapshot-import",
     "rest-review",
     "secret-exposure-review",
     "platform-models",
@@ -210,6 +214,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "normalization-resilience",
     "openapi-review",
     "proxy-adapter",
+    "recon-snapshot-import",
     "release-bundle",
     "rest-review",
     "secret-exposure-review",
@@ -264,6 +269,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
         "jwt_target_acceptance",
         "feature=\"jwt-target-acceptance-review\"",
     ),
+    ("recon_snapshot", "feature=\"recon-snapshot-import\""),
     ("legacy_discovery", "feature=\"legacy-scanner\""),
     ("logging", "feature=\"legacy-scanner\""),
     (
@@ -1059,6 +1065,9 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(core_surface_violations(workspace_root)?);
     let source = fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/lib.rs"))?;
     violations.extend(module_gate_violations(&source)?);
+    let recon_snapshot_source =
+        fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/recon_snapshot.rs"))?;
+    violations.extend(recon_snapshot_authority_violations(&recon_snapshot_source));
     violations.extend(scanner_legacy_reexport_violations(&source)?);
     violations.extend(private_facade_reexport_violations(
         &source,
@@ -1381,6 +1390,10 @@ fn cli_feature_violations(
             &["termivar-scanner/control-reference-mapping"][..],
         ),
         (
+            "recon-snapshot-import",
+            &["termivar-scanner/recon-snapshot-import"][..],
+        ),
+        (
             "ssrf-oast-review",
             &["termivar-scanner/ssrf-oast-review"][..],
         ),
@@ -1641,6 +1654,21 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             "control-reference-mapping",
             &[
                 "control-reference-mapping",
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "recon-snapshot-import",
+            &[
+                "recon-snapshot-import",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -1982,6 +2010,46 @@ fn module_gate_violations(source: &str) -> Result<Vec<String>, syn::Error> {
         )?);
     }
     Ok(violations)
+}
+
+fn recon_snapshot_authority_violations(source: &str) -> Vec<String> {
+    let production = source
+        .split_once("#[cfg(test)]")
+        .map_or(source, |(value, _)| value);
+    [
+        "reqwest",
+        "tokio",
+        "std::env",
+        "std::fs",
+        "std::io",
+        "std::net",
+        "std::process",
+        "std::thread",
+        "File",
+        "OpenOptions",
+        "TcpStream",
+        "TcpListener",
+        "UdpSocket",
+        "ToSocketAddrs",
+        "UnixStream",
+        "UnixDatagram",
+        "Command",
+        "include_bytes",
+        "include_str",
+        "web_runtime",
+        "request_broker",
+        "planner",
+        "knowledge",
+        "Evidence",
+    ]
+    .into_iter()
+    .filter(|forbidden| production.contains(forbidden))
+    .map(|forbidden| {
+        format!(
+            "recon snapshot parser must remain inert and authority-free; production source contains `{forbidden}`"
+        )
+    })
+    .collect()
 }
 
 fn graphql_review_contract_violations(
@@ -5411,6 +5479,7 @@ const EXACT_REPORTING_INHERENT_METHODS: &[(&str, &[&str])] = &[
         &[
             "available_formats",
             "attach_control_reference_mapping",
+            "attach_recon_snapshot",
             "compose_assessment",
             "compose_assessment_with_jwt_policy_review",
             "generate",
@@ -5467,6 +5536,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             (
                 "control_reference_mapping",
                 "Option<AssessmentControlReferenceMappingAuditDocument>",
+            ),
+            (
+                "recon_snapshot_import",
+                "Option<AssessmentReconSnapshotImportAuditDocument>",
             ),
             (
                 "wordpress_review",
@@ -5586,6 +5659,96 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("applicability_condition", "&'static str"),
             ("assurance", "&'static str"),
             ("original_mapping_rationale", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentReconSnapshotImportAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy", "&'static str"),
+            ("selected", "bool"),
+            ("input", "AssessmentReconSnapshotInputDocument"),
+            ("snapshot", "AssessmentReconSnapshotIdentityDocument"),
+            ("sources", "Vec<AssessmentReconSnapshotSourceDocument>"),
+            ("records", "Vec<AssessmentReconSnapshotRecordDocument>"),
+            ("accounting", "AssessmentReconSnapshotAccountingDocument"),
+            (
+                "external_activity",
+                "AssessmentReconSnapshotExternalActivityDocument",
+            ),
+            ("claim_limits", "AssessmentReconSnapshotClaimLimitsDocument"),
+        ],
+    ),
+    (
+        "AssessmentReconSnapshotInputDocument",
+        &[],
+        &[
+            ("source_schema", "&'static str"),
+            ("byte_length", "u64"),
+            ("sha256", "String"),
+        ],
+    ),
+    (
+        "AssessmentReconSnapshotIdentityDocument",
+        &[],
+        &[("id", "String"), ("revision", "String")],
+    ),
+    (
+        "AssessmentReconSnapshotSourceDocument",
+        &[],
+        &[
+            ("source_id", "String"),
+            ("namespace", "String"),
+            ("revision", "String"),
+            ("provider_time", "Option<String>"),
+            ("observed_time", "String"),
+            ("collection_method", "String"),
+            ("completeness", "&'static str"),
+            ("origin", "String"),
+            ("rights", "AssessmentReconSnapshotRightsDocument"),
+        ],
+    ),
+    (
+        "AssessmentReconSnapshotRightsDocument",
+        &[],
+        &[
+            ("status", "&'static str"),
+            ("attribution", "Option<String>"),
+            ("notice", "Option<String>"),
+        ],
+    ),
+    (
+        "AssessmentReconSnapshotAccountingDocument",
+        &[],
+        &[
+            ("source_count", "u64"),
+            ("record_count", "u64"),
+            ("source_association_count", "u64"),
+            ("prepared_index_bytes", "u64"),
+        ],
+    ),
+    (
+        "AssessmentReconSnapshotExternalActivityDocument",
+        &[],
+        &[
+            ("target_request_count", "u64"),
+            ("provider_request_count", "u64"),
+            ("archive_processing", "&'static str"),
+            ("decompression", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentReconSnapshotClaimLimitsDocument",
+        &[],
+        &[
+            ("record_interpretation", "&'static str"),
+            ("source_authentication", "&'static str"),
+            ("asset_ownership", "&'static str"),
+            ("current_reachability", "&'static str"),
+            ("scan_authority", "&'static str"),
+            ("vulnerability", "&'static str"),
+            ("impact", "&'static str"),
         ],
     ),
     (
@@ -6917,6 +7080,14 @@ fn reporting_serde_skip_serializing(attribute: &Attribute) -> bool {
         })
 }
 
+fn reporting_serde_recon_record_shape(attribute: &Attribute) -> bool {
+    attribute.path().is_ident("serde")
+        && attribute.meta.require_list().is_ok_and(|list| {
+            squash_ascii_whitespace(&list.tokens.to_string())
+                == "tag=\"kind\",rename_all=\"snake_case\""
+        })
+}
+
 fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature: &str) -> bool {
     let expected = match feature {
         "authorization-review" => "feature=\"authorization-review\"",
@@ -6927,6 +7098,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "jwt-policy-review" => "feature=\"jwt-policy-review\"",
         "jwt-target-acceptance-review" => "feature=\"jwt-target-acceptance-review\"",
         "control-reference-mapping" => "feature=\"control-reference-mapping\"",
+        "recon-snapshot-import" => "feature=\"recon-snapshot-import\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
         _ => return false,
@@ -6993,6 +7165,14 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentControlReferenceClaimLimitsDocument"
                 | "AssessmentControlReferenceRelationshipDocument"
                 | "AssessmentControlReferenceLinkDocument"
+                | "AssessmentReconSnapshotImportAuditDocument"
+                | "AssessmentReconSnapshotInputDocument"
+                | "AssessmentReconSnapshotIdentityDocument"
+                | "AssessmentReconSnapshotSourceDocument"
+                | "AssessmentReconSnapshotRightsDocument"
+                | "AssessmentReconSnapshotAccountingDocument"
+                | "AssessmentReconSnapshotExternalActivityDocument"
+                | "AssessmentReconSnapshotClaimLimitsDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -7128,6 +7308,16 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentControlReferenceLinkDocument" => {
                     "all(feature=\"scanning\",feature=\"control-reference-mapping\")"
                 },
+                "AssessmentReconSnapshotImportAuditDocument"
+                | "AssessmentReconSnapshotInputDocument"
+                | "AssessmentReconSnapshotIdentityDocument"
+                | "AssessmentReconSnapshotSourceDocument"
+                | "AssessmentReconSnapshotRightsDocument"
+                | "AssessmentReconSnapshotAccountingDocument"
+                | "AssessmentReconSnapshotExternalActivityDocument"
+                | "AssessmentReconSnapshotClaimLimitsDocument" => {
+                    "all(feature=\"scanning\",feature=\"recon-snapshot-import\")"
+                },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -7258,6 +7448,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         reporting_audit_field_attributes_are_exact(
                             &field.attrs,
                             "control-reference-mapping",
+                        )
+                    } else if name == "AssessmentDocument" && field_name == "recon_snapshot_import"
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "recon-snapshot-import",
                         )
                     } else if name == "AssessmentJwtPolicyReviewAuditDocument"
                         && matches!(
@@ -7675,6 +7871,15 @@ fn reporting_public_api_violations(source: &str) -> Result<Vec<String>, syn::Err
                                             .to_owned(),
                                     );
                                 }
+                            } else if owner == "ReportGenerator"
+                                && method.sig.ident == "attach_recon_snapshot"
+                            {
+                                if !reporting_scanning_recon_snapshot_cfg_is_exact(&method.attrs) {
+                                    violations.push(
+                                        "reporting public method `ReportGenerator::attach_recon_snapshot` must have exactly cfg(all(feature = \"scanning\", feature = \"recon-snapshot-import\")) plus documentation"
+                                            .to_owned(),
+                                    );
+                                }
                             } else {
                                 reject_reporting_cfg_attributes(
                                     &method.attrs,
@@ -7986,6 +8191,19 @@ fn reporting_scanning_control_mapping_cfg_is_exact(attributes: &[Attribute]) -> 
         == 1
 }
 
+fn reporting_scanning_recon_snapshot_cfg_is_exact(attributes: &[Attribute]) -> bool {
+    attributes.iter().all(|attribute| {
+        attribute.path().is_ident("doc")
+            || (attribute.path().is_ident("cfg")
+                && cfg_predicate(attribute).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"recon-snapshot-import\")"))
+    }) && attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("cfg"))
+        .count()
+        == 1
+}
+
 fn validate_reporting_public_constant(item: &syn::ItemConst, violations: &mut Vec<String>) {
     match item.ident.to_string().as_str() {
         "ASSESSMENT_REPORT_DOCUMENT_SCHEMA"
@@ -8198,6 +8416,15 @@ fn reporting_signature_matches(owner: &str, method: &str, signature: &syn::Signa
                     if simple_type_path(&argument.ty, "AssessmentRunReport").is_some())
                 && assessment_bridge_return_is_exact(&signature.output)
         },
+        ("ReportGenerator", "attach_recon_snapshot") => {
+            signature.constness.is_none()
+                && signature.inputs.len() == 2
+                && matches!(signature.inputs.first(), Some(syn::FnArg::Typed(argument))
+                    if simple_type_path(&argument.ty, "AssessmentRunReport").is_some())
+                && matches!(signature.inputs.iter().nth(1), Some(syn::FnArg::Typed(argument))
+                    if simple_type_path(&argument.ty, "ReconSnapshot").is_some())
+                && assessment_bridge_return_is_exact(&signature.output)
+        },
         ("ReportGenerator", "generate_assessment") => {
             signature.constness.is_none()
                 && signature.inputs.len() == 2
@@ -8271,6 +8498,16 @@ fn validate_reporting_public_method_body(
                 if call.method == "with_control_reference_mapping"
                     && call.turbofish.is_none()
                     && call.args.is_empty()
+                    && reporting_expression_path_key(call.receiver.as_ref()).as_deref()
+                        == Some("report"))
+        },
+        ("ReportGenerator", "attach_recon_snapshot") => {
+            matches!(reporting_only_expression(block), Some(syn::Expr::MethodCall(call))
+                if call.method == "with_recon_snapshot"
+                    && call.turbofish.is_none()
+                    && call.args.len() == 1
+                    && call.args.first().is_some_and(|argument|
+                        reporting_expression_path_key(argument).as_deref() == Some("audit"))
                     && reporting_expression_path_key(call.receiver.as_ref()).as_deref()
                         == Some("report"))
         },
@@ -9907,8 +10144,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 518_964;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x88d4_f1ca_a64b_433b_1830_c352_edfe_ee3b;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 539_368;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xbd49_1d4f_dbde_c413_1bf8_b958_b692_996f;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -10038,6 +10275,12 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES",
+    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES",
+    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_RECORDS",
+    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_SOURCES",
+    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_SOURCE_ASSOCIATIONS",
+    "crate::recon_snapshot::ReconSnapshot",
+    "crate::recon_snapshot::ReconnaissanceRecordValue",
     "crate::rest_review::RestDocumentedResponseClass",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
@@ -10179,6 +10422,11 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentRunReportError::JwtPolicyReviewAuditMismatch",
     "AssessmentControlReferenceMappingAuditDocument::from_audit",
+    "AssessmentReconSnapshotImportAuditDocument::from_audit",
+    "AssessmentReconSnapshotRecordDocument::CtName",
+    "AssessmentReconSnapshotRecordDocument::DnsHistory",
+    "AssessmentReconSnapshotRecordDocument::ReputationLabel",
+    "AssessmentReconSnapshotRecordDocument::ServiceBannerProduct",
     "AssessmentDecisionOverview::from_document",
     "AssessmentJwtPolicyReviewAuditDocument::from_audits",
     "AssessmentJwtTargetAcceptanceAuditDocument::from_audit",
@@ -10235,6 +10483,16 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES",
+    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES",
+    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_RECORDS",
+    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_SOURCES",
+    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_SOURCE_ASSOCIATIONS",
+    "crate::recon_snapshot::ReconSnapshot",
+    "crate::recon_snapshot::ReconnaissanceRecordValue",
+    "ReconnaissanceRecordValue::CtName",
+    "ReconnaissanceRecordValue::DnsHistory",
+    "ReconnaissanceRecordValue::ReputationLabel",
+    "ReconnaissanceRecordValue::ServiceBannerProduct",
     "crate::web_runtime::SECRET_EXPOSURE_AUDIT_SCHEMA",
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_ID",
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
@@ -10836,6 +11094,11 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "std::cmp::Ordering::Greater",
     "std::cmp::Ordering::Less",
     "std::error::Error",
+    "Self::CtName",
+    "Self::DnsHistory",
+    "Self::ReputationLabel",
+    "Self::ServiceBannerProduct",
+    "u64::MAX",
     "std::fmt",
     "std::io",
     "std::str::from_utf8",
@@ -10867,6 +11130,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
+    "valid_recon_report_sha256",
+    "valid_recon_report_text",
     "AccountingDimension::from_accounting",
     "AccountingDocument::from_report",
     "AssessmentBasisLinkageDocument::from_basis",
@@ -11102,6 +11367,35 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "address",
+    "archive_processing",
+    "attribution",
+    "claim_limit",
+    "collection_method",
+    "completeness",
+    "decompression",
+    "host",
+    "input",
+    "namespace",
+    "observed_time",
+    "origin",
+    "prepared_index_bytes",
+    "presentation",
+    "product",
+    "provider_time",
+    "recon_snapshot_audit",
+    "record_count",
+    "record_id",
+    "records",
+    "rights",
+    "snapshot_id",
+    "snapshot_revision",
+    "source_association_count",
+    "source_count",
+    "source_ids",
+    "subject",
+    "transport",
+    "with_recon_snapshot",
     "accepted_association_count",
     "accounted_response_bytes",
     "activity",
@@ -11898,6 +12192,18 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES"
                 )
             });
+        let recon_snapshot_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES"
+                        | "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_RECORDS"
+                        | "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_SOURCES"
+                        | "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_SOURCE_ASSOCIATIONS"
+                        | "crate::recon_snapshot::ReconSnapshot"
+                        | "crate::recon_snapshot::ReconnaissanceRecordValue"
+                )
+            });
         let supplied_session_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -12042,6 +12348,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")")
+        } else if recon_snapshot_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"recon-snapshot-import\")")
         } else if supplied_session_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -12125,6 +12436,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                 cfg.as_deref(),
                 Some("feature=\"scanning\"")
                     | Some("feature=\"control-reference-mapping\"")
+                    | Some("feature=\"recon-snapshot-import\"")
                     | Some("feature=\"authorization-review\"")
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
@@ -12138,6 +12450,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"wordpress-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
                     | Some("all(feature=\"scanning\",feature=\"control-reference-mapping\")")
+                    | Some("all(feature=\"scanning\",feature=\"recon-snapshot-import\")")
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
                     | Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
@@ -12156,7 +12469,8 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
         }
         let exact_redaction_attribute = reporting_serde_skip_option_is_none(attribute)
             || reporting_serde_skip_vec_is_empty(attribute)
-            || reporting_serde_skip_serializing(attribute);
+            || reporting_serde_skip_serializing(attribute)
+            || reporting_serde_recon_record_shape(attribute);
         if !ALLOWED_REPORTING_ATTRIBUTES.contains(&attribute_name.as_str())
             && !matches!(attribute_name.as_str(), "cfg" | "cfg_attr")
             && !exact_redaction_attribute
@@ -12432,6 +12746,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
             || key.starts_with("crate::control_reference_mapping::")
             || key.starts_with("crate::jwt_policy_review::")
             || key.starts_with("crate::jwt_target_acceptance::")
+            || key.starts_with("crate::recon_snapshot::")
             || key.starts_with("crate::rest_review::")
             || key.starts_with("crate::supplied_session_review::")
             || key.starts_with("crate::wordpress_review::")
@@ -12894,6 +13209,10 @@ mod tests {
         );
         features.insert(
             "control-reference-mapping".to_owned(),
+            vec!["scanning".to_owned()],
+        );
+        features.insert(
+            "recon-snapshot-import".to_owned(),
             vec!["scanning".to_owned()],
         );
         features.insert(
@@ -15896,6 +16215,13 @@ mod tests {
                 ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
                     report.with_control_reference_mapping()
                 }
+                #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+                pub fn attach_recon_snapshot(
+                    report: AssessmentRunReport,
+                    audit: ReconSnapshot,
+                ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+                    report.with_recon_snapshot(audit)
+                }
                 #[cfg(feature = "scanning")]
                 pub fn generate_assessment(
                     report: &AssessmentRunReport,
@@ -16022,6 +16348,28 @@ mod tests {
             .unwrap()
             .iter()
             .any(|violation| violation.contains("compose_assessment")
+                && violation.contains("exact bounded implementation")));
+
+        let broadened_recon_gate = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"recon-snapshot-import\"))]\n                pub fn attach_recon_snapshot",
+            "#[cfg(feature = \"scanning\")]\n                pub fn attach_recon_snapshot",
+        );
+        assert_ne!(broadened_recon_gate, source);
+        assert!(reporting_public_api_violations(&broadened_recon_gate)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("attach_recon_snapshot")
+                && violation.contains("exactly cfg")));
+
+        let forged_recon_attachment = source.replace(
+            "report.with_recon_snapshot(audit)",
+            "report.with_control_reference_mapping()",
+        );
+        assert_ne!(forged_recon_attachment, source);
+        assert!(reporting_public_api_violations(&forged_recon_attachment)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("attach_recon_snapshot")
                 && violation.contains("exact bounded implementation")));
 
         let externally_supplied_assessment_run =
@@ -16154,6 +16502,14 @@ mod tests {
                 JWT_TARGET_ACCEPTANCE_POLICY_ID, MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS,
                 MAX_JWT_TARGET_ACCEPTANCE_REQUESTS, MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES,
                 MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES,
+            };
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            use crate::recon_snapshot::{
+                ReconSnapshot, ReconnaissanceRecordValue,
+                MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES,
+                MAX_RECONNAISSANCE_SNAPSHOT_RECORDS,
+                MAX_RECONNAISSANCE_SNAPSHOT_SOURCES,
+                MAX_RECONNAISSANCE_SNAPSHOT_SOURCE_ASSOCIATIONS,
             };
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             use crate::{
@@ -16315,6 +16671,16 @@ mod tests {
         );
         assert_ne!(widened_jwt_target_import, imports);
         let violations = reporting_source_import_violations(&widened_jwt_target_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_recon_snapshot_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"recon-snapshot-import\"))]\n            use crate::recon_snapshot::{",
+            "#[cfg(feature = \"scanning\")]\n            use crate::recon_snapshot::{",
+        );
+        assert_ne!(widened_recon_snapshot_import, imports);
+        let violations = reporting_source_import_violations(&widened_recon_snapshot_import)
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
@@ -16713,6 +17079,9 @@ mod tests {
                 #[cfg(feature = "control-reference-mapping")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 control_reference_mapping: Option<AssessmentControlReferenceMappingAuditDocument>,
+                #[cfg(feature = "recon-snapshot-import")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                recon_snapshot_import: Option<AssessmentReconSnapshotImportAuditDocument>,
                 #[cfg(feature = "wordpress-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -16806,6 +17175,80 @@ mod tests {
                 applicability_condition: &'static str,
                 assurance: &'static str,
                 original_mapping_rationale: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            #[derive(Serialize)]
+            struct AssessmentReconSnapshotImportAuditDocument {
+                schema: &'static str,
+                policy: &'static str,
+                selected: bool,
+                input: AssessmentReconSnapshotInputDocument,
+                snapshot: AssessmentReconSnapshotIdentityDocument,
+                sources: Vec<AssessmentReconSnapshotSourceDocument>,
+                records: Vec<AssessmentReconSnapshotRecordDocument>,
+                accounting: AssessmentReconSnapshotAccountingDocument,
+                external_activity: AssessmentReconSnapshotExternalActivityDocument,
+                claim_limits: AssessmentReconSnapshotClaimLimitsDocument,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            #[derive(Serialize)]
+            struct AssessmentReconSnapshotInputDocument {
+                source_schema: &'static str,
+                byte_length: u64,
+                sha256: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            #[derive(Serialize)]
+            struct AssessmentReconSnapshotIdentityDocument {
+                id: String,
+                revision: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            #[derive(Serialize)]
+            struct AssessmentReconSnapshotSourceDocument {
+                source_id: String,
+                namespace: String,
+                revision: String,
+                provider_time: Option<String>,
+                observed_time: String,
+                collection_method: String,
+                completeness: &'static str,
+                origin: String,
+                rights: AssessmentReconSnapshotRightsDocument,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            #[derive(Serialize)]
+            struct AssessmentReconSnapshotRightsDocument {
+                status: &'static str,
+                attribution: Option<String>,
+                notice: Option<String>,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            #[derive(Serialize)]
+            struct AssessmentReconSnapshotAccountingDocument {
+                source_count: u64,
+                record_count: u64,
+                source_association_count: u64,
+                prepared_index_bytes: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            #[derive(Serialize)]
+            struct AssessmentReconSnapshotExternalActivityDocument {
+                target_request_count: u64,
+                provider_request_count: u64,
+                archive_processing: &'static str,
+                decompression: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
+            #[derive(Serialize)]
+            struct AssessmentReconSnapshotClaimLimitsDocument {
+                record_interpretation: &'static str,
+                source_authentication: &'static str,
+                asset_ownership: &'static str,
+                current_reachability: &'static str,
+                scan_authority: &'static str,
+                vulnerability: &'static str,
+                impact: &'static str,
             }
             #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
             #[derive(Serialize)]
@@ -18471,6 +18914,53 @@ mod tests {
     }
 
     #[test]
+    fn recon_snapshot_reporting_shape_gate_and_serde_contract_are_exact() {
+        let source = valid_reporting_document_contract_fixture();
+        assert!(reporting_document_contract_violations(source)
+            .unwrap()
+            .is_empty());
+
+        let missing_prepared_index =
+            source.replacen("                prepared_index_bytes: u64,", "", 1);
+        assert_ne!(missing_prepared_index, source);
+        let violations = reporting_document_contract_violations(&missing_prepared_index)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentReconSnapshotAccountingDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let broadened_gate = source.replacen(
+            "#[cfg(all(feature = \"scanning\", feature = \"recon-snapshot-import\"))]\n            #[derive(Serialize)]\n            struct AssessmentReconSnapshotImportAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentReconSnapshotImportAuditDocument",
+            1,
+        );
+        assert_ne!(broadened_gate, source);
+        let violations = reporting_document_contract_violations(&broadened_gate)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentReconSnapshotImportAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
+        let production = include_str!("../../../crates/termivar-scanner/src/reporting.rs");
+        let changed_record_tag = production.replace(
+            "#[serde(tag = \"kind\", rename_all = \"snake_case\")]",
+            "#[serde(tag = \"type\", rename_all = \"snake_case\")]",
+        );
+        assert_ne!(changed_record_tag, production);
+        assert!(reporting_source_violations(&changed_record_tag)
+            .unwrap()
+            .iter()
+            .any(|violation| violation.contains("attribute `serde`")
+                && violation.contains("outside the exact allowlist")));
+    }
+
+    #[test]
     fn reporting_comparison_declaration_does_not_unlock_existing_renderer() {
         let source =
             include_str!("../../../crates/termivar-scanner/src/reporting.rs").replace("\r\n", "\n");
@@ -18614,6 +19104,10 @@ mod tests {
             (
                 "control-reference-mapping".to_owned(),
                 vec!["termivar-scanner/control-reference-mapping".to_owned()],
+            ),
+            (
+                "recon-snapshot-import".to_owned(),
+                vec!["termivar-scanner/recon-snapshot-import".to_owned()],
             ),
             (
                 "supplied-session-review".to_owned(),
@@ -19577,6 +20071,7 @@ mod tests {
             #[cfg(feature = "platform-models")] pub mod config;
             #[cfg(feature = "platform-models")] pub mod config_loader;
             #[cfg(feature = "control-reference-mapping")] pub mod control_reference_mapping;
+            #[cfg(feature = "recon-snapshot-import")] pub mod recon_snapshot;
             #[cfg(feature = "legacy-scanner")] pub mod context;
             #[cfg(feature = "legacy-scanner")] pub mod contracts;
             #[cfg(feature = "platform-models")] pub mod dashboard;
@@ -19655,6 +20150,29 @@ mod tests {
             violation.contains("module `control_reference_mapping`")
                 && violation.contains("exact cfg")
         }));
+    }
+
+    #[test]
+    fn recon_snapshot_parser_rejects_runtime_and_network_authority() {
+        let valid = r#"
+            pub fn parse(bytes: &[u8]) -> usize { bytes.len() }
+            #[cfg(test)]
+            mod tests { fn fixture() { let _ = "reqwest::Client"; } }
+        "#;
+        assert!(recon_snapshot_authority_violations(valid).is_empty());
+
+        for mutation in [
+            "use std::net::TcpStream; pub fn parse() {}",
+            "use std::{net::{UdpSocket as Datagram, ToSocketAddrs}, process::Command as Runner}; pub fn parse() {}",
+            "use std::fs::{self, File as Snapshot, OpenOptions}; pub fn parse() {}",
+            "pub fn parse() { let _ = include_bytes!(\"private.json\"); }",
+            "pub fn parse() { let _ = reqwest::Client::new(); }",
+            "use crate::web_runtime::WebAssessmentRuntime; pub fn parse() {}",
+            "use crate::request_broker::HttpRequestBroker; pub fn parse() {}",
+        ] {
+            let violations = recon_snapshot_authority_violations(mutation);
+            assert!(!violations.is_empty(), "{violations:?}");
+        }
     }
 
     #[test]

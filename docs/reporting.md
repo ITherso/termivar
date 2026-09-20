@@ -74,6 +74,24 @@ It contains no standards body text beyond the permitted identifiers and exact
 title references described in the
 [mapping contract](internals/control-reference-mapping.md).
 
+### Optional reconnaissance snapshot import audit
+
+With `recon-snapshot-import` compiled and `--profile web-review
+--recon-snapshot FILE` selected, the central document may contain one
+`recon_snapshot_import` object using
+`security.recon-snapshot-import-audit/v1`. It records the exact supplied-byte
+identity separately from declared snapshot/source provenance, bounded
+source-qualified hypotheses, reconciled coverage/index accounting, zero import
+network activity, and explicit claim limits. It never changes `items`, item
+counts, dispositions, severity, evidence authority, or target scope. The source
+file and its local path are not bundled.
+
+Feature-independent Verify validates the saved structure and bundle bytes, not
+source authenticity or asset truth. Compare reports methodology, provenance,
+coverage, and hypothesis-set differences separately; one-sided audit presence
+is `not_comparable`, and no difference establishes target change or remediation.
+See [the import contract](internals/recon-snapshot-import.md).
+
 This appendix is descriptive. It does not modify any item's stable identity,
 severity, disposition, remediation, evidence or claim authority. It is not a
 score, pass/fail result, certification, legal advice or compliance

@@ -57,6 +57,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "jwt-target-acceptance-review",
     "legacy-scanner",
     "proxy-adapter",
+    "recon-snapshot-import",
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
@@ -74,6 +75,7 @@ EXPECTED_FEATURE_STATES = {
     "normalization-resilience": "compiled",
     "openapi-review": "compiled",
     "proxy-adapter": "not_compiled",
+    "recon-snapshot-import": "not_compiled",
     "release-bundle": "compiled",
     "rest-review": "compiled",
     "secret-exposure-review": "not_compiled",
@@ -116,6 +118,27 @@ EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION = (
     "source authenticity, applicability, or control fulfilment. The feature requires "
     "explicit --profile web-review and --control-reference-mapping, remains development-only, "
     "and is outside default, release-bundle, and published alpha.2 archives."
+)
+EXPECTED_RECON_SNAPSHOT_OPTION = "--recon-snapshot"
+EXPECTED_RECON_SNAPSHOT_PREREQUISITES = (
+    "--profile web-review",
+    "--recon-snapshot FILE",
+)
+EXPECTED_RECON_SNAPSHOT_LIMITATION = (
+    "Imports one explicit bounded local security.recon-snapshot/v1 regular JSON file as "
+    "source-qualified asset hypotheses and schedules zero target or provider requests. V1 "
+    "admits only certificate-transparency names, DNS-history associations, structured "
+    "service-banner product hints, and reputation labels with explicit source, observation, "
+    "completeness, origin, and operator-declared rights metadata. Exact input byte length and "
+    "SHA-256 identify the supplied bytes but do not authenticate their producer, rights, "
+    "freshness, completeness, or truth. Imported records cannot create scan subjects, broker "
+    "permits, assessment items, findings, or authorization to contact a named asset; historical "
+    "association is not current ownership or scan authorization. No archive, decompression, "
+    "provider retrieval, implicit file search, or live validation occurs. Report Compare "
+    "separates snapshot/source changes from hypothesis and coverage changes; Verify checks "
+    "bundle integrity and schema consistency, not source authenticity or asset truth. The "
+    "feature requires explicit --profile web-review and --recon-snapshot FILE, remains "
+    "development-only, and is outside default, release-bundle, and published alpha.2 archives."
 )
 EXPECTED_SECRET_EXPOSURE_PREREQUISITES = (
     "--profile web-review",
@@ -1113,6 +1136,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "prerequisites": list(EXPECTED_CONTROL_REFERENCE_MAPPING_PREREQUISITES),
             "limitation": EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION,
             "documentation": "docs/internals/control-reference-mapping.md",
+        },
+        {
+            "key": "option.recon-snapshot",
+            "label": "Local reconnaissance snapshot import",
+            "compile_feature": "recon-snapshot-import",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_RECON_SNAPSHOT_PREREQUISITES),
+            "limitation": EXPECTED_RECON_SNAPSHOT_LIMITATION,
+            "documentation": "docs/internals/recon-snapshot-import.md",
         },
         {
             "key": "option.secret-exposure-review",
@@ -2771,9 +2808,9 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 18)
+        self.assertEqual(len(rows), 19)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 10)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 11)
         self.assertNotIn(EXPECTED_CONTROL_REFERENCE_MAPPING_OPTION,
                          fake_help(["scan", "--help"]).decode("utf-8"))
         result = self.validate(document)
@@ -2797,6 +2834,15 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "claim_authority": "unchanged",
             "catalogue_changes": "methodology",
             "verification_scope": "integrity_and_schema_not_truth",
+        })
+        self.assertEqual(result["recon_snapshot_import_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "target_requests": 0,
+            "provider_requests": 0,
+            "scope_authority": "unchanged",
         })
         self.assertEqual(result["secret_exposure_preview"], {
             "build_state": "not_compiled",
@@ -3087,6 +3133,96 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         document = capabilities()
         text = capabilities_text(document).replace(
             f"    limit: {EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION}\n".encode(), b"")
+        self.assert_rejected(document, "limitation is absent", text)
+
+    def test_recon_snapshot_surface_matches_producer_and_fails_closed(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.recon-snapshot",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = '\n            "docs/internals/recon-snapshot-import.md",'
+        self.assertEqual(block.count(documentation), 1)
+        limitation_line = block.split(documentation, 1)[0].splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_RECON_SNAPSHOT_LIMITATION)
+
+        valid = capabilities()
+        surface = next(row for row in valid["surfaces"]
+                       if row["key"] == "option.recon-snapshot")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_RECON_SNAPSHOT_PREREQUISITES)
+        self.assertEqual(surface["limitation"], EXPECTED_RECON_SNAPSHOT_LIMITATION)
+        self.assertNotIn(EXPECTED_RECON_SNAPSHOT_OPTION,
+                         fake_help(["scan", "--help"]).decode("utf-8"))
+        self.validate(valid)
+
+        for field, wrong in (
+            ("label", "Recon scanner"),
+            ("compile_feature", "threat-intel"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "recon"),
+            ("documentation", "docs/recon.md"),
+        ):
+            with self.subTest(field=field):
+                document = capabilities()
+                next(row for row in document["surfaces"]
+                     if row["key"] == "option.recon-snapshot")[field] = wrong
+                self.assert_rejected(document, "recon-snapshot surface metadata")
+
+        for wrong in (None, True, 2, {}, [True], ["--recon-snapshot FILE"]):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                next(row for row in document["surfaces"]
+                     if row["key"] == "option.recon-snapshot")["prerequisites"] = wrong
+                self.assert_rejected(document, "recon-snapshot opt-in contract")
+
+        for old, new in (
+            ("zero target or provider requests", "one provider request"),
+            ("cannot create scan subjects, broker permits, assessment items, findings, or authorization",
+             "creates scan subjects and authorization"),
+            ("No archive, decompression, provider retrieval, implicit file search, or live validation",
+             "Retrieves providers automatically"),
+            ("do not authenticate their producer, rights, freshness, completeness, or truth",
+             "authenticates source truth"),
+            ("requires explicit --profile web-review and --recon-snapshot FILE",
+             "runs automatically"),
+            ("outside default, release-bundle, and published alpha.2 archives",
+             "included in release-bundle"),
+        ):
+            with self.subTest(old=old):
+                document = capabilities()
+                row = next(row for row in document["surfaces"]
+                           if row["key"] == "option.recon-snapshot")
+                self.assertEqual(row["limitation"].count(old), 1)
+                row["limitation"] = row["limitation"].replace(old, new)
+                self.assert_rejected(document, "recon-snapshot limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [row for row in missing["surfaces"]
+                               if row["key"] != "option.recon-snapshot"]
+        self.assert_rejected(missing, "recon-snapshot surface identity")
+
+        duplicate = capabilities()
+        duplicate["surfaces"].append(copy.deepcopy(next(
+            row for row in duplicate["surfaces"]
+            if row["key"] == "option.recon-snapshot")))
+        self.assert_rejected(duplicate, "invalid or duplicated")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"Local reconnaissance snapshot import", b"Other import")
+        self.assert_rejected(document, "text and JSON views disagree", text)
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            f"    limit: {EXPECTED_RECON_SNAPSHOT_LIMITATION}\n".encode(), b"")
         self.assert_rejected(document, "limitation is absent", text)
 
     def test_pinned_secret_exposure_surface_matches_the_named_producer_literals(self):
@@ -3885,7 +4021,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         next(row for row in counts_only["cli_package_features"]
              if row["name"] == "control-reference-mapping")["name"] = (
                  "unclassified-control-mapping")
-        self.assertEqual(len(counts_only["cli_package_features"]), 18)
+        self.assertEqual(len(counts_only["cli_package_features"]), 19)
         self.assertEqual(
             sum(row["build_state"] == "compiled"
                 for row in counts_only["cli_package_features"]),
@@ -3894,7 +4030,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assertEqual(
             sum(row["build_state"] == "not_compiled"
                 for row in counts_only["cli_package_features"]),
-            10,
+            11,
         )
         self.assert_rejected(counts_only, "feature names changed")
 
@@ -3908,6 +4044,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("jwt-policy-review", "compiled"),
             ("jwt-target-acceptance-review", "compiled"),
             ("control-reference-mapping", "compiled"),
+            ("recon-snapshot-import", "compiled"),
         ]
         for name, state in cases:
             with self.subTest(name=name, state=state):
@@ -5110,6 +5247,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn(
             "unexpectedly exposes non-bundled TLS observation",
+            result["failure"],
+        )
+
+    def test_packaged_help_must_not_expose_non_bundled_recon_snapshot_option(self):
+        result, _ = self.execute(
+            exposed_session_option=EXPECTED_RECON_SNAPSHOT_OPTION,
+            path_suffix="-recon-snapshot-help",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(
+            "unexpectedly exposes non-bundled recon snapshot import",
             result["failure"],
         )
 

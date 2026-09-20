@@ -53,6 +53,14 @@ handshake kind and resumption remain unavailable at this backend seam; this
 slice does not create a second TLS client to manufacture those fields. See
 [Existing-connection TLS observation](internals/existing-connection-tls-observation.md).
 
+Local reconnaissance snapshot import uses the opposite side of the same
+authority boundary: the CLI owns one explicit hardened local-file read, the
+scanner parser owns a closed bounded inert model, and the normal runtime owns no
+recon transport at all. The typed snapshot is attached only after assessment
+composition and therefore cannot influence planning, subjects, broker permits,
+knowledge authority, evidence commits, or finding construction. See
+[Local reconnaissance snapshot import](internals/recon-snapshot-import.md).
+
 The separately non-default `wordpress-review` feature also stays inside that
 single assessment boundary. With explicit `--profile web-review
 --wordpress-review`, it receives only the existing complete root-response HTML

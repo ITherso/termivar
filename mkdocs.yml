@@ -36,6 +36,7 @@ nav:
       - REST read-only review: internals/rest-readonly-review.md
       - Passive secret-exposure review: internals/passive-secret-exposure-review.md
       - Existing-connection TLS observation: internals/existing-connection-tls-observation.md
+      - Local reconnaissance snapshot import: internals/recon-snapshot-import.md
       - WordPress evidence review: wordpress-review.md
       - Normalization resilience: internals/normalization-resilience.md
       - Defense observation: internals/defense-observation.md
@@ -83,6 +84,7 @@ nav:
       - GraphQL surface review: internals/graphql-review.md
       - Passive secret-exposure review: internals/passive-secret-exposure-review.md
       - Existing-connection TLS observation: internals/existing-connection-tls-observation.md
+      - Local reconnaissance snapshot import: internals/recon-snapshot-import.md
       - Standard web decision profile: internals/web-decision.md
       - Standard web decision runtime: internals/web-runtime.md
       - Web reasoning: internals/web-reasoning.md

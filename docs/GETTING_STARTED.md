@@ -136,9 +136,10 @@ Preview. It does not activate any of them: WordPress still requires explicit
 `control-reference-mapping`, `supplied-session-review`,
 `secret-exposure-review`, `tls-observation`,
 `jwt-policy-review`, `jwt-target-acceptance-review`,
-`ssrf-oast-review`, `legacy-scanner`, `api-adapter`, and `proxy-adapter`.
-The stock curated inventory is therefore exactly 18 known identities: eight
-compiled (the `release-bundle` marker plus seven members) and ten excluded.
+`recon-snapshot-import`, `ssrf-oast-review`, `legacy-scanner`, `api-adapter`,
+and `proxy-adapter`.
+The stock curated inventory is therefore exactly 19 known identities: eight
+compiled (the `release-bundle` marker plus seven members) and eleven excluded.
 Enabling the seven current member features individually can therefore produce
 the same member surface states while `release-bundle` remains `not_compiled`.
 
@@ -248,6 +249,26 @@ The output does not change item severity, disposition or claim authority. It is
 not a score, pass/fail result, certification, legal advice or compliance
 determination, and absence of an item is not control fulfilment. See the
 [versioned mapping contract](internals/control-reference-mapping.md).
+
+## Import a bounded local reconnaissance snapshot
+
+The development-only `recon-snapshot-import` feature adds one explicit,
+transport-free reference input to `web-review`:
+
+```bash
+cargo run --locked -p termivar-cli --no-default-features \
+  --features recon-snapshot-import -- \
+  scan https://owned.example/ --profile web-review \
+  --recon-snapshot recon-snapshot.json \
+  --report-dir assessment-recon
+```
+
+The strict V1 document contains only source-qualified CT-name, DNS-history,
+service-banner-product and reputation-label hypotheses. Import does not contact
+those assets or providers, extend target scope, or create assessment items.
+Its byte digest identifies the supplied bytes without authenticating their
+source, rights, freshness, completeness or truth. See the
+[local recon snapshot contract](internals/recon-snapshot-import.md).
 
 ## Live assessment progress
 
@@ -557,6 +578,7 @@ errors are not rewritten. Raw captures are retained as local/CI evidence.
   and [runtime map](internals/runtime-map.md)
 - [Reporting](reporting.md) and [architecture](architecture.md)
 - [Versioned control-reference mapping](internals/control-reference-mapping.md)
+- [Local reconnaissance snapshot import](internals/recon-snapshot-import.md)
 - [Credential-input limits](internals/credential-input.md) and
   [maintenance ledger](audits/native-oast-corrective-maintenance.md);
   F3 remains deferred, out of scope, and unresolved

@@ -16,6 +16,8 @@ use termivar_scanner::authorization_review::{
 };
 #[cfg(feature = "jwt-policy-review")]
 use termivar_scanner::jwt_policy_review::JwtPolicyReviewAudit;
+#[cfg(feature = "recon-snapshot-import")]
+use termivar_scanner::recon_snapshot::ReconSnapshot;
 #[cfg(feature = "rest-review")]
 use termivar_scanner::rest_review::RestDocumentedResponseClass;
 #[cfg(feature = "ssrf-oast-review")]
@@ -958,6 +960,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) tls_observation: bool,
     #[cfg(feature = "control-reference-mapping")]
     pub(crate) control_reference_mapping: bool,
+    #[cfg(feature = "recon-snapshot-import")]
+    pub(crate) recon_snapshot: Option<ReconSnapshot>,
     #[cfg(feature = "jwt-policy-review")]
     pub(crate) jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1006,6 +1010,8 @@ pub(crate) async fn run_profile_scan(
         tls_observation,
         #[cfg(feature = "control-reference-mapping")]
         control_reference_mapping,
+        #[cfg(feature = "recon-snapshot-import")]
+        recon_snapshot,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1047,6 +1053,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "control-reference mapping requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "recon-snapshot-import")]
+            if recon_snapshot.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "reconnaissance snapshot import requires the web-review profile",
                 )
                 .into());
             }
@@ -1188,6 +1202,8 @@ pub(crate) async fn run_profile_scan(
                     tls_observation,
                     #[cfg(feature = "control-reference-mapping")]
                     control_reference_mapping,
+                    #[cfg(feature = "recon-snapshot-import")]
+                    recon_snapshot,
                     #[cfg(feature = "jwt-policy-review")]
                     jwt_policy_review,
                     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1261,6 +1277,8 @@ struct WebReviewRunOptions {
     tls_observation: bool,
     #[cfg(feature = "control-reference-mapping")]
     control_reference_mapping: bool,
+    #[cfg(feature = "recon-snapshot-import")]
+    recon_snapshot: Option<ReconSnapshot>,
     #[cfg(feature = "jwt-policy-review")]
     jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1302,6 +1320,8 @@ async fn run_web_review(
         tls_observation,
         #[cfg(feature = "control-reference-mapping")]
         control_reference_mapping,
+        #[cfg(feature = "recon-snapshot-import")]
+        recon_snapshot,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1484,6 +1504,14 @@ async fn run_web_review(
             let composed = composed.and_then(|product| {
                 if control_reference_mapping {
                     ReportGenerator::attach_control_reference_mapping(product)
+                } else {
+                    Ok(product)
+                }
+            });
+            #[cfg(feature = "recon-snapshot-import")]
+            let composed = composed.and_then(|product| {
+                if let Some(audit) = recon_snapshot {
+                    ReportGenerator::attach_recon_snapshot(product, audit)
                 } else {
                     Ok(product)
                 }
