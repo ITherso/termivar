@@ -2798,34 +2798,34 @@ mod tests {
                 "JwtPolicyReviewInput must remain underived",
             ),
             (
-                "validate_jwt_local_file_path(&policy_file).map_err(JwtPolicyInputError::PolicySource)?;",
+                "validate_local_file_path(&policy_file).map_err(JwtPolicyInputError::PolicySource)?;",
                 "let _ = &policy_file;",
-                "reject Windows remote/device JWT file spellings",
+                "reject guarded Windows remote/device file spellings",
             ),
             (
-                "validate_jwt_local_file_path(&public_jwk_file)\n            .map_err(JwtPolicyInputError::PublicKeySource)?;",
+                "validate_local_file_path(&public_jwk_file).map_err(JwtPolicyInputError::PublicKeySource)?;",
                 "let _ = &public_jwk_file;",
-                "reject Windows remote/device JWT file spellings",
+                "reject guarded Windows remote/device file spellings",
             ),
             (
-                "validate_jwt_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;",
+                "validate_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;",
                 "let _ = token_file;",
-                "reject Windows remote/device JWT file spellings",
+                "reject guarded Windows remote/device file spellings",
             ),
             (
                 "Prefix::UNC(_, _)",
                 "Prefix::Disk(_)",
-                "reject Windows remote/device JWT file spellings",
+                "reject guarded Windows remote/device file spellings",
             ),
             (
                 "|| upper.starts_with(\"\\\\DEVICE\\\\\")",
                 "|| false",
-                "reject Windows remote/device JWT file spellings",
+                "reject guarded Windows remote/device file spellings",
             ),
             (
                 "\"CON\" | \"PRN\" | \"AUX\" | \"NUL\" | \"CLOCK$\" | \"CONIN$\" | \"CONOUT$\"",
                 "\"CON\" | \"PRN\" | \"AUX\" | \"NULL\" | \"CLOCK$\" | \"CONIN$\" | \"CONOUT$\"",
-                "reject Windows remote/device JWT file spellings",
+                "reject guarded Windows remote/device file spellings",
             ),
             (
                 "read_bounded_regular_file(self.policy_file, MAX_JWT_POLICY_BYTES)",
