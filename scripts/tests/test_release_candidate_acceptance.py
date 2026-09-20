@@ -53,6 +53,7 @@ EXPECTED_RELEASE_MEMBERS = (
 EXPECTED_EXCLUDED_FEATURES = (
     "api-adapter",
     "jwt-policy-review",
+    "jwt-target-acceptance-review",
     "legacy-scanner",
     "proxy-adapter",
     "secret-exposure-review",
@@ -66,6 +67,7 @@ EXPECTED_FEATURE_STATES = {
     "authorization-review": "compiled",
     "graphql-review": "compiled",
     "jwt-policy-review": "not_compiled",
+    "jwt-target-acceptance-review": "not_compiled",
     "legacy-scanner": "not_compiled",
     "normalization-resilience": "compiled",
     "openapi-review": "compiled",
@@ -128,6 +130,7 @@ EXPECTED_JWT_POLICY_REVIEW_OPTIONS = (
     "--jwt-token-file",
     "--jwt-token-stdin",
 )
+EXPECTED_JWT_TARGET_ACCEPTANCE_OPTION = "--jwt-target-acceptance-policy"
 EXPECTED_JWT_POLICY_REVIEW_PREREQUISITES = (
     "--profile web-review",
     "--jwt-policy FILE",
@@ -143,20 +146,52 @@ EXPECTED_JWT_POLICY_REVIEW_LIMITATION = (
     "without authenticating their source. The token is read from an explicitly selected "
     "environment variable, local regular file, or stdin; Windows UNC, device, and named-pipe "
     "namespaces are rejected before open, while mapped drives and mounted network filesystems "
-    "remain an operator trust boundary. The token is never "
-    "placed in argv, sent to the target, replayed, or used as authorization. Before the token "
+    "remain an operator trust boundary. The token is never placed in argv. Before the token "
     "source is read, JWK intake validates only the closed public-JWK structure and canonical "
     "32-byte x/y coordinates; curve membership and signature validity are decided by local "
     "ES256 verification, and failure remains unauthenticated with local_signature=invalid. "
-    "The JWT evaluator performs zero target requests and no remote key retrieval; the "
+    "The local evaluator performs zero target requests and no remote key retrieval; unless the "
+    "separately compiled target-acceptance feature and --jwt-target-acceptance-policy are both "
+    "selected, the token is not forwarded or replayed and target acceptance remains "
+    "not_performed. The "
     "surrounding scan retains its ordinary authorized web-review requests. JWE, nested or compressed "
     "JOSE, critical headers, unencoded payloads, unsecured or non-ES256 algorithms, jku, x5u, "
     "embedded keys, and private JWK material are rejected or unsupported. Parsed, "
-    "policy-consistent, locally signature-verified, and target-accepted are distinct states; "
-    "target acceptance is not performed. Local signature verification establishes only the "
+    "policy-consistent, locally signature-verified, and target-accepted are distinct states. "
+    "Local signature verification establishes only the "
     "relationship among the supplied token bytes, local policy, local clock, and supplied "
     "public key; it does not authenticate the issuer or source, establish server acceptance, "
     "or perform exploit or impact validation."
+)
+EXPECTED_JWT_TARGET_ACCEPTANCE_PREREQUISITES = (
+    "--profile web-review",
+    "--jwt-policy FILE",
+    "--jwt-public-jwk FILE",
+    "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin",
+    "--jwt-target-acceptance-policy FILE",
+    "HTTPS, except numeric-loopback HTTP fixtures",
+)
+EXPECTED_JWT_TARGET_ACCEPTANCE_LIMITATION = (
+    "After the local evaluator establishes supported parsing, policy consistency, and ES256 "
+    "signature validity, one strict non-secret target policy selects one exact-origin, "
+    "application-contained JSON GET resource and a private top-level boolean success marker. "
+    "The declared target policy revision (policy_revision) must change whenever the "
+    "application, resource, resource reference, or private success-marker semantics change; "
+    "reports compare that revision because the URL and marker are intentionally omitted. "
+    "Six ordered candidate/replay legs compare valid-token, anonymous, and invalid-signature "
+    "behavior; only the two invalid-signature controls are active, each active leg requires "
+    "its same-stage valid marker and absent anonymous marker, and every leg uses a fresh "
+    "ambient-proxy-free pool under the parent scope, request/active/response-byte accounting, "
+    "cancellation, and evidence authority. The target policy cannot nominate remote keys or "
+    "expand application authority. The review dispatches at most six requests, two active "
+    "requests, retains and interprets at most 64 KiB per response and 256 KiB total, and "
+    "records the broker's exact charged bytes separately because one delivered chunk may "
+    "cross a retention ceiling. It accepts only complete committed JSON-compatible 200, 401, "
+    "or 403 responses with one strict top-level boolean marker; redirects, retries, cookies, "
+    "ambient credentials, arbitrary endpoints, and writes are absent. Invalid-signature marker "
+    "acceptance is not issuer authentication, authorization bypass, exploit execution, impact "
+    "validation, or a Confirmed finding; the audit remains value-free and the feature is "
+    "outside default, release-bundle, and published alpha.2 archives."
 )
 EXPECTED_SUPPLIED_SESSION_OPTIONS = (
     "--session-policy",
@@ -1081,6 +1116,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "alias": None,
             "prerequisites": list(EXPECTED_JWT_POLICY_REVIEW_PREREQUISITES),
             "limitation": EXPECTED_JWT_POLICY_REVIEW_LIMITATION,
+            "documentation": "docs/internals/local-jwt-policy-review.md",
+        },
+        {
+            "key": "option.jwt-target-acceptance-review",
+            "label": "JWT target acceptance review",
+            "compile_feature": "jwt-target-acceptance-review",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_JWT_TARGET_ACCEPTANCE_PREREQUISITES),
+            "limitation": EXPECTED_JWT_TARGET_ACCEPTANCE_LIMITATION,
             "documentation": "docs/internals/local-jwt-policy-review.md",
         },
         {
@@ -2684,9 +2733,9 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 16)
+        self.assertEqual(len(rows), 17)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 8)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 9)
         result = self.validate(document)
         self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
         self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
@@ -2717,6 +2766,15 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "runtime_activation": "unavailable_in_release_bundle",
             "network_activity": "not_performed",
             "target_acceptance": "not_performed",
+        })
+        self.assertEqual(result["jwt_target_acceptance_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "maximum_requests": 6,
+            "maximum_active_requests": 2,
+            "confirmed_finding": "not_produced",
         })
         self.assertEqual(result["supplied_session_preview"], {
             "build_state": "not_compiled",
@@ -3007,9 +3065,12 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         documentation_words = " ".join(documentation.split())
         self.assertNotIn("reviews one compact JWT entirely offline", documentation)
         for required in (
-            "Its local JWT evaluator performs no network operation and adds no target request",
+            "The local evaluator itself still performs no network operation",
             "The surrounding `scan` command still performs its ordinary authorized",
+            "--jwt-target-acceptance-policy",
             "policy_revision",
+            "The declared target policy revision (`policy_revision`) must change whenever the application, resource, resource reference, or private success-marker semantics change",
+            "URL and marker are intentionally omitted",
             "actual public-key-byte identifier",
             "Windows UNC, device and named-pipe namespaces are rejected before open",
             "Mapped drives, mounted network filesystems",
@@ -3079,16 +3140,12 @@ class CapabilityInventoryContractTests(unittest.TestCase):
                 "JWK intake fully validates P-256 curve membership before token acquisition",
             ),
             (
-                "JWT evaluator performs zero target requests and no remote key retrieval; the surrounding scan retains its ordinary authorized web-review requests",
-                "the whole scan is offline and may retrieve remote keys",
+                "local evaluator performs zero target requests and no remote key retrieval; unless the separately compiled target-acceptance feature and --jwt-target-acceptance-policy are both selected, the token is not forwarded or replayed and target acceptance remains not_performed",
+                "the local evaluator retrieves remote keys and always forwards the token",
             ),
             (
                 "Parsed, policy-consistent, locally signature-verified, and target-accepted are distinct states",
                 "A parsed token is verified and accepted by the target",
-            ),
-            (
-                "target acceptance is not performed",
-                "target acceptance is confirmed",
             ),
             (
                 "does not authenticate the issuer or source, establish server acceptance",
@@ -3126,6 +3183,161 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         document = capabilities()
         text = capabilities_text(document).replace(
             b"Local JWT policy review", b"other")
+        self.assert_rejected(document, "text and JSON views disagree", text)
+
+    def test_pinned_jwt_target_surface_matches_the_named_producer_literals(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.jwt-target-acceptance-review",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = '\n            "docs/internals/local-jwt-policy-review.md",'
+        self.assertEqual(block.count(documentation), 1)
+        before_documentation = block.split(documentation, 1)[0]
+        limitation_line = before_documentation.splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_JWT_TARGET_ACCEPTANCE_LIMITATION)
+
+        document = capabilities()
+        target = next(surface for surface in document["surfaces"]
+                      if surface["key"] == "option.jwt-target-acceptance-review")
+        self.assertEqual(tuple(target["prerequisites"]),
+                         EXPECTED_JWT_TARGET_ACCEPTANCE_PREREQUISITES)
+        self.assertEqual(target["limitation"], EXPECTED_JWT_TARGET_ACCEPTANCE_LIMITATION)
+
+    def test_jwt_target_surface_is_exact_and_fails_closed_on_mutations(self):
+        metadata_mutations = (
+            ("label", "JWT acceptance scanner"),
+            ("compile_feature", "jwt-policy-review"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "jwt-target"),
+            ("documentation", "docs/jwt-target.md"),
+        )
+        for field, wrong in metadata_mutations:
+            with self.subTest(field=field):
+                document = capabilities()
+                target = next(surface for surface in document["surfaces"]
+                              if surface["key"] == "option.jwt-target-acceptance-review")
+                target[field] = wrong
+                self.assert_rejected(document, "JWT target-acceptance surface metadata")
+
+        for wrong in (
+            None,
+            True,
+            "--jwt-target-acceptance-policy",
+            {},
+            [True],
+            list(EXPECTED_JWT_TARGET_ACCEPTANCE_PREREQUISITES[:-1]),
+            [
+                "--profile web-review",
+                "--jwt-target-acceptance-policy FILE",
+                "HTTP for all targets",
+            ],
+        ):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                target = next(surface for surface in document["surfaces"]
+                              if surface["key"] == "option.jwt-target-acceptance-review")
+                target["prerequisites"] = wrong
+                self.assert_rejected(document, "JWT target-acceptance opt-in contract")
+
+        limitation_mutations = (
+            (
+                "one exact-origin, application-contained JSON GET resource",
+                "any discovered endpoint",
+            ),
+            (
+                "declared target policy revision (policy_revision) must change",
+                "declared target policy revision (policy_revision) may remain stable",
+            ),
+            (
+                "application, resource, resource reference, or private success-marker semantics",
+                "public labels only",
+            ),
+            (
+                "reports compare that revision because the URL and marker are intentionally omitted",
+                "reports compare that revision because every private field is reported",
+            ),
+            (
+                "only the two invalid-signature controls are active",
+                "all legs are passive",
+            ),
+            (
+                "each active leg requires its same-stage valid marker and absent anonymous marker",
+                "an active leg may run without controls",
+            ),
+            (
+                "every leg uses a fresh ambient-proxy-free pool",
+                "all principals share one ambient proxy pool",
+            ),
+            (
+                "at most six requests, two active requests",
+                "at most sixty requests, twenty active requests",
+            ),
+            (
+                "retains and interprets at most 64 KiB per response and 256 KiB total",
+                "retains complete unbounded responses",
+            ),
+            (
+                "records the broker's exact charged bytes separately because one delivered chunk may cross a retention ceiling",
+                "reports retained bytes as exact transport accounting",
+            ),
+            (
+                "complete committed JSON-compatible 200, 401, or 403 responses",
+                "any partial response",
+            ),
+            (
+                "redirects, retries, cookies, ambient credentials, arbitrary endpoints, and writes are absent",
+                "redirects and retries are enabled",
+            ),
+            (
+                "not issuer authentication, authorization bypass, exploit execution, impact validation, or a Confirmed finding",
+                "confirms an authorization bypass",
+            ),
+            (
+                "audit remains value-free",
+                "audit saves tokens and response bodies",
+            ),
+        )
+        for old, new in limitation_mutations:
+            with self.subTest(old=old):
+                self.assertEqual(EXPECTED_JWT_TARGET_ACCEPTANCE_LIMITATION.count(old), 1)
+                document = capabilities()
+                target = next(surface for surface in document["surfaces"]
+                              if surface["key"] == "option.jwt-target-acceptance-review")
+                target["limitation"] = target["limitation"].replace(old, new)
+                self.assert_rejected(document, "JWT target-acceptance limitation")
+
+        for wrong in (None, True, 6, [], {}):
+            with self.subTest(limitation=wrong):
+                document = capabilities()
+                target = next(surface for surface in document["surfaces"]
+                              if surface["key"] == "option.jwt-target-acceptance-review")
+                target["limitation"] = wrong
+                self.assert_rejected(document, "JWT target-acceptance limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            surface for surface in missing["surfaces"]
+            if surface["key"] != "option.jwt-target-acceptance-review"
+        ]
+        self.assert_rejected(missing, "JWT target-acceptance surface identity")
+
+        duplicate = capabilities()
+        target = next(surface for surface in duplicate["surfaces"]
+                      if surface["key"] == "option.jwt-target-acceptance-review")
+        duplicate["surfaces"].append(dict(target))
+        self.assert_rejected(duplicate, "surface key is invalid or duplicated")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"JWT target acceptance review", b"other")
         self.assert_rejected(document, "text and JSON views disagree", text)
 
     def test_pinned_supplied_session_surface_matches_the_named_producer_literals(self):
@@ -3458,6 +3670,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("supplied-session-review", "compiled"),
             ("tls-observation", "compiled"),
             ("jwt-policy-review", "compiled"),
+            ("jwt-target-acceptance-review", "compiled"),
         ]
         for name, state in cases:
             with self.subTest(name=name, state=state):
@@ -4675,6 +4888,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
                     "unexpectedly exposes non-bundled local JWT-policy option",
                     result["failure"],
                 )
+
+    def test_packaged_help_must_not_expose_non_bundled_jwt_target_option(self):
+        result, _ = self.execute(
+            exposed_session_option=EXPECTED_JWT_TARGET_ACCEPTANCE_OPTION,
+            path_suffix="-jwt-target-help",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(
+            "unexpectedly exposes non-bundled JWT target-acceptance option",
+            result["failure"],
+        )
 
     def test_packaged_help_must_expose_every_bundled_wordpress_option(self):
         for index, option in enumerate((

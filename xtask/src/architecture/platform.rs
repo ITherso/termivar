@@ -28,6 +28,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "distributed",
     "graphql-review",
     "jwt-policy-review",
+    "jwt-target-acceptance-review",
     "legacy-scanner",
     "lua",
     "normalization-resilience",
@@ -56,6 +57,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "full",
     "graphql-review",
     "jwt-policy-review",
+    "jwt-target-acceptance-review",
     "legacy-scanner",
     "lua",
     "minimal",
@@ -87,6 +89,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "distributed",
     "graphql-review",
     "jwt-policy-review",
+    "jwt-target-acceptance-review",
     "legacy-scanner",
     "lua",
     "ml",
@@ -114,6 +117,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "distributed",
     "graphql-review",
     "jwt-policy-review",
+    "jwt-target-acceptance-review",
     "legacy-scanner",
     "lua",
     "ml",
@@ -196,6 +200,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "default",
     "graphql-review",
     "jwt-policy-review",
+    "jwt-target-acceptance-review",
     "legacy-scanner",
     "normalization-resilience",
     "openapi-review",
@@ -246,6 +251,10 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("error", "feature=\"legacy-scanner\""),
     ("graphql_review", "feature=\"graphql-review\""),
     ("jwt_policy_review", "feature=\"jwt-policy-review\""),
+    (
+        "jwt_target_acceptance",
+        "feature=\"jwt-target-acceptance-review\"",
+    ),
     ("legacy_discovery", "feature=\"legacy-scanner\""),
     ("logging", "feature=\"legacy-scanner\""),
     (
@@ -1338,6 +1347,13 @@ fn cli_feature_violations(
             "jwt-policy-review",
             &["dep:toml", "termivar-scanner/jwt-policy-review"][..],
         ),
+        (
+            "jwt-target-acceptance-review",
+            &[
+                "jwt-policy-review",
+                "termivar-scanner/jwt-target-acceptance-review",
+            ][..],
+        ),
         ("openapi-review", &["termivar-scanner/openapi-review"][..]),
         (
             "rest-review",
@@ -1642,6 +1658,24 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
         (
             "jwt-policy-review",
             &[
+                "jwt-policy-review",
+                "scanning",
+                "core",
+                "dep:ring",
+                "dep:zeroize",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "jwt-target-acceptance-review",
+            &[
+                "jwt-target-acceptance-review",
                 "jwt-policy-review",
                 "scanning",
                 "core",
@@ -2059,10 +2093,10 @@ fn supplied_session_runtime_module_gate_violations(
         ],
     };
     let compact = squash_ascii_whitespace(source);
-    let shared_transport_gate = "#[cfg(any(feature=\"authorization-review\",feature=\"supplied-session-review\"))]pub(crate)useauthority::authenticated_transport_is_allowed;";
+    let shared_transport_gate = "#[cfg(any(feature=\"authorization-review\",feature=\"jwt-target-acceptance-review\",feature=\"supplied-session-review\"))]pub(crate)useauthority::authenticated_transport_is_allowed;";
     if compact.matches(shared_transport_gate).count() != 1 {
         violations.push(
-            "authenticated transport validation must be re-exported exactly for authorization-review or supplied-session-review"
+            "authenticated transport validation must be re-exported exactly for authorization-review, JWT target-acceptance, or supplied-session-review"
                 .to_owned(),
         );
     }
@@ -2264,7 +2298,7 @@ fn supplied_session_review_source_contract_violations(
         &mut violations,
         &compact_assessment,
         &[
-            "#[cfg(any(feature=\"authorization-review\",feature=\"supplied-session-review\"))]usesuper::authenticated_transport_is_allowed;",
+            "#[cfg(any(feature=\"authorization-review\",feature=\"jwt-target-acceptance-review\",feature=\"supplied-session-review\"))]usesuper::authenticated_transport_is_allowed;",
             "#[cfg(feature=\"supplied-session-review\")]supplied_session:Option<WebAssessmentSuppliedSessionAudit>",
             "supplied_session:self.supplied_session_audit.as_ref(),",
             "self.supplied_session,",
@@ -5084,7 +5118,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 10
+        || report_call.args.len() != 11
     {
         return false;
     }
@@ -5099,6 +5133,13 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_authorization_field(argument, "authorization_review")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(
+                argument,
+                "jwt_target_acceptance",
+                "jwt-target-acceptance-review",
+            )
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "openapi_review", "openapi-review")
@@ -5428,6 +5469,102 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Vec<AssessmentJwtPolicyViolationDocument>",
             ),
             ("source_authentication", "&'static str"),
+            ("preparation_reference", "Option<String>"),
+            (
+                "target_acceptance",
+                "Option<AssessmentJwtTargetAcceptanceAuditDocument>",
+            ),
+        ],
+    ),
+    (
+        "AssessmentJwtTargetAcceptanceAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy", "&'static str"),
+            ("selected", "bool"),
+            ("operator_policy_reference", "String"),
+            ("operator_policy_revision", "String"),
+            ("resource_reference", "String"),
+            ("method", "&'static str"),
+            ("preparation_reference", "String"),
+            ("status", "&'static str"),
+            (
+                "accounting",
+                "AssessmentJwtTargetAcceptanceAccountingDocument",
+            ),
+            (
+                "dimensions",
+                "AssessmentJwtTargetAcceptanceDimensionsDocument",
+            ),
+            (
+                "conclusion",
+                "AssessmentJwtTargetAcceptanceConclusionDocument",
+            ),
+            ("legs", "Vec<AssessmentJwtTargetAcceptanceLegDocument>"),
+            ("source_authentication", "&'static str"),
+            ("interpretation_limits", "[&'static str;6]"),
+        ],
+    ),
+    (
+        "AssessmentJwtTargetAcceptanceAccountingDocument",
+        &[],
+        &[
+            ("request_limit", "u64"),
+            ("active_request_limit", "u64"),
+            ("retained_response_byte_limit", "u64"),
+            ("total_retained_response_byte_limit", "u64"),
+            ("dispatched_request_count", "u64"),
+            ("dispatched_passive_request_count", "u64"),
+            ("dispatched_active_request_count", "u64"),
+            ("committed_response_count", "u64"),
+            ("retained_response_bytes", "u64"),
+            ("accounted_transport_response_bytes", "u64"),
+        ],
+    ),
+    (
+        "AssessmentJwtTargetAcceptanceDimensionsDocument",
+        &[],
+        &[
+            ("valid_marker", "&'static str"),
+            ("anonymous_marker", "&'static str"),
+            ("invalid_marker", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentJwtTargetAcceptanceConclusionDocument",
+        &[],
+        &[
+            ("kind", "&'static str"),
+            (
+                "incomplete_reason",
+                "Option<AssessmentJwtTargetAcceptanceIncompleteReasonDocument>",
+            ),
+        ],
+    ),
+    (
+        "AssessmentJwtTargetAcceptanceIncompleteReasonDocument",
+        &[],
+        &[
+            ("kind", "&'static str"),
+            ("role", "Option<&'static str>"),
+            ("not_eligible_reason", "Option<&'static str>"),
+        ],
+    ),
+    (
+        "AssessmentJwtTargetAcceptanceLegDocument",
+        &[],
+        &[
+            ("role", "&'static str"),
+            ("stage", "&'static str"),
+            ("activity", "&'static str"),
+            ("dispatch_status", "&'static str"),
+            ("commit_status", "&'static str"),
+            ("response_status", "&'static str"),
+            ("marker_status", "&'static str"),
+            ("retained_response_bytes", "u64"),
+            ("accounted_transport_response_bytes", "u64"),
+            ("evidence_reference", "Option<String>"),
         ],
     ),
     (
@@ -6650,6 +6787,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "secret-exposure-review" => "feature=\"secret-exposure-review\"",
         "tls-observation" => "feature=\"tls-observation\"",
         "jwt-policy-review" => "feature=\"jwt-policy-review\"",
+        "jwt-target-acceptance-review" => "feature=\"jwt-target-acceptance-review\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
         _ => return false,
@@ -6702,6 +6840,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentJwtPolicyMethodologyDocument"
                 | "AssessmentJwtExternalActivityDocument"
                 | "AssessmentJwtPolicyViolationDocument"
+                | "AssessmentJwtTargetAcceptanceAuditDocument"
+                | "AssessmentJwtTargetAcceptanceAccountingDocument"
+                | "AssessmentJwtTargetAcceptanceDimensionsDocument"
+                | "AssessmentJwtTargetAcceptanceConclusionDocument"
+                | "AssessmentJwtTargetAcceptanceIncompleteReasonDocument"
+                | "AssessmentJwtTargetAcceptanceLegDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -6818,6 +6962,14 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentJwtExternalActivityDocument"
                 | "AssessmentJwtPolicyViolationDocument" => {
                     "all(feature=\"scanning\",feature=\"jwt-policy-review\")"
+                },
+                "AssessmentJwtTargetAcceptanceAuditDocument"
+                | "AssessmentJwtTargetAcceptanceAccountingDocument"
+                | "AssessmentJwtTargetAcceptanceDimensionsDocument"
+                | "AssessmentJwtTargetAcceptanceConclusionDocument"
+                | "AssessmentJwtTargetAcceptanceIncompleteReasonDocument"
+                | "AssessmentJwtTargetAcceptanceLegDocument" => {
+                    "all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")"
                 },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
@@ -6943,6 +7095,16 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                             &field.attrs,
                             "jwt-policy-review",
                         )
+                    } else if name == "AssessmentJwtPolicyReviewAuditDocument"
+                        && matches!(
+                            field_name.as_str(),
+                            "preparation_reference" | "target_acceptance"
+                        )
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "jwt-target-acceptance-review",
+                        )
                     } else if name == "AssessmentDocument"
                         && matches!(
                             field_name.as_str(),
@@ -6956,6 +7118,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         && field_name == "parsing_rejection")
                         || (name == "AssessmentJwtPolicyViolationDocument"
                             && field_name == "ordinal")
+                        || (name == "AssessmentJwtTargetAcceptanceConclusionDocument"
+                            && field_name == "incomplete_reason")
+                        || (name == "AssessmentJwtTargetAcceptanceIncompleteReasonDocument"
+                            && matches!(field_name.as_str(), "role" | "not_eligible_reason"))
+                        || (name == "AssessmentJwtTargetAcceptanceLegDocument"
+                            && field_name == "evidence_reference")
                         || (name == "AssessmentSuppliedSessionAuditDocument"
                             && matches!(
                                 field_name.as_str(),
@@ -7170,6 +7338,19 @@ fn reporting_type_key(ty: &syn::Type) -> Option<String> {
                 segments.push(format!("{}{arguments}", segment.ident));
             }
             Some(segments.join("::"))
+        },
+        syn::Type::Array(array) => {
+            let syn::Expr::Lit(length) = &array.len else {
+                return None;
+            };
+            let syn::Lit::Int(length) = &length.lit else {
+                return None;
+            };
+            Some(format!(
+                "[{};{}]",
+                reporting_type_key(&array.elem)?,
+                length.base10_digits()
+            ))
         },
         _ => None,
     }
@@ -7905,10 +8086,38 @@ fn validate_reporting_public_method_body(
 }
 
 fn reporting_compose_assessment_body_matches(block: &syn::Block) -> bool {
-    let Some(syn::Expr::MethodCall(call)) = reporting_only_expression(block) else {
+    let [syn::Stmt::Expr(syn::Expr::If(gate), None), syn::Stmt::Expr(syn::Expr::MethodCall(call), None)] =
+        block.stmts.as_slice()
+    else {
         return false;
     };
-    call.method == "into_assessment_report"
+    let gate_condition_is_exact = matches!(gate.cond.as_ref(), syn::Expr::MethodCall(is_some)
+        if is_some.method == "is_some"
+            && is_some.turbofish.is_none()
+            && is_some.args.is_empty()
+            && matches!(is_some.receiver.as_ref(), syn::Expr::MethodCall(selected)
+                if selected.method == "jwt_target_acceptance_audit"
+                    && selected.turbofish.is_none()
+                    && selected.args.is_empty()
+                    && reporting_expression_path_key(selected.receiver.as_ref()).as_deref()
+                        == Some("report")));
+    let gate_body_is_exact = matches!(gate.then_branch.stmts.as_slice(),
+        [syn::Stmt::Expr(syn::Expr::Return(returned), Some(_))]
+            if returned.expr.as_deref().is_some_and(|expression|
+                matches!(expression, syn::Expr::Call(error)
+                    if error.args.len() == 1
+                        && reporting_expression_path_key(error.func.as_ref()).as_deref()
+                            == Some("Err")
+                        && error.args.first().is_some_and(|argument|
+                            reporting_expression_path_key(argument).as_deref()
+                                == Some("AssessmentRunReportError::JwtPolicyReviewAuditMismatch")))));
+    gate.attrs.len() == 1
+        && cfg_predicate(&gate.attrs[0]).as_deref()
+            == Some("feature=\"jwt-target-acceptance-review\"")
+        && gate.else_branch.is_none()
+        && gate_condition_is_exact
+        && gate_body_is_exact
+        && call.method == "into_assessment_report"
         && call.turbofish.is_none()
         && reporting_expression_path_key(call.receiver.as_ref()).as_deref() == Some("report")
         && call.args.len() == 1
@@ -9497,8 +9706,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 461_012;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x36fc_d7ad_9ad5_499d_33cc_c57b_1e37_deae;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 498_129;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x3649_d334_2afb_a022_48f1_46ed_1f96_13e1;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -9604,6 +9813,25 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::jwt_policy_review::JwtTargetAcceptanceStatus",
     "crate::jwt_policy_review::MAX_CLOCK_SKEW_SECONDS",
     "crate::jwt_policy_review::MAX_REQUIRED_CLAIMS",
+    "crate::jwt_target_acceptance::JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA",
+    "crate::jwt_target_acceptance::JWT_TARGET_ACCEPTANCE_POLICY_ID",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceActivity",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceAudit",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceCommitStatus",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceConclusion",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceDimension",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceDispatchStatus",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceIncompleteReason",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceLegRole",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceLegStage",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceMarkerStatus",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceMethod",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceNotEligibleReason",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceResponseStatus",
+    "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS",
+    "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS",
+    "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES",
+    "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES",
     "crate::rest_review::RestDocumentedResponseClass",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
@@ -9743,8 +9971,10 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
+    "AssessmentRunReportError::JwtPolicyReviewAuditMismatch",
     "AssessmentDecisionOverview::from_document",
-    "AssessmentJwtPolicyReviewAuditDocument::from_audit",
+    "AssessmentJwtPolicyReviewAuditDocument::from_audits",
+    "AssessmentJwtTargetAcceptanceAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS",
@@ -9774,6 +10004,25 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::jwt_policy_review::JwtTargetAcceptanceStatus",
     "crate::jwt_policy_review::MAX_CLOCK_SKEW_SECONDS",
     "crate::jwt_policy_review::MAX_REQUIRED_CLAIMS",
+    "crate::jwt_target_acceptance::JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA",
+    "crate::jwt_target_acceptance::JWT_TARGET_ACCEPTANCE_POLICY_ID",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceActivity",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceAudit",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceCommitStatus",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceConclusion",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceDimension",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceDispatchStatus",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceIncompleteReason",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceLegRole",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceLegStage",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceMarkerStatus",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceMethod",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceNotEligibleReason",
+    "crate::jwt_target_acceptance::JwtTargetAcceptanceResponseStatus",
+    "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS",
+    "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS",
+    "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES",
+    "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES",
     "crate::web_runtime::SECRET_EXPOSURE_AUDIT_SCHEMA",
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_ID",
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
@@ -9838,6 +10087,49 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "JwtPolicyViolation::NotYetValid",
     "JwtPolicyViolation::TypeMismatch",
     "JwtTargetAcceptanceStatus::NotPerformed",
+    "JwtTargetAcceptanceActivity::Active",
+    "JwtTargetAcceptanceActivity::Passive",
+    "JwtTargetAcceptanceCommitStatus::Committed",
+    "JwtTargetAcceptanceCommitStatus::NotCommitted",
+    "JwtTargetAcceptanceConclusion::Incomplete",
+    "JwtTargetAcceptanceConclusion::Inconclusive",
+    "JwtTargetAcceptanceConclusion::InvalidControlMarkerNotObserved",
+    "JwtTargetAcceptanceConclusion::InvalidSignatureControlMarkerObservedWithAnonymousControl",
+    "JwtTargetAcceptanceConclusion::PublicOrTokenAgnosticMarkerObserved",
+    "JwtTargetAcceptanceConclusion::UnstableInconclusive",
+    "JwtTargetAcceptanceDimension::Incomplete",
+    "JwtTargetAcceptanceDimension::NotEvaluated",
+    "JwtTargetAcceptanceDimension::NotObservedStable",
+    "JwtTargetAcceptanceDimension::ObservedStable",
+    "JwtTargetAcceptanceDimension::Unstable",
+    "JwtTargetAcceptanceDispatchStatus::Dispatched",
+    "JwtTargetAcceptanceDispatchStatus::NotDispatched",
+    "JwtTargetAcceptanceIncompleteReason::LegNotCommitted",
+    "JwtTargetAcceptanceIncompleteReason::LegNotDispatched",
+    "JwtTargetAcceptanceIncompleteReason::NotEligible",
+    "JwtTargetAcceptanceIncompleteReason::ResponseIncomplete",
+    "JwtTargetAcceptanceIncompleteReason::ResponseNotClassified",
+    "JwtTargetAcceptanceLegRole::AnonymousCandidate",
+    "JwtTargetAcceptanceLegRole::AnonymousReplay",
+    "JwtTargetAcceptanceLegRole::InvalidCandidate",
+    "JwtTargetAcceptanceLegRole::InvalidReplay",
+    "JwtTargetAcceptanceLegRole::ORDERED",
+    "JwtTargetAcceptanceLegRole::ValidCandidate",
+    "JwtTargetAcceptanceLegRole::ValidReplay",
+    "JwtTargetAcceptanceLegStage::Candidate",
+    "JwtTargetAcceptanceLegStage::Replay",
+    "JwtTargetAcceptanceMarkerStatus::NotEvaluated",
+    "JwtTargetAcceptanceMarkerStatus::NotObserved",
+    "JwtTargetAcceptanceMarkerStatus::Observed",
+    "JwtTargetAcceptanceMethod::Get",
+    "JwtTargetAcceptanceNotEligibleReason::LocalParsingNotEstablished",
+    "JwtTargetAcceptanceNotEligibleReason::LocalPolicyNotEstablished",
+    "JwtTargetAcceptanceNotEligibleReason::LocalSignatureNotEstablished",
+    "JwtTargetAcceptanceNotEligibleReason::RequestBudgetUnavailable",
+    "JwtTargetAcceptanceNotEligibleReason::RuntimeAuthorityUnavailable",
+    "JwtTargetAcceptanceResponseStatus::CompleteAndClassified",
+    "JwtTargetAcceptanceResponseStatus::Incomplete",
+    "JwtTargetAcceptanceResponseStatus::NotClassified",
     "AuthorizationReviewOutcome::BudgetExhausted",
     "AuthorizationReviewOutcome::Cancelled",
     "AuthorizationReviewOutcome::ContractMismatch",
@@ -10325,6 +10617,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "std::collections::BTreeMap",
     "std::collections::BTreeMap::new",
     "Vec::len",
+    "Vec::with_capacity",
     "std::collections::BTreeSet",
     "std::collections::BTreeSet::new",
     "std::cmp::Ordering::Equal",
@@ -10368,7 +10661,8 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentDecisionOverview::from_document",
     "AssessmentDocument::from_report",
     "AssessmentItemDocument::from_item",
-    "AssessmentJwtPolicyReviewAuditDocument::from_audit",
+    "AssessmentJwtPolicyReviewAuditDocument::from_audits",
+    "AssessmentJwtTargetAcceptanceAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
@@ -10390,6 +10684,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "String::new",
     "String::with_capacity",
     "Vec::new",
+    "Vec::with_capacity",
     "WordPressPresentationEmitter::Html",
     "WordPressPresentationEmitter::Markdown",
     "WordPressPresentationInline::Bool",
@@ -10425,6 +10720,15 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "io::Error::other",
     "is_bidi_control",
     "jwt_parse_rejection",
+    "jwt_target_activity",
+    "jwt_target_conclusion_document",
+    "jwt_target_dimension",
+    "jwt_target_incomplete_reason_document",
+    "pair_dimension",
+    "passive_prerequisite_is_established",
+    "jwt_target_role",
+    "jwt_target_role_incomplete_reason",
+    "jwt_target_stage",
     "is_strict_https_reference",
     "is_wordfence_vulnerability_reference",
     "lowercase_hex",
@@ -10490,6 +10794,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "valid_inventory_version",
     "valid_jwt_policy_reference",
     "valid_jwt_public_key_sha256",
+    "valid_jwt_target_preparation_reference",
     "valid_wordfence_raw_source_identity",
     "valid_wordfence_source_identity",
     "valid_wordpress_discovery_reference",
@@ -10586,19 +10891,32 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accepted_association_count",
+    "accounted_response_bytes",
+    "activity",
     "allowed_clock_skew_seconds",
+    "anonymous_marker",
     "alpn_protocol",
     "certificate_limit_rejection_count",
     "certificate_time_status",
     "cipher_suite",
     "clock_assurance",
+    "commit_status",
+    "conclusion",
     "connection_reuse",
     "dns_san_count",
+    "dispatch_status",
+    "dispatched_active_request_count",
+    "dispatched_passive_request_count",
     "full_chain",
     "handshake_kind",
     "ip_san_count",
+    "invalid_marker",
+    "jwt_target_acceptance_audit",
     "leaf_observations",
+    "legs",
     "malformed_certificate_count",
+    "marker_status",
+    "method",
     "not_after_epoch_seconds",
     "not_before_epoch_seconds",
     "observation_clock_assurance",
@@ -10609,6 +10927,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "policy",
     "protocol",
     "response_occurrence_count",
+    "response_status",
+    "retained_response_bytes",
     "revocation",
     "san_count_truncated",
     "session_resumption",
@@ -10617,11 +10937,14 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "successful_https_response_count",
     "target_scheme",
     "target_acceptance_status",
+    "target_local_state_is_consistent",
+    "target_preparation_binding",
     "target_request_count",
     "tls_info_unavailable_count",
     "tls_observation_audit",
     "token_forwarding",
     "unretained_leaf_response_count",
+    "valid_marker",
     "with_jwt_policy_review_audit",
     "cmp",
     "detector_class",
@@ -10644,6 +10967,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "omitted_observation_count",
     "operator_policy_reference",
     "operator_policy_revision",
+    "preparation_binding",
     "local_public_key_sha256",
     "parsing_status",
     "policy_status",
@@ -11288,6 +11612,31 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::jwt_policy_review::MAX_REQUIRED_CLAIMS"
                 )
             });
+        let jwt_target_acceptance_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::jwt_target_acceptance::JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA"
+                        | "crate::jwt_target_acceptance::JWT_TARGET_ACCEPTANCE_POLICY_ID"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceActivity"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceAudit"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceCommitStatus"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceConclusion"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceDimension"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceDispatchStatus"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceIncompleteReason"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceLegRole"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceLegStage"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceMarkerStatus"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceMethod"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceNotEligibleReason"
+                        | "crate::jwt_target_acceptance::JwtTargetAcceptanceResponseStatus"
+                        | "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS"
+                        | "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS"
+                        | "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES"
+                        | "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES"
+                )
+            });
         let supplied_session_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -11422,6 +11771,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"jwt-policy-review\")")
+        } else if jwt_target_acceptance_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")")
         } else if supplied_session_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -11510,6 +11864,8 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"secret-exposure-review\"")
                     | Some("feature=\"tls-observation\"")
                     | Some("feature=\"jwt-policy-review\"")
+                    | Some("feature=\"jwt-target-acceptance-review\"")
+                    | Some("not(feature=\"jwt-target-acceptance-review\")")
                     | Some("feature=\"supplied-session-review\"")
                     | Some("not(feature=\"supplied-session-review\")")
                     | Some("feature=\"wordpress-review\"")
@@ -11519,6 +11875,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
                     | Some("all(feature=\"scanning\",feature=\"tls-observation\")")
                     | Some("all(feature=\"scanning\",feature=\"jwt-policy-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")")
                     | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
             );
@@ -11804,6 +12161,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
         && (key.starts_with("crate::web_runtime::")
             || key.starts_with("crate::authorization_review::")
             || key.starts_with("crate::jwt_policy_review::")
+            || key.starts_with("crate::jwt_target_acceptance::")
             || key.starts_with("crate::rest_review::")
             || key.starts_with("crate::supplied_session_review::")
             || key.starts_with("crate::wordpress_review::")
@@ -12283,6 +12641,10 @@ mod tests {
                 "dep:ring".to_owned(),
                 "dep:zeroize".to_owned(),
             ],
+        );
+        features.insert(
+            "jwt-target-acceptance-review".to_owned(),
+            vec!["jwt-policy-review".to_owned()],
         );
         features.insert("graphql-review".to_owned(), vec!["scanning".to_owned()]);
         features.insert("openapi-review".to_owned(), vec!["scanning".to_owned()]);
@@ -12846,6 +13208,46 @@ mod tests {
     }
 
     #[test]
+    fn jwt_target_acceptance_feature_edges_are_exact_and_fail_closed() {
+        let features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("jwt-target-acceptance-review").unwrap(),
+            &["jwt-policy-review".to_owned()]
+        );
+        assert!(!raw_feature_closure(&features, "default").contains("jwt-target-acceptance-review"));
+        for aggregate in ["full", "enterprise"] {
+            assert!(features
+                .get(aggregate)
+                .unwrap()
+                .iter()
+                .any(|member| member == "jwt-target-acceptance-review"));
+        }
+
+        let mut policy_alias_removed = valid_feature_map();
+        policy_alias_removed
+            .get_mut("jwt-target-acceptance-review")
+            .unwrap()
+            .clear();
+        assert!(feature_violations(&policy_alias_removed)
+            .iter()
+            .any(|violation| {
+                violation.contains("jwt-target-acceptance-review")
+                    && violation.contains("raw feature closure")
+            }));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        cli_features
+            .get_mut("jwt-target-acceptance-review")
+            .unwrap()
+            .retain(|member| member != "jwt-policy-review");
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("jwt-target-acceptance-review")));
+    }
+
+    #[test]
     fn supplied_session_source_chain_is_exact_and_mutations_fail_closed() {
         let core = include_str!("../../../crates/termivar-scanner/src/supplied_session_review.rs");
         let runtime = include_str!(
@@ -13071,7 +13473,7 @@ mod tests {
             .is_empty());
 
         let narrowed_transport_export = web_runtime.replace(
-            "#[cfg(any(feature = \"authorization-review\", feature = \"supplied-session-review\"))]",
+            "#[cfg(any(\n    feature = \"authorization-review\",\n    feature = \"jwt-target-acceptance-review\",\n    feature = \"supplied-session-review\"\n))]",
             "#[cfg(feature = \"supplied-session-review\")]",
         );
         assert_ne!(narrowed_transport_export, web_runtime);
@@ -13079,12 +13481,13 @@ mod tests {
             supplied_session_runtime_module_gate_violations(&narrowed_transport_export)
                 .unwrap()
                 .iter()
-                .any(|violation| violation
-                    .contains("authorization-review or supplied-session-review"))
+                .any(|violation| violation.contains(
+                    "authorization-review, JWT target-acceptance, or supplied-session-review"
+                ))
         );
 
         let narrowed_transport_import = assessment.replace(
-            "#[cfg(any(feature = \"authorization-review\", feature = \"supplied-session-review\"))]",
+            "#[cfg(any(\n    feature = \"authorization-review\",\n    feature = \"jwt-target-acceptance-review\",\n    feature = \"supplied-session-review\"\n))]",
             "#[cfg(feature = \"supplied-session-review\")]",
         );
         assert_ne!(narrowed_transport_import, assessment);
@@ -14805,6 +15208,8 @@ mod tests {
                         self.supplied_session,
                         #[cfg(feature = "authorization-review")]
                         self.authorization_review,
+                        #[cfg(feature = "jwt-target-acceptance-review")]
+                        self.jwt_target_acceptance,
                         #[cfg(feature = "openapi-review")]
                         self.openapi_review,
                         #[cfg(feature = "rest-review")]
@@ -14834,7 +15239,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -15146,6 +15551,10 @@ mod tests {
                     report: WebAssessmentRunReport,
                     profile: ScanProfileV1,
                 ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+                    #[cfg(feature = "jwt-target-acceptance-review")]
+                    if report.jwt_target_acceptance_audit().is_some() {
+                        return Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch);
+                    }
                     report.into_assessment_report(profile)
                 }
                 #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
@@ -15397,6 +15806,19 @@ mod tests {
                 MAX_REQUIRED_CLAIMS, JWT_POLICY_REVIEW_AUDIT_SCHEMA,
                 JWT_POLICY_REVIEW_POLICY_ID,
             };
+            #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+            use crate::jwt_target_acceptance::{
+                JwtTargetAcceptanceActivity, JwtTargetAcceptanceAudit,
+                JwtTargetAcceptanceCommitStatus, JwtTargetAcceptanceConclusion,
+                JwtTargetAcceptanceDimension, JwtTargetAcceptanceDispatchStatus,
+                JwtTargetAcceptanceIncompleteReason, JwtTargetAcceptanceLegRole,
+                JwtTargetAcceptanceLegStage, JwtTargetAcceptanceMarkerStatus,
+                JwtTargetAcceptanceMethod, JwtTargetAcceptanceNotEligibleReason,
+                JwtTargetAcceptanceResponseStatus, JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA,
+                JWT_TARGET_ACCEPTANCE_POLICY_ID, MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS,
+                MAX_JWT_TARGET_ACCEPTANCE_REQUESTS, MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES,
+                MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES,
+            };
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             use crate::{
                 authorization_review::{
@@ -15547,6 +15969,16 @@ mod tests {
         );
         assert_ne!(widened_tls_observation_import, imports);
         let violations = reporting_source_import_violations(&widened_tls_observation_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_jwt_target_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"jwt-target-acceptance-review\"))]\n            use crate::jwt_target_acceptance::{",
+            "#[cfg(all(feature = \"scanning\", feature = \"jwt-policy-review\"))]\n            use crate::jwt_target_acceptance::{",
+        );
+        assert_ne!(widened_jwt_target_import, imports);
+        let violations = reporting_source_import_violations(&widened_jwt_target_import)
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
@@ -15969,6 +16401,12 @@ mod tests {
                 external_activity: AssessmentJwtExternalActivityDocument,
                 policy_violations: Vec<AssessmentJwtPolicyViolationDocument>,
                 source_authentication: &'static str,
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                preparation_reference: Option<String>,
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                target_acceptance: Option<AssessmentJwtTargetAcceptanceAuditDocument>,
             }
             #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
             #[derive(Serialize)]
@@ -16003,6 +16441,77 @@ mod tests {
                 kind: &'static str,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 ordinal: Option<u64>,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtTargetAcceptanceAuditDocument {
+                schema: &'static str,
+                policy: &'static str,
+                selected: bool,
+                operator_policy_reference: String,
+                operator_policy_revision: String,
+                resource_reference: String,
+                method: &'static str,
+                preparation_reference: String,
+                status: &'static str,
+                accounting: AssessmentJwtTargetAcceptanceAccountingDocument,
+                dimensions: AssessmentJwtTargetAcceptanceDimensionsDocument,
+                conclusion: AssessmentJwtTargetAcceptanceConclusionDocument,
+                legs: Vec<AssessmentJwtTargetAcceptanceLegDocument>,
+                source_authentication: &'static str,
+                interpretation_limits: [&'static str; 6],
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtTargetAcceptanceAccountingDocument {
+                request_limit: u64,
+                active_request_limit: u64,
+                retained_response_byte_limit: u64,
+                total_retained_response_byte_limit: u64,
+                dispatched_request_count: u64,
+                dispatched_passive_request_count: u64,
+                dispatched_active_request_count: u64,
+                committed_response_count: u64,
+                retained_response_bytes: u64,
+                accounted_transport_response_bytes: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtTargetAcceptanceDimensionsDocument {
+                valid_marker: &'static str,
+                anonymous_marker: &'static str,
+                invalid_marker: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtTargetAcceptanceConclusionDocument {
+                kind: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                incomplete_reason: Option<AssessmentJwtTargetAcceptanceIncompleteReasonDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+                kind: &'static str,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                role: Option<&'static str>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                not_eligible_reason: Option<&'static str>,
+            }
+            #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+            #[derive(Serialize)]
+            struct AssessmentJwtTargetAcceptanceLegDocument {
+                role: &'static str,
+                stage: &'static str,
+                activity: &'static str,
+                dispatch_status: &'static str,
+                commit_status: &'static str,
+                response_status: &'static str,
+                marker_status: &'static str,
+                retained_response_bytes: u64,
+                accounted_transport_response_bytes: u64,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                evidence_reference: Option<String>,
             }
             #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
             #[derive(Serialize)]
@@ -17502,6 +18011,44 @@ mod tests {
     }
 
     #[test]
+    fn jwt_target_reporting_document_shape_and_gate_mutations_are_rejected() {
+        let source = valid_reporting_document_contract_fixture();
+        assert!(reporting_document_contract_violations(source)
+            .unwrap()
+            .is_empty());
+
+        let missing_accounted_bytes = source.replacen(
+            "                accounted_transport_response_bytes: u64,",
+            "",
+            1,
+        );
+        assert_ne!(missing_accounted_bytes, source);
+        let violations = reporting_document_contract_violations(&missing_accounted_bytes)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentJwtTargetAcceptanceAccountingDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let aliased_gate = source.replacen(
+            "#[cfg(all(feature = \"scanning\", feature = \"jwt-target-acceptance-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentJwtTargetAcceptanceAuditDocument",
+            "#[cfg(all(feature = \"scanning\", feature = \"jwt-policy-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentJwtTargetAcceptanceAuditDocument",
+            1,
+        );
+        assert_ne!(aliased_gate, source);
+        let violations = reporting_document_contract_violations(&aliased_gate)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentJwtTargetAcceptanceAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+    }
+
+    #[test]
     fn reporting_comparison_declaration_does_not_unlock_existing_renderer() {
         let source =
             include_str!("../../../crates/termivar-scanner/src/reporting.rs").replace("\r\n", "\n");
@@ -17659,6 +18206,13 @@ mod tests {
                 vec![
                     "dep:toml".to_owned(),
                     "termivar-scanner/jwt-policy-review".to_owned(),
+                ],
+            ),
+            (
+                "jwt-target-acceptance-review".to_owned(),
+                vec![
+                    "jwt-policy-review".to_owned(),
+                    "termivar-scanner/jwt-target-acceptance-review".to_owned(),
                 ],
             ),
             (
@@ -18606,6 +19160,7 @@ mod tests {
             #[cfg(feature = "legacy-scanner")] pub mod error;
             #[cfg(feature = "graphql-review")] pub(crate) mod graphql_review;
             #[cfg(feature = "jwt-policy-review")] pub mod jwt_policy_review;
+            #[cfg(feature = "jwt-target-acceptance-review")] pub mod jwt_target_acceptance;
             #[cfg(feature = "legacy-scanner")] mod legacy_discovery;
             #[cfg(feature = "legacy-scanner")] pub mod logging;
             #[cfg(any(feature = "platform-models", feature = "lua"))] mod lua_config;
@@ -18655,6 +19210,14 @@ mod tests {
         .unwrap();
         assert!(oast_violations.iter().any(|violation| {
             violation.contains("module `oast`") && violation.contains("exact cfg")
+        }));
+
+        let jwt_target_violations = module_gate_violations(
+            r#"#[cfg(feature = "jwt-policy-review")] pub mod jwt_target_acceptance;"#,
+        )
+        .unwrap();
+        assert!(jwt_target_violations.iter().any(|violation| {
+            violation.contains("module `jwt_target_acceptance`") && violation.contains("exact cfg")
         }));
     }
 

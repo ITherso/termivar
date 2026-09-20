@@ -9,6 +9,17 @@ use crate::jwt_policy_review::{
     JwtTargetAcceptanceStatus, JWT_POLICY_REVIEW_AUDIT_SCHEMA, JWT_POLICY_REVIEW_POLICY_ID,
     MAX_CLOCK_SKEW_SECONDS, MAX_REQUIRED_CLAIMS,
 };
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+use crate::jwt_target_acceptance::{
+    JwtTargetAcceptanceActivity, JwtTargetAcceptanceAudit, JwtTargetAcceptanceCommitStatus,
+    JwtTargetAcceptanceConclusion, JwtTargetAcceptanceDimension, JwtTargetAcceptanceDispatchStatus,
+    JwtTargetAcceptanceIncompleteReason, JwtTargetAcceptanceLegRole, JwtTargetAcceptanceLegStage,
+    JwtTargetAcceptanceMarkerStatus, JwtTargetAcceptanceMethod,
+    JwtTargetAcceptanceNotEligibleReason, JwtTargetAcceptanceResponseStatus,
+    JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA, JWT_TARGET_ACCEPTANCE_POLICY_ID,
+    MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS, MAX_JWT_TARGET_ACCEPTANCE_REQUESTS,
+    MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES, MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES,
+};
 #[cfg(all(feature = "scanning", feature = "rest-review"))]
 use crate::rest_review::RestDocumentedResponseClass;
 #[cfg(feature = "scanning")]
@@ -216,6 +227,10 @@ impl ReportGenerator {
         report: WebAssessmentRunReport,
         profile: ScanProfileV1,
     ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if report.jwt_target_acceptance_audit().is_some() {
+            return Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch);
+        }
         report.into_assessment_report(profile)
     }
 
@@ -1194,6 +1209,22 @@ fn render_assessment_csv(
     #[cfg(feature = "jwt-policy-review")]
     if let Some(audit) = &document.jwt_policy_review {
         let summary = audit.wire_json()?;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let collection_method = if audit.target_acceptance.is_some() {
+            "local-jwt-policy-and-bounded-target-review"
+        } else {
+            "local-jwt-policy-review"
+        };
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let evidence_count = audit
+            .target_acceptance
+            .as_ref()
+            .map_or(0, |target| target.accounting.committed_response_count)
+            .to_string();
+        #[cfg(not(feature = "jwt-target-acceptance-review"))]
+        let collection_method = "local-jwt-policy-review";
+        #[cfg(not(feature = "jwt-target-acceptance-review"))]
+        let evidence_count = "0".to_owned();
         write_assessment_csv_row(
             &mut output,
             [
@@ -1215,9 +1246,9 @@ fn render_assessment_csv(
                 "",
                 "",
                 "",
-                "0",
+                &evidence_count,
                 &summary,
-                "local-jwt-policy-review",
+                collection_method,
                 "",
                 "",
                 "",
@@ -1947,10 +1978,15 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
     }
     #[cfg(feature = "jwt-policy-review")]
     if let Some(audit) = &document.jwt_policy_review {
-        output.push_str(
-            "<section><h2>Local JWT policy review audit</h2>\
-<p class=\"wp-note\">Parsing, local policy consistency, signature verification against the explicitly supplied local public key, and target acceptance are separate states. This value-free audit retains no token, claim value, or key material. It performed no target request, remote-key retrieval, or token forwarding; target acceptance and source authentication are not established.</p><dl class=\"meta\">",
-        )?;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if audit.target_acceptance.is_some() {
+            output.push_str("<section><h2>JWT policy and target-control review audit</h2><p class=\"wp-note\">Parsing, local policy consistency, local signature verification, and bounded target behavior are separate states. This value-free audit retains no token, claim value, key material, selected marker name, or raw resource URL. Target controls remain review-level and establish neither a general authentication bypass nor authorization impact.</p>")?;
+        } else {
+            output.push_str("<section><h2>Local JWT policy review audit</h2><p class=\"wp-note\">Parsing, local policy consistency, signature verification against the explicitly supplied local public key, and target acceptance are separate states. This value-free audit retains no token, claim value, or key material. It performed no target request, remote-key retrieval, or token forwarding; target acceptance and source authentication are not established.</p>")?;
+        }
+        #[cfg(not(feature = "jwt-target-acceptance-review"))]
+        output.push_str("<section><h2>Local JWT policy review audit</h2><p class=\"wp-note\">Parsing, local policy consistency, signature verification against the explicitly supplied local public key, and target acceptance are separate states. This value-free audit retains no token, claim value, or key material. It performed no target request, remote-key retrieval, or token forwarding; target acceptance and source authentication are not established.</p>")?;
+        output.push_str("<dl class=\"meta\">")?;
         for (label, value) in audit.metadata() {
             output.push_str("<dt>")?;
             write_html_text(&mut output, label)?;
@@ -1971,7 +2007,37 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             write_html_text(&mut output, &row)?;
             output.push_str("</code></li>")?;
         }
-        output.push_str("</ul></section>")?;
+        output.push_str("</ul>")?;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if let Some(target) = &audit.target_acceptance {
+            output.push_str("<h3>Target acceptance controls</h3><ul>")?;
+            if target.legs.is_empty() {
+                output.push_str("<li><code>no target leg dispatched</code></li>")?;
+            }
+            for leg in &target.legs {
+                output.push_str("<li><code>")?;
+                write_html_text(
+                    &mut output,
+                    &format!(
+                        "role={};stage={};activity={};dispatch={};commit={};response={};marker={};retained_bytes={};accounted_transport_bytes={}",
+                        leg.role,
+                        leg.stage,
+                        leg.activity,
+                        leg.dispatch_status,
+                        leg.commit_status,
+                        leg.response_status,
+                        leg.marker_status,
+                        leg.retained_response_bytes,
+                        leg.accounted_transport_response_bytes,
+                    ),
+                )?;
+                output.push_str("</code></li>")?;
+            }
+            output.push_str("</ul><p class=\"wp-note\">")?;
+            write_html_text(&mut output, &target.interpretation_limits.join(" "))?;
+            output.push_str("</p>")?;
+        }
+        output.push_str("</section>")?;
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
@@ -4230,9 +4296,14 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "jwt-policy-review")]
     if let Some(audit) = &document.jwt_policy_review {
-        output.push_str(
-            "\n### Local JWT policy review audit\n\nParsing, local policy consistency, signature verification against the explicitly supplied local public key, and target acceptance are separate states. This value-free audit retains no token, claim value, or key material. It performed no target request, remote-key retrieval, or token forwarding; target acceptance and source authentication are not established.\n\n",
-        )?;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if audit.target_acceptance.is_some() {
+            output.push_str("\n### JWT policy and target-control review audit\n\nParsing, local policy consistency, local signature verification, and bounded target behavior are separate states. This value-free audit retains no token, claim value, key material, selected marker name, or raw resource URL. Target controls remain review-level and establish neither a general authentication bypass nor authorization impact.\n\n")?;
+        } else {
+            output.push_str("\n### Local JWT policy review audit\n\nParsing, local policy consistency, signature verification against the explicitly supplied local public key, and target acceptance are separate states. This value-free audit retains no token, claim value, or key material. It performed no target request, remote-key retrieval, or token forwarding; target acceptance and source authentication are not established.\n\n")?;
+        }
+        #[cfg(not(feature = "jwt-target-acceptance-review"))]
+        output.push_str("\n### Local JWT policy review audit\n\nParsing, local policy consistency, signature verification against the explicitly supplied local public key, and target acceptance are separate states. This value-free audit retains no token, claim value, or key material. It performed no target request, remote-key retrieval, or token forwarding; target acceptance and source authentication are not established.\n\n")?;
         for (label, value) in audit.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
@@ -4250,6 +4321,38 @@ fn render_assessment_markdown(
             );
             write_markdown_code_span(&mut output, &row)?;
             output.push_char('\n')?;
+        }
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if let Some(target) = &audit.target_acceptance {
+            output.push_str("\n#### Target acceptance controls\n\n")?;
+            if target.legs.is_empty() {
+                output.push_str("- `no target leg dispatched`\n")?;
+            }
+            for leg in &target.legs {
+                output.push_str("- ")?;
+                write_markdown_code_span(
+                    &mut output,
+                    &format!(
+                        "role={};stage={};activity={};dispatch={};commit={};response={};marker={};retained_bytes={};accounted_transport_bytes={}",
+                        leg.role,
+                        leg.stage,
+                        leg.activity,
+                        leg.dispatch_status,
+                        leg.commit_status,
+                        leg.response_status,
+                        leg.marker_status,
+                        leg.retained_response_bytes,
+                        leg.accounted_transport_response_bytes,
+                    ),
+                )?;
+                output.push_char('\n')?;
+            }
+            output.push_char('\n')?;
+            for limitation in target.interpretation_limits {
+                output.push_str("- ")?;
+                output.push_str(limitation)?;
+                output.push_char('\n')?;
+            }
         }
     }
     #[cfg(feature = "wordpress-review")]
@@ -4505,10 +4608,25 @@ impl<'a> AssessmentDocument<'a> {
             #[cfg(feature = "tls-observation")]
             tls_observation,
             #[cfg(feature = "jwt-policy-review")]
-            jwt_policy_review: report
-                .jwt_policy_review_audit()
-                .map(AssessmentJwtPolicyReviewAuditDocument::from_audit)
-                .transpose()?,
+            jwt_policy_review: match report.jwt_policy_review_audit() {
+                Some(audit) => {
+                    #[cfg(feature = "jwt-target-acceptance-review")]
+                    let document = AssessmentJwtPolicyReviewAuditDocument::from_audits(
+                        audit,
+                        report.jwt_target_acceptance_audit(),
+                    )?;
+                    #[cfg(not(feature = "jwt-target-acceptance-review"))]
+                    let document = AssessmentJwtPolicyReviewAuditDocument::from_audits(audit)?;
+                    Some(document)
+                },
+                None => {
+                    #[cfg(feature = "jwt-target-acceptance-review")]
+                    if report.jwt_target_acceptance_audit().is_some() {
+                        return Err(ReportError::Serialization);
+                    }
+                    None
+                },
+            },
             #[cfg(feature = "wordpress-review")]
             wordpress_review: report
                 .wordpress_review_audit()
@@ -5166,6 +5284,19 @@ const JWT_POLICY_KEY_SOURCE_ASSURANCE: &str = "operator_supplied_not_authenticat
 const JWT_POLICY_TOKEN_KEY_SELECTION: &str = "prohibited";
 #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
 const MAX_JWT_POLICY_VIOLATIONS: usize = MAX_REQUIRED_CLAIMS + 5;
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+const JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2: &str = "security.jwt-policy-review-audit/v2";
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+const JWT_TARGET_SOURCE_AUTHENTICATION: &str = "not_established";
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+const JWT_TARGET_INTERPRETATION_LIMITS: [&str; 6] = [
+    "A marker relationship applies only to the selected resource and request controls; it does not establish a general authentication bypass, authorization effect, exploitability, or impact.",
+    "An invalid-signature control marker is reported only beside matched valid and anonymous controls; it is still review-level evidence, not a confirmed vulnerability.",
+    "A public or token-agnostic marker suppresses invalid-signature-specific interpretation, while a rejected invalid control does not prove every token verifier is secure.",
+    "Retained response bytes are bounded interpreted bytes; accounted transport response bytes include charged discarded overrun and may exceed a retention ceiling without expanding interpreted content.",
+    "The operator policy, selected resource, local key, target, and source are not authenticated by this report.",
+    "The random preparation reference links local and target evidence only within this report; it is not a token identity, cross-run identity, signature, or source authentication claim.",
+];
 
 #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
 #[derive(Serialize)]
@@ -5183,6 +5314,12 @@ struct AssessmentJwtPolicyReviewAuditDocument {
     external_activity: AssessmentJwtExternalActivityDocument,
     policy_violations: Vec<AssessmentJwtPolicyViolationDocument>,
     source_authentication: &'static str,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preparation_reference: Option<String>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_acceptance: Option<AssessmentJwtTargetAcceptanceAuditDocument>,
 }
 
 #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
@@ -5222,9 +5359,91 @@ struct AssessmentJwtPolicyViolationDocument {
     ordinal: Option<u64>,
 }
 
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtTargetAcceptanceAuditDocument {
+    schema: &'static str,
+    policy: &'static str,
+    selected: bool,
+    operator_policy_reference: String,
+    operator_policy_revision: String,
+    resource_reference: String,
+    method: &'static str,
+    preparation_reference: String,
+    status: &'static str,
+    accounting: AssessmentJwtTargetAcceptanceAccountingDocument,
+    dimensions: AssessmentJwtTargetAcceptanceDimensionsDocument,
+    conclusion: AssessmentJwtTargetAcceptanceConclusionDocument,
+    legs: Vec<AssessmentJwtTargetAcceptanceLegDocument>,
+    source_authentication: &'static str,
+    interpretation_limits: [&'static str; 6],
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtTargetAcceptanceAccountingDocument {
+    request_limit: u64,
+    active_request_limit: u64,
+    retained_response_byte_limit: u64,
+    total_retained_response_byte_limit: u64,
+    dispatched_request_count: u64,
+    dispatched_passive_request_count: u64,
+    dispatched_active_request_count: u64,
+    committed_response_count: u64,
+    retained_response_bytes: u64,
+    accounted_transport_response_bytes: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtTargetAcceptanceDimensionsDocument {
+    valid_marker: &'static str,
+    anonymous_marker: &'static str,
+    invalid_marker: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtTargetAcceptanceConclusionDocument {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    incomplete_reason: Option<AssessmentJwtTargetAcceptanceIncompleteReasonDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_eligible_reason: Option<&'static str>,
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+#[derive(Serialize)]
+struct AssessmentJwtTargetAcceptanceLegDocument {
+    role: &'static str,
+    stage: &'static str,
+    activity: &'static str,
+    dispatch_status: &'static str,
+    commit_status: &'static str,
+    response_status: &'static str,
+    marker_status: &'static str,
+    retained_response_bytes: u64,
+    accounted_transport_response_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence_reference: Option<String>,
+}
+
 #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
 impl AssessmentJwtPolicyReviewAuditDocument {
-    fn from_audit(audit: &JwtPolicyReviewAudit) -> Result<Self, ReportError> {
+    fn from_audits(
+        audit: &JwtPolicyReviewAudit,
+        #[cfg(feature = "jwt-target-acceptance-review")] target_acceptance: Option<
+            &JwtTargetAcceptanceAudit,
+        >,
+    ) -> Result<Self, ReportError> {
         let (parsing_status, parsing_rejection) = match audit.parsing_status() {
             JwtParsingStatus::Parsed => ("parsed", None),
             JwtParsingStatus::Rejected(reason) => ("rejected", Some(jwt_parse_rejection(reason))),
@@ -5237,8 +5456,23 @@ impl AssessmentJwtPolicyReviewAuditDocument {
             .copied()
             .map(jwt_policy_violation)
             .collect::<Vec<_>>();
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let target_acceptance = target_acceptance
+            .map(AssessmentJwtTargetAcceptanceAuditDocument::from_audit)
+            .transpose()?;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let preparation_reference = audit
+            .target_preparation_binding()
+            .map(|binding| binding.reference());
         let document = Self {
+            #[cfg(not(feature = "jwt-target-acceptance-review"))]
             schema: audit.schema(),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            schema: if target_acceptance.is_some() {
+                JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2
+            } else {
+                audit.schema()
+            },
             policy: audit.policy(),
             selected: audit.selected(),
             parsing_status,
@@ -5253,9 +5487,17 @@ impl AssessmentJwtPolicyReviewAuditDocument {
                 JwtLocalSignatureStatus::Verified => "verified",
                 JwtLocalSignatureStatus::Invalid => "invalid",
             },
+            #[cfg(not(feature = "jwt-target-acceptance-review"))]
             target_acceptance_status: match audit.target_acceptance_status() {
                 JwtTargetAcceptanceStatus::NotPerformed => "not_performed",
             },
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            target_acceptance_status: target_acceptance.as_ref().map_or_else(
+                || match audit.target_acceptance_status() {
+                    JwtTargetAcceptanceStatus::NotPerformed => "not_performed",
+                },
+                |target| target.status,
+            ),
             methodology: AssessmentJwtPolicyMethodologyDocument {
                 algorithm: JWT_POLICY_ALGORITHM,
                 representation: JWT_POLICY_REPRESENTATION,
@@ -5279,23 +5521,92 @@ impl AssessmentJwtPolicyReviewAuditDocument {
                 },
             },
             external_activity: AssessmentJwtExternalActivityDocument {
+                #[cfg(not(feature = "jwt-target-acceptance-review"))]
                 target_request_count: u64::from(external.target_request_count()),
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                target_request_count: target_acceptance.as_ref().map_or_else(
+                    || u64::from(external.target_request_count()),
+                    |target| target.accounting.dispatched_request_count,
+                ),
                 remote_key_retrieval: match external.remote_key_retrieval() {
                     JwtExternalOperationStatus::NotPerformed => JWT_POLICY_EXTERNAL_NOT_PERFORMED,
                 },
+                #[cfg(not(feature = "jwt-target-acceptance-review"))]
                 token_forwarding: match external.token_forwarding() {
                     JwtExternalOperationStatus::NotPerformed => JWT_POLICY_EXTERNAL_NOT_PERFORMED,
                 },
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                token_forwarding: target_acceptance.as_ref().map_or_else(
+                    || match external.token_forwarding() {
+                        JwtExternalOperationStatus::NotPerformed => {
+                            JWT_POLICY_EXTERNAL_NOT_PERFORMED
+                        },
+                    },
+                    |target| {
+                        if target.legs.iter().any(|leg| {
+                            leg.dispatch_status == "dispatched"
+                                && leg.role != "anonymous_candidate"
+                                && leg.role != "anonymous_replay"
+                        }) {
+                            "performed"
+                        } else {
+                            JWT_POLICY_EXTERNAL_NOT_PERFORMED
+                        }
+                    },
+                ),
             },
             policy_violations,
             source_authentication: JWT_POLICY_SOURCE_AUTHENTICATION,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            preparation_reference,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            target_acceptance,
         };
         document.validate()?;
         Ok(document)
     }
 
     fn validate(&self) -> Result<(), ReportError> {
-        if self.schema != JWT_POLICY_REVIEW_AUDIT_SCHEMA
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let target_contract_valid = match (&self.target_acceptance, self.schema) {
+            (None, JWT_POLICY_REVIEW_AUDIT_SCHEMA) => {
+                self.preparation_reference.is_none()
+                    && self.target_acceptance_status == "not_performed"
+                    && self.external_activity.target_request_count == 0
+                    && self.external_activity.token_forwarding == JWT_POLICY_EXTERNAL_NOT_PERFORMED
+            },
+            (Some(target), JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2) => {
+                target.validate().is_ok()
+                    && self.preparation_reference.as_deref()
+                        == Some(target.preparation_reference.as_str())
+                    && self
+                        .preparation_reference
+                        .as_deref()
+                        .is_some_and(valid_jwt_target_preparation_reference)
+                    && self.target_local_state_is_consistent(target)
+                    && self.target_acceptance_status == target.status
+                    && self.external_activity.target_request_count
+                        == target.accounting.dispatched_request_count
+                    && self.external_activity.token_forwarding
+                        == if target.legs.iter().any(|leg| {
+                            leg.dispatch_status == "dispatched"
+                                && leg.role != "anonymous_candidate"
+                                && leg.role != "anonymous_replay"
+                        }) {
+                            "performed"
+                        } else {
+                            JWT_POLICY_EXTERNAL_NOT_PERFORMED
+                        }
+            },
+            _ => false,
+        };
+        #[cfg(not(feature = "jwt-target-acceptance-review"))]
+        let target_contract_valid = self.schema == JWT_POLICY_REVIEW_AUDIT_SCHEMA
+            && self.target_acceptance_status == "not_performed"
+            && self.external_activity.target_request_count == 0
+            && self.external_activity.token_forwarding == JWT_POLICY_EXTERNAL_NOT_PERFORMED;
+
+        if !target_contract_valid
             || self.policy != JWT_POLICY_REVIEW_POLICY_ID
             || !self.selected
             || !valid_jwt_policy_reference(&self.methodology.operator_policy_reference)
@@ -5313,10 +5624,7 @@ impl AssessmentJwtPolicyReviewAuditDocument {
                 > u64::try_from(MAX_REQUIRED_CLAIMS).map_err(|_| ReportError::Serialization)?
             || self.methodology.allowed_clock_skew_seconds > u64::from(MAX_CLOCK_SKEW_SECONDS)
             || self.methodology.clock_assurance != JWT_POLICY_CLOCK_ASSURANCE
-            || self.external_activity.target_request_count != 0
             || self.external_activity.remote_key_retrieval != JWT_POLICY_EXTERNAL_NOT_PERFORMED
-            || self.external_activity.token_forwarding != JWT_POLICY_EXTERNAL_NOT_PERFORMED
-            || self.target_acceptance_status != "not_performed"
             || self.source_authentication != JWT_POLICY_SOURCE_AUTHENTICATION
             || self.policy_violations.len() > MAX_JWT_POLICY_VIOLATIONS
         {
@@ -5392,8 +5700,39 @@ impl AssessmentJwtPolicyReviewAuditDocument {
         Ok(())
     }
 
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    fn target_local_state_is_consistent(
+        &self,
+        target: &AssessmentJwtTargetAcceptanceAuditDocument,
+    ) -> bool {
+        let local_eligible = self.parsing_status == "parsed"
+            && self.policy_status == "consistent"
+            && self.local_signature_status == "verified";
+        if !target.legs.is_empty() {
+            return local_eligible;
+        }
+        let reason = target
+            .conclusion
+            .incomplete_reason
+            .as_ref()
+            .and_then(|reason| reason.not_eligible_reason);
+        match reason {
+            Some("local_parsing_not_established") => self.parsing_status == "rejected",
+            Some("local_policy_not_established") => {
+                self.parsing_status == "parsed" && self.policy_status == "inconsistent"
+            },
+            Some("local_signature_not_established") => {
+                self.parsing_status == "parsed"
+                    && self.policy_status == "consistent"
+                    && self.local_signature_status == "invalid"
+            },
+            Some("runtime_authority_unavailable" | "request_budget_unavailable") => local_eligible,
+            _ => false,
+        }
+    }
+
     fn metadata(&self) -> Vec<(&'static str, String)> {
-        vec![
+        let metadata = vec![
             ("Audit schema", self.schema.to_owned()),
             ("Policy", self.policy.to_owned()),
             ("Selected", self.selected.to_string()),
@@ -5457,12 +5796,670 @@ impl AssessmentJwtPolicyReviewAuditDocument {
                 "Source authentication",
                 self.source_authentication.to_owned(),
             ),
-        ]
+        ];
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let metadata = {
+            let mut metadata = metadata;
+            if let Some(target) = &self.target_acceptance {
+                metadata.extend([
+                    (
+                        "Target policy reference",
+                        target.operator_policy_reference.clone(),
+                    ),
+                    (
+                        "Target policy revision",
+                        target.operator_policy_revision.clone(),
+                    ),
+                    (
+                        "Target resource reference",
+                        target.resource_reference.clone(),
+                    ),
+                    (
+                        "Target dispatched requests",
+                        target.accounting.dispatched_request_count.to_string(),
+                    ),
+                    (
+                        "Target committed responses",
+                        target.accounting.committed_response_count.to_string(),
+                    ),
+                    (
+                        "Target retained response bytes",
+                        target.accounting.retained_response_bytes.to_string(),
+                    ),
+                    (
+                        "Target accounted transport response bytes",
+                        target
+                            .accounting
+                            .accounted_transport_response_bytes
+                            .to_string(),
+                    ),
+                    ("Target conclusion", target.conclusion.kind.to_owned()),
+                ]);
+                if let Some(reason) = &target.conclusion.incomplete_reason {
+                    let value = match (reason.role, reason.not_eligible_reason) {
+                        (Some(role), None) => {
+                            format!("kind={};role={role}", reason.kind)
+                        },
+                        (None, Some(not_eligible_reason)) => format!(
+                            "kind={};not_eligible_reason={not_eligible_reason}",
+                            reason.kind
+                        ),
+                        (Some(role), Some(not_eligible_reason)) => format!(
+                            "kind={};role={role};not_eligible_reason={not_eligible_reason}",
+                            reason.kind
+                        ),
+                        (None, None) => format!("kind={}", reason.kind),
+                    };
+                    metadata.push(("Target incomplete reason", value));
+                }
+            }
+            metadata
+        };
+        metadata
     }
 
     fn wire_json(&self) -> Result<String, ReportError> {
         serde_json::to_string(self).map_err(|_| ReportError::Serialization)
     }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+impl AssessmentJwtTargetAcceptanceAuditDocument {
+    fn from_audit(audit: &JwtTargetAcceptanceAudit) -> Result<Self, ReportError> {
+        let accounting = audit.accounting();
+        let conclusion = jwt_target_conclusion_document(audit.conclusion());
+        let status = if accounting.dispatched_request_count() == 0 {
+            "not_performed"
+        } else if matches!(
+            audit.conclusion(),
+            JwtTargetAcceptanceConclusion::Incomplete(_)
+        ) {
+            "partially_performed"
+        } else {
+            "completed"
+        };
+        let document = Self {
+            schema: audit.schema(),
+            policy: audit.policy(),
+            selected: true,
+            operator_policy_reference: audit.operator_policy_reference().to_owned(),
+            operator_policy_revision: audit.operator_policy_revision().to_owned(),
+            resource_reference: audit.resource_reference().to_owned(),
+            method: match audit.method() {
+                JwtTargetAcceptanceMethod::Get => "get",
+            },
+            preparation_reference: audit
+                .preparation_binding()
+                .ok_or(ReportError::Serialization)?
+                .reference(),
+            status,
+            accounting: AssessmentJwtTargetAcceptanceAccountingDocument {
+                request_limit: u64::from(MAX_JWT_TARGET_ACCEPTANCE_REQUESTS),
+                active_request_limit: u64::from(MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS),
+                retained_response_byte_limit: MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES,
+                total_retained_response_byte_limit: MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES,
+                dispatched_request_count: u64::from(accounting.dispatched_request_count()),
+                dispatched_passive_request_count: u64::from(
+                    accounting.dispatched_passive_request_count(),
+                ),
+                dispatched_active_request_count: u64::from(
+                    accounting.dispatched_active_request_count(),
+                ),
+                committed_response_count: u64::from(accounting.committed_response_count()),
+                retained_response_bytes: accounting.retained_response_bytes(),
+                accounted_transport_response_bytes: accounting.accounted_response_bytes(),
+            },
+            dimensions: AssessmentJwtTargetAcceptanceDimensionsDocument {
+                valid_marker: jwt_target_dimension(audit.valid_marker()),
+                anonymous_marker: jwt_target_dimension(audit.anonymous_marker()),
+                invalid_marker: jwt_target_dimension(audit.invalid_marker()),
+            },
+            conclusion,
+            legs: audit
+                .legs()
+                .iter()
+                .map(|leg| AssessmentJwtTargetAcceptanceLegDocument {
+                    role: jwt_target_role(leg.role()),
+                    stage: jwt_target_stage(leg.role().stage()),
+                    activity: jwt_target_activity(leg.role().activity()),
+                    dispatch_status: match leg.dispatch_status() {
+                        JwtTargetAcceptanceDispatchStatus::NotDispatched => "not_dispatched",
+                        JwtTargetAcceptanceDispatchStatus::Dispatched => "dispatched",
+                    },
+                    commit_status: match leg.commit_status() {
+                        JwtTargetAcceptanceCommitStatus::NotCommitted => "not_committed",
+                        JwtTargetAcceptanceCommitStatus::Committed => "committed",
+                    },
+                    response_status: match leg.response_status() {
+                        JwtTargetAcceptanceResponseStatus::NotClassified => "not_classified",
+                        JwtTargetAcceptanceResponseStatus::CompleteAndClassified => {
+                            "complete_and_classified"
+                        },
+                        JwtTargetAcceptanceResponseStatus::Incomplete => "incomplete",
+                    },
+                    marker_status: match leg.marker_status() {
+                        JwtTargetAcceptanceMarkerStatus::Observed => "observed",
+                        JwtTargetAcceptanceMarkerStatus::NotObserved => "not_observed",
+                        JwtTargetAcceptanceMarkerStatus::NotEvaluated => "not_evaluated",
+                    },
+                    retained_response_bytes: leg.retained_response_bytes(),
+                    accounted_transport_response_bytes: leg.accounted_response_bytes(),
+                    evidence_reference: leg.evidence_reference().map(str::to_owned),
+                })
+                .collect(),
+            source_authentication: JWT_TARGET_SOURCE_AUTHENTICATION,
+            interpretation_limits: JWT_TARGET_INTERPRETATION_LIMITS,
+        };
+        document.validate()?;
+        Ok(document)
+    }
+
+    fn validate(&self) -> Result<(), ReportError> {
+        if self.schema != JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA
+            || self.policy != JWT_TARGET_ACCEPTANCE_POLICY_ID
+            || !self.selected
+            || !valid_jwt_policy_reference(&self.operator_policy_reference)
+            || !valid_jwt_policy_reference(&self.operator_policy_revision)
+            || !valid_jwt_policy_reference(&self.resource_reference)
+            || !valid_jwt_target_preparation_reference(&self.preparation_reference)
+            || self.method != "get"
+            || self.source_authentication != JWT_TARGET_SOURCE_AUTHENTICATION
+            || self.interpretation_limits != JWT_TARGET_INTERPRETATION_LIMITS
+            || self.accounting.request_limit != u64::from(MAX_JWT_TARGET_ACCEPTANCE_REQUESTS)
+            || self.accounting.active_request_limit
+                != u64::from(MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS)
+            || self.accounting.retained_response_byte_limit
+                != MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES
+            || self.accounting.total_retained_response_byte_limit
+                != MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES
+        {
+            return Err(ReportError::Serialization);
+        }
+
+        let conclusion_incomplete = self.conclusion.kind == "incomplete";
+        if conclusion_incomplete != self.conclusion.incomplete_reason.is_some()
+            || !matches!(
+                self.conclusion.kind,
+                "invalid_signature_control_marker_observed_with_anonymous_control"
+                    | "public_or_token_agnostic_marker_observed"
+                    | "invalid_control_marker_not_observed"
+                    | "unstable_inconclusive"
+                    | "inconclusive"
+                    | "incomplete"
+            )
+            || ![
+                "observed_stable",
+                "not_observed_stable",
+                "unstable",
+                "not_evaluated",
+                "incomplete",
+            ]
+            .contains(&self.dimensions.valid_marker)
+            || ![
+                "observed_stable",
+                "not_observed_stable",
+                "unstable",
+                "not_evaluated",
+                "incomplete",
+            ]
+            .contains(&self.dimensions.anonymous_marker)
+            || ![
+                "observed_stable",
+                "not_observed_stable",
+                "unstable",
+                "not_evaluated",
+                "incomplete",
+            ]
+            .contains(&self.dimensions.invalid_marker)
+        {
+            return Err(ReportError::Serialization);
+        }
+        if let Some(reason) = &self.conclusion.incomplete_reason {
+            let valid = match reason.kind {
+                "not_eligible" => {
+                    reason.role.is_none()
+                        && matches!(
+                            reason.not_eligible_reason,
+                            Some(
+                                "local_parsing_not_established"
+                                    | "local_policy_not_established"
+                                    | "local_signature_not_established"
+                                    | "runtime_authority_unavailable"
+                                    | "request_budget_unavailable"
+                            )
+                        )
+                },
+                "leg_not_dispatched"
+                | "leg_not_committed"
+                | "response_incomplete"
+                | "response_not_classified" => {
+                    reason.not_eligible_reason.is_none()
+                        && reason.role.is_some_and(valid_jwt_target_role)
+                },
+                _ => false,
+            };
+            if !valid {
+                return Err(ReportError::Serialization);
+            }
+        }
+
+        if !(self.legs.is_empty()
+            || self.legs.len() == usize::from(MAX_JWT_TARGET_ACCEPTANCE_REQUESTS))
+        {
+            return Err(ReportError::Serialization);
+        }
+        let mut dispatched = 0_u64;
+        let mut passive = 0_u64;
+        let mut active = 0_u64;
+        let mut committed = 0_u64;
+        let mut retained_bytes = 0_u64;
+        let mut accounted_transport_bytes = 0_u64;
+        let mut evidence_references = std::collections::BTreeSet::new();
+        let mut dispatches = Vec::with_capacity(self.legs.len());
+        let mut commits = Vec::with_capacity(self.legs.len());
+        let mut responses = Vec::with_capacity(self.legs.len());
+        let mut markers = Vec::with_capacity(self.legs.len());
+        let mut retained_by_leg = Vec::with_capacity(self.legs.len());
+        for (index, leg) in self.legs.iter().enumerate() {
+            let expected_role = jwt_target_role(JwtTargetAcceptanceLegRole::ORDERED[index]);
+            let expected_stage =
+                jwt_target_stage(JwtTargetAcceptanceLegRole::ORDERED[index].stage());
+            let expected_activity =
+                jwt_target_activity(JwtTargetAcceptanceLegRole::ORDERED[index].activity());
+            if leg.role != expected_role
+                || leg.stage != expected_stage
+                || leg.activity != expected_activity
+                || leg.retained_response_bytes > MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES
+                || leg.accounted_transport_response_bytes < leg.retained_response_bytes
+            {
+                return Err(ReportError::Serialization);
+            }
+            let leg_valid = match (leg.dispatch_status, leg.commit_status) {
+                ("not_dispatched", "not_committed") => {
+                    leg.response_status == "not_classified"
+                        && leg.marker_status == "not_evaluated"
+                        && leg.retained_response_bytes == 0
+                        && leg.accounted_transport_response_bytes == 0
+                        && leg.evidence_reference.is_none()
+                },
+                ("dispatched", "not_committed") => {
+                    leg.response_status != "complete_and_classified"
+                        && leg.marker_status == "not_evaluated"
+                        && leg.evidence_reference.is_none()
+                },
+                ("dispatched", "committed") => {
+                    leg.evidence_reference
+                        .as_deref()
+                        .is_some_and(valid_jwt_target_evidence_reference)
+                        && match leg.response_status {
+                            "complete_and_classified" => {
+                                matches!(leg.marker_status, "observed" | "not_observed")
+                            },
+                            "not_classified" | "incomplete" => leg.marker_status == "not_evaluated",
+                            _ => false,
+                        }
+                },
+                _ => false,
+            };
+            if !leg_valid {
+                return Err(ReportError::Serialization);
+            }
+            if leg.dispatch_status == "dispatched" {
+                dispatched += 1;
+                if leg.activity == "active" {
+                    active += 1;
+                } else {
+                    passive += 1;
+                }
+            }
+            if leg.commit_status == "committed" {
+                committed += 1;
+            }
+            retained_bytes = retained_bytes
+                .checked_add(leg.retained_response_bytes)
+                .ok_or(ReportError::Serialization)?;
+            accounted_transport_bytes = accounted_transport_bytes
+                .checked_add(leg.accounted_transport_response_bytes)
+                .ok_or(ReportError::Serialization)?;
+            if let Some(reference) = leg.evidence_reference.as_deref() {
+                if !evidence_references.insert(reference) {
+                    return Err(ReportError::Serialization);
+                }
+            }
+            dispatches.push(leg.dispatch_status);
+            commits.push(leg.commit_status);
+            responses.push(leg.response_status);
+            markers.push(leg.marker_status);
+            retained_by_leg.push(leg.retained_response_bytes);
+        }
+        if self.accounting.dispatched_request_count != dispatched
+            || self.accounting.dispatched_passive_request_count != passive
+            || self.accounting.dispatched_active_request_count != active
+            || self.accounting.committed_response_count != committed
+            || self.accounting.retained_response_bytes != retained_bytes
+            || self.accounting.accounted_transport_response_bytes != accounted_transport_bytes
+            || dispatched > self.accounting.request_limit
+            || active > self.accounting.active_request_limit
+            || retained_bytes > self.accounting.total_retained_response_byte_limit
+            || accounted_transport_bytes < retained_bytes
+        {
+            return Err(ReportError::Serialization);
+        }
+        if self.legs.len() == usize::from(MAX_JWT_TARGET_ACCEPTANCE_REQUESTS) {
+            let passive_prerequisite_is_established =
+                |valid_index: usize, anonymous_index: usize| {
+                    commits[valid_index] == "committed"
+                        && responses[valid_index] == "complete_and_classified"
+                        && markers[valid_index] == "observed"
+                        && commits[anonymous_index] == "committed"
+                        && responses[anonymous_index] == "complete_and_classified"
+                        && markers[anonymous_index] == "not_observed"
+                };
+            for (valid_index, anonymous_index, invalid_index) in [(0, 1, 2), (3, 4, 5)] {
+                if dispatches[invalid_index] == "dispatched"
+                    && !passive_prerequisite_is_established(valid_index, anonymous_index)
+                {
+                    return Err(ReportError::Serialization);
+                }
+            }
+
+            let mut stopped = false;
+            let mut sequential_retained_bytes = 0_u64;
+            for index in 0..self.legs.len() {
+                if stopped {
+                    if dispatches[index] == "dispatched" {
+                        return Err(ReportError::Serialization);
+                    }
+                    continue;
+                }
+                if dispatches[index] == "not_dispatched" {
+                    let prerequisite_skip = match index {
+                        2 => !passive_prerequisite_is_established(0, 1),
+                        5 => !passive_prerequisite_is_established(3, 4),
+                        _ => false,
+                    };
+                    if !prerequisite_skip {
+                        stopped = true;
+                    }
+                    continue;
+                }
+                sequential_retained_bytes = sequential_retained_bytes
+                    .checked_add(retained_by_leg[index])
+                    .ok_or(ReportError::Serialization)?;
+                if commits[index] != "committed"
+                    || sequential_retained_bytes >= MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES
+                {
+                    stopped = true;
+                }
+            }
+
+            let pair_dimension = |candidate: usize, replay: usize| {
+                if dispatches[candidate] == "not_dispatched"
+                    && dispatches[replay] == "not_dispatched"
+                {
+                    "not_evaluated"
+                } else if commits[candidate] != "committed"
+                    || commits[replay] != "committed"
+                    || responses[candidate] != "complete_and_classified"
+                    || responses[replay] != "complete_and_classified"
+                {
+                    "incomplete"
+                } else {
+                    match (markers[candidate], markers[replay]) {
+                        ("observed", "observed") => "observed_stable",
+                        ("not_observed", "not_observed") => "not_observed_stable",
+                        _ => "unstable",
+                    }
+                }
+            };
+            let expected_valid = pair_dimension(0, 3);
+            let expected_anonymous = pair_dimension(1, 4);
+            let expected_invalid = pair_dimension(2, 5);
+            if self.dimensions.valid_marker != expected_valid
+                || self.dimensions.anonymous_marker != expected_anonymous
+                || self.dimensions.invalid_marker != expected_invalid
+            {
+                return Err(ReportError::Serialization);
+            }
+            let expected_conclusion =
+                if [expected_valid, expected_anonymous, expected_invalid].contains(&"unstable") {
+                    "unstable_inconclusive"
+                } else if expected_anonymous == "observed_stable" {
+                    "public_or_token_agnostic_marker_observed"
+                } else if expected_valid == "observed_stable"
+                    && expected_anonymous == "not_observed_stable"
+                    && expected_invalid == "observed_stable"
+                {
+                    "invalid_signature_control_marker_observed_with_anonymous_control"
+                } else if expected_valid == "observed_stable"
+                    && expected_anonymous == "not_observed_stable"
+                    && expected_invalid == "not_observed_stable"
+                {
+                    "invalid_control_marker_not_observed"
+                } else if [expected_valid, expected_anonymous, expected_invalid]
+                    .iter()
+                    .any(|value| matches!(*value, "incomplete" | "not_evaluated"))
+                {
+                    "incomplete"
+                } else {
+                    "inconclusive"
+                };
+            if self.conclusion.kind != expected_conclusion {
+                return Err(ReportError::Serialization);
+            }
+            if expected_conclusion == "incomplete" {
+                let (kind, role) = self
+                    .legs
+                    .iter()
+                    .find_map(|leg| {
+                        if leg.dispatch_status == "not_dispatched" {
+                            Some(("leg_not_dispatched", leg.role))
+                        } else if leg.commit_status != "committed" {
+                            Some(("leg_not_committed", leg.role))
+                        } else {
+                            match leg.response_status {
+                                "incomplete" => Some(("response_incomplete", leg.role)),
+                                "not_classified" => Some(("response_not_classified", leg.role)),
+                                _ => None,
+                            }
+                        }
+                    })
+                    .ok_or(ReportError::Serialization)?;
+                let reason = self
+                    .conclusion
+                    .incomplete_reason
+                    .as_ref()
+                    .ok_or(ReportError::Serialization)?;
+                if reason.kind != kind
+                    || reason.role != Some(role)
+                    || reason.not_eligible_reason.is_some()
+                {
+                    return Err(ReportError::Serialization);
+                }
+            }
+        }
+        let expected_status = if dispatched == 0 {
+            "not_performed"
+        } else if conclusion_incomplete {
+            "partially_performed"
+        } else {
+            "completed"
+        };
+        let empty_leg_contract_valid = !self.legs.is_empty()
+            || self
+                .conclusion
+                .incomplete_reason
+                .as_ref()
+                .is_some_and(|reason| {
+                    reason.kind == "not_eligible"
+                        && reason.role.is_none()
+                        && reason.not_eligible_reason.is_some()
+                });
+        if self.status != expected_status
+            || !empty_leg_contract_valid
+            || (self.legs.is_empty()
+                && !(self.dimensions.valid_marker == "not_evaluated"
+                    && self.dimensions.anonymous_marker == "not_evaluated"
+                    && self.dimensions.invalid_marker == "not_evaluated"
+                    && conclusion_incomplete))
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn jwt_target_role(role: JwtTargetAcceptanceLegRole) -> &'static str {
+    match role {
+        JwtTargetAcceptanceLegRole::ValidCandidate => "valid_candidate",
+        JwtTargetAcceptanceLegRole::AnonymousCandidate => "anonymous_candidate",
+        JwtTargetAcceptanceLegRole::InvalidCandidate => "invalid_candidate",
+        JwtTargetAcceptanceLegRole::ValidReplay => "valid_replay",
+        JwtTargetAcceptanceLegRole::AnonymousReplay => "anonymous_replay",
+        JwtTargetAcceptanceLegRole::InvalidReplay => "invalid_replay",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn valid_jwt_target_role(role: &str) -> bool {
+    JwtTargetAcceptanceLegRole::ORDERED
+        .iter()
+        .copied()
+        .map(jwt_target_role)
+        .any(|expected| expected == role)
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn jwt_target_stage(stage: JwtTargetAcceptanceLegStage) -> &'static str {
+    match stage {
+        JwtTargetAcceptanceLegStage::Candidate => "candidate",
+        JwtTargetAcceptanceLegStage::Replay => "replay",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn jwt_target_activity(activity: JwtTargetAcceptanceActivity) -> &'static str {
+    match activity {
+        JwtTargetAcceptanceActivity::Passive => "passive",
+        JwtTargetAcceptanceActivity::Active => "active",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn jwt_target_dimension(dimension: JwtTargetAcceptanceDimension) -> &'static str {
+    match dimension {
+        JwtTargetAcceptanceDimension::ObservedStable => "observed_stable",
+        JwtTargetAcceptanceDimension::NotObservedStable => "not_observed_stable",
+        JwtTargetAcceptanceDimension::Unstable => "unstable",
+        JwtTargetAcceptanceDimension::NotEvaluated => "not_evaluated",
+        JwtTargetAcceptanceDimension::Incomplete => "incomplete",
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn jwt_target_conclusion_document(
+    conclusion: JwtTargetAcceptanceConclusion,
+) -> AssessmentJwtTargetAcceptanceConclusionDocument {
+    let (kind, incomplete_reason) = match conclusion {
+        JwtTargetAcceptanceConclusion::InvalidSignatureControlMarkerObservedWithAnonymousControl => (
+            "invalid_signature_control_marker_observed_with_anonymous_control",
+            None,
+        ),
+        JwtTargetAcceptanceConclusion::PublicOrTokenAgnosticMarkerObserved => {
+            ("public_or_token_agnostic_marker_observed", None)
+        },
+        JwtTargetAcceptanceConclusion::InvalidControlMarkerNotObserved => {
+            ("invalid_control_marker_not_observed", None)
+        },
+        JwtTargetAcceptanceConclusion::UnstableInconclusive => ("unstable_inconclusive", None),
+        JwtTargetAcceptanceConclusion::Inconclusive => ("inconclusive", None),
+        JwtTargetAcceptanceConclusion::Incomplete(reason) => (
+            "incomplete",
+            Some(jwt_target_incomplete_reason_document(reason)),
+        ),
+    };
+    AssessmentJwtTargetAcceptanceConclusionDocument {
+        kind,
+        incomplete_reason,
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn jwt_target_incomplete_reason_document(
+    reason: JwtTargetAcceptanceIncompleteReason,
+) -> AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+    match reason {
+        JwtTargetAcceptanceIncompleteReason::NotEligible(reason) => {
+            AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+                kind: "not_eligible",
+                role: None,
+                not_eligible_reason: Some(match reason {
+                    JwtTargetAcceptanceNotEligibleReason::LocalParsingNotEstablished => {
+                        "local_parsing_not_established"
+                    },
+                    JwtTargetAcceptanceNotEligibleReason::LocalPolicyNotEstablished => {
+                        "local_policy_not_established"
+                    },
+                    JwtTargetAcceptanceNotEligibleReason::LocalSignatureNotEstablished => {
+                        "local_signature_not_established"
+                    },
+                    JwtTargetAcceptanceNotEligibleReason::RuntimeAuthorityUnavailable => {
+                        "runtime_authority_unavailable"
+                    },
+                    JwtTargetAcceptanceNotEligibleReason::RequestBudgetUnavailable => {
+                        "request_budget_unavailable"
+                    },
+                }),
+            }
+        },
+        JwtTargetAcceptanceIncompleteReason::LegNotDispatched { role } => {
+            jwt_target_role_incomplete_reason("leg_not_dispatched", role)
+        },
+        JwtTargetAcceptanceIncompleteReason::LegNotCommitted { role } => {
+            jwt_target_role_incomplete_reason("leg_not_committed", role)
+        },
+        JwtTargetAcceptanceIncompleteReason::ResponseIncomplete { role } => {
+            jwt_target_role_incomplete_reason("response_incomplete", role)
+        },
+        JwtTargetAcceptanceIncompleteReason::ResponseNotClassified { role } => {
+            jwt_target_role_incomplete_reason("response_not_classified", role)
+        },
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn jwt_target_role_incomplete_reason(
+    kind: &'static str,
+    role: JwtTargetAcceptanceLegRole,
+) -> AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+    AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+        kind,
+        role: Some(jwt_target_role(role)),
+        not_eligible_reason: None,
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn valid_jwt_target_evidence_reference(value: &str) -> bool {
+    value.strip_prefix("jwt-target-leg:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
+
+#[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+fn valid_jwt_target_preparation_reference(value: &str) -> bool {
+    value
+        .strip_prefix("jwt-target-preparation:")
+        .is_some_and(|binding| {
+            binding.len() == 64
+                && binding
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        })
 }
 
 #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
@@ -13668,7 +14665,70 @@ mod tests {
             },
             policy_violations: Vec::new(),
             source_authentication: JWT_POLICY_SOURCE_AUTHENTICATION,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            preparation_reference: None,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            target_acceptance: None,
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+    fn jwt_target_policy_review_audit_document() -> AssessmentJwtPolicyReviewAuditDocument {
+        let policy = crate::jwt_target_acceptance::JwtTargetAcceptancePolicy::new(
+            ("synthetic-target-policy", "synthetic-target-v1"),
+            url::Url::parse("https://owned.invalid/app/").unwrap(),
+            url::Url::parse("https://owned.invalid/app/canary").unwrap(),
+            "protected-canary",
+            "private-marker-sentinel",
+        )
+        .unwrap();
+        let markers = [
+            JwtTargetAcceptanceMarkerStatus::Observed,
+            JwtTargetAcceptanceMarkerStatus::NotObserved,
+            JwtTargetAcceptanceMarkerStatus::Observed,
+            JwtTargetAcceptanceMarkerStatus::Observed,
+            JwtTargetAcceptanceMarkerStatus::NotObserved,
+            JwtTargetAcceptanceMarkerStatus::Observed,
+        ];
+        let legs = JwtTargetAcceptanceLegRole::ORDERED
+            .into_iter()
+            .zip(markers)
+            .enumerate()
+            .map(|(index, (role, marker))| {
+                let retained_response_bytes = u64::try_from(index + 101).unwrap();
+                let accounted_transport_response_bytes = if index == 0 {
+                    70_000
+                } else {
+                    retained_response_bytes
+                };
+                crate::jwt_target_acceptance::JwtTargetAcceptanceLegFact::new_with_transport_accounting(
+                    role,
+                    JwtTargetAcceptanceDispatchStatus::Dispatched,
+                    JwtTargetAcceptanceCommitStatus::Committed,
+                    JwtTargetAcceptanceResponseStatus::CompleteAndClassified,
+                    marker,
+                    retained_response_bytes,
+                    accounted_transport_response_bytes,
+                    Some(format!("jwt-target-leg:{:064x}", index + 1)),
+                )
+                .unwrap()
+            })
+            .collect();
+        let preparation_binding =
+            crate::jwt_target_acceptance::JwtTargetAcceptanceBinding::synthetic_for_test(0x5A);
+        let target = JwtTargetAcceptanceAudit::from_legs(&policy, legs)
+            .unwrap()
+            .bind_to_preparation(preparation_binding.clone());
+        let target = AssessmentJwtTargetAcceptanceAuditDocument::from_audit(&target).unwrap();
+        let mut document = jwt_policy_review_audit_document();
+        document.schema = JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2;
+        document.target_acceptance_status = target.status;
+        document.external_activity.target_request_count =
+            target.accounting.dispatched_request_count;
+        document.external_activity.token_forwarding = "performed";
+        document.preparation_reference = Some(preparation_binding.reference());
+        document.target_acceptance = Some(target);
+        document
     }
 
     #[cfg(all(feature = "scanning", feature = "authorization-review"))]
@@ -13758,6 +14818,16 @@ mod tests {
         assert!(audit.get("raw_token").is_none());
         assert!(audit.get("claims").is_none());
         assert!(audit.get("verification_key").is_none());
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        let rows: Vec<Vec<String>> = csv.lines().map(parse_csv_line).collect();
+        let headers = &rows[0];
+        let column = |name: &str| headers.iter().position(|header| header == name).unwrap();
+        let audit_row = rows
+            .iter()
+            .find(|row| row[column("record_type")] == "jwt_policy_review_audit")
+            .unwrap();
+        assert_eq!(audit_row[column("evidence_count")], "0");
     }
 
     #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
@@ -13851,6 +14921,309 @@ mod tests {
             render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
             Err(ReportError::Serialization)
         );
+    }
+
+    #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+    #[test]
+    fn jwt_target_selected_writer_is_strict_value_free_and_preserves_transport_accounting() {
+        let mut document = observation_assessment_document("unrelated.observation@1");
+        document.jwt_policy_review = Some(jwt_target_policy_review_audit_document());
+
+        for format in [
+            ReportFormat::Json,
+            ReportFormat::Csv,
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+        ] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("security.jwt-policy-review-audit/v2"));
+            assert!(rendered
+                .contains("invalid_signature_control_marker_observed_with_anonymous_control"));
+            assert!(!rendered.contains("private-marker-sentinel"));
+            assert!(!rendered.contains("https://owned.invalid"));
+        }
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let target = &value["jwt_policy_review"]["target_acceptance"];
+        assert_eq!(target["accounting"]["retained_response_bytes"], 621);
+        assert_eq!(
+            target["accounting"]["accounted_transport_response_bytes"],
+            70_520
+        );
+        assert_eq!(target["legs"][0]["retained_response_bytes"], 101);
+        assert_eq!(
+            target["legs"][0]["accounted_transport_response_bytes"],
+            70_000
+        );
+        assert_eq!(target["legs"].as_array().unwrap().len(), 6);
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        let rows: Vec<Vec<String>> = csv.lines().map(parse_csv_line).collect();
+        let headers = &rows[0];
+        let column = |name: &str| headers.iter().position(|header| header == name).unwrap();
+        let audit_row = rows
+            .iter()
+            .find(|row| row[column("record_type")] == "jwt_policy_review_audit")
+            .unwrap();
+        assert_eq!(audit_row[column("evidence_count")], "6");
+
+        let mut cancelled_document = observation_assessment_document("unrelated.observation@1");
+        let mut cancelled = jwt_target_policy_review_audit_document();
+        cancelled.target_acceptance_status = "not_performed";
+        cancelled.external_activity.target_request_count = 0;
+        cancelled.external_activity.token_forwarding = JWT_POLICY_EXTERNAL_NOT_PERFORMED;
+        let cancelled_target = cancelled.target_acceptance.as_mut().unwrap();
+        cancelled_target.status = "not_performed";
+        cancelled_target.accounting.dispatched_request_count = 0;
+        cancelled_target.accounting.dispatched_passive_request_count = 0;
+        cancelled_target.accounting.dispatched_active_request_count = 0;
+        cancelled_target.accounting.committed_response_count = 0;
+        cancelled_target.accounting.retained_response_bytes = 0;
+        cancelled_target
+            .accounting
+            .accounted_transport_response_bytes = 0;
+        cancelled_target.dimensions.valid_marker = "not_evaluated";
+        cancelled_target.dimensions.anonymous_marker = "not_evaluated";
+        cancelled_target.dimensions.invalid_marker = "not_evaluated";
+        cancelled_target.conclusion = AssessmentJwtTargetAcceptanceConclusionDocument {
+            kind: "incomplete",
+            incomplete_reason: Some(AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+                kind: "leg_not_dispatched",
+                role: Some("valid_candidate"),
+                not_eligible_reason: None,
+            }),
+        };
+        for leg in &mut cancelled_target.legs {
+            leg.dispatch_status = "not_dispatched";
+            leg.commit_status = "not_committed";
+            leg.response_status = "not_classified";
+            leg.marker_status = "not_evaluated";
+            leg.retained_response_bytes = 0;
+            leg.accounted_transport_response_bytes = 0;
+            leg.evidence_reference = None;
+        }
+        cancelled_document.jwt_policy_review = Some(cancelled);
+        assert!(
+            render_assessment_with_limit(&cancelled_document, ReportFormat::Json, usize::MAX,)
+                .is_ok()
+        );
+        let cancelled_csv =
+            render_assessment_with_limit(&cancelled_document, ReportFormat::Csv, usize::MAX)
+                .unwrap();
+        let cancelled_rows: Vec<Vec<String>> = cancelled_csv.lines().map(parse_csv_line).collect();
+        let cancelled_headers = &cancelled_rows[0];
+        let cancelled_column = |name: &str| {
+            cancelled_headers
+                .iter()
+                .position(|header| header == name)
+                .unwrap()
+        };
+        let cancelled_audit_row = cancelled_rows
+            .iter()
+            .find(|row| row[cancelled_column("record_type")] == "jwt_policy_review_audit")
+            .unwrap();
+        assert_eq!(cancelled_audit_row[cancelled_column("evidence_count")], "0");
+        cancelled_document
+            .jwt_policy_review
+            .as_mut()
+            .unwrap()
+            .local_signature_status = "invalid";
+        assert_eq!(
+            render_assessment_with_limit(&cancelled_document, ReportFormat::Json, usize::MAX,),
+            Err(ReportError::Serialization)
+        );
+
+        let audit = document.jwt_policy_review.as_mut().unwrap();
+        audit.local_signature_status = "invalid";
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+        let audit = document.jwt_policy_review.as_mut().unwrap();
+        audit.local_signature_status = "verified";
+        audit
+            .target_acceptance
+            .as_mut()
+            .unwrap()
+            .accounting
+            .committed_response_count = 5;
+        assert_eq!(
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+    }
+
+    #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+    #[test]
+    fn jwt_target_human_renderers_preserve_value_free_incomplete_reasons() {
+        for (reason, other_reason) in [
+            (
+                "runtime_authority_unavailable",
+                "request_budget_unavailable",
+            ),
+            (
+                "request_budget_unavailable",
+                "runtime_authority_unavailable",
+            ),
+        ] {
+            let mut document = observation_assessment_document("unrelated.observation@1");
+            let mut audit = jwt_target_policy_review_audit_document();
+            audit.target_acceptance_status = "not_performed";
+            audit.external_activity.target_request_count = 0;
+            audit.external_activity.token_forwarding = JWT_POLICY_EXTERNAL_NOT_PERFORMED;
+            let target = audit.target_acceptance.as_mut().unwrap();
+            target.status = "not_performed";
+            target.accounting.dispatched_request_count = 0;
+            target.accounting.dispatched_passive_request_count = 0;
+            target.accounting.dispatched_active_request_count = 0;
+            target.accounting.committed_response_count = 0;
+            target.accounting.retained_response_bytes = 0;
+            target.accounting.accounted_transport_response_bytes = 0;
+            target.dimensions.valid_marker = "not_evaluated";
+            target.dimensions.anonymous_marker = "not_evaluated";
+            target.dimensions.invalid_marker = "not_evaluated";
+            target.legs.clear();
+            target.conclusion = AssessmentJwtTargetAcceptanceConclusionDocument {
+                kind: "incomplete",
+                incomplete_reason: Some(AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+                    kind: "not_eligible",
+                    role: None,
+                    not_eligible_reason: Some(reason),
+                }),
+            };
+            document.jwt_policy_review = Some(audit);
+
+            let expected = format!("kind=not_eligible;not_eligible_reason={reason}");
+            for format in [ReportFormat::Html, ReportFormat::Markdown] {
+                let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+                assert!(rendered.contains("Target incomplete reason"));
+                assert!(rendered.contains(&expected));
+                assert!(!rendered.contains(other_reason));
+                assert!(!rendered.contains("private-marker-sentinel"));
+                assert!(!rendered.contains("https://owned.invalid"));
+            }
+        }
+
+        let mut document = observation_assessment_document("unrelated.observation@1");
+        let mut audit = jwt_target_policy_review_audit_document();
+        audit.target_acceptance_status = "not_performed";
+        audit.external_activity.target_request_count = 0;
+        audit.external_activity.token_forwarding = JWT_POLICY_EXTERNAL_NOT_PERFORMED;
+        let target = audit.target_acceptance.as_mut().unwrap();
+        target.status = "not_performed";
+        target.accounting.dispatched_request_count = 0;
+        target.accounting.dispatched_passive_request_count = 0;
+        target.accounting.dispatched_active_request_count = 0;
+        target.accounting.committed_response_count = 0;
+        target.accounting.retained_response_bytes = 0;
+        target.accounting.accounted_transport_response_bytes = 0;
+        target.dimensions.valid_marker = "not_evaluated";
+        target.dimensions.anonymous_marker = "not_evaluated";
+        target.dimensions.invalid_marker = "not_evaluated";
+        target.conclusion = AssessmentJwtTargetAcceptanceConclusionDocument {
+            kind: "incomplete",
+            incomplete_reason: Some(AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+                kind: "leg_not_dispatched",
+                role: Some("valid_candidate"),
+                not_eligible_reason: None,
+            }),
+        };
+        for leg in &mut target.legs {
+            leg.dispatch_status = "not_dispatched";
+            leg.commit_status = "not_committed";
+            leg.response_status = "not_classified";
+            leg.marker_status = "not_evaluated";
+            leg.retained_response_bytes = 0;
+            leg.accounted_transport_response_bytes = 0;
+            leg.evidence_reference = None;
+        }
+        document.jwt_policy_review = Some(audit);
+        for format in [ReportFormat::Html, ReportFormat::Markdown] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("kind=leg_not_dispatched;role=valid_candidate"));
+            assert!(!rendered.contains("private-marker-sentinel"));
+            assert!(!rendered.contains("https://owned.invalid"));
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "jwt-target-acceptance-review"))]
+    #[test]
+    fn jwt_target_writer_rejects_binding_and_derived_state_mutations() {
+        let render = |audit: AssessmentJwtPolicyReviewAuditDocument| {
+            let mut document = observation_assessment_document("unrelated.observation@1");
+            document.jwt_policy_review = Some(audit);
+            render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX)
+        };
+
+        let mut mismatched_binding = jwt_target_policy_review_audit_document();
+        mismatched_binding.preparation_reference =
+            Some(format!("jwt-target-preparation:{}", "b".repeat(64)));
+        assert_eq!(render(mismatched_binding), Err(ReportError::Serialization));
+
+        let mut invalid_dimension = jwt_target_policy_review_audit_document();
+        invalid_dimension
+            .target_acceptance
+            .as_mut()
+            .unwrap()
+            .dimensions
+            .invalid_marker = "not_observed_stable";
+        assert_eq!(render(invalid_dimension), Err(ReportError::Serialization));
+
+        let mut invalid_conclusion = jwt_target_policy_review_audit_document();
+        invalid_conclusion
+            .target_acceptance
+            .as_mut()
+            .unwrap()
+            .conclusion = AssessmentJwtTargetAcceptanceConclusionDocument {
+            kind: "inconclusive",
+            incomplete_reason: None,
+        };
+        assert_eq!(render(invalid_conclusion), Err(ReportError::Serialization));
+
+        let mut post_stop_dispatch = jwt_target_policy_review_audit_document();
+        let target = post_stop_dispatch.target_acceptance.as_mut().unwrap();
+        let first = &mut target.legs[0];
+        first.commit_status = "not_committed";
+        first.response_status = "incomplete";
+        first.marker_status = "not_evaluated";
+        first.evidence_reference = None;
+        target.accounting.committed_response_count -= 1;
+        assert_eq!(render(post_stop_dispatch), Err(ReportError::Serialization));
+
+        let mut empty = jwt_target_policy_review_audit_document()
+            .target_acceptance
+            .take()
+            .unwrap();
+        empty.status = "not_performed";
+        empty.accounting.dispatched_request_count = 0;
+        empty.accounting.dispatched_passive_request_count = 0;
+        empty.accounting.dispatched_active_request_count = 0;
+        empty.accounting.committed_response_count = 0;
+        empty.accounting.retained_response_bytes = 0;
+        empty.accounting.accounted_transport_response_bytes = 0;
+        empty.dimensions.valid_marker = "not_evaluated";
+        empty.dimensions.anonymous_marker = "not_evaluated";
+        empty.dimensions.invalid_marker = "not_evaluated";
+        empty.legs.clear();
+        empty.conclusion = AssessmentJwtTargetAcceptanceConclusionDocument {
+            kind: "incomplete",
+            incomplete_reason: Some(AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+                kind: "not_eligible",
+                role: None,
+                not_eligible_reason: Some("local_signature_not_established"),
+            }),
+        };
+        assert!(empty.validate().is_ok());
+        empty.conclusion = AssessmentJwtTargetAcceptanceConclusionDocument {
+            kind: "incomplete",
+            incomplete_reason: Some(AssessmentJwtTargetAcceptanceIncompleteReasonDocument {
+                kind: "leg_not_dispatched",
+                role: Some("valid_candidate"),
+                not_eligible_reason: None,
+            }),
+        };
+        assert_eq!(empty.validate(), Err(ReportError::Serialization));
     }
 
     #[cfg(all(feature = "scanning", feature = "tls-observation"))]

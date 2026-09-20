@@ -178,6 +178,7 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review
           cargo test --locked -p termivar-cli --no-default-features --features tls-observation
           cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review
+          cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review
       - name: Verify compiled CLI capabilities matrix
         run: |
           set -euo pipefail
@@ -189,13 +190,14 @@ jobs:
           TERMIVAR_CAPABILITIES_MATRIX_CASE=secret-only cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=tls-only cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=jwt-only cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=jwt-target-only cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -319,6 +321,8 @@ jobs:
         run: cargo test --locked -p termivar-scanner --no-default-features --features tls-observation web_runtime::authority::tests::selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch -- --exact --nocapture
       - name: Exercise opt-in local JWT policy review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture
+      - name: Exercise opt-in JWT target-acceptance review CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review --test jwt_policy_cli -- --nocapture
       - name: Reject authenticated session bodies from the anonymous secret-exposure context
         run: cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review,supplied-session-review --test supplied_session_cli passive_secret_review_does_not_select_authenticated_session_bodies -- --exact --nocapture
       - name: Exercise supplied-session WordPress integration CLI

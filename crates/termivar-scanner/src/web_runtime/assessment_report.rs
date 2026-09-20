@@ -27,6 +27,13 @@ use crate::jwt_policy_review::{
     JwtPolicyStatus, JwtPolicyViolation, JwtTargetAcceptanceStatus, MAX_CLOCK_SKEW_SECONDS,
     MAX_REQUIRED_CLAIMS,
 };
+#[cfg(feature = "jwt-target-acceptance-review")]
+use crate::jwt_target_acceptance::{
+    JwtTargetAcceptanceAudit, JwtTargetAcceptanceConclusion, JwtTargetAcceptanceIncompleteReason,
+    JwtTargetAcceptanceNotEligibleReason, JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA,
+    JWT_TARGET_ACCEPTANCE_POLICY_ID, MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS,
+    MAX_JWT_TARGET_ACCEPTANCE_REQUESTS,
+};
 
 #[cfg(feature = "secret-exposure-review")]
 use super::assessment_item::AssessmentBasis;
@@ -236,6 +243,8 @@ pub struct AssessmentRunReport {
     supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<WebAssessmentOpenApiAudit>,
     #[cfg(feature = "rest-review")]
@@ -258,6 +267,8 @@ struct AssessmentReviewAudits {
     supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<WebAssessmentOpenApiAudit>,
     #[cfg(feature = "rest-review")]
@@ -285,6 +296,9 @@ impl AssessmentRunReport {
         #[cfg(feature = "authorization-review")] authorization_review: Option<
             WebAssessmentAuthorizationAudit,
         >,
+        #[cfg(feature = "jwt-target-acceptance-review")] jwt_target_acceptance: Option<
+            JwtTargetAcceptanceAudit,
+        >,
         #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
         #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
         #[cfg(feature = "ssrf-oast-review")] ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
@@ -306,6 +320,8 @@ impl AssessmentRunReport {
                 supplied_session,
                 #[cfg(feature = "authorization-review")]
                 authorization_review,
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                jwt_target_acceptance,
                 #[cfg(feature = "openapi-review")]
                 openapi_review,
                 #[cfg(feature = "rest-review")]
@@ -342,6 +358,8 @@ impl AssessmentRunReport {
             supplied_session,
             #[cfg(feature = "authorization-review")]
             authorization_review,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance,
             #[cfg(feature = "openapi-review")]
             openapi_review,
             #[cfg(feature = "rest-review")]
@@ -383,6 +401,12 @@ impl AssessmentRunReport {
         validate_supplied_session_audit(supplied_session.as_ref(), &items)?;
         #[cfg(feature = "authorization-review")]
         validate_authorization_audit(authorization_review.as_ref(), &items)?;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        validate_jwt_target_acceptance_audit(
+            jwt_target_acceptance.as_ref(),
+            truth.expected_accounting.requests().consumed(),
+            truth.expected_accounting.response_body_bytes().consumed(),
+        )?;
         #[cfg(feature = "openapi-review")]
         validate_openapi_audit(openapi_review.as_ref(), &items)?;
         #[cfg(feature = "rest-review")]
@@ -414,6 +438,8 @@ impl AssessmentRunReport {
             supplied_session,
             #[cfg(feature = "authorization-review")]
             authorization_review,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance,
             #[cfg(feature = "openapi-review")]
             openapi_review,
             #[cfg(feature = "rest-review")]
@@ -482,6 +508,11 @@ impl AssessmentRunReport {
     pub const fn authorization_review_audit(&self) -> Option<&WebAssessmentAuthorizationAudit> {
         self.authorization_review.as_ref()
     }
+    /// Returns the optional value-free target-side JWT control audit.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub const fn jwt_target_acceptance_audit(&self) -> Option<&JwtTargetAcceptanceAudit> {
+        self.jwt_target_acceptance.as_ref()
+    }
     #[cfg(feature = "openapi-review")]
     pub const fn openapi_review_audit(&self) -> Option<&WebAssessmentOpenApiAudit> {
         self.openapi_review.as_ref()
@@ -527,8 +558,24 @@ impl AssessmentRunReport {
         if self.jwt_policy_review.is_some() {
             return Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch);
         }
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if self.jwt_target_acceptance.is_some() && audit.is_none() {
+            return Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch);
+        }
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if self.jwt_target_acceptance.is_none()
+            && audit
+                .as_ref()
+                .is_some_and(|audit| audit.target_preparation_binding().is_some())
+        {
+            return Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch);
+        }
         if let Some(audit) = audit.as_ref() {
             validate_jwt_policy_review_audit(audit)?;
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            if let Some(target) = self.jwt_target_acceptance.as_ref() {
+                validate_jwt_target_local_link(audit, target)?;
+            }
         }
         self.jwt_policy_review = audit;
         Ok(self)
@@ -538,6 +585,47 @@ impl AssessmentRunReport {
     #[cfg(feature = "jwt-policy-review")]
     pub const fn jwt_policy_review_audit(&self) -> Option<&JwtPolicyReviewAudit> {
         self.jwt_policy_review.as_ref()
+    }
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn validate_jwt_target_local_link(
+    local: &JwtPolicyReviewAudit,
+    target: &JwtTargetAcceptanceAudit,
+) -> Result<(), AssessmentRunReportError> {
+    if local.target_preparation_binding().is_none()
+        || local.target_preparation_binding() != target.preparation_binding()
+    {
+        return Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch);
+    }
+    let local_eligible = local.parsing_status() == JwtParsingStatus::Parsed
+        && local.policy_status() == JwtPolicyStatus::Consistent
+        && local.local_signature_status() == JwtLocalSignatureStatus::Verified;
+    let linked = match target.conclusion() {
+        JwtTargetAcceptanceConclusion::Incomplete(
+            JwtTargetAcceptanceIncompleteReason::NotEligible(reason),
+        ) if target.legs().is_empty() => match reason {
+            JwtTargetAcceptanceNotEligibleReason::LocalParsingNotEstablished => {
+                matches!(local.parsing_status(), JwtParsingStatus::Rejected(_))
+            },
+            JwtTargetAcceptanceNotEligibleReason::LocalPolicyNotEstablished => {
+                local.parsing_status() == JwtParsingStatus::Parsed
+                    && local.policy_status() == JwtPolicyStatus::Inconsistent
+            },
+            JwtTargetAcceptanceNotEligibleReason::LocalSignatureNotEstablished => {
+                local.parsing_status() == JwtParsingStatus::Parsed
+                    && local.policy_status() == JwtPolicyStatus::Consistent
+                    && local.local_signature_status() == JwtLocalSignatureStatus::Invalid
+            },
+            JwtTargetAcceptanceNotEligibleReason::RuntimeAuthorityUnavailable
+            | JwtTargetAcceptanceNotEligibleReason::RequestBudgetUnavailable => local_eligible,
+        },
+        _ => !target.legs().is_empty() && local_eligible,
+    };
+    if linked {
+        Ok(())
+    } else {
+        Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch)
     }
 }
 
@@ -594,6 +682,73 @@ fn validate_jwt_policy_review_audit(
         Ok(())
     } else {
         Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch)
+    }
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn validate_jwt_target_acceptance_audit(
+    audit: Option<&JwtTargetAcceptanceAudit>,
+    assessment_request_count: Option<u64>,
+    assessment_response_bytes: Option<u64>,
+) -> Result<(), AssessmentRunReportError> {
+    let Some(audit) = audit else {
+        return Ok(());
+    };
+    let accounting = audit.accounting();
+    let dispatched = audit
+        .legs()
+        .iter()
+        .filter(|leg| leg.was_dispatched())
+        .count();
+    let committed = audit
+        .legs()
+        .iter()
+        .filter(|leg| leg.was_committed())
+        .count();
+    let active = audit
+        .legs()
+        .iter()
+        .filter(|leg| leg.was_dispatched() && leg.role().is_active())
+        .count();
+    let passive = dispatched.saturating_sub(active);
+    let accounted_bytes = audit.legs().iter().try_fold(0_u64, |sum, leg| {
+        sum.checked_add(leg.accounted_response_bytes())
+    });
+    let retained_bytes = audit.legs().iter().try_fold(0_u64, |sum, leg| {
+        sum.checked_add(leg.retained_response_bytes())
+    });
+    let zero_request_shape = audit.legs().is_empty()
+        && accounting.dispatched_request_count() == 0
+        && accounting.dispatched_passive_request_count() == 0
+        && accounting.dispatched_active_request_count() == 0
+        && accounting.committed_response_count() == 0
+        && accounting.retained_response_bytes() == 0
+        && accounting.accounted_response_bytes() == 0;
+    let selected_shape = audit.legs().len() == usize::from(MAX_JWT_TARGET_ACCEPTANCE_REQUESTS)
+        && dispatched == usize::from(accounting.dispatched_request_count())
+        && passive == usize::from(accounting.dispatched_passive_request_count())
+        && active == usize::from(accounting.dispatched_active_request_count())
+        && committed == usize::from(accounting.committed_response_count())
+        && retained_bytes == Some(accounting.retained_response_bytes())
+        && accounted_bytes == Some(accounting.accounted_response_bytes());
+    let valid = audit.schema() == JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA
+        && audit.policy() == JWT_TARGET_ACCEPTANCE_POLICY_ID
+        && valid_jwt_methodology_reference(audit.operator_policy_reference())
+        && valid_jwt_methodology_reference(audit.operator_policy_revision())
+        && valid_jwt_methodology_reference(audit.resource_reference())
+        && audit.preparation_binding().is_some()
+        && (zero_request_shape || selected_shape)
+        && accounting.dispatched_request_count() <= MAX_JWT_TARGET_ACCEPTANCE_REQUESTS
+        && accounting.dispatched_active_request_count()
+            <= MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS
+        && assessment_request_count
+            .is_some_and(|count| u64::from(accounting.dispatched_request_count()) <= count)
+        && assessment_response_bytes
+            .is_some_and(|count| accounting.accounted_response_bytes() <= count);
+    if valid {
+        Ok(())
+    } else {
+        Err(AssessmentRunReportError::JwtTargetAcceptanceAuditMismatch)
     }
 }
 
@@ -1050,6 +1205,11 @@ impl fmt::Debug for AssessmentRunReport {
         debug.field(
             "authorization_review_audit_present",
             &self.authorization_review.is_some(),
+        );
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        debug.field(
+            "jwt_target_acceptance_audit_present",
+            &self.jwt_target_acceptance.is_some(),
         );
         #[cfg(feature = "openapi-review")]
         debug.field(
@@ -1891,6 +2051,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "jwt-policy-review")]
     #[error("JWT policy review audit does not match its local evaluation contract")]
     JwtPolicyReviewAuditMismatch,
+    /// The optional target-side JWT audit violated its closed six-leg contract.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[error("JWT target-acceptance audit does not match its runtime contract")]
+    JwtTargetAcceptanceAuditMismatch,
 }
 
 fn build_run_report(
@@ -2092,6 +2256,9 @@ fn validate_completed_assessment_truth_with_active_limit(
         let allowance = allowance.saturating_add(1);
         #[cfg(feature = "authorization-review")]
         let allowance = allowance.saturating_add(1);
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let allowance =
+            allowance.saturating_add(u16::from(MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS));
         #[cfg(feature = "openapi-review")]
         let allowance = allowance.saturating_add(1);
         #[cfg(feature = "rest-review")]
@@ -2275,6 +2442,145 @@ mod tests {
     const PRIVATE_CANONICAL_TARGET: &str = "https://private-target-credential-sentinel.test/review";
     const PRIVATE_STOP_DETAIL: &str = "private-stop-diagnostic-sentinel";
     const TEST_ELAPSED_MS: u64 = 1_000;
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[test]
+    fn jwt_target_audit_is_bound_to_the_matching_local_prerequisite_state() {
+        use crate::{
+            jwt_policy_review::{
+                review_and_prepare_target_acceptance, Es256LocalPublicKey, JwtEvaluationTime,
+                JwtLocalPolicy, SecretCompactJwt,
+            },
+            jwt_target_acceptance::{
+                JwtTargetAcceptanceAudit, JwtTargetAcceptanceNotEligibleReason,
+                JwtTargetAcceptancePolicy,
+            },
+        };
+
+        let key = Es256LocalPublicKey::from_jwk_json(
+            br#"{"kty":"EC","crv":"P-256","alg":"ES256","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU","y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"}"#
+                .to_vec(),
+        )
+        .unwrap();
+        let policy = JwtLocalPolicy::new(
+            ("synthetic-policy", "synthetic-policy-v1"),
+            "JWT",
+            "owned-issuer",
+            "owned-api",
+            &["scope"],
+            true,
+            0,
+        )
+        .unwrap();
+        let prepared = review_and_prepare_target_acceptance(
+            SecretCompactJwt::new(b"not-a.compact.jwt".to_vec()).unwrap(),
+            &key,
+            &policy,
+            JwtEvaluationTime {
+                unix_seconds: 1_900_000_000,
+            },
+        )
+        .unwrap();
+        let (rejected, runtime_input) = prepared.into_parts();
+        let (_, reason, preparation_binding) = runtime_input.into_parts();
+        assert_eq!(
+            reason,
+            Some(JwtTargetAcceptanceNotEligibleReason::LocalParsingNotEstablished)
+        );
+        let target_policy = JwtTargetAcceptancePolicy::new(
+            ("synthetic-target-policy", "synthetic-target-v1"),
+            Url::parse("https://owned.invalid/app/").unwrap(),
+            Url::parse("https://owned.invalid/app/canary").unwrap(),
+            "protected-canary",
+            "accepted",
+        )
+        .unwrap();
+
+        let matching = JwtTargetAcceptanceAudit::not_eligible(
+            &target_policy,
+            JwtTargetAcceptanceNotEligibleReason::LocalParsingNotEstablished,
+        )
+        .bind_to_preparation(preparation_binding.clone());
+        assert!(validate_jwt_target_local_link(&rejected, &matching).is_ok());
+
+        let independently_prepared = review_and_prepare_target_acceptance(
+            SecretCompactJwt::new(b"not-a.compact.jwt".to_vec()).unwrap(),
+            &key,
+            &policy,
+            JwtEvaluationTime {
+                unix_seconds: 1_900_000_000,
+            },
+        )
+        .unwrap();
+        let (independent_rejected, _) = independently_prepared.into_parts();
+        assert_eq!(
+            validate_jwt_target_local_link(&independent_rejected, &matching),
+            Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch),
+            "identical local states from another preparation must not pair with this target audit"
+        );
+
+        for reason in [
+            JwtTargetAcceptanceNotEligibleReason::LocalPolicyNotEstablished,
+            JwtTargetAcceptanceNotEligibleReason::LocalSignatureNotEstablished,
+            JwtTargetAcceptanceNotEligibleReason::RuntimeAuthorityUnavailable,
+            JwtTargetAcceptanceNotEligibleReason::RequestBudgetUnavailable,
+        ] {
+            let mismatched = JwtTargetAcceptanceAudit::not_eligible(&target_policy, reason)
+                .bind_to_preparation(preparation_binding.clone());
+            assert_eq!(
+                validate_jwt_target_local_link(&rejected, &mismatched),
+                Err(AssessmentRunReportError::JwtPolicyReviewAuditMismatch)
+            );
+        }
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[test]
+    fn jwt_target_transport_bytes_are_bounded_by_parent_response_accounting() {
+        use crate::jwt_target_acceptance::{
+            JwtTargetAcceptanceAudit, JwtTargetAcceptanceBinding, JwtTargetAcceptanceCommitStatus,
+            JwtTargetAcceptanceDispatchStatus, JwtTargetAcceptanceLegFact,
+            JwtTargetAcceptanceLegRole, JwtTargetAcceptanceMarkerStatus, JwtTargetAcceptancePolicy,
+            JwtTargetAcceptanceResponseStatus,
+        };
+
+        let policy = JwtTargetAcceptancePolicy::new(
+            ("synthetic-target-policy", "synthetic-target-v1"),
+            Url::parse("https://owned.invalid/app/").unwrap(),
+            Url::parse("https://owned.invalid/app/canary").unwrap(),
+            "protected-canary",
+            "accepted",
+        )
+        .unwrap();
+        let roles = JwtTargetAcceptanceLegRole::ORDERED;
+        let mut legs = roles
+            .into_iter()
+            .map(JwtTargetAcceptanceLegFact::not_dispatched)
+            .collect::<Vec<_>>();
+        legs[0] = JwtTargetAcceptanceLegFact::new(
+            roles[0],
+            JwtTargetAcceptanceDispatchStatus::Dispatched,
+            JwtTargetAcceptanceCommitStatus::NotCommitted,
+            JwtTargetAcceptanceResponseStatus::Incomplete,
+            JwtTargetAcceptanceMarkerStatus::NotEvaluated,
+            5,
+            None,
+        )
+        .unwrap();
+        let audit = JwtTargetAcceptanceAudit::from_legs(&policy, legs)
+            .unwrap()
+            .bind_to_preparation(JwtTargetAcceptanceBinding::synthetic_for_test(0x3C));
+
+        assert!(validate_jwt_target_acceptance_audit(Some(&audit), Some(1), Some(5)).is_ok());
+        assert_eq!(
+            validate_jwt_target_acceptance_audit(Some(&audit), Some(1), Some(4)),
+            Err(AssessmentRunReportError::JwtTargetAcceptanceAuditMismatch)
+        );
+        assert_eq!(
+            validate_jwt_target_acceptance_audit(Some(&audit), Some(1), None),
+            Err(AssessmentRunReportError::JwtTargetAcceptanceAuditMismatch)
+        );
+    }
 
     #[cfg(feature = "tls-observation")]
     #[test]
@@ -2847,6 +3153,7 @@ mod tests {
     #[cfg(all(
         feature = "graphql-review",
         feature = "authorization-review",
+        feature = "jwt-target-acceptance-review",
         feature = "openapi-review",
         feature = "rest-review"
     ))]
@@ -2858,9 +3165,9 @@ mod tests {
                 .unwrap();
         let root = runtime.authorized_root();
         let limits = WebAssessmentLimits::default();
-        let expected = limits.max_active_verifications().checked_add(4).unwrap();
+        let expected = limits.max_active_verifications().checked_add(6).unwrap();
         let usage = AssessmentUsageTruth {
-            active_verifications: 4,
+            active_verifications: 6,
             ..usage_truth(root.url().as_str())
         };
         let profile = ScanProfileV1::web_review().unwrap();
@@ -2868,7 +3175,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected, 4),
+                AssessmentRuntimeLimits::new(limits, expected, 6),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -2879,7 +3186,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected - 1, 4),
+                AssessmentRuntimeLimits::new(limits, expected - 1, 6),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -2890,7 +3197,51 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected + 1, 5),
+                AssessmentRuntimeLimits::new(limits, expected + 1, 7),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[test]
+    fn jwt_target_acceptance_has_exact_two_active_control_allowance() {
+        let runtime =
+            WebAssessmentRuntime::builder(Url::parse("https://example.test/review").unwrap())
+                .build()
+                .unwrap();
+        let root = runtime.authorized_root();
+        let limits = WebAssessmentLimits::default();
+        let allowance = u16::from(MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS);
+        let expected = limits
+            .max_active_verifications()
+            .checked_add(allowance)
+            .unwrap();
+        let usage = AssessmentUsageTruth {
+            active_verifications: allowance,
+            ..usage_truth(root.url().as_str())
+        };
+        let profile = ScanProfileV1::web_review().unwrap();
+
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected, allowance),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected - 1, allowance),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,

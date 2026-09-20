@@ -153,12 +153,13 @@ The non-default `jwt-policy-review` scanner/CLI feature remains outside
 `default` and `release-bundle`. Explicit `--profile web-review`,
 `--jwt-policy FILE`, `--jwt-public-jwk FILE`, and exactly one of
 `--jwt-token-env ENV_VAR`, `--jwt-token-file FILE`, or `--jwt-token-stdin`
-select one transport-free evaluation. The policy plus the closed public-JWK
+select one local transport-free evaluation. The policy plus the closed public-JWK
 structure and canonical 32-byte `x`/`y` coordinates are validated before the
 selected token source is read. Curve membership and signature validity are
 decided only during local ES256 verification; failure remains unauthenticated
-with `local_signature_status=invalid`. Token bytes stay outside
-argv and are never forwarded to the assessment target.
+with `local_signature_status=invalid`. Token bytes stay outside argv. Without
+the separately compiled target-acceptance feature and explicit target policy,
+they are never forwarded to the assessment target.
 
 The V1 policy requires a bounded non-secret operator `policy_revision` plus
 explicit intended `typ`, issuer, and audience bindings. All three checks are
@@ -172,16 +173,46 @@ local EC/P-256/ES256 public JWK. Structural admission does not establish P-256
 curve membership before verification. Duplicate JSON keys, unsupported algorithms,
 JWE, nested or compressed JOSE, critical/unencoded-payload extensions, private
 key material, embedded keys, `jku`, and `x5u` fail closed. The JWT evaluator
-performs zero target requests, no token replay, and no remote-key retrieval;
-the surrounding scan retains its ordinary authorized web requests.
+performs zero target requests and no remote-key retrieval. Unless the separate
+target-acceptance feature is selected, it performs no token replay; the
+surrounding scan retains its ordinary authorized web requests.
 
 The value-free `security.jwt-policy-review-audit/v1` keeps parsing, local
 claim/time policy consistency, ES256 verification against the supplied key,
-and target acceptance as distinct states. Target acceptance is always
-`not_performed` in this slice. Local signature verification does not authenticate
+and target acceptance as distinct states. Target acceptance remains
+`not_performed` when the separate target option is absent. Local signature verification does not authenticate
 the issuer or source, establish server acceptance or authorization, or perform
 exploit/impact validation. See
 [Local JWT policy review](local-jwt-policy-review.md).
+
+### Bounded JWT target acceptance
+
+The separate non-default `jwt-target-acceptance-review` feature depends on the
+local review but remains outside `default` and `release-bundle`. After the local
+evaluator establishes supported parsing, policy consistency and ES256 signature
+validity, explicit `--jwt-target-acceptance-policy FILE` may authorize one exact
+same-origin, application-contained, query-free JSON `GET` resource and one
+private top-level boolean marker. The policy cannot select a key endpoint or
+expand target authority.
+
+The child runs six ordered candidate/replay roles: valid token, anonymous
+control and invalid-signature control, then the same three roles as replays.
+Only the two invalid-signature roles are active, and each requires its same-stage
+valid marker plus absent anonymous marker before dispatch. Each leg gets a fresh
+ambient-proxy-free connection pool. Redirects, retries, cookies, ambient
+credentials and write methods are absent; request, active, byte, deadline,
+cancellation and evidence accounting remain owned by the parent assessment.
+
+The local retained/interpreted limits are 64 KiB per response and 256 KiB for
+the six-leg child. The broker still charges every delivered transport chunk, so
+the audit reports exact charged bytes separately; those bytes can exceed the
+retained bytes by a final chunk overrun. Only complete committed JSON-compatible
+status-200, 401 or 403 responses with a strict top-level boolean marker are
+classified. Token bytes, the marker name, raw URL, body and Authorization value
+are absent from the value-free audit. A stable marker under an invalid-signature
+control is a target-acceptance relationship only. It does not authenticate the
+issuer, prove an authorization bypass, validate impact or emit a `Confirmed`
+finding.
 
 ## WordPress evidence review
 
@@ -634,6 +665,11 @@ Composition is selection-specific:
   JWK outside the target transport. It produces only a value-free audit, makes
   no target/provider request, and keeps parsed, policy-consistent,
   local-signature-verified and target-accepted states distinct.
+- **JWT target acceptance review** (`jwt-target-acceptance-review`, opt-in)
+  consumes that established local eligibility and one exact non-secret target
+  policy. Six sequential valid/anonymous/invalid candidate/replay legs use fresh
+  no-proxy pools under the same parent authority; only two invalid controls are
+  active, and the value-free result does not produce a finding or Confirmed claim.
 - **Resource authorization review** (`authorization-review`, opt-in) is one
   native action in the existing `web-review` runtime. It compares one exact
   selected JSON resource across primary/peer candidate and replay views, using
@@ -791,7 +827,8 @@ The following matrix separates build availability from actual execution:
 | REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
 | Passive response secret-exposure review | scanner and CLI opt-in (`secret-exposure-review`) plus explicit `--profile web-review --secret-exposure-review` | one shared observer evaluates eligible complete ordinary anonymous GET bodies inside the response transaction; only validated committed records reach the audit, and it adds no request, active verification, provider call, or subject | no | Preview, development-only; 128 KiB/response and 4 MiB/assessment admitted detector-work ceilings, 1,024 outcome/64 occurrence/32 retained-observation ceilings, fixed value-free catalogue, `Informational` / `KnowledgeOnly` only, supplied-session bodies excluded, and outside `release-bundle` |
 | Existing-connection TLS observation | scanner and CLI opt-in (`tls-observation`) plus explicit `--profile web-review --tls-observation` | existing assessment clients expose TLS information for successful responses already selected by their owning paths; one shared collector immediately reduces bounded leaf DER facts and adds no request, connection, handshake, action or retry | no | Preview, development-only; 64 KiB/leaf, 16 retained unique leaves, 256 bounded SAN entries/leaf, leaf-only Reqwest backend visibility, no active protocol/cipher enumeration, no revocation/OCSP/CT/AIA retrieval, no finding, and outside `release-bundle` |
-| Local JWT policy review | scanner and CLI opt-in (`jwt-policy-review`) plus explicit local policy with a non-secret revision and mandatory intended `typ`, issuer and audience bindings, local public JWK and one env/file/stdin token source | after local preflight/output reservation and before the target scan, one bounded transport-free evaluator parses the compact JWS, applies the local claim/time policy and verifies ES256 against the supplied P-256 public key; the secret token is then dropped, and only the value-free audit is attached during final composition after the ordinary assessment completes. It never forwards the token, retrieves remote keys or adds target work; the surrounding scan still performs its ordinary authorized work | no | Preview, development-only; only compact ES256 JWS and strict local public JWK are supported, all three identity-context checks are mandatory, methodology compares the declared policy revision and exact public-key-byte identifier, target acceptance remains `not_performed`, parsed/policy/signature/target states are distinct, no finding or active verification is added, and the feature is outside `release-bundle` |
+| Local JWT policy review | scanner and CLI opt-in (`jwt-policy-review`) plus explicit local policy with a non-secret revision and mandatory intended `typ`, issuer and audience bindings, local public JWK and one env/file/stdin token source | after local preflight/output reservation and before the target scan, one bounded transport-free evaluator parses the compact JWS, applies the local claim/time policy and verifies ES256 against the supplied P-256 public key; the local evaluator adds no target request and retrieves no remote key. Without the separate target-acceptance option it never forwards/replays the token, and only the value-free local audit is attached during final composition after the ordinary assessment completes | no | Preview, development-only; only compact ES256 JWS and strict local public JWK are supported, all three identity-context checks are mandatory, methodology compares the declared policy revision and exact public-key-byte identifier, parsed/policy/signature/target states are distinct, no finding is added, and the feature is outside `release-bundle` |
+| JWT target acceptance review | scanner and CLI opt-in (`jwt-target-acceptance-review`, which includes `jwt-policy-review`) plus the complete local JWT selection and explicit `--jwt-target-acceptance-policy FILE` | after local eligibility, one strict policy authorizes one exact-origin application-contained JSON GET; six ordered valid/anonymous/invalid candidate/replay legs run sequentially through fresh no-proxy pools under the shared parent broker, with the two invalid legs admitted only after their same-stage passive controls | no | Preview, development-only; at most six requests/two active requests, 64 KiB retained/interpreted per response and 256 KiB total, exact charged bytes retained separately, complete committed JSON-compatible 200/401/403 boolean-marker classification only, value-free audit, no finding/Confirmed claim, and outside `release-bundle` |
 | WordPress evidence review and metadata discovery | scanner and CLI opt-in (`wordpress-review`), compiled by the current untagged alpha.3 `release-bundle`, plus optional bounded local context/catalogue; the session consumer additionally requires `supplied-session-review`, policy V1/V2 and `--wordpress-supplied-session` | review-only interprets complete exact-root HTML and supplied declarations with zero added requests; explicit `--wordpress-discovery` may issue at most twelve anonymous, bodyless, same-origin metadata GET attempts through the same broker/budget; optional observed page scope reuses up to three eligible committed anonymous secondary-page responses without fetching pages; the V1/V2 session consumer may nominate public metadata only from health-qualified committed resource HTML and never forwards credentials or selects authenticated-page fingerprints; V3 is rejected before secret acquisition | no | Preview, development-only; absent from the default build and published alpha.2 archives; zero active verifications, at most one root-surface item plus one distinct metadata-source response-outcome item; advisory decisions are audit-only and no exploit/impact validation occurs |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
@@ -819,13 +856,14 @@ The normal CLI dependency additionally enables `reporting` for the explicit
 completed `web-review` path; this does not alter no-profile execution or its
 wire contract.
 The stock untagged alpha.3 `release-bundle` capability inventory now reports
-16 known feature identities: the marker plus seven compiled members and eight
+17 known feature identities: the marker plus seven compiled members and nine
 excluded features. The eight compiled identities remain `release-bundle`,
 `artifact-adapter`, `normalization-resilience`, `graphql-review`,
 `openapi-review`, `rest-review`, `authorization-review`, and
-`wordpress-review`. The eight excluded identities are `api-adapter`,
-`jwt-policy-review`, `legacy-scanner`, `proxy-adapter`, `secret-exposure-review`,
-`ssrf-oast-review`, `supplied-session-review`, and `tls-observation`.
+`wordpress-review`. The nine excluded identities are `api-adapter`,
+`jwt-policy-review`, `jwt-target-acceptance-review`, `legacy-scanner`,
+`proxy-adapter`, `secret-exposure-review`, `ssrf-oast-review`,
+`supplied-session-review`, and `tls-observation`.
 `default` remains empty;
 this inventory is build truth, not runtime activation or publication status.
 `LuaEngineConfig` is a small shared support type reachable through either

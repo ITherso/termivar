@@ -256,6 +256,8 @@ pub(super) struct JwtPolicyReviewComparison {
     pub(super) coverage: WordPressFacetComparison,
     pub(super) outcome: WordPressFacetComparison,
     pub(super) interpretation_limits: [&'static str; 6],
+    #[serde(skip)]
+    pub(super) target_selected: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -395,6 +397,7 @@ pub(super) struct ImportedTlsObservationAudit {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedJwtPolicyReviewAudit {
+    pub(super) schema: String,
     pub(super) methodology: Value,
     pub(super) coverage: Value,
     pub(super) outcome: Value,
@@ -795,10 +798,39 @@ fn compare_jwt_policy_review(
         return None;
     }
     let (status, reason) = match (before, after) {
-        (Some(_), Some(_)) => ("compared", None),
+        (Some(before), Some(after)) if before.schema == after.schema => ("compared", None),
+        (Some(_), Some(_)) => ("not_comparable", Some("audit_schema_changed")),
         (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
         (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
         (None, None) => return None,
+    };
+    let target_selected = before
+        .into_iter()
+        .chain(after)
+        .any(|audit| audit.schema == "security.jwt-policy-review-audit/v2");
+    let methodology_status = if status == "compared" {
+        paired_status(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+        )
+    } else {
+        "not_comparable"
+    };
+    let coverage_status = if status == "compared" {
+        paired_status(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+        )
+    } else {
+        "not_comparable"
+    };
+    let outcome_status = if status == "compared" {
+        paired_status(
+            before.map(|audit| &audit.outcome),
+            after.map(|audit| &audit.outcome),
+        )
+    } else {
+        "not_comparable"
     };
     Some(JwtPolicyReviewComparison {
         schema: JWT_POLICY_REVIEW_COMPARISON_SCHEMA,
@@ -807,38 +839,49 @@ fn compare_jwt_policy_review(
         methodology: facet(
             before.map(|audit| &audit.methodology),
             after.map(|audit| &audit.methodology),
-            paired_status(
-                before.map(|audit| &audit.methodology),
-                after.map(|audit| &audit.methodology),
-            ),
+            methodology_status,
             "Declared policy reference/revision, expected-claim selection, clock-skew allowance, or exact public-key-byte identity changes can change interpretation without any target behavior changing.",
         ),
         coverage: facet(
             before.map(|audit| &audit.coverage),
             after.map(|audit| &audit.coverage),
-            paired_status(
-                before.map(|audit| &audit.coverage),
-                after.map(|audit| &audit.coverage),
-            ),
-            "The local evaluation instant and explicit absence of external activity describe bounded review coverage; they do not establish continuous clock accuracy or target acceptance.",
+            coverage_status,
+            if target_selected {
+                "The local evaluation instant plus bounded target dispatch, commit, retained-byte, and exact transport-byte accounting describe coverage. Charged chunk overrun can exceed retained bytes; missing or changed coverage is not a target fix, regression, or authorization result."
+            } else {
+                "The local evaluation instant and explicit absence of external activity describe bounded review coverage; they do not establish continuous clock accuracy or target acceptance."
+            },
         ),
         outcome: facet(
             before.map(|audit| &audit.outcome),
             after.map(|audit| &audit.outcome),
-            paired_status(
-                before.map(|audit| &audit.outcome),
-                after.map(|audit| &audit.outcome),
-            ),
-            "Parsing, local policy consistency, and local signature status are separate outcomes. A changed local outcome is not evidence that a target accepted a token or that authorization changed.",
+            outcome_status,
+            if target_selected {
+                "Local parsing, policy consistency, signature verification, target marker controls, and authorization effect are distinct. A changed marker relationship remains review-level and does not establish a general bypass or impact."
+            } else {
+                "Parsing, local policy consistency, and local signature status are separate outcomes. A changed local outcome is not evidence that a target accepted a token or that authorization changed."
+            },
         ),
-        interpretation_limits: [
-            "The compact token, claim names and values, signature bytes, and verification-key material are not imported into this display-only comparison.",
-            "The operator policy revision must change when private policy semantics change; the public-key SHA-256 identifies bytes but authenticates neither key nor source.",
-            "Local parsing does not authenticate claims; local signature verification applies only to the explicitly supplied local public key.",
-            "Policy consistency is not target acceptance, authorization, exploitability, or impact.",
-            "The evaluator performed no target request, token forwarding, or remote-key retrieval.",
-            "A one-sided or changed audit does not establish vulnerability, remediation, or source authenticity.",
-        ],
+        interpretation_limits: if target_selected {
+            [
+                "The compact token, claim names and values, signature bytes, selected marker name, raw resource URL, and verification-key material are not imported into this display-only comparison.",
+                "The operator policy revision must change when private policy semantics change; public digests and opaque references authenticate neither key, target, policy, nor source.",
+                "Local parsing does not authenticate claims; local signature verification applies only to the explicitly supplied local public key.",
+                "A target marker relationship applies only to the selected resource and matched controls; it is not a confirmed bypass, authorization effect, exploitability, or impact.",
+                "A v1 local-only audit and a v2 target-selected audit are not comparable; the target selection is a methodology and coverage change.",
+                "A one-sided or changed audit does not establish vulnerability, remediation, or source authenticity.",
+            ]
+        } else {
+            [
+                "The compact token, claim names and values, signature bytes, and verification-key material are not imported into this display-only comparison.",
+                "The operator policy revision must change when private policy semantics change; the public-key SHA-256 identifies bytes but authenticates neither key nor source.",
+                "Local parsing does not authenticate claims; local signature verification applies only to the explicitly supplied local public key.",
+                "Policy consistency is not target acceptance, authorization, exploitability, or impact.",
+                "The evaluator performed no target request, token forwarding, or remote-key retrieval.",
+                "A one-sided or changed audit does not establish vulnerability, remediation, or source authenticity.",
+            ]
+        },
+        target_selected,
     })
 }
 
@@ -1525,7 +1568,11 @@ fn write_jwt_policy_review_comparison_markdown(
     output: &mut RenderBuffer,
     comparison: &JwtPolicyReviewComparison,
 ) -> Result<(), ComparisonError> {
-    output.push_str("## Local JWT policy review differences\n\n- Schema: ")?;
+    if comparison.target_selected {
+        output.push_str("## JWT policy review differences\n\n- Schema: ")?;
+    } else {
+        output.push_str("## Local JWT policy review differences\n\n- Schema: ")?;
+    }
     write_markdown_code_span(output, comparison.schema)?;
     output.push_str("\n- Status: ")?;
     write_markdown_code_span(output, comparison.status)?;
@@ -1533,9 +1580,15 @@ fn write_jwt_policy_review_comparison_markdown(
         output.push_str("\n- Reason: ")?;
         write_markdown_code_span(output, reason)?;
     }
-    output.push_str(
-        "\n\nThis section compares validated, value-free local JWT audit projections. It does not expose the token, claims, signature, or key; contact a target; or establish target acceptance, authorization, vulnerability, or remediation.\n\n",
-    )?;
+    if comparison.target_selected {
+        output.push_str(
+            "\n\nThis section compares validated, value-free local policy projections and bounded target-control projections. It retains no token, claim, signature, key, selected marker name, or raw resource URL and does not establish a general authentication bypass, authorization effect, vulnerability, impact, or remediation.\n\n",
+        )?;
+    } else {
+        output.push_str(
+            "\n\nThis section compares validated, value-free local JWT audit projections. It does not expose the token, claims, signature, or key; contact a target; or establish target acceptance, authorization, vulnerability, or remediation.\n\n",
+        )?;
+    }
     for (label, facet) in [
         ("Methodology", &comparison.methodology),
         ("Coverage", &comparison.coverage),

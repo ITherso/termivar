@@ -59,6 +59,8 @@ mod assessment_review_projection;
 mod authority;
 #[cfg(feature = "graphql-review")]
 mod graphql_runtime;
+#[cfg(feature = "jwt-target-acceptance-review")]
+mod jwt_target_acceptance_runtime;
 #[cfg(feature = "openapi-review")]
 mod openapi_runtime;
 #[cfg(feature = "authorization-review")]
@@ -90,7 +92,11 @@ pub(crate) use assessment_defense::{
     AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
 };
 pub(crate) use assessment_review::AssessmentReviewObserverSet;
-#[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "jwt-target-acceptance-review",
+    feature = "supplied-session-review"
+))]
 pub(crate) use authority::authenticated_transport_is_allowed;
 #[cfg(feature = "oast-native-provider")]
 pub(crate) use authority::NativeOastProviderMintToken;

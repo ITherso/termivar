@@ -7,7 +7,10 @@
 //! separate states; this module performs no target request.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_FIXED};
+use ring::{
+    rand::{SecureRandom, SystemRandom},
+    signature::{UnparsedPublicKey, ECDSA_P256_SHA256_FIXED},
+};
 use serde::{
     de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer, Serialize,
@@ -16,6 +19,11 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+use crate::jwt_target_acceptance::{
+    JwtTargetAcceptanceBinding, JwtTargetAcceptanceNotEligibleReason,
+};
 
 /// Stable identifier for the initial local JWT policy evaluator.
 pub const JWT_POLICY_REVIEW_POLICY_ID: &str = "termivar.jwt-local-policy/es256-v1";
@@ -70,6 +78,141 @@ impl SecretCompactJwt {
     fn as_bytes(&self) -> &[u8] {
         self.bytes.as_slice()
     }
+}
+
+/// Move-only valid/invalid token pair prepared only after the supplied token
+/// has passed the complete local JWT review.
+///
+/// The invalid control preserves the exact protected header and claims bytes
+/// while changing one bit of the fixed-width ES256 signature. Neither token is
+/// printable, cloneable, or serializable. The target runtime may borrow the
+/// bytes only through this crate-private seam while constructing one sensitive
+/// `Authorization` header per isolated request leg.
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub(crate) struct JwtTargetAcceptanceCredentials {
+    valid: SecretCompactJwt,
+    invalid_signature_control: SecretCompactJwt,
+    preparation_binding: JwtTargetAcceptanceBinding,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl JwtTargetAcceptanceCredentials {
+    pub(crate) fn valid_bytes(&self) -> &[u8] {
+        self.valid.as_bytes()
+    }
+
+    pub(crate) fn invalid_signature_control_bytes(&self) -> &[u8] {
+        self.invalid_signature_control.as_bytes()
+    }
+
+    pub(crate) const fn preparation_binding(&self) -> &JwtTargetAcceptanceBinding {
+        &self.preparation_binding
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic_for_test() -> Self {
+        Self {
+            valid: SecretCompactJwt::new(b"eyJhbGciOiJFUzI1NiJ9.e30.AA".to_vec()).unwrap(),
+            invalid_signature_control: SecretCompactJwt::new(
+                b"eyJhbGciOiJFUzI1NiJ9.e30.AQ".to_vec(),
+            )
+            .unwrap(),
+            preparation_binding: JwtTargetAcceptanceBinding::synthetic_for_test(0xA5),
+        }
+    }
+}
+
+/// Move-only sealed handoff from local JWT preparation into the sole target
+/// runtime. Callers can carry this value alongside the public target policy,
+/// but cannot separate credentials, the local ineligibility reason, or the
+/// opaque per-preparation binding.
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub struct JwtTargetAcceptanceRuntimeInput {
+    credentials: Option<JwtTargetAcceptanceCredentials>,
+    not_eligible_reason: Option<JwtTargetAcceptanceNotEligibleReason>,
+    preparation_binding: JwtTargetAcceptanceBinding,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl JwtTargetAcceptanceRuntimeInput {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Option<JwtTargetAcceptanceCredentials>,
+        Option<JwtTargetAcceptanceNotEligibleReason>,
+        JwtTargetAcceptanceBinding,
+    ) {
+        (
+            self.credentials,
+            self.not_eligible_reason,
+            self.preparation_binding,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic_eligible_for_test() -> Self {
+        let credentials = JwtTargetAcceptanceCredentials::synthetic_for_test();
+        let preparation_binding = credentials.preparation_binding().clone();
+        Self {
+            credentials: Some(credentials),
+            not_eligible_reason: None,
+            preparation_binding,
+        }
+    }
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl fmt::Debug for JwtTargetAcceptanceRuntimeInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JwtTargetAcceptanceRuntimeInput")
+            .field(
+                "credentials",
+                &self.credentials.as_ref().map(|_| "<redacted>"),
+            )
+            .field("not_eligible_reason", &self.not_eligible_reason)
+            .field("preparation_binding", &"<opaque-per-preparation>")
+            .finish()
+    }
+}
+
+/// Local review plus an optional sealed credential handoff for the target
+/// acceptance child. A selected but locally ineligible token produces the
+/// local audit and no credential handoff, so it can never reach transport.
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub struct PreparedJwtTargetAcceptance {
+    local_audit: JwtPolicyReviewAudit,
+    runtime_input: JwtTargetAcceptanceRuntimeInput,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl PreparedJwtTargetAcceptance {
+    pub fn local_audit(&self) -> &JwtPolicyReviewAudit {
+        &self.local_audit
+    }
+
+    pub fn into_parts(self) -> (JwtPolicyReviewAudit, JwtTargetAcceptanceRuntimeInput) {
+        (self.local_audit, self.runtime_input)
+    }
+}
+
+/// Redaction-safe invariant failure while deriving the one invalid-signature
+/// control. This is a local implementation error, not a target observation.
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum JwtTargetControlPreparationError {
+    /// The operating system could not provide one opaque per-preparation
+    /// binding. No token bytes are exposed by this failure.
+    #[error("JWT target control preparation could not mint its private binding")]
+    PreparationBindingUnavailable,
+    /// The already reviewed token could not be reproduced as one strict
+    /// compact ES256 object.
+    #[error("JWT target control preparation violated the compact-token contract")]
+    InvalidCompactToken,
+    /// The derived token did not retain the expected locally invalid signature
+    /// relationship.
+    #[error("JWT target control preparation violated the invalid-signature contract")]
+    InvalidControlInvariant,
 }
 
 /// Redaction-safe compact-token input failure.
@@ -380,6 +523,8 @@ pub struct JwtPolicyReviewAudit {
     external_activity: JwtExternalActivity,
     /// Bounded value-free reasons for a policy-inconsistent result.
     policy_violations: Vec<JwtPolicyViolation>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    target_preparation_binding: Option<JwtTargetAcceptanceBinding>,
 }
 
 /// Value-free local methodology facts needed by strict saved reports and
@@ -622,7 +767,14 @@ impl JwtPolicyReviewAudit {
             methodology: methodology(key, policy, evaluation_time),
             external_activity: no_external_activity(),
             policy_violations: Vec::new(),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            target_preparation_binding: None,
         }
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub(crate) const fn target_preparation_binding(&self) -> Option<&JwtTargetAcceptanceBinding> {
+        self.target_preparation_binding.as_ref()
     }
 }
 
@@ -706,9 +858,136 @@ pub fn review_compact_jwt(
             methodology: methodology(key, policy, evaluation_time),
             external_activity: no_external_activity(),
             policy_violations,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            target_preparation_binding: None,
         },
         Err(reason) => JwtPolicyReviewAudit::rejected(reason, key, policy, evaluation_time),
     }
+}
+
+/// Reviews one compact token locally and, only when every selected local gate
+/// succeeds, derives a sealed invalid-signature control for the explicitly
+/// selected target-acceptance child.
+///
+/// This function performs no I/O. In particular, a malformed, policy-
+/// inconsistent, expired, or locally unverified token can never be forwarded
+/// to the target runtime.
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub fn review_and_prepare_target_acceptance(
+    token: SecretCompactJwt,
+    key: &Es256LocalPublicKey,
+    policy: &JwtLocalPolicy,
+    evaluation_time: JwtEvaluationTime,
+) -> Result<PreparedJwtTargetAcceptance, JwtTargetControlPreparationError> {
+    let mut binding_bytes = [0_u8; 32];
+    SystemRandom::new()
+        .fill(&mut binding_bytes)
+        .map_err(|_| JwtTargetControlPreparationError::PreparationBindingUnavailable)?;
+    let preparation_binding = JwtTargetAcceptanceBinding::from_random_bytes(binding_bytes);
+    let mut local_audit = review_compact_jwt(&token, key, policy, evaluation_time);
+    local_audit.target_preparation_binding = Some(preparation_binding.clone());
+    let eligible = local_audit.parsing_status() == JwtParsingStatus::Parsed
+        && local_audit.policy_status() == JwtPolicyStatus::Consistent
+        && local_audit.local_signature_status() == JwtLocalSignatureStatus::Verified;
+    if !eligible {
+        let not_eligible_reason = match local_audit.parsing_status() {
+            JwtParsingStatus::Rejected(_) => {
+                JwtTargetAcceptanceNotEligibleReason::LocalParsingNotEstablished
+            },
+            JwtParsingStatus::Parsed
+                if local_audit.policy_status() != JwtPolicyStatus::Consistent =>
+            {
+                JwtTargetAcceptanceNotEligibleReason::LocalPolicyNotEstablished
+            },
+            _ => JwtTargetAcceptanceNotEligibleReason::LocalSignatureNotEstablished,
+        };
+        return Ok(PreparedJwtTargetAcceptance {
+            local_audit,
+            runtime_input: JwtTargetAcceptanceRuntimeInput {
+                credentials: None,
+                not_eligible_reason: Some(not_eligible_reason),
+                preparation_binding,
+            },
+        });
+    }
+
+    let invalid_signature_control = derive_invalid_signature_control(&token)?;
+    let control_audit =
+        review_compact_jwt(&invalid_signature_control, key, policy, evaluation_time);
+    if control_audit.parsing_status() != JwtParsingStatus::Parsed
+        || control_audit.policy_status() != JwtPolicyStatus::Consistent
+        || control_audit.local_signature_status() != JwtLocalSignatureStatus::Invalid
+    {
+        return Err(JwtTargetControlPreparationError::InvalidControlInvariant);
+    }
+
+    Ok(PreparedJwtTargetAcceptance {
+        local_audit,
+        runtime_input: JwtTargetAcceptanceRuntimeInput {
+            credentials: Some(JwtTargetAcceptanceCredentials {
+                valid: token,
+                invalid_signature_control,
+                preparation_binding: preparation_binding.clone(),
+            }),
+            not_eligible_reason: None,
+            preparation_binding,
+        },
+    })
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn derive_invalid_signature_control(
+    token: &SecretCompactJwt,
+) -> Result<SecretCompactJwt, JwtTargetControlPreparationError> {
+    let bytes = token.as_bytes();
+    let segments = bytes.split(|byte| *byte == b'.').collect::<Vec<_>>();
+    if segments.len() != 3
+        || segments.iter().any(|segment| segment.is_empty())
+        || segments
+            .iter()
+            .any(|segment| !is_unpadded_base64url(segment))
+    {
+        return Err(JwtTargetControlPreparationError::InvalidCompactToken);
+    }
+    let mut signature = Zeroizing::new(Vec::new());
+    URL_SAFE_NO_PAD
+        .decode_vec(segments[2], &mut signature)
+        .map_err(|_| JwtTargetControlPreparationError::InvalidCompactToken)?;
+    if signature.len() != ES256_SIGNATURE_BYTES {
+        return Err(JwtTargetControlPreparationError::InvalidCompactToken);
+    }
+    signature[0] ^= 1;
+
+    // The unpadded encoding of 64 bytes is exactly 86 bytes. Encode directly
+    // into guarded storage instead of creating an intermediate `String`.
+    const ENCODED_ES256_SIGNATURE_BYTES: usize = 86;
+    let mut encoded_signature = Zeroizing::new(vec![0_u8; ENCODED_ES256_SIGNATURE_BYTES]);
+    let encoded = URL_SAFE_NO_PAD
+        .encode_slice(signature.as_slice(), encoded_signature.as_mut_slice())
+        .map_err(|_| JwtTargetControlPreparationError::InvalidControlInvariant)?;
+    if encoded != ENCODED_ES256_SIGNATURE_BYTES {
+        return Err(JwtTargetControlPreparationError::InvalidControlInvariant);
+    }
+
+    let length = segments[0]
+        .len()
+        .checked_add(1)
+        .and_then(|value| value.checked_add(segments[1].len()))
+        .and_then(|value| value.checked_add(1))
+        .and_then(|value| value.checked_add(encoded))
+        .ok_or(JwtTargetControlPreparationError::InvalidControlInvariant)?;
+    if length > MAX_COMPACT_JWT_BYTES {
+        return Err(JwtTargetControlPreparationError::InvalidControlInvariant);
+    }
+    let mut control = Zeroizing::new(Vec::with_capacity(length));
+    control.extend_from_slice(segments[0]);
+    control.push(b'.');
+    control.extend_from_slice(segments[1]);
+    control.push(b'.');
+    control.extend_from_slice(&encoded_signature[..encoded]);
+    let control = std::mem::take(&mut *control);
+    SecretCompactJwt::new(control)
+        .map_err(|_| JwtTargetControlPreparationError::InvalidControlInvariant)
 }
 
 fn methodology(
@@ -1233,6 +1512,178 @@ mod tests {
             URL_SAFE_NO_PAD.encode(claims.as_bytes()),
             URL_SAFE_NO_PAD.encode(signature)
         )
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    fn locally_verified_target_fixture() -> (SecretCompactJwt, Es256LocalPublicKey, JwtLocalPolicy)
+    {
+        use ring::{
+            rand::SystemRandom,
+            signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING},
+        };
+
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("generate task-owned key");
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .expect("parse task-owned key");
+        let point = pair.public_key().as_ref();
+        let public_jwk = format!(
+            concat!(
+                "{{\"kty\":\"EC\",\"crv\":\"P-256\",\"alg\":\"ES256\",",
+                "\"x\":\"{}\",\"y\":\"{}\"}}"
+            ),
+            URL_SAFE_NO_PAD.encode(&point[1..33]),
+            URL_SAFE_NO_PAD.encode(&point[33..65]),
+        );
+        let key = Es256LocalPublicKey::from_jwk_json(public_jwk.into_bytes())
+            .expect("task-owned public key");
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256","typ":"JWT"}"#);
+        let claims = URL_SAFE_NO_PAD
+            .encode(br#"{"iss":"owned-issuer","aud":"owned-api","scope":"read","exp":4000000000}"#);
+        let signing_input = format!("{header}.{claims}");
+        let signature = pair
+            .sign(&rng, signing_input.as_bytes())
+            .expect("sign task-owned token");
+        let token = SecretCompactJwt::new(
+            format!(
+                "{signing_input}.{}",
+                URL_SAFE_NO_PAD.encode(signature.as_ref())
+            )
+            .into_bytes(),
+        )
+        .expect("bounded token");
+        let policy = JwtLocalPolicy::new(
+            ("owned-target-policy", "owned-target-policy-v1"),
+            "JWT",
+            "owned-issuer",
+            "owned-api",
+            &["scope"],
+            true,
+            0,
+        )
+        .expect("policy");
+        (token, key, policy)
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[test]
+    fn target_handoff_is_sealed_until_all_local_gates_pass() {
+        let (token, key, policy) = locally_verified_target_fixture();
+        let prepared = review_and_prepare_target_acceptance(
+            token,
+            &key,
+            &policy,
+            JwtEvaluationTime {
+                unix_seconds: 1_900_000_000,
+            },
+        )
+        .expect("prepare control");
+        let (audit, runtime_input) = prepared.into_parts();
+        let (credentials, not_eligible_reason, preparation_binding) = runtime_input.into_parts();
+        assert_eq!(audit.parsing_status(), JwtParsingStatus::Parsed);
+        assert_eq!(audit.policy_status(), JwtPolicyStatus::Consistent);
+        assert_eq!(
+            audit.local_signature_status(),
+            JwtLocalSignatureStatus::Verified
+        );
+        let credentials = credentials.expect("eligible handoff");
+        assert_eq!(not_eligible_reason, None);
+        assert_eq!(credentials.preparation_binding(), &preparation_binding);
+        assert_eq!(
+            audit.target_preparation_binding(),
+            Some(&preparation_binding)
+        );
+        assert_ne!(
+            credentials.valid_bytes(),
+            credentials.invalid_signature_control_bytes()
+        );
+        let valid_parts = credentials
+            .valid_bytes()
+            .split(|byte| *byte == b'.')
+            .collect::<Vec<_>>();
+        let invalid_parts = credentials
+            .invalid_signature_control_bytes()
+            .split(|byte| *byte == b'.')
+            .collect::<Vec<_>>();
+        assert_eq!(valid_parts.len(), 3);
+        assert_eq!(invalid_parts.len(), 3);
+        assert_eq!(valid_parts[0], invalid_parts[0]);
+        assert_eq!(valid_parts[1], invalid_parts[1]);
+        let valid_signature = URL_SAFE_NO_PAD
+            .decode(valid_parts[2])
+            .expect("decode valid signature independently");
+        let invalid_signature = URL_SAFE_NO_PAD
+            .decode(invalid_parts[2])
+            .expect("decode invalid signature independently");
+        assert_eq!(valid_signature.len(), ES256_SIGNATURE_BYTES);
+        assert_eq!(invalid_signature.len(), ES256_SIGNATURE_BYTES);
+        assert_eq!(
+            valid_signature
+                .iter()
+                .zip(&invalid_signature)
+                .map(|(valid, invalid)| (valid ^ invalid).count_ones())
+                .sum::<u32>(),
+            1,
+            "the control changes exactly one signature bit"
+        );
+        let mut signing_input = Vec::new();
+        signing_input.extend_from_slice(valid_parts[0]);
+        signing_input.push(b'.');
+        signing_input.extend_from_slice(valid_parts[1]);
+        let verifier =
+            UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, key.sec1_public_point.as_slice());
+        assert!(verifier.verify(&signing_input, &valid_signature).is_ok());
+        assert!(verifier.verify(&signing_input, &invalid_signature).is_err());
+        let invalid = SecretCompactJwt::new(credentials.invalid_signature_control_bytes().to_vec())
+            .expect("bounded invalid control");
+        let control = review_compact_jwt(
+            &invalid,
+            &key,
+            &policy,
+            JwtEvaluationTime {
+                unix_seconds: 1_900_000_000,
+            },
+        );
+        assert_eq!(control.parsing_status(), JwtParsingStatus::Parsed);
+        assert_eq!(control.policy_status(), JwtPolicyStatus::Consistent);
+        assert_eq!(
+            control.local_signature_status(),
+            JwtLocalSignatureStatus::Invalid
+        );
+
+        let (token, key, _) = locally_verified_target_fixture();
+        let mismatched = JwtLocalPolicy::new(
+            ("owned-target-policy", "owned-target-policy-v2"),
+            "JWT",
+            "other-issuer",
+            "owned-api",
+            &["scope"],
+            true,
+            0,
+        )
+        .expect("mismatched policy");
+        let prepared = review_and_prepare_target_acceptance(
+            token,
+            &key,
+            &mismatched,
+            JwtEvaluationTime {
+                unix_seconds: 1_900_000_000,
+            },
+        )
+        .expect("local mismatch remains an audit outcome");
+        let (audit, runtime_input) = prepared.into_parts();
+        let (credentials, not_eligible_reason, preparation_binding) = runtime_input.into_parts();
+        assert_eq!(audit.policy_status(), JwtPolicyStatus::Inconsistent);
+        assert!(credentials.is_none());
+        assert_eq!(
+            not_eligible_reason,
+            Some(JwtTargetAcceptanceNotEligibleReason::LocalPolicyNotEstablished)
+        );
+        assert_eq!(
+            audit.target_preparation_binding(),
+            Some(&preparation_binding)
+        );
     }
 
     #[test]

@@ -225,6 +225,94 @@ fn jwt_policy_review_audit() -> Value {
     })
 }
 
+fn jwt_target_policy_review_audit() -> Value {
+    let mut audit = jwt_policy_review_audit();
+    let preparation_reference = concat!(
+        "jwt-target-preparation:",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
+    audit["schema"] = json!("security.jwt-policy-review-audit/v2");
+    audit["preparation_reference"] = json!(preparation_reference);
+    audit["target_acceptance_status"] = json!("completed");
+    audit["external_activity"]["target_request_count"] = json!(6);
+    audit["external_activity"]["token_forwarding"] = json!("performed");
+    let legs = [
+        ("valid_candidate", "candidate", "passive", "observed", 101),
+        (
+            "anonymous_candidate",
+            "candidate",
+            "passive",
+            "not_observed",
+            102,
+        ),
+        ("invalid_candidate", "candidate", "active", "observed", 103),
+        ("valid_replay", "replay", "passive", "observed", 104),
+        ("anonymous_replay", "replay", "passive", "not_observed", 105),
+        ("invalid_replay", "replay", "active", "observed", 106),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(
+        |(index, (role, stage, activity, marker_status, accounted_transport_response_bytes))| {
+            json!({
+                "role": role,
+                "stage": stage,
+                "activity": activity,
+                "dispatch_status": "dispatched",
+                "commit_status": "committed",
+            "response_status": "complete_and_classified",
+            "marker_status": marker_status,
+            "retained_response_bytes": accounted_transport_response_bytes,
+            "accounted_transport_response_bytes": accounted_transport_response_bytes,
+            "evidence_reference": format!("jwt-target-leg:{:064x}", index + 1)
+            })
+        },
+    )
+    .collect::<Vec<_>>();
+    audit["target_acceptance"] = json!({
+        "schema": "security.jwt-target-acceptance-audit/v1",
+        "policy": "termivar.jwt-target-acceptance/exact-origin-json-marker-v1",
+        "selected": true,
+        "operator_policy_reference": "synthetic-target-policy",
+        "operator_policy_revision": "synthetic-target-v1",
+        "resource_reference": "protected-canary",
+        "method": "get",
+        "preparation_reference": preparation_reference,
+        "status": "completed",
+        "accounting": {
+            "request_limit": 6,
+            "active_request_limit": 2,
+            "retained_response_byte_limit": 65_536,
+            "total_retained_response_byte_limit": 262_144,
+            "dispatched_request_count": 6,
+            "dispatched_passive_request_count": 4,
+            "dispatched_active_request_count": 2,
+            "committed_response_count": 6,
+            "retained_response_bytes": 621,
+            "accounted_transport_response_bytes": 621
+        },
+        "dimensions": {
+            "valid_marker": "observed_stable",
+            "anonymous_marker": "not_observed_stable",
+            "invalid_marker": "observed_stable"
+        },
+        "conclusion": {
+            "kind": "invalid_signature_control_marker_observed_with_anonymous_control"
+        },
+        "legs": legs,
+        "source_authentication": "not_established",
+        "interpretation_limits": [
+            "A marker relationship applies only to the selected resource and request controls; it does not establish a general authentication bypass, authorization effect, exploitability, or impact.",
+            "An invalid-signature control marker is reported only beside matched valid and anonymous controls; it is still review-level evidence, not a confirmed vulnerability.",
+            "A public or token-agnostic marker suppresses invalid-signature-specific interpretation, while a rejected invalid control does not prove every token verifier is secure.",
+            "Retained response bytes are bounded interpreted bytes; accounted transport response bytes include charged discarded overrun and may exceed a retention ceiling without expanding interpreted content.",
+            "The operator policy, selected resource, local key, target, and source are not authenticated by this report.",
+            "The random preparation reference links local and target evidence only within this report; it is not a token identity, cross-run identity, signature, or source authentication claim."
+        ]
+    });
+    audit
+}
+
 fn report_with_jwt_policy_review(audit: Value) -> Value {
     let mut document = report(Vec::new());
     document["jwt_policy_review"] = audit;
@@ -380,6 +468,419 @@ fn jwt_policy_review_is_strict_feature_independent_value_free_and_self_compares(
 }
 
 #[test]
+fn jwt_target_selected_v2_is_strict_value_free_and_not_comparable_with_v1() {
+    let target = report_with_jwt_policy_review(jwt_target_policy_review_audit());
+    assert!(import_assessment_summary(&bytes(&target)).is_ok());
+
+    let comparison = compare(&target, &target);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["status"],
+        "compared"
+    );
+    for facet in ["methodology", "coverage", "outcome"] {
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"][facet]["status"],
+            "unchanged"
+        );
+    }
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["before"]["target_acceptance"]
+            ["resource_reference"],
+        "protected-canary"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["outcome"]["before"]["target_acceptance"]
+            ["conclusion"]["kind"],
+        "invalid_signature_control_marker_observed_with_anonymous_control"
+    );
+    let serialized = serde_json::to_string(&comparison).unwrap();
+    for private_value in [
+        "eyJhbGciOiJFUzI1NiJ9",
+        "success_json_field",
+        "https://target.invalid/private",
+        "synthetic-secret-claim-value",
+    ] {
+        assert!(!serialized.contains(private_value));
+    }
+
+    let local = report_with_jwt_policy_review(jwt_policy_review_audit());
+    let cross_version = compare(&local, &target);
+    assert_eq!(
+        cross_version["jwt_policy_review_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        cross_version["jwt_policy_review_comparison"]["reason"],
+        "audit_schema_changed"
+    );
+    for facet in ["methodology", "coverage", "outcome"] {
+        assert_eq!(
+            cross_version["jwt_policy_review_comparison"][facet]["status"],
+            "not_comparable"
+        );
+    }
+}
+
+#[test]
+fn jwt_target_preparation_references_are_required_linked_and_well_formed() {
+    let valid = report_with_jwt_policy_review(jwt_target_policy_review_audit());
+
+    let mut missing_outer = valid.clone();
+    missing_outer["jwt_policy_review"]
+        .as_object_mut()
+        .unwrap()
+        .remove("preparation_reference");
+
+    let mut missing_nested = valid.clone();
+    missing_nested["jwt_policy_review"]["target_acceptance"]
+        .as_object_mut()
+        .unwrap()
+        .remove("preparation_reference");
+
+    let mut mismatched = valid.clone();
+    mismatched["jwt_policy_review"]["target_acceptance"]["preparation_reference"] = json!(
+        "jwt-target-preparation:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    );
+
+    let mut wrong_outer_shape = valid.clone();
+    wrong_outer_shape["jwt_policy_review"]["preparation_reference"] =
+        json!("jwt-target-preparation:not-a-lowercase-hex-binding");
+
+    let mut wrong_nested_shape = valid.clone();
+    wrong_nested_shape["jwt_policy_review"]["target_acceptance"]["preparation_reference"] =
+        json!("jwt-target-preparation:not-a-lowercase-hex-binding");
+
+    let mut wrong_outer_type = valid.clone();
+    wrong_outer_type["jwt_policy_review"]["preparation_reference"] = json!({
+        "opaque": "jwt-target-preparation:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    });
+
+    let mut wrong_nested_type = valid;
+    wrong_nested_type["jwt_policy_review"]["target_acceptance"]["preparation_reference"] =
+        json!(17);
+
+    for (case, invalid) in [
+        ("missing outer reference", missing_outer),
+        ("missing nested reference", missing_nested),
+        ("mismatched references", mismatched),
+        ("wrong outer reference shape", wrong_outer_shape),
+        ("wrong nested reference shape", wrong_nested_shape),
+        ("wrong outer reference type", wrong_outer_type),
+        ("wrong nested reference type", wrong_nested_type),
+    ] {
+        assert!(
+            import_assessment_summary(&bytes(&invalid)).is_err(),
+            "{case} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn jwt_target_preparation_reference_is_semantically_opaque_when_both_copies_change() {
+    let before = report_with_jwt_policy_review(jwt_target_policy_review_audit());
+    let mut after = before.clone();
+    let alternate_reference = concat!(
+        "jwt-target-preparation:",
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    );
+    after["jwt_policy_review"]["preparation_reference"] = json!(alternate_reference);
+    after["jwt_policy_review"]["target_acceptance"]["preparation_reference"] =
+        json!(alternate_reference);
+    assert!(import_assessment_summary(&bytes(&after)).is_ok());
+
+    let comparison = compare(&before, &after);
+    assert_ne!(
+        comparison["before"]["sha256"],
+        comparison["after"]["sha256"]
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["status"],
+        "compared"
+    );
+    for facet in ["methodology", "coverage", "outcome"] {
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"][facet]["status"], "unchanged",
+            "the report-local preparation reference must not change the {facet} facet"
+        );
+    }
+    assert!(
+        !serde_json::to_string(&comparison["jwt_policy_review_comparison"])
+            .unwrap()
+            .contains("jwt-target-preparation:")
+    );
+}
+
+#[test]
+fn jwt_target_selected_reader_rejects_accounting_control_and_shape_mutations() {
+    let valid = report_with_jwt_policy_review(jwt_target_policy_review_audit());
+
+    let mut not_eligible = valid.clone();
+    let audit = &mut not_eligible["jwt_policy_review"];
+    audit["target_acceptance_status"] = json!("not_performed");
+    audit["external_activity"]["target_request_count"] = json!(0);
+    audit["external_activity"]["token_forwarding"] = json!("not_performed");
+    let target = &mut audit["target_acceptance"];
+    target["status"] = json!("not_performed");
+    target["accounting"]["dispatched_request_count"] = json!(0);
+    target["accounting"]["dispatched_passive_request_count"] = json!(0);
+    target["accounting"]["dispatched_active_request_count"] = json!(0);
+    target["accounting"]["committed_response_count"] = json!(0);
+    target["accounting"]["retained_response_bytes"] = json!(0);
+    target["accounting"]["accounted_transport_response_bytes"] = json!(0);
+    target["dimensions"] = json!({
+        "valid_marker": "not_evaluated",
+        "anonymous_marker": "not_evaluated",
+        "invalid_marker": "not_evaluated"
+    });
+    target["conclusion"] = json!({
+        "kind": "incomplete",
+        "incomplete_reason": {
+            "kind": "not_eligible",
+            "not_eligible_reason": "request_budget_unavailable"
+        }
+    });
+    target["legs"] = json!([]);
+    let not_eligible_comparison = compare(&not_eligible, &not_eligible);
+    assert_eq!(
+        not_eligible_comparison["jwt_policy_review_comparison"]["status"],
+        "compared"
+    );
+
+    let mut dispatched_without_local_proof = valid.clone();
+    dispatched_without_local_proof["jwt_policy_review"]["local_signature_status"] =
+        json!("invalid");
+    reject(&dispatched_without_local_proof);
+
+    let mut wrong_zero_request_reason = not_eligible.clone();
+    wrong_zero_request_reason["jwt_policy_review"]["local_signature_status"] = json!("invalid");
+    reject(&wrong_zero_request_reason);
+
+    let mut local_signature_not_established = not_eligible.clone();
+    local_signature_not_established["jwt_policy_review"]["local_signature_status"] =
+        json!("invalid");
+    local_signature_not_established["jwt_policy_review"]["target_acceptance"]["conclusion"]
+        ["incomplete_reason"]["not_eligible_reason"] = json!("local_signature_not_established");
+    assert!(import_assessment_summary(&bytes(&local_signature_not_established)).is_ok());
+
+    let mut cancelled_before_dispatch = valid.clone();
+    let audit = &mut cancelled_before_dispatch["jwt_policy_review"];
+    audit["target_acceptance_status"] = json!("not_performed");
+    audit["external_activity"]["target_request_count"] = json!(0);
+    audit["external_activity"]["token_forwarding"] = json!("not_performed");
+    let target = &mut audit["target_acceptance"];
+    target["status"] = json!("not_performed");
+    for field in [
+        "dispatched_request_count",
+        "dispatched_passive_request_count",
+        "dispatched_active_request_count",
+        "committed_response_count",
+        "retained_response_bytes",
+        "accounted_transport_response_bytes",
+    ] {
+        target["accounting"][field] = json!(0);
+    }
+    target["dimensions"] = json!({
+        "valid_marker": "not_evaluated",
+        "anonymous_marker": "not_evaluated",
+        "invalid_marker": "not_evaluated"
+    });
+    target["conclusion"] = json!({
+        "kind": "incomplete",
+        "incomplete_reason": {
+            "kind": "leg_not_dispatched",
+            "role": "valid_candidate"
+        }
+    });
+    for leg in target["legs"].as_array_mut().unwrap() {
+        leg["dispatch_status"] = json!("not_dispatched");
+        leg["commit_status"] = json!("not_committed");
+        leg["response_status"] = json!("not_classified");
+        leg["marker_status"] = json!("not_evaluated");
+        leg["retained_response_bytes"] = json!(0);
+        leg["accounted_transport_response_bytes"] = json!(0);
+        leg.as_object_mut().unwrap().remove("evidence_reference");
+    }
+    assert!(import_assessment_summary(&bytes(&cancelled_before_dispatch)).is_ok());
+    let mut cancelled_without_local_proof = cancelled_before_dispatch.clone();
+    cancelled_without_local_proof["jwt_policy_review"]["local_signature_status"] = json!("invalid");
+    reject(&cancelled_without_local_proof);
+
+    let mut chunk_overrun = valid.clone();
+    chunk_overrun["jwt_policy_review"]["target_acceptance"]["legs"][0]
+        ["accounted_transport_response_bytes"] = json!(70_000);
+    chunk_overrun["jwt_policy_review"]["target_acceptance"]["accounting"]
+        ["accounted_transport_response_bytes"] = json!(70_520);
+    assert!(import_assessment_summary(&bytes(&chunk_overrun)).is_ok());
+
+    let mut transport_below_retained = valid.clone();
+    transport_below_retained["jwt_policy_review"]["target_acceptance"]["legs"][0]
+        ["accounted_transport_response_bytes"] = json!(100);
+    transport_below_retained["jwt_policy_review"]["target_acceptance"]["accounting"]
+        ["accounted_transport_response_bytes"] = json!(620);
+    reject(&transport_below_retained);
+
+    let mut missing = valid.clone();
+    missing["jwt_policy_review"]["target_acceptance"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dimensions");
+    reject(&missing);
+
+    let mut count_disagrees = valid.clone();
+    count_disagrees["jwt_policy_review"]["target_acceptance"]["accounting"]
+        ["dispatched_request_count"] = json!(5);
+    reject(&count_disagrees);
+
+    let mut duplicate_evidence = valid.clone();
+    let first = duplicate_evidence["jwt_policy_review"]["target_acceptance"]["legs"][0]
+        ["evidence_reference"]
+        .clone();
+    duplicate_evidence["jwt_policy_review"]["target_acceptance"]["legs"][1]["evidence_reference"] =
+        first;
+    reject(&duplicate_evidence);
+
+    let mut anonymous_control_disagrees = valid.clone();
+    anonymous_control_disagrees["jwt_policy_review"]["target_acceptance"]["legs"][1]
+        ["marker_status"] = json!("observed");
+    reject(&anonymous_control_disagrees);
+
+    let mut active_without_prerequisite = valid.clone();
+    active_without_prerequisite["jwt_policy_review"]["target_acceptance"]["legs"][0]
+        ["marker_status"] = json!("not_observed");
+    reject(&active_without_prerequisite);
+
+    let mut unknown = valid.clone();
+    unknown["jwt_policy_review"]["target_acceptance"]["raw_resource_url"] =
+        json!("https://target.invalid/private");
+    reject(&unknown);
+}
+
+#[test]
+fn jwt_target_reader_rejects_dispatch_after_a_terminal_stop() {
+    let valid = report_with_jwt_policy_review(jwt_target_policy_review_audit());
+    let make_not_dispatched = |document: &mut Value, index: usize| {
+        let leg = &mut document["jwt_policy_review"]["target_acceptance"]["legs"][index];
+        leg["dispatch_status"] = json!("not_dispatched");
+        leg["commit_status"] = json!("not_committed");
+        leg["response_status"] = json!("not_classified");
+        leg["marker_status"] = json!("not_evaluated");
+        leg["retained_response_bytes"] = json!(0);
+        leg["accounted_transport_response_bytes"] = json!(0);
+        leg.as_object_mut().unwrap().remove("evidence_reference");
+    };
+
+    let mut dispatch_after_passive_not_dispatched = valid.clone();
+    make_not_dispatched(&mut dispatch_after_passive_not_dispatched, 3);
+    make_not_dispatched(&mut dispatch_after_passive_not_dispatched, 5);
+    let audit = &mut dispatch_after_passive_not_dispatched["jwt_policy_review"];
+    audit["target_acceptance_status"] = json!("partially_performed");
+    audit["external_activity"]["target_request_count"] = json!(4);
+    let target = &mut audit["target_acceptance"];
+    target["status"] = json!("partially_performed");
+    target["accounting"]["dispatched_request_count"] = json!(4);
+    target["accounting"]["dispatched_passive_request_count"] = json!(3);
+    target["accounting"]["dispatched_active_request_count"] = json!(1);
+    target["accounting"]["committed_response_count"] = json!(4);
+    target["accounting"]["retained_response_bytes"] = json!(411);
+    target["accounting"]["accounted_transport_response_bytes"] = json!(411);
+    target["dimensions"] = json!({
+        "valid_marker": "incomplete",
+        "anonymous_marker": "not_observed_stable",
+        "invalid_marker": "incomplete"
+    });
+    target["conclusion"] = json!({
+        "kind": "incomplete",
+        "incomplete_reason": {
+            "kind": "leg_not_dispatched",
+            "role": "valid_replay"
+        }
+    });
+    assert!(
+        import_assessment_summary(&bytes(&dispatch_after_passive_not_dispatched)).is_err(),
+        "a dispatched passive leg after a terminal passive skip must be rejected"
+    );
+
+    let mut dispatch_after_not_committed = valid.clone();
+    let stopped_leg =
+        &mut dispatch_after_not_committed["jwt_policy_review"]["target_acceptance"]["legs"][3];
+    stopped_leg["commit_status"] = json!("not_committed");
+    stopped_leg["response_status"] = json!("incomplete");
+    stopped_leg["marker_status"] = json!("not_evaluated");
+    stopped_leg
+        .as_object_mut()
+        .unwrap()
+        .remove("evidence_reference");
+    make_not_dispatched(&mut dispatch_after_not_committed, 5);
+    let audit = &mut dispatch_after_not_committed["jwt_policy_review"];
+    audit["target_acceptance_status"] = json!("partially_performed");
+    audit["external_activity"]["target_request_count"] = json!(5);
+    let target = &mut audit["target_acceptance"];
+    target["status"] = json!("partially_performed");
+    target["accounting"]["dispatched_request_count"] = json!(5);
+    target["accounting"]["dispatched_passive_request_count"] = json!(4);
+    target["accounting"]["dispatched_active_request_count"] = json!(1);
+    target["accounting"]["committed_response_count"] = json!(4);
+    target["accounting"]["retained_response_bytes"] = json!(515);
+    target["accounting"]["accounted_transport_response_bytes"] = json!(515);
+    target["dimensions"] = json!({
+        "valid_marker": "incomplete",
+        "anonymous_marker": "not_observed_stable",
+        "invalid_marker": "incomplete"
+    });
+    target["conclusion"] = json!({
+        "kind": "incomplete",
+        "incomplete_reason": {
+            "kind": "leg_not_committed",
+            "role": "valid_replay"
+        }
+    });
+    assert!(
+        import_assessment_summary(&bytes(&dispatch_after_not_committed)).is_err(),
+        "a dispatch after an uncommitted response must be rejected"
+    );
+
+    let mut dispatch_after_retained_cap = valid;
+    for index in 0..4 {
+        let leg = &mut dispatch_after_retained_cap["jwt_policy_review"]["target_acceptance"]
+            ["legs"][index];
+        leg["retained_response_bytes"] = json!(65_536);
+        leg["accounted_transport_response_bytes"] = json!(65_536);
+    }
+    let post_cap_leg =
+        &mut dispatch_after_retained_cap["jwt_policy_review"]["target_acceptance"]["legs"][4];
+    post_cap_leg["retained_response_bytes"] = json!(0);
+    post_cap_leg["accounted_transport_response_bytes"] = json!(0);
+    make_not_dispatched(&mut dispatch_after_retained_cap, 5);
+    let audit = &mut dispatch_after_retained_cap["jwt_policy_review"];
+    audit["target_acceptance_status"] = json!("partially_performed");
+    audit["external_activity"]["target_request_count"] = json!(5);
+    let target = &mut audit["target_acceptance"];
+    target["status"] = json!("partially_performed");
+    target["accounting"]["dispatched_request_count"] = json!(5);
+    target["accounting"]["dispatched_passive_request_count"] = json!(4);
+    target["accounting"]["dispatched_active_request_count"] = json!(1);
+    target["accounting"]["committed_response_count"] = json!(5);
+    target["accounting"]["retained_response_bytes"] = json!(262_144);
+    target["accounting"]["accounted_transport_response_bytes"] = json!(262_144);
+    target["dimensions"] = json!({
+        "valid_marker": "observed_stable",
+        "anonymous_marker": "not_observed_stable",
+        "invalid_marker": "incomplete"
+    });
+    target["conclusion"] = json!({
+        "kind": "incomplete",
+        "incomplete_reason": {
+            "kind": "leg_not_dispatched",
+            "role": "invalid_replay"
+        }
+    });
+    assert!(
+        import_assessment_summary(&bytes(&dispatch_after_retained_cap)).is_err(),
+        "a dispatch after reaching the total retained-byte cap must be rejected"
+    );
+}
+
+#[test]
 fn jwt_policy_review_changes_are_partitioned_by_semantic_facet() {
     let before = report_with_jwt_policy_review(jwt_policy_review_audit());
 
@@ -475,6 +976,78 @@ fn jwt_policy_review_changes_are_partitioned_by_semantic_facet() {
     assert_eq!(
         comparison["jwt_policy_review_comparison"]["reason"],
         "after_audit_missing"
+    );
+}
+
+#[test]
+fn jwt_target_acceptance_changes_are_partitioned_by_semantic_facet() {
+    let before = report_with_jwt_policy_review(jwt_target_policy_review_audit());
+
+    for (field, replacement) in [
+        ("operator_policy_revision", json!("synthetic-target-v2")),
+        ("resource_reference", json!("alternate-protected-canary")),
+    ] {
+        let mut methodology_changed = before.clone();
+        methodology_changed["jwt_policy_review"]["target_acceptance"][field] = replacement;
+        let comparison = compare(&before, &methodology_changed);
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"]["methodology"]["status"], "changed",
+            "target {field} must remain part of the methodology identity"
+        );
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+            "unchanged"
+        );
+        assert_eq!(
+            comparison["jwt_policy_review_comparison"]["outcome"]["status"],
+            "unchanged"
+        );
+    }
+
+    let mut coverage_changed = before.clone();
+    coverage_changed["jwt_policy_review"]["target_acceptance"]["legs"][0]
+        ["retained_response_bytes"] = json!(111);
+    coverage_changed["jwt_policy_review"]["target_acceptance"]["legs"][0]
+        ["accounted_transport_response_bytes"] = json!(111);
+    coverage_changed["jwt_policy_review"]["target_acceptance"]["accounting"]
+        ["retained_response_bytes"] = json!(631);
+    coverage_changed["jwt_policy_review"]["target_acceptance"]["accounting"]
+        ["accounted_transport_response_bytes"] = json!(631);
+    let comparison = compare(&before, &coverage_changed);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+
+    let mut outcome_changed = before.clone();
+    outcome_changed["jwt_policy_review"]["target_acceptance"]["legs"][2]["marker_status"] =
+        json!("not_observed");
+    outcome_changed["jwt_policy_review"]["target_acceptance"]["legs"][5]["marker_status"] =
+        json!("not_observed");
+    outcome_changed["jwt_policy_review"]["target_acceptance"]["dimensions"]["invalid_marker"] =
+        json!("not_observed_stable");
+    outcome_changed["jwt_policy_review"]["target_acceptance"]["conclusion"]["kind"] =
+        json!("invalid_control_marker_not_observed");
+    let comparison = compare(&before, &outcome_changed);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["outcome"]["status"],
+        "changed"
     );
 }
 

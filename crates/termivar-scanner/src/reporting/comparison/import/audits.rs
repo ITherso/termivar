@@ -41,7 +41,11 @@ const TLS_OBSERVATION_VALIDATION_SCOPE: &str = "successful_https_response_connec
 const TLS_OBSERVATION_SOURCE_SCOPE: &str = "assessment_exact_origin_existing_connections/v1";
 const TLS_OBSERVATION_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
 const JWT_POLICY_REVIEW_AUDIT_SCHEMA: &str = "security.jwt-policy-review-audit/v1";
+const JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2: &str = "security.jwt-policy-review-audit/v2";
 const JWT_POLICY_REVIEW_POLICY: &str = "termivar.jwt-local-policy/es256-v1";
+const JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA: &str = "security.jwt-target-acceptance-audit/v1";
+const JWT_TARGET_ACCEPTANCE_POLICY: &str =
+    "termivar.jwt-target-acceptance/exact-origin-json-marker-v1";
 const JWT_POLICY_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
 const JWT_POLICY_NOT_PERFORMED: &str = "not_performed";
 const JWT_POLICY_SOURCE_AUTHENTICATION: &str = "not_established";
@@ -54,6 +58,12 @@ const MAX_JWT_POLICY_REFERENCE_BYTES: usize = 64;
 const MAX_JWT_REQUIRED_CLAIMS: u64 = 16;
 const MAX_JWT_CLOCK_SKEW_SECONDS: u64 = 3_600;
 const MAX_JWT_POLICY_VIOLATIONS: usize = MAX_JWT_REQUIRED_CLAIMS as usize + 5;
+const MAX_JWT_TARGET_REQUESTS: u64 = 6;
+const MAX_JWT_TARGET_ACTIVE_REQUESTS: u64 = 2;
+const MAX_JWT_TARGET_RESPONSE_BYTES: u64 = 64 * 1024;
+const MAX_JWT_TARGET_TOTAL_RESPONSE_BYTES: u64 = 256 * 1024;
+const MAX_JWT_TARGET_EVIDENCE_REFERENCE_BYTES: usize = 128;
+const MAX_JWT_TARGET_PREPARATION_REFERENCE_BYTES: usize = 87;
 const MAX_TLS_RESPONSES: u64 = 10_000;
 const MAX_TLS_RETAINED_LEAF_OBSERVATIONS: u64 = 16;
 const MAX_TLS_LEAF_CERTIFICATE_BYTES: u64 = 64 * 1024;
@@ -814,24 +824,46 @@ pub(super) fn validate_jwt_policy_review(
         "invalid_signature_length",
     ];
     let fields = object(value)?;
-    keys(
-        fields,
-        &[
-            "schema",
-            "policy",
-            "selected",
-            "parsing_status",
-            "policy_status",
-            "local_signature_status",
-            "target_acceptance_status",
-            "methodology",
-            "external_activity",
-            "policy_violations",
-            "source_authentication",
-        ],
-        &["parsing_rejection"],
-    )?;
-    check(string(fields, "schema")? == JWT_POLICY_REVIEW_AUDIT_SCHEMA)?;
+    let schema = string(fields, "schema")?;
+    match schema {
+        JWT_POLICY_REVIEW_AUDIT_SCHEMA => keys(
+            fields,
+            &[
+                "schema",
+                "policy",
+                "selected",
+                "parsing_status",
+                "policy_status",
+                "local_signature_status",
+                "target_acceptance_status",
+                "methodology",
+                "external_activity",
+                "policy_violations",
+                "source_authentication",
+            ],
+            &["parsing_rejection"],
+        )?,
+        JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2 => keys(
+            fields,
+            &[
+                "schema",
+                "policy",
+                "selected",
+                "parsing_status",
+                "policy_status",
+                "local_signature_status",
+                "target_acceptance_status",
+                "methodology",
+                "external_activity",
+                "policy_violations",
+                "source_authentication",
+                "preparation_reference",
+                "target_acceptance",
+            ],
+            &["parsing_rejection"],
+        )?,
+        _ => return Err(ComparisonError::InvalidDocument),
+    }
     check(string(fields, "policy")? == JWT_POLICY_REVIEW_POLICY)?;
     check(boolean(fields, "selected")?)?;
     let parsing_status = token(fields, "parsing_status", &["parsed", "rejected"])?;
@@ -853,14 +885,34 @@ pub(super) fn validate_jwt_policy_review(
         "local_signature_status",
         &["not_evaluated", "verified", "invalid"],
     )?;
-    check(
+    let target_acceptance_status = if schema == JWT_POLICY_REVIEW_AUDIT_SCHEMA {
+        check(
+            token(
+                fields,
+                "target_acceptance_status",
+                &[JWT_POLICY_NOT_PERFORMED],
+            )? == JWT_POLICY_NOT_PERFORMED,
+        )?;
+        JWT_POLICY_NOT_PERFORMED
+    } else {
         token(
             fields,
             "target_acceptance_status",
-            &[JWT_POLICY_NOT_PERFORMED],
-        )? == JWT_POLICY_NOT_PERFORMED,
-    )?;
+            &["not_performed", "partially_performed", "completed"],
+        )?
+    };
     check(string(fields, "source_authentication")? == JWT_POLICY_SOURCE_AUTHENTICATION)?;
+    let preparation_reference = if schema == JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2 {
+        let reference = text(
+            fields,
+            "preparation_reference",
+            MAX_JWT_TARGET_PREPARATION_REFERENCE_BYTES,
+        )?;
+        check(valid_jwt_target_preparation_reference(reference))?;
+        Some(reference)
+    } else {
+        None
+    };
 
     let methodology = object(required(fields, "methodology")?)?;
     keys(
@@ -931,9 +983,46 @@ pub(super) fn validate_jwt_policy_review(
         ],
         &[],
     )?;
-    check(number(external, "target_request_count", 0)? == 0)?;
+    let target_request_count = number(
+        external,
+        "target_request_count",
+        if schema == JWT_POLICY_REVIEW_AUDIT_SCHEMA {
+            0
+        } else {
+            MAX_JWT_TARGET_REQUESTS
+        },
+    )?;
     check(string(external, "remote_key_retrieval")? == JWT_POLICY_NOT_PERFORMED)?;
-    check(string(external, "token_forwarding")? == JWT_POLICY_NOT_PERFORMED)?;
+    let token_forwarding = token(
+        external,
+        "token_forwarding",
+        &[JWT_POLICY_NOT_PERFORMED, "performed"],
+    )?;
+    if schema == JWT_POLICY_REVIEW_AUDIT_SCHEMA {
+        check(
+            target_request_count == 0
+                && token_forwarding == JWT_POLICY_NOT_PERFORMED
+                && fields.get("target_acceptance").is_none(),
+        )?;
+    }
+
+    let target_projection = if schema == JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2 {
+        let projection = validate_jwt_target_acceptance(required(fields, "target_acceptance")?)?;
+        check(preparation_reference == Some(projection.preparation_reference.as_str()))?;
+        check(target_acceptance_status == projection.status)?;
+        check(target_request_count == projection.dispatched_request_count)?;
+        check(
+            token_forwarding
+                == if projection.authorized_request_dispatched {
+                    "performed"
+                } else {
+                    JWT_POLICY_NOT_PERFORMED
+                },
+        )?;
+        Some(projection)
+    } else {
+        None
+    };
 
     let wire_violations = array(fields, "policy_violations")?;
     check(wire_violations.len() <= MAX_JWT_POLICY_VIOLATIONS)?;
@@ -1013,6 +1102,31 @@ pub(super) fn validate_jwt_policy_review(
         },
         _ => false,
     })?;
+    if let Some(target) = &target_projection {
+        let local_eligible = parsing_status == "parsed"
+            && policy_status == "consistent"
+            && local_signature_status == "verified";
+        let linked = if target.has_legs {
+            local_eligible
+        } else {
+            match target.not_eligible_reason.as_deref() {
+                Some("local_parsing_not_established") => parsing_status == "rejected",
+                Some("local_policy_not_established") => {
+                    parsing_status == "parsed" && policy_status == "inconsistent"
+                },
+                Some("local_signature_not_established") => {
+                    parsing_status == "parsed"
+                        && policy_status == "consistent"
+                        && local_signature_status == "invalid"
+                },
+                Some("runtime_authority_unavailable" | "request_budget_unavailable") => {
+                    local_eligible
+                },
+                _ => false,
+            }
+        };
+        check(linked)?;
+    }
 
     let mut methodology_projection = Map::new();
     for name in ["schema", "policy", "selected", "source_authentication"] {
@@ -1039,6 +1153,9 @@ pub(super) fn validate_jwt_policy_review(
             canonical_value(required(methodology, name)?)?,
         );
     }
+    if let Some(target) = &target_projection {
+        methodology_projection.insert("target_acceptance".to_owned(), target.methodology.clone());
+    }
     let mut coverage = Map::new();
     for name in ["evaluation_time_unix_seconds", "clock_assurance"] {
         coverage.insert(
@@ -1053,6 +1170,9 @@ pub(super) fn validate_jwt_policy_review(
     ] {
         coverage.insert(name.to_owned(), canonical_value(required(external, name)?)?);
     }
+    if let Some(target) = &target_projection {
+        coverage.insert("target_acceptance".to_owned(), target.coverage.clone());
+    }
     let mut outcome = Map::new();
     for name in [
         "parsing_status",
@@ -1066,11 +1186,701 @@ pub(super) fn validate_jwt_policy_review(
         }
     }
     outcome.insert("policy_violations".to_owned(), Value::Array(violations));
+    if let Some(target) = target_projection {
+        outcome.insert("target_acceptance".to_owned(), target.outcome);
+    }
     Ok(ImportedJwtPolicyReviewAudit {
+        schema: schema.to_owned(),
         methodology: Value::Object(methodology_projection),
         coverage: Value::Object(coverage),
         outcome: Value::Object(outcome),
     })
+}
+
+struct ImportedJwtTargetAcceptanceProjection {
+    preparation_reference: String,
+    status: String,
+    dispatched_request_count: u64,
+    authorized_request_dispatched: bool,
+    has_legs: bool,
+    not_eligible_reason: Option<String>,
+    methodology: Value,
+    coverage: Value,
+    outcome: Value,
+}
+
+fn validate_jwt_target_acceptance(
+    value: &Value,
+) -> Result<ImportedJwtTargetAcceptanceProjection, ComparisonError> {
+    const ROLES: [&str; 6] = [
+        "valid_candidate",
+        "anonymous_candidate",
+        "invalid_candidate",
+        "valid_replay",
+        "anonymous_replay",
+        "invalid_replay",
+    ];
+    const STAGES: [&str; 6] = [
+        "candidate",
+        "candidate",
+        "candidate",
+        "replay",
+        "replay",
+        "replay",
+    ];
+    const ACTIVITIES: [&str; 6] = [
+        "passive", "passive", "active", "passive", "passive", "active",
+    ];
+    const INTERPRETATION_LIMITS: [&str; 6] = [
+        "A marker relationship applies only to the selected resource and request controls; it does not establish a general authentication bypass, authorization effect, exploitability, or impact.",
+        "An invalid-signature control marker is reported only beside matched valid and anonymous controls; it is still review-level evidence, not a confirmed vulnerability.",
+        "A public or token-agnostic marker suppresses invalid-signature-specific interpretation, while a rejected invalid control does not prove every token verifier is secure.",
+        "Retained response bytes are bounded interpreted bytes; accounted transport response bytes include charged discarded overrun and may exceed a retention ceiling without expanding interpreted content.",
+        "The operator policy, selected resource, local key, target, and source are not authenticated by this report.",
+        "The random preparation reference links local and target evidence only within this report; it is not a token identity, cross-run identity, signature, or source authentication claim.",
+    ];
+
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "operator_policy_reference",
+            "operator_policy_revision",
+            "resource_reference",
+            "method",
+            "preparation_reference",
+            "status",
+            "accounting",
+            "dimensions",
+            "conclusion",
+            "legs",
+            "source_authentication",
+            "interpretation_limits",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == JWT_TARGET_ACCEPTANCE_AUDIT_SCHEMA)?;
+    check(string(fields, "policy")? == JWT_TARGET_ACCEPTANCE_POLICY)?;
+    check(boolean(fields, "selected")?)?;
+    for name in [
+        "operator_policy_reference",
+        "operator_policy_revision",
+        "resource_reference",
+    ] {
+        check(valid_jwt_policy_reference(text(
+            fields,
+            name,
+            MAX_JWT_POLICY_REFERENCE_BYTES,
+        )?))?;
+    }
+    check(string(fields, "method")? == "get")?;
+    let preparation_reference = text(
+        fields,
+        "preparation_reference",
+        MAX_JWT_TARGET_PREPARATION_REFERENCE_BYTES,
+    )?;
+    check(valid_jwt_target_preparation_reference(
+        preparation_reference,
+    ))?;
+    let status = token(
+        fields,
+        "status",
+        &["not_performed", "partially_performed", "completed"],
+    )?;
+    check(string(fields, "source_authentication")? == JWT_POLICY_SOURCE_AUTHENTICATION)?;
+    let limits = array(fields, "interpretation_limits")?;
+    check(limits.len() == INTERPRETATION_LIMITS.len())?;
+    for (value, expected) in limits.iter().zip(INTERPRETATION_LIMITS) {
+        check(value.as_str() == Some(expected))?;
+    }
+
+    let accounting = object(required(fields, "accounting")?)?;
+    keys(
+        accounting,
+        &[
+            "request_limit",
+            "active_request_limit",
+            "retained_response_byte_limit",
+            "total_retained_response_byte_limit",
+            "dispatched_request_count",
+            "dispatched_passive_request_count",
+            "dispatched_active_request_count",
+            "committed_response_count",
+            "retained_response_bytes",
+            "accounted_transport_response_bytes",
+        ],
+        &[],
+    )?;
+    check(
+        number(accounting, "request_limit", MAX_JWT_TARGET_REQUESTS)? == MAX_JWT_TARGET_REQUESTS,
+    )?;
+    check(
+        number(
+            accounting,
+            "active_request_limit",
+            MAX_JWT_TARGET_ACTIVE_REQUESTS,
+        )? == MAX_JWT_TARGET_ACTIVE_REQUESTS,
+    )?;
+    check(
+        number(
+            accounting,
+            "retained_response_byte_limit",
+            MAX_JWT_TARGET_RESPONSE_BYTES,
+        )? == MAX_JWT_TARGET_RESPONSE_BYTES,
+    )?;
+    check(
+        number(
+            accounting,
+            "total_retained_response_byte_limit",
+            MAX_JWT_TARGET_TOTAL_RESPONSE_BYTES,
+        )? == MAX_JWT_TARGET_TOTAL_RESPONSE_BYTES,
+    )?;
+    let declared_dispatched = number(
+        accounting,
+        "dispatched_request_count",
+        MAX_JWT_TARGET_REQUESTS,
+    )?;
+    let declared_passive = number(
+        accounting,
+        "dispatched_passive_request_count",
+        MAX_JWT_TARGET_REQUESTS,
+    )?;
+    let declared_active = number(
+        accounting,
+        "dispatched_active_request_count",
+        MAX_JWT_TARGET_ACTIVE_REQUESTS,
+    )?;
+    let declared_committed = number(
+        accounting,
+        "committed_response_count",
+        MAX_JWT_TARGET_REQUESTS,
+    )?;
+    let declared_retained_bytes = number(
+        accounting,
+        "retained_response_bytes",
+        MAX_JWT_TARGET_TOTAL_RESPONSE_BYTES,
+    )?;
+    let declared_accounted_transport_bytes =
+        number(accounting, "accounted_transport_response_bytes", u64::MAX)?;
+
+    let dimensions = object(required(fields, "dimensions")?)?;
+    keys(
+        dimensions,
+        &["valid_marker", "anonymous_marker", "invalid_marker"],
+        &[],
+    )?;
+    let valid_dimension = token(
+        dimensions,
+        "valid_marker",
+        &[
+            "observed_stable",
+            "not_observed_stable",
+            "unstable",
+            "not_evaluated",
+            "incomplete",
+        ],
+    )?;
+    let anonymous_dimension = token(
+        dimensions,
+        "anonymous_marker",
+        &[
+            "observed_stable",
+            "not_observed_stable",
+            "unstable",
+            "not_evaluated",
+            "incomplete",
+        ],
+    )?;
+    let invalid_dimension = token(
+        dimensions,
+        "invalid_marker",
+        &[
+            "observed_stable",
+            "not_observed_stable",
+            "unstable",
+            "not_evaluated",
+            "incomplete",
+        ],
+    )?;
+
+    let wire_legs = array(fields, "legs")?;
+    check(wire_legs.is_empty() || wire_legs.len() == ROLES.len())?;
+    let mut dispatched = 0_u64;
+    let mut passive = 0_u64;
+    let mut active = 0_u64;
+    let mut committed = 0_u64;
+    let mut retained_bytes = 0_u64;
+    let mut accounted_transport_bytes = 0_u64;
+    let mut evidence_references = BTreeSet::new();
+    let mut dispatches = Vec::with_capacity(wire_legs.len());
+    let mut commits = Vec::with_capacity(wire_legs.len());
+    let mut responses = Vec::with_capacity(wire_legs.len());
+    let mut markers = Vec::with_capacity(wire_legs.len());
+    let mut retained_by_leg = Vec::with_capacity(wire_legs.len());
+    let mut coverage_legs = Vec::with_capacity(wire_legs.len());
+    let mut outcome_legs = Vec::with_capacity(wire_legs.len());
+    for (index, value) in wire_legs.iter().enumerate() {
+        let leg = object(value)?;
+        keys(
+            leg,
+            &[
+                "role",
+                "stage",
+                "activity",
+                "dispatch_status",
+                "commit_status",
+                "response_status",
+                "marker_status",
+                "retained_response_bytes",
+                "accounted_transport_response_bytes",
+            ],
+            &["evidence_reference"],
+        )?;
+        check(string(leg, "role")? == ROLES[index])?;
+        check(string(leg, "stage")? == STAGES[index])?;
+        check(string(leg, "activity")? == ACTIVITIES[index])?;
+        let dispatch = token(leg, "dispatch_status", &["not_dispatched", "dispatched"])?;
+        let commit = token(leg, "commit_status", &["not_committed", "committed"])?;
+        let response = token(
+            leg,
+            "response_status",
+            &["not_classified", "complete_and_classified", "incomplete"],
+        )?;
+        let marker = token(
+            leg,
+            "marker_status",
+            &["observed", "not_observed", "not_evaluated"],
+        )?;
+        let retained = number(
+            leg,
+            "retained_response_bytes",
+            MAX_JWT_TARGET_RESPONSE_BYTES,
+        )?;
+        let accounted = number(leg, "accounted_transport_response_bytes", u64::MAX)?;
+        check(accounted >= retained)?;
+        let reference = leg
+            .get("evidence_reference")
+            .map(|value| {
+                let reference = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+                check(
+                    reference.len() <= MAX_JWT_TARGET_EVIDENCE_REFERENCE_BYTES
+                        && reference
+                            .strip_prefix("jwt-target-leg:")
+                            .is_some_and(|digest| {
+                                digest.len() == 64
+                                    && digest.bytes().all(|byte| {
+                                        byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+                                    })
+                            }),
+                )?;
+                Ok::<_, ComparisonError>(reference)
+            })
+            .transpose()?;
+        let state_valid = match (dispatch, commit) {
+            ("not_dispatched", "not_committed") => {
+                response == "not_classified"
+                    && marker == "not_evaluated"
+                    && retained == 0
+                    && accounted == 0
+                    && reference.is_none()
+            },
+            ("dispatched", "not_committed") => {
+                response != "complete_and_classified"
+                    && marker == "not_evaluated"
+                    && reference.is_none()
+            },
+            ("dispatched", "committed") => {
+                reference.is_some()
+                    && match response {
+                        "complete_and_classified" => {
+                            matches!(marker, "observed" | "not_observed")
+                        },
+                        "not_classified" | "incomplete" => marker == "not_evaluated",
+                        _ => false,
+                    }
+            },
+            _ => false,
+        };
+        check(state_valid)?;
+        if let Some(reference) = reference {
+            check(evidence_references.insert(reference))?;
+        }
+        if dispatch == "dispatched" {
+            dispatched += 1;
+            if ACTIVITIES[index] == "active" {
+                active += 1;
+            } else {
+                passive += 1;
+            }
+        }
+        if commit == "committed" {
+            committed += 1;
+        }
+        retained_bytes = retained_bytes
+            .checked_add(retained)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        accounted_transport_bytes = accounted_transport_bytes
+            .checked_add(accounted)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        dispatches.push(dispatch);
+        commits.push(commit);
+        responses.push(response);
+        markers.push(marker);
+        retained_by_leg.push(retained);
+        coverage_legs.push(json_object([
+            ("role", Value::String(ROLES[index].to_owned())),
+            ("stage", Value::String(STAGES[index].to_owned())),
+            ("activity", Value::String(ACTIVITIES[index].to_owned())),
+            ("dispatch_status", Value::String(dispatch.to_owned())),
+            ("commit_status", Value::String(commit.to_owned())),
+            ("response_status", Value::String(response.to_owned())),
+            ("retained_response_bytes", Value::from(retained)),
+            ("accounted_transport_response_bytes", Value::from(accounted)),
+        ]));
+        outcome_legs.push(json_object([
+            ("role", Value::String(ROLES[index].to_owned())),
+            ("marker_status", Value::String(marker.to_owned())),
+        ]));
+    }
+    check(
+        declared_dispatched == dispatched
+            && declared_passive == passive
+            && declared_active == active
+            && declared_committed == committed
+            && declared_retained_bytes == retained_bytes
+            && declared_accounted_transport_bytes == accounted_transport_bytes
+            && accounted_transport_bytes >= retained_bytes
+            && dispatched == passive + active,
+    )?;
+
+    if wire_legs.len() == ROLES.len() {
+        let passive_prerequisite_is_established = |valid_index: usize, anonymous_index: usize| {
+            commits[valid_index] == "committed"
+                && responses[valid_index] == "complete_and_classified"
+                && markers[valid_index] == "observed"
+                && commits[anonymous_index] == "committed"
+                && responses[anonymous_index] == "complete_and_classified"
+                && markers[anonymous_index] == "not_observed"
+        };
+        for (valid_index, anonymous_index, invalid_index) in [(0, 1, 2), (3, 4, 5)] {
+            if dispatches[invalid_index] == "dispatched" {
+                check(passive_prerequisite_is_established(
+                    valid_index,
+                    anonymous_index,
+                ))?;
+            }
+        }
+        let mut stopped = false;
+        let mut sequential_retained_bytes = 0_u64;
+        for index in 0..ROLES.len() {
+            if stopped {
+                check(dispatches[index] == "not_dispatched")?;
+                continue;
+            }
+            if dispatches[index] == "not_dispatched" {
+                let prerequisite_skip = match index {
+                    2 => !passive_prerequisite_is_established(0, 1),
+                    5 => !passive_prerequisite_is_established(3, 4),
+                    _ => false,
+                };
+                if !prerequisite_skip {
+                    stopped = true;
+                }
+                continue;
+            }
+            sequential_retained_bytes = sequential_retained_bytes
+                .checked_add(retained_by_leg[index])
+                .ok_or(ComparisonError::InvalidDocument)?;
+            if commits[index] != "committed"
+                || sequential_retained_bytes >= MAX_JWT_TARGET_TOTAL_RESPONSE_BYTES
+            {
+                stopped = true;
+            }
+        }
+        check(
+            valid_dimension
+                == imported_jwt_target_pair_dimension(
+                    0,
+                    3,
+                    &dispatches,
+                    &commits,
+                    &responses,
+                    &markers,
+                ),
+        )?;
+        check(
+            anonymous_dimension
+                == imported_jwt_target_pair_dimension(
+                    1,
+                    4,
+                    &dispatches,
+                    &commits,
+                    &responses,
+                    &markers,
+                ),
+        )?;
+        check(
+            invalid_dimension
+                == imported_jwt_target_pair_dimension(
+                    2,
+                    5,
+                    &dispatches,
+                    &commits,
+                    &responses,
+                    &markers,
+                ),
+        )?;
+    } else {
+        check(
+            valid_dimension == "not_evaluated"
+                && anonymous_dimension == "not_evaluated"
+                && invalid_dimension == "not_evaluated",
+        )?;
+    }
+
+    let conclusion = object(required(fields, "conclusion")?)?;
+    keys(conclusion, &["kind"], &["incomplete_reason"])?;
+    let conclusion_kind = token(
+        conclusion,
+        "kind",
+        &[
+            "invalid_signature_control_marker_observed_with_anonymous_control",
+            "public_or_token_agnostic_marker_observed",
+            "invalid_control_marker_not_observed",
+            "unstable_inconclusive",
+            "inconclusive",
+            "incomplete",
+        ],
+    )?;
+    let expected_conclusion =
+        imported_jwt_target_conclusion(valid_dimension, anonymous_dimension, invalid_dimension);
+    check(conclusion_kind == expected_conclusion)?;
+    let incomplete_reason = conclusion
+        .get("incomplete_reason")
+        .map(validate_jwt_target_incomplete_reason)
+        .transpose()?;
+    check((conclusion_kind == "incomplete") == incomplete_reason.is_some())?;
+    let not_eligible_reason = incomplete_reason
+        .as_ref()
+        .and_then(|(_, _, reason)| reason.clone());
+    if wire_legs.is_empty() {
+        check(
+            incomplete_reason
+                .as_ref()
+                .is_some_and(|(kind, role, reason)| {
+                    kind == "not_eligible" && role.is_none() && reason.is_some()
+                }),
+        )?;
+    } else if conclusion_kind == "incomplete" {
+        let expected = imported_jwt_target_first_incomplete(&dispatches, &commits, &responses);
+        check(incomplete_reason.as_ref() == Some(&expected))?;
+    }
+
+    let expected_status = if dispatched == 0 {
+        "not_performed"
+    } else if conclusion_kind == "incomplete" {
+        "partially_performed"
+    } else {
+        "completed"
+    };
+    check(status == expected_status)?;
+    let authorized_request_dispatched = wire_legs
+        .iter()
+        .enumerate()
+        .any(|(index, _)| dispatches[index] == "dispatched" && !matches!(index, 1 | 4));
+
+    let methodology = selected_object(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "operator_policy_reference",
+            "operator_policy_revision",
+            "resource_reference",
+            "method",
+            "source_authentication",
+        ],
+        &[],
+    )?;
+    let coverage = json_object([
+        ("status", Value::String(status.to_owned())),
+        (
+            "accounting",
+            canonical_value(required(fields, "accounting")?)?,
+        ),
+        ("legs", Value::Array(coverage_legs)),
+    ]);
+    let outcome = json_object([
+        (
+            "dimensions",
+            canonical_value(required(fields, "dimensions")?)?,
+        ),
+        (
+            "conclusion",
+            canonical_value(required(fields, "conclusion")?)?,
+        ),
+        ("legs", Value::Array(outcome_legs)),
+    ]);
+    Ok(ImportedJwtTargetAcceptanceProjection {
+        preparation_reference: preparation_reference.to_owned(),
+        status: status.to_owned(),
+        dispatched_request_count: dispatched,
+        authorized_request_dispatched,
+        has_legs: !wire_legs.is_empty(),
+        not_eligible_reason,
+        methodology,
+        coverage,
+        outcome,
+    })
+}
+
+fn imported_jwt_target_pair_dimension<'a>(
+    candidate: usize,
+    replay: usize,
+    dispatches: &[&'a str],
+    commits: &[&'a str],
+    responses: &[&'a str],
+    markers: &[&'a str],
+) -> &'static str {
+    if dispatches[candidate] == "not_dispatched" && dispatches[replay] == "not_dispatched" {
+        return "not_evaluated";
+    }
+    if commits[candidate] != "committed"
+        || commits[replay] != "committed"
+        || responses[candidate] != "complete_and_classified"
+        || responses[replay] != "complete_and_classified"
+    {
+        return "incomplete";
+    }
+    match (markers[candidate], markers[replay]) {
+        ("observed", "observed") => "observed_stable",
+        ("not_observed", "not_observed") => "not_observed_stable",
+        _ => "unstable",
+    }
+}
+
+fn imported_jwt_target_conclusion(valid: &str, anonymous: &str, invalid: &str) -> &'static str {
+    if [valid, anonymous, invalid].contains(&"unstable") {
+        "unstable_inconclusive"
+    } else if anonymous == "observed_stable" {
+        "public_or_token_agnostic_marker_observed"
+    } else if valid == "observed_stable"
+        && anonymous == "not_observed_stable"
+        && invalid == "observed_stable"
+    {
+        "invalid_signature_control_marker_observed_with_anonymous_control"
+    } else if valid == "observed_stable"
+        && anonymous == "not_observed_stable"
+        && invalid == "not_observed_stable"
+    {
+        "invalid_control_marker_not_observed"
+    } else if [valid, anonymous, invalid]
+        .iter()
+        .any(|value| matches!(*value, "incomplete" | "not_evaluated"))
+    {
+        "incomplete"
+    } else {
+        "inconclusive"
+    }
+}
+
+fn validate_jwt_target_incomplete_reason(
+    value: &Value,
+) -> Result<(String, Option<String>, Option<String>), ComparisonError> {
+    let fields = object(value)?;
+    let kind = token(
+        fields,
+        "kind",
+        &[
+            "not_eligible",
+            "leg_not_dispatched",
+            "leg_not_committed",
+            "response_incomplete",
+            "response_not_classified",
+        ],
+    )?;
+    match kind {
+        "not_eligible" => {
+            keys(fields, &["kind", "not_eligible_reason"], &[])?;
+            let reason = token(
+                fields,
+                "not_eligible_reason",
+                &[
+                    "local_parsing_not_established",
+                    "local_policy_not_established",
+                    "local_signature_not_established",
+                    "runtime_authority_unavailable",
+                    "request_budget_unavailable",
+                ],
+            )?;
+            Ok((kind.to_owned(), None, Some(reason.to_owned())))
+        },
+        _ => {
+            keys(fields, &["kind", "role"], &[])?;
+            let role = token(
+                fields,
+                "role",
+                &[
+                    "valid_candidate",
+                    "anonymous_candidate",
+                    "invalid_candidate",
+                    "valid_replay",
+                    "anonymous_replay",
+                    "invalid_replay",
+                ],
+            )?;
+            Ok((kind.to_owned(), Some(role.to_owned()), None))
+        },
+    }
+}
+
+fn imported_jwt_target_first_incomplete(
+    dispatches: &[&str],
+    commits: &[&str],
+    responses: &[&str],
+) -> (String, Option<String>, Option<String>) {
+    const ROLES: [&str; 6] = [
+        "valid_candidate",
+        "anonymous_candidate",
+        "invalid_candidate",
+        "valid_replay",
+        "anonymous_replay",
+        "invalid_replay",
+    ];
+    for (index, role) in ROLES.iter().enumerate() {
+        let kind = if dispatches[index] != "dispatched" {
+            Some("leg_not_dispatched")
+        } else if commits[index] != "committed" {
+            Some("leg_not_committed")
+        } else if responses[index] == "incomplete" {
+            Some("response_incomplete")
+        } else if responses[index] == "not_classified" {
+            Some("response_not_classified")
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            return (kind.to_owned(), Some((*role).to_owned()), None);
+        }
+    }
+    (
+        "leg_not_dispatched".to_owned(),
+        Some("valid_candidate".to_owned()),
+        None,
+    )
+}
+
+fn json_object<const N: usize>(entries: [(&str, Value); N]) -> Value {
+    Value::Object(
+        entries
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+    )
 }
 
 fn valid_jwt_policy_reference(value: &str) -> bool {
@@ -1080,6 +1890,17 @@ fn valid_jwt_policy_reference(value: &str) -> bool {
             byte.is_ascii_lowercase()
                 || byte.is_ascii_digit()
                 || (index > 0 && matches!(byte, b'-' | b'_' | b'.'))
+        })
+}
+
+fn valid_jwt_target_preparation_reference(value: &str) -> bool {
+    value
+        .strip_prefix("jwt-target-preparation:")
+        .is_some_and(|binding| {
+            binding.len() == 64
+                && binding
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
         })
 }
 

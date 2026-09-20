@@ -95,6 +95,7 @@ impl CollectedHttpResponse {
     #[cfg(any(
         feature = "legacy-scanner",
         feature = "authorization-review",
+        feature = "jwt-target-acceptance-review",
         feature = "openapi-review",
         feature = "supplied-session-review",
         feature = "ssrf-oast-review",
@@ -120,6 +121,7 @@ impl CollectedHttpResponse {
     #[cfg(any(
         feature = "graphql-review",
         feature = "authorization-review",
+        feature = "jwt-target-acceptance-review",
         feature = "openapi-review",
         feature = "supplied-session-review",
         feature = "ssrf-oast-review",

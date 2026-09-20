@@ -4,7 +4,7 @@ use reqwest::{
     Client,
 };
 
-#[cfg(feature = "wordpress-review")]
+#[cfg(any(feature = "jwt-target-acceptance-review", feature = "wordpress-review"))]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "wordpress-review")]
 use termivar_core::{EntityId, EvidenceId, EvidenceKind, EvidenceValue};
@@ -15,18 +15,24 @@ use reqwest::header::ACCEPT_ENCODING;
 #[cfg(any(
     feature = "graphql-review",
     feature = "authorization-review",
+    feature = "jwt-target-acceptance-review",
     feature = "supplied-session-review"
 ))]
 use reqwest::header::ACCEPT;
 #[cfg(any(
     feature = "graphql-review",
     feature = "authorization-review",
+    feature = "jwt-target-acceptance-review",
     feature = "supplied-session-review",
     feature = "wordpress-review"
 ))]
 use reqwest::Method;
 
-#[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "jwt-target-acceptance-review",
+    feature = "supplied-session-review"
+))]
 use reqwest::header::AUTHORIZATION;
 #[cfg(any(feature = "graphql-review", feature = "supplied-session-review"))]
 use reqwest::header::CONTENT_TYPE;
@@ -40,6 +46,15 @@ use crate::wordpress_review::{
     valid_slug, valid_wordpress_asset_fingerprint_path, WordPressComponentIdentity,
     WordPressComponentKind,
 };
+#[cfg(feature = "jwt-target-acceptance-review")]
+use crate::{
+    jwt_policy_review::JwtTargetAcceptanceCredentials,
+    jwt_target_acceptance::{
+        JwtTargetAcceptanceLegRole, JwtTargetAcceptancePolicy,
+        JWT_TARGET_ACCEPTANCE_ANONYMOUS_ACTION_ID, JWT_TARGET_ACCEPTANCE_INVALID_ACTION_ID,
+        JWT_TARGET_ACCEPTANCE_POLICY_ID, JWT_TARGET_ACCEPTANCE_VALID_ACTION_ID,
+    },
+};
 
 #[cfg(all(test, feature = "supplied-session-review"))]
 use crate::supplied_session_review::SuppliedSessionAuthorization;
@@ -50,7 +65,11 @@ use crate::supplied_session_review::{
     SUPPLIED_SESSION_HEALTH_ACTION_ID, SUPPLIED_SESSION_LOGIN_PAGE_ACTION_ID,
     SUPPLIED_SESSION_LOGIN_SUBMIT_ACTION_ID, SUPPLIED_SESSION_RESOURCE_ACTION_ID,
 };
-#[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "jwt-target-acceptance-review",
+    feature = "supplied-session-review"
+))]
 use crate::web_runtime::authenticated_transport_is_allowed;
 #[cfg(feature = "tls-observation")]
 use crate::web_runtime::TlsObservationCollector;
@@ -61,11 +80,112 @@ use crate::{
     DecisionActionOrigin, DecisionExecutionFailureKind, DecisionExecutionLimits,
     DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError, RuntimeLimitExceeded,
 };
+#[cfg(feature = "jwt-target-acceptance-review")]
+use zeroize::Zeroizing;
 
 use super::{elapsed_ms, CollectedHttpResponse, HttpEvidenceError, HttpEvidencePolicy, HttpProbe};
 
 #[cfg(feature = "graphql-review")]
 const GRAPHQL_RESPONSE_ACCEPT: &str = "application/graphql-response+json, application/json";
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+const JWT_TARGET_ACCEPTANCE_RESPONSE_ACCEPT: &str = "application/json";
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+const JWT_TARGET_ACCEPTANCE_POLICY_BINDING_DOMAIN: &[u8] =
+    b"termivar.jwt-target-acceptance-request-policy/v1\0";
+
+/// Broker-owned proof for one exact JWT target-acceptance leg.
+///
+/// Construction binds the selected application, resource, role, and complete
+/// interpretation policy. The private marker and operator identity are folded
+/// into a domain-separated digest that never crosses this broker boundary.
+/// Dispatch repeats the binding checks before any request is counted.
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub(crate) struct JwtTargetAcceptanceRequestDescriptor {
+    policy_id: &'static str,
+    application: url::Url,
+    target: url::Url,
+    resource_reference: String,
+    policy_binding: [u8; 32],
+    role: JwtTargetAcceptanceLegRole,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl JwtTargetAcceptanceRequestDescriptor {
+    pub(crate) fn from_policy(
+        policy: &JwtTargetAcceptancePolicy,
+        role: JwtTargetAcceptanceLegRole,
+    ) -> Self {
+        Self {
+            policy_id: JWT_TARGET_ACCEPTANCE_POLICY_ID,
+            application: policy.application().clone(),
+            target: policy.resource().clone(),
+            resource_reference: policy.resource_reference().to_owned(),
+            policy_binding: jwt_target_acceptance_policy_binding(policy),
+            role,
+        }
+    }
+
+    pub(crate) fn role(&self) -> JwtTargetAcceptanceLegRole {
+        self.role
+    }
+
+    pub(crate) fn target(&self) -> &url::Url {
+        &self.target
+    }
+
+    pub(crate) fn validate_against(&self, policy: &JwtTargetAcceptancePolicy) -> bool {
+        self.policy_id == JWT_TARGET_ACCEPTANCE_POLICY_ID
+            && self.application == *policy.application()
+            && self.target == *policy.resource()
+            && self.resource_reference == policy.resource_reference()
+            && self.policy_binding == jwt_target_acceptance_policy_binding(policy)
+    }
+
+    fn action_id(&self) -> &'static str {
+        match self.role {
+            JwtTargetAcceptanceLegRole::ValidCandidate
+            | JwtTargetAcceptanceLegRole::ValidReplay => JWT_TARGET_ACCEPTANCE_VALID_ACTION_ID,
+            JwtTargetAcceptanceLegRole::AnonymousCandidate
+            | JwtTargetAcceptanceLegRole::AnonymousReplay => {
+                JWT_TARGET_ACCEPTANCE_ANONYMOUS_ACTION_ID
+            },
+            JwtTargetAcceptanceLegRole::InvalidCandidate
+            | JwtTargetAcceptanceLegRole::InvalidReplay => JWT_TARGET_ACCEPTANCE_INVALID_ACTION_ID,
+        }
+    }
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn jwt_target_acceptance_policy_binding(policy: &JwtTargetAcceptancePolicy) -> [u8; 32] {
+    fn update_field(digest: &mut Sha256, value: &[u8]) {
+        let length = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        digest.update(length.to_be_bytes());
+        digest.update(value);
+    }
+
+    let mut digest = Sha256::new();
+    digest.update(JWT_TARGET_ACCEPTANCE_POLICY_BINDING_DOMAIN);
+    for value in [
+        policy.schema().as_bytes(),
+        policy.policy_id().as_bytes(),
+        b"GET",
+        policy.operator_policy_reference().as_bytes(),
+        policy.operator_policy_revision().as_bytes(),
+        policy.application().as_str().as_bytes(),
+        policy.resource().as_str().as_bytes(),
+        policy.resource_reference().as_bytes(),
+        policy.success_json_field().as_bytes(),
+    ] {
+        update_field(&mut digest, value);
+    }
+    digest.update([policy.max_requests()]);
+    digest.update([policy.max_active_requests()]);
+    digest.update(policy.max_response_bytes().to_be_bytes());
+    digest.update(policy.max_total_response_bytes().to_be_bytes());
+    digest.finalize().into()
+}
 
 /// Closed policy revision understood by the broker-owned WordPress metadata
 /// admission descriptor.
@@ -650,6 +770,25 @@ pub(crate) enum SuppliedSessionRequestError {
     InvalidDescriptor,
 }
 
+/// Closed error surface for descriptor-bound JWT target-acceptance collection.
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JwtTargetAcceptanceRequestError {
+    Http,
+    RuntimeLimit,
+    InvalidDescriptor,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl From<HttpRequestBrokerError> for JwtTargetAcceptanceRequestError {
+    fn from(error: HttpRequestBrokerError) -> Self {
+        match error {
+            HttpRequestBrokerError::Http(_) => Self::Http,
+            HttpRequestBrokerError::RuntimeLimit(_) => Self::RuntimeLimit,
+        }
+    }
+}
+
 #[cfg(feature = "supplied-session-review")]
 impl From<HttpEvidenceError> for SuppliedSessionRequestError {
     fn from(_error: HttpEvidenceError) -> Self {
@@ -836,6 +975,32 @@ impl HttpRequestBroker {
     /// ambient process proxy.
     #[cfg(feature = "authorization-review")]
     pub(crate) fn isolated_authorization_review(&self) -> Result<Self, HttpEvidenceError> {
+        let mut broker = Self::build(
+            self.policy.clone(),
+            self.accounting.clone(),
+            #[cfg(feature = "tls-observation")]
+            self.tls_observation.clone(),
+        )?;
+        let client = Client::builder()
+            .redirect(RedirectPolicy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy();
+        #[cfg(feature = "tls-observation")]
+        let client = if broker.tls_observation.is_some() {
+            client.tls_info(true)
+        } else {
+            client
+        };
+        broker.client = client.build().map_err(HttpEvidenceError::Client)?;
+        Ok(broker)
+    }
+
+    /// Creates one fresh, ambient-proxy-free connection pool for exactly one
+    /// JWT target-acceptance leg. The pool has no cookie store, redirects,
+    /// retries, proxy discovery, or default credentials and retains the
+    /// parent's immutable exact-origin policy and accounting authority.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub(crate) fn isolated_jwt_target_acceptance(&self) -> Result<Self, HttpEvidenceError> {
         let mut broker = Self::build(
             self.policy.clone(),
             self.accounting.clone(),
@@ -1054,6 +1219,82 @@ impl HttpRequestBroker {
         let request = self.build_authorized_json_get_request(target, authorization)?;
         self.collect_built_request(&self.client, action_id, stage, origin, limits, request)
             .await
+    }
+
+    /// Dispatches one fixed-shape JWT target-acceptance leg after revalidating
+    /// its sealed descriptor against the selected policy.
+    ///
+    /// The complete bearer value is built in guarded storage and installed as
+    /// a sensitive header. Reqwest and its HTTP backend may retain downstream
+    /// copies outside this module's owned zeroization boundary; no value is
+    /// returned to an observation, diagnostic, error, or report sink.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub(crate) async fn collect_jwt_target_acceptance_get_for_runtime(
+        &self,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        descriptor: &JwtTargetAcceptanceRequestDescriptor,
+        policy: &JwtTargetAcceptancePolicy,
+        credentials: &JwtTargetAcceptanceCredentials,
+    ) -> Result<CollectedHttpResponse, JwtTargetAcceptanceRequestError> {
+        if !descriptor.validate_against(policy)
+            || !authenticated_transport_is_allowed(descriptor.target())
+        {
+            return Err(JwtTargetAcceptanceRequestError::InvalidDescriptor);
+        }
+        let role = descriptor.role();
+        let contract_valid = if role.is_active() {
+            stage == DecisionExecutionStage::Active && origin.is_none()
+        } else {
+            stage == DecisionExecutionStage::Passive
+                && origin == Some(DecisionActionOrigin::Planned)
+        };
+        if !contract_valid {
+            return Err(JwtTargetAcceptanceRequestError::InvalidDescriptor);
+        }
+        self.validate_target(descriptor.target())
+            .map_err(|_| JwtTargetAcceptanceRequestError::InvalidDescriptor)?;
+        let mut request = self
+            .client
+            .request(Method::GET, descriptor.target().clone())
+            .header(ACCEPT, JWT_TARGET_ACCEPTANCE_RESPONSE_ACCEPT);
+        let token = match role {
+            JwtTargetAcceptanceLegRole::ValidCandidate
+            | JwtTargetAcceptanceLegRole::ValidReplay => Some(credentials.valid_bytes()),
+            JwtTargetAcceptanceLegRole::InvalidCandidate
+            | JwtTargetAcceptanceLegRole::InvalidReplay => {
+                Some(credentials.invalid_signature_control_bytes())
+            },
+            JwtTargetAcceptanceLegRole::AnonymousCandidate
+            | JwtTargetAcceptanceLegRole::AnonymousReplay => None,
+        };
+        if let Some(token) = token {
+            let length = b"Bearer "
+                .len()
+                .checked_add(token.len())
+                .ok_or(JwtTargetAcceptanceRequestError::InvalidDescriptor)?;
+            let mut bearer = Zeroizing::new(Vec::with_capacity(length));
+            bearer.extend_from_slice(b"Bearer ");
+            bearer.extend_from_slice(token);
+            let mut header = HeaderValue::from_bytes(bearer.as_slice())
+                .map_err(|_| JwtTargetAcceptanceRequestError::InvalidDescriptor)?;
+            header.set_sensitive(true);
+            request = request.header(AUTHORIZATION, header);
+        }
+        let request = request
+            .build()
+            .map_err(|_| JwtTargetAcceptanceRequestError::InvalidDescriptor)?;
+        self.collect_built_request(
+            &self.client,
+            descriptor.action_id(),
+            stage,
+            origin,
+            limits,
+            request,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Dispatches one descriptor-bound, bodyless supplied-session GET.
@@ -1571,6 +1812,108 @@ mod tests {
 
         assert_eq!(metered_request_body_bytes(&bodyless).unwrap(), 0);
         assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[tokio::test]
+    async fn forged_jwt_target_policy_bindings_are_denied_before_request_accounting() {
+        let application = url::Url::parse("http://127.0.0.1:1/app/").unwrap();
+        let resource = application.join("private/marker").unwrap();
+        let policy = JwtTargetAcceptancePolicy::new(
+            ("operator-policy", "revision-1"),
+            application.clone(),
+            resource.clone(),
+            "protected-marker",
+            "accepted",
+        )
+        .unwrap();
+        let descriptor = JwtTargetAcceptanceRequestDescriptor::from_policy(
+            &policy,
+            JwtTargetAcceptanceLegRole::ValidCandidate,
+        );
+        assert!(descriptor.validate_against(&policy));
+
+        let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+        let broker = HttpRequestBroker::new_metered(
+            HttpEvidencePolicy::for_origin(application.clone()).unwrap(),
+            accounting.clone(),
+        )
+        .unwrap()
+        .isolated_jwt_target_acceptance()
+        .unwrap();
+        let changed_policies = [
+            JwtTargetAcceptancePolicy::new(
+                ("different-policy", "revision-1"),
+                application.clone(),
+                resource.clone(),
+                "protected-marker",
+                "accepted",
+            )
+            .unwrap(),
+            JwtTargetAcceptancePolicy::new(
+                ("operator-policy", "revision-2"),
+                application.clone(),
+                resource.clone(),
+                "protected-marker",
+                "accepted",
+            )
+            .unwrap(),
+            JwtTargetAcceptancePolicy::new(
+                ("operator-policy", "revision-1"),
+                application.clone(),
+                resource.clone(),
+                "protected-marker",
+                "authorized",
+            )
+            .unwrap(),
+            JwtTargetAcceptancePolicy::new(
+                ("operator-policy", "revision-1"),
+                application.clone(),
+                resource,
+                "different-resource",
+                "accepted",
+            )
+            .unwrap(),
+        ];
+        for changed_policy in &changed_policies {
+            let result = broker
+                .collect_jwt_target_acceptance_get_for_runtime(
+                    DecisionExecutionStage::Passive,
+                    Some(DecisionActionOrigin::Planned),
+                    DecisionExecutionLimits::new(),
+                    &descriptor,
+                    changed_policy,
+                    &JwtTargetAcceptanceCredentials::synthetic_for_test(),
+                )
+                .await;
+            assert!(matches!(
+                result,
+                Err(JwtTargetAcceptanceRequestError::InvalidDescriptor)
+            ));
+        }
+
+        let mut changed_target = JwtTargetAcceptanceRequestDescriptor::from_policy(
+            &policy,
+            JwtTargetAcceptanceLegRole::ValidCandidate,
+        );
+        changed_target.target = application.join("private/other").unwrap();
+        let result = broker
+            .collect_jwt_target_acceptance_get_for_runtime(
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+                DecisionExecutionLimits::new(),
+                &changed_target,
+                &policy,
+                &JwtTargetAcceptanceCredentials::synthetic_for_test(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(JwtTargetAcceptanceRequestError::InvalidDescriptor)
+        ));
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+        assert_eq!(accounting.snapshot().response_bytes(), 0);
+        assert!(accounting.dispatch_audit().is_empty());
     }
 
     #[cfg(feature = "authorization-review")]

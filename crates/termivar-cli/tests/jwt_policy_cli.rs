@@ -58,6 +58,13 @@ struct TestServer {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[derive(Clone, Copy)]
+enum TargetFixtureMode {
+    Marker,
+    Redirect,
+}
+
 impl TestServer {
     fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind numeric-loopback fixture");
@@ -83,6 +90,41 @@ impl TestServer {
         }
     }
 
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    fn start_target_acceptance() -> Self {
+        Self::start_target_acceptance_with_mode(TargetFixtureMode::Marker)
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    fn start_target_redirect() -> Self {
+        Self::start_target_acceptance_with_mode(TargetFixtureMode::Redirect)
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    fn start_target_acceptance_with_mode(mode: TargetFixtureMode) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind numeric-loopback fixture");
+        let address = listener.local_addr().expect("read fixture address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_requests = Arc::clone(&requests);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                if thread_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                handle_target_acceptance_connection(&mut stream, &thread_requests, mode);
+            }
+        });
+        Self {
+            address,
+            url: format!("http://{address}/"),
+            requests,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
     fn shutdown(mut self) -> Vec<String> {
         self.stop.store(true, Ordering::Release);
         let _ = TcpStream::connect_timeout(&self.address, Duration::from_millis(100));
@@ -92,6 +134,88 @@ impl TestServer {
         let trace = self.requests.lock().expect("request trace lock").clone();
         trace
     }
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn handle_target_acceptance_connection(
+    stream: &mut TcpStream,
+    requests: &Mutex<Vec<String>>,
+    mode: TargetFixtureMode,
+) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    const MAX_REQUEST_HEADER_BYTES: usize = 16 * 1024;
+    let mut request_bytes = Vec::with_capacity(2048);
+    while !request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        let mut chunk = [0_u8; 2048];
+        let bytes_read = stream
+            .read(&mut chunk)
+            .expect("read target-acceptance fixture request headers");
+        assert!(
+            bytes_read > 0,
+            "target-acceptance fixture request ended before its header terminator"
+        );
+        assert!(
+            request_bytes.len() + bytes_read <= MAX_REQUEST_HEADER_BYTES,
+            "target-acceptance fixture request headers exceeded the independent test ceiling"
+        );
+        request_bytes.extend_from_slice(&chunk[..bytes_read]);
+    }
+    let request = String::from_utf8_lossy(&request_bytes).into_owned();
+    requests
+        .lock()
+        .expect("target-acceptance request trace lock")
+        .push(request.clone());
+    let request_lower = request.to_ascii_lowercase();
+    let protected = request
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("GET /protected/marker HTTP/1.1"));
+    let body = if protected && matches!(mode, TargetFixtureMode::Redirect) {
+        b"redirect is an unsupported target representation".as_slice()
+    } else if protected {
+        if request_lower.contains("\r\nauthorization: bearer ") {
+            br#"{"accepted":true}"#.as_slice()
+        } else {
+            br#"{"accepted":false}"#.as_slice()
+        }
+    } else {
+        BODY.as_bytes()
+    };
+    let media_type = if protected && matches!(mode, TargetFixtureMode::Redirect) {
+        "text/plain; charset=utf-8"
+    } else if protected {
+        "application/json"
+    } else {
+        "text/html; charset=utf-8"
+    };
+    let set_cookie = if protected {
+        "Set-Cookie: jwt_target_fixture=must-not-return; HttpOnly\r\n"
+    } else {
+        ""
+    };
+    let (status, redirect) = if protected && matches!(mode, TargetFixtureMode::Redirect) {
+        ("302 Found", "Location: /redirect-canary\r\n")
+    } else {
+        ("200 OK", "")
+    };
+    let response = format!(
+        concat!(
+            "HTTP/1.1 {}\r\n",
+            "Content-Type: {}\r\n",
+            "{}",
+            "{}",
+            "Content-Length: {}\r\n",
+            "Connection: close\r\n\r\n"
+        ),
+        status,
+        media_type,
+        redirect,
+        set_cookie,
+        body.len(),
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.write_all(body);
+    let _ = stream.flush();
 }
 
 impl Drop for TestServer {
@@ -220,6 +344,45 @@ fn write_inputs(directory: &Path, fixture: &LocalJwtFixture) -> (String, String,
     )
 }
 
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn write_target_acceptance_policy(directory: &Path, server: &TestServer) -> String {
+    let policy = directory.join("private-target-acceptance-policy.toml");
+    fs::write(
+        &policy,
+        format!(
+            concat!(
+                "schema = \"security.jwt-target-acceptance-policy/v1\"\n",
+                "policy_reference = \"owned-target-acceptance\"\n",
+                "policy_revision = \"owned-target-acceptance-v1\"\n",
+                "application = \"{}\"\n",
+                "resource = \"{}protected/marker\"\n",
+                "resource_reference = \"protected-marker\"\n",
+                "success_json_field = \"accepted\"\n"
+            ),
+            server.url, server.url,
+        ),
+    )
+    .expect("write target-acceptance policy");
+    policy.to_string_lossy().into_owned()
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn flip_one_signature_bit(token: &str) -> String {
+    let parts = token.split('.').collect::<Vec<_>>();
+    assert_eq!(parts.len(), 3);
+    let mut signature = URL_SAFE_NO_PAD
+        .decode(parts[2])
+        .expect("decode fixture signature");
+    assert_eq!(signature.len(), 64);
+    signature[0] ^= 1;
+    format!(
+        "{}.{}.{}",
+        parts[0],
+        parts[1],
+        URL_SAFE_NO_PAD.encode(signature)
+    )
+}
+
 fn run_scan(
     server: &TestServer,
     destination: &Path,
@@ -237,6 +400,25 @@ fn run_scan(
             .args(["--jwt-token-file", token]);
     }
     command.output().expect("run real Termivar CLI process")
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn run_target_acceptance_scan(
+    server: &TestServer,
+    destination: &Path,
+    inputs: &(String, String, String),
+    target_policy: &str,
+) -> Output {
+    termivar()
+        .args(["scan", &server.url, "--profile", "web-review"])
+        .args(["--jwt-policy", &inputs.0])
+        .args(["--jwt-public-jwk", &inputs.1])
+        .args(["--jwt-token-file", &inputs.2])
+        .args(["--jwt-target-acceptance-policy", target_policy])
+        .arg("--report-dir")
+        .arg(destination)
+        .output()
+        .expect("run real target-acceptance CLI process")
 }
 
 fn assert_success(output: &Output, label: &str) {
@@ -718,4 +900,482 @@ fn actual_cli_reviews_local_es256_without_forwarding_or_extra_requests() {
         baseline_trace.len(),
         selected_trace.len()
     );
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[test]
+fn actual_cli_runs_six_leg_target_acceptance_and_offline_bundle_checks() {
+    let parent = tempfile::tempdir().expect("create private target-acceptance directory");
+    let fixture = local_jwt_fixture();
+    let inputs = write_inputs(parent.path(), &fixture);
+    let server = TestServer::start_target_acceptance();
+    let target_policy = write_target_acceptance_policy(parent.path(), &server);
+    let destination = parent.path().join("target-acceptance");
+
+    let output = run_target_acceptance_scan(&server, &destination, &inputs, &target_policy);
+    assert_success(&output, "target-acceptance scan");
+    let trace = server.shutdown();
+    let (assessment, bundle_bytes) = read_bundle(&destination);
+
+    let audit = &assessment["jwt_policy_review"];
+    assert_eq!(audit["schema"], "security.jwt-policy-review-audit/v2");
+    assert_eq!(audit["parsing_status"], "parsed");
+    assert_eq!(audit["policy_status"], "consistent");
+    assert_eq!(audit["local_signature_status"], "verified");
+    assert_eq!(audit["target_acceptance_status"], "completed");
+    assert_eq!(audit["external_activity"]["target_request_count"], 6);
+    assert_eq!(audit["external_activity"]["token_forwarding"], "performed");
+    let target = &audit["target_acceptance"];
+    assert_eq!(target["schema"], "security.jwt-target-acceptance-audit/v1");
+    assert_eq!(
+        target["policy"],
+        "termivar.jwt-target-acceptance/exact-origin-json-marker-v1"
+    );
+    assert_eq!(target["status"], "completed");
+    assert_eq!(
+        target["conclusion"]["kind"],
+        "invalid_signature_control_marker_observed_with_anonymous_control"
+    );
+    assert_eq!(target["dimensions"]["valid_marker"], "observed_stable");
+    assert_eq!(
+        target["dimensions"]["anonymous_marker"],
+        "not_observed_stable"
+    );
+    assert_eq!(target["dimensions"]["invalid_marker"], "observed_stable");
+    assert_eq!(target["accounting"]["request_limit"], 6);
+    assert_eq!(target["accounting"]["active_request_limit"], 2);
+    assert_eq!(target["accounting"]["dispatched_request_count"], 6);
+    assert_eq!(target["accounting"]["dispatched_passive_request_count"], 4);
+    assert_eq!(target["accounting"]["dispatched_active_request_count"], 2);
+    assert_eq!(target["accounting"]["committed_response_count"], 6);
+    let retained = target["accounting"]["retained_response_bytes"]
+        .as_u64()
+        .expect("retained target bytes");
+    let accounted = target["accounting"]["accounted_transport_response_bytes"]
+        .as_u64()
+        .expect("accounted target transport bytes");
+    assert!(retained > 0);
+    assert!(accounted >= retained);
+    let legs = target["legs"]
+        .as_array()
+        .expect("target legs must be an array");
+    assert_eq!(legs.len(), 6);
+    assert_eq!(
+        legs.iter()
+            .map(|leg| leg["role"].as_str().expect("target role"))
+            .collect::<Vec<_>>(),
+        [
+            "valid_candidate",
+            "anonymous_candidate",
+            "invalid_candidate",
+            "valid_replay",
+            "anonymous_replay",
+            "invalid_replay",
+        ]
+    );
+
+    let target_requests = trace
+        .iter()
+        .filter(|request| {
+            request
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("GET /protected/marker HTTP/1.1"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        trace.len(),
+        9,
+        "six target-control legs must not replace the three-request ordinary plan"
+    );
+    assert_eq!(target_requests.len(), 6);
+    assert_eq!(
+        trace
+            .iter()
+            .take(6)
+            .filter(|request| {
+                request
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.starts_with("GET /protected/marker HTTP/1.1"))
+            })
+            .count(),
+        6,
+        "target-control legs must finish before the ordinary anonymous plan"
+    );
+    let expected_valid = format!("Bearer {}", fixture.token);
+    let mut valid_count = 0;
+    let mut invalid_count = 0;
+    let mut anonymous_count = 0;
+    let mut invalid_control_headers = Vec::new();
+    let mut invalid_control_tokens = Vec::new();
+    for request in &target_requests {
+        let authorization = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("authorization")
+                .then_some(value.trim())
+        });
+        match authorization {
+            Some(value) if value == expected_valid => valid_count += 1,
+            Some(value) => {
+                assert!(
+                    value.starts_with("Bearer ") && value != expected_valid,
+                    "invalid control must remain a distinct Bearer credential"
+                );
+                invalid_count += 1;
+                invalid_control_headers.push(value.to_owned());
+                invalid_control_tokens.push(
+                    value
+                        .strip_prefix("Bearer ")
+                        .expect("invalid control uses the reviewed Bearer mechanism")
+                        .to_owned(),
+                );
+            },
+            None => anonymous_count += 1,
+        }
+        let lower = request.to_ascii_lowercase();
+        assert!(!lower.contains("\r\ncookie:"));
+        assert!(!lower.contains("\r\nproxy-authorization:"));
+    }
+    assert_eq!((valid_count, anonymous_count, invalid_count), (2, 2, 2));
+    invalid_control_headers.sort();
+    invalid_control_headers.dedup();
+    invalid_control_tokens.sort();
+    invalid_control_tokens.dedup();
+    assert_eq!(invalid_control_headers.len(), 1);
+    assert_eq!(invalid_control_tokens.len(), 1);
+    let ordinary_requests = trace
+        .iter()
+        .filter(|request| {
+            !request
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("GET /protected/marker HTTP/1.1"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ordinary_requests.len(), 3);
+    for request in ordinary_requests {
+        let lower = request.to_ascii_lowercase();
+        assert!(!lower.contains("\r\nauthorization:"));
+        assert!(!lower.contains("\r\nproxy-authorization:"));
+        assert!(!request.contains(&fixture.token));
+        for invalid in invalid_control_headers
+            .iter()
+            .chain(&invalid_control_tokens)
+        {
+            assert!(!request.contains(invalid));
+        }
+    }
+    assert!(
+        trace
+            .iter()
+            .all(|request| !request.to_ascii_lowercase().contains("\r\ncookie:")),
+        "fixture Set-Cookie values must not enter a later target leg or the ordinary plan"
+    );
+
+    let all_output = [&output.stdout[..], &output.stderr[..], &bundle_bytes[..]];
+    for bytes in all_output {
+        assert!(!bytes
+            .windows(fixture.token.len())
+            .any(|window| { window == fixture.token.as_bytes() }));
+        assert!(!bytes
+            .windows(b"\"accepted\"".len())
+            .any(|window| { window == b"\"accepted\"" }));
+        assert!(!bytes
+            .windows(b"/protected/marker".len())
+            .any(|window| { window == b"/protected/marker" }));
+        assert!(!bytes
+            .windows(b"must-not-return".len())
+            .any(|window| window == b"must-not-return"));
+        for invalid in invalid_control_headers
+            .iter()
+            .chain(&invalid_control_tokens)
+        {
+            assert!(
+                !bytes
+                    .windows(invalid.len())
+                    .any(|window| window == invalid.as_bytes()),
+                "derived invalid credential leaked outside the private target transport"
+            );
+        }
+    }
+    assert!(assessment["items"]
+        .as_array()
+        .expect("assessment items")
+        .iter()
+        .all(|item| !item["capability_id"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("jwt-target-acceptance")));
+
+    let comparison = offline_verify_and_self_compare(&destination, &assessment);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["status"],
+        "compared"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+    let comparison_bytes = serde_json::to_vec(&comparison).expect("serialize comparison");
+    assert!(!comparison_bytes
+        .windows(fixture.token.len())
+        .any(|window| window == fixture.token.as_bytes()));
+    for invalid in invalid_control_headers
+        .iter()
+        .chain(&invalid_control_tokens)
+    {
+        assert!(
+            !comparison_bytes
+                .windows(invalid.len())
+                .any(|window| window == invalid.as_bytes()),
+            "derived invalid credential leaked into semantic Compare"
+        );
+    }
+    eprintln!(
+        "jwt-target-cli-acceptance total_requests=9 target_requests=6 ordinary_requests=3 passive=4 active=2 committed=6 retained_bytes={retained} accounted_transport_bytes={accounted} valid=observed_stable anonymous=not_observed_stable invalid=observed_stable conclusion=review_level verify=integrity_match self_compare=unchanged"
+    );
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[test]
+fn target_redirect_is_not_followed_and_suppresses_active_controls() {
+    let parent = tempfile::tempdir().expect("create private redirect target directory");
+    let fixture = local_jwt_fixture();
+    let inputs = write_inputs(parent.path(), &fixture);
+    let server = TestServer::start_target_redirect();
+    let target_policy = write_target_acceptance_policy(parent.path(), &server);
+    let destination = parent.path().join("target-redirect");
+
+    let output = run_target_acceptance_scan(&server, &destination, &inputs, &target_policy);
+    assert_success(&output, "redirect target-acceptance scan");
+    let trace = server.shutdown();
+    let (assessment, bundle_bytes) = read_bundle(&destination);
+
+    let target_requests = trace
+        .iter()
+        .filter(|request| request.starts_with("GET /protected/marker "))
+        .collect::<Vec<_>>();
+    assert_eq!(target_requests.len(), 4);
+    assert!(trace
+        .iter()
+        .all(|request| !request.starts_with("GET /redirect-canary ")));
+    assert_eq!(
+        target_requests
+            .iter()
+            .filter(|request| request.to_ascii_lowercase().contains("\r\nauthorization:"))
+            .count(),
+        2
+    );
+    assert!(trace.iter().all(|request| {
+        !request.to_ascii_lowercase().contains("\r\ncookie:")
+            && !request
+                .to_ascii_lowercase()
+                .contains("\r\nproxy-authorization:")
+    }));
+
+    let audit = &assessment["jwt_policy_review"];
+    assert_eq!(audit["schema"], "security.jwt-policy-review-audit/v2");
+    assert_eq!(audit["target_acceptance_status"], "partially_performed");
+    assert_eq!(audit["external_activity"]["target_request_count"], 4);
+    let target = &audit["target_acceptance"];
+    assert_eq!(target["status"], "partially_performed");
+    assert_eq!(target["accounting"]["dispatched_request_count"], 4);
+    assert_eq!(target["accounting"]["dispatched_passive_request_count"], 4);
+    assert_eq!(target["accounting"]["dispatched_active_request_count"], 0);
+    assert_eq!(target["accounting"]["committed_response_count"], 4);
+    assert_eq!(target["conclusion"]["kind"], "incomplete");
+    assert_eq!(
+        target["conclusion"]["incomplete_reason"]["kind"],
+        "response_not_classified"
+    );
+    assert_eq!(
+        target["conclusion"]["incomplete_reason"]["role"],
+        "valid_candidate"
+    );
+    assert_eq!(
+        target["legs"]
+            .as_array()
+            .expect("redirect target legs")
+            .iter()
+            .filter(|leg| leg["activity"] == "active" && leg["dispatch_status"] == "dispatched")
+            .count(),
+        0
+    );
+    assert!(assessment["items"]
+        .as_array()
+        .expect("assessment items")
+        .iter()
+        .all(|item| !item["capability_id"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("jwt-target-acceptance")));
+    for bytes in [&output.stdout[..], &output.stderr[..], &bundle_bytes[..]] {
+        for forbidden in [
+            fixture.token.as_bytes(),
+            b"/protected/marker".as_slice(),
+            b"/redirect-canary".as_slice(),
+            b"must-not-return".as_slice(),
+        ] {
+            assert!(!bytes
+                .windows(forbidden.len())
+                .any(|window| window == forbidden));
+        }
+    }
+
+    let comparison = offline_verify_and_self_compare(&destination, &assessment);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["status"],
+        "compared"
+    );
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[test]
+fn locally_invalid_signature_never_reaches_selected_target_acceptance() {
+    let parent = tempfile::tempdir().expect("create private ineligible target directory");
+    let mut fixture = local_jwt_fixture();
+    fixture.token = flip_one_signature_bit(&fixture.token);
+    let inputs = write_inputs(parent.path(), &fixture);
+    let server = TestServer::start_target_acceptance();
+    let target_policy = write_target_acceptance_policy(parent.path(), &server);
+    let destination = parent.path().join("target-local-signature-invalid");
+
+    let output = run_target_acceptance_scan(&server, &destination, &inputs, &target_policy);
+    assert_success(&output, "locally ineligible target-acceptance scan");
+    let trace = server.shutdown();
+    let (assessment, bundle_bytes) = read_bundle(&destination);
+
+    assert_eq!(trace.len(), 3);
+    assert!(trace.iter().all(|request| {
+        !request.starts_with("GET /protected/marker ")
+            && !request.to_ascii_lowercase().contains("\r\nauthorization:")
+    }));
+    let audit = &assessment["jwt_policy_review"];
+    assert_eq!(audit["schema"], "security.jwt-policy-review-audit/v2");
+    assert_eq!(audit["parsing_status"], "parsed");
+    assert_eq!(audit["policy_status"], "consistent");
+    assert_eq!(audit["local_signature_status"], "invalid");
+    assert_eq!(audit["target_acceptance_status"], "not_performed");
+    assert_eq!(audit["external_activity"]["target_request_count"], 0);
+    assert_eq!(
+        audit["external_activity"]["token_forwarding"],
+        "not_performed"
+    );
+    let target = &audit["target_acceptance"];
+    assert_eq!(target["selected"], true);
+    assert_eq!(target["status"], "not_performed");
+    assert_eq!(target["accounting"]["dispatched_request_count"], 0);
+    assert_eq!(target["accounting"]["committed_response_count"], 0);
+    assert_eq!(target["legs"], json!([]));
+    assert_eq!(target["conclusion"]["kind"], "incomplete");
+    assert_eq!(
+        target["conclusion"]["incomplete_reason"]["kind"],
+        "not_eligible"
+    );
+    assert_eq!(
+        target["conclusion"]["incomplete_reason"]["not_eligible_reason"],
+        "local_signature_not_established"
+    );
+    for bytes in [&output.stdout[..], &output.stderr[..], &bundle_bytes[..]] {
+        assert!(!bytes
+            .windows(fixture.token.len())
+            .any(|window| window == fixture.token.as_bytes()));
+    }
+
+    let comparison = offline_verify_and_self_compare(&destination, &assessment);
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["status"],
+        "compared"
+    );
+    assert_eq!(
+        comparison["jwt_policy_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[test]
+fn malformed_target_policy_fails_before_secret_target_or_output_access() {
+    let parent = tempfile::tempdir().expect("create private target preflight directory");
+    let fixture = local_jwt_fixture();
+    let inputs = write_inputs(parent.path(), &fixture);
+    let missing_token = parent.path().join("missing-private-token.secret");
+    let target_policy = parent.path().join("invalid-target-policy.toml");
+    let server = TestServer::start_target_acceptance();
+    let server_url = server.url.clone();
+    let normalized_resource = format!("{server_url}safe/%2e%2e/protected/marker");
+    fs::write(
+        &target_policy,
+        format!(
+            concat!(
+                "schema = \"security.jwt-target-acceptance-policy/v1\"\n",
+                "policy_reference = \"owned-target-acceptance\"\n",
+                "policy_revision = \"owned-target-acceptance-v1\"\n",
+                "application = \"{}\"\n",
+                "resource = \"{}\"\n",
+                "resource_reference = \"protected-marker\"\n",
+                "success_json_field = \"accepted\"\n"
+            ),
+            server_url, normalized_resource,
+        ),
+    )
+    .expect("write malformed target policy");
+    let destination = parent.path().join("must-not-be-reserved");
+    let output = termivar()
+        .args(["scan", &server.url, "--profile", "web-review"])
+        .args(["--jwt-policy", &inputs.0])
+        .args(["--jwt-public-jwk", &inputs.1])
+        .arg("--jwt-token-file")
+        .arg(&missing_token)
+        .arg("--jwt-target-acceptance-policy")
+        .arg(&target_policy)
+        .arg("--report-dir")
+        .arg(&destination)
+        .output()
+        .expect("run target-policy preflight refusal");
+    let trace = server.shutdown();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("preflight error is UTF-8");
+    assert!(stderr.contains("InvalidTargetPolicy"));
+    assert!(
+        trace.is_empty(),
+        "invalid target policy preceded target I/O"
+    );
+    assert!(
+        !destination.exists(),
+        "invalid target policy preceded output reservation"
+    );
+    let missing_token_path = missing_token.to_string_lossy().into_owned();
+    let target_policy_path = target_policy.to_string_lossy().into_owned();
+    for forbidden in [
+        missing_token_path.as_str(),
+        target_policy_path.as_str(),
+        inputs.0.as_str(),
+        inputs.1.as_str(),
+        fixture.token.as_str(),
+        PRIVATE_ISSUER,
+        PRIVATE_AUDIENCE,
+        PRIVATE_TYPE,
+        PRIVATE_CLAIM_NAME,
+        PRIVATE_CLAIM_VALUE,
+        normalized_resource.as_str(),
+        server_url.as_str(),
+        "accepted",
+    ] {
+        assert!(
+            !stderr.contains(forbidden),
+            "preflight leaked private input"
+        );
+    }
 }

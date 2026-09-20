@@ -40,6 +40,10 @@ authorization-review = ["termivar-scanner/authorization-review"]
 secret-exposure-review = ["termivar-scanner/secret-exposure-review"]
 tls-observation = ["termivar-scanner/tls-observation"]
 jwt-policy-review = ["dep:toml", "termivar-scanner/jwt-policy-review"]
+jwt-target-acceptance-review = [
+    "jwt-policy-review",
+    "termivar-scanner/jwt-target-acceptance-review",
+]
 supplied-session-review = ["termivar-scanner/supplied-session-review"]
 ssrf-oast-review = ["termivar-scanner/ssrf-oast-review"]
 wordpress-review = ["termivar-scanner/wordpress-review"]

@@ -247,6 +247,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
         ),
         ("graphql-review", cfg!(feature = "graphql-review")),
         ("jwt-policy-review", cfg!(feature = "jwt-policy-review")),
+        (
+            "jwt-target-acceptance-review",
+            cfg!(feature = "jwt-target-acceptance-review"),
+        ),
         ("legacy-scanner", cfg!(feature = "legacy-scanner")),
         (
             "normalization-resilience",
@@ -599,7 +603,27 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "--jwt-public-jwk FILE",
                 "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin",
             ],
-            "Reviews one explicitly supplied compact JWS under a strict local policy and verifies only ES256 against one explicitly supplied local P-256 public JWK. The V1 policy requires a non-secret operator policy revision plus explicit intended typ, issuer, and audience bindings; all three checks are mandatory. The revision must change when private policy semantics change, and reports identify the exact public-key bytes with SHA-256 without authenticating their source. The token is read from an explicitly selected environment variable, local regular file, or stdin; Windows UNC, device, and named-pipe namespaces are rejected before open, while mapped drives and mounted network filesystems remain an operator trust boundary. The token is never placed in argv, sent to the target, replayed, or used as authorization. Before the token source is read, JWK intake validates only the closed public-JWK structure and canonical 32-byte x/y coordinates; curve membership and signature validity are decided by local ES256 verification, and failure remains unauthenticated with local_signature=invalid. The JWT evaluator performs zero target requests and no remote key retrieval; the surrounding scan retains its ordinary authorized web-review requests. JWE, nested or compressed JOSE, critical headers, unencoded payloads, unsecured or non-ES256 algorithms, jku, x5u, embedded keys, and private JWK material are rejected or unsupported. Parsed, policy-consistent, locally signature-verified, and target-accepted are distinct states; target acceptance is not performed. Local signature verification establishes only the relationship among the supplied token bytes, local policy, local clock, and supplied public key; it does not authenticate the issuer or source, establish server acceptance, or perform exploit or impact validation.",
+            "Reviews one explicitly supplied compact JWS under a strict local policy and verifies only ES256 against one explicitly supplied local P-256 public JWK. The V1 policy requires a non-secret operator policy revision plus explicit intended typ, issuer, and audience bindings; all three checks are mandatory. The revision must change when private policy semantics change, and reports identify the exact public-key bytes with SHA-256 without authenticating their source. The token is read from an explicitly selected environment variable, local regular file, or stdin; Windows UNC, device, and named-pipe namespaces are rejected before open, while mapped drives and mounted network filesystems remain an operator trust boundary. The token is never placed in argv. Before the token source is read, JWK intake validates only the closed public-JWK structure and canonical 32-byte x/y coordinates; curve membership and signature validity are decided by local ES256 verification, and failure remains unauthenticated with local_signature=invalid. The local evaluator performs zero target requests and no remote key retrieval; unless the separately compiled target-acceptance feature and --jwt-target-acceptance-policy are both selected, the token is not forwarded or replayed and target acceptance remains not_performed. The surrounding scan retains its ordinary authorized web-review requests. JWE, nested or compressed JOSE, critical headers, unencoded payloads, unsecured or non-ES256 algorithms, jku, x5u, embedded keys, and private JWK material are rejected or unsupported. Parsed, policy-consistent, locally signature-verified, and target-accepted are distinct states. Local signature verification establishes only the relationship among the supplied token bytes, local policy, local clock, and supplied public key; it does not authenticate the issuer or source, establish server acceptance, or perform exploit or impact validation.",
+            "docs/internals/local-jwt-policy-review.md",
+        ),
+        surface!(
+            "option.jwt-target-acceptance-review",
+            "JWT target acceptance review",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("jwt-target-acceptance-review"),
+            cfg!(feature = "jwt-target-acceptance-review"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &[
+                "--profile web-review",
+                "--jwt-policy FILE",
+                "--jwt-public-jwk FILE",
+                "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin",
+                "--jwt-target-acceptance-policy FILE",
+                "HTTPS, except numeric-loopback HTTP fixtures",
+            ],
+            "After the local evaluator establishes supported parsing, policy consistency, and ES256 signature validity, one strict non-secret target policy selects one exact-origin, application-contained JSON GET resource and a private top-level boolean success marker. The declared target policy revision (policy_revision) must change whenever the application, resource, resource reference, or private success-marker semantics change; reports compare that revision because the URL and marker are intentionally omitted. Six ordered candidate/replay legs compare valid-token, anonymous, and invalid-signature behavior; only the two invalid-signature controls are active, each active leg requires its same-stage valid marker and absent anonymous marker, and every leg uses a fresh ambient-proxy-free pool under the parent scope, request/active/response-byte accounting, cancellation, and evidence authority. The target policy cannot nominate remote keys or expand application authority. The review dispatches at most six requests, two active requests, retains and interprets at most 64 KiB per response and 256 KiB total, and records the broker's exact charged bytes separately because one delivered chunk may cross a retention ceiling. It accepts only complete committed JSON-compatible 200, 401, or 403 responses with one strict top-level boolean marker; redirects, retries, cookies, ambient credentials, arbitrary endpoints, and writes are absent. Invalid-signature marker acceptance is not issuer authentication, authorization bypass, exploit execution, impact validation, or a Confirmed finding; the audit remains value-free and the feature is outside default, release-bundle, and published alpha.2 archives.",
             "docs/internals/local-jwt-policy-review.md",
         ),
         surface!(
@@ -852,7 +876,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 27);
+        assert_eq!(document.surfaces.len(), 28);
 
         let keys = document
             .surfaces
@@ -886,6 +910,7 @@ mod tests {
                 "option.secret-exposure-review",
                 "option.tls-observation",
                 "option.jwt-policy-review",
+                "option.jwt-target-acceptance-review",
                 "option.ssrf-oast-review",
                 "option.supplied-session-review",
                 "option.wordpress-review",
@@ -970,6 +995,10 @@ mod tests {
             ("option.secret-exposure-review", "secret-exposure-review"),
             ("option.tls-observation", "tls-observation"),
             ("option.jwt-policy-review", "jwt-policy"),
+            (
+                "option.jwt-target-acceptance-review",
+                "jwt-target-acceptance-policy",
+            ),
             ("option.ssrf-oast-review", "ssrf-oast-review"),
             ("option.supplied-session-review", "session-policy"),
             ("option.wordpress-review", "wordpress-review"),
@@ -1091,6 +1120,12 @@ mod tests {
             (
                 "option.jwt-policy-review",
                 Some("jwt-policy-review"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.jwt-target-acceptance-review",
+                Some("jwt-target-acceptance-review"),
                 "preview",
                 "implemented",
             ),
@@ -1341,11 +1376,11 @@ mod tests {
             "identify the exact public-key bytes with SHA-256 without authenticating their source",
             "Windows UNC, device, and named-pipe namespaces are rejected before open",
             "mapped drives and mounted network filesystems remain an operator trust boundary",
-            "never placed in argv, sent to the target, replayed, or used as authorization",
-            "JWT evaluator performs zero target requests and no remote key retrieval; the surrounding scan retains its ordinary authorized web-review requests",
+            "never placed in argv",
+            "local evaluator performs zero target requests and no remote key retrieval",
+            "unless the separately compiled target-acceptance feature and --jwt-target-acceptance-policy are both selected, the token is not forwarded or replayed and target acceptance remains not_performed",
             "jku, x5u, embedded keys, and private JWK material",
             "Parsed, policy-consistent, locally signature-verified, and target-accepted are distinct states",
-            "target acceptance is not performed",
             "does not authenticate the issuer or source",
             "establish server acceptance",
             "exploit or impact validation",
@@ -1353,6 +1388,48 @@ mod tests {
             assert!(
                 jwt.limitation.contains(required),
                 "missing local JWT-policy limitation `{required}`"
+            );
+        }
+        let jwt_target = find("option.jwt-target-acceptance-review");
+        assert_eq!(
+            jwt_target.prerequisites,
+            [
+                "--profile web-review",
+                "--jwt-policy FILE",
+                "--jwt-public-jwk FILE",
+                "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin",
+                "--jwt-target-acceptance-policy FILE",
+                "HTTPS, except numeric-loopback HTTP fixtures",
+            ]
+        );
+        assert_eq!(
+            jwt_target.compile_feature,
+            Some("jwt-target-acceptance-review")
+        );
+        assert_eq!(
+            jwt_target.documentation,
+            "docs/internals/local-jwt-policy-review.md"
+        );
+        for required in [
+            "one exact-origin, application-contained JSON GET resource",
+            "declared target policy revision (policy_revision) must change whenever the application, resource, resource reference, or private success-marker semantics change",
+            "reports compare that revision because the URL and marker are intentionally omitted",
+            "Six ordered candidate/replay legs",
+            "only the two invalid-signature controls are active",
+            "each active leg requires its same-stage valid marker and absent anonymous marker",
+            "fresh ambient-proxy-free pool",
+            "at most six requests, two active requests",
+            "64 KiB per response and 256 KiB total",
+            "exact charged bytes separately because one delivered chunk may cross a retention ceiling",
+            "complete committed JSON-compatible 200, 401, or 403 responses",
+            "redirects, retries, cookies, ambient credentials, arbitrary endpoints, and writes are absent",
+            "not issuer authentication, authorization bypass, exploit execution, impact validation, or a Confirmed finding",
+            "audit remains value-free",
+            "outside default, release-bundle, and published alpha.2 archives",
+        ] {
+            assert!(
+                jwt_target.limitation.contains(required),
+                "missing JWT target-acceptance limitation `{required}`"
             );
         }
         let session = find("option.supplied-session-review");

@@ -58,6 +58,17 @@ use termivar_scanner::web_runtime::{
 };
 #[cfg(feature = "wordpress-review")]
 use termivar_scanner::wordpress_review::WordPressReviewInputs;
+#[cfg(feature = "jwt-target-acceptance-review")]
+use termivar_scanner::{
+    jwt_policy_review::JwtTargetAcceptanceRuntimeInput,
+    jwt_target_acceptance::{
+        JwtTargetAcceptanceActivity, JwtTargetAcceptanceAudit, JwtTargetAcceptanceCommitStatus,
+        JwtTargetAcceptanceConclusion, JwtTargetAcceptanceDimension,
+        JwtTargetAcceptanceDispatchStatus, JwtTargetAcceptanceLegRole, JwtTargetAcceptanceLegStage,
+        JwtTargetAcceptanceMarkerStatus, JwtTargetAcceptanceMethod, JwtTargetAcceptancePolicy,
+        JwtTargetAcceptanceResponseStatus,
+    },
+};
 use termivar_scanner::{
     DecisionLoopCommand, DecisionStopReason, ReportFormat, ReportGenerator, RuntimeBudgetDimension,
     RuntimeLimitExceeded, SemanticEntityType, SemanticExtractionResult,
@@ -305,6 +316,9 @@ struct ExactOriginReport {
     #[cfg(feature = "supplied-session-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     supplied_session_audit: Option<SuppliedSessionAuditRecord>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jwt_target_acceptance_audit: Option<JwtTargetAcceptanceAuditRecord>,
     #[cfg(feature = "authorization-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization_review_audit: Option<AuthorizationReviewAuditRecord>,
@@ -316,6 +330,98 @@ struct ExactOriginReport {
     rest_review_audit: Option<RestReviewAuditRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_inventory: Option<FailureInventory>,
+}
+
+/// Explicit value-free projection for the optional target-acceptance prefix.
+///
+/// This diagnostic surface deliberately copies only reviewed non-secret facts;
+/// it never serializes the runtime-owned credentials, selected JSON field, URL,
+/// response body, or the knowledge-base evidence value.
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[derive(Serialize)]
+struct JwtTargetAcceptanceAuditRecord {
+    schema: &'static str,
+    policy: &'static str,
+    operator_policy_reference: String,
+    operator_policy_revision: String,
+    resource_reference: String,
+    method: JwtTargetAcceptanceMethod,
+    legs: Vec<JwtTargetAcceptanceLegRecord>,
+    accounting: JwtTargetAcceptanceAccountingRecord,
+    valid_marker: JwtTargetAcceptanceDimension,
+    anonymous_marker: JwtTargetAcceptanceDimension,
+    invalid_marker: JwtTargetAcceptanceDimension,
+    conclusion: JwtTargetAcceptanceConclusion,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[derive(Serialize)]
+struct JwtTargetAcceptanceLegRecord {
+    role: JwtTargetAcceptanceLegRole,
+    stage: JwtTargetAcceptanceLegStage,
+    activity: JwtTargetAcceptanceActivity,
+    dispatched: JwtTargetAcceptanceDispatchStatus,
+    committed: JwtTargetAcceptanceCommitStatus,
+    response_status: JwtTargetAcceptanceResponseStatus,
+    marker_status: JwtTargetAcceptanceMarkerStatus,
+    retained_response_bytes: u64,
+    accounted_response_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence_reference: Option<String>,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[derive(Serialize)]
+struct JwtTargetAcceptanceAccountingRecord {
+    dispatched_request_count: u8,
+    dispatched_passive_request_count: u8,
+    dispatched_active_request_count: u8,
+    committed_response_count: u8,
+    retained_response_bytes: u64,
+    accounted_response_bytes: u64,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl JwtTargetAcceptanceAuditRecord {
+    fn from_audit(audit: &JwtTargetAcceptanceAudit) -> Self {
+        let accounting = audit.accounting();
+        Self {
+            schema: audit.schema(),
+            policy: audit.policy(),
+            operator_policy_reference: audit.operator_policy_reference().to_owned(),
+            operator_policy_revision: audit.operator_policy_revision().to_owned(),
+            resource_reference: audit.resource_reference().to_owned(),
+            method: audit.method(),
+            legs: audit
+                .legs()
+                .iter()
+                .map(|leg| JwtTargetAcceptanceLegRecord {
+                    role: leg.role(),
+                    stage: leg.role().stage(),
+                    activity: leg.role().activity(),
+                    dispatched: leg.dispatch_status(),
+                    committed: leg.commit_status(),
+                    response_status: leg.response_status(),
+                    marker_status: leg.marker_status(),
+                    retained_response_bytes: leg.retained_response_bytes(),
+                    accounted_response_bytes: leg.accounted_response_bytes(),
+                    evidence_reference: leg.evidence_reference().map(str::to_owned),
+                })
+                .collect(),
+            accounting: JwtTargetAcceptanceAccountingRecord {
+                dispatched_request_count: accounting.dispatched_request_count(),
+                dispatched_passive_request_count: accounting.dispatched_passive_request_count(),
+                dispatched_active_request_count: accounting.dispatched_active_request_count(),
+                committed_response_count: accounting.committed_response_count(),
+                retained_response_bytes: accounting.retained_response_bytes(),
+                accounted_response_bytes: accounting.accounted_response_bytes(),
+            },
+            valid_marker: audit.valid_marker(),
+            anonymous_marker: audit.anonymous_marker(),
+            invalid_marker: audit.invalid_marker(),
+            conclusion: audit.conclusion(),
+        }
+    }
 }
 
 /// Explicit value-free projection for incomplete/failed runtime diagnostics.
@@ -852,6 +958,9 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) tls_observation: bool,
     #[cfg(feature = "jwt-policy-review")]
     pub(crate) jwt_policy_review: Option<JwtPolicyReviewAudit>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub(crate) jwt_target_acceptance_review:
+        Option<(JwtTargetAcceptancePolicy, JwtTargetAcceptanceRuntimeInput)>,
     #[cfg(feature = "authorization-review")]
     pub(crate) resource_authorization_review:
         Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
@@ -895,6 +1004,8 @@ pub(crate) async fn run_profile_scan(
         tls_observation,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        jwt_target_acceptance_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
         #[cfg(feature = "supplied-session-review")]
@@ -953,6 +1064,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "JWT policy review requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            if jwt_target_acceptance_review.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "JWT target-acceptance review requires the web-review profile",
                 )
                 .into());
             }
@@ -1057,6 +1176,8 @@ pub(crate) async fn run_profile_scan(
                     tls_observation,
                     #[cfg(feature = "jwt-policy-review")]
                     jwt_policy_review,
+                    #[cfg(feature = "jwt-target-acceptance-review")]
+                    jwt_target_acceptance_review,
                     #[cfg(feature = "authorization-review")]
                     resource_authorization_review,
                     #[cfg(feature = "supplied-session-review")]
@@ -1126,6 +1247,9 @@ struct WebReviewRunOptions {
     tls_observation: bool,
     #[cfg(feature = "jwt-policy-review")]
     jwt_policy_review: Option<JwtPolicyReviewAudit>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    jwt_target_acceptance_review:
+        Option<(JwtTargetAcceptancePolicy, JwtTargetAcceptanceRuntimeInput)>,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
     #[cfg(feature = "supplied-session-review")]
@@ -1162,6 +1286,8 @@ async fn run_web_review(
         tls_observation,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        jwt_target_acceptance_review,
         #[cfg(feature = "authorization-review")]
         resource_authorization_review,
         #[cfg(feature = "supplied-session-review")]
@@ -1261,6 +1387,10 @@ async fn run_web_review(
     #[cfg(feature = "authorization-review")]
     if let Some((policy, principals)) = resource_authorization_review {
         builder = builder.with_resource_authorization_review(policy, principals);
+    }
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    if let Some((policy, runtime_input)) = jwt_target_acceptance_review {
+        builder = builder.with_jwt_target_acceptance_review(policy, runtime_input);
     }
     #[cfg(feature = "supplied-session-review")]
     if let Some((policy, authorization)) = supplied_session_review {
@@ -1615,6 +1745,10 @@ fn document_from_web_review_report(
             supplied_session_audit: report
                 .supplied_session_audit()
                 .map(SuppliedSessionAuditRecord::from_audit),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance_audit: report
+                .jwt_target_acceptance_audit()
+                .map(JwtTargetAcceptanceAuditRecord::from_audit),
             #[cfg(feature = "authorization-review")]
             authorization_review_audit: report
                 .authorization_review_audit()
@@ -1696,6 +1830,10 @@ fn document_from_web_review_failure(
             supplied_session_audit: receipt
                 .supplied_session_audit()
                 .map(SuppliedSessionAuditRecord::from_audit),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance_audit: receipt
+                .jwt_target_acceptance_audit()
+                .map(JwtTargetAcceptanceAuditRecord::from_audit),
             #[cfg(feature = "authorization-review")]
             authorization_review_audit: None,
             #[cfg(feature = "openapi-review")]
@@ -3346,6 +3484,8 @@ lifetime_ms = 5000
                 },
                 #[cfg(feature = "supplied-session-review")]
                 supplied_session_audit: Some(diagnostic_supplied_session_audit()),
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                jwt_target_acceptance_audit: None,
                 #[cfg(feature = "authorization-review")]
                 authorization_review_audit: None,
                 #[cfg(feature = "openapi-review")]

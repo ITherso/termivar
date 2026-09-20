@@ -317,7 +317,11 @@ fn wordpress_review_target_conflict(
     }
 }
 
-#[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "wordpress-review",
+    feature = "supplied-session-review",
+    feature = "jwt-target-acceptance-review"
+))]
 fn is_wordpress_application_target(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https")
         && target.username().is_empty()
@@ -618,6 +622,16 @@ struct ScanArgs {
         arg(conflicts_with = "oast_admin_token_stdin")
     )]
     jwt_token_stdin: bool,
+    /// Perform one bounded six-leg acceptance review against an explicitly
+    /// selected protected JSON resource. The supplied local JWT policy, public
+    /// key, and token remain mandatory; the target policy carries no secret.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires_all = ["profile", "jwt_policy", "jwt_public_jwk", "jwt_token_source"]
+    )]
+    jwt_target_acceptance_policy: Option<PathBuf>,
     /// Interpret bounded WordPress component evidence already present in the
     /// assessment. This option adds no target requests and is compiled only
     /// with `wordpress-review`.
@@ -1044,7 +1058,11 @@ struct ScanArgs {
 #[derive(Clone, Debug)]
 struct ScanTarget {
     url: Url,
-    #[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
+    #[cfg(any(
+        feature = "wordpress-review",
+        feature = "supplied-session-review",
+        feature = "jwt-target-acceptance-review"
+    ))]
     raw: String,
 }
 
@@ -1054,7 +1072,11 @@ impl std::str::FromStr for ScanTarget {
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         Ok(Self {
             url: Url::parse(raw)?,
-            #[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
+            #[cfg(any(
+                feature = "wordpress-review",
+                feature = "supplied-session-review",
+                feature = "jwt-target-acceptance-review"
+            ))]
             raw: raw.to_owned(),
         })
     }
@@ -1070,7 +1092,11 @@ impl ScanTarget {
         self.url
     }
 
-    #[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
+    #[cfg(any(
+        feature = "wordpress-review",
+        feature = "supplied-session-review",
+        feature = "jwt-target-acceptance-review"
+    ))]
     fn selected_application_is_unambiguous(&self) -> bool {
         if !is_wordpress_application_target(&self.url) || self.url.as_str() != self.raw {
             return false;
@@ -1096,7 +1122,11 @@ impl ScanTarget {
     }
 }
 
-#[cfg(any(feature = "wordpress-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "wordpress-review",
+    feature = "supplied-session-review",
+    feature = "jwt-target-acceptance-review"
+))]
 fn raw_http_directory_path(value: &str) -> Option<&str> {
     if value.is_empty()
         || value.trim() != value
@@ -1214,6 +1244,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         jwt_token_file,
         #[cfg(feature = "jwt-policy-review")]
         jwt_token_stdin,
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        jwt_target_acceptance_policy,
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
         #[cfg(feature = "wordpress-review")]
@@ -1343,7 +1375,17 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         || jwt_public_jwk.is_some()
         || jwt_token_env.is_some()
         || jwt_token_file.is_some()
-        || jwt_token_stdin;
+        || jwt_token_stdin
+        || {
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            {
+                jwt_target_acceptance_policy.is_some()
+            }
+            #[cfg(not(feature = "jwt-target-acceptance-review"))]
+            {
+                false
+            }
+        };
     #[cfg(feature = "jwt-policy-review")]
     if let Some(message) =
         scan_jwt_policy_review_flags_conflict(profile, jwt_policy_review_selected)
@@ -1455,7 +1497,25 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         )
         .into());
     }
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    if jwt_target_acceptance_policy.is_some() && !target.selected_application_is_unambiguous() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "JWT target-acceptance application must use an unambiguous raw trailing-slash path",
+        )
+        .into());
+    }
     let target = target.into_url();
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    if jwt_target_acceptance_policy.is_some()
+        && !authorization_context_transport_is_allowed(&target)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "JWT target-acceptance review requires HTTPS; numeric loopback HTTP is allowed only for local fixtures",
+        )
+        .into());
+    }
     #[cfg(feature = "authorization-review")]
     let root_authorization_selected = auth_env.is_some() || auth_file.is_some() || auth_stdin;
     #[cfg(feature = "authorization-review")]
@@ -1529,6 +1589,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         jwt_policy,
         jwt_public_jwk,
         auth_input::AuthorizationSourceOptions::new(jwt_token_env, jwt_token_file, jwt_token_stdin),
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        jwt_target_acceptance_policy,
     )?;
     #[cfg(feature = "authorization-review")]
     let resource_authorization_input = auth_input::AuthorizationReviewInput::select(
@@ -1636,9 +1698,20 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         // validated before output reservation. The compact token remains
         // unread until reservation succeeds below.
         #[cfg(feature = "jwt-policy-review")]
-        let prepared_jwt_policy_review = jwt_policy_review_input
-            .map(auth_input::JwtPolicyReviewInput::prepare)
-            .transpose()?;
+        let prepared_jwt_policy_review = {
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            {
+                jwt_policy_review_input
+                    .map(|input| input.prepare(&target))
+                    .transpose()?
+            }
+            #[cfg(not(feature = "jwt-target-acceptance-review"))]
+            {
+                jwt_policy_review_input
+                    .map(auth_input::JwtPolicyReviewInput::prepare)
+                    .transpose()?
+            }
+        };
         // Validate the non-secret supplied-session policy before reserving any
         // externally visible output. The prepared value retains an unread
         // secret source until reservation succeeds below.
@@ -1697,12 +1770,28 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 abort_report_bundle_after_failure(&mut report_bundle);
             })?;
         #[cfg(feature = "jwt-policy-review")]
-        let jwt_policy_review = prepared_jwt_policy_review
+        let loaded_jwt_policy_review = prepared_jwt_policy_review
             .map(auth_input::PreparedJwtPolicyReviewInput::load)
             .transpose()
             .inspect_err(|_| {
                 abort_report_bundle_after_failure(&mut report_bundle);
             })?;
+        #[cfg(all(
+            feature = "jwt-policy-review",
+            not(feature = "jwt-target-acceptance-review")
+        ))]
+        let jwt_policy_review = loaded_jwt_policy_review;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let (jwt_policy_review, jwt_target_acceptance_review) =
+            if let Some(loaded) = loaded_jwt_policy_review {
+                let (local, target) = loaded.into_parts();
+                (
+                    Some(local),
+                    target.map(auth_input::LoadedJwtTargetAcceptanceInput::into_parts),
+                )
+            } else {
+                (None, None)
+            };
 
         eprintln!("{DETERMINISTIC_SCAN_WARNING}");
         let execution = match assessment_scan::run_profile_scan(
@@ -1722,6 +1811,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 tls_observation,
                 #[cfg(feature = "jwt-policy-review")]
                 jwt_policy_review,
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                jwt_target_acceptance_review,
                 #[cfg(feature = "authorization-review")]
                 resource_authorization_review,
                 #[cfg(feature = "supplied-session-review")]

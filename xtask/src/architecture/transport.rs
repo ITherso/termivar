@@ -76,6 +76,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     SECRET_EXPOSURE_RUNTIME_SOURCE,
     TLS_OBSERVATION_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
+    JWT_TARGET_ACCEPTANCE_RUNTIME_SOURCE,
     SSRF_OAST_RUNTIME_SOURCE,
     SUPPLIED_SESSION_RUNTIME_SOURCE,
     WORDPRESS_RUNTIME_SOURCE,
@@ -123,6 +124,8 @@ const TLS_OBSERVATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/tls_observation.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
+const JWT_TARGET_ACCEPTANCE_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/jwt_target_acceptance_runtime.rs";
 const SSRF_OAST_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/ssrf_oast_runtime.rs";
 const SUPPLIED_SESSION_RUNTIME_SOURCE: &str =
@@ -1592,17 +1595,17 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
                 .to_owned(),
         );
     }
-    if broker.matches("Client::builder()").count() != 5
-        || broker.matches(".redirect(RedirectPolicy::none())").count() != 5
-        || broker.matches(".retry(reqwest::retry::never())").count() != 5
-        || broker.matches(".tls_info(true)").count() != 5
+    if broker.matches("Client::builder()").count() != 6
+        || broker.matches(".redirect(RedirectPolicy::none())").count() != 6
+        || broker.matches(".retry(reqwest::retry::never())").count() != 6
+        || broker.matches(".tls_info(true)").count() != 6
         || !broker.contains("#[cfg(all(test, feature = \"tls-observation\"))]")
         || !broker.contains("reqwest::Certificate::from_der(root_certificate_der)")
         || !broker.contains(".add_root_certificate(root_certificate)")
         || !broker.contains(".resolve(resolved_host, resolved_address)")
     {
         violations.push(
-            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, selected authorization-review, and selected supplied-session redirect-disabled, retry-free clients plus the exact cfg(test) owned trusted-root TLS seam"
+            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, selected authorization-review, per-leg JWT target-acceptance, and selected supplied-session redirect-disabled, retry-free clients plus the exact cfg(test) owned trusted-root TLS seam"
                 .to_owned(),
         );
     }
@@ -1611,7 +1614,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             .matches("let anonymous_no_proxy_client = Client::builder()")
             .count()
             != 1
-        || broker.matches(".no_proxy()").count() != 4
+        || broker.matches(".no_proxy()").count() != 5
         || broker.matches("&self.anonymous_no_proxy_client").count() != 1
         || !broker.contains(
             "self.anonymous_no_proxy_client\n            .request(Method::GET, target.clone())",
@@ -1619,6 +1622,43 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
     {
         violations.push(
             "the shared broker's WordPress metadata client must remain the exact anonymous GET-only no-proxy pool without caller credentials"
+                .to_owned(),
+        );
+    }
+    let jwt_isolation = broker
+        .split_once("    #[cfg(feature = \"jwt-target-acceptance-review\")]\n    pub(crate) fn isolated_jwt_target_acceptance(")
+        .and_then(|(_, tail)| tail.split_once("    /// Creates the credentialed child pool"))
+        .map(|(body, _)| body);
+    let jwt_dispatch = broker
+        .split_once("    #[cfg(feature = \"jwt-target-acceptance-review\")]\n    pub(crate) async fn collect_jwt_target_acceptance_get_for_runtime(")
+        .and_then(|(_, tail)| {
+            tail.split_once(
+                "    #[cfg(feature = \"supplied-session-review\")]\n    pub(crate) async fn collect_supplied_session_get_for_runtime(",
+            )
+        })
+        .map(|(body, _)| body);
+    if jwt_isolation.is_none_or(|body| {
+        body.matches("Self::build(").count() != 1
+            || body.matches("Client::builder()").count() != 1
+            || body.matches(".redirect(RedirectPolicy::none())").count() != 1
+            || body.matches(".retry(reqwest::retry::never())").count() != 1
+            || body.matches(".no_proxy()").count() != 1
+            || !body.contains("self.policy.clone()")
+            || !body.contains("self.accounting.clone()")
+            || !body.contains("self.tls_observation.clone()")
+            || !body.contains("broker.client = client.build().map_err(HttpEvidenceError::Client)?;")
+    }) || jwt_dispatch.is_none_or(|body| {
+        !body.contains("!descriptor.validate_against(policy)")
+            || !body.contains("!authenticated_transport_is_allowed(descriptor.target())")
+            || !body.contains(
+                "self\n            .client\n            .request(Method::GET, descriptor.target().clone())",
+            )
+            || !body.contains("header.set_sensitive(true);")
+            || !body.contains("request = request.header(AUTHORIZATION, header);")
+            || !body.contains("self.collect_built_request(")
+    }) {
+        violations.push(
+            "the broker's JWT target-acceptance seam must create one fresh ambient-proxy-free pool per leg under the parent's exact policy, accounting, and TLS authority, then dispatch only its sealed sensitive-header GET descriptor"
                 .to_owned(),
         );
     }
@@ -2755,6 +2795,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "authorization_review")
                     });
+                    let jwt_target_acceptance = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "jwt_target_acceptance")
+                    });
                     let supplied_session = item.fields.iter().find(|field| {
                         field
                             .ident
@@ -2815,6 +2861,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             "Option",
                             &["WebAssessmentAuthorizationAudit"],
                         ) || !attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
+                    }) || jwt_target_acceptance.is_none_or(|field| {
+                        !is_generic_of_idents(&field.ty, "Option", &["JwtTargetAcceptanceAudit"])
+                            || !attributes_are_exact_cfg_feature(
+                                &field.attrs,
+                                "jwt-target-acceptance-review",
+                            )
                     }) || openapi_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentOpenApiAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "openapi-review")
@@ -2849,6 +2901,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                                 "run_started_at"
                                     | "supplied_session"
                                     | "authorization_review"
+                                    | "jwt_target_acceptance"
                                     | "openapi_review"
                                     | "rest_review"
                                     | "secret_exposure_review"
@@ -2859,7 +2912,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields, plus the JWT target-acceptance redacted audit field, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -5367,7 +5420,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 14
+                fields.len() == 15
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -5397,6 +5450,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("authorization_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentAuthorizationAudit"])
                     })
+                    && fields.get("jwt_target_acceptance").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["JwtTargetAcceptanceAudit"])
+                    })
                     && fields.get("openapi_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentOpenApiAudit"])
                     })
@@ -5424,6 +5480,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             })
             && private_named_field(item, "authorization_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
+            })
+            && private_named_field(item, "jwt_target_acceptance").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "jwt-target-acceptance-review")
             })
             && private_named_field(item, "openapi_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "openapi-review")
@@ -5453,7 +5512,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits plus an independently attached local JWT-policy audit; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance and an independently attached local JWT-policy audit; observed fields {observed:?}"
         ));
     }
 
@@ -5469,7 +5528,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 &["Clone", "Copy", "Serialize", "Deserialize"],
             )
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 8
+                fields.len() == 9
                     && fields.get("supplied_session").is_some_and(|field| {
                         is_generic_of_idents(
                             field,
@@ -5479,6 +5538,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     })
                     && fields.get("authorization_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentAuthorizationAudit"])
+                    })
+                    && fields.get("jwt_target_acceptance").is_some_and(|field| {
+                        is_generic_of_idents(field, "Option", &["JwtTargetAcceptanceAudit"])
                     })
                     && fields.get("openapi_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentOpenApiAudit"])
@@ -5505,6 +5567,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "authorization_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "authorization-review")
             })
+            && private_named_field(item, "jwt_target_acceptance").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "jwt-target-acceptance-review")
+            })
             && private_named_field(item, "openapi_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "openapi-review")
             })
@@ -5525,7 +5590,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !review_audits_shape_is_exact {
         violations.push(
-            "AssessmentReviewAudits must remain one private Default-only container with exactly the eight feature-gated redacted audit values"
+            "AssessmentReviewAudits must remain one private Default-only container with exactly the nine feature-gated redacted audit values"
                 .to_owned(),
         );
     }
@@ -5577,7 +5642,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -5629,6 +5694,10 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_and_canonicalize_items",
                     "validate_supplied_session_audit",
                     "validate_authorization_audit",
+                    "validate_jwt_target_acceptance_audit",
+                    "expected_accounting",
+                    "requests",
+                    "consumed",
                     "validate_openapi_audit",
                     "validate_rest_audit",
                     "validate_secret_exposure_audit",
@@ -5686,7 +5755,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance, before construction"
                 .to_owned(),
         );
     }
@@ -7030,7 +7099,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 8
+    typed.len() == expected_prefix.len() + 9
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -7059,23 +7128,29 @@ fn assessment_report_constructor_inputs_are_exact(
         && typed
             .get(expected_prefix.len() + 2)
             .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "jwt-target-acceptance-review")
+                    && is_generic_of_idents(&argument.ty, "Option", &["JwtTargetAcceptanceAudit"])
+            })
+        && typed
+            .get(expected_prefix.len() + 3)
+            .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "openapi-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentOpenApiAudit"])
             })
         && typed
-            .get(expected_prefix.len() + 3)
+            .get(expected_prefix.len() + 4)
             .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "rest-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentRestAudit"])
             })
         && typed
-            .get(expected_prefix.len() + 4)
+            .get(expected_prefix.len() + 5)
             .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "ssrf-oast-review")
                     && is_generic_of_idents(&argument.ty, "Option", &["WebAssessmentSsrfOastAudit"])
             })
         && typed
-            .get(expected_prefix.len() + 5)
+            .get(expected_prefix.len() + 6)
             .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "wordpress-review")
                     && is_generic_of_idents(
@@ -7085,7 +7160,7 @@ fn assessment_report_constructor_inputs_are_exact(
                     )
             })
         && typed
-            .get(expected_prefix.len() + 6)
+            .get(expected_prefix.len() + 7)
             .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "secret-exposure-review")
                     && is_generic_of_idents(
@@ -9685,6 +9760,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "crates/termivar-scanner/src/web_runtime.rs",
                     "resource_authorization_runtime"
                 )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
+                    "jwt_target_acceptance_runtime"
+                )
                 | ("crates/termivar-scanner/src/web_runtime.rs", "scan_profile")
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
@@ -9751,6 +9830,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "resource_authorization_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "authorization-review")
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "jwt_target_acceptance_runtime"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "jwt-target-acceptance-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "ssrf_oast_runtime"
         {
@@ -11802,6 +11885,10 @@ mod tests {
                 "#[cfg(feature = \"authorization-review\")] mod resource_authorization_runtime;",
             ),
             (
+                "crates/termivar-scanner/src/web_runtime.rs",
+                "#[cfg(feature = \"jwt-target-acceptance-review\")] mod jwt_target_acceptance_runtime;",
+            ),
+            (
                 "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                 "#[cfg(feature = \"normalization-resilience\")] mod normalization_transform_catalog;",
             ),
@@ -11843,6 +11930,22 @@ mod tests {
             assert!(
                 violations.contains("unregistered external submodule"),
                 "resource authorization runtime feature boundary unexpectedly passed: {source}: {violations}"
+            );
+        }
+
+        for source in [
+            "mod jwt_target_acceptance_runtime;",
+            "#[cfg(feature = \"jwt-policy-review\")] mod jwt_target_acceptance_runtime;",
+            "#[cfg(feature = \"jwt-target-acceptance-review\")] pub mod jwt_target_acceptance_runtime;",
+            "#[cfg(any(feature = \"jwt-target-acceptance-review\", feature = \"scanning\"))] mod jwt_target_acceptance_runtime;",
+        ] {
+            let violations =
+                inspect_bounded_source("crates/termivar-scanner/src/web_runtime.rs", source)
+                    .unwrap()
+                    .join("\n");
+            assert!(
+                violations.contains("unregistered external submodule"),
+                "JWT target runtime feature boundary unexpectedly passed: {source}: {violations}"
             );
         }
 
@@ -13338,6 +13441,17 @@ mod tests {
             "{violations}"
         );
 
+        let missing_jwt_target_audit = report_source.replacen(
+            "    #[cfg(feature = \"jwt-target-acceptance-review\")]\n    jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_jwt_target_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_jwt_target_audit)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("JWT target-acceptance"), "{violations}");
+
         let missing_openapi_audit = report_source.replacen(
             "    #[cfg(feature = \"openapi-review\")]\n    openapi_review: Option<WebAssessmentOpenApiAudit>,\n",
             "",
@@ -13569,7 +13683,7 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains(
-                "AssessmentReviewAudits must remain one private Default-only container with exactly the eight feature-gated redacted audit values"
+                "AssessmentReviewAudits must remain one private Default-only container with exactly the nine feature-gated redacted audit values"
                 ),
                 "{violations}"
             );
@@ -14000,6 +14114,8 @@ mod tests {
                 supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
                 #[cfg(feature = "authorization-review")]
                 authorization_review: Option<WebAssessmentAuthorizationAudit>,
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
                 #[cfg(feature = "openapi-review")]
                 openapi_review: Option<WebAssessmentOpenApiAudit>,
                 #[cfg(feature = "rest-review")]
@@ -14142,6 +14258,19 @@ mod tests {
             violations.contains(
                 "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
             ),
+            "{violations}"
+        );
+
+        let missing_jwt_target_audit = valid.replace(
+            "                #[cfg(feature = \"jwt-target-acceptance-review\")]\n                jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,\n",
+            "",
+        );
+        assert_ne!(missing_jwt_target_audit, valid);
+        let violations = inspect_web_assessment_models(&missing_jwt_target_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("JWT target-acceptance redacted audit field"),
             "{violations}"
         );
 
@@ -14597,6 +14726,20 @@ mod tests {
                     1,
                 ),
                 "no automatic cookie store",
+            ),
+            (
+                http.clone(),
+                broker.replacen(
+                    "    #[cfg(feature = \"jwt-target-acceptance-review\")]\n    pub(crate) fn isolated_jwt_target_acceptance(&self) -> Result<Self, HttpEvidenceError> {\n        let mut broker = Self::build(\n            self.policy.clone(),\n            self.accounting.clone(),\n            #[cfg(feature = \"tls-observation\")]\n            self.tls_observation.clone(),\n        )?;\n        let client = Client::builder()\n            .redirect(RedirectPolicy::none())\n            .retry(reqwest::retry::never())\n            .no_proxy();",
+                    "    #[cfg(feature = \"jwt-target-acceptance-review\")]\n    pub(crate) fn isolated_jwt_target_acceptance(&self) -> Result<Self, HttpEvidenceError> {\n        let mut broker = Self::build(\n            self.policy.clone(),\n            self.accounting.clone(),\n            #[cfg(feature = \"tls-observation\")]\n            self.tls_observation.clone(),\n        )?;\n        let client = Client::builder()\n            .redirect(RedirectPolicy::none())\n            .retry(reqwest::retry::never());",
+                    1,
+                ),
+                "fresh ambient-proxy-free pool per leg",
+            ),
+            (
+                http.clone(),
+                broker.replace("header.set_sensitive(true);", "header.set_sensitive(false);"),
+                "sealed sensitive-header GET descriptor",
             ),
             (
                 http,

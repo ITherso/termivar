@@ -25,6 +25,11 @@ use termivar_scanner::jwt_policy_review::{
     review_compact_jwt, Es256LocalPublicKey, JwtEvaluationTime, JwtLocalPolicy,
     JwtPolicyReviewAudit, SecretCompactJwt, MAX_COMPACT_JWT_BYTES, MAX_LOCAL_PUBLIC_JWK_BYTES,
 };
+#[cfg(feature = "jwt-target-acceptance-review")]
+use termivar_scanner::{
+    jwt_policy_review::{review_and_prepare_target_acceptance, JwtTargetAcceptanceRuntimeInput},
+    jwt_target_acceptance::JwtTargetAcceptancePolicy,
+};
 
 #[cfg(feature = "authorization-review")]
 use termivar_scanner::authorization_review::{
@@ -195,6 +200,8 @@ pub(crate) struct JwtPolicyReviewInput {
     policy_file: PathBuf,
     public_jwk_file: PathBuf,
     token: AuthorizationInputSource,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    target_acceptance_policy_file: Option<PathBuf>,
 }
 
 /// Validated non-secret policy and public key paired with the unread token.
@@ -203,6 +210,22 @@ pub(crate) struct PreparedJwtPolicyReviewInput {
     policy: JwtLocalPolicy,
     public_key: Es256LocalPublicKey,
     token: AuthorizationInputSource,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    target_acceptance_policy: Option<JwtTargetAcceptancePolicy>,
+}
+
+/// Loaded local audit and the optional move-only target-acceptance handoff.
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub(crate) struct LoadedJwtPolicyReviewInput {
+    local_audit: JwtPolicyReviewAudit,
+    target_acceptance: Option<LoadedJwtTargetAcceptanceInput>,
+}
+
+/// Target selection retained even when local eligibility prevents dispatch.
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub(crate) struct LoadedJwtTargetAcceptanceInput {
+    policy: JwtTargetAcceptancePolicy,
+    runtime_input: JwtTargetAcceptanceRuntimeInput,
 }
 
 #[cfg(feature = "jwt-policy-review")]
@@ -229,6 +252,29 @@ impl fmt::Debug for PreparedJwtPolicyReviewInput {
     }
 }
 
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl fmt::Debug for LoadedJwtPolicyReviewInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LoadedJwtPolicyReviewInput(<redacted>)")
+    }
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl LoadedJwtPolicyReviewInput {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (JwtPolicyReviewAudit, Option<LoadedJwtTargetAcceptanceInput>) {
+        (self.local_audit, self.target_acceptance)
+    }
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl LoadedJwtTargetAcceptanceInput {
+    pub(crate) fn into_parts(self) -> (JwtTargetAcceptancePolicy, JwtTargetAcceptanceRuntimeInput) {
+        (self.policy, self.runtime_input)
+    }
+}
+
 #[cfg(feature = "jwt-policy-review")]
 const MAX_JWT_POLICY_BYTES: usize = 8 * 1024;
 #[cfg(feature = "jwt-policy-review")]
@@ -250,18 +296,91 @@ struct JwtPolicyDocument {
 }
 
 #[cfg(feature = "jwt-policy-review")]
+impl Drop for JwtPolicyDocument {
+    fn drop(&mut self) {
+        self.expected_type.zeroize();
+        self.expected_issuer.zeroize();
+        self.expected_audience.zeroize();
+        self.required_claims.zeroize();
+    }
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+const MAX_JWT_TARGET_ACCEPTANCE_POLICY_BYTES: usize = 8 * 1024;
+#[cfg(feature = "jwt-target-acceptance-review")]
+const JWT_TARGET_ACCEPTANCE_POLICY_INPUT_SCHEMA: &str = "security.jwt-target-acceptance-policy/v1";
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JwtTargetAcceptancePolicyDocument {
+    schema: String,
+    policy_reference: String,
+    policy_revision: String,
+    application: String,
+    resource: String,
+    resource_reference: String,
+    success_json_field: String,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn parse_exact_jwt_target_policy_url(value: &str) -> Result<url::Url, JwtPolicyInputError> {
+    // The URL parser follows the URL Standard and can canonicalize literal or
+    // encoded dot segments, backslashes, host casing, and default ports. An
+    // operator policy is an authority input, so its raw spelling must already
+    // be the exact canonical URL that will be bound into the request
+    // descriptor. Normalization must never turn rejected text into authority.
+    if value.is_empty()
+        || value.trim() != value
+        || !value.is_ascii()
+        || value.bytes().any(|byte| byte.is_ascii_control())
+        || value.contains('%')
+        || value.contains('\\')
+    {
+        return Err(JwtPolicyInputError::InvalidTargetPolicy);
+    }
+    let parsed = url::Url::parse(value).map_err(|_| JwtPolicyInputError::InvalidTargetPolicy)?;
+    if parsed.as_str() != value {
+        return Err(JwtPolicyInputError::InvalidTargetPolicy);
+    }
+    Ok(parsed)
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+impl Drop for JwtTargetAcceptancePolicyDocument {
+    fn drop(&mut self) {
+        self.application.zeroize();
+        self.resource.zeroize();
+        self.success_json_field.zeroize();
+    }
+}
+
+#[cfg(feature = "jwt-policy-review")]
 impl JwtPolicyReviewInput {
     /// Requires one policy, one local public JWK, and exactly one token source.
     pub(crate) fn select(
         policy_file: Option<PathBuf>,
         public_jwk_file: Option<PathBuf>,
         token: AuthorizationSourceOptions,
+        #[cfg(feature = "jwt-target-acceptance-review")] target_acceptance_policy_file: Option<
+            PathBuf,
+        >,
     ) -> Result<Option<Self>, JwtPolicyInputError> {
         let any_selected = policy_file.is_some()
             || public_jwk_file.is_some()
             || token.environment.is_some()
             || token.file.is_some()
-            || token.stdin;
+            || token.stdin
+            || {
+                #[cfg(feature = "jwt-target-acceptance-review")]
+                {
+                    target_acceptance_policy_file.is_some()
+                }
+                #[cfg(not(feature = "jwt-target-acceptance-review"))]
+                {
+                    false
+                }
+            };
         if !any_selected {
             return Ok(None);
         }
@@ -275,16 +394,26 @@ impl JwtPolicyReviewInput {
         if let AuthorizationInputSource::File(token_file) = &token {
             validate_local_file_path(token_file).map_err(JwtPolicyInputError::TokenSource)?;
         }
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if let Some(target_policy_file) = &target_acceptance_policy_file {
+            validate_local_file_path(target_policy_file)
+                .map_err(JwtPolicyInputError::TargetPolicySource)?;
+        }
         Ok(Some(Self {
             policy_file,
             public_jwk_file,
             token,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            target_acceptance_policy_file,
         }))
     }
 
     /// Validates the non-secret policy and explicit local public key while the
     /// secret compact token remains unread.
-    pub(crate) fn prepare(self) -> Result<PreparedJwtPolicyReviewInput, JwtPolicyInputError> {
+    pub(crate) fn prepare(
+        self,
+        #[cfg(feature = "jwt-target-acceptance-review")] selected_application: &url::Url,
+    ) -> Result<PreparedJwtPolicyReviewInput, JwtPolicyInputError> {
         let policy_source = read_bounded_regular_file(self.policy_file, MAX_JWT_POLICY_BYTES)
             .map_err(JwtPolicyInputError::PolicySource)?;
         let document: JwtPolicyDocument = toml::from_str(
@@ -315,10 +444,42 @@ impl JwtPolicyReviewInput {
                 .map_err(JwtPolicyInputError::PublicKeySource)?;
         let public_key = Es256LocalPublicKey::from_jwk_json(public_jwk_source.into_owned())
             .map_err(|_| JwtPolicyInputError::InvalidPublicKey)?;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let target_acceptance_policy = self
+            .target_acceptance_policy_file
+            .map(|path| {
+                let source =
+                    read_bounded_regular_file(path, MAX_JWT_TARGET_ACCEPTANCE_POLICY_BYTES)
+                        .map_err(JwtPolicyInputError::TargetPolicySource)?;
+                let document: JwtTargetAcceptancePolicyDocument = toml::from_str(
+                    std::str::from_utf8(source.as_slice())
+                        .map_err(|_| JwtPolicyInputError::InvalidTargetPolicy)?,
+                )
+                .map_err(|_| JwtPolicyInputError::InvalidTargetPolicy)?;
+                if document.schema != JWT_TARGET_ACCEPTANCE_POLICY_INPUT_SCHEMA {
+                    return Err(JwtPolicyInputError::InvalidTargetPolicy);
+                }
+                let application = parse_exact_jwt_target_policy_url(&document.application)?;
+                let resource = parse_exact_jwt_target_policy_url(&document.resource)?;
+                if application != *selected_application {
+                    return Err(JwtPolicyInputError::InvalidTargetPolicy);
+                }
+                JwtTargetAcceptancePolicy::new(
+                    (&document.policy_reference, &document.policy_revision),
+                    application,
+                    resource,
+                    &document.resource_reference,
+                    &document.success_json_field,
+                )
+                .map_err(|_| JwtPolicyInputError::InvalidTargetPolicy)
+            })
+            .transpose()?;
         Ok(PreparedJwtPolicyReviewInput {
             policy,
             public_key,
             token: self.token,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            target_acceptance_policy,
         })
     }
 }
@@ -419,6 +580,7 @@ fn windows_path_component_is_special(component: &std::ffi::OsStr) -> bool {
 impl PreparedJwtPolicyReviewInput {
     /// Reads and evaluates the compact token exactly once after output
     /// reservation. The token is never sent to the target or serialized.
+    #[cfg(not(feature = "jwt-target-acceptance-review"))]
     pub(crate) fn load(self) -> Result<JwtPolicyReviewAudit, JwtPolicyInputError> {
         let token = self
             .token
@@ -438,6 +600,51 @@ impl PreparedJwtPolicyReviewInput {
             JwtEvaluationTime { unix_seconds },
         ))
     }
+
+    /// Reads the compact token exactly once after output reservation. When
+    /// target acceptance is selected, only a locally parsed, policy-consistent,
+    /// and signature-verified token crosses into the move-only runtime handoff.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub(crate) fn load(self) -> Result<LoadedJwtPolicyReviewInput, JwtPolicyInputError> {
+        let token = self
+            .token
+            .read_bytes_with_limit(MAX_COMPACT_JWT_BYTES)
+            .map_err(JwtPolicyInputError::TokenSource)?;
+        let token = SecretCompactJwt::new(token.into_owned())
+            .map_err(|_| JwtPolicyInputError::InvalidToken)?;
+        let unix_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+            .ok_or(JwtPolicyInputError::EvaluationClockUnavailable)?;
+        let evaluation_time = JwtEvaluationTime { unix_seconds };
+        let Some(target_policy) = self.target_acceptance_policy else {
+            return Ok(LoadedJwtPolicyReviewInput {
+                local_audit: review_compact_jwt(
+                    &token,
+                    &self.public_key,
+                    &self.policy,
+                    evaluation_time,
+                ),
+                target_acceptance: None,
+            });
+        };
+        let prepared = review_and_prepare_target_acceptance(
+            token,
+            &self.public_key,
+            &self.policy,
+            evaluation_time,
+        )
+        .map_err(|_| JwtPolicyInputError::TargetControlPreparation)?;
+        let (local_audit, runtime_input) = prepared.into_parts();
+        Ok(LoadedJwtPolicyReviewInput {
+            local_audit,
+            target_acceptance: Some(LoadedJwtTargetAcceptanceInput {
+                policy: target_policy,
+                runtime_input,
+            }),
+        })
+    }
 }
 
 /// Redaction-safe failures for the local JWT input boundary.
@@ -452,9 +659,15 @@ pub(crate) enum JwtPolicyInputError {
     InvalidPolicy,
     PublicKeySource(AuthorizationInputError),
     InvalidPublicKey,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    TargetPolicySource(AuthorizationInputError),
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    InvalidTargetPolicy,
     TokenSource(AuthorizationInputError),
     InvalidToken,
     EvaluationClockUnavailable,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    TargetControlPreparation,
 }
 
 #[cfg(feature = "jwt-policy-review")]
@@ -470,9 +683,19 @@ impl fmt::Display for JwtPolicyInputError {
             Self::InvalidPolicy => "JWT policy is invalid",
             Self::PublicKeySource(_) => "JWT public JWK must be a bounded regular file",
             Self::InvalidPublicKey => "JWT public JWK is invalid",
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::TargetPolicySource(_) => {
+                "JWT target-acceptance policy must be a bounded regular UTF-8 file"
+            },
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::InvalidTargetPolicy => "JWT target-acceptance policy is invalid",
             Self::TokenSource(_) => "JWT token source could not be loaded",
             Self::InvalidToken => "JWT token value is invalid",
             Self::EvaluationClockUnavailable => "JWT local evaluation clock is unavailable",
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::TargetControlPreparation => {
+                "JWT invalid-signature control could not be prepared safely"
+            },
         })
     }
 }
@@ -484,6 +707,8 @@ impl std::error::Error for JwtPolicyInputError {
             Self::PolicySource(source)
             | Self::PublicKeySource(source)
             | Self::TokenSource(source) => Some(source),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::TargetPolicySource(source) => Some(source),
             _ => None,
         }
     }
@@ -1377,9 +1602,67 @@ allowed_clock_skew_seconds = 0
     }
 
     #[cfg(feature = "jwt-policy-review")]
+    fn select_local_jwt_input(
+        policy_file: Option<PathBuf>,
+        public_jwk_file: Option<PathBuf>,
+        token: AuthorizationSourceOptions,
+    ) -> Result<Option<JwtPolicyReviewInput>, JwtPolicyInputError> {
+        JwtPolicyReviewInput::select(
+            policy_file,
+            public_jwk_file,
+            token,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            None,
+        )
+    }
+
+    #[cfg(feature = "jwt-policy-review")]
+    fn prepare_local_jwt_input(
+        input: JwtPolicyReviewInput,
+    ) -> Result<PreparedJwtPolicyReviewInput, JwtPolicyInputError> {
+        input.prepare(
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            &url::Url::parse("https://owned.example.test/app/").unwrap(),
+        )
+    }
+
+    #[cfg(feature = "jwt-policy-review")]
+    fn load_local_jwt_input(
+        input: PreparedJwtPolicyReviewInput,
+    ) -> Result<JwtPolicyReviewAudit, JwtPolicyInputError> {
+        #[cfg(not(feature = "jwt-target-acceptance-review"))]
+        {
+            input.load()
+        }
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        {
+            let loaded = input.load()?;
+            let (audit, target_acceptance) = loaded.into_parts();
+            assert!(target_acceptance.is_none());
+            Ok(audit)
+        }
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    fn jwt_target_acceptance_policy_source(application: &url::Url) -> String {
+        format!(
+            concat!(
+                "schema = \"security.jwt-target-acceptance-policy/v1\"\n",
+                "policy_reference = \"owned-target-acceptance\"\n",
+                "policy_revision = \"owned-target-acceptance-v1\"\n",
+                "application = \"{}\"\n",
+                "resource = \"{}protected/marker\"\n",
+                "resource_reference = \"protected-marker\"\n",
+                "success_json_field = \"accepted\"\n"
+            ),
+            application, application,
+        )
+    }
+
+    #[cfg(feature = "jwt-policy-review")]
     #[test]
     fn jwt_input_selection_and_debug_redact_all_sources() {
-        assert!(JwtPolicyReviewInput::select(
+        assert!(select_local_jwt_input(
             None,
             None,
             AuthorizationSourceOptions::new(None, None, false),
@@ -1387,7 +1670,7 @@ allowed_clock_skew_seconds = 0
         .unwrap()
         .is_none());
         assert!(matches!(
-            JwtPolicyReviewInput::select(
+            select_local_jwt_input(
                 Some(PathBuf::from("POLICY-MUST-NOT-LEAK")),
                 None,
                 AuthorizationSourceOptions::new(None, None, false),
@@ -1395,7 +1678,7 @@ allowed_clock_skew_seconds = 0
             Err(JwtPolicyInputError::MissingPublicKey)
         ));
         assert!(matches!(
-            JwtPolicyReviewInput::select(
+            select_local_jwt_input(
                 Some(PathBuf::from("POLICY-MUST-NOT-LEAK")),
                 Some(PathBuf::from("KEY-MUST-NOT-LEAK")),
                 AuthorizationSourceOptions::new(
@@ -1406,7 +1689,7 @@ allowed_clock_skew_seconds = 0
             ),
             Err(JwtPolicyInputError::ConflictingTokenSources)
         ));
-        let input = JwtPolicyReviewInput::select(
+        let input = select_local_jwt_input(
             Some(PathBuf::from("POLICY-MUST-NOT-LEAK")),
             Some(PathBuf::from("KEY-MUST-NOT-LEAK")),
             AuthorizationSourceOptions::new(
@@ -1470,7 +1753,7 @@ allowed_clock_skew_seconds = 0
         let named_pipe = PathBuf::from(r"\\.\pipe\termivar-jwt-must-not-open");
         for (error, expected) in [
             (
-                JwtPolicyReviewInput::select(
+                select_local_jwt_input(
                     Some(named_pipe.clone()),
                     Some(local_jwk.clone()),
                     AuthorizationSourceOptions::new(None, Some(local_token.clone()), false),
@@ -1479,7 +1762,7 @@ allowed_clock_skew_seconds = 0
                 "policy",
             ),
             (
-                JwtPolicyReviewInput::select(
+                select_local_jwt_input(
                     Some(local_policy.clone()),
                     Some(named_pipe.clone()),
                     AuthorizationSourceOptions::new(None, Some(local_token.clone()), false),
@@ -1488,7 +1771,7 @@ allowed_clock_skew_seconds = 0
                 "public-key",
             ),
             (
-                JwtPolicyReviewInput::select(
+                select_local_jwt_input(
                     Some(local_policy.clone()),
                     Some(local_jwk.clone()),
                     AuthorizationSourceOptions::new(None, Some(named_pipe.clone()), false),
@@ -1527,15 +1810,14 @@ allowed_clock_skew_seconds = 0
         std::fs::write(&policy, "schema = \"wrong\"").unwrap();
         std::fs::write(&key, RFC7515_PUBLIC_JWK).unwrap();
         let missing_token = directory.path().join("TOKEN-MUST-NOT-BE-OPENED");
-        let error = JwtPolicyReviewInput::select(
+        let input = select_local_jwt_input(
             Some(policy),
             Some(key),
             AuthorizationSourceOptions::new(None, Some(missing_token), false),
         )
         .unwrap()
-        .unwrap()
-        .prepare()
-        .unwrap_err();
+        .unwrap();
+        let error = prepare_local_jwt_input(input).unwrap_err();
         assert!(matches!(error, JwtPolicyInputError::InvalidPolicy));
     }
 
@@ -1559,16 +1841,137 @@ allowed_clock_skew_seconds = 0
                 .join("\n");
             std::fs::write(&policy, source).unwrap();
             std::fs::write(&key, RFC7515_PUBLIC_JWK).unwrap();
-            let error = JwtPolicyReviewInput::select(
+            let input = select_local_jwt_input(
                 Some(policy),
                 Some(key),
                 AuthorizationSourceOptions::new(None, Some(missing_token), false),
             )
             .unwrap()
-            .unwrap()
-            .prepare()
-            .unwrap_err();
+            .unwrap();
+            let error = prepare_local_jwt_input(input).unwrap_err();
             assert!(matches!(error, JwtPolicyInputError::InvalidPolicy));
+        }
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[test]
+    fn jwt_target_policy_preflight_follows_local_inputs_and_precedes_token_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = directory.path().join("policy.toml");
+        let key = directory.path().join("public.jwk");
+        let target_policy = directory.path().join("target-policy.toml");
+        let missing_target_policy = directory.path().join("MISSING-TARGET-POLICY");
+        let missing_token = directory.path().join("TOKEN-MUST-NOT-BE-OPENED");
+        let application = url::Url::parse("https://owned.example.test/app/").unwrap();
+
+        let select = |target_policy_file: PathBuf| {
+            JwtPolicyReviewInput::select(
+                Some(policy.clone()),
+                Some(key.clone()),
+                AuthorizationSourceOptions::new(None, Some(missing_token.clone()), false),
+                Some(target_policy_file),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        std::fs::write(&policy, "schema = \"wrong\"").unwrap();
+        std::fs::write(&key, RFC7515_PUBLIC_JWK).unwrap();
+        assert!(matches!(
+            select(missing_target_policy.clone())
+                .prepare(&application)
+                .unwrap_err(),
+            JwtPolicyInputError::InvalidPolicy
+        ));
+
+        std::fs::write(&policy, jwt_policy_source()).unwrap();
+        std::fs::write(&key, "{}").unwrap();
+        assert!(matches!(
+            select(missing_target_policy)
+                .prepare(&application)
+                .unwrap_err(),
+            JwtPolicyInputError::InvalidPublicKey
+        ));
+
+        std::fs::write(&key, RFC7515_PUBLIC_JWK).unwrap();
+        std::fs::write(&target_policy, "schema = \"wrong\"").unwrap();
+        assert!(matches!(
+            select(target_policy.clone())
+                .prepare(&application)
+                .unwrap_err(),
+            JwtPolicyInputError::InvalidTargetPolicy
+        ));
+
+        let canonical_resource = format!("{application}protected/marker");
+        for unsafe_resource in [
+            format!("{application}safe/../protected/marker"),
+            format!("{application}safe/%2e%2e/protected/marker"),
+            format!(r"{application}safe\..\protected\marker"),
+        ] {
+            let source = jwt_target_acceptance_policy_source(&application)
+                .replace(&canonical_resource, &unsafe_resource);
+            std::fs::write(&target_policy, source).unwrap();
+            assert!(matches!(
+                select(target_policy.clone())
+                    .prepare(&application)
+                    .unwrap_err(),
+                JwtPolicyInputError::InvalidTargetPolicy
+            ));
+        }
+
+        std::fs::write(
+            &target_policy,
+            jwt_target_acceptance_policy_source(&application),
+        )
+        .unwrap();
+        let error = select(target_policy)
+            .prepare(&application)
+            .unwrap()
+            .load()
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            JwtPolicyInputError::TokenSource(AuthorizationInputError::SourceUnavailable)
+        ));
+    }
+
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[test]
+    fn jwt_target_policy_urls_require_exact_raw_canonical_spelling() {
+        let canonical = "https://owned.example.test/app/protected/marker";
+        assert_eq!(
+            parse_exact_jwt_target_policy_url(canonical)
+                .unwrap()
+                .as_str(),
+            canonical
+        );
+        for normalized_away in [
+            "https://owned.example.test/app/safe/%2e%2e/protected/marker",
+            r"https://owned.example.test/app/safe\..\protected\marker",
+        ] {
+            assert_eq!(
+                url::Url::parse(normalized_away).unwrap().as_str(),
+                canonical,
+                "the underlying parser no longer reproduces the guarded normalization"
+            );
+            assert!(parse_exact_jwt_target_policy_url(normalized_away).is_err());
+        }
+        for rejected in [
+            "https://owned.example.test/app/./protected/marker",
+            "https://owned.example.test/app/safe/../protected/marker",
+            "https://owned.example.test/app/safe/%2e%2e/protected/marker",
+            r"https://owned.example.test/app\protected\marker",
+            r"https:\\owned.example.test\app\protected\marker",
+            "HTTPS://OWNED.EXAMPLE.TEST/app/protected/marker",
+            "https://owned.example.test:443/app/protected/marker",
+            "https://owned.example.test",
+            " https://owned.example.test/app/protected/marker",
+            "https://owned.example.test/app/protected/marker\n",
+        ] {
+            assert!(
+                parse_exact_jwt_target_policy_url(rejected).is_err(),
+                "non-canonical authority spelling was accepted: {rejected:?}"
+            );
         }
     }
 
@@ -1582,17 +1985,15 @@ allowed_clock_skew_seconds = 0
         std::fs::write(&policy, jwt_policy_source()).unwrap();
         std::fs::write(&key, RFC7515_PUBLIC_JWK).unwrap();
         std::fs::write(&token, format!("{RFC7515_ES256_JWS}\r\n")).unwrap();
-        let audit = JwtPolicyReviewInput::select(
+        let input = select_local_jwt_input(
             Some(policy),
             Some(key),
             AuthorizationSourceOptions::new(None, Some(token), false),
         )
         .unwrap()
-        .unwrap()
-        .prepare()
-        .unwrap()
-        .load()
         .unwrap();
+        let prepared = prepare_local_jwt_input(input).unwrap();
+        let audit = load_local_jwt_input(prepared).unwrap();
         assert_eq!(audit.parsing_status(), JwtParsingStatus::Parsed);
         assert_eq!(
             audit.local_signature_status(),

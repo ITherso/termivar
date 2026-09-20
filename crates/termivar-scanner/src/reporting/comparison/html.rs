@@ -229,7 +229,11 @@ fn jwt_policy_review(
     output: &mut RenderBuffer,
     comparison: &JwtPolicyReviewComparison,
 ) -> Result<(), ReportError> {
-    output.push_str("<section class=\"wp-review\" aria-labelledby=\"jwt-policy-review-differences\"><h2 id=\"jwt-policy-review-differences\">Local JWT policy review differences</h2><p class=\"muted\">Validated, value-free local JWT audit projections are compared separately from target observations. This display retains no token, claim value, signature, or key material and does not establish target acceptance, authorization, vulnerability, or remediation.</p><div class=\"wp-summary\">")?;
+    if comparison.target_selected {
+        output.push_str("<section class=\"wp-review\" aria-labelledby=\"jwt-policy-review-differences\"><h2 id=\"jwt-policy-review-differences\">JWT policy review differences</h2><p class=\"muted\">Validated, value-free local policy projections and bounded target-control projections are compared without retaining token, claim, signature, key, marker-name, or raw-resource values. The comparison does not establish a general authentication bypass, authorization effect, vulnerability, impact, or remediation.</p><div class=\"wp-summary\">")?;
+    } else {
+        output.push_str("<section class=\"wp-review\" aria-labelledby=\"jwt-policy-review-differences\"><h2 id=\"jwt-policy-review-differences\">Local JWT policy review differences</h2><p class=\"muted\">Validated, value-free local JWT audit projections are compared separately from target observations. This display retains no token, claim value, signature, or key material and does not establish target acceptance, authorization, vulnerability, or remediation.</p><div class=\"wp-summary\">")?;
+    }
     for (label, value) in [
         ("Comparison", comparison.status),
         ("Methodology", comparison.methodology.status.as_str()),

@@ -77,6 +77,10 @@ pub(crate) use request_broker::{
     WORDPRESS_METADATA_DISCOVERY_POLICY_ID,
 };
 pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub(crate) use request_broker::{
+    JwtTargetAcceptanceRequestDescriptor, JwtTargetAcceptanceRequestError,
+};
 #[cfg(feature = "authorization-review")]
 pub(crate) use response::AuthorizationResponseDefense;
 pub(crate) use response::CollectedHttpResponse;

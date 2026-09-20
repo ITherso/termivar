@@ -28,6 +28,15 @@ use crate::authorization_review::{
 };
 #[cfg(feature = "graphql-review")]
 use crate::graphql_review::{MAX_GRAPHQL_ITEM_EVIDENCE_REFERENCES, MAX_GRAPHQL_RESPONSE_BYTES};
+#[cfg(feature = "jwt-target-acceptance-review")]
+use crate::jwt_policy_review::JwtTargetAcceptanceRuntimeInput;
+#[cfg(feature = "jwt-target-acceptance-review")]
+use crate::jwt_target_acceptance::{
+    JwtTargetAcceptanceCommitStatus, JwtTargetAcceptanceConclusion, JwtTargetAcceptanceDimension,
+    JwtTargetAcceptanceDispatchStatus, JwtTargetAcceptanceIncompleteReason,
+    JwtTargetAcceptanceLegRole, JwtTargetAcceptanceMarkerStatus, JwtTargetAcceptancePolicy,
+    JwtTargetAcceptanceResponseStatus, MAX_JWT_TARGET_ACCEPTANCE_REQUESTS,
+};
 use crate::web_actions::{
     NATIVE_WEB_REVIEW_ACTIVE_REQUESTS_PER_CASE, NATIVE_WEB_REVIEW_REQUESTS_PER_CASE,
 };
@@ -38,6 +47,8 @@ use crate::web_runtime::assessment_passive::{
     CommittedAssessmentPassiveLedger, CommittedAssessmentPassiveObservation,
     CommittedPassiveMediaClass, ASSESSMENT_PASSIVE_NAMESPACE,
 };
+#[cfg(feature = "jwt-target-acceptance-review")]
+use crate::web_runtime::jwt_target_acceptance_runtime::JwtTargetAcceptanceTestFailurePoint;
 #[cfg(feature = "openapi-review")]
 use crate::web_runtime::openapi_runtime::{OpenApiCandidateSource, OpenApiRuntimeOutcome};
 #[cfg(feature = "rest-review")]
@@ -8132,6 +8143,682 @@ struct RecordedRequest {
     target: String,
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+fn jwt_target_acceptance_policy(server: &LocalServer) -> JwtTargetAcceptancePolicy {
+    JwtTargetAcceptancePolicy::new(
+        ("owned-target-policy", "owned-target-policy-v1"),
+        server.url("/"),
+        server.url("/protected/marker"),
+        "protected-marker",
+        "accepted",
+    )
+    .expect("independent target-acceptance policy fixture")
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[tokio::test]
+async fn jwt_target_acceptance_runs_six_ordered_legs_through_normal_runtime() {
+    const VALID: &str = "Bearer eyJhbGciOiJFUzI1NiJ9.e30.AA";
+    const INVALID: &str = "Bearer eyJhbGciOiJFUzI1NiJ9.e30.AQ";
+
+    let server = serve(|request| {
+        if request.path() == "/protected/marker" {
+            let accepted = matches!(
+                request.headers.get("authorization").map(String::as_str),
+                Some(VALID | INVALID)
+            );
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                format!(r#"{{"accepted":{accepted}}}"#),
+            ));
+        }
+        FixtureReply::Response(FixtureResponse::html("fixture root"))
+    })
+    .await;
+    let policy = jwt_target_acceptance_policy(&server);
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_jwt_target_acceptance_review(
+            policy,
+            JwtTargetAcceptanceRuntimeInput::synthetic_eligible_for_test(),
+        )
+        .build()
+        .expect("build normal target-acceptance runtime");
+
+    let report = runtime
+        .analyze()
+        .await
+        .expect("execute normal target-acceptance runtime");
+    let audit = report
+        .jwt_target_acceptance_audit()
+        .expect("target-acceptance audit");
+    assert_eq!(
+        audit.conclusion(),
+        JwtTargetAcceptanceConclusion::InvalidSignatureControlMarkerObservedWithAnonymousControl
+    );
+    assert_eq!(
+        audit.valid_marker(),
+        JwtTargetAcceptanceDimension::ObservedStable
+    );
+    assert_eq!(
+        audit.anonymous_marker(),
+        JwtTargetAcceptanceDimension::NotObservedStable
+    );
+    assert_eq!(
+        audit.invalid_marker(),
+        JwtTargetAcceptanceDimension::ObservedStable
+    );
+    assert_eq!(
+        audit.accounting().dispatched_request_count(),
+        MAX_JWT_TARGET_ACCEPTANCE_REQUESTS
+    );
+    assert_eq!(audit.accounting().dispatched_passive_request_count(), 4);
+    assert_eq!(audit.accounting().dispatched_active_request_count(), 2);
+    assert_eq!(audit.accounting().committed_response_count(), 6);
+    assert!(audit.accounting().retained_response_bytes() > 0);
+    assert!(
+        audit.accounting().accounted_response_bytes()
+            >= audit.accounting().retained_response_bytes()
+    );
+    assert_eq!(
+        audit
+            .legs()
+            .iter()
+            .map(|leg| leg.role())
+            .collect::<Vec<_>>(),
+        JwtTargetAcceptanceLegRole::ORDERED
+    );
+    assert_eq!(
+        audit
+            .legs()
+            .iter()
+            .map(|leg| leg.marker_status())
+            .collect::<Vec<_>>(),
+        [
+            JwtTargetAcceptanceMarkerStatus::Observed,
+            JwtTargetAcceptanceMarkerStatus::NotObserved,
+            JwtTargetAcceptanceMarkerStatus::Observed,
+            JwtTargetAcceptanceMarkerStatus::Observed,
+            JwtTargetAcceptanceMarkerStatus::NotObserved,
+            JwtTargetAcceptanceMarkerStatus::Observed,
+        ]
+    );
+    assert!(
+        report
+            .assessment_items()
+            .iter()
+            .all(|item| !item.capability_id().contains("jwt-target-acceptance")),
+        "target-control review must not mint a finding"
+    );
+
+    let protected = server
+        .requests()
+        .await
+        .into_iter()
+        .filter(|request| request.path() == "/protected/marker")
+        .collect::<Vec<_>>();
+    assert_eq!(protected.len(), 6);
+    assert_eq!(
+        protected
+            .iter()
+            .map(|request| request.headers.get("authorization").map(String::as_str))
+            .collect::<Vec<_>>(),
+        [
+            Some(VALID),
+            None,
+            Some(INVALID),
+            Some(VALID),
+            None,
+            Some(INVALID),
+        ]
+    );
+    assert!(protected.iter().all(|request| {
+        request.method == "GET"
+            && !request.headers.contains_key("cookie")
+            && !request.headers.contains_key("proxy-authorization")
+    }));
+
+    #[cfg(feature = "reporting")]
+    assert!(matches!(
+        ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap()),
+        Err(crate::web_runtime::AssessmentRunReportError::JwtPolicyReviewAuditMismatch)
+    ));
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[tokio::test]
+async fn jwt_target_acceptance_public_marker_suppresses_both_active_controls() {
+    let server = serve(|request| {
+        if request.path() == "/protected/marker" {
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"accepted":true}"#,
+            ));
+        }
+        FixtureReply::Response(FixtureResponse::html("fixture root"))
+    })
+    .await;
+    let policy = jwt_target_acceptance_policy(&server);
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_jwt_target_acceptance_review(
+            policy,
+            JwtTargetAcceptanceRuntimeInput::synthetic_eligible_for_test(),
+        )
+        .build()
+        .expect("build public-marker target-acceptance runtime");
+
+    let report = runtime
+        .analyze()
+        .await
+        .expect("execute public-marker target-acceptance runtime");
+    let audit = report
+        .jwt_target_acceptance_audit()
+        .expect("public-marker target-acceptance audit");
+    assert_eq!(
+        audit.conclusion(),
+        JwtTargetAcceptanceConclusion::PublicOrTokenAgnosticMarkerObserved
+    );
+    assert_eq!(audit.accounting().dispatched_request_count(), 4);
+    assert_eq!(audit.accounting().dispatched_passive_request_count(), 4);
+    assert_eq!(audit.accounting().dispatched_active_request_count(), 0);
+    assert_eq!(audit.accounting().committed_response_count(), 4);
+    assert_eq!(
+        audit
+            .legs()
+            .iter()
+            .map(|leg| (leg.role(), leg.was_dispatched(), leg.marker_status()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                JwtTargetAcceptanceLegRole::ValidCandidate,
+                true,
+                JwtTargetAcceptanceMarkerStatus::Observed,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::AnonymousCandidate,
+                true,
+                JwtTargetAcceptanceMarkerStatus::Observed,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::InvalidCandidate,
+                false,
+                JwtTargetAcceptanceMarkerStatus::NotEvaluated,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::ValidReplay,
+                true,
+                JwtTargetAcceptanceMarkerStatus::Observed,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::AnonymousReplay,
+                true,
+                JwtTargetAcceptanceMarkerStatus::Observed,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::InvalidReplay,
+                false,
+                JwtTargetAcceptanceMarkerStatus::NotEvaluated,
+            ),
+        ]
+    );
+
+    let protected = server
+        .requests()
+        .await
+        .into_iter()
+        .filter(|request| request.path() == "/protected/marker")
+        .collect::<Vec<_>>();
+    assert_eq!(protected.len(), 4);
+    assert_eq!(
+        protected
+            .iter()
+            .filter(|request| request.headers.contains_key("authorization"))
+            .count(),
+        2
+    );
+    assert!(protected.iter().all(|request| {
+        request
+            .headers
+            .get("authorization")
+            .is_none_or(|value| value.ends_with(".AA"))
+    }));
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[tokio::test]
+async fn jwt_target_acceptance_missing_anonymous_marker_suppresses_active_controls() {
+    const VALID: &str = "Bearer eyJhbGciOiJFUzI1NiJ9.e30.AA";
+
+    let server = serve(|request| {
+        if request.path() == "/protected/marker" {
+            let body = if request.headers.get("authorization").map(String::as_str) == Some(VALID) {
+                br#"{"accepted":true}"#.as_slice()
+            } else {
+                br#"{"unrelated":false}"#.as_slice()
+            };
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                body,
+            ));
+        }
+        FixtureReply::Response(FixtureResponse::html("fixture root"))
+    })
+    .await;
+    let policy = jwt_target_acceptance_policy(&server);
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_jwt_target_acceptance_review(
+            policy,
+            JwtTargetAcceptanceRuntimeInput::synthetic_eligible_for_test(),
+        )
+        .build()
+        .expect("build missing-marker target-acceptance runtime");
+
+    let report = runtime
+        .analyze()
+        .await
+        .expect("execute missing-marker target-acceptance runtime");
+    let audit = report
+        .jwt_target_acceptance_audit()
+        .expect("missing-marker target-acceptance audit");
+    assert_eq!(
+        audit.conclusion(),
+        JwtTargetAcceptanceConclusion::Incomplete(
+            JwtTargetAcceptanceIncompleteReason::ResponseNotClassified {
+                role: JwtTargetAcceptanceLegRole::AnonymousCandidate,
+            },
+        )
+    );
+    assert_eq!(
+        audit.valid_marker(),
+        JwtTargetAcceptanceDimension::ObservedStable
+    );
+    assert_eq!(
+        audit.anonymous_marker(),
+        JwtTargetAcceptanceDimension::Incomplete
+    );
+    assert_eq!(
+        audit.invalid_marker(),
+        JwtTargetAcceptanceDimension::NotEvaluated
+    );
+    assert_eq!(audit.accounting().dispatched_request_count(), 4);
+    assert_eq!(audit.accounting().dispatched_passive_request_count(), 4);
+    assert_eq!(audit.accounting().dispatched_active_request_count(), 0);
+    assert_eq!(audit.accounting().committed_response_count(), 4);
+    assert_eq!(
+        audit
+            .legs()
+            .iter()
+            .map(|leg| (leg.role(), leg.was_dispatched(), leg.response_status()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                JwtTargetAcceptanceLegRole::ValidCandidate,
+                true,
+                JwtTargetAcceptanceResponseStatus::CompleteAndClassified,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::AnonymousCandidate,
+                true,
+                JwtTargetAcceptanceResponseStatus::NotClassified,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::InvalidCandidate,
+                false,
+                JwtTargetAcceptanceResponseStatus::NotClassified,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::ValidReplay,
+                true,
+                JwtTargetAcceptanceResponseStatus::CompleteAndClassified,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::AnonymousReplay,
+                true,
+                JwtTargetAcceptanceResponseStatus::NotClassified,
+            ),
+            (
+                JwtTargetAcceptanceLegRole::InvalidReplay,
+                false,
+                JwtTargetAcceptanceResponseStatus::NotClassified,
+            ),
+        ]
+    );
+
+    let protected = server
+        .requests()
+        .await
+        .into_iter()
+        .filter(|request| request.path() == "/protected/marker")
+        .collect::<Vec<_>>();
+    assert_eq!(protected.len(), 4);
+    assert_eq!(
+        protected
+            .iter()
+            .filter(|request| request.headers.contains_key("authorization"))
+            .count(),
+        2
+    );
+    assert!(protected.iter().all(|request| {
+        request
+            .headers
+            .get("authorization")
+            .is_none_or(|value| value == VALID)
+    }));
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[tokio::test]
+async fn jwt_target_acceptance_rejected_invalid_control_is_not_a_security_claim() {
+    const VALID: &str = "Bearer eyJhbGciOiJFUzI1NiJ9.e30.AA";
+    let server = serve(|request| {
+        if request.path() == "/protected/marker" {
+            let accepted = request
+                .headers
+                .get("authorization")
+                .is_some_and(|value| value == VALID);
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                format!(r#"{{"accepted":{accepted}}}"#),
+            ));
+        }
+        FixtureReply::Response(FixtureResponse::html("fixture root"))
+    })
+    .await;
+    let policy = jwt_target_acceptance_policy(&server);
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_jwt_target_acceptance_review(
+            policy,
+            JwtTargetAcceptanceRuntimeInput::synthetic_eligible_for_test(),
+        )
+        .build()
+        .expect("build rejected-control target-acceptance runtime");
+
+    let report = runtime
+        .analyze()
+        .await
+        .expect("execute rejected-control target-acceptance runtime");
+    let audit = report
+        .jwt_target_acceptance_audit()
+        .expect("rejected-control target-acceptance audit");
+    assert_eq!(
+        audit.conclusion(),
+        JwtTargetAcceptanceConclusion::InvalidControlMarkerNotObserved
+    );
+    assert_eq!(
+        audit.invalid_marker(),
+        JwtTargetAcceptanceDimension::NotObservedStable
+    );
+    assert_eq!(audit.accounting().dispatched_request_count(), 6);
+    assert_eq!(audit.accounting().dispatched_active_request_count(), 2);
+    assert!(
+        report
+            .assessment_items()
+            .iter()
+            .all(|item| !item.capability_id().contains("jwt-target-acceptance")),
+        "a rejected control cannot mint a security or remediation finding"
+    );
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[tokio::test]
+async fn jwt_target_acceptance_prefix_survives_later_failure_without_secret_values() {
+    const VALID: &str = "Bearer eyJhbGciOiJFUzI1NiJ9.e30.AA";
+    const INVALID: &str = "Bearer eyJhbGciOiJFUzI1NiJ9.e30.AQ";
+    const TARGET_PATH: &str = "/protected/marker";
+
+    let server = serve(|request| {
+        if request.path() == TARGET_PATH {
+            let accepted = matches!(
+                request.headers.get("authorization").map(String::as_str),
+                Some(VALID | INVALID)
+            );
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                format!(r#"{{"accepted":{accepted}}}"#),
+            ));
+        }
+        FixtureReply::CloseWithoutResponse
+    })
+    .await;
+    let policy = jwt_target_acceptance_policy(&server);
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_jwt_target_acceptance_review(
+            policy,
+            JwtTargetAcceptanceRuntimeInput::synthetic_eligible_for_test(),
+        )
+        .build()
+        .expect("build target-acceptance failure-receipt runtime");
+
+    let error = runtime
+        .analyze()
+        .await
+        .expect_err("ordinary assessment failure must retain the completed target prefix");
+    let receipt = error
+        .failure_receipt()
+        .expect("started ordinary assessment failure receipt");
+    assert_failure_reconciles(receipt);
+
+    let audit = receipt
+        .jwt_target_acceptance_audit()
+        .expect("committed target-acceptance prefix");
+    assert_eq!(
+        audit.conclusion(),
+        JwtTargetAcceptanceConclusion::InvalidSignatureControlMarkerObservedWithAnonymousControl
+    );
+    assert_eq!(
+        audit.accounting().dispatched_request_count(),
+        MAX_JWT_TARGET_ACCEPTANCE_REQUESTS
+    );
+    assert_eq!(audit.accounting().committed_response_count(), 6);
+    assert_eq!(receipt.usage().total_requests(), 7);
+    assert_eq!(receipt.transport().receipts().len(), 7);
+    assert_eq!(
+        receipt.transport().receipts()[6].outcome(),
+        TransportDispatchOutcome::TransportFailure
+    );
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == TARGET_PATH)
+            .count(),
+        6
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/")
+            .count(),
+        1
+    );
+
+    let debug = format!("{error:?}{receipt:?}");
+    assert_no_secret(&debug, &[VALID, INVALID, "accepted", TARGET_PATH]);
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[tokio::test]
+async fn jwt_target_acceptance_failure_after_first_commit_preserves_typed_prefix() {
+    const VALID: &str = "Bearer eyJhbGciOiJFUzI1NiJ9.e30.AA";
+    const TARGET_PATH: &str = "/protected/marker";
+
+    let server = serve(|request| {
+        if request.path() == TARGET_PATH {
+            let accepted = request
+                .headers
+                .get("authorization")
+                .is_some_and(|value| value == VALID);
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                format!(r#"{{"accepted":{accepted}}}"#),
+            ));
+        }
+        FixtureReply::Response(FixtureResponse::html("fixture root"))
+    })
+    .await;
+    let policy = jwt_target_acceptance_policy(&server);
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_jwt_target_acceptance_review(
+            policy,
+            JwtTargetAcceptanceRuntimeInput::synthetic_eligible_for_test(),
+        )
+        .build()
+        .expect("build target-acceptance injected-failure runtime");
+    runtime
+        .jwt_target_acceptance_review
+        .as_mut()
+        .expect("target-acceptance runtime config")
+        .inject_failure_for_test(JwtTargetAcceptanceTestFailurePoint::BeforeDispatch(
+            JwtTargetAcceptanceLegRole::AnonymousCandidate,
+        ));
+
+    let error = runtime
+        .analyze()
+        .await
+        .expect_err("injected failure must return a started failure receipt");
+    let receipt = error
+        .failure_receipt()
+        .expect("target-execution failure receipt");
+    assert_failure_reconciles(receipt);
+    let audit = receipt
+        .jwt_target_acceptance_audit()
+        .expect("typed target prefix audit");
+    assert_eq!(
+        audit.conclusion(),
+        JwtTargetAcceptanceConclusion::Incomplete(
+            JwtTargetAcceptanceIncompleteReason::LegNotDispatched {
+                role: JwtTargetAcceptanceLegRole::AnonymousCandidate,
+            },
+        )
+    );
+    assert_eq!(audit.accounting().dispatched_request_count(), 1);
+    assert_eq!(audit.accounting().committed_response_count(), 1);
+    assert_eq!(receipt.usage().total_requests(), 1);
+    assert_eq!(receipt.transport().receipts().len(), 1);
+    assert_eq!(audit.legs().len(), 6);
+    assert_eq!(
+        (
+            audit.legs()[0].dispatch_status(),
+            audit.legs()[0].commit_status(),
+            audit.legs()[0].response_status(),
+            audit.legs()[0].marker_status(),
+        ),
+        (
+            JwtTargetAcceptanceDispatchStatus::Dispatched,
+            JwtTargetAcceptanceCommitStatus::Committed,
+            JwtTargetAcceptanceResponseStatus::CompleteAndClassified,
+            JwtTargetAcceptanceMarkerStatus::Observed,
+        )
+    );
+    assert!(audit.legs()[1..]
+        .iter()
+        .all(|fact| !fact.was_dispatched() && !fact.was_committed()));
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path(), TARGET_PATH);
+    let debug = format!("{error:?}{receipt:?}");
+    assert_no_secret(&debug, &[VALID, "accepted", TARGET_PATH]);
+}
+
+#[cfg(feature = "jwt-target-acceptance-review")]
+#[tokio::test]
+async fn jwt_target_acceptance_failure_after_accounted_bytes_preserves_uncommitted_leg() {
+    const VALID: &str = "Bearer eyJhbGciOiJFUzI1NiJ9.e30.AA";
+    const TARGET_PATH: &str = "/protected/marker";
+
+    let server = serve(|request| {
+        if request.path() == TARGET_PATH {
+            return FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"accepted":true}"#,
+            ));
+        }
+        FixtureReply::Response(FixtureResponse::html("fixture root"))
+    })
+    .await;
+    let policy = jwt_target_acceptance_policy(&server);
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_jwt_target_acceptance_review(
+            policy,
+            JwtTargetAcceptanceRuntimeInput::synthetic_eligible_for_test(),
+        )
+        .build()
+        .expect("build target-acceptance post-response failure runtime");
+    runtime
+        .jwt_target_acceptance_review
+        .as_mut()
+        .expect("target-acceptance runtime config")
+        .inject_failure_for_test(
+            JwtTargetAcceptanceTestFailurePoint::AfterResponseBeforeCommit(
+                JwtTargetAcceptanceLegRole::ValidCandidate,
+            ),
+        );
+
+    let error = runtime
+        .analyze()
+        .await
+        .expect_err("post-response failure must retain request and byte accounting");
+    let receipt = error
+        .failure_receipt()
+        .expect("target-execution byte-prefix receipt");
+    assert_failure_reconciles(receipt);
+    let audit = receipt
+        .jwt_target_acceptance_audit()
+        .expect("typed uncommitted target leg");
+    assert_eq!(
+        audit.conclusion(),
+        JwtTargetAcceptanceConclusion::Incomplete(
+            JwtTargetAcceptanceIncompleteReason::LegNotCommitted {
+                role: JwtTargetAcceptanceLegRole::ValidCandidate,
+            },
+        )
+    );
+    assert_eq!(audit.accounting().dispatched_request_count(), 1);
+    assert_eq!(audit.accounting().committed_response_count(), 0);
+    assert_eq!(receipt.usage().total_requests(), 1);
+    assert_eq!(receipt.transport().receipts().len(), 1);
+    let failed_leg = &audit.legs()[0];
+    assert_eq!(
+        failed_leg.dispatch_status(),
+        JwtTargetAcceptanceDispatchStatus::Dispatched
+    );
+    assert_eq!(
+        failed_leg.commit_status(),
+        JwtTargetAcceptanceCommitStatus::NotCommitted
+    );
+    assert_eq!(
+        failed_leg.response_status(),
+        JwtTargetAcceptanceResponseStatus::NotClassified
+    );
+    assert_eq!(
+        failed_leg.marker_status(),
+        JwtTargetAcceptanceMarkerStatus::NotEvaluated
+    );
+    assert!(failed_leg.retained_response_bytes() > 0);
+    assert!(failed_leg.accounted_response_bytes() >= failed_leg.retained_response_bytes());
+    assert_eq!(
+        receipt.usage().response_bytes(),
+        failed_leg.accounted_response_bytes()
+    );
+    assert!(audit.legs()[1..]
+        .iter()
+        .all(|fact| !fact.was_dispatched() && !fact.was_committed()));
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path(), TARGET_PATH);
+    let debug = format!("{error:?}{receipt:?}");
+    assert_no_secret(&debug, &[VALID, "accepted", TARGET_PATH]);
 }
 
 impl RecordedRequest {

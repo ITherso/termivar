@@ -29,18 +29,26 @@ use crate::graphql_review::MAX_GRAPHQL_ACTIVE_VERIFICATIONS;
 #[cfg(feature = "graphql-review")]
 use crate::DefenseInteractionClass;
 
-#[cfg(any(feature = "authorization-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "authorization-review",
+    feature = "jwt-target-acceptance-review",
+    feature = "supplied-session-review"
+))]
 use super::authenticated_transport_is_allowed;
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
     AuthorizationPrincipalPair, AuthorizationReviewOutcome, AuthorizationReviewPolicy,
 };
+#[cfg(feature = "jwt-target-acceptance-review")]
+use crate::jwt_policy_review::JwtTargetAcceptanceRuntimeInput;
 
 #[cfg(feature = "graphql-review")]
 use super::graphql_runtime::{
     execute_graphql_review, graphql_endpoint_hints, CommittedGraphqlReview, GraphqlRuntimeResult,
     GraphqlRuntimeStop,
 };
+#[cfg(feature = "jwt-target-acceptance-review")]
+use super::jwt_target_acceptance_runtime::JwtTargetAcceptanceRuntimeConfig;
 #[cfg(feature = "openapi-review")]
 use super::openapi_runtime::{
     select_openapi_candidate, CommittedOpenApiReview, OpenApiReviewConfig, OpenApiRuntimeOutcome,
@@ -114,6 +122,10 @@ use super::{
         CompletedWebAssessmentTruth,
     },
     scan_profile::ScanProfileV1,
+};
+#[cfg(feature = "jwt-target-acceptance-review")]
+use crate::jwt_target_acceptance::{
+    JwtTargetAcceptanceAudit, JwtTargetAcceptancePolicy, MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS,
 };
 #[cfg(feature = "ssrf-oast-review")]
 use crate::ssrf_oast_review::{
@@ -1387,6 +1399,8 @@ pub struct WebAssessmentRunReport {
     defense: WebAssessmentDefenseAudit,
     #[cfg(feature = "supplied-session-review")]
     supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
@@ -1428,6 +1442,8 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug.field("authorization_review", &self.authorization_review);
         #[cfg(feature = "supplied-session-review")]
         debug.field("supplied_session", &self.supplied_session);
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        debug.field("jwt_target_acceptance", &self.jwt_target_acceptance);
         #[cfg(feature = "openapi-review")]
         debug.field("openapi_review", &self.openapi_review);
         #[cfg(feature = "rest-review")]
@@ -1501,6 +1517,11 @@ impl WebAssessmentRunReport {
     #[cfg(feature = "authorization-review")]
     pub const fn authorization_review_audit(&self) -> Option<&WebAssessmentAuthorizationAudit> {
         self.authorization_review.as_ref()
+    }
+    /// Returns the optional value-free six-leg JWT target-acceptance audit.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub const fn jwt_target_acceptance_audit(&self) -> Option<&JwtTargetAcceptanceAudit> {
+        self.jwt_target_acceptance.as_ref()
     }
     #[cfg(feature = "openapi-review")]
     pub const fn openapi_review_audit(&self) -> Option<&WebAssessmentOpenApiAudit> {
@@ -1587,6 +1608,8 @@ impl WebAssessmentRunReport {
             self.supplied_session,
             #[cfg(feature = "authorization-review")]
             self.authorization_review,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            self.jwt_target_acceptance,
             #[cfg(feature = "openapi-review")]
             self.openapi_review,
             #[cfg(feature = "rest-review")]
@@ -1612,6 +1635,8 @@ pub struct WebAssessmentFailureReceipt {
     defense: WebAssessmentDefenseAudit,
     #[cfg(feature = "supplied-session-review")]
     supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     current_subject: WebAssessmentSubjectReport,
     incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     inventory_consistent: bool,
@@ -1632,6 +1657,8 @@ impl fmt::Debug for WebAssessmentFailureReceipt {
             .field("defense", &self.defense);
         #[cfg(feature = "supplied-session-review")]
         debug.field("supplied_session", &self.supplied_session);
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        debug.field("jwt_target_acceptance", &self.jwt_target_acceptance);
         debug
             .field("current_subject", &self.current_subject)
             .field("incomplete_reasons", &self.incomplete_reasons)
@@ -1673,6 +1700,11 @@ impl WebAssessmentFailureReceipt {
     #[cfg(feature = "supplied-session-review")]
     pub const fn supplied_session_audit(&self) -> Option<&WebAssessmentSuppliedSessionAudit> {
         self.supplied_session.as_ref()
+    }
+    /// Returns the value-free JWT target prefix preserved before a later run failure.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub const fn jwt_target_acceptance_audit(&self) -> Option<&JwtTargetAcceptanceAudit> {
+        self.jwt_target_acceptance.as_ref()
     }
     pub fn current_subject(&self) -> &WebAssessmentSubject {
         &self.current_subject.subject
@@ -1741,6 +1773,20 @@ pub enum WebAssessmentRuntimeError {
     #[cfg(feature = "authorization-review")]
     #[error("resource authorization review requires protected authenticated transport")]
     InsecureAuthorizationReviewTransport,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[error("JWT target-acceptance policy does not match the exact assessment application")]
+    JwtTargetAcceptanceApplicationMismatch,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[error("JWT target-acceptance review requires protected authenticated transport")]
+    InsecureJwtTargetAcceptanceTransport,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[error("JWT target-acceptance review could not be composed safely")]
+    JwtTargetAcceptanceComposition,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    #[error("JWT target-acceptance review failed after assessment start")]
+    JwtTargetAcceptanceExecution {
+        receipt: Box<WebAssessmentFailureReceipt>,
+    },
     #[cfg(feature = "supplied-session-review")]
     #[error("supplied-session policy does not match the exact assessment application")]
     SuppliedSessionApplicationMismatch,
@@ -1845,6 +1891,21 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             #[cfg(feature = "authorization-review")]
             Self::InsecureAuthorizationReviewTransport => formatter
                 .write_str("WebAssessmentRuntimeError::InsecureAuthorizationReviewTransport"),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::JwtTargetAcceptanceApplicationMismatch => formatter
+                .write_str("WebAssessmentRuntimeError::JwtTargetAcceptanceApplicationMismatch"),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::InsecureJwtTargetAcceptanceTransport => formatter
+                .write_str("WebAssessmentRuntimeError::InsecureJwtTargetAcceptanceTransport"),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::JwtTargetAcceptanceComposition => {
+                formatter.write_str("WebAssessmentRuntimeError::JwtTargetAcceptanceComposition")
+            },
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::JwtTargetAcceptanceExecution { receipt } => formatter
+                .debug_struct("WebAssessmentRuntimeError::JwtTargetAcceptanceExecution")
+                .field("receipt", receipt)
+                .finish(),
             #[cfg(feature = "supplied-session-review")]
             Self::SuppliedSessionApplicationMismatch => {
                 formatter.write_str("WebAssessmentRuntimeError::SuppliedSessionApplicationMismatch")
@@ -1953,6 +2014,8 @@ impl WebAssessmentRuntimeError {
             Self::RunFailed { receipt, .. }
             | Self::ApiVisibilityRunFailed { receipt, .. }
             | Self::ProjectionInvariant { receipt } => Some(receipt),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            Self::JwtTargetAcceptanceExecution { receipt } => Some(receipt),
             _ => None,
         }
     }
@@ -1972,6 +2035,9 @@ pub struct WebAssessmentRuntimeBuilder {
     graphql_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<(AuthorizationReviewPolicy, AuthorizationPrincipalPair)>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    jwt_target_acceptance_review:
+        Option<(JwtTargetAcceptancePolicy, JwtTargetAcceptanceRuntimeInput)>,
     #[cfg(feature = "openapi-review")]
     openapi_review: bool,
     #[cfg(feature = "rest-review")]
@@ -2010,6 +2076,8 @@ impl WebAssessmentRuntimeBuilder {
             graphql_review: false,
             #[cfg(feature = "authorization-review")]
             resource_authorization_review: None,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance_review: None,
             #[cfg(feature = "openapi-review")]
             openapi_review: false,
             #[cfg(feature = "rest-review")]
@@ -2188,6 +2256,22 @@ impl WebAssessmentRuntimeBuilder {
         self.resource_authorization_review = Some((policy, principals));
         self
     }
+    /// Adds one explicitly selected, bounded valid/anonymous/invalid JWT
+    /// target-acceptance review.
+    ///
+    /// The policy, optional locally proven token pair, and typed local
+    /// ineligibility reason are consumed by this assessment. Build rechecks
+    /// exact application and protected transport before any token can reach
+    /// the broker.
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    pub fn with_jwt_target_acceptance_review(
+        mut self,
+        policy: JwtTargetAcceptancePolicy,
+        runtime_input: JwtTargetAcceptanceRuntimeInput,
+    ) -> Self {
+        self.jwt_target_acceptance_review = Some((policy, runtime_input));
+        self
+    }
     /// Adds one anonymous/authorized JSON comparison for the exact origin root.
     ///
     /// The context is consumed during build and can neither be cloned nor
@@ -2322,6 +2406,25 @@ impl WebAssessmentRuntimeBuilder {
         {
             return Err(WebAssessmentRuntimeError::InsecureSuppliedSessionTransport);
         }
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if self
+            .jwt_target_acceptance_review
+            .as_ref()
+            .is_some_and(|(policy, _)| policy.application() != &root.url)
+        {
+            return Err(WebAssessmentRuntimeError::JwtTargetAcceptanceApplicationMismatch);
+        }
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if self
+            .jwt_target_acceptance_review
+            .as_ref()
+            .is_some_and(|(policy, _)| {
+                !authenticated_transport_is_allowed(&root.url)
+                    || !authenticated_transport_is_allowed(policy.resource())
+            })
+        {
+            return Err(WebAssessmentRuntimeError::InsecureJwtTargetAcceptanceTransport);
+        }
         #[cfg(feature = "wordpress-review")]
         if self
             .wordpress_review
@@ -2403,6 +2506,16 @@ impl WebAssessmentRuntimeBuilder {
                     ) * AUTHORIZATION_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE,
                 )
                 .expect("compiled authorization allowance fits u16");
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        self.jwt_target_acceptance_review.is_some()
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * u16::from(MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS),
+                )
+                .expect("compiled JWT target-acceptance allowance fits u16");
             #[cfg(feature = "openapi-review")]
             let allowance = allowance
                 .checked_add(
@@ -2472,6 +2585,14 @@ impl WebAssessmentRuntimeBuilder {
             .map(|(policy, credential)| {
                 SuppliedSessionRuntimeConfig::new(policy, credential, &authority)
                     .map_err(|()| WebAssessmentRuntimeError::SuppliedSessionComposition)
+            })
+            .transpose()?;
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        let jwt_target_acceptance_review = self
+            .jwt_target_acceptance_review
+            .map(|(policy, runtime_input)| {
+                JwtTargetAcceptanceRuntimeConfig::new(policy, runtime_input)
+                    .map_err(|_| WebAssessmentRuntimeError::JwtTargetAcceptanceComposition)
             })
             .transpose()?;
         let root_subject = WebAssessmentSubject {
@@ -2581,6 +2702,8 @@ impl WebAssessmentRuntimeBuilder {
             graphql_review: self.graphql_review,
             #[cfg(feature = "authorization-review")]
             resource_authorization_review,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance_review,
             #[cfg(feature = "openapi-review")]
             openapi_review: self.openapi_review.then(|| {
                 OpenApiReviewConfig::new(
@@ -2616,6 +2739,8 @@ impl WebAssessmentRuntimeBuilder {
             committed_resource_authorization_review: None,
             #[cfg(feature = "authorization-review")]
             authorization_review_audit: None,
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance_audit: None,
             #[cfg(feature = "openapi-review")]
             committed_openapi_review: None,
             #[cfg(feature = "openapi-review")]
@@ -2665,6 +2790,8 @@ pub struct WebAssessmentRuntime {
     graphql_review: bool,
     #[cfg(feature = "authorization-review")]
     resource_authorization_review: Option<ResourceAuthorizationReviewConfig>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    jwt_target_acceptance_review: Option<JwtTargetAcceptanceRuntimeConfig>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<OpenApiReviewConfig>,
     #[cfg(feature = "rest-review")]
@@ -2696,6 +2823,8 @@ pub struct WebAssessmentRuntime {
     committed_openapi_review: Option<CommittedOpenApiReview>,
     #[cfg(feature = "authorization-review")]
     authorization_review_audit: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "jwt-target-acceptance-review")]
+    jwt_target_acceptance_audit: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "openapi-review")]
     openapi_review_audit: Option<WebAssessmentOpenApiAudit>,
     #[cfg(feature = "rest-review")]
@@ -2933,6 +3062,35 @@ impl WebAssessmentRuntime {
         if !defer_supplied_session {
             if let Some(session) = self.supplied_session_review.take() {
                 self.supplied_session_audit = Some(session.execute(&self.authority, None).await);
+            }
+        }
+
+        // The explicit target-acceptance review consumes the S06 local proof
+        // in a separate six-leg, exact-resource child before anonymous BFS.
+        // It shares parent accounting/cancellation/evidence authority but no
+        // connection pool, cookie state, response body, or token value with
+        // the ordinary assessment.
+        #[cfg(feature = "jwt-target-acceptance-review")]
+        if let Some(review) = self.jwt_target_acceptance_review.take() {
+            match review.execute(&self.authority).await {
+                Ok(audit) => self.jwt_target_acceptance_audit = Some(audit),
+                Err(failure) => {
+                    self.jwt_target_acceptance_audit = failure.into_partial_audit();
+                    return Err(WebAssessmentRuntimeError::JwtTargetAcceptanceExecution {
+                        receipt: Box::new(self.failure_receipt(
+                            &known_subjects,
+                            subject_reports,
+                            forms,
+                            WebAssessmentSubjectReport::failed(
+                                self.root.clone(),
+                                StandardWebDecisionAssessmentFailureParts::default(),
+                                false,
+                            ),
+                            failed_reasons(&reasons),
+                            started_at,
+                        )),
+                    });
+                },
             }
         }
 
@@ -4640,6 +4798,8 @@ impl WebAssessmentRuntime {
             defense: self.defense_audit.clone(),
             #[cfg(feature = "supplied-session-review")]
             supplied_session: self.supplied_session_audit.clone(),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance: self.jwt_target_acceptance_audit.clone(),
             #[cfg(feature = "authorization-review")]
             authorization_review: self.authorization_review_audit.clone(),
             #[cfg(feature = "openapi-review")]
@@ -5035,6 +5195,8 @@ impl WebAssessmentRuntime {
             defense: self.defense_audit.clone(),
             #[cfg(feature = "supplied-session-review")]
             supplied_session: self.supplied_session_audit.clone(),
+            #[cfg(feature = "jwt-target-acceptance-review")]
+            jwt_target_acceptance: self.jwt_target_acceptance_audit.clone(),
             current_subject,
             incomplete_reasons,
             inventory_consistent,

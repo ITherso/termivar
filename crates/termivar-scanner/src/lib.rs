@@ -50,6 +50,8 @@ pub mod experience;
 pub(crate) mod graphql_review;
 #[cfg(feature = "jwt-policy-review")]
 pub mod jwt_policy_review;
+#[cfg(feature = "jwt-target-acceptance-review")]
+pub mod jwt_target_acceptance;
 pub mod knowledge;
 #[cfg(feature = "legacy-scanner")]
 mod legacy_discovery;

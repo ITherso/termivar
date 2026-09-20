@@ -16,6 +16,7 @@ const FEATURE_NAMES: &[&str] = &[
     "authorization-review",
     "graphql-review",
     "jwt-policy-review",
+    "jwt-target-acceptance-review",
     "legacy-scanner",
     "normalization-resilience",
     "openapi-review",
@@ -129,6 +130,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         ),
         ("graphql-review", cfg!(feature = "graphql-review")),
         ("jwt-policy-review", cfg!(feature = "jwt-policy-review")),
+        (
+            "jwt-target-acceptance-review",
+            cfg!(feature = "jwt-target-acceptance-review"),
+        ),
         ("legacy-scanner", cfg!(feature = "legacy-scanner")),
         (
             "normalization-resilience",
@@ -188,6 +193,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.jwt-policy-review"),
         states["jwt-policy-review"]
     );
+    assert_eq!(
+        surface_state(&document, "option.jwt-target-acceptance-review"),
+        states["jwt-target-acceptance-review"]
+    );
     let authorization = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -245,11 +254,11 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "closed public-JWK structure and canonical 32-byte x/y coordinates",
         "curve membership and signature validity are decided by local ES256 verification",
         "failure remains unauthenticated with local_signature=invalid",
-        "never placed in argv, sent to the target, replayed, or used as authorization",
-        "JWT evaluator performs zero target requests and no remote key retrieval; the surrounding scan retains its ordinary authorized web-review requests",
+        "never placed in argv",
+        "local evaluator performs zero target requests and no remote key retrieval",
+        "unless the separately compiled target-acceptance feature and --jwt-target-acceptance-policy are both selected, the token is not forwarded or replayed and target acceptance remains not_performed",
         "jku, x5u, embedded keys, and private JWK material",
         "Parsed, policy-consistent, locally signature-verified, and target-accepted are distinct states",
-        "target acceptance is not performed",
         "does not authenticate the issuer or source",
         "establish server acceptance",
         "exploit or impact validation",
@@ -257,6 +266,50 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         assert!(
             jwt_limit.contains(required),
             "missing local JWT-policy limitation `{required}`"
+        );
+    }
+    let jwt_target = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.jwt-target-acceptance-review")
+        .expect("JWT target-acceptance surface");
+    assert_eq!(
+        jwt_target["documentation"],
+        "docs/internals/local-jwt-policy-review.md"
+    );
+    assert_eq!(
+        jwt_target["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--jwt-policy FILE",
+            "--jwt-public-jwk FILE",
+            "exactly one of --jwt-token-env ENV_VAR, --jwt-token-file FILE, or --jwt-token-stdin",
+            "--jwt-target-acceptance-policy FILE",
+            "HTTPS, except numeric-loopback HTTP fixtures"
+        ])
+    );
+    let jwt_target_limit = jwt_target["limitation"]
+        .as_str()
+        .expect("JWT target-acceptance limitation");
+    for required in [
+        "one exact-origin, application-contained JSON GET resource",
+        "declared target policy revision (policy_revision) must change whenever the application, resource, resource reference, or private success-marker semantics change",
+        "reports compare that revision because the URL and marker are intentionally omitted",
+        "Six ordered candidate/replay legs",
+        "only the two invalid-signature controls are active",
+        "each active leg requires its same-stage valid marker and absent anonymous marker",
+        "fresh ambient-proxy-free pool",
+        "at most six requests, two active requests",
+        "64 KiB per response and 256 KiB total",
+        "exact charged bytes separately because one delivered chunk may cross a retention ceiling",
+        "complete committed JSON-compatible 200, 401, or 403 responses",
+        "not issuer authentication, authorization bypass, exploit execution, impact validation, or a Confirmed finding",
+        "audit remains value-free",
+    ] {
+        assert!(
+            jwt_target_limit.contains(required),
+            "missing JWT target-acceptance limitation `{required}`"
         );
     }
     let tls = document["surfaces"]
@@ -567,6 +620,10 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         ("option.secret-exposure-review", "--secret-exposure-review"),
         ("option.tls-observation", "--tls-observation"),
         ("option.jwt-policy-review", "--jwt-policy"),
+        (
+            "option.jwt-target-acceptance-review",
+            "--jwt-target-acceptance-policy",
+        ),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
         ("option.supplied-session-review", "--session-policy"),
         ("option.wordpress-review", "--wordpress-review"),
@@ -721,6 +778,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "supplied-session-review",
         "tls-observation",
         "jwt-policy-review",
+        "jwt-target-acceptance-review",
     ];
     match case.as_str() {
         "default" | "no-default" => {
@@ -742,7 +800,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                8
+                9
             );
         },
         "rest-only" => {
@@ -775,6 +833,16 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "jwt-policy-review" || !compiled(feature) }));
+        },
+        "jwt-target-only" => {
+            assert!(compiled("jwt-policy-review"));
+            assert!(compiled("jwt-target-acceptance-review"));
+            assert!(FEATURE_NAMES.iter().all(|feature| {
+                matches!(
+                    *feature,
+                    "jwt-policy-review" | "jwt-target-acceptance-review"
+                ) || !compiled(feature)
+            }));
         },
         "bundle-members-individual" => {
             assert!(!compiled("release-bundle"));
