@@ -62,13 +62,13 @@ pub(super) enum JwtTargetAcceptanceTestFailurePoint {
 }
 
 pub(super) struct JwtTargetAcceptanceRuntimeFailure {
-    partial_audit: Option<JwtTargetAcceptanceAudit>,
+    partial_audit: Option<Box<JwtTargetAcceptanceAudit>>,
     _source: JwtTargetAcceptanceRuntimeError,
 }
 
 impl JwtTargetAcceptanceRuntimeFailure {
     pub(super) fn into_partial_audit(self) -> Option<JwtTargetAcceptanceAudit> {
-        self.partial_audit
+        self.partial_audit.map(|audit| *audit)
     }
 }
 
@@ -282,7 +282,7 @@ fn runtime_failure(
             .map(|audit| audit.bind_to_preparation(preparation_binding.clone()))
     });
     JwtTargetAcceptanceRuntimeFailure {
-        partial_audit,
+        partial_audit: partial_audit.map(Box::new),
         _source: source,
     }
 }
@@ -921,6 +921,11 @@ pub(super) enum JwtTargetAcceptanceRuntimeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_failure_keeps_the_partial_audit_out_of_the_result_error() {
+        assert!(std::mem::size_of::<JwtTargetAcceptanceRuntimeFailure>() <= 128);
+    }
 
     fn policy() -> JwtTargetAcceptancePolicy {
         policy_with(
