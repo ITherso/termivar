@@ -1542,6 +1542,16 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "DETERMINISTIC_SCAN_WARNING",
         "run_profile_scan",
     ];
+    if compact
+        .matches("scan_control_reference_mapping_flags_conflict(profile,control_reference_mapping)")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI control-reference mapping validation must receive the exact selected flag before any input or network work"
+                .to_owned(),
+        );
+    }
     if !contains_ordered_subsequence(&ordered, &expected)
         || ordered
             .iter()
