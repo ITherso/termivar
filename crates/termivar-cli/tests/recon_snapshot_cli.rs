@@ -50,12 +50,14 @@ struct TestServer {
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
+    address: SocketAddr,
 }
 
 impl TestServer {
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
+            let _ = TcpStream::connect(self.address);
             worker.join().expect("join numeric-loopback fixture");
         }
     }
@@ -69,23 +71,20 @@ impl Drop for TestServer {
 
 fn serve() -> TestServer {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind numeric-loopback fixture");
-    listener
-        .set_nonblocking(true)
-        .expect("make numeric-loopback fixture nonblocking");
     let address: SocketAddr = listener.local_addr().expect("read fixture address");
     let requests = Arc::new(Mutex::new(Vec::new()));
     let thread_requests = Arc::clone(&requests);
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let worker = thread::spawn(move || {
-        while !thread_stop.load(Ordering::Acquire) {
-            match listener.accept() {
-                Ok((mut stream, _)) => handle_connection(&mut stream, thread_requests.as_ref()),
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(5));
-                },
-                Err(_) => break,
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                break;
+            };
+            if thread_stop.load(Ordering::Acquire) {
+                break;
             }
+            handle_connection(&mut stream, thread_requests.as_ref());
         }
     });
     TestServer {
@@ -93,6 +92,7 @@ fn serve() -> TestServer {
         requests,
         stop,
         worker: Some(worker),
+        address,
     }
 }
 
