@@ -1,16 +1,17 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
 use super::super::{
-    ImportedJwtPolicyReviewAudit, ImportedSecretExposureAudit, ImportedSuppliedSessionAudit,
-    ImportedTlsObservationAudit, ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit,
-    SuppliedSessionResourceBinding, WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
+    ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit,
+    ImportedSecretExposureAudit, ImportedSuppliedSessionAudit, ImportedTlsObservationAudit,
+    ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit, SuppliedSessionResourceBinding,
+    WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
     WordPressAssetFingerprintResourceKey, WordPressComponentKey,
     WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY,
 };
 use super::{
     array, boolean, check, digest, keys, number, object, optional_boolean, optional_text,
     optional_token, reference, required, string, text, token, ComparisonError, ImportedItem, Value,
-    MAX_IDENTIFIER_BYTES, MAX_LEGACY_AUDIT_TEXT_BYTES,
+    MAX_AUDIT_TEXT_BYTES, MAX_IDENTIFIER_BYTES, MAX_LEGACY_AUDIT_TEXT_BYTES,
 };
 use crate::wordpress_version::{
     checked_accumulate_external_interpretation_work, ProfiledVersionKey, WordPressComparisonProfile,
@@ -54,6 +55,294 @@ const JWT_POLICY_REPRESENTATION: &str = "compact_jws";
 const JWT_POLICY_LOCAL_KEY_SOURCE: &str = "explicit_operator_supplied_public_jwk";
 const JWT_POLICY_KEY_SOURCE_ASSURANCE: &str = "operator_supplied_not_authenticated";
 const JWT_POLICY_TOKEN_KEY_SELECTION: &str = "prohibited";
+const CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA: &str = "security.control-reference-mapping-audit/v1";
+const CONTROL_REFERENCE_MAPPING_POLICY: &str = "termivar.control-reference-mapping/v1";
+const CONTROL_REFERENCE_MAPPING_CATALOGUE_ID: &str = "termivar.reviewed-control-references";
+const CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION: &str = "2026-09-20.1";
+const CONTROL_REFERENCE_SOURCE_VERIFIED_AT: &str = "2026-09-20";
+const MAX_CONTROL_REFERENCE_MAPPING_RELATIONSHIPS: u64 = 4_096;
+const MAX_CONTROL_REFERENCE_MAPPING_LINKS: u64 = 16_384;
+const MAX_CONTROL_REFERENCE_LINKS_PER_ITEM: usize = 8;
+
+#[derive(Clone, Copy)]
+struct ExpectedControlReferenceRule {
+    capability_id: &'static str,
+    cwe: Option<&'static str>,
+    item_basis: &'static str,
+    rule_id: &'static str,
+    source_id: &'static str,
+    control_reference: &'static str,
+    control_title: Option<&'static str>,
+    applicability_condition: &'static str,
+    original_mapping_rationale: &'static str,
+}
+
+const EXPECTED_CONTROL_REFERENCE_RULES: [ExpectedControlReferenceRule; 24] = [
+    ExpectedControlReferenceRule {
+        capability_id: "web.review.sql.structural-differential@1",
+        cwe: Some("CWE-89"),
+        item_basis: "differential",
+        rule_id: "termivar.mapping.sql-cwe-89-to-owasp-a05-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A05:2025",
+        control_title: Some("Injection"),
+        applicability_condition: "The mapped item is the exact bounded SQL structural differential with CWE-89 metadata.",
+        original_mapping_rationale: "The exact differential is relevant to review of injection-resistant query construction; it does not establish database access or exploitation.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.review.xss.structural-boundary@1",
+        cwe: Some("CWE-79"),
+        item_basis: "differential",
+        rule_id: "termivar.mapping.xss-cwe-79-to-owasp-a05-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A05:2025",
+        control_title: Some("Injection"),
+        applicability_condition: "The mapped item is the exact non-executing XSS structural differential with CWE-79 metadata.",
+        original_mapping_rationale: "The exact parser-visible differential is relevant to injection review; script execution and exploitability remain untested.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.review.ssti.structural-evaluation@1",
+        cwe: Some("CWE-1336"),
+        item_basis: "differential",
+        rule_id: "termivar.mapping.ssti-cwe-1336-to-owasp-a05-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A05:2025",
+        control_title: Some("Injection"),
+        applicability_condition: "The mapped item is the exact arithmetic template differential with CWE-1336 metadata.",
+        original_mapping_rationale: "The exact template-expression differential is relevant to injection review; engine identity, code execution, and impact remain untested.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.review.cors.credentialed-external-origin@1",
+        cwe: Some("CWE-942"),
+        item_basis: "differential",
+        rule_id: "termivar.mapping.cors-cwe-942-to-owasp-a01-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A01:2025",
+        control_title: Some("Broken Access Control"),
+        applicability_condition: "The mapped item is the exact credentialed external-origin differential with CWE-942 metadata.",
+        original_mapping_rationale: "The exact cross-origin policy differential is relevant to access-control review; browser exploitability and data access remain untested.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.review.redirect.candidate-specific-external@1",
+        cwe: Some("CWE-601"),
+        item_basis: "differential",
+        rule_id: "termivar.mapping.redirect-cwe-601-to-owasp-a01-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A01:2025",
+        control_title: Some("Broken Access Control"),
+        applicability_condition: "The mapped item is the exact candidate-specific external redirect differential with CWE-601 metadata.",
+        original_mapping_rationale: "The exact redirect differential is relevant to destination-control review; no redirect was followed and no downstream impact was tested.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "authorization.resource-cross-principal-equivalence@1",
+        cwe: None,
+        item_basis: "differential",
+        rule_id: "termivar.mapping.authorization-cross-principal-to-owasp-a01-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A01:2025",
+        control_title: Some("Broken Access Control"),
+        applicability_condition: "The mapped item is the exact operator-policy-bound cross-principal equivalence differential and carries no CWE claim.",
+        original_mapping_rationale: "The exact cross-principal differential is relevant to access-control review; operator expectations and resource equivalence do not alone establish unauthorized access.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "ssrf.oast-repeated-outbound-interaction@1",
+        cwe: Some("CWE-918"),
+        item_basis: "differential",
+        rule_id: "termivar.mapping.ssrf-cwe-918-to-owasp-a01-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A01:2025",
+        control_title: Some("Broken Access Control"),
+        applicability_condition: "The mapped item is the exact repeated OAST interaction differential with CWE-918 metadata.",
+        original_mapping_rationale: "OWASP Top 10:2025 places SSRF within A01; the mapped interaction remains review-level and does not establish exploitability or business impact.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.hsts.missing@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.hsts-missing-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response HSTS-missing observation on an eligible HTTPS response.",
+        original_mapping_rationale: "The exact missing-header observation is relevant to transport-policy configuration review; it is not an organization-wide control assessment.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.hsts.max-age-zero@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.hsts-max-age-zero-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response zero-max-age HSTS observation.",
+        original_mapping_rationale: "The exact zero-retention observation is relevant to transport-policy configuration review; intended deployment policy remains operator context.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.hsts.nonconformant@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.hsts-nonconformant-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response nonconformant HSTS observation.",
+        original_mapping_rationale: "The exact malformed-policy observation is relevant to transport-policy configuration review; it does not establish broader configuration compliance.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.csp.missing@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.csp-missing-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response CSP-missing observation.",
+        original_mapping_rationale: "The exact missing-policy observation is relevant to browser content-policy configuration review; it is not proof of executable injection or a control assessment.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.csp.nonconformant@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.csp-nonconformant-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response nonconformant CSP observation.",
+        original_mapping_rationale: "The exact malformed-policy observation is relevant to browser content-policy configuration review; effective browser behavior and wider control coverage remain untested.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.csp.unsafe-inline-declared@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.csp-unsafe-inline-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response CSP unsafe-inline declaration observation.",
+        original_mapping_rationale: "The exact directive observation is relevant to browser content-policy configuration review; it does not establish an injection path or script execution.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.csp.unsafe-eval-declared@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.csp-unsafe-eval-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response CSP unsafe-eval declaration observation.",
+        original_mapping_rationale: "The exact directive observation is relevant to browser content-policy configuration review; it does not establish attacker-controlled evaluation or impact.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.x-content-type-options.missing@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.x-content-type-options-missing-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response X-Content-Type-Options-missing observation.",
+        original_mapping_rationale: "The exact missing-header observation is relevant to response content-type configuration review; browser exploitation and organizational control coverage remain untested.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "web.passive.x-content-type-options.not-nosniff@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.x-content-type-options-not-nosniff-to-owasp-a02-2025@1",
+        source_id: "owasp-top-10-2025",
+        control_reference: "A02:2025",
+        control_title: Some("Security Misconfiguration"),
+        applicability_condition: "The mapped item is the exact complete-response X-Content-Type-Options not-nosniff observation.",
+        original_mapping_rationale: "The exact header-value observation is relevant to response content-type configuration review; browser exploitation and wider compliance remain untested.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "exposure.response-private-key-material@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.private-key-exposure-to-kvkk-article-12@1",
+        source_id: "kvkk-law-6698-article-12",
+        control_reference: "6698/Madde-12",
+        control_title: None,
+        applicability_condition: "The exact redacted response observation may be relevant only if applicable personal-data processing and organizational scope are independently established.",
+        original_mapping_rationale: "Returned private-key-like material can be relevant technical security context, but ownership, validity, personal-data scope, and legal applicability were not established.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "exposure.response-aws-access-key-pair@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.aws-key-pair-exposure-to-kvkk-article-12@1",
+        source_id: "kvkk-law-6698-article-12",
+        control_reference: "6698/Madde-12",
+        control_title: None,
+        applicability_condition: "The exact redacted paired-credential observation may be relevant only if applicable personal-data processing and organizational scope are independently established.",
+        original_mapping_rationale: "Returned paired credential material can be relevant technical security context, but validity, permissions, ownership, personal-data scope, and legal applicability were not established.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "exposure.response-stripe-live-secret@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.stripe-live-secret-exposure-to-kvkk-article-12@1",
+        source_id: "kvkk-law-6698-article-12",
+        control_reference: "6698/Madde-12",
+        control_title: None,
+        applicability_condition: "The exact redacted provider-secret observation may be relevant only if applicable personal-data processing and organizational scope are independently established.",
+        original_mapping_rationale: "Returned live-secret-like material can be relevant technical security context, but validity, permissions, ownership, personal-data scope, and legal applicability were not established.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "exposure.response-bearer-authorization@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.bearer-authorization-exposure-to-kvkk-article-12@1",
+        source_id: "kvkk-law-6698-article-12",
+        control_reference: "6698/Madde-12",
+        control_title: None,
+        applicability_condition: "The exact redacted bearer-material observation may be relevant only if applicable personal-data processing and organizational scope are independently established.",
+        original_mapping_rationale: "Returned bearer-material-like content can be relevant technical security context, but validity, permissions, ownership, personal-data scope, and legal applicability were not established.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "exposure.response-private-key-material@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.private-key-exposure-to-kvkk-guide-72-2025@1",
+        source_id: "kvkk-guide-72-2025-04",
+        control_reference: "KVKK-Rehber-72/2025-04",
+        control_title: None,
+        applicability_condition: "The exact redacted response observation is relevant technical context only if applicable personal-data processing and organizational scope are independently established.",
+        original_mapping_rationale: "The official KVKK security guide is relevant context for safeguarding data-processing environments; this observation does not establish personal-data scope, organizational control failure, or legal noncompliance.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "exposure.response-aws-access-key-pair@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.aws-key-pair-exposure-to-kvkk-guide-72-2025@1",
+        source_id: "kvkk-guide-72-2025-04",
+        control_reference: "KVKK-Rehber-72/2025-04",
+        control_title: None,
+        applicability_condition: "The exact redacted paired-credential observation is relevant technical context only if applicable personal-data processing and organizational scope are independently established.",
+        original_mapping_rationale: "The official KVKK security guide is relevant context for safeguarding data-processing environments; this paired-credential observation does not establish validity, personal-data scope, organizational control failure, or legal noncompliance.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "exposure.response-stripe-live-secret@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.stripe-live-secret-exposure-to-kvkk-guide-72-2025@1",
+        source_id: "kvkk-guide-72-2025-04",
+        control_reference: "KVKK-Rehber-72/2025-04",
+        control_title: None,
+        applicability_condition: "The exact redacted provider-secret observation is relevant technical context only if applicable personal-data processing and organizational scope are independently established.",
+        original_mapping_rationale: "The official KVKK security guide is relevant context for safeguarding data-processing environments; this provider-secret observation does not establish validity, personal-data scope, organizational control failure, or legal noncompliance.",
+    },
+    ExpectedControlReferenceRule {
+        capability_id: "exposure.response-bearer-authorization@1",
+        cwe: None,
+        item_basis: "observation",
+        rule_id: "termivar.mapping.bearer-authorization-exposure-to-kvkk-guide-72-2025@1",
+        source_id: "kvkk-guide-72-2025-04",
+        control_reference: "KVKK-Rehber-72/2025-04",
+        control_title: None,
+        applicability_condition: "The exact redacted bearer-material observation is relevant technical context only if applicable personal-data processing and organizational scope are independently established.",
+        original_mapping_rationale: "The official KVKK security guide is relevant context for safeguarding data-processing environments; this bearer-material observation does not establish validity, personal-data scope, organizational control failure, or legal noncompliance.",
+    },
+];
 const MAX_JWT_POLICY_REFERENCE_BYTES: usize = 64;
 const MAX_JWT_REQUIRED_CLAIMS: u64 = 16;
 const MAX_JWT_CLOCK_SKEW_SECONDS: u64 = 3_600;
@@ -360,6 +649,448 @@ pub(super) fn is_secret_exposure_capability(capability: &str) -> bool {
     SECRET_EXPOSURE_CAPABILITIES
         .iter()
         .any(|(_, expected)| *expected == capability)
+}
+
+pub(super) fn validate_control_reference_mapping(
+    value: &Value,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<ImportedControlReferenceMappingAudit, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "catalogue",
+            "sources",
+            "coverage",
+            "external_activity",
+            "claim_limits",
+            "relationships",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA)?;
+    check(string(fields, "policy")? == CONTROL_REFERENCE_MAPPING_POLICY)?;
+    check(boolean(fields, "selected")?)?;
+
+    let catalogue = object(required(fields, "catalogue")?)?;
+    keys(catalogue, &["id", "revision"], &[])?;
+    check(string(catalogue, "id")? == CONTROL_REFERENCE_MAPPING_CATALOGUE_ID)?;
+    check(string(catalogue, "revision")? == CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION)?;
+
+    let wire_sources = array(fields, "sources")?;
+    check(wire_sources.len() == 5)?;
+    let expected_sources = BTreeMap::from([
+        (
+            "owasp-top-10-2025",
+            (
+                "owasp-top-10", "2025", None,
+                "community_security_project",
+                "https://top10.owasp.org/2025/0x00_2025-Introduction/",
+                "reviewed_identifiers_and_titles",
+                "identifiers_and_titles_with_attribution",
+            ),
+        ),
+        (
+            "pci-dss-4.0.1",
+            (
+                "pci-dss", "4.0.1", Some("published-2024-06-11"),
+                "industry_standards_body",
+                "https://blog.pcisecuritystandards.org/just-published-pci-dss-v4-0-1",
+                "bibliographic_only_rights_deferred",
+                "bibliographic_metadata_only",
+            ),
+        ),
+        (
+            "iso-iec-27001-2022-amd-1-2024",
+            (
+                "iso-iec-27001", "2022", Some("Amd-1:2024"),
+                "international_standards_organization",
+                "https://www.iso.org/standard/27001",
+                "bibliographic_only_rights_deferred",
+                "bibliographic_metadata_only",
+            ),
+        ),
+        (
+            "kvkk-law-6698-article-12",
+            (
+                "kvkk-law-6698", "6698", Some("Madde-12"),
+                "statutory_authority",
+                "https://www.kvkk.gov.tr/Icerik/2040/Veri-Guvenligine-Iliskin-Yukumlulukler",
+                "relevant_technical_context_only",
+                "official_reference_only",
+            ),
+        ),
+        (
+            "kvkk-guide-72-2025-04",
+            (
+                "kvkk-personal-data-security-guide", "2025-04", Some("KVKK-Yayinlari-No-72"),
+                "statutory_authority",
+                "https://kvkk.gov.tr/SharedFolderServer/CMSFiles/7512d0d4-f345-41cb-bc5b-8d5cf125e3a1.pdf",
+                "relevant_technical_context_only",
+                "official_reference_only",
+            ),
+        ),
+    ]);
+    let mut sources = BTreeMap::new();
+    for value in wire_sources {
+        let source = object(value)?;
+        keys(
+            source,
+            &[
+                "source_id",
+                "framework_id",
+                "edition",
+                "revision_or_amendment",
+                "authority_kind",
+                "source_url",
+                "source_verified_at",
+                "mapping_availability",
+                "rights_basis",
+            ],
+            &[],
+        )?;
+        let source_id = text(source, "source_id", MAX_IDENTIFIER_BYTES)?;
+        identifier(source_id)?;
+        let (
+            expected_framework,
+            expected_edition,
+            expected_revision,
+            expected_authority,
+            expected_url,
+            expected_availability,
+            expected_rights,
+        ) = expected_sources
+            .get(source_id)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        let framework_id = text(source, "framework_id", MAX_IDENTIFIER_BYTES)?;
+        identifier(framework_id)?;
+        check(framework_id == *expected_framework)?;
+        let edition = text(source, "edition", MAX_IDENTIFIER_BYTES)?;
+        identifier(edition)?;
+        check(edition == *expected_edition)?;
+        let revision = optional_text(source, "revision_or_amendment", MAX_IDENTIFIER_BYTES)?;
+        if let Some(revision) = revision {
+            identifier(revision)?;
+        }
+        check(revision == *expected_revision)?;
+        check(string(source, "authority_kind")? == *expected_authority)?;
+        let source_url = text(source, "source_url", MAX_LEGACY_AUDIT_TEXT_BYTES)?;
+        check(is_strict_https_reference(source_url))?;
+        check(source_url == *expected_url)?;
+        let verified_at = text(source, "source_verified_at", MAX_IDENTIFIER_BYTES)?;
+        date(verified_at)?;
+        check(verified_at == CONTROL_REFERENCE_SOURCE_VERIFIED_AT)?;
+        let availability = string(source, "mapping_availability")?;
+        check(availability == *expected_availability)?;
+        check(string(source, "rights_basis")? == *expected_rights)?;
+        check(
+            sources
+                .insert(
+                    source_id.to_owned(),
+                    (
+                        framework_id.to_owned(),
+                        edition.to_owned(),
+                        availability.to_owned(),
+                    ),
+                )
+                .is_none(),
+        )?;
+    }
+    check(sources.len() == expected_sources.len())?;
+
+    let coverage = object(required(fields, "coverage")?)?;
+    keys(
+        coverage,
+        &[
+            "considered_item_count",
+            "mapped_item_count",
+            "unmapped_item_count",
+            "relationship_count",
+            "reference_link_count",
+            "omitted_item_count",
+            "omitted_reference_link_count",
+        ],
+        &[],
+    )?;
+    let considered_item_count = number(
+        coverage,
+        "considered_item_count",
+        MAX_CONTROL_REFERENCE_MAPPING_RELATIONSHIPS,
+    )?;
+    let mapped_item_count = number(
+        coverage,
+        "mapped_item_count",
+        MAX_CONTROL_REFERENCE_MAPPING_RELATIONSHIPS,
+    )?;
+    let unmapped_item_count = number(
+        coverage,
+        "unmapped_item_count",
+        MAX_CONTROL_REFERENCE_MAPPING_RELATIONSHIPS,
+    )?;
+    let relationship_count = number(
+        coverage,
+        "relationship_count",
+        MAX_CONTROL_REFERENCE_MAPPING_RELATIONSHIPS,
+    )?;
+    let reference_link_count = number(
+        coverage,
+        "reference_link_count",
+        MAX_CONTROL_REFERENCE_MAPPING_LINKS,
+    )?;
+    let omitted_item_count = number(
+        coverage,
+        "omitted_item_count",
+        MAX_CONTROL_REFERENCE_MAPPING_RELATIONSHIPS,
+    )?;
+    let omitted_reference_link_count = number(
+        coverage,
+        "omitted_reference_link_count",
+        MAX_CONTROL_REFERENCE_MAPPING_LINKS,
+    )?;
+    check(considered_item_count == items.len() as u64)?;
+    check(mapped_item_count == relationship_count)?;
+    check(omitted_item_count == 0 && omitted_reference_link_count == 0)?;
+    check(
+        mapped_item_count
+            .checked_add(unmapped_item_count)
+            .and_then(|count| count.checked_add(omitted_item_count))
+            == Some(considered_item_count),
+    )?;
+
+    let external_activity = object(required(fields, "external_activity")?)?;
+    keys(
+        external_activity,
+        &[
+            "target_request_count",
+            "provider_request_count",
+            "source_retrieval",
+        ],
+        &[],
+    )?;
+    check(number(external_activity, "target_request_count", 0)? == 0)?;
+    check(number(external_activity, "provider_request_count", 0)? == 0)?;
+    check(string(external_activity, "source_retrieval")? == "not_performed")?;
+
+    let claim_limits = object(required(fields, "claim_limits")?)?;
+    keys(
+        claim_limits,
+        &[
+            "control_assessment",
+            "compliance",
+            "certification",
+            "legal_conclusion",
+            "source_authentication",
+        ],
+        &[],
+    )?;
+    check(string(claim_limits, "control_assessment")? == "not_performed")?;
+    for name in [
+        "compliance",
+        "certification",
+        "legal_conclusion",
+        "source_authentication",
+    ] {
+        check(string(claim_limits, name)? == "not_established")?;
+    }
+
+    let relationships = array(fields, "relationships")?;
+    check(relationships.len() as u64 == relationship_count)?;
+    let mut mapped_fingerprints = BTreeSet::new();
+    let mut actual_reference_link_count = 0_u64;
+    for value in relationships {
+        let relationship = object(value)?;
+        keys(
+            relationship,
+            &[
+                "item_fingerprint",
+                "capability_id",
+                "cwe",
+                "item_basis",
+                "references",
+            ],
+            &[],
+        )?;
+        let fingerprint = string(relationship, "item_fingerprint")?;
+        check(digest(fingerprint, "sha256:") && mapped_fingerprints.insert(fingerprint))?;
+        let item = items
+            .get(fingerprint)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        let capability_id = text(relationship, "capability_id", MAX_IDENTIFIER_BYTES)?;
+        identifier(capability_id)?;
+        check(item.capability_id == capability_id)?;
+        let cwe = optional_text(relationship, "cwe", MAX_IDENTIFIER_BYTES)?;
+        if let Some(cwe) = cwe {
+            identifier(cwe)?;
+        }
+        check(item.projection.cwe.as_deref() == cwe)?;
+        let item_basis = token(
+            relationship,
+            "item_basis",
+            &["observation", "differential", "verifier"],
+        )?;
+        let root_basis = match item_basis {
+            "verifier" => "verifier_transition",
+            value => value,
+        };
+        check(item.projection.claim_basis == root_basis)?;
+        let expected_rules = EXPECTED_CONTROL_REFERENCE_RULES
+            .iter()
+            .filter(|rule| {
+                rule.capability_id == capability_id
+                    && rule.cwe == cwe
+                    && rule.item_basis == item_basis
+            })
+            .collect::<Vec<_>>();
+        check(!expected_rules.is_empty())?;
+        let references = array(relationship, "references")?;
+        check(
+            references.len() == expected_rules.len()
+                && references.len() <= MAX_CONTROL_REFERENCE_LINKS_PER_ITEM,
+        )?;
+        actual_reference_link_count = actual_reference_link_count
+            .checked_add(references.len() as u64)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        let mut identities = BTreeSet::new();
+        for value in references {
+            let reference = object(value)?;
+            keys(
+                reference,
+                &[
+                    "rule_id",
+                    "source_id",
+                    "framework_id",
+                    "edition",
+                    "control_reference",
+                    "control_title",
+                    "mapping_basis",
+                    "applicability",
+                    "applicability_condition",
+                    "assurance",
+                    "original_mapping_rationale",
+                ],
+                &[],
+            )?;
+            let rule_id = text(reference, "rule_id", MAX_IDENTIFIER_BYTES)?;
+            identifier(rule_id)?;
+            let expected_rule = expected_rules
+                .iter()
+                .find(|rule| rule.rule_id == rule_id)
+                .ok_or(ComparisonError::InvalidDocument)?;
+            let source_id = text(reference, "source_id", MAX_IDENTIFIER_BYTES)?;
+            identifier(source_id)?;
+            check(source_id == expected_rule.source_id)?;
+            let (source_framework, source_edition, source_availability) = sources
+                .get(source_id)
+                .ok_or(ComparisonError::InvalidDocument)?;
+            check(source_availability != "bibliographic_only_rights_deferred")?;
+            let framework_id = text(reference, "framework_id", MAX_IDENTIFIER_BYTES)?;
+            let edition = text(reference, "edition", MAX_IDENTIFIER_BYTES)?;
+            check(framework_id == source_framework.as_str() && edition == source_edition.as_str())?;
+            let control_reference = text(reference, "control_reference", MAX_IDENTIFIER_BYTES)?;
+            identifier(control_reference)?;
+            check(control_reference == expected_rule.control_reference)?;
+            let control_title = optional_text(reference, "control_title", MAX_AUDIT_TEXT_BYTES)?;
+            if let Some(title) = control_title {
+                external_text(title, MAX_AUDIT_TEXT_BYTES, false)?;
+            }
+            check(control_title == expected_rule.control_title)?;
+            let mapping_basis = token(
+                reference,
+                "mapping_basis",
+                &[
+                    "exact_capability_cwe_and_assessment_basis",
+                    "exact_capability_and_assessment_basis",
+                ],
+            )?;
+            check(
+                (cwe.is_some() && mapping_basis == "exact_capability_cwe_and_assessment_basis")
+                    || (cwe.is_none() && mapping_basis == "exact_capability_and_assessment_basis"),
+            )?;
+            let applicability = token(
+                reference,
+                "applicability",
+                &[
+                    "conditional_technical_context",
+                    "applicability_unestablished",
+                ],
+            )?;
+            let expected_applicability = if source_id == "owasp-top-10-2025" {
+                "conditional_technical_context"
+            } else {
+                "applicability_unestablished"
+            };
+            check(applicability == expected_applicability)?;
+            let applicability_condition =
+                text(reference, "applicability_condition", MAX_AUDIT_TEXT_BYTES)?;
+            external_text(applicability_condition, MAX_AUDIT_TEXT_BYTES, false)?;
+            check(applicability_condition == expected_rule.applicability_condition)?;
+            let assurance = token(
+                reference,
+                "assurance",
+                &[
+                    "reviewed_primary_source_identifier",
+                    "relevant_technical_context",
+                ],
+            )?;
+            check(match source_availability.as_str() {
+                "reviewed_identifiers_and_titles" => {
+                    assurance == "reviewed_primary_source_identifier"
+                },
+                "relevant_technical_context_only" => assurance == "relevant_technical_context",
+                _ => false,
+            })?;
+            let rationale = text(
+                reference,
+                "original_mapping_rationale",
+                MAX_AUDIT_TEXT_BYTES,
+            )?;
+            external_text(rationale, MAX_AUDIT_TEXT_BYTES, false)?;
+            check(rationale == expected_rule.original_mapping_rationale)?;
+            check(identities.insert((rule_id, source_id, edition, control_reference)))?;
+        }
+    }
+    let expected_mapped_fingerprints = items
+        .iter()
+        .filter_map(|(fingerprint, item)| {
+            let item_basis = match item.projection.claim_basis.as_str() {
+                "verifier_transition" => "verifier",
+                value => value,
+            };
+            EXPECTED_CONTROL_REFERENCE_RULES
+                .iter()
+                .any(|rule| {
+                    rule.capability_id == item.capability_id
+                        && rule.cwe == item.projection.cwe.as_deref()
+                        && rule.item_basis == item_basis
+                })
+                .then_some(fingerprint.as_str())
+        })
+        .collect::<BTreeSet<_>>();
+    check(mapped_fingerprints == expected_mapped_fingerprints)?;
+    check(actual_reference_link_count == reference_link_count)?;
+
+    let methodology = selected_object(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "catalogue",
+            "sources",
+            "external_activity",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    let reference_set = selected_object(fields, &["catalogue", "sources", "relationships"], &[])?;
+    Ok(ImportedControlReferenceMappingAudit {
+        methodology,
+        coverage: canonical_value(required(fields, "coverage")?)?,
+        reference_set,
+    })
 }
 
 pub(super) fn validate_secret_exposure(

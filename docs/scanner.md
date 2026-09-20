@@ -307,6 +307,31 @@ enabled enforcement can only narrow or suppress existing authorized work. It
 cannot add an action, expand exact-origin authority or budgets, or increase
 intensity.
 
+### Optional versioned control-reference mapping
+
+The non-default `control-reference-mapping` feature and explicit
+`--profile web-review --control-reference-mapping` select a bounded local pass
+over completed typed assessment items. The mapper is not a scanner phase and
+does not schedule target/provider requests, retrieve source material, change
+the plan or add active verification. Its additive
+`security.control-reference-mapping-audit/v1` records finite-catalogue source
+metadata, item-to-reference relationships, mapped/unmapped/omitted accounting,
+and explicit zero external activity.
+
+The built-in `termivar.reviewed-control-references` revision `2026-09-20.1`
+contains attributed OWASP Top 10:2025 IDs/exact title references and original
+Termivar rationales. PCI DSS 4.0.1 and ISO/IEC 27001:2022+Amd 1:2024 remain
+bibliographic `rights_deferred` records with no embedded control mappings. KVKK
+Law No. 6698 Article 12 and Guide No. 72 (April 2025) are relevant technical
+context with applicability unestablished. This capability is deliberately
+separate from the older experimental `compliance` scaffold below.
+
+Relationships never mutate item identity, severity, disposition, remediation,
+evidence or claim authority. They are not scores, pass/fail, certification,
+legal advice or compliance determinations; an absent item does not establish
+control fulfilment. See
+[Versioned control-reference mapping](internals/control-reference-mapping.md).
+
 ## Internal domain facades
 
 The scanner's responsibility-dense domains are split behind their existing
@@ -469,6 +494,7 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | `distributed` | Implemented deterministic bounded in-process coordination; no transport, persistence, or multi-node runtime | Experimental |
 | `ml` | Serializable external-model records; no learning, clustering, classification, or execution | Experimental |
 | `monitoring` | Caller-supplied performance records and comparisons; no telemetry collector | Experimental |
+| `control-reference-mapping` | Non-default development-only local mapping of completed typed assessment items to one built-in finite versioned reference catalogue; zero target/provider requests, no item-authority change, no score/pass/fail/certification/legal/compliance conclusion | Preview |
 | `compliance` | Caller-supplied audit/catalog records; no compliance determination | Experimental |
 | `threat-intel` | Caller-supplied feed/rule records and catalogs; no correlation or alert engine | Experimental |
 | `full` / `research` | Historical all-opt-in compatibility aggregates; not supported product tiers | Experimental |

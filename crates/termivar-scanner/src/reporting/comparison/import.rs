@@ -67,6 +67,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "secret_exposure_review",
             "tls_observation",
             "jwt_policy_review",
+            "control_reference_mapping",
             "supplied_session",
             "wordpress_review",
             "wordpress_discovery",
@@ -101,6 +102,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     let mut secret_exposure = None;
     let mut tls_observation = None;
     let mut jwt_policy_review = None;
+    let mut control_reference_mapping = None;
     let mut wordpress_review = None;
     let mut wordpress_discovery = None;
     let mut wordpress_asset_fingerprints = None;
@@ -111,6 +113,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "secret_exposure_review",
         "tls_observation",
         "jwt_policy_review",
+        "control_reference_mapping",
         "supplied_session",
         "wordpress_review",
         "wordpress_discovery",
@@ -125,6 +128,9 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
                 tls_observation = Some(audits::validate_tls_observation(value)?);
             } else if name == "jwt_policy_review" {
                 jwt_policy_review = Some(audits::validate_jwt_policy_review(value)?);
+            } else if name == "control_reference_mapping" {
+                control_reference_mapping =
+                    Some(audits::validate_control_reference_mapping(value, &items)?);
             } else if name == "wordpress_discovery" {
                 wordpress_discovery = Some(audits::validate_wordpress_discovery(value, &items)?);
             } else if name == "wordpress_asset_fingerprints" {
@@ -217,6 +223,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         secret_exposure,
         tls_observation,
         jwt_policy_review,
+        control_reference_mapping,
         wordpress_review,
     })
 }

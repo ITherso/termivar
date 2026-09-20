@@ -106,6 +106,8 @@ use crate::authorization_review::{
     AuthorizationReviewOutcome, HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS,
     HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS,
 };
+#[cfg(feature = "control-reference-mapping")]
+use crate::control_reference_mapping::{map_control_references, ControlReferenceMappingAudit};
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{
     SuppliedSessionCredentialAcquisition, SuppliedSessionCredentialMechanism,
@@ -259,6 +261,8 @@ pub struct AssessmentRunReport {
     tls_observation: Option<WebAssessmentTlsObservationAudit>,
     #[cfg(feature = "jwt-policy-review")]
     jwt_policy_review: Option<JwtPolicyReviewAudit>,
+    #[cfg(feature = "control-reference-mapping")]
+    control_reference_mapping: Option<ControlReferenceMappingAudit>,
 }
 
 #[derive(Default)]
@@ -454,6 +458,8 @@ impl AssessmentRunReport {
             tls_observation,
             #[cfg(feature = "jwt-policy-review")]
             jwt_policy_review: None,
+            #[cfg(feature = "control-reference-mapping")]
+            control_reference_mapping: None,
         })
     }
 
@@ -585,6 +591,28 @@ impl AssessmentRunReport {
     #[cfg(feature = "jwt-policy-review")]
     pub const fn jwt_policy_review_audit(&self) -> Option<&JwtPolicyReviewAudit> {
         self.jwt_policy_review.as_ref()
+    }
+
+    /// Attaches the one built-in, bounded, transport-free control-reference
+    /// projection over this completed report's immutable assessment items.
+    #[cfg(feature = "control-reference-mapping")]
+    pub(crate) fn with_control_reference_mapping(
+        mut self,
+    ) -> Result<Self, AssessmentRunReportError> {
+        if self.control_reference_mapping.is_some() {
+            return Err(AssessmentRunReportError::ControlReferenceMappingAuditMismatch);
+        }
+        self.control_reference_mapping = Some(
+            map_control_references(&self.items)
+                .map_err(|_| AssessmentRunReportError::ControlReferenceMappingAuditMismatch)?,
+        );
+        Ok(self)
+    }
+
+    /// Returns the optional transport-free control-reference mapping audit.
+    #[cfg(feature = "control-reference-mapping")]
+    pub const fn control_reference_mapping_audit(&self) -> Option<&ControlReferenceMappingAudit> {
+        self.control_reference_mapping.as_ref()
     }
 }
 
@@ -1242,6 +1270,11 @@ impl fmt::Debug for AssessmentRunReport {
         debug.field(
             "jwt_policy_review_audit_present",
             &self.jwt_policy_review.is_some(),
+        );
+        #[cfg(feature = "control-reference-mapping")]
+        debug.field(
+            "control_reference_mapping_audit_present",
+            &self.control_reference_mapping.is_some(),
         );
         debug.finish()
     }
@@ -2055,6 +2088,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "jwt-target-acceptance-review")]
     #[error("JWT target-acceptance audit does not match its runtime contract")]
     JwtTargetAcceptanceAuditMismatch,
+    /// The optional offline control-reference mapping violated its closed bounds.
+    #[cfg(feature = "control-reference-mapping")]
+    #[error("control-reference mapping audit does not match completed assessment items")]
+    ControlReferenceMappingAuditMismatch,
 }
 
 fn build_run_report(

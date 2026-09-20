@@ -214,6 +214,34 @@ control is a target-acceptance relationship only. It does not authenticate the
 issuer, prove an authorization bypass, validate impact or emit a `Confirmed`
 finding.
 
+## Versioned control-reference mapping
+
+The non-default `control-reference-mapping` scanner/CLI feature remains outside
+`default`, `release-bundle`, and the published alpha.2 archives. Explicit
+`--profile web-review --control-reference-mapping` runs one bounded local
+post-composition pass over completed typed assessment items. It neither changes
+the assessment plan nor schedules a target request, provider request, source
+retrieval, action, or active verification.
+
+The built-in finite catalogue is `termivar.reviewed-control-references` revision
+`2026-09-20.1`. Its optional audit is
+`security.control-reference-mapping-audit/v1` under policy
+`termivar.control-reference-mapping/v1`. V1 embeds attributed OWASP Top 10:2025
+IDs and exact title references plus original Termivar rationale. PCI DSS 4.0.1
+and ISO/IEC 27001:2022+Amd 1:2024 are bibliographic `rights_deferred` sources;
+they contribute no embedded control mapping. KVKK Law No. 6698 Article 12 and
+Guide No. 72 (April 2025) are relevant technical context only, with
+applicability unestablished.
+
+Mapping is an additive relationship audit. It cannot change an item's severity,
+disposition, identity, evidence, remediation or claim authority. It is not a
+score, pass/fail result, certification, legal advice or compliance
+determination, and an absent item is not control fulfilment. Catalogue/source
+changes are methodology changes in Compare. Verify checks saved bytes and
+schema consistency, not catalogue truth, source authenticity, applicability or
+control fulfilment. See
+[Versioned control-reference mapping](control-reference-mapping.md).
+
 ## WordPress evidence review
 
 The non-default `wordpress-review` scanner/CLI feature adds no work by itself.
@@ -670,6 +698,10 @@ Composition is selection-specific:
   policy. Six sequential valid/anonymous/invalid candidate/replay legs use fresh
   no-proxy pools under the same parent authority; only two invalid controls are
   active, and the value-free result does not produce a finding or Confirmed claim.
+- **Versioned control-reference mapping** (`control-reference-mapping`, opt-in)
+  runs only after completed typed assessment items exist. It produces an
+  additive finite-catalogue relationship audit, schedules zero target/provider
+  requests, and cannot increase severity, disposition or claim authority.
 - **Resource authorization review** (`authorization-review`, opt-in) is one
   native action in the existing `web-review` runtime. It compares one exact
   selected JSON resource across primary/peer candidate and replay views, using
@@ -829,6 +861,7 @@ The following matrix separates build availability from actual execution:
 | Existing-connection TLS observation | scanner and CLI opt-in (`tls-observation`) plus explicit `--profile web-review --tls-observation` | existing assessment clients expose TLS information for successful responses already selected by their owning paths; one shared collector immediately reduces bounded leaf DER facts and adds no request, connection, handshake, action or retry | no | Preview, development-only; 64 KiB/leaf, 16 retained unique leaves, 256 bounded SAN entries/leaf, leaf-only Reqwest backend visibility, no active protocol/cipher enumeration, no revocation/OCSP/CT/AIA retrieval, no finding, and outside `release-bundle` |
 | Local JWT policy review | scanner and CLI opt-in (`jwt-policy-review`) plus explicit local policy with a non-secret revision and mandatory intended `typ`, issuer and audience bindings, local public JWK and one env/file/stdin token source | after local preflight/output reservation and before the target scan, one bounded transport-free evaluator parses the compact JWS, applies the local claim/time policy and verifies ES256 against the supplied P-256 public key; the local evaluator adds no target request and retrieves no remote key. Without the separate target-acceptance option it never forwards/replays the token, and only the value-free local audit is attached during final composition after the ordinary assessment completes | no | Preview, development-only; only compact ES256 JWS and strict local public JWK are supported, all three identity-context checks are mandatory, methodology compares the declared policy revision and exact public-key-byte identifier, parsed/policy/signature/target states are distinct, no finding is added, and the feature is outside `release-bundle` |
 | JWT target acceptance review | scanner and CLI opt-in (`jwt-target-acceptance-review`, which includes `jwt-policy-review`) plus the complete local JWT selection and explicit `--jwt-target-acceptance-policy FILE` | after local eligibility, one strict policy authorizes one exact-origin application-contained JSON GET; six ordered valid/anonymous/invalid candidate/replay legs run sequentially through fresh no-proxy pools under the shared parent broker, with the two invalid legs admitted only after their same-stage passive controls | no | Preview, development-only; at most six requests/two active requests, 64 KiB retained/interpreted per response and 256 KiB total, exact charged bytes retained separately, complete committed JSON-compatible 200/401/403 boolean-marker classification only, value-free audit, no finding/Confirmed claim, and outside `release-bundle` |
+| Versioned control-reference mapping | scanner and CLI opt-in (`control-reference-mapping`) plus explicit `--profile web-review --control-reference-mapping` | after ordinary composition completes, maps completed typed items to the built-in versioned finite catalogue; adds zero target/provider requests or source retrievals and does not mutate item authority | no | Preview, development-only; OWASP Top 10:2025 mappings plus bibliographic/technical-context source records, no score/pass/fail/certification/legal conclusion, Compare methodology-only for catalogue/source changes, Verify integrity/schema only, and outside `release-bundle` |
 | WordPress evidence review and metadata discovery | scanner and CLI opt-in (`wordpress-review`), compiled by the current untagged alpha.3 `release-bundle`, plus optional bounded local context/catalogue; the session consumer additionally requires `supplied-session-review`, policy V1/V2 and `--wordpress-supplied-session` | review-only interprets complete exact-root HTML and supplied declarations with zero added requests; explicit `--wordpress-discovery` may issue at most twelve anonymous, bodyless, same-origin metadata GET attempts through the same broker/budget; optional observed page scope reuses up to three eligible committed anonymous secondary-page responses without fetching pages; the V1/V2 session consumer may nominate public metadata only from health-qualified committed resource HTML and never forwards credentials or selects authenticated-page fingerprints; V3 is rejected before secret acquisition | no | Preview, development-only; absent from the default build and published alpha.2 archives; zero active verifications, at most one root-surface item plus one distinct metadata-source response-outcome item; advisory decisions are audit-only and no exploit/impact validation occurs |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
@@ -856,12 +889,13 @@ The normal CLI dependency additionally enables `reporting` for the explicit
 completed `web-review` path; this does not alter no-profile execution or its
 wire contract.
 The stock untagged alpha.3 `release-bundle` capability inventory now reports
-17 known feature identities: the marker plus seven compiled members and nine
+18 known feature identities: the marker plus seven compiled members and ten
 excluded features. The eight compiled identities remain `release-bundle`,
 `artifact-adapter`, `normalization-resilience`, `graphql-review`,
 `openapi-review`, `rest-review`, `authorization-review`, and
-`wordpress-review`. The nine excluded identities are `api-adapter`,
-`jwt-policy-review`, `jwt-target-acceptance-review`, `legacy-scanner`,
+`wordpress-review`. The ten excluded identities are `api-adapter`,
+`control-reference-mapping`, `jwt-policy-review`,
+`jwt-target-acceptance-review`, `legacy-scanner`,
 `proxy-adapter`, `secret-exposure-review`, `ssrf-oast-review`,
 `supplied-session-review`, and `tls-observation`.
 `default` remains empty;

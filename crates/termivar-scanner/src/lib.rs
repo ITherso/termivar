@@ -42,6 +42,8 @@ pub mod config_loader;
 pub mod context;
 #[cfg(feature = "legacy-scanner")]
 pub mod contracts;
+#[cfg(feature = "control-reference-mapping")]
+pub mod control_reference_mapping;
 pub mod defense;
 #[cfg(feature = "legacy-scanner")]
 pub mod error;

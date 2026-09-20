@@ -75,6 +75,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "authz_primary_env",
     "authz_primary_file",
     "authz_primary_stdin",
+    "control_reference_mapping",
     "enforce_defense",
     "explain",
     "format",
@@ -821,6 +822,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("explain", "bool", None),
         ("profile", "Option", Some("CliScanProfile")),
         ("progress", "bool", None),
+        ("control_reference_mapping", "bool", None),
         ("enforce_defense", "bool", None),
         ("graphql_review", "bool", None),
         ("jwt_policy", "Option", Some("PathBuf")),
@@ -1144,6 +1146,30 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     }) {
         violations.push(
             "CLI `openapi_review` must remain an exact cfg-gated bool requiring the explicit scan profile"
+                .to_owned(),
+        );
+    }
+
+    if fields.get("control_reference_mapping").is_none_or(|field| {
+        !is_plain_type(&field.ty, "bool")
+            || !exact_cfg_feature_attribute(&field.attrs, "control-reference-mapping")
+            || !exact_arg_attribute(&field.attrs, "long,requires=\"profile\"")
+    }) {
+        violations.push(
+            "CLI `control_reference_mapping` must remain an exact private opt-in bool requiring an explicit profile"
+                .to_owned(),
+        );
+    }
+
+    if !compact.contains(
+        "fnscan_control_reference_mapping_flags_conflict(profile:Option<CliScanProfile>,selected:bool,)->Option<&'staticstr>{ifselected&&profile!=Some(CliScanProfile::WebReview){Some(\"`--control-reference-mapping`requires`--profileweb-review`\")}else{None}}",
+    ) || compact
+        .matches("fnscan_control_reference_mapping_flags_conflict(")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI control-reference mapping validation must retain the exact web-review-only, value-free preflight"
                 .to_owned(),
         );
     }
@@ -1478,6 +1504,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     let expected = [
         "scan_flags_conflict",
         "scan_rest_review_flags_conflict",
+        "scan_control_reference_mapping_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
@@ -1516,6 +1543,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "run_profile_scan",
     ];
     if !contains_ordered_subsequence(&ordered, &expected)
+        || ordered
+            .iter()
+            .filter(|name| name.as_str() == "scan_control_reference_mapping_flags_conflict")
+            .count()
+            != 1
         || ordered
             .iter()
             .filter(|name| name.as_str() == "scan_progress_flags_conflict")
@@ -2669,6 +2701,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
     const OBSERVED: &[&str] = &[
         "scan_flags_conflict",
         "scan_rest_review_flags_conflict",
+        "scan_control_reference_mapping_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
@@ -3303,6 +3336,11 @@ mod tests {
                 "must remain an exact cfg-gated bool",
             ),
             (
+                "    #[cfg(feature = \"control-reference-mapping\")]\n    #[arg(long, requires = \"profile\")]\n    control_reference_mapping: bool,",
+                "    #[arg(long, requires = \"profile\")]\n    control_reference_mapping: bool,",
+                "control_reference_mapping",
+            ),
+            (
                 "    #[cfg(feature = \"jwt-policy-review\")]\n    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"jwt_public_jwk\", \"jwt_token_source\"]\n    )]\n    jwt_policy: Option<PathBuf>,",
                 "    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"jwt_public_jwk\", \"jwt_token_source\"]\n    )]\n    jwt_policy: Option<PathBuf>,",
                 "private jwt-policy-review gate",
@@ -3396,6 +3434,11 @@ mod tests {
                 "if let Some(message) = scan_progress_flags_conflict(profile, progress) {",
                 "if false {",
                 "after flag, progress, transport",
+            ),
+            (
+                "scan_control_reference_mapping_flags_conflict(profile, control_reference_mapping)",
+                "scan_control_reference_mapping_flags_conflict(profile, false)",
+                "control-reference mapping validation",
             ),
             (
                 "let jwt_policy_review_selected = jwt_policy.is_some()\n        || jwt_public_jwk.is_some()\n        || jwt_token_env.is_some()\n        || jwt_token_file.is_some()\n        || jwt_token_stdin\n        || {\n            #[cfg(feature = \"jwt-target-acceptance-review\")]\n            {\n                jwt_target_acceptance_policy.is_some()\n            }\n            #[cfg(not(feature = \"jwt-target-acceptance-review\"))]\n            {\n                false\n            }\n        };",

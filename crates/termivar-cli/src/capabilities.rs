@@ -245,6 +245,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
             "authorization-review",
             cfg!(feature = "authorization-review"),
         ),
+        (
+            "control-reference-mapping",
+            cfg!(feature = "control-reference-mapping"),
+        ),
         ("graphql-review", cfg!(feature = "graphql-review")),
         ("jwt-policy-review", cfg!(feature = "jwt-policy-review")),
         (
@@ -563,6 +567,19 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/authorization-differential-review.md",
         ),
         surface!(
+            "option.control-reference-mapping",
+            "Versioned control-reference mapping",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("control-reference-mapping"),
+            cfg!(feature = "control-reference-mapping"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &["--profile web-review", "--control-reference-mapping"],
+            "Maps only completed typed assessment items to a built-in, versioned finite control-reference catalogue and schedules zero target or provider requests. V1 embeds attributed OWASP Top 10:2025 identifiers and exact title references with original Termivar rationale. PCI DSS v4.0.1 and ISO/IEC 27001:2022 with Amendment 1:2024 are bibliographic rights_deferred sources with no embedded control mappings. KVKK Law No. 6698 Article 12 and Guide No. 72 (April 2025) are relevant technical context only; applicability is not established and the output is not legal advice. A mapped relationship is not a score, pass/fail result, certification, or compliance determination; absence of an assessment item is not control fulfilment. Mapping never raises severity, disposition, or claim authority. Report Compare classifies catalogue or source changes as methodology changes rather than target or remediation changes. Report Verify checks bundle integrity and schema consistency, not catalogue truth, source authenticity, applicability, or control fulfilment. The feature requires explicit --profile web-review and --control-reference-mapping, remains development-only, and is outside default, release-bundle, and published alpha.2 archives.",
+            "docs/internals/control-reference-mapping.md",
+        ),
+        surface!(
             "option.secret-exposure-review",
             "Passive response secret-exposure review",
             SurfaceGroup::Optional,
@@ -876,7 +893,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 28);
+        assert_eq!(document.surfaces.len(), 29);
 
         let keys = document
             .surfaces
@@ -907,6 +924,7 @@ mod tests {
                 "option.openapi-review",
                 "option.rest-review",
                 "option.resource-authorization-review",
+                "option.control-reference-mapping",
                 "option.secret-exposure-review",
                 "option.tls-observation",
                 "option.jwt-policy-review",
@@ -991,6 +1009,10 @@ mod tests {
             (
                 "option.resource-authorization-review",
                 "authorization-review-policy",
+            ),
+            (
+                "option.control-reference-mapping",
+                "control-reference-mapping",
             ),
             ("option.secret-exposure-review", "secret-exposure-review"),
             ("option.tls-observation", "tls-observation"),
@@ -1102,6 +1124,12 @@ mod tests {
             (
                 "option.resource-authorization-review",
                 Some("authorization-review"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.control-reference-mapping",
+                Some("control-reference-mapping"),
                 "preview",
                 "implemented",
             ),
@@ -1313,6 +1341,40 @@ mod tests {
             find("option.resource-authorization-review").limitation,
             "Distinct principals are operator-provided. Each credentialed leg uses a fresh connection pool with ambient proxies disabled while sharing the parent exact-origin scope, accounting, cancellation, and evidence authority. No identifier mutation or confirmed authorization claim is performed."
         );
+        let control_mapping = find("option.control-reference-mapping");
+        assert_eq!(
+            control_mapping.prerequisites,
+            ["--profile web-review", "--control-reference-mapping"]
+        );
+        assert_eq!(
+            control_mapping.compile_feature,
+            Some("control-reference-mapping")
+        );
+        assert_eq!(
+            control_mapping.documentation,
+            "docs/internals/control-reference-mapping.md"
+        );
+        for required in [
+            "completed typed assessment items",
+            "zero target or provider requests",
+            "OWASP Top 10:2025 identifiers and exact title references",
+            "PCI DSS v4.0.1 and ISO/IEC 27001:2022 with Amendment 1:2024 are bibliographic rights_deferred sources with no embedded control mappings",
+            "KVKK Law No. 6698 Article 12 and Guide No. 72 (April 2025)",
+            "applicability is not established",
+            "not legal advice",
+            "not a score, pass/fail result, certification, or compliance determination",
+            "absence of an assessment item is not control fulfilment",
+            "never raises severity, disposition, or claim authority",
+            "catalogue or source changes as methodology changes rather than target or remediation changes",
+            "Verify checks bundle integrity and schema consistency, not catalogue truth, source authenticity, applicability, or control fulfilment",
+            "requires explicit --profile web-review and --control-reference-mapping",
+            "outside default, release-bundle, and published alpha.2 archives",
+        ] {
+            assert!(
+                control_mapping.limitation.contains(required),
+                "missing control-reference-mapping limitation `{required}`"
+            );
+        }
         let secret_exposure = find("option.secret-exposure-review");
         assert_eq!(
             secret_exposure.prerequisites,

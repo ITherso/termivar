@@ -26,6 +26,10 @@ required-features = ["supplied-session-review"]
 name = "wordpress_supplied_session_cli"
 required-features = ["wordpress-review", "supplied-session-review"]
 
+[[test]]
+name = "control_reference_mapping_cli"
+required-features = ["control-reference-mapping"]
+
 [features]
 default = []
 legacy-scanner = ["dep:reqwest", "termivar-scanner/legacy-scanner"]
@@ -44,6 +48,7 @@ jwt-target-acceptance-review = [
     "jwt-policy-review",
     "termivar-scanner/jwt-target-acceptance-review",
 ]
+control-reference-mapping = ["termivar-scanner/control-reference-mapping"]
 supplied-session-review = ["termivar-scanner/supplied-session-review"]
 ssrf-oast-review = ["termivar-scanner/ssrf-oast-review"]
 wordpress-review = ["termivar-scanner/wordpress-review"]

@@ -25,6 +25,7 @@ const DEFAULT_SCANNER_FEATURES: &[&str] = &["core", "scanning"];
 const EXACT_CORE_FEATURES: &[&str] = &["default", "legacy-contracts"];
 const QUARANTINED_FEATURES: &[&str] = &[
     "authorization-review",
+    "control-reference-mapping",
     "distributed",
     "graphql-review",
     "jwt-policy-review",
@@ -49,6 +50,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
 const EXACT_SCANNER_FEATURES: &[&str] = &[
     "authorization-review",
     "compliance",
+    "control-reference-mapping",
     "core",
     "default",
     "detection",
@@ -84,6 +86,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
 const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "authorization-review",
     "compliance",
+    "control-reference-mapping",
     "core",
     "detection",
     "distributed",
@@ -112,6 +115,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
 const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "authorization-review",
     "compliance",
+    "control-reference-mapping",
     "core",
     "detection",
     "distributed",
@@ -197,6 +201,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "api-adapter",
     "artifact-adapter",
     "authorization-review",
+    "control-reference-mapping",
     "default",
     "graphql-review",
     "jwt-policy-review",
@@ -243,6 +248,10 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("compliance", "feature=\"compliance\""),
     ("config", "feature=\"platform-models\""),
     ("config_loader", "feature=\"platform-models\""),
+    (
+        "control_reference_mapping",
+        "feature=\"control-reference-mapping\"",
+    ),
     ("context", "feature=\"legacy-scanner\""),
     ("contracts", "feature=\"legacy-scanner\""),
     ("dashboard", "feature=\"platform-models\""),
@@ -1368,6 +1377,10 @@ fn cli_feature_violations(
             &["termivar-scanner/authorization-review"][..],
         ),
         (
+            "control-reference-mapping",
+            &["termivar-scanner/control-reference-mapping"][..],
+        ),
+        (
             "ssrf-oast-review",
             &["termivar-scanner/ssrf-oast-review"][..],
         ),
@@ -1613,6 +1626,21 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             "authorization-review",
             &[
                 "authorization-review",
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "control-reference-mapping",
+            &[
+                "control-reference-mapping",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -5382,6 +5410,7 @@ const EXACT_REPORTING_INHERENT_METHODS: &[(&str, &[&str])] = &[
         "ReportGenerator",
         &[
             "available_formats",
+            "attach_control_reference_mapping",
             "compose_assessment",
             "compose_assessment_with_jwt_policy_review",
             "generate",
@@ -5436,6 +5465,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentJwtPolicyReviewAuditDocument>",
             ),
             (
+                "control_reference_mapping",
+                "Option<AssessmentControlReferenceMappingAuditDocument>",
+            ),
+            (
                 "wordpress_review",
                 "Option<AssessmentWordPressAuditDocument>",
             ),
@@ -5448,6 +5481,111 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentWordPressAssetFingerprintAuditDocument>",
             ),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
+        ],
+    ),
+    (
+        "AssessmentControlReferenceMappingAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy", "&'static str"),
+            ("selected", "bool"),
+            ("catalogue", "AssessmentControlReferenceCatalogueDocument"),
+            ("sources", "Vec<AssessmentControlReferenceSourceDocument>"),
+            ("coverage", "AssessmentControlReferenceCoverageDocument"),
+            (
+                "external_activity",
+                "AssessmentControlReferenceExternalActivityDocument",
+            ),
+            (
+                "claim_limits",
+                "AssessmentControlReferenceClaimLimitsDocument",
+            ),
+            (
+                "relationships",
+                "Vec<AssessmentControlReferenceRelationshipDocument>",
+            ),
+        ],
+    ),
+    (
+        "AssessmentControlReferenceCatalogueDocument",
+        &[],
+        &[("id", "&'static str"), ("revision", "&'static str")],
+    ),
+    (
+        "AssessmentControlReferenceSourceDocument",
+        &[],
+        &[
+            ("source_id", "&'static str"),
+            ("framework_id", "&'static str"),
+            ("edition", "&'static str"),
+            ("revision_or_amendment", "Option<&'static str>"),
+            ("authority_kind", "&'static str"),
+            ("source_url", "&'static str"),
+            ("source_verified_at", "&'static str"),
+            ("mapping_availability", "&'static str"),
+            ("rights_basis", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentControlReferenceCoverageDocument",
+        &[],
+        &[
+            ("considered_item_count", "u64"),
+            ("mapped_item_count", "u64"),
+            ("unmapped_item_count", "u64"),
+            ("relationship_count", "u64"),
+            ("reference_link_count", "u64"),
+            ("omitted_item_count", "u64"),
+            ("omitted_reference_link_count", "u64"),
+        ],
+    ),
+    (
+        "AssessmentControlReferenceExternalActivityDocument",
+        &[],
+        &[
+            ("target_request_count", "u64"),
+            ("provider_request_count", "u64"),
+            ("source_retrieval", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentControlReferenceClaimLimitsDocument",
+        &[],
+        &[
+            ("control_assessment", "&'static str"),
+            ("compliance", "&'static str"),
+            ("certification", "&'static str"),
+            ("legal_conclusion", "&'static str"),
+            ("source_authentication", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentControlReferenceRelationshipDocument",
+        &[],
+        &[
+            ("item_fingerprint", "String"),
+            ("capability_id", "String"),
+            ("cwe", "Option<String>"),
+            ("item_basis", "&'static str"),
+            ("references", "Vec<AssessmentControlReferenceLinkDocument>"),
+        ],
+    ),
+    (
+        "AssessmentControlReferenceLinkDocument",
+        &[],
+        &[
+            ("rule_id", "&'static str"),
+            ("source_id", "&'static str"),
+            ("framework_id", "&'static str"),
+            ("edition", "&'static str"),
+            ("control_reference", "&'static str"),
+            ("control_title", "Option<&'static str>"),
+            ("mapping_basis", "&'static str"),
+            ("applicability", "&'static str"),
+            ("applicability_condition", "&'static str"),
+            ("assurance", "&'static str"),
+            ("original_mapping_rationale", "&'static str"),
         ],
     ),
     (
@@ -6788,6 +6926,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "tls-observation" => "feature=\"tls-observation\"",
         "jwt-policy-review" => "feature=\"jwt-policy-review\"",
         "jwt-target-acceptance-review" => "feature=\"jwt-target-acceptance-review\"",
+        "control-reference-mapping" => "feature=\"control-reference-mapping\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
         _ => return false,
@@ -6846,6 +6985,14 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentJwtTargetAcceptanceConclusionDocument"
                 | "AssessmentJwtTargetAcceptanceIncompleteReasonDocument"
                 | "AssessmentJwtTargetAcceptanceLegDocument"
+                | "AssessmentControlReferenceMappingAuditDocument"
+                | "AssessmentControlReferenceCatalogueDocument"
+                | "AssessmentControlReferenceSourceDocument"
+                | "AssessmentControlReferenceCoverageDocument"
+                | "AssessmentControlReferenceExternalActivityDocument"
+                | "AssessmentControlReferenceClaimLimitsDocument"
+                | "AssessmentControlReferenceRelationshipDocument"
+                | "AssessmentControlReferenceLinkDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -6971,6 +7118,16 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentJwtTargetAcceptanceLegDocument" => {
                     "all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")"
                 },
+                "AssessmentControlReferenceMappingAuditDocument"
+                | "AssessmentControlReferenceCatalogueDocument"
+                | "AssessmentControlReferenceSourceDocument"
+                | "AssessmentControlReferenceCoverageDocument"
+                | "AssessmentControlReferenceExternalActivityDocument"
+                | "AssessmentControlReferenceClaimLimitsDocument"
+                | "AssessmentControlReferenceRelationshipDocument"
+                | "AssessmentControlReferenceLinkDocument" => {
+                    "all(feature=\"scanning\",feature=\"control-reference-mapping\")"
+                },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -7094,6 +7251,13 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         reporting_audit_field_attributes_are_exact(
                             &field.attrs,
                             "jwt-policy-review",
+                        )
+                    } else if name == "AssessmentDocument"
+                        && field_name == "control_reference_mapping"
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "control-reference-mapping",
                         )
                     } else if name == "AssessmentJwtPolicyReviewAuditDocument"
                         && matches!(
@@ -7502,6 +7666,15 @@ fn reporting_public_api_violations(source: &str) -> Result<Vec<String>, syn::Err
                                             .to_owned(),
                                     );
                                 }
+                            } else if owner == "ReportGenerator"
+                                && method.sig.ident == "attach_control_reference_mapping"
+                            {
+                                if !reporting_scanning_control_mapping_cfg_is_exact(&method.attrs) {
+                                    violations.push(
+                                        "reporting public method `ReportGenerator::attach_control_reference_mapping` must have exactly cfg(all(feature = \"scanning\", feature = \"control-reference-mapping\")) plus documentation"
+                                            .to_owned(),
+                                    );
+                                }
                             } else {
                                 reject_reporting_cfg_attributes(
                                     &method.attrs,
@@ -7800,6 +7973,19 @@ fn reporting_scanning_jwt_cfg_is_exact(attributes: &[Attribute]) -> bool {
         == 1
 }
 
+fn reporting_scanning_control_mapping_cfg_is_exact(attributes: &[Attribute]) -> bool {
+    attributes.iter().all(|attribute| {
+        attribute.path().is_ident("doc")
+            || (attribute.path().is_ident("cfg")
+                && cfg_predicate(attribute).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"control-reference-mapping\")"))
+    }) && attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("cfg"))
+        .count()
+        == 1
+}
+
 fn validate_reporting_public_constant(item: &syn::ItemConst, violations: &mut Vec<String>) {
     match item.ident.to_string().as_str() {
         "ASSESSMENT_REPORT_DOCUMENT_SCHEMA"
@@ -8005,6 +8191,13 @@ fn reporting_signature_matches(owner: &str, method: &str, signature: &syn::Signa
                         == Some("Option<JwtPolicyReviewAudit>"))
                 && assessment_bridge_return_is_exact(&signature.output)
         },
+        ("ReportGenerator", "attach_control_reference_mapping") => {
+            signature.constness.is_none()
+                && signature.inputs.len() == 1
+                && matches!(signature.inputs.first(), Some(syn::FnArg::Typed(argument))
+                    if simple_type_path(&argument.ty, "AssessmentRunReport").is_some())
+                && assessment_bridge_return_is_exact(&signature.output)
+        },
         ("ReportGenerator", "generate_assessment") => {
             signature.constness.is_none()
                 && signature.inputs.len() == 2
@@ -8072,6 +8265,14 @@ fn validate_reporting_public_method_body(
         },
         ("ReportGenerator", "compose_assessment_with_jwt_policy_review") => {
             reporting_compose_assessment_with_jwt_body_matches(block)
+        },
+        ("ReportGenerator", "attach_control_reference_mapping") => {
+            matches!(reporting_only_expression(block), Some(syn::Expr::MethodCall(call))
+                if call.method == "with_control_reference_mapping"
+                    && call.turbofish.is_none()
+                    && call.args.is_empty()
+                    && reporting_expression_path_key(call.receiver.as_ref()).as_deref()
+                        == Some("report"))
         },
         ("ReportGenerator", "generate_assessment") => {
             reporting_generate_assessment_body_matches(block)
@@ -9706,8 +9907,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 498_129;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x3649_d334_2afb_a022_48f1_46ed_1f96_13e1;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 518_964;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x88d4_f1ca_a64b_433b_1830_c352_edfe_ee3b;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -9800,6 +10001,11 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::authorization_review::AuthorizationReviewOutcome",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_IGNORED_PATHS",
     "crate::authorization_review::HARD_MAX_AUTHORIZATION_REVIEW_SELECTED_PATHS",
+    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA",
+    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_ID",
+    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION",
+    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_POLICY_ID",
+    "crate::control_reference_mapping::ControlReferenceMappingAudit",
     "crate::jwt_policy_review::JWT_POLICY_REVIEW_AUDIT_SCHEMA",
     "crate::jwt_policy_review::JWT_POLICY_REVIEW_POLICY_ID",
     "crate::jwt_policy_review::JwtClockAssurance",
@@ -9972,11 +10178,17 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentRunReportError::JwtPolicyReviewAuditMismatch",
+    "AssessmentControlReferenceMappingAuditDocument::from_audit",
     "AssessmentDecisionOverview::from_document",
     "AssessmentJwtPolicyReviewAuditDocument::from_audits",
     "AssessmentJwtTargetAcceptanceAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
+    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA",
+    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_ID",
+    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION",
+    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_POLICY_ID",
+    "crate::control_reference_mapping::ControlReferenceMappingAudit",
     "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_BODY_BYTES",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_OCCURRENCES",
@@ -10893,38 +11105,69 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "accepted_association_count",
     "accounted_response_bytes",
     "activity",
+    "applicability_condition",
     "allowed_clock_skew_seconds",
     "anonymous_marker",
     "alpn_protocol",
+    "assurance",
+    "authority_kind",
+    "catalogue_id",
+    "catalogue_revision",
     "certificate_limit_rejection_count",
     "certificate_time_status",
     "cipher_suite",
     "clock_assurance",
     "commit_status",
+    "certification",
+    "claim_limits",
+    "compliance",
+    "considered_item_count",
     "conclusion",
+    "control_assessment",
+    "control_reference",
+    "control_reference_mapping_audit",
+    "control_title",
     "connection_reuse",
     "dns_san_count",
     "dispatch_status",
     "dispatched_active_request_count",
     "dispatched_passive_request_count",
     "full_chain",
+    "edition",
+    "framework_id",
     "handshake_kind",
     "ip_san_count",
     "invalid_marker",
+    "item_basis",
+    "item_fingerprint",
     "jwt_target_acceptance_audit",
     "leaf_observations",
+    "legal_conclusion",
     "legs",
     "malformed_certificate_count",
     "marker_status",
     "method",
+    "mapped_item_count",
+    "mapping_availability",
+    "mapping_basis",
     "not_after_epoch_seconds",
     "not_before_epoch_seconds",
     "observation_clock_assurance",
     "observation_source_scope",
+    "omitted_item_count",
+    "omitted_reference_link_count",
+    "original_mapping_rationale",
     "observed_at_epoch_seconds",
     "other_san_count",
     "plaintext_response_count",
     "policy",
+    "provider_request_count",
+    "reference_link_count",
+    "relationship_count",
+    "relationships",
+    "revision_or_amendment",
+    "rights_basis",
+    "rule_id",
     "protocol",
     "response_occurrence_count",
     "response_status",
@@ -10935,6 +11178,11 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "standard_transport_validation_scope",
     "standard_transport_validation_succeeded",
     "successful_https_response_count",
+    "source_authentication",
+    "source_id",
+    "source_retrieval",
+    "source_url",
+    "source_verified_at",
     "target_scheme",
     "target_acceptance_status",
     "target_local_state_is_consistent",
@@ -10944,7 +11192,9 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "tls_observation_audit",
     "token_forwarding",
     "unretained_leaf_response_count",
+    "unmapped_item_count",
     "valid_marker",
+    "with_control_reference_mapping",
     "with_jwt_policy_review_audit",
     "cmp",
     "detector_class",
@@ -11541,6 +11791,17 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID"
             )
             });
+        let control_reference_mapping_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA"
+                        | "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_ID"
+                        | "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION"
+                        | "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_POLICY_ID"
+                        | "crate::control_reference_mapping::ControlReferenceMappingAudit"
+                )
+            });
         let openapi_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -11746,6 +12007,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"authorization-review\")")
+        } else if control_reference_mapping_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"control-reference-mapping\")")
         } else if openapi_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -11858,6 +12124,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
             && matches!(
                 cfg.as_deref(),
                 Some("feature=\"scanning\"")
+                    | Some("feature=\"control-reference-mapping\"")
                     | Some("feature=\"authorization-review\"")
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
@@ -11870,6 +12137,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("not(feature=\"supplied-session-review\")")
                     | Some("feature=\"wordpress-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"control-reference-mapping\")")
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
                     | Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
@@ -11878,6 +12146,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")")
                     | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
+                    | Some("all(feature=\"scanning\",any(feature=\"wordpress-review\",feature=\"control-reference-mapping\"))")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
@@ -12160,6 +12429,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
     let exact_internal_assessment_path = ALLOWED_REPORTING_QUALIFIED_PATHS.contains(&key.as_str())
         && (key.starts_with("crate::web_runtime::")
             || key.starts_with("crate::authorization_review::")
+            || key.starts_with("crate::control_reference_mapping::")
             || key.starts_with("crate::jwt_policy_review::")
             || key.starts_with("crate::jwt_target_acceptance::")
             || key.starts_with("crate::rest_review::")
@@ -12623,6 +12893,10 @@ mod tests {
             vec!["scanning".to_owned()],
         );
         features.insert(
+            "control-reference-mapping".to_owned(),
+            vec!["scanning".to_owned()],
+        );
+        features.insert(
             "supplied-session-review".to_owned(),
             vec!["scanning".to_owned(), "dep:zeroize".to_owned()],
         );
@@ -13026,6 +13300,55 @@ mod tests {
             .get_mut("release-bundle")
             .unwrap()
             .push("secret-exposure-review".to_owned());
+        assert!(
+            cli_feature_violations(&cli_features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
+    }
+
+    #[test]
+    fn control_reference_mapping_is_scanner_and_cli_opt_in_but_not_release_bundled() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("control-reference-mapping").unwrap(),
+            &["scanning".to_owned()]
+        );
+        assert!(!raw_feature_closure(&features, "default").contains("control-reference-mapping"));
+        for aggregate in ["full", "enterprise"] {
+            assert!(features
+                .get(aggregate)
+                .unwrap()
+                .iter()
+                .any(|member| member == "control-reference-mapping"));
+        }
+
+        features
+            .get_mut("control-reference-mapping")
+            .unwrap()
+            .clear();
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`control-reference-mapping` raw feature closure")
+                && violation.contains("scanning")
+        }));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert_eq!(
+            cli_features.get("control-reference-mapping").unwrap(),
+            &["termivar-scanner/control-reference-mapping".to_owned()]
+        );
+        assert!(cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .all(|member| member != "control-reference-mapping"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("control-reference-mapping".to_owned());
         assert!(
             cli_feature_violations(&cli_features, &dependencies)
                 .iter()
@@ -15567,6 +15890,12 @@ mod tests {
                         .into_assessment_report(profile)?
                         .with_jwt_policy_review_audit(audit)
                 }
+                #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+                pub fn attach_control_reference_mapping(
+                    report: AssessmentRunReport,
+                ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+                    report.with_control_reference_mapping()
+                }
                 #[cfg(feature = "scanning")]
                 pub fn generate_assessment(
                     report: &AssessmentRunReport,
@@ -15772,6 +16101,13 @@ mod tests {
             use crate::web_runtime::{
                 AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
                 WebAssessmentRunReport,
+            };
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            use crate::control_reference_mapping::{
+                ControlReferenceMappingAudit, CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA,
+                CONTROL_REFERENCE_MAPPING_CATALOGUE_ID,
+                CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION,
+                CONTROL_REFERENCE_MAPPING_POLICY_ID,
             };
             #[cfg(all(feature = "scanning", feature = "openapi-review"))]
             use crate::web_runtime::{OpenApiRuntimeOutcome, OPENAPI_REVIEW_CAPABILITY_ID};
@@ -16374,6 +16710,9 @@ mod tests {
                 #[cfg(feature = "jwt-policy-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 jwt_policy_review: Option<AssessmentJwtPolicyReviewAuditDocument>,
+                #[cfg(feature = "control-reference-mapping")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                control_reference_mapping: Option<AssessmentControlReferenceMappingAuditDocument>,
                 #[cfg(feature = "wordpress-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -16384,6 +16723,89 @@ mod tests {
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_asset_fingerprints: Option<AssessmentWordPressAssetFingerprintAuditDocument>,
                 items: Vec<AssessmentItemDocument<'a>>,
+            }
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            #[derive(Serialize)]
+            struct AssessmentControlReferenceMappingAuditDocument {
+                schema: &'static str,
+                policy: &'static str,
+                selected: bool,
+                catalogue: AssessmentControlReferenceCatalogueDocument,
+                sources: Vec<AssessmentControlReferenceSourceDocument>,
+                coverage: AssessmentControlReferenceCoverageDocument,
+                external_activity: AssessmentControlReferenceExternalActivityDocument,
+                claim_limits: AssessmentControlReferenceClaimLimitsDocument,
+                relationships: Vec<AssessmentControlReferenceRelationshipDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            #[derive(Serialize)]
+            struct AssessmentControlReferenceCatalogueDocument {
+                id: &'static str,
+                revision: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            #[derive(Serialize)]
+            struct AssessmentControlReferenceSourceDocument {
+                source_id: &'static str,
+                framework_id: &'static str,
+                edition: &'static str,
+                revision_or_amendment: Option<&'static str>,
+                authority_kind: &'static str,
+                source_url: &'static str,
+                source_verified_at: &'static str,
+                mapping_availability: &'static str,
+                rights_basis: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            #[derive(Serialize)]
+            struct AssessmentControlReferenceCoverageDocument {
+                considered_item_count: u64,
+                mapped_item_count: u64,
+                unmapped_item_count: u64,
+                relationship_count: u64,
+                reference_link_count: u64,
+                omitted_item_count: u64,
+                omitted_reference_link_count: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            #[derive(Serialize)]
+            struct AssessmentControlReferenceExternalActivityDocument {
+                target_request_count: u64,
+                provider_request_count: u64,
+                source_retrieval: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            #[derive(Serialize)]
+            struct AssessmentControlReferenceClaimLimitsDocument {
+                control_assessment: &'static str,
+                compliance: &'static str,
+                certification: &'static str,
+                legal_conclusion: &'static str,
+                source_authentication: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            #[derive(Serialize)]
+            struct AssessmentControlReferenceRelationshipDocument {
+                item_fingerprint: String,
+                capability_id: String,
+                cwe: Option<String>,
+                item_basis: &'static str,
+                references: Vec<AssessmentControlReferenceLinkDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+            #[derive(Serialize)]
+            struct AssessmentControlReferenceLinkDocument {
+                rule_id: &'static str,
+                source_id: &'static str,
+                framework_id: &'static str,
+                edition: &'static str,
+                control_reference: &'static str,
+                control_title: Option<&'static str>,
+                mapping_basis: &'static str,
+                applicability: &'static str,
+                applicability_condition: &'static str,
+                assurance: &'static str,
+                original_mapping_rationale: &'static str,
             }
             #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
             #[derive(Serialize)]
@@ -18190,6 +18612,10 @@ mod tests {
                 vec!["termivar-scanner/authorization-review".to_owned()],
             ),
             (
+                "control-reference-mapping".to_owned(),
+                vec!["termivar-scanner/control-reference-mapping".to_owned()],
+            ),
+            (
                 "supplied-session-review".to_owned(),
                 vec!["termivar-scanner/supplied-session-review".to_owned()],
             ),
@@ -19150,6 +19576,7 @@ mod tests {
             #[cfg(feature = "compliance")] pub mod compliance;
             #[cfg(feature = "platform-models")] pub mod config;
             #[cfg(feature = "platform-models")] pub mod config_loader;
+            #[cfg(feature = "control-reference-mapping")] pub mod control_reference_mapping;
             #[cfg(feature = "legacy-scanner")] pub mod context;
             #[cfg(feature = "legacy-scanner")] pub mod contracts;
             #[cfg(feature = "platform-models")] pub mod dashboard;
@@ -19218,6 +19645,15 @@ mod tests {
         .unwrap();
         assert!(jwt_target_violations.iter().any(|violation| {
             violation.contains("module `jwt_target_acceptance`") && violation.contains("exact cfg")
+        }));
+
+        let control_mapping_violations = module_gate_violations(
+            r#"#[cfg(feature = "reporting")] pub mod control_reference_mapping;"#,
+        )
+        .unwrap();
+        assert!(control_mapping_violations.iter().any(|violation| {
+            violation.contains("module `control_reference_mapping`")
+                && violation.contains("exact cfg")
         }));
     }
 

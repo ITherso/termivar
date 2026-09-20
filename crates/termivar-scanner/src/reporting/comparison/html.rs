@@ -2,9 +2,10 @@
 
 use super::super::{write_html_text, RenderBuffer, ReportError};
 use super::{
-    ComparisonDocument, ComparisonError, ComparisonItem, ItemProjection, JwtPolicyReviewComparison,
-    SecretExposureComparison, SourceMetadata, SuppliedSessionComparison, TlsObservationComparison,
-    WordPressEntityChanges, WordPressFacetComparison, WordPressReviewComparison,
+    ComparisonDocument, ComparisonError, ComparisonItem, ControlReferenceMappingComparison,
+    ItemProjection, JwtPolicyReviewComparison, SecretExposureComparison, SourceMetadata,
+    SuppliedSessionComparison, TlsObservationComparison, WordPressEntityChanges,
+    WordPressFacetComparison, WordPressReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -43,6 +44,9 @@ pub(super) fn render(
     }
     if let Some(comparison) = &document.jwt_policy_review_comparison {
         jwt_policy_review(&mut output, comparison)?;
+    }
+    if let Some(comparison) = &document.control_reference_mapping_comparison {
+        control_reference_mapping(&mut output, comparison)?;
     }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         wordpress_review(&mut output, wordpress)?;
@@ -265,6 +269,47 @@ fn jwt_policy_review(
         wordpress_facet(output, label, facet)?;
     }
     output.push_str("<details><summary>JWT policy review interpretation limits</summary><ul>")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn control_reference_mapping(
+    output: &mut RenderBuffer,
+    comparison: &ControlReferenceMappingComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"control-reference-mapping-differences\"><h2 id=\"control-reference-mapping-differences\">Control-reference mapping differences</h2><p class=\"muted\">Validated offline catalogue/source/relationship projections are compared separately from target observations. Differences are methodology or reference-set changes, not target change, remediation, compliance, certification, or legal conclusions.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Coverage", comparison.coverage.status.as_str()),
+        ("Reference set", comparison.reference_set.status.as_str()),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str("</span>. Audit presence changes are not target findings, control outcomes, or remediation.</p>")?;
+    }
+    for (label, facet) in [
+        ("Control-reference methodology", &comparison.methodology),
+        ("Control-reference coverage", &comparison.coverage),
+        ("Control-reference set", &comparison.reference_set),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str(
+        "<details><summary>Control-reference mapping interpretation limits</summary><ul>",
+    )?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;
         write_html_text(output, limit)?;

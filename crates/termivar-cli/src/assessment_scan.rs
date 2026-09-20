@@ -956,6 +956,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) secret_exposure_review: bool,
     #[cfg(feature = "tls-observation")]
     pub(crate) tls_observation: bool,
+    #[cfg(feature = "control-reference-mapping")]
+    pub(crate) control_reference_mapping: bool,
     #[cfg(feature = "jwt-policy-review")]
     pub(crate) jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1002,6 +1004,8 @@ pub(crate) async fn run_profile_scan(
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "control-reference-mapping")]
+        control_reference_mapping,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1035,6 +1039,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "normalization-resilience review requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "control-reference-mapping")]
+            if control_reference_mapping {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "control-reference mapping requires the web-review profile",
                 )
                 .into());
             }
@@ -1174,6 +1186,8 @@ pub(crate) async fn run_profile_scan(
                     secret_exposure_review,
                     #[cfg(feature = "tls-observation")]
                     tls_observation,
+                    #[cfg(feature = "control-reference-mapping")]
+                    control_reference_mapping,
                     #[cfg(feature = "jwt-policy-review")]
                     jwt_policy_review,
                     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1245,6 +1259,8 @@ struct WebReviewRunOptions {
     secret_exposure_review: bool,
     #[cfg(feature = "tls-observation")]
     tls_observation: bool,
+    #[cfg(feature = "control-reference-mapping")]
+    control_reference_mapping: bool,
     #[cfg(feature = "jwt-policy-review")]
     jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1284,6 +1300,8 @@ async fn run_web_review(
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "control-reference-mapping")]
+        control_reference_mapping,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1462,6 +1480,14 @@ async fn run_web_review(
                 profile,
                 jwt_policy_review,
             );
+            #[cfg(feature = "control-reference-mapping")]
+            let composed = composed.and_then(|product| {
+                if control_reference_mapping {
+                    ReportGenerator::attach_control_reference_mapping(product)
+                } else {
+                    Ok(product)
+                }
+            });
             let product = match composed {
                 Ok(product) => product,
                 Err(error) => {

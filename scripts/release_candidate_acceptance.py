@@ -68,6 +68,7 @@ RELEASE_MEMBERS = (
 )
 EXCLUDED_FEATURES = (
     "api-adapter",
+    "control-reference-mapping",
     "jwt-policy-review",
     "jwt-target-acceptance-review",
     "legacy-scanner",
@@ -90,6 +91,28 @@ AUTHORIZATION_REVIEW_LIMITATION = (
     "pool with ambient proxies disabled while sharing the parent exact-origin scope, accounting, "
     "cancellation, and evidence authority. No identifier mutation or confirmed authorization "
     "claim is performed."
+)
+CONTROL_REFERENCE_MAPPING_OPTION = "--control-reference-mapping"
+CONTROL_REFERENCE_MAPPING_PREREQUISITES = (
+    "--profile web-review",
+    "--control-reference-mapping",
+)
+CONTROL_REFERENCE_MAPPING_LIMITATION = (
+    "Maps only completed typed assessment items to a built-in, versioned finite "
+    "control-reference catalogue and schedules zero target or provider requests. V1 embeds "
+    "attributed OWASP Top 10:2025 identifiers and exact title references with original "
+    "Termivar rationale. PCI DSS v4.0.1 and ISO/IEC 27001:2022 with Amendment 1:2024 are "
+    "bibliographic rights_deferred sources with no embedded control mappings. KVKK Law No. "
+    "6698 Article 12 and Guide No. 72 (April 2025) are relevant technical context only; "
+    "applicability is not established and the output is not legal advice. A mapped "
+    "relationship is not a score, pass/fail result, certification, or compliance "
+    "determination; absence of an assessment item is not control fulfilment. Mapping never "
+    "raises severity, disposition, or claim authority. Report Compare classifies catalogue "
+    "or source changes as methodology changes rather than target or remediation changes. "
+    "Report Verify checks bundle integrity and schema consistency, not catalogue truth, "
+    "source authenticity, applicability, or control fulfilment. The feature requires "
+    "explicit --profile web-review and --control-reference-mapping, remains development-only, "
+    "and is outside default, release-bundle, and published alpha.2 archives."
 )
 SECRET_EXPOSURE_OPTION = "--secret-exposure-review"
 SECRET_EXPOSURE_PREREQUISITES = (
@@ -853,6 +876,9 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require(re.search(rf"(?m)^\s*{re.escape(JWT_TARGET_ACCEPTANCE_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled JWT target-acceptance option")
+    require(re.search(rf"(?m)^\s*{re.escape(CONTROL_REFERENCE_MAPPING_OPTION)}(?:\s|$)",
+                      scan_text) is None,
+            "scan help unexpectedly exposes non-bundled control-reference mapping")
     for option in SUPPLIED_SESSION_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
                 f"scan help unexpectedly exposes non-bundled option {option}")
@@ -931,6 +957,41 @@ def _validate_authorization_review_surface(
     require(f"    limit: {AUTHORIZATION_REVIEW_LIMITATION}" in text_value,
             "authorization-review capability limitation is absent from text output")
     return authorization
+
+
+def _validate_control_reference_mapping_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    mapping_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.control-reference-mapping"
+    ]
+    require(len(mapping_surfaces) == 1,
+            "packaged control-reference-mapping surface identity changed")
+    mapping = mapping_surfaces[0]
+    require(mapping.get("label") == "Versioned control-reference mapping"
+            and mapping.get("compile_feature") == "control-reference-mapping"
+            and mapping.get("build_state") == expected_state
+            and mapping.get("maturity") == "preview"
+            and mapping.get("implementation_status") == "implemented"
+            and mapping.get("group") == "optional"
+            and mapping.get("kind") == "scan_option"
+            and mapping.get("alias") is None
+            and mapping.get("documentation")
+            == "docs/internals/control-reference-mapping.md",
+            "packaged control-reference-mapping surface metadata changed")
+    prerequisites = mapping.get("prerequisites")
+    require(isinstance(prerequisites, list)
+            and all(isinstance(value, str) for value in prerequisites)
+            and tuple(prerequisites) == CONTROL_REFERENCE_MAPPING_PREREQUISITES,
+            "packaged control-reference-mapping opt-in contract changed")
+    require(mapping.get("limitation") == CONTROL_REFERENCE_MAPPING_LIMITATION,
+            "packaged control-reference-mapping limitation changed")
+    require(f"[{expected_state}] {mapping['label']}" in text_value,
+            "control-reference-mapping capability text and JSON views disagree")
+    require(f"    limit: {CONTROL_REFERENCE_MAPPING_LIMITATION}" in text_value,
+            "control-reference-mapping limitation is absent from text output")
+    return mapping
 
 
 def _validate_tls_observation_surface(
@@ -1091,6 +1152,7 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
     require("command.capabilities" in surface_keys,
             "capabilities command surface identity changed")
     _validate_authorization_review_surface(surfaces, text_value, "compiled")
+    _validate_control_reference_mapping_surface(surfaces, text_value, "not_compiled")
     _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
     _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
     _validate_jwt_policy_review_surface(surfaces, text_value, "not_compiled")
@@ -1184,6 +1246,17 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "runtime_activation": "explicit_opt_in",
             "declared_credentialed_transport_contract":
                 "fresh_ambient_proxy_free_pool_per_leg",
+        },
+        "control_reference_mapping_preview": {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "target_requests": 0,
+            "provider_requests": 0,
+            "claim_authority": "unchanged",
+            "catalogue_changes": "methodology",
+            "verification_scope": "integrity_and_schema_not_truth",
         },
         "secret_exposure_preview": {
             "build_state": "not_compiled",

@@ -2,6 +2,13 @@
 
 pub mod comparison;
 
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+use crate::control_reference_mapping::{
+    ControlReferenceMappingAudit, CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA,
+    CONTROL_REFERENCE_MAPPING_CATALOGUE_ID, CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION,
+    CONTROL_REFERENCE_MAPPING_POLICY_ID,
+};
+
 #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
 use crate::jwt_policy_review::{
     JwtClockAssurance, JwtExternalOperationStatus, JwtLocalSignatureStatus, JwtParseRejection,
@@ -246,6 +253,16 @@ impl ReportGenerator {
         report
             .into_assessment_report(profile)?
             .with_jwt_policy_review_audit(audit)
+    }
+
+    /// Attaches the explicitly selected, transport-free control-reference
+    /// projection after the ordinary assessment has completed. The mapper can
+    /// neither create assessment items nor change their claim authority.
+    #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+    pub fn attach_control_reference_mapping(
+        report: AssessmentRunReport,
+    ) -> Result<AssessmentRunReport, AssessmentRunReportError> {
+        report.with_control_reference_mapping()
     }
 
     /// Renders one completed typed assessment through the existing bounded,
@@ -1261,6 +1278,46 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "control-reference-mapping")]
+    if let Some(audit) = &document.control_reference_mapping {
+        let evidence_count = audit.coverage.reference_link_count.to_string();
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "control_reference_mapping_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                "selected",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "informational",
+                "observation",
+                "",
+                "",
+                "",
+                &evidence_count,
+                &summary,
+                "offline-control-reference-mapping",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         let evidence_count = audit.evidence_reference_count.to_string();
@@ -2038,6 +2095,72 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             output.push_str("</p>")?;
         }
         output.push_str("</section>")?;
+    }
+    #[cfg(feature = "control-reference-mapping")]
+    if let Some(audit) = &document.control_reference_mapping {
+        output.push_str(
+            "<section><h2>Versioned control-reference mapping audit</h2>\
+<p class=\"wp-note\">This deterministic offline mapping relates eligible assessment evidence to a finite, versioned reference catalogue. It does not assess a control, determine compliance or legal noncompliance, certify an organization, authenticate a source, or turn the absence of a finding into evidence that a control is fulfilled.</p><dl class=\"meta\">",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Reference sources</h3><ul>")?;
+        for source in &audit.sources {
+            output.push_str("<li><code>")?;
+            write_html_text(
+                &mut output,
+                &format!(
+                    "source_id={};framework_id={};edition={};revision_or_amendment={};authority_kind={};mapping_availability={};rights_basis={};source_verified_at={};source_url={}",
+                    source.source_id,
+                    source.framework_id,
+                    source.edition,
+                    source.revision_or_amendment.unwrap_or("not_applicable"),
+                    source.authority_kind,
+                    source.mapping_availability,
+                    source.rights_basis,
+                    source.source_verified_at,
+                    source.source_url,
+                ),
+            )?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul><h3>Evidence-to-reference relationships</h3><ul>")?;
+        if audit.relationships.is_empty() {
+            output.push_str("<li><code>no exact mapping in the selected catalogue</code></li>")?;
+        }
+        for relationship in &audit.relationships {
+            let cwe = relationship.cwe.as_deref().unwrap_or("not_available");
+            for reference in &relationship.references {
+                output.push_str("<li><code>")?;
+                write_html_text(
+                    &mut output,
+                    &format!(
+                        "item_fingerprint={};capability_id={};cwe={};item_basis={};rule_id={};source_id={};edition={};control_reference={};control_title={};mapping_basis={};applicability={};applicability_condition={};assurance={};rationale={}",
+                        relationship.item_fingerprint,
+                        relationship.capability_id,
+                        cwe,
+                        relationship.item_basis,
+                        reference.rule_id,
+                        reference.source_id,
+                        reference.edition,
+                        reference.control_reference,
+                        reference.control_title.unwrap_or("not_available"),
+                        reference.mapping_basis,
+                        reference.applicability,
+                        reference.applicability_condition,
+                        reference.assurance,
+                        reference.original_mapping_rationale,
+                    ),
+                )?;
+                output.push_str("</code></li>")?;
+            }
+        }
+        output.push_str("</ul><p class=\"wp-note\">Framework identifiers and short titles are source-qualified references. Rights-deferred sources are bibliographic context only, and KVKK material is relevant technical context rather than legal advice or a compliance conclusion. No target or provider request was performed for this mapping.</p></section>")?;
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
@@ -4355,6 +4478,69 @@ fn render_assessment_markdown(
             }
         }
     }
+    #[cfg(feature = "control-reference-mapping")]
+    if let Some(audit) = &document.control_reference_mapping {
+        output.push_str(
+            "\n### Versioned control-reference mapping audit\n\nThis deterministic offline mapping relates eligible assessment evidence to a finite, versioned reference catalogue. It does not assess a control, determine compliance or legal noncompliance, certify an organization, authenticate a source, or turn the absence of a finding into evidence that a control is fulfilled.\n\n",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Reference sources\n\n")?;
+        for source in &audit.sources {
+            output.push_str("- ")?;
+            write_markdown_code_span(
+                &mut output,
+                &format!(
+                    "source_id={};framework_id={};edition={};revision_or_amendment={};authority_kind={};mapping_availability={};rights_basis={};source_verified_at={};source_url={}",
+                    source.source_id,
+                    source.framework_id,
+                    source.edition,
+                    source.revision_or_amendment.unwrap_or("not_applicable"),
+                    source.authority_kind,
+                    source.mapping_availability,
+                    source.rights_basis,
+                    source.source_verified_at,
+                    source.source_url,
+                ),
+            )?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Evidence-to-reference relationships\n\n")?;
+        if audit.relationships.is_empty() {
+            output.push_str("- `no exact mapping in the selected catalogue`\n")?;
+        }
+        for relationship in &audit.relationships {
+            let cwe = relationship.cwe.as_deref().unwrap_or("not_available");
+            for reference in &relationship.references {
+                output.push_str("- ")?;
+                write_markdown_code_span(
+                    &mut output,
+                    &format!(
+                        "item_fingerprint={};capability_id={};cwe={};item_basis={};rule_id={};source_id={};edition={};control_reference={};control_title={};mapping_basis={};applicability={};applicability_condition={};assurance={};rationale={}",
+                        relationship.item_fingerprint,
+                        relationship.capability_id,
+                        cwe,
+                        relationship.item_basis,
+                        reference.rule_id,
+                        reference.source_id,
+                        reference.edition,
+                        reference.control_reference,
+                        reference.control_title.unwrap_or("not_available"),
+                        reference.mapping_basis,
+                        reference.applicability,
+                        reference.applicability_condition,
+                        reference.assurance,
+                        reference.original_mapping_rationale,
+                    ),
+                )?;
+                output.push_char('\n')?;
+            }
+        }
+        output.push_str("\nFramework identifiers and short titles are source-qualified references. Rights-deferred sources are bibliographic context only, and KVKK material is relevant technical context rather than legal advice or a compliance conclusion. No target or provider request was performed for this mapping.\n")?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         output.push_str("\n### WordPress evidence review audit\n\n")?;
@@ -4472,6 +4658,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "jwt-policy-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     jwt_policy_review: Option<AssessmentJwtPolicyReviewAuditDocument>,
+    #[cfg(feature = "control-reference-mapping")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    control_reference_mapping: Option<AssessmentControlReferenceMappingAuditDocument>,
     #[cfg(feature = "wordpress-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -4627,6 +4816,11 @@ impl<'a> AssessmentDocument<'a> {
                     None
                 },
             },
+            #[cfg(feature = "control-reference-mapping")]
+            control_reference_mapping: report
+                .control_reference_mapping_audit()
+                .map(AssessmentControlReferenceMappingAuditDocument::from_audit)
+                .transpose()?,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: report
                 .wordpress_review_audit()
@@ -4704,6 +4898,10 @@ impl<'a> AssessmentDocument<'a> {
         #[cfg(feature = "jwt-policy-review")]
         if let Some(audit) = &self.jwt_policy_review {
             audit.validate()?;
+        }
+        #[cfg(feature = "control-reference-mapping")]
+        if let Some(audit) = &self.control_reference_mapping {
+            audit.validate(&self.items)?;
         }
         #[cfg(feature = "wordpress-review")]
         if let Some(audit) = &self.wordpress_review {
@@ -6548,6 +6746,351 @@ fn valid_jwt_public_key_sha256(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     })
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+#[derive(Serialize)]
+struct AssessmentControlReferenceMappingAuditDocument {
+    schema: &'static str,
+    policy: &'static str,
+    selected: bool,
+    catalogue: AssessmentControlReferenceCatalogueDocument,
+    sources: Vec<AssessmentControlReferenceSourceDocument>,
+    coverage: AssessmentControlReferenceCoverageDocument,
+    external_activity: AssessmentControlReferenceExternalActivityDocument,
+    claim_limits: AssessmentControlReferenceClaimLimitsDocument,
+    relationships: Vec<AssessmentControlReferenceRelationshipDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+#[derive(Serialize)]
+struct AssessmentControlReferenceCatalogueDocument {
+    id: &'static str,
+    revision: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+#[derive(Serialize)]
+struct AssessmentControlReferenceSourceDocument {
+    source_id: &'static str,
+    framework_id: &'static str,
+    edition: &'static str,
+    revision_or_amendment: Option<&'static str>,
+    authority_kind: &'static str,
+    source_url: &'static str,
+    source_verified_at: &'static str,
+    mapping_availability: &'static str,
+    rights_basis: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+#[derive(Serialize)]
+struct AssessmentControlReferenceCoverageDocument {
+    considered_item_count: u64,
+    mapped_item_count: u64,
+    unmapped_item_count: u64,
+    relationship_count: u64,
+    reference_link_count: u64,
+    omitted_item_count: u64,
+    omitted_reference_link_count: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+#[derive(Serialize)]
+struct AssessmentControlReferenceExternalActivityDocument {
+    target_request_count: u64,
+    provider_request_count: u64,
+    source_retrieval: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+#[derive(Serialize)]
+struct AssessmentControlReferenceClaimLimitsDocument {
+    control_assessment: &'static str,
+    compliance: &'static str,
+    certification: &'static str,
+    legal_conclusion: &'static str,
+    source_authentication: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+#[derive(Serialize)]
+struct AssessmentControlReferenceRelationshipDocument {
+    item_fingerprint: String,
+    capability_id: String,
+    cwe: Option<String>,
+    item_basis: &'static str,
+    references: Vec<AssessmentControlReferenceLinkDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+#[derive(Serialize)]
+struct AssessmentControlReferenceLinkDocument {
+    rule_id: &'static str,
+    source_id: &'static str,
+    framework_id: &'static str,
+    edition: &'static str,
+    control_reference: &'static str,
+    control_title: Option<&'static str>,
+    mapping_basis: &'static str,
+    applicability: &'static str,
+    applicability_condition: &'static str,
+    assurance: &'static str,
+    original_mapping_rationale: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+impl AssessmentControlReferenceMappingAuditDocument {
+    fn from_audit(audit: &ControlReferenceMappingAudit) -> Result<Self, ReportError> {
+        let mut sources = audit
+            .sources()
+            .iter()
+            .map(|source| AssessmentControlReferenceSourceDocument {
+                source_id: source.source_id(),
+                framework_id: source.framework_id(),
+                edition: source.edition(),
+                revision_or_amendment: source.revision_or_amendment(),
+                authority_kind: source.authority_kind().as_str(),
+                source_url: source.source_url(),
+                source_verified_at: source.source_verified_at(),
+                mapping_availability: source.mapping_availability().as_str(),
+                rights_basis: source.rights_basis().as_str(),
+            })
+            .collect::<Vec<_>>();
+        sources.sort_by(|left, right| left.source_id.cmp(right.source_id));
+
+        let mut relationships = Vec::with_capacity(audit.relationships().len());
+        for relationship in audit.relationships() {
+            let mut references = Vec::with_capacity(relationship.references().len());
+            for reference in relationship.references() {
+                let source = sources
+                    .iter()
+                    .find(|source| source.source_id == reference.source_id())
+                    .ok_or(ReportError::Serialization)?;
+                if source.framework_id != reference.framework_id() {
+                    return Err(ReportError::Serialization);
+                }
+                references.push(AssessmentControlReferenceLinkDocument {
+                    rule_id: reference.rule_id(),
+                    source_id: reference.source_id(),
+                    framework_id: reference.framework_id(),
+                    edition: source.edition,
+                    control_reference: reference.control_reference(),
+                    control_title: reference.control_title(),
+                    mapping_basis: reference.mapping_basis().as_str(),
+                    applicability: reference.applicability().as_str(),
+                    applicability_condition: reference.applicability_condition(),
+                    assurance: reference.assurance().as_str(),
+                    original_mapping_rationale: reference.original_mapping_rationale(),
+                });
+            }
+            references.sort_by(|left, right| {
+                left.rule_id
+                    .cmp(right.rule_id)
+                    .then(left.source_id.cmp(right.source_id))
+                    .then(left.edition.cmp(right.edition))
+                    .then(left.control_reference.cmp(right.control_reference))
+            });
+            relationships.push(AssessmentControlReferenceRelationshipDocument {
+                item_fingerprint: relationship.item_fingerprint().to_owned(),
+                capability_id: relationship.capability_id().to_owned(),
+                cwe: relationship.cwe().map(str::to_owned),
+                item_basis: relationship.item_basis().as_str(),
+                references,
+            });
+        }
+        relationships.sort_by(|left, right| {
+            left.item_fingerprint
+                .cmp(&right.item_fingerprint)
+                .then(left.capability_id.cmp(&right.capability_id))
+        });
+        let external = audit.external_activity();
+        let claims = audit.claim_limits();
+        Ok(Self {
+            schema: audit.schema(),
+            policy: audit.policy_id(),
+            selected: audit.selected(),
+            catalogue: AssessmentControlReferenceCatalogueDocument {
+                id: audit.catalogue_id(),
+                revision: audit.catalogue_revision(),
+            },
+            sources,
+            coverage: AssessmentControlReferenceCoverageDocument {
+                considered_item_count: u64::try_from(audit.considered_item_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                mapped_item_count: u64::try_from(audit.mapped_item_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                unmapped_item_count: u64::try_from(audit.unmapped_item_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                relationship_count: u64::try_from(audit.relationship_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                reference_link_count: u64::try_from(audit.reference_link_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                omitted_item_count: u64::try_from(audit.omitted_item_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                omitted_reference_link_count: u64::try_from(audit.omitted_reference_link_count())
+                    .map_err(|_| ReportError::Serialization)?,
+            },
+            external_activity: AssessmentControlReferenceExternalActivityDocument {
+                target_request_count: external.target_request_count(),
+                provider_request_count: external.provider_request_count(),
+                source_retrieval: external.source_retrieval().as_str(),
+            },
+            claim_limits: AssessmentControlReferenceClaimLimitsDocument {
+                control_assessment: claims.control_assessment().as_str(),
+                compliance: claims.compliance().as_str(),
+                certification: claims.certification().as_str(),
+                legal_conclusion: claims.legal_conclusion().as_str(),
+                source_authentication: claims.source_authentication().as_str(),
+            },
+            relationships,
+        })
+    }
+
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        let considered = u64::try_from(items.len()).map_err(|_| ReportError::Serialization)?;
+        let partition = self
+            .coverage
+            .mapped_item_count
+            .checked_add(self.coverage.unmapped_item_count)
+            .and_then(|count| count.checked_add(self.coverage.omitted_item_count));
+        let reference_count = self.relationships.iter().try_fold(0_u64, |sum, row| {
+            u64::try_from(row.references.len())
+                .ok()
+                .and_then(|count| sum.checked_add(count))
+        });
+        let mut source_ids = std::collections::BTreeSet::new();
+        let sources_valid = self.sources.len() == 5
+            && self.sources.iter().all(|source| {
+                source_ids.insert(source.source_id)
+                    && !source.source_id.is_empty()
+                    && !source.framework_id.is_empty()
+                    && !source.edition.is_empty()
+                    && is_strict_https_reference(source.source_url)
+                    && source.source_verified_at == "2026-09-20"
+                    && matches!(
+                        source.mapping_availability,
+                        "reviewed_identifiers_and_titles"
+                            | "bibliographic_only_rights_deferred"
+                            | "relevant_technical_context_only"
+                    )
+            });
+        let mut mapped_fingerprints = std::collections::BTreeSet::new();
+        let relationships_valid = self.relationships.iter().all(|relationship| {
+            let source_item = items.iter().find(|item| {
+                item.fingerprint == relationship.item_fingerprint
+                    && item.capability_id == relationship.capability_id
+                    && item.cwe == relationship.cwe.as_deref()
+                    && item.claim_basis == relationship.item_basis
+            });
+            let mut references = std::collections::BTreeSet::new();
+            source_item.is_some()
+                && mapped_fingerprints.insert(relationship.item_fingerprint.as_str())
+                && !relationship.references.is_empty()
+                && relationship.references.len() <= 8
+                && relationship.references.iter().all(|reference| {
+                    self.sources.iter().any(|source| {
+                        source.source_id == reference.source_id
+                            && source.framework_id == reference.framework_id
+                            && source.edition == reference.edition
+                            && source.mapping_availability != "bibliographic_only_rights_deferred"
+                    }) && references.insert((
+                        reference.rule_id,
+                        reference.source_id,
+                        reference.edition,
+                        reference.control_reference,
+                    )) && !reference.rule_id.is_empty()
+                        && !reference.control_reference.is_empty()
+                        && !reference.applicability_condition.is_empty()
+                        && !reference.original_mapping_rationale.is_empty()
+                        && matches!(
+                            reference.mapping_basis,
+                            "exact_capability_cwe_and_assessment_basis"
+                                | "exact_capability_and_assessment_basis"
+                        )
+                        && matches!(
+                            reference.applicability,
+                            "conditional_technical_context" | "applicability_unestablished"
+                        )
+                        && matches!(
+                            reference.assurance,
+                            "reviewed_primary_source_identifier" | "relevant_technical_context"
+                        )
+                })
+        });
+        if self.schema != CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA
+            || self.policy != CONTROL_REFERENCE_MAPPING_POLICY_ID
+            || !self.selected
+            || self.catalogue.id != CONTROL_REFERENCE_MAPPING_CATALOGUE_ID
+            || self.catalogue.revision != CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION
+            || self.coverage.considered_item_count != considered
+            || self.coverage.relationship_count
+                != u64::try_from(self.relationships.len())
+                    .map_err(|_| ReportError::Serialization)?
+            || self.coverage.mapped_item_count != self.coverage.relationship_count
+            || partition != Some(self.coverage.considered_item_count)
+            || self.coverage.omitted_item_count != 0
+            || self.coverage.omitted_reference_link_count != 0
+            || reference_count != Some(self.coverage.reference_link_count)
+            || self.coverage.reference_link_count > 16_384
+            || !sources_valid
+            || !relationships_valid
+            || self.external_activity.target_request_count != 0
+            || self.external_activity.provider_request_count != 0
+            || self.external_activity.source_retrieval != "not_performed"
+            || self.claim_limits.control_assessment != "not_performed"
+            || self.claim_limits.compliance != "not_established"
+            || self.claim_limits.certification != "not_established"
+            || self.claim_limits.legal_conclusion != "not_established"
+            || self.claim_limits.source_authentication != "not_established"
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> [(&'static str, String); 13] {
+        [
+            ("Audit schema", self.schema.to_owned()),
+            ("Policy", self.policy.to_owned()),
+            ("Catalogue", self.catalogue.id.to_owned()),
+            ("Catalogue revision", self.catalogue.revision.to_owned()),
+            ("Reviewed sources", self.sources.len().to_string()),
+            (
+                "Items considered",
+                self.coverage.considered_item_count.to_string(),
+            ),
+            ("Items mapped", self.coverage.mapped_item_count.to_string()),
+            (
+                "Items without an exact mapping",
+                self.coverage.unmapped_item_count.to_string(),
+            ),
+            (
+                "Reference links",
+                self.coverage.reference_link_count.to_string(),
+            ),
+            (
+                "Additional target requests",
+                self.external_activity.target_request_count.to_string(),
+            ),
+            (
+                "Provider requests",
+                self.external_activity.provider_request_count.to_string(),
+            ),
+            (
+                "Compliance determination",
+                self.claim_limits.compliance.to_owned(),
+            ),
+            (
+                "Legal conclusion",
+                self.claim_limits.legal_conclusion.to_owned(),
+            ),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
 }
 
 #[cfg(all(feature = "scanning", feature = "tls-observation"))]
@@ -13500,7 +14043,10 @@ fn wordpress_external_record_reference(references: &[String]) -> Option<&str> {
         })
 }
 
-#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+#[cfg(all(
+    feature = "scanning",
+    any(feature = "wordpress-review", feature = "control-reference-mapping")
+))]
 fn is_strict_https_reference(value: &str) -> bool {
     url::Url::parse(value).ok().is_some_and(|url| {
         url.scheme() == "https"
@@ -14514,6 +15060,8 @@ mod tests {
             tls_observation: None,
             #[cfg(feature = "jwt-policy-review")]
             jwt_policy_review: None,
+            #[cfg(feature = "control-reference-mapping")]
+            control_reference_mapping: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
             #[cfg(feature = "wordpress-review")]
@@ -14547,6 +15095,286 @@ mod tests {
                 verification_stage: None,
             }],
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+    fn control_reference_sources() -> Vec<AssessmentControlReferenceSourceDocument> {
+        vec![
+            AssessmentControlReferenceSourceDocument {
+                source_id: "iso-iec-27001-2022-amd-1-2024",
+                framework_id: "iso-iec-27001",
+                edition: "2022",
+                revision_or_amendment: Some("Amd-1:2024"),
+                authority_kind: "international_standards_organization",
+                source_url: "https://www.iso.org/standard/27001",
+                source_verified_at: "2026-09-20",
+                mapping_availability: "bibliographic_only_rights_deferred",
+                rights_basis: "bibliographic_metadata_only",
+            },
+            AssessmentControlReferenceSourceDocument {
+                source_id: "kvkk-guide-72-2025-04",
+                framework_id: "kvkk-personal-data-security-guide",
+                edition: "2025-04",
+                revision_or_amendment: Some("KVKK-Yayinlari-No-72"),
+                authority_kind: "statutory_authority",
+                source_url: "https://kvkk.gov.tr/SharedFolderServer/CMSFiles/7512d0d4-f345-41cb-bc5b-8d5cf125e3a1.pdf",
+                source_verified_at: "2026-09-20",
+                mapping_availability: "relevant_technical_context_only",
+                rights_basis: "official_reference_only",
+            },
+            AssessmentControlReferenceSourceDocument {
+                source_id: "kvkk-law-6698-article-12",
+                framework_id: "kvkk-law-6698",
+                edition: "6698",
+                revision_or_amendment: Some("Madde-12"),
+                authority_kind: "statutory_authority",
+                source_url: "https://www.kvkk.gov.tr/Icerik/2040/Veri-Guvenligine-Iliskin-Yukumlulukler",
+                source_verified_at: "2026-09-20",
+                mapping_availability: "relevant_technical_context_only",
+                rights_basis: "official_reference_only",
+            },
+            AssessmentControlReferenceSourceDocument {
+                source_id: "owasp-top-10-2025",
+                framework_id: "owasp-top-10",
+                edition: "2025",
+                revision_or_amendment: None,
+                authority_kind: "community_security_project",
+                source_url: "https://top10.owasp.org/2025/0x00_2025-Introduction/",
+                source_verified_at: "2026-09-20",
+                mapping_availability: "reviewed_identifiers_and_titles",
+                rights_basis: "identifiers_and_titles_with_attribution",
+            },
+            AssessmentControlReferenceSourceDocument {
+                source_id: "pci-dss-4.0.1",
+                framework_id: "pci-dss",
+                edition: "4.0.1",
+                revision_or_amendment: Some("published-2024-06-11"),
+                authority_kind: "industry_standards_body",
+                source_url: "https://blog.pcisecuritystandards.org/just-published-pci-dss-v4-0-1",
+                source_verified_at: "2026-09-20",
+                mapping_availability: "bibliographic_only_rights_deferred",
+                rights_basis: "bibliographic_metadata_only",
+            },
+        ]
+    }
+
+    #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+    fn selected_empty_control_reference_mapping_audit(
+    ) -> AssessmentControlReferenceMappingAuditDocument {
+        AssessmentControlReferenceMappingAuditDocument {
+            schema: CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA,
+            policy: CONTROL_REFERENCE_MAPPING_POLICY_ID,
+            selected: true,
+            catalogue: AssessmentControlReferenceCatalogueDocument {
+                id: CONTROL_REFERENCE_MAPPING_CATALOGUE_ID,
+                revision: CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION,
+            },
+            sources: control_reference_sources(),
+            coverage: AssessmentControlReferenceCoverageDocument {
+                considered_item_count: 0,
+                mapped_item_count: 0,
+                unmapped_item_count: 0,
+                relationship_count: 0,
+                reference_link_count: 0,
+                omitted_item_count: 0,
+                omitted_reference_link_count: 0,
+            },
+            external_activity: AssessmentControlReferenceExternalActivityDocument {
+                target_request_count: 0,
+                provider_request_count: 0,
+                source_retrieval: "not_performed",
+            },
+            claim_limits: AssessmentControlReferenceClaimLimitsDocument {
+                control_assessment: "not_performed",
+                compliance: "not_established",
+                certification: "not_established",
+                legal_conclusion: "not_established",
+                source_authentication: "not_established",
+            },
+            relationships: Vec::new(),
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+    fn mapped_control_reference_document() -> AssessmentDocument<'static> {
+        let mut document = observation_assessment_document("web.passive.csp.missing@1");
+        document.items[0].fingerprint = "assessment-fingerprint-v1:csp-missing";
+        let mut audit = selected_empty_control_reference_mapping_audit();
+        audit.coverage.considered_item_count = 1;
+        audit.coverage.mapped_item_count = 1;
+        audit.coverage.relationship_count = 1;
+        audit.coverage.reference_link_count = 1;
+        audit.relationships.push(AssessmentControlReferenceRelationshipDocument {
+            item_fingerprint: "assessment-fingerprint-v1:csp-missing".to_owned(),
+            capability_id: "web.passive.csp.missing@1".to_owned(),
+            cwe: None,
+            item_basis: "observation",
+            references: vec![AssessmentControlReferenceLinkDocument {
+                rule_id: "termivar.mapping.csp-missing-to-owasp-a02-2025@1",
+                source_id: "owasp-top-10-2025",
+                framework_id: "owasp-top-10",
+                edition: "2025",
+                control_reference: "A02:2025",
+                control_title: Some("Security Misconfiguration"),
+                mapping_basis: "exact_capability_and_assessment_basis",
+                applicability: "conditional_technical_context",
+                applicability_condition:
+                    "The mapped item is the exact complete-response CSP-missing observation.",
+                assurance: "reviewed_primary_source_identifier",
+                original_mapping_rationale: "The exact missing-policy observation is relevant to browser content-policy configuration review; it is not proof of executable injection or a control assessment.",
+            }],
+        });
+        document.control_reference_mapping = Some(audit);
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+    #[test]
+    fn selected_empty_control_reference_mapping_is_distinct_and_rendered_in_every_format() {
+        let mut document = observation_assessment_document("unmapped.fixture-capability@1");
+        document.items.clear();
+        document.item_count = 0;
+        document.control_reference_mapping = Some(selected_empty_control_reference_mapping_audit());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &value["control_reference_mapping"];
+        assert_eq!(audit["selected"], true);
+        assert_eq!(audit["coverage"]["considered_item_count"], 0);
+        assert_eq!(audit["coverage"]["relationship_count"], 0);
+        assert_eq!(audit["relationships"], serde_json::json!([]));
+        assert_eq!(audit["external_activity"]["target_request_count"], 0);
+        assert_eq!(audit["claim_limits"]["compliance"], "not_established");
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(html.contains("Versioned control-reference mapping audit"));
+        assert!(markdown.contains("Versioned control-reference mapping audit"));
+        assert!(csv.contains("control_reference_mapping_audit"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+    #[test]
+    fn mapped_control_reference_output_preserves_item_identity_and_claim_limits() {
+        let document = mapped_control_reference_document();
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let relationship = &value["control_reference_mapping"]["relationships"][0];
+        assert_eq!(
+            relationship["item_fingerprint"],
+            value["items"][0]["fingerprint"]
+        );
+        assert_eq!(
+            relationship["capability_id"],
+            value["items"][0]["capability_id"]
+        );
+        assert_eq!(relationship["item_basis"], value["items"][0]["claim_basis"]);
+        assert_eq!(
+            relationship["references"][0]["control_reference"],
+            "A02:2025"
+        );
+        assert_ne!(
+            relationship["references"][0]["control_reference"],
+            "A03:2021"
+        );
+        assert_eq!(
+            value["control_reference_mapping"]["claim_limits"]["control_assessment"],
+            "not_performed"
+        );
+        assert_eq!(
+            value["control_reference_mapping"]["claim_limits"]["legal_conclusion"],
+            "not_established"
+        );
+
+        for format in [
+            ReportFormat::Html,
+            ReportFormat::Markdown,
+            ReportFormat::Csv,
+        ] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("A02:2025"));
+            assert!(rendered.contains("not_established"));
+            assert!(!rendered.contains("A03:2021"));
+        }
+        for format in [ReportFormat::Html, ReportFormat::Markdown] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("Security Misconfiguration"));
+            assert!(rendered.contains("exact_capability_and_assessment_basis"));
+            assert!(rendered.contains(
+                "The mapped item is the exact complete-response CSP-missing observation."
+            ));
+            assert!(rendered.contains("source_verified_at=2026-09-20"));
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
+    #[test]
+    fn control_reference_mapping_writer_rejects_cross_link_rights_and_accounting_mutations() {
+        let mut missing_item = mapped_control_reference_document();
+        missing_item
+            .control_reference_mapping
+            .as_mut()
+            .unwrap()
+            .relationships[0]
+            .item_fingerprint = "assessment-fingerprint-v1:substituted".to_owned();
+        assert_eq!(
+            render_assessment_with_limit(&missing_item, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+
+        let mut false_activity = mapped_control_reference_document();
+        false_activity
+            .control_reference_mapping
+            .as_mut()
+            .unwrap()
+            .external_activity
+            .target_request_count = 1;
+        assert_eq!(
+            render_assessment_with_limit(&false_activity, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+
+        let mut compliance_claim = mapped_control_reference_document();
+        compliance_claim
+            .control_reference_mapping
+            .as_mut()
+            .unwrap()
+            .claim_limits
+            .compliance = "established";
+        assert_eq!(
+            render_assessment_with_limit(&compliance_claim, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
+
+        let mut rights_deferred_link = mapped_control_reference_document();
+        let reference = &mut rights_deferred_link
+            .control_reference_mapping
+            .as_mut()
+            .unwrap()
+            .relationships[0]
+            .references[0];
+        reference.source_id = "pci-dss-4.0.1";
+        reference.framework_id = "pci-dss";
+        reference.edition = "4.0.1";
+        reference.control_reference = "requirement-not-retained";
+        assert_eq!(
+            render_assessment_with_limit(&rights_deferred_link, ReportFormat::Json, usize::MAX,),
+            Err(ReportError::Serialization)
+        );
+
+        let mut count_mismatch = mapped_control_reference_document();
+        count_mismatch
+            .control_reference_mapping
+            .as_mut()
+            .unwrap()
+            .coverage
+            .reference_link_count = 2;
+        assert_eq!(
+            render_assessment_with_limit(&count_mismatch, ReportFormat::Json, usize::MAX),
+            Err(ReportError::Serialization)
+        );
     }
 
     #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]

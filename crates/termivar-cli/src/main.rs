@@ -425,6 +425,21 @@ fn scan_tls_observation_flags_conflict(
     }
 }
 
+/// Rejects offline control-reference projection outside its explicit
+/// web-review contract. This runs before output reservation or runtime
+/// construction; the selected projection itself adds no network authority.
+#[cfg(feature = "control-reference-mapping")]
+fn scan_control_reference_mapping_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--control-reference-mapping` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
 /// Rejects local JWT policy review outside its explicit web-review contract.
 /// This runs before policy, key, token, output, or network acquisition.
 #[cfg(feature = "jwt-policy-review")]
@@ -565,6 +580,12 @@ struct ScanArgs {
     #[cfg(feature = "tls-observation")]
     #[arg(long, requires = "profile")]
     tls_observation: bool,
+    /// Project completed assessment items onto a bounded built-in catalogue of
+    /// versioned control references. This adds no target or provider request
+    /// and does not perform a compliance or legal assessment.
+    #[cfg(feature = "control-reference-mapping")]
+    #[arg(long, requires = "profile")]
+    control_reference_mapping: bool,
     /// Review one explicitly supplied compact JWT against a bounded local
     /// policy and one local ES256 public JWK. The token is never sent to the
     /// target and no remote key is retrieved.
@@ -1234,6 +1255,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "control-reference-mapping")]
+        control_reference_mapping,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy,
         #[cfg(feature = "jwt-policy-review")]
@@ -1365,6 +1388,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     }
     #[cfg(feature = "tls-observation")]
     if let Some(message) = scan_tls_observation_flags_conflict(profile, tls_observation) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "control-reference-mapping")]
+    if let Some(message) =
+        scan_control_reference_mapping_flags_conflict(profile, control_reference_mapping)
+    {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -1809,6 +1841,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 secret_exposure_review,
                 #[cfg(feature = "tls-observation")]
                 tls_observation,
+                #[cfg(feature = "control-reference-mapping")]
+                control_reference_mapping,
                 #[cfg(feature = "jwt-policy-review")]
                 jwt_policy_review,
                 #[cfg(feature = "jwt-target-acceptance-review")]
@@ -2787,6 +2821,88 @@ mod tests {
             "--profile",
             "web-review",
             "--tls-observation",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "control-reference-mapping")]
+    #[test]
+    fn control_reference_mapping_is_explicit_web_review_only() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--control-reference-mapping"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--control-reference-mapping",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--control-reference-mapping",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        let baseline = parsed_scan_args(&baseline);
+        assert!(baseline.control_reference_mapping);
+        assert_eq!(
+            scan_control_reference_mapping_flags_conflict(
+                baseline.profile,
+                baseline.control_reference_mapping,
+            ),
+            Some("`--control-reference-mapping` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--control-reference-mapping",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert!(review.control_reference_mapping);
+        assert_eq!(
+            scan_control_reference_mapping_flags_conflict(
+                review.profile,
+                review.control_reference_mapping,
+            ),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "control-reference-mapping"))]
+    #[test]
+    fn default_cli_does_not_expose_control_reference_mapping() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--control-reference-mapping"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--control-reference-mapping",
             "https://example.test/",
         ])
         .is_err());

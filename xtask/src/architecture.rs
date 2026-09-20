@@ -78,6 +78,8 @@ const PRELUDE_ROOTS: &[&str] = &[
 ];
 const OAST_MODULE: &str = "oast";
 const OAST_MODULE_FEATURE_GATE: &str = "feature=\"oast-correlation\"";
+const CONTROL_REFERENCE_MAPPING_MODULE: &str = "control_reference_mapping";
+const CONTROL_REFERENCE_MAPPING_MODULE_FEATURE_GATE: &str = "feature=\"control-reference-mapping\"";
 
 #[derive(Clone, Copy)]
 struct ModulePolicy {
@@ -226,6 +228,11 @@ const MODULE_POLICIES: &[ModulePolicy] = &[
         source: "api_evidence/profiled/policy.rs",
         allowed_internal: &["api_evidence"],
         allowed_external: &["sha2"],
+    },
+    ModulePolicy {
+        source: "control_reference_mapping.rs",
+        allowed_internal: &["web_runtime"],
+        allowed_external: &["str"],
     },
     ModulePolicy {
         source: "oast.rs",
@@ -773,10 +780,15 @@ fn validate_module_wiring(
                 "lib.rs must expose protected module {module} as pub mod {module};"
             ));
         }
-        if module == OAST_MODULE {
-            if !has_exact_cfg_attribute(&declaration.attrs, OAST_MODULE_FEATURE_GATE) {
+        let expected_feature_gate = match module {
+            OAST_MODULE => Some(OAST_MODULE_FEATURE_GATE),
+            CONTROL_REFERENCE_MAPPING_MODULE => Some(CONTROL_REFERENCE_MAPPING_MODULE_FEATURE_GATE),
+            _ => None,
+        };
+        if let Some(expected_feature_gate) = expected_feature_gate {
+            if !has_exact_cfg_attribute(&declaration.attrs, expected_feature_gate) {
                 violations.push(format!(
-                    "lib.rs protected module {module} must use exactly #[cfg(feature = \"oast-correlation\")] pub mod {module};"
+                    "lib.rs protected module {module} must use exactly #[cfg({expected_feature_gate})] pub mod {module};"
                 ));
             }
         } else if !declaration.attrs.is_empty() {
@@ -1830,6 +1842,32 @@ mod tests {
         for (dependency, expected) in [
             ("use crate::web_runtime::SharedWebRuntime;", "web_runtime"),
             ("use reqwest::Client;", "reqwest"),
+        ] {
+            let mutation = format!("{source}\n{dependency}");
+            assert!(inspect_module_source(policy, &mutation)
+                .unwrap()
+                .iter()
+                .any(|violation| violation.contains(expected)));
+        }
+    }
+
+    #[test]
+    fn control_reference_mapping_policy_is_transport_and_authority_free() {
+        let policy = MODULE_POLICIES
+            .iter()
+            .find(|policy| policy.source == "control_reference_mapping.rs")
+            .expect("control-reference mapping must have an architecture module policy");
+        let source = include_str!("../../crates/termivar-scanner/src/control_reference_mapping.rs");
+        let violations = inspect_module_source(policy, source).unwrap();
+        assert!(violations.is_empty(), "{violations:#?}");
+
+        for (dependency, expected) in [
+            ("use reqwest::Client;", "reqwest"),
+            ("use std::net::TcpStream;", "std::net"),
+            (
+                "use crate::http_evidence::request_broker::HttpRequestBroker;",
+                "http_evidence",
+            ),
         ] {
             let mutation = format!("{source}\n{dependency}");
             assert!(inspect_module_source(policy, &mutation)

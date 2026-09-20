@@ -33,6 +33,9 @@ pub(super) const TLS_OBSERVATION_COMPARISON_SCHEMA: &str = "termivar-tls-observa
 /// Additive, display-only local JWT policy comparison section.
 pub(super) const JWT_POLICY_REVIEW_COMPARISON_SCHEMA: &str =
     "termivar-jwt-policy-review-comparison/v1";
+/// Additive, display-only control-reference mapping comparison section.
+pub(super) const CONTROL_REFERENCE_MAPPING_COMPARISON_SCHEMA: &str =
+    "termivar-control-reference-mapping-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
@@ -203,6 +206,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) jwt_policy_review_comparison: Option<JwtPolicyReviewComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) control_reference_mapping_comparison: Option<ControlReferenceMappingComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) wordpress_review_comparison: Option<WordPressReviewComparison>,
     pub(super) only_in_after: Vec<ComparisonItem>,
     pub(super) only_in_before: Vec<ComparisonItem>,
@@ -258,6 +263,18 @@ pub(super) struct JwtPolicyReviewComparison {
     pub(super) interpretation_limits: [&'static str; 6],
     #[serde(skip)]
     pub(super) target_selected: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ControlReferenceMappingComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) reference_set: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 5],
 }
 
 #[derive(Debug, Serialize)]
@@ -404,6 +421,13 @@ pub(super) struct ImportedJwtPolicyReviewAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedControlReferenceMappingAudit {
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+    pub(super) reference_set: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SuppliedSessionResourceBinding {
     pub(super) evidence_reference: Option<String>,
     pub(super) response_bytes: u64,
@@ -488,6 +512,7 @@ struct ImportedDocument {
     secret_exposure: Option<ImportedSecretExposureAudit>,
     tls_observation: Option<ImportedTlsObservationAudit>,
     jwt_policy_review: Option<ImportedJwtPolicyReviewAudit>,
+    control_reference_mapping: Option<ImportedControlReferenceMappingAudit>,
     wordpress_review: Option<ImportedWordPressAudit>,
 }
 
@@ -521,6 +546,10 @@ fn compare_documents(
         before.jwt_policy_review.as_ref(),
         after.jwt_policy_review.as_ref(),
     );
+    let control_reference_mapping_comparison = compare_control_reference_mapping(
+        before.control_reference_mapping.as_ref(),
+        after.control_reference_mapping.as_ref(),
+    );
     let wordpress_review_comparison = compare_wordpress_reviews(
         before.wordpress_review.as_ref(),
         after.wordpress_review.as_ref(),
@@ -542,6 +571,7 @@ fn compare_documents(
         secret_exposure_comparison,
         tls_observation_comparison,
         jwt_policy_review_comparison,
+        control_reference_mapping_comparison,
         wordpress_review_comparison,
         only_in_after: Vec::new(),
         only_in_before: Vec::new(),
@@ -882,6 +912,60 @@ fn compare_jwt_policy_review(
             ]
         },
         target_selected,
+    })
+}
+
+fn compare_control_reference_mapping(
+    before: Option<&ImportedControlReferenceMappingAudit>,
+    after: Option<&ImportedControlReferenceMappingAudit>,
+) -> Option<ControlReferenceMappingComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    Some(ControlReferenceMappingComparison {
+        schema: CONTROL_REFERENCE_MAPPING_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            paired_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Policy, catalogue revision, reviewed-source revision, rights posture, external-activity declaration, or claim-limit changes are methodology changes; they do not establish a target change, vulnerability, remediation, or control result.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            paired_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "Mapped, unmapped, relationship, reference-link, and omission counts describe bounded mapping coverage; fewer references do not establish remediation, control fulfilment, or safety.",
+        ),
+        reference_set: facet(
+            before.map(|audit| &audit.reference_set),
+            after.map(|audit| &audit.reference_set),
+            paired_status(
+                before.map(|audit| &audit.reference_set),
+                after.map(|audit| &audit.reference_set),
+            ),
+            "Catalogue/source revisions and evidence-to-reference relationships are reference-set differences. They are not target observations, introduced vulnerabilities, verified remediation, compliance, or certification.",
+        ),
+        interpretation_limits: [
+            "The mapping is an offline, versioned reference projection over already composed assessment items; it performs no target, provider, or source-retrieval request.",
+            "Framework identifiers, short titles where rights permit, and original mapping rationales provide technical review context only; they are not copied standards text or a control assessment.",
+            "A mapping relationship does not establish organizational applicability, control fulfilment, compliance, certification, legal noncompliance, or source authenticity.",
+            "An unmapped item means only that no exact rule in this finite catalogue matched; absence of a finding or mapping establishes no control outcome.",
+            "One-sided or changed mapping audits can result from catalogue, source, methodology, coverage, or source-item changes and never by themselves prove target change or remediation.",
+        ],
     })
 }
 
@@ -1340,6 +1424,12 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
     if let Some(jwt_policy_review) = &document.jwt_policy_review_comparison {
         write_jwt_policy_review_comparison_markdown(&mut output, jwt_policy_review)?;
     }
+    if let Some(control_reference_mapping) = &document.control_reference_mapping_comparison {
+        write_control_reference_mapping_comparison_markdown(
+            &mut output,
+            control_reference_mapping,
+        )?;
+    }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         write_wordpress_comparison_markdown(&mut output, wordpress)?;
     }
@@ -1609,6 +1699,50 @@ fn write_jwt_policy_review_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### JWT policy review interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_control_reference_mapping_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &ControlReferenceMappingComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Control-reference mapping differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str(
+        "\n\nThis section compares a validated offline reference projection over already composed items. Catalogue, source, coverage, and relationship changes are methodology/reference-set differences, not target changes, remediation, compliance, certification, or legal conclusions.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+        ("Reference set", &comparison.reference_set),
+    ] {
+        output.push_fmt(format_args!("### Control-reference {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### Control-reference mapping interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

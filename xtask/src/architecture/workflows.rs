@@ -264,6 +264,8 @@ const JWT_POLICY_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in loca
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture"#;
 const JWT_TARGET_ACCEPTANCE_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in JWT target-acceptance review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review --test jwt_policy_cli -- --nocapture"#;
+const CONTROL_REFERENCE_MAPPING_SMOKE_GATE: &str = r#"      - name: Exercise opt-in control-reference mapping CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features control-reference-mapping --test control_reference_mapping_cli -- --nocapture"#;
 const TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE: &str = r#"      - name: Exercise trusted passive TLS observation broker path
         run: cargo test --locked -p termivar-scanner --no-default-features --features tls-observation web_runtime::authority::tests::selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch -- --exact --nocapture"#;
 const SECRET_EXPOSURE_SESSION_BOUNDARY_SMOKE_GATE: &str = r#"      - name: Reject authenticated session bodies from the anonymous secret-exposure context
@@ -402,6 +404,7 @@ const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capa
           TERMIVAR_CAPABILITIES_MATRIX_CASE=tls-only cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=jwt-only cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=jwt-target-only cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=control-reference-mapping-only cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-in CLI contracts
@@ -418,12 +421,13 @@ const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-
           cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review
           cargo test --locked -p termivar-cli --no-default-features --features tls-observation
           cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review
-          cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review"#;
+          cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review
+          cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping"#;
 const SCANNER_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -900,6 +904,16 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact feature-minimal JWT target-acceptance CLI integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise opt-in control-reference mapping CLI",
+        CONTROL_REFERENCE_MAPPING_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact release-profile feature-minimal control-reference-mapping CLI integration test"
         ));
     }
     if !job_has_exact_step(
@@ -3251,16 +3265,80 @@ mod tests {
     }
 
     #[test]
-    fn secret_exposure_feature_boundaries_reject_omission_and_bundle_substitution() {
+    fn control_reference_mapping_capabilities_matrix_rejects_omission_and_aliasing() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
-        let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review";
+        let mapping_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=control-reference-mapping-only cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
+        for mutation in [
+            valid.replacen(mapping_case, "", 1),
+            valid.replacen(
+                mapping_case,
+                &mapping_case.replacen(
+                    "--features control-reference-mapping",
+                    "--features release-bundle",
+                    1,
+                ),
+                1,
+            ),
+            valid.replacen(
+                mapping_case,
+                &mapping_case.replacen(
+                    "TERMIVAR_CAPABILITIES_MATRIX_CASE=control-reference-mapping-only",
+                    "TERMIVAR_CAPABILITIES_MATRIX_CASE=release-bundle",
+                    1,
+                ),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("capabilities"), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn control_reference_mapping_feature_boundaries_reject_omission_and_bundle_substitution() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner";
+            "jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner",
+                "jwt-policy-review jwt-target-acceptance-review legacy-scanner",
+                1,
+            ),
+            valid.replacen(
+                cli_case,
+                "cargo test --locked -p termivar-cli --no-default-features --features release-bundle",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("feature boundaries")
+                    || violations[0].contains("isolated scanner features"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_exposure_feature_boundaries_reject_omission_and_bundle_substitution() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review";
+        let scanner_member =
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner";
+        for mutation in [
+            valid.replacen(cli_case, "", 1),
+            valid.replacen(
+                scanner_member,
+                "ssrf-oast-review supplied-session-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3286,12 +3364,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner",
+                "ssrf-oast-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3318,12 +3396,12 @@ mod tests {
         let cli_case =
             "cargo test --locked -p termivar-cli --no-default-features --features tls-observation";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review secret-exposure-review jwt-policy-review jwt-target-acceptance-review legacy-scanner",
+                "ssrf-oast-review supplied-session-review secret-exposure-review jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3350,12 +3428,12 @@ mod tests {
         let cli_case =
             "cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-target-acceptance-review legacy-scanner",
+                "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-target-acceptance-review control-reference-mapping legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3381,12 +3459,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review legacy-scanner",
+                "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review control-reference-mapping legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3604,6 +3682,35 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("JWT target-acceptance"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_reference_mapping_runtime_smoke_rejects_omission_widening_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(CONTROL_REFERENCE_MAPPING_SMOKE_GATE, "", 1),
+            valid.replacen(
+                CONTROL_REFERENCE_MAPPING_SMOKE_GATE,
+                "      - name: Exercise opt-in control-reference mapping CLI\n        run: cargo test --release --locked -p termivar-cli --all-features --test control_reference_mapping_cli -- --nocapture",
+                1,
+            ),
+            valid.replacen(
+                CONTROL_REFERENCE_MAPPING_SMOKE_GATE,
+                &format!(
+                    "{CONTROL_REFERENCE_MAPPING_SMOKE_GATE}\n        continue-on-error: true"
+                ),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("control-reference-mapping"),
                 "{violations:?}"
             );
         }

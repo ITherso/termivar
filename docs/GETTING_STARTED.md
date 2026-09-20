@@ -133,9 +133,12 @@ composition marker compiles `artifact-adapter`, `normalization-resilience`,
 untagged alpha.3 development composition also compiles the `wordpress-review`
 Preview. It does not activate any of them: WordPress still requires explicit
 `--profile web-review --wordpress-review`. Current alpha.3 excludes
-`supplied-session-review`, `secret-exposure-review`, `tls-observation`,
+`control-reference-mapping`, `supplied-session-review`,
+`secret-exposure-review`, `tls-observation`,
 `jwt-policy-review`, `jwt-target-acceptance-review`,
 `ssrf-oast-review`, `legacy-scanner`, `api-adapter`, and `proxy-adapter`.
+The stock curated inventory is therefore exactly 18 known identities: eight
+compiled (the `release-bundle` marker plus seven members) and ten excluded.
 Enabling the seven current member features individually can therefore produce
 the same member surface states while `release-bundle` remains `not_compiled`.
 
@@ -215,6 +218,36 @@ valid/anonymous/invalid candidate/replay requests against one exact authorized
 JSON resource, but it does not authenticate the issuer, prove authorization
 bypass, validate impact, or emit a Confirmed finding. See the
 [local JWT and optional target-acceptance contract](internals/local-jwt-policy-review.md).
+
+## Map completed items to reviewed control references
+
+The unreleased development source has a non-default
+`control-reference-mapping` feature. It is outside the seven-member
+`release-bundle` and published alpha.2 archives. Build a feature-specific
+binary, then select the option with an explicit `web-review` profile:
+
+```bash
+cargo build --locked -p termivar-cli --no-default-features \
+  --features control-reference-mapping
+
+termivar scan <AUTHORIZED_TARGET> \
+  --profile web-review \
+  --control-reference-mapping \
+  --report-dir assessment-with-control-references
+```
+
+The mapper runs only over completed typed assessment items. It adds zero target
+or provider requests and never retrieves standards content at scan time. The V1
+built-in catalogue includes attributed OWASP Top 10:2025 IDs/exact title
+references and original Termivar rationale. PCI DSS 4.0.1 and ISO/IEC
+27001:2022+Amd 1:2024 are bibliographic `rights_deferred` sources with no
+embedded control mappings. KVKK Law No. 6698 Article 12 and Guide No. 72 (April
+2025) are relevant technical context with applicability unestablished.
+
+The output does not change item severity, disposition or claim authority. It is
+not a score, pass/fail result, certification, legal advice or compliance
+determination, and absence of an item is not control fulfilment. See the
+[versioned mapping contract](internals/control-reference-mapping.md).
 
 ## Live assessment progress
 
@@ -422,7 +455,9 @@ client.
 An integrity match is not a signature or source-authenticity result. It does not
 establish original target scope, finding accuracy, remediation, HTML safety, or
 HTML-to-JSON semantic equivalence. A consistently edited payload and manifest
-can still be internally consistent. The HTML is never executed.
+can still be internally consistent. For a control-reference audit it does not
+establish catalogue truth, source authenticity, applicability, legal meaning or
+control fulfilment. The HTML is never executed.
 
 Once checked, compare two deliberately selected assessment payloads with the
 existing offline command:
@@ -521,6 +556,7 @@ errors are not rewritten. Raw captures are retained as local/CI evidence.
 - [Feature lifecycle](https://github.com/ITherso/termivar/blob/main/FEATURES.md)
   and [runtime map](internals/runtime-map.md)
 - [Reporting](reporting.md) and [architecture](architecture.md)
+- [Versioned control-reference mapping](internals/control-reference-mapping.md)
 - [Credential-input limits](internals/credential-input.md) and
   [maintenance ledger](audits/native-oast-corrective-maintenance.md);
   F3 remains deferred, out of scope, and unresolved

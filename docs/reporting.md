@@ -62,6 +62,25 @@ The no-profile CLI path never calls the assessment composer and its
 unchanged. The explicit `baseline` profile likewise does not use the typed
 assessment renderer.
 
+### Optional control-reference mapping audit
+
+When the development-only `control-reference-mapping` feature and explicit
+`--profile web-review --control-reference-mapping` are selected, the central
+composer may attach one strict `security.control-reference-mapping-audit/v1`
+section. The audit records the built-in catalogue identity/revision, bounded
+source metadata and item-to-reference relationships, reconciled mapped,
+unmapped and omitted counts, and explicit zero target/provider request counts.
+It contains no standards body text beyond the permitted identifiers and exact
+title references described in the
+[mapping contract](internals/control-reference-mapping.md).
+
+This appendix is descriptive. It does not modify any item's stable identity,
+severity, disposition, remediation, evidence or claim authority. It is not a
+score, pass/fail result, certification, legal advice or compliance
+determination. An item with no catalogue relationship is unmapped under this
+finite catalogue, not a fulfilled control; an item absent from the report says
+nothing about control fulfilment.
+
 ## Standalone generic API
 
 Enable only `reporting` for a host that already owns a `RunReport`:
@@ -376,7 +395,10 @@ establish producer/source authenticity, the validity or authorization scope of
 the original scan, finding accuracy, remediation, HTML-to-JSON semantic
 equivalence, or executable HTML safety. An editor can modify a payload and its
 manifest consistently and still receive `integrity_match`; authenticity remains
-`not_established`.
+`not_established`. For a control-reference audit, Verify likewise checks only
+the supported schema and saved bundle bytes. It does not establish catalogue
+truth, source authenticity, applicability, legal meaning, compliance or control
+fulfilment.
 
 After verification, the same validated bundle JSON can be used by the existing
 offline comparison command without conversion:
@@ -445,6 +467,14 @@ groups:
 - `only_in_before`: present only in the supplied before document;
 - `changed`: matched identity with different supported comparable content;
 - `unchanged`: matched identity with equal supported comparable content.
+
+When either input contains a supported control-reference mapping audit, the
+comparison keeps catalogue/source identity and relationship coverage separate
+from target items. A catalogue revision, source edition, rights status, rationale
+or mapping-set change is a methodology change, not a newly observed target
+condition, remediation, compliance transition or control-status change. The
+existing four top-level item arrays remain the item partition; no fictional
+top-level counts object is introduced.
 
 When at least one imported assessment contains a supported WordPress audit,
 the comparison includes the additive optional

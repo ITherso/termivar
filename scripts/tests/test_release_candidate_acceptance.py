@@ -52,6 +52,7 @@ EXPECTED_RELEASE_MEMBERS = (
 )
 EXPECTED_EXCLUDED_FEATURES = (
     "api-adapter",
+    "control-reference-mapping",
     "jwt-policy-review",
     "jwt-target-acceptance-review",
     "legacy-scanner",
@@ -65,6 +66,7 @@ EXPECTED_FEATURE_STATES = {
     "api-adapter": "not_compiled",
     "artifact-adapter": "compiled",
     "authorization-review": "compiled",
+    "control-reference-mapping": "not_compiled",
     "graphql-review": "compiled",
     "jwt-policy-review": "not_compiled",
     "jwt-target-acceptance-review": "not_compiled",
@@ -92,6 +94,28 @@ EXPECTED_AUTHORIZATION_REVIEW_LIMITATION = (
     "pool with ambient proxies disabled while sharing the parent exact-origin scope, accounting, "
     "cancellation, and evidence authority. No identifier mutation or confirmed authorization "
     "claim is performed."
+)
+EXPECTED_CONTROL_REFERENCE_MAPPING_OPTION = "--control-reference-mapping"
+EXPECTED_CONTROL_REFERENCE_MAPPING_PREREQUISITES = (
+    "--profile web-review",
+    "--control-reference-mapping",
+)
+EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION = (
+    "Maps only completed typed assessment items to a built-in, versioned finite "
+    "control-reference catalogue and schedules zero target or provider requests. V1 embeds "
+    "attributed OWASP Top 10:2025 identifiers and exact title references with original "
+    "Termivar rationale. PCI DSS v4.0.1 and ISO/IEC 27001:2022 with Amendment 1:2024 are "
+    "bibliographic rights_deferred sources with no embedded control mappings. KVKK Law No. "
+    "6698 Article 12 and Guide No. 72 (April 2025) are relevant technical context only; "
+    "applicability is not established and the output is not legal advice. A mapped "
+    "relationship is not a score, pass/fail result, certification, or compliance "
+    "determination; absence of an assessment item is not control fulfilment. Mapping never "
+    "raises severity, disposition, or claim authority. Report Compare classifies catalogue "
+    "or source changes as methodology changes rather than target or remediation changes. "
+    "Report Verify checks bundle integrity and schema consistency, not catalogue truth, "
+    "source authenticity, applicability, or control fulfilment. The feature requires "
+    "explicit --profile web-review and --control-reference-mapping, remains development-only, "
+    "and is outside default, release-bundle, and published alpha.2 archives."
 )
 EXPECTED_SECRET_EXPOSURE_PREREQUISITES = (
     "--profile web-review",
@@ -1075,6 +1099,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "prerequisites": list(EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES),
             "limitation": EXPECTED_AUTHORIZATION_REVIEW_LIMITATION,
             "documentation": "docs/internals/authorization-differential-review.md",
+        },
+        {
+            "key": "option.control-reference-mapping",
+            "label": "Versioned control-reference mapping",
+            "compile_feature": "control-reference-mapping",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_CONTROL_REFERENCE_MAPPING_PREREQUISITES),
+            "limitation": EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION,
+            "documentation": "docs/internals/control-reference-mapping.md",
         },
         {
             "key": "option.secret-exposure-review",
@@ -2733,9 +2771,11 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 17)
+        self.assertEqual(len(rows), 18)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 9)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 10)
+        self.assertNotIn(EXPECTED_CONTROL_REFERENCE_MAPPING_OPTION,
+                         fake_help(["scan", "--help"]).decode("utf-8"))
         result = self.validate(document)
         self.assertEqual(tuple(result["compiled_members"]), EXPECTED_RELEASE_MEMBERS)
         self.assertEqual(tuple(result["excluded_features"]), EXPECTED_EXCLUDED_FEATURES)
@@ -2746,6 +2786,17 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "runtime_activation": "explicit_opt_in",
             "declared_credentialed_transport_contract":
                 "fresh_ambient_proxy_free_pool_per_leg",
+        })
+        self.assertEqual(result["control_reference_mapping_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "target_requests": 0,
+            "provider_requests": 0,
+            "claim_authority": "unchanged",
+            "catalogue_changes": "methodology",
+            "verification_scope": "integrity_and_schema_not_truth",
         })
         self.assertEqual(result["secret_exposure_preview"], {
             "build_state": "not_compiled",
@@ -2869,6 +2920,174 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         text = capabilities_text(document).replace(
             b"Resource authorization review", b"other")
         self.assert_rejected(document, "text and JSON views disagree", text)
+
+    def test_pinned_control_mapping_surface_matches_the_named_producer_literals(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.control-reference-mapping",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = '\n            "docs/internals/control-reference-mapping.md",'
+        self.assertEqual(block.count(documentation), 1)
+        before_documentation = block.split(documentation, 1)[0]
+        limitation_line = before_documentation.splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION)
+
+        document = capabilities()
+        surface = next(surface for surface in document["surfaces"]
+                       if surface["key"] == "option.control-reference-mapping")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_CONTROL_REFERENCE_MAPPING_PREREQUISITES)
+        self.assertEqual(surface["limitation"],
+                         EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION)
+
+    def test_control_mapping_documentation_preserves_claim_and_scaffold_boundaries(self):
+        documentation = (
+            REPOSITORY / "docs/internals/control-reference-mapping.md"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(documentation.split())
+        for required in (
+            "security.control-reference-mapping-audit/v1",
+            "termivar.control-reference-mapping/v1",
+            "termivar.reviewed-control-references",
+            "A01:2025",
+            "Broken Access Control",
+            "A02:2025",
+            "Security Misconfiguration",
+            "A05:2025",
+            "Injection",
+            "PCI DSS 4.0.1",
+            "ISO/IEC 27001:2022 with Amd 1:2024",
+            "Law No. 6698, Article 12",
+            "publication No. 72, April 2025",
+            "zero target requests, zero provider requests",
+            "create a score, percentage, pass/fail result or certification",
+            "make a legal or organization-wide compliance conclusion",
+            "An absent assessment item is not evidence that a control is fulfilled",
+            "cannot mutate an item's stable identity, evidence, severity, disposition, remediation or claim authority",
+            "methodology/source change",
+            "does not establish catalogue truth",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, normalized)
+
+        scanner_documentation = (REPOSITORY / "docs/scanner.md").read_text(
+            encoding="utf-8")
+        self.assertIn(
+            "| `compliance` | Caller-supplied audit/catalog records; no compliance "
+            "determination | Experimental |",
+            scanner_documentation,
+        )
+
+    def test_control_mapping_surface_is_exact_and_fails_closed_on_mutations(self):
+        for field, wrong in (
+            ("label", "Compliance scanner"),
+            ("compile_feature", "compliance"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "compliance"),
+            ("documentation", "docs/compliance.md"),
+        ):
+            with self.subTest(field=field):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.control-reference-mapping")
+                surface[field] = wrong
+                self.assert_rejected(document,
+                                     "control-reference-mapping surface metadata")
+
+        for wrong in (
+            None,
+            True,
+            12,
+            {},
+            [True],
+            ["--control-reference-mapping"],
+            ["--profile web-review", "--control-reference-mapping",
+             "--control-reference-mapping"],
+        ):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.control-reference-mapping")
+                surface["prerequisites"] = wrong
+                self.assert_rejected(document,
+                                     "control-reference-mapping opt-in contract")
+
+        limitation_mutations = (
+            ("completed typed assessment items", "all scanner output"),
+            ("zero target or provider requests", "one provider request"),
+            ("OWASP Top 10:2025 identifiers and exact title references",
+             "OWASP Top 10:2021 categories"),
+            ("bibliographic rights_deferred sources with no embedded control mappings",
+             "embedded normative control mappings"),
+            ("KVKK Law No. 6698 Article 12 and Guide No. 72 (April 2025)",
+             "general KVKK compliance"),
+            ("applicability is not established", "applicability is established"),
+            ("not legal advice", "legal advice"),
+            ("not a score, pass/fail result, certification, or compliance determination",
+             "a compliance score and pass/fail determination"),
+            ("absence of an assessment item is not control fulfilment",
+             "absence establishes control fulfilment"),
+            ("never raises severity, disposition, or claim authority",
+             "raises severity, disposition, and claim authority"),
+            ("methodology changes rather than target or remediation changes",
+             "target remediation changes"),
+            ("integrity and schema consistency, not catalogue truth, source authenticity, applicability, or control fulfilment",
+             "catalogue truth and control fulfilment"),
+            ("requires explicit --profile web-review and --control-reference-mapping",
+             "runs automatically"),
+            ("outside default, release-bundle, and published alpha.2 archives",
+             "included in release-bundle"),
+        )
+        for old, new in limitation_mutations:
+            with self.subTest(old=old):
+                self.assertEqual(EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION.count(old), 1)
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.control-reference-mapping")
+                surface["limitation"] = surface["limitation"].replace(old, new)
+                self.assert_rejected(document,
+                                     "control-reference-mapping limitation")
+
+        for wrong in (None, True, 12, [], {}):
+            with self.subTest(limitation=wrong):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.control-reference-mapping")
+                surface["limitation"] = wrong
+                self.assert_rejected(document,
+                                     "control-reference-mapping limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            surface for surface in missing["surfaces"]
+            if surface["key"] != "option.control-reference-mapping"
+        ]
+        self.assert_rejected(missing,
+                             "control-reference-mapping surface identity")
+
+        duplicate = capabilities()
+        duplicate["surfaces"].append(copy.deepcopy(next(
+            surface for surface in duplicate["surfaces"]
+            if surface["key"] == "option.control-reference-mapping")))
+        self.assert_rejected(duplicate, "invalid or duplicated")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"Versioned control-reference mapping", b"Other mapping")
+        self.assert_rejected(document, "text and JSON views disagree", text)
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            f"    limit: {EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION}\n".encode(), b"")
+        self.assert_rejected(document, "limitation is absent", text)
 
     def test_pinned_secret_exposure_surface_matches_the_named_producer_literals(self):
         source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
@@ -3662,6 +3881,23 @@ class CapabilityInventoryContractTests(unittest.TestCase):
              if row["name"] == "wordpress-review")["name"] = "wordpresx-review"
         self.assert_rejected(wrong, "feature names changed")
 
+        counts_only = capabilities()
+        next(row for row in counts_only["cli_package_features"]
+             if row["name"] == "control-reference-mapping")["name"] = (
+                 "unclassified-control-mapping")
+        self.assertEqual(len(counts_only["cli_package_features"]), 18)
+        self.assertEqual(
+            sum(row["build_state"] == "compiled"
+                for row in counts_only["cli_package_features"]),
+            8,
+        )
+        self.assertEqual(
+            sum(row["build_state"] == "not_compiled"
+                for row in counts_only["cli_package_features"]),
+            10,
+        )
+        self.assert_rejected(counts_only, "feature names changed")
+
     def test_compiled_state_drift_fails_for_selected_and_excluded_features(self):
         cases = [
             ("wordpress-review", "not_compiled"),
@@ -3671,6 +3907,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("tls-observation", "compiled"),
             ("jwt-policy-review", "compiled"),
             ("jwt-target-acceptance-review", "compiled"),
+            ("control-reference-mapping", "compiled"),
         ]
         for name, state in cases:
             with self.subTest(name=name, state=state):

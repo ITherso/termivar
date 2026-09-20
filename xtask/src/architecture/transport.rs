@@ -5420,7 +5420,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 15
+                fields.len() == 16
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -5468,6 +5468,11 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("jwt_policy_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["JwtPolicyReviewAudit"])
                     })
+                    && fields
+                        .get("control_reference_mapping")
+                        .is_some_and(|field| {
+                            is_generic_of_idents(field, "Option", &["ControlReferenceMappingAudit"])
+                        })
                     && fields.get("ssrf_oast_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
                     })
@@ -5498,6 +5503,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "jwt_policy_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "jwt-policy-review")
             })
+            && private_named_field(item, "control_reference_mapping").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "control-reference-mapping")
+            })
             && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
             })
@@ -5512,7 +5520,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance and an independently attached local JWT-policy audit; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance and independently attached local JWT-policy and offline control-reference mapping audits; observed fields {observed:?}"
         ));
     }
 
@@ -5705,6 +5713,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_ssrf_oast_audit",
                     "validate_wordpress_audit",
                     "jwt_policy_review",
+                    "control_reference_mapping",
                     "profile",
                 ],
             )
@@ -5828,6 +5837,66 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     if !jwt_audit_accessor {
         violations.push(
             "AssessmentRunReport::jwt_policy_review_audit must remain a feature-gated borrowed accessor to value-free local JWT review state"
+                .to_owned(),
+        );
+    }
+
+    let control_mapping_attacher = report_methods
+        .get("with_control_reference_mapping")
+        .is_some_and(|method| {
+            is_pub_crate_visibility(&method.vis)
+                && attributes_are_exact_cfg_feature_allowing_docs(
+                    &method.attrs,
+                    "control-reference-mapping",
+                )
+                && method.sig.receiver().is_some_and(|receiver| {
+                    receiver.reference.is_none()
+                        && receiver.mutability.is_some()
+                        && receiver.colon_token.is_none()
+                })
+                && method.sig.inputs.len() == 1
+                && typed_input_types(method).is_empty()
+                && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
+                    if is_result_of(output, "Self", "AssessmentRunReportError"))
+                && block_references_all(
+                    &method.block,
+                    &[
+                        "control_reference_mapping",
+                        "is_some",
+                        "ControlReferenceMappingAuditMismatch",
+                        "map_control_references",
+                        "items",
+                        "map_err",
+                        "Some",
+                    ],
+                )
+                && statement_reference_precedes(&method.block, "map_control_references", "Ok")
+        });
+    if !control_mapping_attacher {
+        violations.push(
+            "AssessmentRunReport::with_control_reference_mapping must remain the sole feature-gated, one-shot post-composition attachment seam over immutable completed items"
+                .to_owned(),
+        );
+    }
+
+    let control_mapping_accessor = report_methods
+        .get("control_reference_mapping_audit")
+        .is_some_and(|method| {
+            matches!(method.vis, syn::Visibility::Public(_))
+                && attributes_are_exact_cfg_feature_allowing_docs(
+                    &method.attrs,
+                    "control-reference-mapping",
+                )
+                && method.sig.constness.is_some()
+                && method.sig.receiver().is_some_and(|receiver| {
+                    receiver.reference.is_some() && receiver.mutability.is_none()
+                })
+                && typed_input_types(method).is_empty()
+                && block_references_all(&method.block, &["control_reference_mapping", "as_ref"])
+        });
+    if !control_mapping_accessor {
+        violations.push(
+            "AssessmentRunReport::control_reference_mapping_audit must remain a feature-gated borrowed accessor to the optional offline audit"
                 .to_owned(),
         );
     }
@@ -13451,6 +13520,48 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("JWT target-acceptance"), "{violations}");
+
+        let missing_control_mapping_audit = report_source.replacen(
+            "    #[cfg(feature = \"control-reference-mapping\")]\n    control_reference_mapping: Option<ControlReferenceMappingAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_control_mapping_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_control_mapping_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("offline control-reference mapping audits"),
+            "{violations}"
+        );
+
+        let externally_supplied_control_mapping = report_source.replacen(
+            "map_control_references(&self.items)",
+            "map_control_references(&Vec::new())",
+            1,
+        );
+        assert_ne!(externally_supplied_control_mapping, report_source);
+        let violations = inspect_assessment_report_boundary(&externally_supplied_control_mapping)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("one-shot post-composition attachment seam"),
+            "{violations}"
+        );
+
+        let public_control_mapping_attacher = report_source.replacen(
+            "pub(crate) fn with_control_reference_mapping(",
+            "pub fn with_control_reference_mapping(",
+            1,
+        );
+        assert_ne!(public_control_mapping_attacher, report_source);
+        let violations = inspect_assessment_report_boundary(&public_control_mapping_attacher)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("one-shot post-composition attachment seam"),
+            "{violations}"
+        );
 
         let missing_openapi_audit = report_source.replacen(
             "    #[cfg(feature = \"openapi-review\")]\n    openapi_review: Option<WebAssessmentOpenApiAudit>,\n",

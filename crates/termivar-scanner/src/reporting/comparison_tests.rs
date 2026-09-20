@@ -35,6 +35,173 @@ fn report(items: Vec<Value>) -> Value {
     })
 }
 
+fn control_reference_sources() -> Vec<Value> {
+    vec![
+        json!({
+            "source_id":"owasp-top-10-2025", "framework_id":"owasp-top-10",
+            "edition":"2025", "revision_or_amendment":null,
+            "authority_kind":"community_security_project",
+            "source_url":"https://top10.owasp.org/2025/0x00_2025-Introduction/",
+            "source_verified_at":"2026-09-20",
+            "mapping_availability":"reviewed_identifiers_and_titles",
+            "rights_basis":"identifiers_and_titles_with_attribution"
+        }),
+        json!({
+            "source_id":"pci-dss-4.0.1", "framework_id":"pci-dss",
+            "edition":"4.0.1", "revision_or_amendment":"published-2024-06-11",
+            "authority_kind":"industry_standards_body",
+            "source_url":"https://blog.pcisecuritystandards.org/just-published-pci-dss-v4-0-1",
+            "source_verified_at":"2026-09-20",
+            "mapping_availability":"bibliographic_only_rights_deferred",
+            "rights_basis":"bibliographic_metadata_only"
+        }),
+        json!({
+            "source_id":"iso-iec-27001-2022-amd-1-2024", "framework_id":"iso-iec-27001",
+            "edition":"2022", "revision_or_amendment":"Amd-1:2024",
+            "authority_kind":"international_standards_organization",
+            "source_url":"https://www.iso.org/standard/27001",
+            "source_verified_at":"2026-09-20",
+            "mapping_availability":"bibliographic_only_rights_deferred",
+            "rights_basis":"bibliographic_metadata_only"
+        }),
+        json!({
+            "source_id":"kvkk-law-6698-article-12", "framework_id":"kvkk-law-6698",
+            "edition":"6698", "revision_or_amendment":"Madde-12",
+            "authority_kind":"statutory_authority",
+            "source_url":"https://www.kvkk.gov.tr/Icerik/2040/Veri-Guvenligine-Iliskin-Yukumlulukler",
+            "source_verified_at":"2026-09-20",
+            "mapping_availability":"relevant_technical_context_only",
+            "rights_basis":"official_reference_only"
+        }),
+        json!({
+            "source_id":"kvkk-guide-72-2025-04", "framework_id":"kvkk-personal-data-security-guide",
+            "edition":"2025-04", "revision_or_amendment":"KVKK-Yayinlari-No-72",
+            "authority_kind":"statutory_authority",
+            "source_url":"https://kvkk.gov.tr/SharedFolderServer/CMSFiles/7512d0d4-f345-41cb-bc5b-8d5cf125e3a1.pdf",
+            "source_verified_at":"2026-09-20",
+            "mapping_availability":"relevant_technical_context_only",
+            "rights_basis":"official_reference_only"
+        }),
+    ]
+}
+
+fn hsts_control_reference_relationship(identity: u32) -> Value {
+    json!({
+        "item_fingerprint":format!("sha256:{identity:064x}"),
+        "capability_id":"web.passive.hsts.missing@1",
+        "cwe":null,
+        "item_basis":"observation",
+        "references":[{
+            "rule_id":"termivar.mapping.hsts-missing-to-owasp-a02-2025@1",
+            "source_id":"owasp-top-10-2025",
+            "framework_id":"owasp-top-10",
+            "edition":"2025",
+            "control_reference":"A02:2025",
+            "control_title":"Security Misconfiguration",
+            "mapping_basis":"exact_capability_and_assessment_basis",
+            "applicability":"conditional_technical_context",
+            "applicability_condition":"The mapped item is the exact complete-response HSTS-missing observation on an eligible HTTPS response.",
+            "assurance":"reviewed_primary_source_identifier",
+            "original_mapping_rationale":"The exact missing-header observation is relevant to transport-policy configuration review; it is not an organization-wide control assessment."
+        }]
+    })
+}
+
+fn private_key_control_reference_relationship(identity: u32) -> Value {
+    json!({
+        "item_fingerprint":format!("sha256:{identity:064x}"),
+        "capability_id":"exposure.response-private-key-material@1",
+        "cwe":null,
+        "item_basis":"observation",
+        "references":[
+            {
+                "rule_id":"termivar.mapping.private-key-exposure-to-kvkk-article-12@1",
+                "source_id":"kvkk-law-6698-article-12",
+                "framework_id":"kvkk-law-6698",
+                "edition":"6698",
+                "control_reference":"6698/Madde-12",
+                "control_title":null,
+                "mapping_basis":"exact_capability_and_assessment_basis",
+                "applicability":"applicability_unestablished",
+                "applicability_condition":"The exact redacted response observation may be relevant only if applicable personal-data processing and organizational scope are independently established.",
+                "assurance":"relevant_technical_context",
+                "original_mapping_rationale":"Returned private-key-like material can be relevant technical security context, but ownership, validity, personal-data scope, and legal applicability were not established."
+            },
+            {
+                "rule_id":"termivar.mapping.private-key-exposure-to-kvkk-guide-72-2025@1",
+                "source_id":"kvkk-guide-72-2025-04",
+                "framework_id":"kvkk-personal-data-security-guide",
+                "edition":"2025-04",
+                "control_reference":"KVKK-Rehber-72/2025-04",
+                "control_title":null,
+                "mapping_basis":"exact_capability_and_assessment_basis",
+                "applicability":"applicability_unestablished",
+                "applicability_condition":"The exact redacted response observation is relevant technical context only if applicable personal-data processing and organizational scope are independently established.",
+                "assurance":"relevant_technical_context",
+                "original_mapping_rationale":"The official KVKK security guide is relevant context for safeguarding data-processing environments; this observation does not establish personal-data scope, organizational control failure, or legal noncompliance."
+            }
+        ]
+    })
+}
+
+fn control_reference_mapping_audit(item_count: usize, relationships: Vec<Value>) -> Value {
+    let relationship_count = relationships.len();
+    let reference_link_count = relationships
+        .iter()
+        .map(|relationship| relationship["references"].as_array().unwrap().len())
+        .sum::<usize>();
+    json!({
+        "schema":"security.control-reference-mapping-audit/v1",
+        "policy":"termivar.control-reference-mapping/v1",
+        "selected":true,
+        "catalogue":{"id":"termivar.reviewed-control-references","revision":"2026-09-20.1"},
+        "sources":control_reference_sources(),
+        "coverage":{
+            "considered_item_count":item_count,
+            "mapped_item_count":relationship_count,
+            "unmapped_item_count":item_count - relationship_count,
+            "relationship_count":relationship_count,
+            "reference_link_count":reference_link_count,
+            "omitted_item_count":0,
+            "omitted_reference_link_count":0
+        },
+        "external_activity":{
+            "target_request_count":0,
+            "provider_request_count":0,
+            "source_retrieval":"not_performed"
+        },
+        "claim_limits":{
+            "control_assessment":"not_performed",
+            "compliance":"not_established",
+            "certification":"not_established",
+            "legal_conclusion":"not_established",
+            "source_authentication":"not_established"
+        },
+        "relationships":relationships
+    })
+}
+
+fn report_with_control_reference_mapping(
+    mut items: Vec<Value>,
+    mapped_identity: Option<u32>,
+) -> Value {
+    if let Some(identity) = mapped_identity {
+        let mapped = items
+            .iter_mut()
+            .find(|item| item["fingerprint"] == json!(format!("sha256:{identity:064x}")))
+            .expect("mapped test item exists");
+        mapped["capability_id"] = json!("web.passive.hsts.missing@1");
+    }
+    let relationships = mapped_identity
+        .map(hsts_control_reference_relationship)
+        .into_iter()
+        .collect();
+    let audit = control_reference_mapping_audit(items.len(), relationships);
+    let mut document = report(items);
+    document["control_reference_mapping"] = audit;
+    document
+}
+
 fn secret_exposure_item(identity: u32, detector_class: &str, evidence_reference: &str) -> Value {
     let capability_id = match detector_class {
         "pem_private_key_block" => "exposure.response-private-key-material@1",
@@ -7142,6 +7309,241 @@ fn audit_optional_values_and_positive_count_consistency_are_strict() {
             reject(&document);
         }
     }
+}
+
+#[test]
+fn control_reference_mapping_is_strict_feature_independent_and_self_compares() {
+    let selected_empty = report_with_control_reference_mapping(Vec::new(), None);
+    assert!(import_assessment_summary(&bytes(&selected_empty)).is_ok());
+    let empty_comparison = compare(&selected_empty, &selected_empty);
+    assert_eq!(
+        empty_comparison["control_reference_mapping_comparison"]["status"],
+        "compared"
+    );
+    assert_eq!(
+        empty_comparison["control_reference_mapping_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(group(&empty_comparison, "unchanged").len(), 0);
+    assert!(empty_comparison.get("counts").is_none());
+
+    let mapped = report_with_control_reference_mapping(vec![item(301)], Some(301));
+    assert!(import_assessment_summary(&bytes(&mapped)).is_ok());
+    let comparison = compare(&mapped, &mapped);
+    assert_eq!(
+        comparison["control_reference_mapping_comparison"]["reference_set"]["status"],
+        "unchanged"
+    );
+    assert_eq!(group(&comparison, "only_in_after").len(), 0);
+    assert_eq!(group(&comparison, "only_in_before").len(), 0);
+    assert_eq!(group(&comparison, "changed").len(), 0);
+    assert_eq!(group(&comparison, "unchanged").len(), 1);
+
+    let markdown =
+        compare_reports(&bytes(&mapped), &bytes(&mapped), ComparisonFormat::Markdown).unwrap();
+    assert!(markdown.contains("Control-reference mapping differences"));
+    assert!(markdown.contains("not target changes"));
+    let html = compare_reports(&bytes(&mapped), &bytes(&mapped), ComparisonFormat::Html).unwrap();
+    assert!(html.contains("control-reference-mapping-differences"));
+    assert!(html.contains("not target change"));
+
+    let secret_item = secret_exposure_item(304, "pem_private_key_block", "evidence-0000");
+    let secret_audit = secret_exposure_audit(
+        1,
+        1,
+        32,
+        vec![secret_exposure_observation(
+            "pem_private_key_block",
+            1,
+            "evidence-0000",
+        )],
+        1,
+    );
+    let mut many_to_many = report_with_secret_exposure(vec![secret_item], secret_audit);
+    many_to_many["control_reference_mapping"] =
+        control_reference_mapping_audit(1, vec![private_key_control_reference_relationship(304)]);
+    assert!(import_assessment_summary(&bytes(&many_to_many)).is_ok());
+    let comparison = compare(&many_to_many, &many_to_many);
+    assert_eq!(
+        comparison["control_reference_mapping_comparison"]["reference_set"]["before"]
+            ["relationships"][0]["references"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn absent_and_selected_empty_control_reference_mapping_are_distinct() {
+    let absent = report(Vec::new());
+    let selected_empty = report_with_control_reference_mapping(Vec::new(), None);
+    let comparison = compare(&absent, &selected_empty);
+    assert_eq!(
+        comparison["control_reference_mapping_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["control_reference_mapping_comparison"]["reason"],
+        "before_audit_missing"
+    );
+    assert_eq!(group(&comparison, "only_in_after").len(), 0);
+    assert_eq!(group(&comparison, "only_in_before").len(), 0);
+}
+
+#[test]
+fn control_reference_mapping_rejects_schema_source_and_accounting_mutations() {
+    let valid = report_with_control_reference_mapping(vec![item(302)], Some(302));
+    let mut mutations = Vec::new();
+
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["schema"] =
+        json!("security.control-reference-mapping-audit/v2");
+    mutations.push(value);
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["selected"] = json!(false);
+    mutations.push(value);
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["catalogue"]["revision"] = json!("2026-09-20.2");
+    mutations.push(value);
+    for (field, replacement) in [
+        ("edition", json!("2021")),
+        ("revision_or_amendment", json!("wrong-revision")),
+        ("source_url", json!("https://example.invalid/source")),
+        ("source_verified_at", json!("2026-09-19")),
+    ] {
+        let mut value = valid.clone();
+        value["control_reference_mapping"]["sources"][1][field] = replacement;
+        mutations.push(value);
+    }
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["sources"][4] =
+        value["control_reference_mapping"]["sources"][3].clone();
+    mutations.push(value);
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["coverage"]["mapped_item_count"] = json!(true);
+    mutations.push(value);
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["coverage"]["reference_link_count"] = json!(2);
+    mutations.push(value);
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["external_activity"]["target_request_count"] = json!(1);
+    mutations.push(value);
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["claim_limits"]["compliance"] = json!("established");
+    mutations.push(value);
+    let mut value = valid.clone();
+    value["control_reference_mapping"]
+        .as_object_mut()
+        .unwrap()
+        .remove("claim_limits");
+    mutations.push(value);
+    let mut value = valid.clone();
+    value["control_reference_mapping"]["unexpected"] = json!(0);
+    mutations.push(value);
+
+    for invalid in mutations {
+        reject(&invalid);
+    }
+}
+
+#[test]
+fn control_reference_mapping_rejects_substituted_or_incomplete_closed_rules() {
+    let valid = report_with_control_reference_mapping(vec![item(303)], Some(303));
+    for (field, replacement) in [
+        ("rule_id", json!("termivar.mapping.other@1")),
+        ("source_id", json!("kvkk-law-6698-article-12")),
+        ("framework_id", json!("other-framework")),
+        ("edition", json!("2021")),
+        ("control_reference", json!("A02:2021")),
+        ("control_title", json!("Different title")),
+        (
+            "mapping_basis",
+            json!("exact_capability_cwe_and_assessment_basis"),
+        ),
+        ("applicability", json!("applicability_unestablished")),
+        ("applicability_condition", json!("A substituted condition.")),
+        ("assurance", json!("relevant_technical_context")),
+        (
+            "original_mapping_rationale",
+            json!("A substituted rationale."),
+        ),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["control_reference_mapping"]["relationships"][0]["references"][0][field] =
+            replacement;
+        reject(&invalid);
+    }
+
+    let mut extra_link = valid.clone();
+    let duplicate =
+        extra_link["control_reference_mapping"]["relationships"][0]["references"][0].clone();
+    extra_link["control_reference_mapping"]["relationships"][0]["references"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate);
+    extra_link["control_reference_mapping"]["coverage"]["reference_link_count"] = json!(2);
+    reject(&extra_link);
+
+    let mut missing_relationship = valid.clone();
+    missing_relationship["control_reference_mapping"]["relationships"] = json!([]);
+    missing_relationship["control_reference_mapping"]["coverage"]["mapped_item_count"] = json!(0);
+    missing_relationship["control_reference_mapping"]["coverage"]["unmapped_item_count"] = json!(1);
+    missing_relationship["control_reference_mapping"]["coverage"]["relationship_count"] = json!(0);
+    missing_relationship["control_reference_mapping"]["coverage"]["reference_link_count"] =
+        json!(0);
+    reject(&missing_relationship);
+
+    let mut wrong_item = valid.clone();
+    wrong_item["control_reference_mapping"]["relationships"][0]["capability_id"] =
+        json!("web.passive.csp.missing@1");
+    reject(&wrong_item);
+
+    let secret_item = secret_exposure_item(305, "pem_private_key_block", "evidence-0000");
+    let secret_audit = secret_exposure_audit(
+        1,
+        1,
+        32,
+        vec![secret_exposure_observation(
+            "pem_private_key_block",
+            1,
+            "evidence-0000",
+        )],
+        1,
+    );
+    let mut missing_second_link = report_with_secret_exposure(vec![secret_item], secret_audit);
+    missing_second_link["control_reference_mapping"] =
+        control_reference_mapping_audit(1, vec![private_key_control_reference_relationship(305)]);
+    missing_second_link["control_reference_mapping"]["relationships"][0]["references"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    missing_second_link["control_reference_mapping"]["coverage"]["reference_link_count"] = json!(1);
+    reject(&missing_second_link);
+}
+
+#[test]
+fn control_reference_revision_projections_are_methodology_not_target_changes() {
+    let before = ImportedControlReferenceMappingAudit {
+        methodology: json!({"catalogue":{"revision":"r1"},"sources":[{"revision_or_amendment":"s1"}]}),
+        coverage: json!({"mapped_item_count":1}),
+        reference_set: json!({"catalogue":{"revision":"r1"},"sources":[{"revision_or_amendment":"s1"}],"relationships":[]}),
+    };
+    let after = ImportedControlReferenceMappingAudit {
+        methodology: json!({"catalogue":{"revision":"r2"},"sources":[{"revision_or_amendment":"s2"}]}),
+        coverage: json!({"mapped_item_count":1}),
+        reference_set: json!({"catalogue":{"revision":"r2"},"sources":[{"revision_or_amendment":"s2"}],"relationships":[]}),
+    };
+    let comparison = compare_control_reference_mapping(Some(&before), Some(&after)).unwrap();
+    assert_eq!(comparison.status, "compared");
+    assert_eq!(comparison.methodology.status, "changed");
+    assert_eq!(comparison.coverage.status, "unchanged");
+    assert_eq!(comparison.reference_set.status, "changed");
+    assert!(comparison
+        .reference_set
+        .note
+        .contains("not target observations"));
+    assert!(comparison.reference_set.note.contains("remediation"));
 }
 
 #[cfg(feature = "scanning")]
