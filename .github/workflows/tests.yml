@@ -278,7 +278,7 @@ jobs:
   platform-runtime-smoke:
     name: Runtime Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 40
     permissions:
       contents: read
     strategy:

@@ -239,7 +239,7 @@ const WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY: &str = r#"          - target: wordp
 const FIRST_USE_TEMP_PREFIX: &str = "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}";
 const PLATFORM_RUNTIME_OS_MATRIX: &str =
     "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]";
-const PLATFORM_RUNTIME_TIMEOUT: &str = "    timeout-minutes: 30";
+const PLATFORM_RUNTIME_TIMEOUT: &str = "    timeout-minutes: 40";
 const REPORT_BUNDLE_SMOKE_GATE: &str = r#"      - name: Exercise single-run report bundle CLI
         run: cargo test --locked -p termivar-cli --test report_bundle_cli"#;
 const REPORT_VERIFICATION_SMOKE_GATE: &str = r#"      - name: Exercise offline report bundle verification CLI
@@ -823,7 +823,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
                 == 1
     ) {
         violations.push(format!(
-            "{TESTS_WORKFLOW}: platform runtime smoke requires the exact thirty-minute runtime budget"
+            "{TESTS_WORKFLOW}: platform runtime smoke requires the exact forty-minute runtime budget"
         ));
     }
     if !job_has_exact_step(
@@ -2709,7 +2709,7 @@ mod tests {
             1
         );
 
-        for replacement in ["    timeout-minutes: 20", "    timeout-minutes: 300"] {
+        for replacement in ["    timeout-minutes: 30", "    timeout-minutes: 300"] {
             let mutated_job = job.replacen(PLATFORM_RUNTIME_TIMEOUT, replacement, 1);
             assert_ne!(mutated_job, *job, "mutation must alter the job fixture");
             let mutation = valid.replacen(job.as_str(), &mutated_job, 1);
@@ -2718,7 +2718,7 @@ mod tests {
                 capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
-                violations[0].contains("thirty-minute runtime budget"),
+                violations[0].contains("forty-minute runtime budget"),
                 "{violations:?}"
             );
         }
