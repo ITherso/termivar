@@ -1,8 +1,9 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
 use super::super::{
-    ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit, ImportedReconSnapshotAudit,
-    ImportedSecretExposureAudit, ImportedSuppliedSessionAudit, ImportedTlsObservationAudit,
+    ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit,
+    ImportedReconCertSpotterAudit, ImportedReconSnapshotAudit, ImportedSecretExposureAudit,
+    ImportedSuppliedSessionAudit, ImportedTlsObservationAudit,
     ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit, SuppliedSessionResourceBinding,
     WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
     WordPressAssetFingerprintResourceKey, WordPressComponentKey,
@@ -80,6 +81,31 @@ const MAX_RECON_SNAPSHOT_RIGHTS_TEXT_BYTES: usize = 4_096;
 const MAX_RECON_SNAPSHOT_PRODUCT_BYTES: usize = 256;
 const MAX_RECON_SNAPSHOT_VERSION_BYTES: usize = 128;
 const MAX_RECON_SNAPSHOT_LABEL_BYTES: usize = 256;
+const RECON_CERTSPOTTER_AUDIT_SCHEMA: &str = "security.recon-certspotter-audit/v1";
+const RECON_CERTSPOTTER_POLICY: &str = "termivar.recon-certspotter-provider/v1";
+const RECON_CERTSPOTTER_POLICY_SCHEMA: &str = "security.recon-certspotter-policy/v1";
+const RECON_CERTSPOTTER_PROVIDER: &str = "cert_spotter";
+const RECON_CERTSPOTTER_PRODUCTION_ORIGIN: &str = "https://api.certspotter.com";
+const MAX_RECON_CERTSPOTTER_PAGES: u64 = 2;
+const MAX_RECON_CERTSPOTTER_RESPONSE_PAGE_BYTES: u64 = 256 * 1_024;
+const MAX_RECON_CERTSPOTTER_RESPONSE_BYTES: u64 = 512 * 1_024;
+const MAX_RECON_CERTSPOTTER_ELAPSED_MILLISECONDS: u64 = 10_000;
+const MAX_RECON_CERTSPOTTER_IN_FLIGHT_REQUESTS: u64 = 1;
+const MAX_RECON_CERTSPOTTER_RETAINED_NAMES: u64 = 256;
+const MAX_RECON_CERTSPOTTER_ISSUANCES: u64 = 8_192;
+const MAX_RECON_CERTSPOTTER_ISSUANCES_PER_PAGE: u64 = 4_096;
+const MAX_RECON_CERTSPOTTER_NAME_EVENTS: u64 = 65_536;
+const MAX_RECON_CERTSPOTTER_ISSUANCE_ID_BYTES: u64 = 128;
+const RECON_CERTSPOTTER_ISSUANCE_REFERENCE_PREFIX: &str = "certspotter-issuance-sha256:";
+const RECON_CERTSPOTTER_ISSUANCE_REFERENCE_BYTES: usize =
+    RECON_CERTSPOTTER_ISSUANCE_REFERENCE_PREFIX.len() + 64;
+const RECON_CERTSPOTTER_CLAIM_LIMITS: [&str; 5] = [
+    "hypotheses_only",
+    "scan_authority_not_granted",
+    "ownership_not_established",
+    "currentness_not_established",
+    "source_authentication_not_established",
+];
 
 #[derive(Clone, Copy)]
 struct ExpectedControlReferenceRule {
@@ -1461,6 +1487,502 @@ pub(super) fn validate_recon_snapshot_import(
         coverage_and_accounting: canonical_value(required(fields, "accounting")?)?,
         hypotheses: Value::Array(normalized_records.into_values().collect()),
     })
+}
+
+pub(super) fn validate_recon_certspotter(
+    value: &Value,
+) -> Result<ImportedReconCertSpotterAudit, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "provider",
+            "methodology",
+            "coverage",
+            "hypotheses",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == RECON_CERTSPOTTER_AUDIT_SCHEMA)?;
+    check(string(fields, "policy")? == RECON_CERTSPOTTER_POLICY)?;
+    check(boolean(fields, "selected")?)?;
+    validate_recon_certspotter_claim_limits(required(fields, "claim_limits")?)?;
+
+    let provider = object(required(fields, "provider")?)?;
+    keys(
+        provider,
+        &[
+            "name",
+            "policy_schema",
+            "policy_revision",
+            "query_domain",
+            "query_reference",
+            "execution_mode",
+            "origin",
+        ],
+        &[],
+    )?;
+    check(string(provider, "name")? == RECON_CERTSPOTTER_PROVIDER)?;
+    check(string(provider, "policy_schema")? == RECON_CERTSPOTTER_POLICY_SCHEMA)?;
+    let policy_revision = text(provider, "policy_revision", MAX_IDENTIFIER_BYTES)?;
+    let query_reference = text(provider, "query_reference", MAX_IDENTIFIER_BYTES)?;
+    check(recon_certspotter_safe_opaque(policy_revision))?;
+    check(recon_certspotter_safe_opaque(query_reference))?;
+    let query_domain = text(provider, "query_domain", 253)?;
+    check(recon_certspotter_query_domain(query_domain))?;
+    let execution_mode = token(
+        provider,
+        "execution_mode",
+        &["production", "owned_loopback_fixture"],
+    )?;
+    let origin = text(provider, "origin", 256)?;
+    check(recon_certspotter_origin(execution_mode, origin))?;
+
+    let methodology = object(required(fields, "methodology")?)?;
+    keys(
+        methodology,
+        &[
+            "request_path",
+            "pagination",
+            "retries",
+            "polling",
+            "credentials",
+            "maximum_pages",
+            "maximum_response_page_bytes",
+            "maximum_response_bytes",
+            "maximum_elapsed_milliseconds",
+            "maximum_in_flight_requests",
+            "maximum_retained_names",
+        ],
+        &[],
+    )?;
+    check(string(methodology, "request_path")? == "/v1/issuances")?;
+    check(string(methodology, "pagination")? == "after_cursor")?;
+    check(string(methodology, "retries")? == "none")?;
+    check(string(methodology, "polling")? == "none")?;
+    check(string(methodology, "credentials")? == "none")?;
+    check(
+        number(methodology, "maximum_pages", MAX_RECON_CERTSPOTTER_PAGES)?
+            == MAX_RECON_CERTSPOTTER_PAGES,
+    )?;
+    check(
+        number(
+            methodology,
+            "maximum_response_page_bytes",
+            MAX_RECON_CERTSPOTTER_RESPONSE_PAGE_BYTES,
+        )? == MAX_RECON_CERTSPOTTER_RESPONSE_PAGE_BYTES,
+    )?;
+    check(
+        number(
+            methodology,
+            "maximum_response_bytes",
+            MAX_RECON_CERTSPOTTER_RESPONSE_BYTES,
+        )? == MAX_RECON_CERTSPOTTER_RESPONSE_BYTES,
+    )?;
+    check(
+        number(
+            methodology,
+            "maximum_elapsed_milliseconds",
+            MAX_RECON_CERTSPOTTER_ELAPSED_MILLISECONDS,
+        )? == MAX_RECON_CERTSPOTTER_ELAPSED_MILLISECONDS,
+    )?;
+    check(
+        number(
+            methodology,
+            "maximum_in_flight_requests",
+            MAX_RECON_CERTSPOTTER_IN_FLIGHT_REQUESTS,
+        )? == MAX_RECON_CERTSPOTTER_IN_FLIGHT_REQUESTS,
+    )?;
+    check(
+        number(
+            methodology,
+            "maximum_retained_names",
+            MAX_RECON_CERTSPOTTER_RETAINED_NAMES,
+        )? == MAX_RECON_CERTSPOTTER_RETAINED_NAMES,
+    )?;
+
+    let coverage = object(required(fields, "coverage")?)?;
+    keys(
+        coverage,
+        &[
+            "terminal",
+            "completeness",
+            "first_failure",
+            "initial_after_reference",
+            "initial_after_byte_length",
+            "last_cursor_reference",
+            "last_cursor_byte_length",
+            "request_attempt_count",
+            "request_admitted_count",
+            "response_completed_count",
+            "observed_response_bytes",
+            "accepted_page_count",
+            "accepted_response_bytes",
+            "issuance_count",
+            "retained_name_count",
+            "foreign_name_count",
+            "duplicate_name_count",
+            "omitted_name_count",
+        ],
+        &[],
+    )?;
+    let terminal = token(
+        coverage,
+        "terminal",
+        &[
+            "provider_exhausted",
+            "hypothesis_limit_reached",
+            "page_limit_reached",
+            "deadline_reached",
+            "parent_authority_unavailable",
+            "transport_failed",
+            "cancelled",
+        ],
+    )?;
+    let completeness = token(
+        coverage,
+        "completeness",
+        &[
+            "provider_exhausted_as_observed",
+            "bounded_partial",
+            "unknown",
+        ],
+    )?;
+    let first_failure = optional_token(
+        coverage,
+        "first_failure",
+        &[
+            "client_initialization",
+            "request_construction",
+            "parent_authority_unavailable",
+            "cancelled",
+            "deadline_reached",
+            "transport_failed",
+            "redirect_refused",
+            "access_rejected",
+            "throttled",
+            "provider_not_found",
+            "server_failure",
+            "unexpected_status",
+            "unsupported_media",
+            "unsupported_content_coding",
+            "response_too_large",
+            "invalid_response",
+        ],
+    )?;
+    let initial_after_reference = optional_text(
+        coverage,
+        "initial_after_reference",
+        RECON_CERTSPOTTER_ISSUANCE_REFERENCE_BYTES,
+    )?;
+    let initial_after_byte_length =
+        optional_recon_certspotter_issuance_byte_length(coverage, "initial_after_byte_length")?;
+    check(
+        initial_after_reference.is_some() == initial_after_byte_length.is_some()
+            && initial_after_reference.is_none_or(recon_certspotter_issuance_reference),
+    )?;
+    check(initial_after_reference.is_none() && initial_after_byte_length.is_none())?;
+    let last_cursor_reference = optional_text(
+        coverage,
+        "last_cursor_reference",
+        RECON_CERTSPOTTER_ISSUANCE_REFERENCE_BYTES,
+    )?;
+    let last_cursor_byte_length =
+        optional_recon_certspotter_issuance_byte_length(coverage, "last_cursor_byte_length")?;
+    check(
+        last_cursor_reference.is_some() == last_cursor_byte_length.is_some()
+            && last_cursor_reference.is_none_or(recon_certspotter_issuance_reference),
+    )?;
+    let request_attempt_count = number(
+        coverage,
+        "request_attempt_count",
+        MAX_RECON_CERTSPOTTER_PAGES,
+    )?;
+    let request_admitted_count = number(
+        coverage,
+        "request_admitted_count",
+        MAX_RECON_CERTSPOTTER_PAGES,
+    )?;
+    let response_completed_count = number(
+        coverage,
+        "response_completed_count",
+        MAX_RECON_CERTSPOTTER_PAGES,
+    )?;
+    let observed_response_bytes = number(coverage, "observed_response_bytes", u64::MAX)?;
+    let accepted_page_count = number(coverage, "accepted_page_count", MAX_RECON_CERTSPOTTER_PAGES)?;
+    let accepted_response_bytes = number(
+        coverage,
+        "accepted_response_bytes",
+        MAX_RECON_CERTSPOTTER_RESPONSE_BYTES,
+    )?;
+    let issuance_count = number(coverage, "issuance_count", MAX_RECON_CERTSPOTTER_ISSUANCES)?;
+    let retained_name_count = number(
+        coverage,
+        "retained_name_count",
+        MAX_RECON_CERTSPOTTER_RETAINED_NAMES,
+    )?;
+    let foreign_name_count = number(
+        coverage,
+        "foreign_name_count",
+        MAX_RECON_CERTSPOTTER_NAME_EVENTS,
+    )?;
+    let duplicate_name_count = number(
+        coverage,
+        "duplicate_name_count",
+        MAX_RECON_CERTSPOTTER_NAME_EVENTS,
+    )?;
+    let omitted_name_count = number(
+        coverage,
+        "omitted_name_count",
+        MAX_RECON_CERTSPOTTER_NAME_EVENTS,
+    )?;
+    check(
+        request_admitted_count <= request_attempt_count
+            && response_completed_count <= request_admitted_count
+            && accepted_page_count <= response_completed_count
+            && accepted_response_bytes <= observed_response_bytes,
+    )?;
+    check((accepted_page_count == 0) == (accepted_response_bytes == 0))?;
+    check((issuance_count == 0) == last_cursor_reference.is_none())?;
+    let issuance_capacity = accepted_page_count
+        .checked_mul(MAX_RECON_CERTSPOTTER_ISSUANCES_PER_PAGE)
+        .ok_or(ComparisonError::InvalidDocument)?;
+    check(issuance_count <= issuance_capacity)?;
+    let name_event_count = retained_name_count
+        .checked_add(foreign_name_count)
+        .and_then(|count| count.checked_add(duplicate_name_count))
+        .and_then(|count| count.checked_add(omitted_name_count))
+        .ok_or(ComparisonError::InvalidDocument)?;
+    check(name_event_count <= MAX_RECON_CERTSPOTTER_NAME_EVENTS)?;
+    check(issuance_count != 0 || name_event_count == 0)?;
+    let completed_collection_accounting_is_exact = request_attempt_count == accepted_page_count
+        && request_admitted_count == accepted_page_count
+        && response_completed_count == accepted_page_count
+        && observed_response_bytes == accepted_response_bytes;
+    check(match terminal {
+        "provider_exhausted" => {
+            completeness == "provider_exhausted_as_observed"
+                && first_failure.is_none()
+                && accepted_page_count > 0
+                && completed_collection_accounting_is_exact
+        },
+        "hypothesis_limit_reached" => {
+            completeness == "bounded_partial"
+                && first_failure.is_none()
+                && retained_name_count == MAX_RECON_CERTSPOTTER_RETAINED_NAMES
+                && completed_collection_accounting_is_exact
+        },
+        "page_limit_reached" => {
+            completeness == "bounded_partial"
+                && first_failure.is_none()
+                && accepted_page_count == MAX_RECON_CERTSPOTTER_PAGES
+                && completed_collection_accounting_is_exact
+        },
+        "deadline_reached" => {
+            completeness == "unknown"
+                && first_failure == Some("deadline_reached")
+                && accepted_page_count < MAX_RECON_CERTSPOTTER_PAGES
+        },
+        "parent_authority_unavailable" => {
+            completeness == "unknown"
+                && first_failure == Some("parent_authority_unavailable")
+                && accepted_page_count < MAX_RECON_CERTSPOTTER_PAGES
+        },
+        "cancelled" => {
+            completeness == "unknown"
+                && first_failure == Some("cancelled")
+                && accepted_page_count < MAX_RECON_CERTSPOTTER_PAGES
+        },
+        "transport_failed" => {
+            completeness == "unknown"
+                && first_failure.is_some_and(recon_certspotter_transport_failure)
+                && accepted_page_count < MAX_RECON_CERTSPOTTER_PAGES
+        },
+        _ => false,
+    })?;
+
+    let wire_hypotheses = array(fields, "hypotheses")?;
+    check(wire_hypotheses.len() as u64 == retained_name_count)?;
+    let mut names = BTreeSet::new();
+    let mut source_identities = BTreeSet::new();
+    let mut normalized_hypotheses = BTreeMap::new();
+    for value in wire_hypotheses {
+        let hypothesis = object(value)?;
+        keys(hypothesis, &["name", "source", "claim_limits"], &[])?;
+        let name = text(hypothesis, "name", 255)?;
+        check(recon_certspotter_name(name, query_domain))?;
+        check(names.insert(name.to_owned()))?;
+        validate_recon_certspotter_claim_limits(required(hypothesis, "claim_limits")?)?;
+        let source = object(required(hypothesis, "source")?)?;
+        keys(
+            source,
+            &[
+                "provider",
+                "origin",
+                "first_issuance_reference",
+                "first_issuance_byte_length",
+            ],
+            &[],
+        )?;
+        check(string(source, "provider")? == RECON_CERTSPOTTER_PROVIDER)?;
+        check(string(source, "origin")? == origin)?;
+        let issuance_reference = text(
+            source,
+            "first_issuance_reference",
+            RECON_CERTSPOTTER_ISSUANCE_REFERENCE_BYTES,
+        )?;
+        check(recon_certspotter_issuance_reference(issuance_reference))?;
+        let issuance_byte_length = number(
+            source,
+            "first_issuance_byte_length",
+            MAX_RECON_CERTSPOTTER_ISSUANCE_ID_BYTES,
+        )?;
+        check(issuance_byte_length > 0)?;
+        check(source_identities.insert((
+            name.to_owned(),
+            issuance_reference.to_owned(),
+            issuance_byte_length,
+        )))?;
+        check(
+            normalized_hypotheses
+                .insert(name.to_owned(), canonical_value(value)?)
+                .is_none(),
+        )?;
+    }
+
+    let methodology_projection = selected_object(
+        fields,
+        &["schema", "policy", "selected"],
+        &[
+            ("methodology", Some(required(fields, "methodology")?)),
+            ("claim_limits", Some(required(fields, "claim_limits")?)),
+        ],
+    )?;
+    Ok(ImportedReconCertSpotterAudit {
+        provider: canonical_value(required(fields, "provider")?)?,
+        methodology: methodology_projection,
+        coverage: canonical_value(required(fields, "coverage")?)?,
+        hypotheses: Value::Array(normalized_hypotheses.into_values().collect()),
+    })
+}
+
+fn validate_recon_certspotter_claim_limits(value: &Value) -> Result<(), ComparisonError> {
+    let values = value.as_array().ok_or(ComparisonError::InvalidDocument)?;
+    check(values.len() == RECON_CERTSPOTTER_CLAIM_LIMITS.len())?;
+    check(
+        values
+            .iter()
+            .zip(RECON_CERTSPOTTER_CLAIM_LIMITS)
+            .all(|(value, expected)| value.as_str() == Some(expected)),
+    )
+}
+
+fn recon_certspotter_safe_opaque(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_IDENTIFIER_BYTES
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+}
+
+fn recon_certspotter_query_domain(value: &str) -> bool {
+    value.contains('.')
+        && !value.starts_with("*.")
+        && value.parse::<IpAddr>().is_err()
+        && recon_certspotter_dns_name(value)
+}
+
+fn recon_certspotter_name(value: &str, query_domain: &str) -> bool {
+    let bare = value.strip_prefix("*.").unwrap_or(value);
+    recon_certspotter_dns_name(bare)
+        && bare.parse::<IpAddr>().is_err()
+        && (bare == query_domain
+            || bare
+                .strip_suffix(query_domain)
+                .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1))
+}
+
+fn recon_certspotter_dns_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.is_ascii()
+        && value == value.to_ascii_lowercase()
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+fn optional_recon_certspotter_issuance_byte_length(
+    fields: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<u64>, ComparisonError> {
+    if required(fields, key)?.is_null() {
+        return Ok(None);
+    }
+    let byte_length = number(fields, key, MAX_RECON_CERTSPOTTER_ISSUANCE_ID_BYTES)?;
+    check(byte_length > 0)?;
+    Ok(Some(byte_length))
+}
+
+fn recon_certspotter_issuance_reference(value: &str) -> bool {
+    digest(value, RECON_CERTSPOTTER_ISSUANCE_REFERENCE_PREFIX)
+}
+
+fn recon_certspotter_origin(mode: &str, origin: &str) -> bool {
+    if mode == "production" {
+        return origin == RECON_CERTSPOTTER_PRODUCTION_ORIGIN;
+    }
+    if mode != "owned_loopback_fixture" || origin.is_empty() || origin.len() > 256 {
+        return false;
+    }
+    let Ok(parsed) = url::Url::parse(origin) else {
+        return false;
+    };
+    parsed.scheme() == "http"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.port().is_some_and(|port| port > 0)
+        && parsed.path() == "/"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.host().is_some_and(|host| match host {
+            url::Host::Ipv4(address) => address.is_loopback(),
+            url::Host::Ipv6(address) => address.is_loopback(),
+            url::Host::Domain(_) => false,
+        })
+        && parsed.origin().ascii_serialization() == origin
+}
+
+fn recon_certspotter_transport_failure(value: &str) -> bool {
+    matches!(
+        value,
+        "client_initialization"
+            | "request_construction"
+            | "transport_failed"
+            | "redirect_refused"
+            | "access_rejected"
+            | "throttled"
+            | "provider_not_found"
+            | "server_failure"
+            | "unexpected_status"
+            | "unsupported_media"
+            | "unsupported_content_coding"
+            | "response_too_large"
+            | "invalid_response"
+    )
 }
 
 fn valid_recon_name(value: &str, wildcard: bool) -> bool {

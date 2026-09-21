@@ -77,6 +77,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     TLS_OBSERVATION_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     JWT_TARGET_ACCEPTANCE_RUNTIME_SOURCE,
+    RECON_CT_PROVIDER_RUNTIME_SOURCE,
     SSRF_OAST_RUNTIME_SOURCE,
     SUPPLIED_SESSION_RUNTIME_SOURCE,
     WORDPRESS_RUNTIME_SOURCE,
@@ -126,6 +127,8 @@ const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs";
 const JWT_TARGET_ACCEPTANCE_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/jwt_target_acceptance_runtime.rs";
+const RECON_CT_PROVIDER_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/recon_ct_runtime.rs";
 const SSRF_OAST_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/ssrf_oast_runtime.rs";
 const SUPPLIED_SESSION_RUNTIME_SOURCE: &str =
@@ -400,6 +403,7 @@ const DIRECT_CLIENT_SOURCE_ALLOWLIST: &[&str] = &[
     "crates/termivar-cli/src/main.rs",
     "crates/termivar-scanner/src/context.rs",
     NATIVE_OAST_PROVIDER_ADAPTER_SOURCE,
+    RECON_CT_PROVIDER_RUNTIME_SOURCE,
     TRANSPORT_OWNER_SOURCE,
     "crates/termivar-scanner/src/sdk.rs",
 ];
@@ -2513,6 +2517,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     let mut defense_audit_owners = BTreeMap::<String, usize>::new();
     let mut rest_audit_owners = BTreeMap::<String, usize>::new();
     let mut tls_observation_audit_owners = BTreeMap::<String, usize>::new();
+    let mut recon_ct_provider_audit_owners = BTreeMap::<String, usize>::new();
     let mut wordpress_audit_owners = BTreeMap::<String, usize>::new();
 
     let progress_checkpoint = syntax.items.iter().find_map(|item| match item {
@@ -2763,6 +2768,17 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                 if tls_observation_audit_count > 0 {
                     tls_observation_audit_owners.insert(name.clone(), tls_observation_audit_count);
                 }
+                let recon_ct_provider_audit_count = item
+                    .fields
+                    .iter()
+                    .filter(|field| {
+                        type_references_ident(&field.ty, "WebAssessmentReconCtProviderAudit")
+                    })
+                    .count();
+                if recon_ct_provider_audit_count > 0 {
+                    recon_ct_provider_audit_owners
+                        .insert(name.clone(), recon_ct_provider_audit_count);
+                }
                 let wordpress_audit_count = item
                     .fields
                     .iter()
@@ -2831,6 +2847,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "tls_observation")
                     });
+                    let recon_ct_provider = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "recon_ct_provider")
+                    });
                     let ssrf_oast_review = item.fields.iter().find(|field| {
                         field
                             .ident
@@ -2888,6 +2910,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             "Option",
                             &["WebAssessmentTlsObservationAudit"],
                         ) || !attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
+                    }) || recon_ct_provider.is_none_or(|field| {
+                        !is_generic_of_idents(
+                            &field.ty,
+                            "Option",
+                            &["WebAssessmentReconCtProviderAudit"],
+                        ) || !attributes_are_exact_cfg_feature(&field.attrs, "recon-ct-provider")
                     }) || ssrf_oast_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentSsrfOastAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
@@ -2906,13 +2934,14 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                                     | "rest_review"
                                     | "secret_exposure_review"
                                     | "tls_observation"
+                                    | "recon_ct_provider"
                                     | "ssrf_oast_review"
                                     | "wordpress_review"
                             )
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields, plus the JWT target-acceptance redacted audit field, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields, plus the JWT target-acceptance redacted audit field, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -2966,6 +2995,13 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     if tls_observation_audit_owners != expected_tls_observation_audit_owners {
         violations.push(format!(
             "assessment TLS-observation audit ownership drifted: expected {expected_tls_observation_audit_owners:?}, observed {tls_observation_audit_owners:?}"
+        ));
+    }
+    let expected_recon_ct_provider_audit_owners =
+        BTreeMap::from([("WebAssessmentRunReport".to_owned(), 1usize)]);
+    if recon_ct_provider_audit_owners != expected_recon_ct_provider_audit_owners {
+        violations.push(format!(
+            "assessment Cert Spotter reconnaissance audit ownership drifted: expected {expected_recon_ct_provider_audit_owners:?}, observed {recon_ct_provider_audit_owners:?}"
         ));
     }
     let expected_wordpress_audit_owners =
@@ -5420,7 +5456,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 17
+                fields.len() == 18
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -5465,6 +5501,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     && fields.get("tls_observation").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentTlsObservationAudit"])
                     })
+                    && fields.get("recon_ct_provider").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "Option",
+                            &["WebAssessmentReconCtProviderAudit"],
+                        )
+                    })
                     && fields.get("jwt_policy_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["JwtPolicyReviewAudit"])
                     })
@@ -5503,6 +5546,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "tls_observation").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
             })
+            && private_named_field(item, "recon_ct_provider").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "recon-ct-provider")
+            })
             && private_named_field(item, "jwt_policy_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "jwt-policy-review")
             })
@@ -5526,7 +5572,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus JWT target-acceptance and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
         ));
     }
 
@@ -5542,7 +5588,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 &["Clone", "Copy", "Serialize", "Deserialize"],
             )
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 9
+                fields.len() == 10
                     && fields.get("supplied_session").is_some_and(|field| {
                         is_generic_of_idents(
                             field,
@@ -5567,6 +5613,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     })
                     && fields.get("tls_observation").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentTlsObservationAudit"])
+                    })
+                    && fields.get("recon_ct_provider").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "Option",
+                            &["WebAssessmentReconCtProviderAudit"],
+                        )
                     })
                     && fields.get("ssrf_oast_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentSsrfOastAudit"])
@@ -5595,6 +5648,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "tls_observation").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
             })
+            && private_named_field(item, "recon_ct_provider").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "recon-ct-provider")
+            })
             && private_named_field(item, "ssrf_oast_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "ssrf-oast-review")
             })
@@ -5604,7 +5660,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !review_audits_shape_is_exact {
         violations.push(
-            "AssessmentReviewAudits must remain one private Default-only container with exactly the nine feature-gated redacted audit values"
+            "AssessmentReviewAudits must remain one private Default-only container with exactly the ten feature-gated redacted audit values"
                 .to_owned(),
         );
     }
@@ -5656,7 +5712,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus JWT target-acceptance, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -5716,6 +5772,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_rest_audit",
                     "validate_secret_exposure_audit",
                     "validate_tls_observation_audit",
+                    "validate_recon_ct_provider_audit",
                     "validate_ssrf_oast_audit",
                     "validate_wordpress_audit",
                     "jwt_policy_review",
@@ -5765,12 +5822,17 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && statement_reference_precedes(&method.block, "validate_rest_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_secret_exposure_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_tls_observation_audit", "Self")
+            && statement_reference_precedes(
+                &method.block,
+                "validate_recon_ct_provider_audit",
+                "Self",
+            )
             && statement_reference_precedes(&method.block, "validate_ssrf_oast_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_wordpress_audit", "Self")
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits, plus JWT target-acceptance, before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus JWT target-acceptance, before construction"
                 .to_owned(),
         );
     }
@@ -7174,7 +7236,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 9
+    typed.len() == expected_prefix.len() + 10
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -7244,12 +7306,22 @@ fn assessment_report_constructor_inputs_are_exact(
                         &["WebAssessmentSecretExposureAudit"],
                     )
             })
+        && typed
+            .get(expected_prefix.len() + 8)
+            .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "tls-observation")
+                    && is_generic_of_idents(
+                        &argument.ty,
+                        "Option",
+                        &["WebAssessmentTlsObservationAudit"],
+                    )
+            })
         && typed.last().is_some_and(|argument| {
-            attributes_are_exact_cfg_feature(&argument.attrs, "tls-observation")
+            attributes_are_exact_cfg_feature(&argument.attrs, "recon-ct-provider")
                 && is_generic_of_idents(
                     &argument.ty,
                     "Option",
-                    &["WebAssessmentTlsObservationAudit"],
+                    &["WebAssessmentReconCtProviderAudit"],
                 )
         })
 }
@@ -8080,6 +8152,15 @@ fn validate_policy_inventory() -> Vec<String> {
     {
         violations.push(
             "OpenAPI review runtime may receive one host-owned broker but must not own direct, unmetered, or independently forbidden transport authority"
+                .to_owned(),
+        );
+    }
+    if !bounded.contains(RECON_CT_PROVIDER_RUNTIME_SOURCE)
+        || !DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&RECON_CT_PROVIDER_RUNTIME_SOURCE)
+        || UNMETERED_STANDALONE_FACADE_SOURCES.contains(&RECON_CT_PROVIDER_RUNTIME_SOURCE)
+    {
+        violations.push(
+            "Cert Spotter provider runtime must remain one bounded consumer with an exact direct-client exception and no unmetered broker authority"
                 .to_owned(),
         );
     }
@@ -9569,7 +9650,13 @@ impl OwnershipVisitor<'_> {
             .is_some_and(|root| normalize_identifier(root) == "reqwest");
         let legacy_client_path = is_legacy_client_path(segments)
             && !(self.allow_legacy_context_type && is_context_type_path(segments));
-        if reqwest || is_direct_transport_path(segments) || legacy_client_path {
+        let reviewed_recon_provider_reqwest = self.source == RECON_CT_PROVIDER_RUNTIME_SOURCE
+            && segments
+                .first()
+                .is_some_and(|root| normalize_identifier(root) == "reqwest");
+        if !reviewed_recon_provider_reqwest
+            && (reqwest || is_direct_transport_path(segments) || legacy_client_path)
+        {
             self.violations.insert(format!(
                 "{} acquires forbidden direct transport path {}; use crate::http_evidence::HttpRequestBroker",
                 self.source,
@@ -9666,10 +9753,10 @@ impl OwnershipVisitor<'_> {
                 continue;
             };
             let member = ident_name(member);
-            if is_punctuation(dot, '.')
-                && (matches!(member.as_str(), "client" | "send")
-                    || (self.forbid_execute && member == "execute"))
-            {
+            let forbidden_transport_member = member == "client"
+                || (member == "send" && self.source != RECON_CT_PROVIDER_RUNTIME_SOURCE)
+                || (self.forbid_execute && member == "execute");
+            if is_punctuation(dot, '.') && forbidden_transport_member {
                 self.violations.insert(format!(
                     "{} hides forbidden direct transport member .{member} inside a macro",
                     self.source
@@ -9839,6 +9926,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "crates/termivar-scanner/src/web_runtime.rs",
                     "jwt_target_acceptance_runtime"
                 )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
+                    "recon_ct_runtime"
+                )
                 | ("crates/termivar-scanner/src/web_runtime.rs", "scan_profile")
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
@@ -9909,6 +10000,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "jwt_target_acceptance_runtime"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "jwt-target-acceptance-review")
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "recon_ct_runtime"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "recon-ct-provider")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "ssrf_oast_runtime"
         {
@@ -10000,7 +10095,7 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
 
     fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
         let method = ident_name(&expression.method);
-        if method == "send" {
+        if method == "send" && self.source != RECON_CT_PROVIDER_RUNTIME_SOURCE {
             self.violations.insert(format!(
                 "{} calls .send() outside the transport owner",
                 self.source
@@ -11057,6 +11152,72 @@ mod tests {
     }
 
     #[test]
+    fn recon_ct_runtime_has_one_exact_bounded_direct_client_exception() {
+        assert_eq!(
+            BOUNDED_RUNTIME_SOURCES
+                .iter()
+                .filter(|source| **source == RECON_CT_PROVIDER_RUNTIME_SOURCE)
+                .count(),
+            1
+        );
+        assert_eq!(
+            DIRECT_CLIENT_SOURCE_ALLOWLIST
+                .iter()
+                .filter(|source| **source == RECON_CT_PROVIDER_RUNTIME_SOURCE)
+                .count(),
+            1
+        );
+        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&RECON_CT_PROVIDER_RUNTIME_SOURCE));
+
+        let reviewed =
+            "use reqwest::Client; async fn dispatch(client: &Client) { let _ = client.get(url()).send().await; }";
+        assert!(
+            inspect_bounded_source(RECON_CT_PROVIDER_RUNTIME_SOURCE, reviewed)
+                .unwrap()
+                .is_empty()
+        );
+
+        let reviewed_macro =
+            "fn dispatch() { tokio::select! { result = request.send() => { let _ = result; } } }";
+        assert!(
+            inspect_bounded_source(RECON_CT_PROVIDER_RUNTIME_SOURCE, reviewed_macro)
+                .unwrap()
+                .is_empty()
+        );
+
+        let wrong_owner =
+            inspect_bounded_source("crates/termivar-scanner/src/web_execution.rs", reviewed)
+                .unwrap()
+                .join("\n");
+        assert!(
+            wrong_owner.contains("forbidden direct transport path")
+                && wrong_owner.contains("calls .send() outside the transport owner"),
+            "{wrong_owner}"
+        );
+        let wrong_macro_owner = inspect_bounded_source(
+            "crates/termivar-scanner/src/web_execution.rs",
+            reviewed_macro,
+        )
+        .unwrap()
+        .join("\n");
+        assert!(
+            wrong_macro_owner.contains("hides forbidden direct transport member .send"),
+            "{wrong_macro_owner}"
+        );
+
+        let socket_escape = inspect_bounded_source(
+            RECON_CT_PROVIDER_RUNTIME_SOURCE,
+            "use tokio::net::TcpStream;",
+        )
+        .unwrap()
+        .join("\n");
+        assert!(
+            socket_escape.contains("forbidden direct transport path"),
+            "{socket_escape}"
+        );
+    }
+
+    #[test]
     fn tls_observation_reduction_cannot_inflate_transport_ttfb() {
         let valid =
             include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs")
@@ -11964,6 +12125,10 @@ mod tests {
                 "#[cfg(feature = \"jwt-target-acceptance-review\")] mod jwt_target_acceptance_runtime;",
             ),
             (
+                "crates/termivar-scanner/src/web_runtime.rs",
+                "#[cfg(feature = \"recon-ct-provider\")] mod recon_ct_runtime;",
+            ),
+            (
                 "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                 "#[cfg(feature = \"normalization-resilience\")] mod normalization_transform_catalog;",
             ),
@@ -12021,6 +12186,22 @@ mod tests {
             assert!(
                 violations.contains("unregistered external submodule"),
                 "JWT target runtime feature boundary unexpectedly passed: {source}: {violations}"
+            );
+        }
+
+        for source in [
+            "mod recon_ct_runtime;",
+            "#[cfg(feature = \"scanning\")] mod recon_ct_runtime;",
+            "#[cfg(feature = \"recon-ct-provider\")] pub mod recon_ct_runtime;",
+            "#[cfg(any(feature = \"recon-ct-provider\", feature = \"scanning\"))] mod recon_ct_runtime;",
+        ] {
+            let violations =
+                inspect_bounded_source("crates/termivar-scanner/src/web_runtime.rs", source)
+                    .unwrap()
+                    .join("\n");
+            assert!(
+                violations.contains("unregistered external submodule"),
+                "Cert Spotter runtime feature boundary unexpectedly passed: {source}: {violations}"
             );
         }
 
@@ -13511,7 +13692,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13594,7 +13775,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13610,7 +13791,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13626,7 +13807,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13642,8 +13823,22 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
+            "{violations}"
+        );
+
+        let missing_recon_ct_provider_audit = report_source.replacen(
+            "    #[cfg(feature = \"recon-ct-provider\")]\n    recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_recon_ct_provider_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_recon_ct_provider_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("Cert Spotter reconnaissance"),
             "{violations}"
         );
 
@@ -13658,7 +13853,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13674,7 +13869,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated redacted supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13690,7 +13885,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13706,7 +13901,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13722,7 +13917,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13738,7 +13933,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13754,8 +13949,22 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
+            "{violations}"
+        );
+
+        let unvalidated_recon_ct_provider_audit = report_source.replacen(
+            "        #[cfg(feature = \"recon-ct-provider\")]\n        validate_recon_ct_provider_audit(\n            recon_ct_provider.as_ref(),\n            truth.expected_accounting.requests().consumed(),\n            truth.expected_accounting.response_body_bytes().consumed(),\n        )?;",
+            "        #[cfg(feature = \"recon-ct-provider\")]\n        let _ = recon_ct_provider.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_recon_ct_provider_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_recon_ct_provider_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("Cert Spotter reconnaissance"),
             "{violations}"
         );
 
@@ -13770,7 +13979,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13786,7 +13995,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress audits"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits"
             ),
             "{violations}"
         );
@@ -13814,7 +14023,7 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains(
-                "AssessmentReviewAudits must remain one private Default-only container with exactly the nine feature-gated redacted audit values"
+                "AssessmentReviewAudits must remain one private Default-only container with exactly the ten feature-gated redacted audit values"
                 ),
                 "{violations}"
             );
@@ -13831,6 +14040,20 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains("caller-supplied RunReport input"),
+            "{violations}"
+        );
+
+        let reordered_recon_ct_provider_argument = report_source.replacen(
+            "        #[cfg(feature = \"tls-observation\")] tls_observation: Option<\n            WebAssessmentTlsObservationAudit,\n        >,\n        #[cfg(feature = \"recon-ct-provider\")] recon_ct_provider: Option<\n            WebAssessmentReconCtProviderAudit,\n        >,",
+            "        #[cfg(feature = \"recon-ct-provider\")] recon_ct_provider: Option<\n            WebAssessmentReconCtProviderAudit,\n        >,\n        #[cfg(feature = \"tls-observation\")] tls_observation: Option<\n            WebAssessmentTlsObservationAudit,\n        >,",
+            1,
+        );
+        assert_ne!(reordered_recon_ct_provider_argument, report_source);
+        let violations = inspect_assessment_report_boundary(&reordered_recon_ct_provider_argument)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("from_completed_truth must consume AssessmentItemSet"),
             "{violations}"
         );
 
@@ -14206,6 +14429,7 @@ mod tests {
             pub struct WebAssessmentRestAudit { outcome: String }
             pub struct WebAssessmentSecretExposureAudit { outcome: String }
             pub struct WebAssessmentTlsObservationAudit { outcome: String }
+            pub struct WebAssessmentReconCtProviderAudit { outcome: String }
             pub struct WebAssessmentSsrfOastAudit { outcome: String }
             pub struct WebAssessmentSuppliedSessionAudit { outcome: String }
             pub struct WebAssessmentWordPressAudit { outcome: String }
@@ -14255,6 +14479,8 @@ mod tests {
                 secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
                 #[cfg(feature = "tls-observation")]
                 tls_observation: Option<WebAssessmentTlsObservationAudit>,
+                #[cfg(feature = "recon-ct-provider")]
+                recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
                 #[cfg(feature = "wordpress-review")]
@@ -14387,7 +14613,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -14415,7 +14641,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -14443,8 +14669,34 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
             ),
+            "{violations}"
+        );
+
+        let missing_recon_ct_provider_audit = valid.replace(
+            "                #[cfg(feature = \"recon-ct-provider\")]\n                recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,\n",
+            "",
+        );
+        assert_ne!(missing_recon_ct_provider_audit, valid);
+        let violations = inspect_web_assessment_models(&missing_recon_ct_provider_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("Cert Spotter reconnaissance"),
+            "{violations}"
+        );
+
+        let nested_recon_ct_provider_audit = valid.replace(
+            "subject: String",
+            "subject: String, recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>",
+        );
+        assert_ne!(nested_recon_ct_provider_audit, valid);
+        let violations = inspect_web_assessment_models(&nested_recon_ct_provider_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("Cert Spotter reconnaissance audit ownership drifted"),
             "{violations}"
         );
 
@@ -14458,7 +14710,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );
@@ -14506,7 +14758,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
             ),
             "{violations}"
         );

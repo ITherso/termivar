@@ -92,6 +92,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "oast_admin_token_file",
     "oast_admin_token_stdin",
     "openapi_review",
+    "recon_certspotter_policy",
     "recon_snapshot",
     "rest_review",
     "secret_exposure_review",
@@ -1017,6 +1018,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("oast_admin_token_file", "Option", Some("PathBuf")),
         ("oast_admin_token_stdin", "bool", None),
         ("openapi_review", "bool", None),
+        ("recon_certspotter_policy", "Option", Some("PathBuf")),
         ("recon_snapshot", "Option", Some("PathBuf")),
         ("rest_review", "bool", None),
         ("secret_exposure_review", "bool", None),
@@ -1380,6 +1382,33 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
+    if fields.get("recon_certspotter_policy").is_none_or(|field| {
+        !is_one_argument_type(&field.ty, "Option", "PathBuf")
+            || !exact_cfg_feature_attribute(&field.attrs, "recon-ct-provider")
+            || !exact_arg_attribute(
+                &field.attrs,
+                "long,value_name=\"FILE\",requires=\"profile\"",
+            )
+    }) {
+        violations.push(
+            "CLI `recon_certspotter_policy` must remain an exact feature-gated local policy path requiring an explicit profile"
+                .to_owned(),
+        );
+    }
+
+    if !compact.contains(
+        "fnscan_recon_certspotter_flags_conflict(profile:Option<CliScanProfile>,selected:bool,)->Option<&'staticstr>{ifselected&&profile!=Some(CliScanProfile::WebReview){Some(\"`--recon-certspotter-policy`requires`--profileweb-review`\")}else{None}}",
+    ) || compact
+        .matches("fnscan_recon_certspotter_flags_conflict(")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI Cert Spotter provider validation must retain the exact web-review-only, value-free preflight"
+                .to_owned(),
+        );
+    }
+
     if fields.get("progress").is_none_or(|field| {
         !is_plain_type(&field.ty, "bool")
             || !exact_arg_attribute(&field.attrs, "long,requires=\"profile\"")
@@ -1712,6 +1741,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_rest_review_flags_conflict",
         "scan_control_reference_mapping_flags_conflict",
         "scan_recon_snapshot_flags_conflict",
+        "scan_recon_certspotter_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
@@ -1735,6 +1765,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "with_defense_enforcement_enabled",
         "load",
         "load",
+        "preflight_recon_ct_provider_composition",
         "prepare",
         "prepare",
         "prepare",
@@ -1772,6 +1803,18 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     }
     if compact
         .matches(
+            "scan_recon_certspotter_flags_conflict(profile,recon_certspotter_policy.is_some())",
+        )
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI Cert Spotter provider validation must receive the exact selected policy state before any input or network work"
+                .to_owned(),
+        );
+    }
+    if compact
+        .matches(
             "letrecon_snapshot_input=recon_snapshot.map(recon_input::ReconSnapshotInput::new);",
         )
         .count()
@@ -1779,6 +1822,16 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     {
         violations.push(
             "CLI reconnaissance snapshot path must be selected exactly once without opening it before the typed load boundary"
+                .to_owned(),
+        );
+    }
+    if compact
+        .matches("letrecon_certspotter_policy_input=recon_certspotter_policy.map(recon_ct_input::ReconCtProviderPolicyInput::new);")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI Cert Spotter provider path must be selected exactly once without opening it before the typed load boundary"
                 .to_owned(),
         );
     }
@@ -1795,6 +1848,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             != 1
         || ordered
             .iter()
+            .filter(|name| name.as_str() == "scan_recon_certspotter_flags_conflict")
+            .count()
+            != 1
+        || ordered
+            .iter()
             .filter(|name| name.as_str() == "scan_progress_flags_conflict")
             .count()
             != 1
@@ -1802,7 +1860,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 7
+            != 8
+        || ordered
+            .iter()
+            .filter(|name| name.as_str() == "preflight_recon_ct_provider_composition")
+            .count()
+            != 1
         || ordered
             .iter()
             .filter(|name| name.as_str() == "prepare")
@@ -1821,6 +1884,8 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     let typed_boundary_order = [
         "letwordpress_review=wordpress_review_input.map(|input|input.load(&target)).transpose()?;",
         "letrecon_snapshot=recon_snapshot_input.map(recon_input::ReconSnapshotInput::load).transpose()?;",
+        "letrecon_ct_provider=recon_certspotter_policy_input.map(recon_ct_input::ReconCtProviderPolicyInput::load).transpose()?;",
+        "assessment_scan::preflight_recon_ct_provider_composition(&target,recon_ct_provider.as_ref(),)?;",
         "letprepared_jwt_policy_review={#[cfg(feature=\"jwt-target-acceptance-review\")]{jwt_policy_review_input.map(|input|input.prepare(&target)).transpose()?}#[cfg(not(feature=\"jwt-target-acceptance-review\"))]{jwt_policy_review_input.map(auth_input::JwtPolicyReviewInput::prepare).transpose()?}};",
         "letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?;",
         "scan_wordpress_supplied_session_policy_conflict(wordpress_supplied_session,prepared.policy_version(),)",
@@ -2949,6 +3014,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_rest_review_flags_conflict",
         "scan_control_reference_mapping_flags_conflict",
         "scan_recon_snapshot_flags_conflict",
+        "scan_recon_certspotter_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
@@ -2966,6 +3032,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "for_builtin",
         "with_defense_enforcement_enabled",
         "prepare",
+        "preflight_recon_ct_provider_composition",
         "preflight_report_output",
         "reserve_report_bundle",
         "load",
@@ -3630,6 +3697,11 @@ mod tests {
                 "control_reference_mapping",
             ),
             (
+                "    #[cfg(feature = \"recon-ct-provider\")]\n    #[arg(long, value_name = \"FILE\", requires = \"profile\")]\n    recon_certspotter_policy: Option<PathBuf>,",
+                "    #[arg(long, value_name = \"FILE\", requires = \"profile\")]\n    recon_certspotter_policy: Option<PathBuf>,",
+                "recon_certspotter_policy",
+            ),
+            (
                 "    #[cfg(feature = \"jwt-policy-review\")]\n    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"jwt_public_jwk\", \"jwt_token_source\"]\n    )]\n    jwt_policy: Option<PathBuf>,",
                 "    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"jwt_public_jwk\", \"jwt_token_source\"]\n    )]\n    jwt_policy: Option<PathBuf>,",
                 "private jwt-policy-review gate",
@@ -3728,6 +3800,16 @@ mod tests {
                 "scan_control_reference_mapping_flags_conflict(profile, control_reference_mapping)",
                 "scan_control_reference_mapping_flags_conflict(profile, false)",
                 "control-reference mapping validation",
+            ),
+            (
+                "scan_recon_certspotter_flags_conflict(profile, recon_certspotter_policy.is_some())",
+                "scan_recon_certspotter_flags_conflict(profile, false)",
+                "Cert Spotter provider validation",
+            ),
+            (
+                "        assessment_scan::preflight_recon_ct_provider_composition(\n            &target,\n            recon_ct_provider.as_ref(),\n        )?;",
+                "        let _unchecked_provider = recon_ct_provider.as_ref();",
+                "typed input operations must preserve",
             ),
             (
                 "let jwt_policy_review_selected = jwt_policy.is_some()\n        || jwt_public_jwk.is_some()\n        || jwt_token_env.is_some()\n        || jwt_token_file.is_some()\n        || jwt_token_stdin\n        || {\n            #[cfg(feature = \"jwt-target-acceptance-review\")]\n            {\n                jwt_target_acceptance_policy.is_some()\n            }\n            #[cfg(not(feature = \"jwt-target-acceptance-review\"))]\n            {\n                false\n            }\n        };",

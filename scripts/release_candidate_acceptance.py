@@ -73,6 +73,7 @@ EXCLUDED_FEATURES = (
     "jwt-target-acceptance-review",
     "legacy-scanner",
     "proxy-adapter",
+    "recon-ct-provider",
     "recon-snapshot-import",
     "secret-exposure-review",
     "ssrf-oast-review",
@@ -114,6 +115,30 @@ CONTROL_REFERENCE_MAPPING_LIMITATION = (
     "source authenticity, applicability, or control fulfilment. The feature requires "
     "explicit --profile web-review and --control-reference-mapping, remains development-only, "
     "and is outside default, release-bundle, and published alpha.2 archives."
+)
+RECON_CERTSPOTTER_OPTION = "--recon-certspotter-policy"
+RECON_CERTSPOTTER_PREREQUISITES = (
+    "--profile web-review",
+    "--recon-certspotter-policy FILE",
+    "policy provider_use_authorized=true",
+    "policy privacy_disclosure_acknowledged=true",
+)
+RECON_CERTSPOTTER_LIMITATION = (
+    "Queries only the fixed live endpoint https://api.certspotter.com/v1/issuances (the "
+    "production policy token selects this endpoint mode only) or an operator-owned "
+    "numeric-loopback fixture under one explicit security.recon-certspotter-policy/v1 file. "
+    "provider_use_authorized must be true and records the operator's decision that the "
+    "provider-documented limited unauthenticated personal/evaluation-use basis, hourly "
+    "quota, and current terms permit the request; it does not prove provider approval, an "
+    "account, or general production entitlement. privacy_disclosure_acknowledged must also "
+    "be true and records the operator's disclosure decision. V1 dispatches at most two "
+    "sequential pages, retains and interprets at most 256 KiB per page and 512 KiB total, "
+    "retains at most 256 names, and performs no retries or polling. Provider credentials are "
+    "unsupported in V1. Returned certificate-transparency names are source-qualified "
+    "hypotheses only and never scan authority, ownership evidence, authentication evidence, "
+    "assessment items, or findings. The feature requires explicit --profile web-review and "
+    "--recon-certspotter-policy FILE, remains development-only, and is outside default, "
+    "release-bundle, and published alpha.2 archives."
 )
 RECON_SNAPSHOT_OPTION = "--recon-snapshot"
 RECON_SNAPSHOT_PREREQUISITES = (
@@ -901,6 +926,9 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require(re.search(rf"(?m)^\s*{re.escape(CONTROL_REFERENCE_MAPPING_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled control-reference mapping")
+    require(re.search(rf"(?m)^\s*{re.escape(RECON_CERTSPOTTER_OPTION)}(?:\s|$)",
+                      scan_text) is None,
+            "scan help unexpectedly exposes non-bundled Cert Spotter provider")
     require(re.search(rf"(?m)^\s*{re.escape(RECON_SNAPSHOT_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled recon snapshot import")
@@ -1052,6 +1080,41 @@ def _validate_recon_snapshot_surface(
     require(f"    limit: {RECON_SNAPSHOT_LIMITATION}" in text_value,
             "recon-snapshot limitation is absent from text output")
     return recon
+
+
+def _validate_recon_certspotter_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    provider_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.recon-certspotter-provider"
+    ]
+    require(len(provider_surfaces) == 1,
+            "packaged Cert Spotter provider surface identity changed")
+    provider = provider_surfaces[0]
+    require(provider.get("label") == "Cert Spotter CT reconnaissance provider"
+            and provider.get("compile_feature") == "recon-ct-provider"
+            and provider.get("build_state") == expected_state
+            and provider.get("maturity") == "preview"
+            and provider.get("implementation_status") == "implemented"
+            and provider.get("group") == "optional"
+            and provider.get("kind") == "scan_option"
+            and provider.get("alias") is None
+            and provider.get("documentation")
+            == "docs/internals/recon-certspotter-provider.md",
+            "packaged Cert Spotter provider surface metadata changed")
+    prerequisites = provider.get("prerequisites")
+    require(isinstance(prerequisites, list)
+            and all(isinstance(value, str) for value in prerequisites)
+            and tuple(prerequisites) == RECON_CERTSPOTTER_PREREQUISITES,
+            "packaged Cert Spotter provider opt-in contract changed")
+    require(provider.get("limitation") == RECON_CERTSPOTTER_LIMITATION,
+            "packaged Cert Spotter provider limitation changed")
+    require(f"[{expected_state}] {provider['label']}" in text_value,
+            "Cert Spotter provider capability text and JSON views disagree")
+    require(f"    limit: {RECON_CERTSPOTTER_LIMITATION}" in text_value,
+            "Cert Spotter provider limitation is absent from text output")
+    return provider
 
 
 def _validate_tls_observation_surface(
@@ -1213,6 +1276,7 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "capabilities command surface identity changed")
     _validate_authorization_review_surface(surfaces, text_value, "compiled")
     _validate_control_reference_mapping_surface(surfaces, text_value, "not_compiled")
+    _validate_recon_certspotter_surface(surfaces, text_value, "not_compiled")
     _validate_recon_snapshot_surface(surfaces, text_value, "not_compiled")
     _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
     _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
@@ -1327,6 +1391,19 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "target_requests": 0,
             "provider_requests": 0,
             "scope_authority": "unchanged",
+        },
+        "recon_ct_provider_preview": {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "live_service_acceptance": "NOT_RUN_NO_INPUT",
+            "maximum_provider_pages": 2,
+            "maximum_page_bytes": 256 * 1024,
+            "maximum_total_bytes": 512 * 1024,
+            "maximum_retained_names": 256,
+            "credentials": "unsupported_in_v1",
+            "hypothesis_authority": "source_qualified_only",
         },
         "secret_exposure_preview": {
             "build_state": "not_compiled",

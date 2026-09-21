@@ -16,6 +16,8 @@ use termivar_scanner::authorization_review::{
 };
 #[cfg(feature = "jwt-policy-review")]
 use termivar_scanner::jwt_policy_review::JwtPolicyReviewAudit;
+#[cfg(feature = "recon-ct-provider")]
+use termivar_scanner::recon_ct_provider::ReconCtProviderPolicy;
 #[cfg(feature = "recon-snapshot-import")]
 use termivar_scanner::recon_snapshot::ReconSnapshot;
 #[cfg(feature = "rest-review")]
@@ -29,6 +31,8 @@ use termivar_scanner::supplied_session_review::{
 };
 #[cfg(feature = "wordpress-review")]
 use termivar_scanner::web_runtime::WordPressPageScope;
+#[cfg(feature = "recon-ct-provider")]
+use termivar_scanner::web_runtime::{recon_ct_provider_scope_is_valid, WebAssessmentRuntimeError};
 use termivar_scanner::web_runtime::{
     BuiltInScanProfile, ScanProfileScope, ScanProfileV1, WebAssessmentCompletion,
     WebAssessmentDefenseAudit, WebAssessmentDefenseBodyCoverage, WebAssessmentDefenseMode,
@@ -91,6 +95,22 @@ pub(crate) const WEB_ASSESSMENT_SCHEMA_V1: &str = "web-assessment/v1";
 /// starting. Completed items use the centralized rendered-assessment schema.
 pub(crate) const WEB_ASSESSMENT_SCHEMA_V2: &str = "web-assessment/v2";
 const PROGRESS_PERIOD: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Rejects a provider child whose disclosure scope is not bound to this
+/// assessment. CLI orchestration calls this before reserving output or opening
+/// any selected secret; [`run_profile_scan`] repeats it at the composition
+/// boundary before constructing the runtime.
+#[cfg(feature = "recon-ct-provider")]
+pub(crate) fn preflight_recon_ct_provider_composition(
+    target: &Url,
+    policy: Option<&ReconCtProviderPolicy>,
+) -> Result<(), WebAssessmentRuntimeError> {
+    if policy.is_some_and(|policy| !recon_ct_provider_scope_is_valid(policy, target)) {
+        Err(WebAssessmentRuntimeError::ReconCtProviderComposition)
+    } else {
+        Ok(())
+    }
+}
 
 struct ProgressCadence {
     period: std::time::Duration,
@@ -962,6 +982,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) control_reference_mapping: bool,
     #[cfg(feature = "recon-snapshot-import")]
     pub(crate) recon_snapshot: Option<ReconSnapshot>,
+    #[cfg(feature = "recon-ct-provider")]
+    pub(crate) recon_ct_provider: Option<ReconCtProviderPolicy>,
     #[cfg(feature = "jwt-policy-review")]
     pub(crate) jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1012,6 +1034,8 @@ pub(crate) async fn run_profile_scan(
         control_reference_mapping,
         #[cfg(feature = "recon-snapshot-import")]
         recon_snapshot,
+        #[cfg(feature = "recon-ct-provider")]
+        recon_ct_provider,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1031,6 +1055,8 @@ pub(crate) async fn run_profile_scan(
         #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
         wordpress_supplied_session,
     } = runtime_options;
+    #[cfg(feature = "recon-ct-provider")]
+    preflight_recon_ct_provider_composition(&target, recon_ct_provider.as_ref())?;
     let target_origin = target.origin().ascii_serialization();
     match (profile.profile(), profile.scope()) {
         (BuiltInScanProfile::Baseline, ScanProfileScope::SingleResource) => {
@@ -1061,6 +1087,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "reconnaissance snapshot import requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "recon-ct-provider")]
+            if recon_ct_provider.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Cert Spotter reconnaissance provider requires the web-review profile",
                 )
                 .into());
             }
@@ -1204,6 +1238,8 @@ pub(crate) async fn run_profile_scan(
                     control_reference_mapping,
                     #[cfg(feature = "recon-snapshot-import")]
                     recon_snapshot,
+                    #[cfg(feature = "recon-ct-provider")]
+                    recon_ct_provider,
                     #[cfg(feature = "jwt-policy-review")]
                     jwt_policy_review,
                     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1279,6 +1315,8 @@ struct WebReviewRunOptions {
     control_reference_mapping: bool,
     #[cfg(feature = "recon-snapshot-import")]
     recon_snapshot: Option<ReconSnapshot>,
+    #[cfg(feature = "recon-ct-provider")]
+    recon_ct_provider: Option<ReconCtProviderPolicy>,
     #[cfg(feature = "jwt-policy-review")]
     jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1322,6 +1360,8 @@ async fn run_web_review(
         control_reference_mapping,
         #[cfg(feature = "recon-snapshot-import")]
         recon_snapshot,
+        #[cfg(feature = "recon-ct-provider")]
+        recon_ct_provider,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1437,6 +1477,10 @@ async fn run_web_review(
     #[cfg(feature = "ssrf-oast-review")]
     if let Some((policy, administrator)) = ssrf_oast_review {
         builder = builder.with_ssrf_oast_review(policy, administrator);
+    }
+    #[cfg(feature = "recon-ct-provider")]
+    if let Some(policy) = recon_ct_provider {
+        builder = builder.with_recon_ct_provider(policy);
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(inputs) = wordpress_review {
@@ -2827,6 +2871,60 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "REST read-only review requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "recon-ct-provider")]
+    #[tokio::test]
+    async fn baseline_rejects_recon_ct_provider_before_transport() {
+        let policy = ReconCtProviderPolicy::parse_json(
+            br#"{"schema":"security.recon-certspotter-policy/v1","revision":"rev-1","query_domain":"example.test","query_reference":"scope-1","execution_mode":"production","provider_use_authorized":true,"privacy_disclosure_acknowledged":true}"#,
+        )
+        .unwrap();
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                recon_ct_provider: Some(policy),
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("Cert Spotter reconnaissance provider is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "Cert Spotter reconnaissance provider requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "recon-ct-provider")]
+    #[tokio::test]
+    async fn web_review_rejects_mismatched_recon_ct_provider_before_runtime_construction() {
+        let policy = ReconCtProviderPolicy::parse_json(
+            br#"{"schema":"security.recon-certspotter-policy/v1","revision":"rev-1","query_domain":"other.test","query_reference":"scope-1","execution_mode":"production","provider_use_authorized":true,"privacy_disclosure_acknowledged":true}"#,
+        )
+        .unwrap();
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::web_review().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                recon_ct_provider: Some(policy),
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("mismatched Cert Spotter scope must fail before runtime construction");
+        assert_eq!(
+            error.to_string(),
+            "certificate-transparency provider policy is not bound to the selected assessment"
         );
     }
 

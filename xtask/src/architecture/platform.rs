@@ -36,6 +36,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "oast-correlation",
     "oast-native-provider",
     "openapi-review",
+    "recon-ct-provider",
     "recon-snapshot-import",
     "rest-review",
     "secret-exposure-review",
@@ -70,6 +71,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "oast-correlation",
     "oast-native-provider",
     "openapi-review",
+    "recon-ct-provider",
     "recon-snapshot-import",
     "rest-review",
     "secret-exposure-review",
@@ -102,6 +104,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "normalization-resilience",
     "oast-correlation",
     "openapi-review",
+    "recon-ct-provider",
     "recon-snapshot-import",
     "rest-review",
     "secret-exposure-review",
@@ -132,6 +135,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "normalization-resilience",
     "oast-correlation",
     "openapi-review",
+    "recon-ct-provider",
     "recon-snapshot-import",
     "rest-review",
     "secret-exposure-review",
@@ -214,6 +218,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "normalization-resilience",
     "openapi-review",
     "proxy-adapter",
+    "recon-ct-provider",
     "recon-snapshot-import",
     "release-bundle",
     "rest-review",
@@ -269,6 +274,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
         "jwt_target_acceptance",
         "feature=\"jwt-target-acceptance-review\"",
     ),
+    ("recon_ct_provider", "feature=\"recon-ct-provider\""),
     ("recon_snapshot", "feature=\"recon-snapshot-import\""),
     ("legacy_discovery", "feature=\"legacy-scanner\""),
     ("logging", "feature=\"legacy-scanner\""),
@@ -1390,6 +1396,10 @@ fn cli_feature_violations(
             &["termivar-scanner/control-reference-mapping"][..],
         ),
         (
+            "recon-ct-provider",
+            &["termivar-scanner/recon-ct-provider"][..],
+        ),
+        (
             "recon-snapshot-import",
             &["termivar-scanner/recon-snapshot-import"][..],
         ),
@@ -1654,6 +1664,21 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             "control-reference-mapping",
             &[
                 "control-reference-mapping",
+                "scanning",
+                "core",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "recon-ct-provider",
+            &[
+                "recon-ct-provider",
                 "scanning",
                 "core",
                 "dep:async-trait",
@@ -5214,7 +5239,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 11
+        || report_call.args.len() != 12
     {
         return false;
     }
@@ -5258,6 +5283,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "tls_observation", "tls-observation")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(argument, "recon_ct_provider", "recon-ct-provider")
         })
 }
 
@@ -5542,6 +5570,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentReconSnapshotImportAuditDocument>",
             ),
             (
+                "recon_certspotter",
+                "Option<AssessmentReconCertSpotterAuditDocument>",
+            ),
+            (
                 "wordpress_review",
                 "Option<AssessmentWordPressAuditDocument>",
             ),
@@ -5749,6 +5781,102 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("scan_authority", "&'static str"),
             ("vulnerability", "&'static str"),
             ("impact", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentReconCertSpotterAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy", "&'static str"),
+            ("selected", "bool"),
+            ("provider", "AssessmentReconCertSpotterProviderDocument"),
+            (
+                "methodology",
+                "AssessmentReconCertSpotterMethodologyDocument",
+            ),
+            ("coverage", "AssessmentReconCertSpotterCoverageDocument"),
+            (
+                "hypotheses",
+                "Vec<AssessmentReconCertSpotterHypothesisDocument>",
+            ),
+            ("claim_limits", "[&'static str;5]"),
+        ],
+    ),
+    (
+        "AssessmentReconCertSpotterProviderDocument",
+        &[],
+        &[
+            ("name", "&'static str"),
+            ("policy_schema", "&'static str"),
+            ("policy_revision", "String"),
+            ("query_domain", "String"),
+            ("query_reference", "String"),
+            ("execution_mode", "&'static str"),
+            ("origin", "String"),
+        ],
+    ),
+    (
+        "AssessmentReconCertSpotterMethodologyDocument",
+        &[],
+        &[
+            ("request_path", "&'static str"),
+            ("pagination", "&'static str"),
+            ("retries", "&'static str"),
+            ("polling", "&'static str"),
+            ("credentials", "&'static str"),
+            ("maximum_pages", "u64"),
+            ("maximum_response_page_bytes", "u64"),
+            ("maximum_response_bytes", "u64"),
+            ("maximum_elapsed_milliseconds", "u64"),
+            ("maximum_in_flight_requests", "u64"),
+            ("maximum_retained_names", "u64"),
+        ],
+    ),
+    (
+        "AssessmentReconCertSpotterCoverageDocument",
+        &[],
+        &[
+            ("terminal", "&'static str"),
+            ("completeness", "&'static str"),
+            ("first_failure", "Option<&'static str>"),
+            ("initial_after_reference", "Option<String>"),
+            ("initial_after_byte_length", "Option<u64>"),
+            ("last_cursor_reference", "Option<String>"),
+            ("last_cursor_byte_length", "Option<u64>"),
+            ("request_attempt_count", "u64"),
+            ("request_admitted_count", "u64"),
+            ("response_completed_count", "u64"),
+            ("observed_response_bytes", "u64"),
+            ("accepted_page_count", "u64"),
+            ("accepted_response_bytes", "u64"),
+            ("issuance_count", "u64"),
+            ("retained_name_count", "u64"),
+            ("foreign_name_count", "u64"),
+            ("duplicate_name_count", "u64"),
+            ("omitted_name_count", "u64"),
+        ],
+    ),
+    (
+        "AssessmentReconCertSpotterHypothesisDocument",
+        &[],
+        &[
+            ("name", "String"),
+            (
+                "source",
+                "AssessmentReconCertSpotterHypothesisSourceDocument",
+            ),
+            ("claim_limits", "[&'static str;5]"),
+        ],
+    ),
+    (
+        "AssessmentReconCertSpotterHypothesisSourceDocument",
+        &[],
+        &[
+            ("provider", "&'static str"),
+            ("origin", "String"),
+            ("first_issuance_reference", "String"),
+            ("first_issuance_byte_length", "u64"),
         ],
     ),
     (
@@ -7098,6 +7226,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "jwt-policy-review" => "feature=\"jwt-policy-review\"",
         "jwt-target-acceptance-review" => "feature=\"jwt-target-acceptance-review\"",
         "control-reference-mapping" => "feature=\"control-reference-mapping\"",
+        "recon-ct-provider" => "feature=\"recon-ct-provider\"",
         "recon-snapshot-import" => "feature=\"recon-snapshot-import\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
@@ -7173,6 +7302,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentReconSnapshotAccountingDocument"
                 | "AssessmentReconSnapshotExternalActivityDocument"
                 | "AssessmentReconSnapshotClaimLimitsDocument"
+                | "AssessmentReconCertSpotterAuditDocument"
+                | "AssessmentReconCertSpotterProviderDocument"
+                | "AssessmentReconCertSpotterMethodologyDocument"
+                | "AssessmentReconCertSpotterCoverageDocument"
+                | "AssessmentReconCertSpotterHypothesisDocument"
+                | "AssessmentReconCertSpotterHypothesisSourceDocument"
                 | "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -7318,6 +7453,14 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentReconSnapshotClaimLimitsDocument" => {
                     "all(feature=\"scanning\",feature=\"recon-snapshot-import\")"
                 },
+                "AssessmentReconCertSpotterAuditDocument"
+                | "AssessmentReconCertSpotterProviderDocument"
+                | "AssessmentReconCertSpotterMethodologyDocument"
+                | "AssessmentReconCertSpotterCoverageDocument"
+                | "AssessmentReconCertSpotterHypothesisDocument"
+                | "AssessmentReconCertSpotterHypothesisSourceDocument" => {
+                    "all(feature=\"scanning\",feature=\"recon-ct-provider\")"
+                },
                 "AssessmentWordPressAuditDocument"
                 | "AssessmentWordPressDiscoveryAuditDocument"
                 | "WordPressSuppliedSessionPageCollectionDocument"
@@ -7454,6 +7597,11 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         reporting_audit_field_attributes_are_exact(
                             &field.attrs,
                             "recon-snapshot-import",
+                        )
+                    } else if name == "AssessmentDocument" && field_name == "recon_certspotter" {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "recon-ct-provider",
                         )
                     } else if name == "AssessmentJwtPolicyReviewAuditDocument"
                         && matches!(
@@ -10144,8 +10292,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 539_368;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xbd49_1d4f_dbde_c413_1bf8_b958_b692_996f;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 565_738;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x0d71_6795_bc4b_45fd_f2ca_3a07_6edb_4be8;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -10275,6 +10423,12 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_ELAPSED",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_IN_FLIGHT_REQUESTS",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_RESPONSE_PAGES",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_RESPONSE_PAGE_BYTES",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_RETAINED_NAMES",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_TOTAL_RESPONSE_BYTES",
     "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES",
     "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_RECORDS",
     "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_SOURCES",
@@ -10336,6 +10490,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SuppliedSessionPrincipalAssurance",
     "crate::web_runtime::SuppliedSessionResourceOutcome",
     "crate::web_runtime::WebAssessmentRunReport",
+    "crate::web_runtime::WebAssessmentReconCtProviderAudit",
     "crate::web_runtime::WebAssessmentSecretExposureAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
     "crate::web_runtime::WebAssessmentTlsObservationAudit",
@@ -10405,6 +10560,8 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::wordpress_review::WordfenceV3IdentityMapping",
     "crate::wordpress_review::WordfenceV3RangeValue",
     "serde::Serialize",
+    "sha2::Digest",
+    "sha2::Sha256",
     "std::error::Error",
     "std::fmt",
     "std::io",
@@ -10422,6 +10579,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
 const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentRunReportError::JwtPolicyReviewAuditMismatch",
     "AssessmentControlReferenceMappingAuditDocument::from_audit",
+    "AssessmentReconCertSpotterAuditDocument::from_audit",
     "AssessmentReconSnapshotImportAuditDocument::from_audit",
     "AssessmentReconSnapshotRecordDocument::CtName",
     "AssessmentReconSnapshotRecordDocument::DnsHistory",
@@ -10430,6 +10588,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentDecisionOverview::from_document",
     "AssessmentJwtPolicyReviewAuditDocument::from_audits",
     "AssessmentJwtTargetAcceptanceAuditDocument::from_audit",
+    "AssessmentReconCertSpotterAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA",
@@ -10483,6 +10642,12 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_ELAPSED",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_IN_FLIGHT_REQUESTS",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_RESPONSE_PAGES",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_RESPONSE_PAGE_BYTES",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_RETAINED_NAMES",
+    "crate::recon_ct_provider::MAX_CERT_SPOTTER_TOTAL_RESPONSE_BYTES",
     "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES",
     "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_RECORDS",
     "crate::recon_snapshot::MAX_RECONNAISSANCE_SNAPSHOT_SOURCES",
@@ -10498,6 +10663,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
     "crate::web_runtime::SECRET_EXPOSURE_POLICY_ID",
     "crate::web_runtime::SECRET_EXPOSURE_REPRESENTATION",
+    "crate::web_runtime::WebAssessmentReconCtProviderAudit",
     "crate::web_runtime::WebAssessmentSecretExposureAudit",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
@@ -11082,6 +11248,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "io::Result",
     "io::Write",
     "serde::Serialize",
+    "sha2::Digest",
+    "sha2::Sha256",
     "serde_json::to_writer",
     "serde_json::to_string",
     "std::collections::BTreeMap",
@@ -11125,6 +11293,11 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "termivar_core::RunStepStatus",
     "termivar_core::RunStopCode",
     "termivar_core::SecuritySeverity",
+    "Sha256::digest",
+    "std::net::IpAddr",
+    "url::Host::Domain",
+    "url::Host::Ipv4",
+    "url::Host::Ipv6",
     "url::Url",
     "url::Url::parse",
 ];
@@ -11157,6 +11330,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "RenderBuffer::new",
     "ReportDocument::from_report",
     "Some",
+    "Sha256::digest",
     "String::from",
     "String::new",
     "String::with_capacity",
@@ -11267,6 +11441,17 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "usize::try_from",
     "visible_text",
     "valid_opaque_assessment_reference",
+    "recon_certspotter_issuance_reference",
+    "recon_certspotter_optional_issuance_reference",
+    "valid_recon_certspotter_dns_name",
+    "valid_recon_certspotter_issuance_byte_length",
+    "valid_recon_certspotter_issuance_id",
+    "valid_recon_certspotter_issuance_reference",
+    "valid_recon_certspotter_name",
+    "valid_recon_certspotter_opaque",
+    "valid_recon_certspotter_optional_issuance_reference",
+    "valid_recon_certspotter_origin",
+    "valid_recon_certspotter_query_domain",
     "valid_inventory_label",
     "valid_inventory_version",
     "valid_jwt_policy_reference",
@@ -11368,25 +11553,58 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "address",
+    "as_bytes",
+    "as_millis",
+    "ascii_serialization",
+    "audit",
     "archive_processing",
     "attribution",
     "claim_limit",
     "collection_method",
     "completeness",
     "decompression",
+    "duplicate_name_count",
+    "eq",
+    "execution_mode",
+    "first_failure",
+    "first_issuance_id",
+    "foreign_name_count",
     "host",
+    "hypotheses",
     "input",
+    "initial_after",
+    "is_consistent",
+    "is_loopback",
+    "issuance_count",
+    "last_cursor",
+    "maximum_elapsed",
+    "maximum_in_flight_requests",
+    "maximum_pages",
+    "maximum_response_bytes",
     "namespace",
+    "observed_response_bytes",
     "observed_time",
+    "omitted_name_count",
     "origin",
+    "page_count",
+    "parse",
+    "policy_revision",
     "prepared_index_bytes",
     "presentation",
     "product",
+    "provider_origin",
     "provider_time",
+    "query_domain",
+    "query_reference",
+    "recon_ct_provider_audit",
     "recon_snapshot_audit",
     "record_count",
     "record_id",
     "records",
+    "request_admitted_count",
+    "request_attempt_count",
+    "response_completed_count",
+    "retained_name_count",
     "rights",
     "snapshot_id",
     "snapshot_revision",
@@ -11394,6 +11612,10 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "source_count",
     "source_ids",
     "subject",
+    "split",
+    "strip_suffix",
+    "terminal",
+    "to_ascii_lowercase",
     "transport",
     "with_recon_snapshot",
     "accepted_association_count",
@@ -12204,6 +12426,21 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::recon_snapshot::ReconnaissanceRecordValue"
                 )
             });
+        let recon_certspotter_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::recon_ct_provider::MAX_CERT_SPOTTER_ELAPSED"
+                        | "crate::recon_ct_provider::MAX_CERT_SPOTTER_IN_FLIGHT_REQUESTS"
+                        | "crate::recon_ct_provider::MAX_CERT_SPOTTER_RESPONSE_PAGES"
+                        | "crate::recon_ct_provider::MAX_CERT_SPOTTER_RESPONSE_PAGE_BYTES"
+                        | "crate::recon_ct_provider::MAX_CERT_SPOTTER_RETAINED_NAMES"
+                        | "crate::recon_ct_provider::MAX_CERT_SPOTTER_TOTAL_RESPONSE_BYTES"
+                        | "crate::web_runtime::WebAssessmentReconCtProviderAudit"
+                        | "sha2::Digest"
+                        | "sha2::Sha256"
+                )
+            });
         let supplied_session_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -12353,6 +12590,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"recon-snapshot-import\")")
+        } else if recon_certspotter_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"recon-ct-provider\")")
         } else if supplied_session_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -12436,6 +12678,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                 cfg.as_deref(),
                 Some("feature=\"scanning\"")
                     | Some("feature=\"control-reference-mapping\"")
+                    | Some("feature=\"recon-ct-provider\"")
                     | Some("feature=\"recon-snapshot-import\"")
                     | Some("feature=\"authorization-review\"")
                     | Some("feature=\"openapi-review\"")
@@ -12450,6 +12693,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"wordpress-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
                     | Some("all(feature=\"scanning\",feature=\"control-reference-mapping\")")
+                    | Some("all(feature=\"scanning\",feature=\"recon-ct-provider\")")
                     | Some("all(feature=\"scanning\",feature=\"recon-snapshot-import\")")
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
@@ -12746,6 +12990,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
             || key.starts_with("crate::control_reference_mapping::")
             || key.starts_with("crate::jwt_policy_review::")
             || key.starts_with("crate::jwt_target_acceptance::")
+            || key.starts_with("crate::recon_ct_provider::")
             || key.starts_with("crate::recon_snapshot::")
             || key.starts_with("crate::rest_review::")
             || key.starts_with("crate::supplied_session_review::")
@@ -13211,6 +13456,7 @@ mod tests {
             "control-reference-mapping".to_owned(),
             vec!["scanning".to_owned()],
         );
+        features.insert("recon-ct-provider".to_owned(), vec!["scanning".to_owned()]);
         features.insert(
             "recon-snapshot-import".to_owned(),
             vec!["scanning".to_owned()],
@@ -13668,6 +13914,52 @@ mod tests {
             .get_mut("release-bundle")
             .unwrap()
             .push("control-reference-mapping".to_owned());
+        assert!(
+            cli_feature_violations(&cli_features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
+    }
+
+    #[test]
+    fn recon_ct_provider_is_scanner_and_cli_opt_in_but_not_release_bundled() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("recon-ct-provider").unwrap(),
+            &["scanning".to_owned()]
+        );
+        assert!(!raw_feature_closure(&features, "default").contains("recon-ct-provider"));
+        for aggregate in ["full", "enterprise"] {
+            assert!(features
+                .get(aggregate)
+                .unwrap()
+                .iter()
+                .any(|member| member == "recon-ct-provider"));
+        }
+
+        features.get_mut("recon-ct-provider").unwrap().clear();
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`recon-ct-provider` raw feature closure")
+                && violation.contains("scanning")
+        }));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert_eq!(
+            cli_features.get("recon-ct-provider").unwrap(),
+            &["termivar-scanner/recon-ct-provider".to_owned()]
+        );
+        assert!(cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .all(|member| member != "recon-ct-provider"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("recon-ct-provider".to_owned());
         assert!(
             cli_feature_violations(&cli_features, &dependencies)
                 .iter()
@@ -15864,6 +16156,8 @@ mod tests {
                         self.secret_exposure_review,
                         #[cfg(feature = "tls-observation")]
                         self.tls_observation,
+                        #[cfg(feature = "recon-ct-provider")]
+                        self.recon_ct_provider,
                     )
                 }
             }
@@ -15881,7 +16175,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -15929,6 +16223,10 @@ mod tests {
                 "forged_secret_exposure_review,",
             ),
             typed_assessment_bridge.replace("self.tls_observation,", "forged_tls_observation,"),
+            typed_assessment_bridge.replace(
+                "self.recon_ct_provider,",
+                "forged_recon_ct_provider,",
+            ),
         ] {
             assert!(!reporting_cross_file_source_violations(
                 "web_runtime/web_assessment.rs",
@@ -16299,6 +16597,19 @@ mod tests {
             .any(|violation| violation.contains("unbounded_render")
                 && violation.contains("outside the exact API")));
 
+        let leaked_recon_certspotter_document = format!(
+            "{source}\n#[cfg(all(feature = \"scanning\", feature = \"recon-ct-provider\"))]\npub struct AssessmentReconCertSpotterAuditDocument;"
+        );
+        assert!(
+            reporting_public_api_violations(&leaked_recon_certspotter_document)
+                .unwrap()
+                .iter()
+                .any(
+                    |violation| violation.contains("AssessmentReconCertSpotterAuditDocument")
+                        && violation.contains("outside the exact API")
+                )
+        );
+
         let extra_trait = format!(
             "{source}\ntrait UnboundedWriter {{}} impl UnboundedWriter for ReportGenerator {{}}"
         );
@@ -16511,6 +16822,16 @@ mod tests {
                 MAX_RECONNAISSANCE_SNAPSHOT_SOURCES,
                 MAX_RECONNAISSANCE_SNAPSHOT_SOURCE_ASSOCIATIONS,
             };
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            use crate::recon_ct_provider::{
+                MAX_CERT_SPOTTER_ELAPSED, MAX_CERT_SPOTTER_IN_FLIGHT_REQUESTS,
+                MAX_CERT_SPOTTER_RESPONSE_PAGES, MAX_CERT_SPOTTER_RESPONSE_PAGE_BYTES,
+                MAX_CERT_SPOTTER_RETAINED_NAMES, MAX_CERT_SPOTTER_TOTAL_RESPONSE_BYTES,
+            };
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            use crate::web_runtime::WebAssessmentReconCtProviderAudit;
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            use sha2::{Digest, Sha256};
             #[cfg(all(feature = "scanning", feature = "authorization-review"))]
             use crate::{
                 authorization_review::{
@@ -16684,6 +17005,28 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_recon_certspotter_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"recon-ct-provider\"))]\n            use crate::recon_ct_provider::{",
+            "#[cfg(feature = \"scanning\")]\n            use crate::recon_ct_provider::{",
+        );
+        assert_ne!(widened_recon_certspotter_import, imports);
+        let violations = reporting_source_import_violations(&widened_recon_certspotter_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let missing_recon_certspotter_bound =
+            imports.replace("                MAX_CERT_SPOTTER_RETAINED_NAMES,", "");
+        assert_ne!(missing_recon_certspotter_bound, imports);
+        let violations = reporting_source_import_violations(&missing_recon_certspotter_bound)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("imports must be exactly")
+                && violations.contains("MAX_CERT_SPOTTER_RETAINED_NAMES"),
+            "{violations}"
+        );
 
         let widened_wordpress_import = imports.replace(
             "#[cfg(all(feature = \"scanning\", feature = \"wordpress-review\"))]\n            use crate::{",
@@ -17082,6 +17425,9 @@ mod tests {
                 #[cfg(feature = "recon-snapshot-import")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 recon_snapshot_import: Option<AssessmentReconSnapshotImportAuditDocument>,
+                #[cfg(feature = "recon-ct-provider")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                recon_certspotter: Option<AssessmentReconCertSpotterAuditDocument>,
                 #[cfg(feature = "wordpress-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -17249,6 +17595,81 @@ mod tests {
                 scan_authority: &'static str,
                 vulnerability: &'static str,
                 impact: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            #[derive(Serialize)]
+            struct AssessmentReconCertSpotterAuditDocument {
+                schema: &'static str,
+                policy: &'static str,
+                selected: bool,
+                provider: AssessmentReconCertSpotterProviderDocument,
+                methodology: AssessmentReconCertSpotterMethodologyDocument,
+                coverage: AssessmentReconCertSpotterCoverageDocument,
+                hypotheses: Vec<AssessmentReconCertSpotterHypothesisDocument>,
+                claim_limits: [&'static str; 5],
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            #[derive(Serialize)]
+            struct AssessmentReconCertSpotterProviderDocument {
+                name: &'static str,
+                policy_schema: &'static str,
+                policy_revision: String,
+                query_domain: String,
+                query_reference: String,
+                execution_mode: &'static str,
+                origin: String,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            #[derive(Serialize)]
+            struct AssessmentReconCertSpotterMethodologyDocument {
+                request_path: &'static str,
+                pagination: &'static str,
+                retries: &'static str,
+                polling: &'static str,
+                credentials: &'static str,
+                maximum_pages: u64,
+                maximum_response_page_bytes: u64,
+                maximum_response_bytes: u64,
+                maximum_elapsed_milliseconds: u64,
+                maximum_in_flight_requests: u64,
+                maximum_retained_names: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            #[derive(Serialize)]
+            struct AssessmentReconCertSpotterCoverageDocument {
+                terminal: &'static str,
+                completeness: &'static str,
+                first_failure: Option<&'static str>,
+                initial_after_reference: Option<String>,
+                initial_after_byte_length: Option<u64>,
+                last_cursor_reference: Option<String>,
+                last_cursor_byte_length: Option<u64>,
+                request_attempt_count: u64,
+                request_admitted_count: u64,
+                response_completed_count: u64,
+                observed_response_bytes: u64,
+                accepted_page_count: u64,
+                accepted_response_bytes: u64,
+                issuance_count: u64,
+                retained_name_count: u64,
+                foreign_name_count: u64,
+                duplicate_name_count: u64,
+                omitted_name_count: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            #[derive(Serialize)]
+            struct AssessmentReconCertSpotterHypothesisDocument {
+                name: String,
+                source: AssessmentReconCertSpotterHypothesisSourceDocument,
+                claim_limits: [&'static str; 5],
+            }
+            #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+            #[derive(Serialize)]
+            struct AssessmentReconCertSpotterHypothesisSourceDocument {
+                provider: &'static str,
+                origin: String,
+                first_issuance_reference: String,
+                first_issuance_byte_length: u64,
             }
             #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
             #[derive(Serialize)]
@@ -18420,6 +18841,76 @@ mod tests {
             .unwrap()
             .is_empty());
 
+        let public_recon_certspotter_field = source.replace(
+            "                recon_certspotter: Option<AssessmentReconCertSpotterAuditDocument>,",
+            "                pub recon_certspotter: Option<AssessmentReconCertSpotterAuditDocument>,",
+        );
+        assert_ne!(public_recon_certspotter_field, source);
+        let violations = reporting_document_contract_violations(&public_recon_certspotter_field)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let serialized_null_recon_certspotter = source.replace(
+            "                #[serde(skip_serializing_if = \"Option::is_none\")]\n                recon_certspotter: Option<AssessmentReconCertSpotterAuditDocument>,",
+            "                recon_certspotter: Option<AssessmentReconCertSpotterAuditDocument>,",
+        );
+        assert_ne!(serialized_null_recon_certspotter, source);
+        let violations = reporting_document_contract_violations(&serialized_null_recon_certspotter)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let widened_recon_certspotter_gate = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"recon-ct-provider\"))]\n            #[derive(Serialize)]\n            struct AssessmentReconCertSpotterAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentReconCertSpotterAuditDocument",
+        );
+        assert_ne!(widened_recon_certspotter_gate, source);
+        let violations = reporting_document_contract_violations(&widened_recon_certspotter_gate)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentReconCertSpotterAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
+        let public_recon_certspotter_document = source.replace(
+            "            struct AssessmentReconCertSpotterAuditDocument {",
+            "            pub struct AssessmentReconCertSpotterAuditDocument {",
+        );
+        assert_ne!(public_recon_certspotter_document, source);
+        let violations = reporting_document_contract_violations(&public_recon_certspotter_document)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentReconCertSpotterAuditDocument")
+                && violations.contains("exact visibility"),
+            "{violations}"
+        );
+
+        let raw_recon_certspotter_issuance_id = source.replace(
+            "                first_issuance_reference: String,",
+            "                first_issuance_id: String,",
+        );
+        assert_ne!(raw_recon_certspotter_issuance_id, source);
+        let violations = reporting_document_contract_violations(&raw_recon_certspotter_issuance_id)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentReconCertSpotterHypothesisSourceDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
         let missing_tls_source_scope = source.replace(
             "                observation_source_scope: &'static str,\n",
             "",
@@ -19104,6 +19595,10 @@ mod tests {
             (
                 "control-reference-mapping".to_owned(),
                 vec!["termivar-scanner/control-reference-mapping".to_owned()],
+            ),
+            (
+                "recon-ct-provider".to_owned(),
+                vec!["termivar-scanner/recon-ct-provider".to_owned()],
             ),
             (
                 "recon-snapshot-import".to_owned(),
@@ -20071,6 +20566,7 @@ mod tests {
             #[cfg(feature = "platform-models")] pub mod config;
             #[cfg(feature = "platform-models")] pub mod config_loader;
             #[cfg(feature = "control-reference-mapping")] pub mod control_reference_mapping;
+            #[cfg(feature = "recon-ct-provider")] pub mod recon_ct_provider;
             #[cfg(feature = "recon-snapshot-import")] pub mod recon_snapshot;
             #[cfg(feature = "legacy-scanner")] pub mod context;
             #[cfg(feature = "legacy-scanner")] pub mod contracts;

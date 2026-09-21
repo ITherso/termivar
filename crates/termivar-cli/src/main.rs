@@ -26,6 +26,8 @@ mod auth_input;
 mod capabilities;
 mod decision_scan;
 mod progress;
+#[cfg(feature = "recon-ct-provider")]
+mod recon_ct_input;
 #[cfg(feature = "recon-snapshot-import")]
 mod recon_input;
 mod report_bundle;
@@ -457,6 +459,21 @@ fn scan_recon_snapshot_flags_conflict(
     }
 }
 
+/// Rejects provider-backed certificate-transparency collection outside its
+/// explicit web-review contract. This runs before opening the selected policy,
+/// reserving output, or constructing target/provider network authority.
+#[cfg(feature = "recon-ct-provider")]
+fn scan_recon_certspotter_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--recon-certspotter-policy` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
 /// Rejects local JWT policy review outside its explicit web-review contract.
 /// This runs before policy, key, token, output, or network acquisition.
 #[cfg(feature = "jwt-policy-review")]
@@ -609,6 +626,12 @@ struct ScanArgs {
     #[cfg(feature = "recon-snapshot-import")]
     #[arg(long, value_name = "FILE", requires = "profile")]
     recon_snapshot: Option<PathBuf>,
+    /// Query the fixed Cert Spotter CT Search API, or an explicitly selected
+    /// owned numeric-loopback fixture, under one bounded provider policy.
+    /// Returned names are source-qualified hypotheses and never scan authority.
+    #[cfg(feature = "recon-ct-provider")]
+    #[arg(long, value_name = "FILE", requires = "profile")]
+    recon_certspotter_policy: Option<PathBuf>,
     /// Review one explicitly supplied compact JWT against a bounded local
     /// policy and one local ES256 public JWK. The token is never sent to the
     /// target and no remote key is retrieved.
@@ -1282,6 +1305,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         control_reference_mapping,
         #[cfg(feature = "recon-snapshot-import")]
         recon_snapshot,
+        #[cfg(feature = "recon-ct-provider")]
+        recon_certspotter_policy,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy,
         #[cfg(feature = "jwt-policy-review")]
@@ -1429,6 +1454,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     }
     #[cfg(feature = "recon-snapshot-import")]
     if let Some(message) = scan_recon_snapshot_flags_conflict(profile, recon_snapshot.is_some()) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "recon-ct-provider")]
+    if let Some(message) =
+        scan_recon_certspotter_flags_conflict(profile, recon_certspotter_policy.is_some())
+    {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -1711,6 +1745,9 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     });
     #[cfg(feature = "recon-snapshot-import")]
     let recon_snapshot_input = recon_snapshot.map(recon_input::ReconSnapshotInput::new);
+    #[cfg(feature = "recon-ct-provider")]
+    let recon_certspotter_policy_input =
+        recon_certspotter_policy.map(recon_ct_input::ReconCtProviderPolicyInput::new);
     #[cfg(feature = "authorization-review")]
     if resource_authorization_input.is_some()
         && !authorization_context_transport_is_allowed(&target)
@@ -1767,6 +1804,19 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         let recon_snapshot = recon_snapshot_input
             .map(recon_input::ReconSnapshotInput::load)
             .transpose()?;
+        // Provider policy is non-secret inert local data, but it defines a
+        // distinct external disclosure authority. Parse its bounded structure
+        // and preflight its target binding before output reservation, credential
+        // acquisition, or networking.
+        #[cfg(feature = "recon-ct-provider")]
+        let recon_ct_provider = recon_certspotter_policy_input
+            .map(recon_ct_input::ReconCtProviderPolicyInput::load)
+            .transpose()?;
+        #[cfg(feature = "recon-ct-provider")]
+        assessment_scan::preflight_recon_ct_provider_composition(
+            &target,
+            recon_ct_provider.as_ref(),
+        )?;
         // The JWT policy and explicitly trusted public key are non-secret and
         // validated before output reservation. The compact token remains
         // unread until reservation succeeds below.
@@ -1886,6 +1936,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 control_reference_mapping,
                 #[cfg(feature = "recon-snapshot-import")]
                 recon_snapshot,
+                #[cfg(feature = "recon-ct-provider")]
+                recon_ct_provider,
                 #[cfg(feature = "jwt-policy-review")]
                 jwt_policy_review,
                 #[cfg(feature = "jwt-target-acceptance-review")]
@@ -3009,6 +3061,98 @@ mod tests {
             "web-review",
             "--recon-snapshot",
             "snapshot.json",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "recon-ct-provider")]
+    #[test]
+    fn recon_certspotter_provider_is_explicit_web_review_only() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--recon-certspotter-policy <FILE>"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--recon-certspotter-policy",
+            "provider.json",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--recon-certspotter-policy",
+            "provider.json",
+            "https://example.test/",
+        ])
+        .expect("semantic profile guard runs before provider policy acquisition");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(
+            baseline.recon_certspotter_policy.as_deref(),
+            Some(std::path::Path::new("provider.json"))
+        );
+        assert_eq!(
+            scan_recon_certspotter_flags_conflict(
+                baseline.profile,
+                baseline.recon_certspotter_policy.is_some(),
+            ),
+            Some("`--recon-certspotter-policy` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--recon-certspotter-policy",
+            "provider.json",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(
+            review.recon_certspotter_policy.as_deref(),
+            Some(std::path::Path::new("provider.json"))
+        );
+        assert_eq!(
+            scan_recon_certspotter_flags_conflict(
+                review.profile,
+                review.recon_certspotter_policy.is_some(),
+            ),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "recon-ct-provider"))]
+    #[test]
+    fn default_cli_does_not_expose_recon_certspotter_provider() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--recon-certspotter-policy"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--recon-certspotter-policy",
+            "provider.json",
             "https://example.test/",
         ])
         .is_err());

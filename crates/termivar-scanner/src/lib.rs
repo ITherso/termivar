@@ -71,6 +71,8 @@ pub mod openapi_review;
 pub mod payload_strategies;
 pub mod payload_strategy;
 pub mod planner;
+#[cfg(feature = "recon-ct-provider")]
+pub mod recon_ct_provider;
 #[cfg(feature = "recon-snapshot-import")]
 pub mod recon_snapshot;
 #[cfg(feature = "rest-review")]

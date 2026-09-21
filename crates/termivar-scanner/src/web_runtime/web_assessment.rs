@@ -54,6 +54,10 @@ use super::openapi_runtime::{
     select_openapi_candidate, CommittedOpenApiReview, OpenApiReviewConfig, OpenApiRuntimeOutcome,
     OpenApiRuntimeResult, WebAssessmentOpenApiAudit, MAX_OPENAPI_REVIEW_ACTIVE_VERIFICATIONS,
 };
+#[cfg(feature = "recon-ct-provider")]
+use super::recon_ct_runtime::{
+    execute_recon_ct_provider, recon_ct_provider_scope_is_valid, WebAssessmentReconCtProviderAudit,
+};
 #[cfg(feature = "authorization-review")]
 use super::resource_authorization_runtime::{
     CommittedResourceAuthorizationReview, ResourceAuthorizationReviewConfig,
@@ -127,6 +131,8 @@ use super::{
 use crate::jwt_target_acceptance::{
     JwtTargetAcceptanceAudit, JwtTargetAcceptancePolicy, MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS,
 };
+#[cfg(feature = "recon-ct-provider")]
+use crate::recon_ct_provider::ReconCtProviderPolicy;
 #[cfg(feature = "ssrf-oast-review")]
 use crate::ssrf_oast_review::{
     select_observed_query_candidate, SsrfOastAdminToken, SsrfOastReviewPolicy,
@@ -1415,6 +1421,8 @@ pub struct WebAssessmentRunReport {
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<WebAssessmentTlsObservationAudit>,
+    #[cfg(feature = "recon-ct-provider")]
+    recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,
     assessment_items: AssessmentItemSet,
     assessment_projection_incompleteness: PassiveAssessmentProjectionIncompleteness,
     completion: WebAssessmentCompletion,
@@ -1456,6 +1464,11 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug.field("secret_exposure_review", &self.secret_exposure_review);
         #[cfg(feature = "tls-observation")]
         debug.field("tls_observation", &self.tls_observation);
+        #[cfg(feature = "recon-ct-provider")]
+        debug.field(
+            "recon_ct_provider",
+            &self.recon_ct_provider.as_ref().map(|_| "<redacted-audit>"),
+        );
         debug
             .field("assessment_items", &self.assessment_items)
             .field(
@@ -1551,6 +1564,11 @@ impl WebAssessmentRunReport {
     pub const fn tls_observation_audit(&self) -> Option<&WebAssessmentTlsObservationAudit> {
         self.tls_observation.as_ref()
     }
+    /// Returns the optional bounded Cert Spotter provider collection audit.
+    #[cfg(feature = "recon-ct-provider")]
+    pub const fn recon_ct_provider_audit(&self) -> Option<&WebAssessmentReconCtProviderAudit> {
+        self.recon_ct_provider.as_ref()
+    }
     /// Returns claim-safe items derived only from committed assessment truth.
     pub fn assessment_items(&self) -> &[AssessmentItem] {
         self.assessment_items.items()
@@ -1622,6 +1640,8 @@ impl WebAssessmentRunReport {
             self.secret_exposure_review,
             #[cfg(feature = "tls-observation")]
             self.tls_observation,
+            #[cfg(feature = "recon-ct-provider")]
+            self.recon_ct_provider,
         )
     }
 }
@@ -1760,6 +1780,9 @@ pub enum WebAssessmentRuntimeError {
     RootRetentionLimit,
     #[error("native low-risk web review could not be composed safely")]
     NativeReviewComposition,
+    #[cfg(feature = "recon-ct-provider")]
+    #[error("certificate-transparency provider policy is not bound to the selected assessment")]
+    ReconCtProviderComposition,
     #[error("root authorization-context review requires an exact origin root target")]
     RootAuthorizationContextRequiresOriginRoot,
     #[error("root API authorization-context review could not be composed safely")]
@@ -1874,6 +1897,10 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             },
             Self::NativeReviewComposition => {
                 formatter.write_str("WebAssessmentRuntimeError::NativeReviewComposition")
+            },
+            #[cfg(feature = "recon-ct-provider")]
+            Self::ReconCtProviderComposition => {
+                formatter.write_str("WebAssessmentRuntimeError::ReconCtProviderComposition")
             },
             Self::RootAuthorizationContextRequiresOriginRoot => formatter
                 .write_str("WebAssessmentRuntimeError::RootAuthorizationContextRequiresOriginRoot"),
@@ -2056,6 +2083,8 @@ pub struct WebAssessmentRuntimeBuilder {
     secret_exposure_review: bool,
     #[cfg(feature = "tls-observation")]
     tls_observation: bool,
+    #[cfg(feature = "recon-ct-provider")]
+    recon_ct_provider: Option<ReconCtProviderPolicy>,
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     wordpress_supplied_session: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
@@ -2096,6 +2125,8 @@ impl WebAssessmentRuntimeBuilder {
             secret_exposure_review: false,
             #[cfg(feature = "tls-observation")]
             tls_observation: false,
+            #[cfg(feature = "recon-ct-provider")]
+            recon_ct_provider: None,
             #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
             wordpress_supplied_session: false,
             root_authorization_context: None,
@@ -2242,6 +2273,16 @@ impl WebAssessmentRuntimeBuilder {
         self.wordpress_supplied_session = true;
         self
     }
+    /// Adds one explicit, bounded Cert Spotter provider query child.
+    ///
+    /// The policy grants only the fixed provider operation. Returned names do
+    /// not enter target planning, and every provider dispatch shares this
+    /// assessment's request, byte, deadline, and cancellation authority.
+    #[cfg(feature = "recon-ct-provider")]
+    pub fn with_recon_ct_provider(mut self, policy: ReconCtProviderPolicy) -> Self {
+        self.recon_ct_provider = Some(policy);
+        self
+    }
     /// Adds one explicitly selected, four-view resource authorization review.
     ///
     /// The policy and move-only principals are consumed by this builder. The
@@ -2316,6 +2357,14 @@ impl WebAssessmentRuntimeBuilder {
             );
             SsrfOastReviewConfig::new(policy, administrator, selection)
         });
+        #[cfg(feature = "recon-ct-provider")]
+        if self
+            .recon_ct_provider
+            .as_ref()
+            .is_some_and(|policy| !recon_ct_provider_scope_is_valid(policy, &self.target))
+        {
+            return Err(WebAssessmentRuntimeError::ReconCtProviderComposition);
+        }
         #[cfg(feature = "rest-review")]
         if self.rest_review && !self.openapi_review {
             return Err(WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview);
@@ -2718,6 +2767,8 @@ impl WebAssessmentRuntimeBuilder {
             supplied_session_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
+            #[cfg(feature = "recon-ct-provider")]
+            recon_ct_provider: self.recon_ct_provider,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure_collector: self
                 .secret_exposure_review
@@ -2802,6 +2853,8 @@ pub struct WebAssessmentRuntime {
     supplied_session_review: Option<SuppliedSessionRuntimeConfig>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewBinding>,
+    #[cfg(feature = "recon-ct-provider")]
+    recon_ct_provider: Option<ReconCtProviderPolicy>,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_collector: Option<SecretExposureCollector>,
     #[cfg(feature = "secret-exposure-review")]
@@ -4765,6 +4818,21 @@ impl WebAssessmentRuntime {
             reasons.insert(WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable);
         }
         let semantics = self.extract_semantics_and_refresh_limits(&mut reasons, started_at);
+        #[cfg(feature = "recon-ct-provider")]
+        let recon_ct_provider = if !reasons.is_empty() {
+            // The incomplete-run diagnostic contract cannot carry a provider
+            // receipt. Do not perform a third-party disclosure that the saved
+            // result would then be unable to account for.
+            None
+        } else if let Some(policy) = self.recon_ct_provider.take() {
+            // Provider-local partial, throttled, and failed outcomes remain a
+            // first-class selected audit. They do not discard the otherwise
+            // completed target assessment through the generic incomplete-run
+            // fallback, which cannot carry this provider receipt.
+            Some(execute_recon_ct_provider(policy, &self.root.url, &self.authority).await)
+        } else {
+            None
+        };
         let usage = self.usage(
             subject_reports.len(),
             subject_reports
@@ -4820,6 +4888,8 @@ impl WebAssessmentRuntime {
                 .map(|_| self.secret_exposure_ledger.audit()),
             #[cfg(feature = "tls-observation")]
             tls_observation: self.authority.tls_observation_audit(),
+            #[cfg(feature = "recon-ct-provider")]
+            recon_ct_provider,
             assessment_items,
             assessment_projection_incompleteness,
             completion,

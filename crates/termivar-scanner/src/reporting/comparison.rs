@@ -39,6 +39,9 @@ pub(super) const CONTROL_REFERENCE_MAPPING_COMPARISON_SCHEMA: &str =
 /// Additive, display-only local reconnaissance snapshot comparison section.
 pub(super) const RECON_SNAPSHOT_IMPORT_COMPARISON_SCHEMA: &str =
     "termivar-recon-snapshot-import-comparison/v1";
+/// Additive, display-only Cert Spotter provider comparison section.
+pub(super) const RECON_CERTSPOTTER_COMPARISON_SCHEMA: &str =
+    "termivar-recon-certspotter-comparison/v1";
 /// Additive, display-only WordPress comparison section carried by comparison v1.
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V1: &str = "termivar-wordpress-review-comparison/v1";
 pub(super) const WORDPRESS_COMPARISON_SCHEMA_V2: &str = "termivar-wordpress-review-comparison/v2";
@@ -213,6 +216,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) recon_snapshot_import_comparison: Option<ReconSnapshotImportComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) recon_certspotter_comparison: Option<ReconCertSpotterComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) wordpress_review_comparison: Option<WordPressReviewComparison>,
     pub(super) only_in_after: Vec<ComparisonItem>,
     pub(super) only_in_before: Vec<ComparisonItem>,
@@ -291,6 +296,19 @@ pub(super) struct ReconSnapshotImportComparison {
     pub(super) methodology: WordPressFacetComparison,
     pub(super) provenance_and_sources: WordPressFacetComparison,
     pub(super) coverage_and_accounting: WordPressFacetComparison,
+    pub(super) hypotheses: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 6],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ReconCertSpotterComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) provider: WordPressFacetComparison,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
     pub(super) hypotheses: WordPressFacetComparison,
     pub(super) interpretation_limits: [&'static str; 6],
 }
@@ -454,6 +472,14 @@ pub(super) struct ImportedReconSnapshotAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedReconCertSpotterAudit {
+    pub(super) provider: Value,
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+    pub(super) hypotheses: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SuppliedSessionResourceBinding {
     pub(super) evidence_reference: Option<String>,
     pub(super) response_bytes: u64,
@@ -540,6 +566,7 @@ struct ImportedDocument {
     jwt_policy_review: Option<ImportedJwtPolicyReviewAudit>,
     control_reference_mapping: Option<ImportedControlReferenceMappingAudit>,
     recon_snapshot_import: Option<ImportedReconSnapshotAudit>,
+    recon_certspotter: Option<ImportedReconCertSpotterAudit>,
     wordpress_review: Option<ImportedWordPressAudit>,
 }
 
@@ -581,6 +608,10 @@ fn compare_documents(
         before.recon_snapshot_import.as_ref(),
         after.recon_snapshot_import.as_ref(),
     );
+    let recon_certspotter_comparison = compare_recon_certspotter(
+        before.recon_certspotter.as_ref(),
+        after.recon_certspotter.as_ref(),
+    );
     let wordpress_review_comparison = compare_wordpress_reviews(
         before.wordpress_review.as_ref(),
         after.wordpress_review.as_ref(),
@@ -604,6 +635,7 @@ fn compare_documents(
         jwt_policy_review_comparison,
         control_reference_mapping_comparison,
         recon_snapshot_import_comparison,
+        recon_certspotter_comparison,
         wordpress_review_comparison,
         only_in_after: Vec::new(),
         only_in_before: Vec::new(),
@@ -1061,6 +1093,70 @@ fn compare_recon_snapshot_import(
             "A certificate name or historical DNS address does not establish current ownership, authorization, reachability, or tenant association.",
             "One-sided audit presence is not comparable and does not establish asset appearance, disappearance, vulnerability, or remediation.",
             "Hypothesis differences must be reviewed with their declared sources and limitations; they do not create a scan permit.",
+        ],
+    })
+}
+
+fn compare_recon_certspotter(
+    before: Option<&ImportedReconCertSpotterAudit>,
+    after: Option<&ImportedReconCertSpotterAudit>,
+) -> Option<ReconCertSpotterComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    Some(ReconCertSpotterComparison {
+        schema: RECON_CERTSPOTTER_COMPARISON_SCHEMA,
+        status,
+        reason,
+        provider: facet(
+            before.map(|audit| &audit.provider),
+            after.map(|audit| &audit.provider),
+            paired_status(
+                before.map(|audit| &audit.provider),
+                after.map(|audit| &audit.provider),
+            ),
+            "Provider identity, effective origin, execution mode, query scope, or opaque policy-reference changes are provider-context differences. They do not authenticate a source, establish ownership, or authorize scanning.",
+        ),
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            paired_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Endpoint, pagination, compiled-bound, no-retry, no-polling, credential, or fixed claim-limit changes are methodology differences, not target changes or security findings.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            paired_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "Terminal state, completeness, cursor, request, byte, issuance, retention, and omission counters describe only each bounded provider collection. Equal counters do not prove equal content, currentness, or complete CT coverage.",
+        ),
+        hypotheses: facet(
+            before.map(|audit| &audit.hypotheses),
+            after.map(|audit| &audit.hypotheses),
+            paired_status(
+                before.map(|audit| &audit.hypotheses),
+                after.map(|audit| &audit.hypotheses),
+            ),
+            "Added, removed, or changed source-qualified names are provider-result differences. They are not findings and do not establish ownership, authentication, currentness, reachability, or scan authority.",
+        ),
+        interpretation_limits: [
+            "The comparison parses saved reports only; it performs no target or provider request and does not authenticate either report or provider response.",
+            "Cert Spotter names remain source-qualified hypotheses and never become assessment items, findings, broker permits, or target authority.",
+            "Provider exhaustion means only that an empty page was observed at the bounded cursor; it is not global CT completeness or currentness proof.",
+            "A one-sided audit or hypothesis does not establish asset appearance, disappearance, ownership, reachability, vulnerability, or remediation.",
+            "Transport success and TLS validation do not authenticate the provider as the asset owner or validate the returned certificate names.",
+            "Every compared hypothesis retains the fixed no-authority, no-ownership, no-currentness, and no-source-authentication claim limits.",
         ],
     })
 }
@@ -1529,6 +1625,9 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
     if let Some(recon_snapshot) = &document.recon_snapshot_import_comparison {
         write_recon_snapshot_import_comparison_markdown(&mut output, recon_snapshot)?;
     }
+    if let Some(recon_certspotter) = &document.recon_certspotter_comparison {
+        write_recon_certspotter_comparison_markdown(&mut output, recon_certspotter)?;
+    }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         write_wordpress_comparison_markdown(&mut output, wordpress)?;
     }
@@ -1888,6 +1987,49 @@ fn write_recon_snapshot_import_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### Reconnaissance snapshot interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_recon_certspotter_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &ReconCertSpotterComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Cert Spotter provider differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str("\n\nThis section compares validated bounded provider projections. Provider, methodology, coverage, and source-qualified hypothesis changes are saved-report context differences, not findings, scan authority, source authentication, ownership, currentness, vulnerability, or remediation.\n\n")?;
+    for (label, facet) in [
+        ("Provider", &comparison.provider),
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+        ("Source-qualified hypotheses", &comparison.hypotheses),
+    ] {
+        output.push_fmt(format_args!("### Cert Spotter {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### Cert Spotter interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

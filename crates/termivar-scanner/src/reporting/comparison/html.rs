@@ -3,9 +3,10 @@
 use super::super::{write_html_text, RenderBuffer, ReportError};
 use super::{
     ComparisonDocument, ComparisonError, ComparisonItem, ControlReferenceMappingComparison,
-    ItemProjection, JwtPolicyReviewComparison, ReconSnapshotImportComparison,
-    SecretExposureComparison, SourceMetadata, SuppliedSessionComparison, TlsObservationComparison,
-    WordPressEntityChanges, WordPressFacetComparison, WordPressReviewComparison,
+    ItemProjection, JwtPolicyReviewComparison, ReconCertSpotterComparison,
+    ReconSnapshotImportComparison, SecretExposureComparison, SourceMetadata,
+    SuppliedSessionComparison, TlsObservationComparison, WordPressEntityChanges,
+    WordPressFacetComparison, WordPressReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -50,6 +51,9 @@ pub(super) fn render(
     }
     if let Some(comparison) = &document.recon_snapshot_import_comparison {
         recon_snapshot_import(&mut output, comparison)?;
+    }
+    if let Some(comparison) = &document.recon_certspotter_comparison {
+        recon_certspotter(&mut output, comparison)?;
     }
     if let Some(wordpress) = &document.wordpress_review_comparison {
         wordpress_review(&mut output, wordpress)?;
@@ -368,6 +372,53 @@ fn recon_snapshot_import(
     output.push_str(
         "<details><summary>Reconnaissance snapshot interpretation limits</summary><ul>",
     )?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn recon_certspotter(
+    output: &mut RenderBuffer,
+    comparison: &ReconCertSpotterComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"recon-certspotter-differences\"><h2 id=\"recon-certspotter-differences\">Cert Spotter provider differences</h2><p class=\"muted\">Validated bounded provider projections are compared separately from target items. Provider, methodology, coverage, and source-qualified hypothesis changes are saved-report context differences, not findings, scan authority, source authentication, ownership, currentness, vulnerability, or remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Provider", comparison.provider.status.as_str()),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Coverage", comparison.coverage.status.as_str()),
+        (
+            "Source-qualified hypotheses",
+            comparison.hypotheses.status.as_str(),
+        ),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str("</span>. Audit presence changes do not establish asset appearance, disappearance, ownership, currentness, vulnerability, or remediation.</p>")?;
+    }
+    for (label, facet) in [
+        ("Cert Spotter provider", &comparison.provider),
+        ("Cert Spotter methodology", &comparison.methodology),
+        ("Cert Spotter coverage", &comparison.coverage),
+        (
+            "Cert Spotter source-qualified hypotheses",
+            &comparison.hypotheses,
+        ),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str("<details><summary>Cert Spotter interpretation limits</summary><ul>")?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;
         write_html_text(output, limit)?;

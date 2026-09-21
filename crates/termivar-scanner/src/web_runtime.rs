@@ -63,6 +63,8 @@ mod graphql_runtime;
 mod jwt_target_acceptance_runtime;
 #[cfg(feature = "openapi-review")]
 mod openapi_runtime;
+#[cfg(feature = "recon-ct-provider")]
+mod recon_ct_runtime;
 #[cfg(feature = "authorization-review")]
 mod resource_authorization_runtime;
 #[cfg(feature = "rest-review")]
@@ -144,6 +146,10 @@ pub use openapi_runtime::{
     OpenApiCandidateSource, OpenApiRuntimeOutcome, WebAssessmentOpenApiAudit,
     MAX_OPENAPI_REVIEW_ACTIVE_VERIFICATIONS, MAX_OPENAPI_REVIEW_DOCUMENTS,
     MAX_OPENAPI_REVIEW_REQUESTS, OPENAPI_REVIEW_ACTION_ID, OPENAPI_REVIEW_CAPABILITY_ID,
+};
+#[cfg(feature = "recon-ct-provider")]
+pub use recon_ct_runtime::{
+    recon_ct_provider_scope_is_valid, ReconCtProviderFailureKind, WebAssessmentReconCtProviderAudit,
 };
 #[cfg(feature = "authorization-review")]
 pub use resource_authorization_runtime::{

@@ -8,6 +8,12 @@ use crate::control_reference_mapping::{
     CONTROL_REFERENCE_MAPPING_CATALOGUE_ID, CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION,
     CONTROL_REFERENCE_MAPPING_POLICY_ID,
 };
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+use crate::recon_ct_provider::{
+    MAX_CERT_SPOTTER_ELAPSED, MAX_CERT_SPOTTER_IN_FLIGHT_REQUESTS, MAX_CERT_SPOTTER_RESPONSE_PAGES,
+    MAX_CERT_SPOTTER_RESPONSE_PAGE_BYTES, MAX_CERT_SPOTTER_RETAINED_NAMES,
+    MAX_CERT_SPOTTER_TOTAL_RESPONSE_BYTES,
+};
 #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
 use crate::recon_snapshot::{
     ReconSnapshot, ReconnaissanceRecordValue, MAX_RECONNAISSANCE_SNAPSHOT_PREPARED_INDEX_BYTES,
@@ -35,6 +41,8 @@ use crate::jwt_target_acceptance::{
 };
 #[cfg(all(feature = "scanning", feature = "rest-review"))]
 use crate::rest_review::RestDocumentedResponseClass;
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+use crate::web_runtime::WebAssessmentReconCtProviderAudit;
 #[cfg(feature = "scanning")]
 use crate::web_runtime::{
     AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
@@ -127,6 +135,8 @@ use crate::{
     },
 };
 use serde::Serialize;
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, io};
 use termivar_core::{
     OutcomeStatus, ResourceAccounting, ResourceAccountingMode, RunOutcomeRecord, RunReport,
@@ -142,6 +152,24 @@ pub const ASSESSMENT_REPORT_DOCUMENT_SCHEMA: &str = "venom-rendered-assessment/v
 pub const MAX_RENDERED_REPORT_BYTES: usize = 16 * 1_024 * 1_024;
 #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
 const RECON_SNAPSHOT_IMPORT_AUDIT_SCHEMA: &str = "security.recon-snapshot-import-audit/v1";
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+const RECON_CERTSPOTTER_AUDIT_SCHEMA: &str = "security.recon-certspotter-audit/v1";
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+const RECON_CERTSPOTTER_POLICY_ID: &str = "termivar.recon-certspotter-provider/v1";
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+const RECON_CERTSPOTTER_PROVIDER: &str = "cert_spotter";
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+const RECON_CERTSPOTTER_ISSUANCE_REFERENCE_PREFIX: &str = "certspotter-issuance-sha256:";
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+const MAX_RECON_CERTSPOTTER_ISSUANCE_ID_BYTES: usize = 128;
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+const RECON_CERTSPOTTER_CLAIM_LIMITS: [&str; 5] = [
+    "hypotheses_only",
+    "scan_authority_not_granted",
+    "ownership_not_established",
+    "currentness_not_established",
+    "source_authentication_not_established",
+];
 
 const REPORT_FORMATS: [ReportFormat; 4] = [
     ReportFormat::Json,
@@ -1378,6 +1406,45 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "recon-ct-provider")]
+    if let Some(audit) = &document.recon_certspotter {
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "recon_certspotter_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                audit.coverage.completeness,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &summary,
+                "bounded-certspotter-provider-query",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         let evidence_count = audit.evidence_reference_count.to_string();
@@ -2245,6 +2312,27 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             output.push_str("</code></li>")?;
         }
         output.push_str("</ul><p class=\"wp-note\">This import performed no target request, provider request, archive processing, or decompression. It did not add assessment subjects or items.</p></section>")?;
+    }
+    #[cfg(feature = "recon-ct-provider")]
+    if let Some(audit) = &document.recon_certspotter {
+        output.push_str("<section><h2>Cert Spotter reconnaissance provider audit</h2><p class=\"wp-note\">Returned certificate-transparency names are source-qualified hypotheses only. They are not findings and do not establish scan authority, source authentication, ownership, or currentness.</p><dl class=\"meta\">")?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Source-qualified hypotheses</h3><ul>")?;
+        if audit.hypotheses.is_empty() {
+            output.push_str("<li><code>none retained</code></li>")?;
+        }
+        for hypothesis in &audit.hypotheses {
+            output.push_str("<li><code>")?;
+            write_html_text(&mut output, &hypothesis.presentation())?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul><p class=\"wp-note\">The fixed claim limits apply to the collection and every displayed hypothesis. Provider transport and bounded collection do not authenticate the provider as an asset owner or authorize contact with any returned name.</p></section>")?;
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
@@ -4647,6 +4735,25 @@ fn render_assessment_markdown(
         }
         output.push_str("\nThis import performed no target request, provider request, archive processing, or decompression. It did not add assessment subjects or items.\n")?;
     }
+    #[cfg(feature = "recon-ct-provider")]
+    if let Some(audit) = &document.recon_certspotter {
+        output.push_str("\n### Cert Spotter reconnaissance provider audit\n\nReturned certificate-transparency names are source-qualified hypotheses only. They are not findings and do not establish scan authority, source authentication, ownership, or currentness.\n\n")?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Source-qualified hypotheses\n\n")?;
+        if audit.hypotheses.is_empty() {
+            output.push_str("- `none retained`\n")?;
+        }
+        for hypothesis in &audit.hypotheses {
+            output.push_str("- ")?;
+            write_markdown_code_span(&mut output, &hypothesis.presentation())?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\nThe fixed claim limits apply to the collection and every displayed hypothesis. Provider transport and bounded collection do not authenticate the provider as an asset owner or authorize contact with any returned name.\n")?;
+    }
     #[cfg(feature = "wordpress-review")]
     if let Some(audit) = &document.wordpress_review {
         output.push_str("\n### WordPress evidence review audit\n\n")?;
@@ -4770,6 +4877,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "recon-snapshot-import")]
     #[serde(skip_serializing_if = "Option::is_none")]
     recon_snapshot_import: Option<AssessmentReconSnapshotImportAuditDocument>,
+    #[cfg(feature = "recon-ct-provider")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recon_certspotter: Option<AssessmentReconCertSpotterAuditDocument>,
     #[cfg(feature = "wordpress-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     wordpress_review: Option<AssessmentWordPressAuditDocument>,
@@ -4935,6 +5045,11 @@ impl<'a> AssessmentDocument<'a> {
                 .recon_snapshot_audit()
                 .map(AssessmentReconSnapshotImportAuditDocument::from_audit)
                 .transpose()?,
+            #[cfg(feature = "recon-ct-provider")]
+            recon_certspotter: report
+                .recon_ct_provider_audit()
+                .map(AssessmentReconCertSpotterAuditDocument::from_audit)
+                .transpose()?,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: report
                 .wordpress_review_audit()
@@ -5019,6 +5134,10 @@ impl<'a> AssessmentDocument<'a> {
         }
         #[cfg(feature = "recon-snapshot-import")]
         if let Some(audit) = &self.recon_snapshot_import {
+            audit.validate()?;
+        }
+        #[cfg(feature = "recon-ct-provider")]
+        if let Some(audit) = &self.recon_certspotter {
             audit.validate()?;
         }
         #[cfg(feature = "wordpress-review")]
@@ -7209,6 +7328,576 @@ impl AssessmentControlReferenceMappingAuditDocument {
     fn wire_json(&self) -> Result<String, ReportError> {
         serde_json::to_string(self).map_err(|_| ReportError::Serialization)
     }
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+#[derive(Serialize)]
+struct AssessmentReconCertSpotterAuditDocument {
+    schema: &'static str,
+    policy: &'static str,
+    selected: bool,
+    provider: AssessmentReconCertSpotterProviderDocument,
+    methodology: AssessmentReconCertSpotterMethodologyDocument,
+    coverage: AssessmentReconCertSpotterCoverageDocument,
+    hypotheses: Vec<AssessmentReconCertSpotterHypothesisDocument>,
+    claim_limits: [&'static str; 5],
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+#[derive(Serialize)]
+struct AssessmentReconCertSpotterProviderDocument {
+    name: &'static str,
+    policy_schema: &'static str,
+    policy_revision: String,
+    query_domain: String,
+    query_reference: String,
+    execution_mode: &'static str,
+    origin: String,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+#[derive(Serialize)]
+struct AssessmentReconCertSpotterMethodologyDocument {
+    request_path: &'static str,
+    pagination: &'static str,
+    retries: &'static str,
+    polling: &'static str,
+    credentials: &'static str,
+    maximum_pages: u64,
+    maximum_response_page_bytes: u64,
+    maximum_response_bytes: u64,
+    maximum_elapsed_milliseconds: u64,
+    maximum_in_flight_requests: u64,
+    maximum_retained_names: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+#[derive(Serialize)]
+struct AssessmentReconCertSpotterCoverageDocument {
+    terminal: &'static str,
+    completeness: &'static str,
+    first_failure: Option<&'static str>,
+    initial_after_reference: Option<String>,
+    initial_after_byte_length: Option<u64>,
+    last_cursor_reference: Option<String>,
+    last_cursor_byte_length: Option<u64>,
+    request_attempt_count: u64,
+    request_admitted_count: u64,
+    response_completed_count: u64,
+    observed_response_bytes: u64,
+    accepted_page_count: u64,
+    accepted_response_bytes: u64,
+    issuance_count: u64,
+    retained_name_count: u64,
+    foreign_name_count: u64,
+    duplicate_name_count: u64,
+    omitted_name_count: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+#[derive(Serialize)]
+struct AssessmentReconCertSpotterHypothesisDocument {
+    name: String,
+    source: AssessmentReconCertSpotterHypothesisSourceDocument,
+    claim_limits: [&'static str; 5],
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+#[derive(Serialize)]
+struct AssessmentReconCertSpotterHypothesisSourceDocument {
+    provider: &'static str,
+    origin: String,
+    first_issuance_reference: String,
+    first_issuance_byte_length: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+impl AssessmentReconCertSpotterHypothesisDocument {
+    fn presentation(&self) -> String {
+        format!(
+            "name={};source_provider={};source_origin={};first_issuance_reference={};first_issuance_byte_length={};claim_limits={}",
+            self.name,
+            self.source.provider,
+            self.source.origin,
+            self.source.first_issuance_reference,
+            self.source.first_issuance_byte_length,
+            self.claim_limits.join(","),
+        )
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+impl AssessmentReconCertSpotterAuditDocument {
+    fn from_audit(audit: &WebAssessmentReconCtProviderAudit) -> Result<Self, ReportError> {
+        if !audit.is_consistent() {
+            return Err(ReportError::Serialization);
+        }
+        let result = audit.result();
+        let collection = result.audit();
+        if !result
+            .claim_limits()
+            .iter()
+            .map(|limit| limit.as_str())
+            .eq(RECON_CERTSPOTTER_CLAIM_LIMITS)
+            || result.hypotheses().iter().any(|hypothesis| {
+                !hypothesis
+                    .claim_limits()
+                    .iter()
+                    .map(|limit| limit.as_str())
+                    .eq(RECON_CERTSPOTTER_CLAIM_LIMITS)
+            })
+        {
+            return Err(ReportError::Serialization);
+        }
+        let hypotheses = result
+            .hypotheses()
+            .iter()
+            .map(|hypothesis| {
+                let (first_issuance_reference, first_issuance_byte_length) =
+                    recon_certspotter_issuance_reference(hypothesis.first_issuance_id())?;
+                Ok(AssessmentReconCertSpotterHypothesisDocument {
+                    name: hypothesis.name().to_owned(),
+                    source: AssessmentReconCertSpotterHypothesisSourceDocument {
+                        provider: RECON_CERTSPOTTER_PROVIDER,
+                        origin: collection.provider_origin().to_owned(),
+                        first_issuance_reference,
+                        first_issuance_byte_length,
+                    },
+                    claim_limits: RECON_CERTSPOTTER_CLAIM_LIMITS,
+                })
+            })
+            .collect::<Result<Vec<_>, ReportError>>()?;
+        let (initial_after_reference, initial_after_byte_length) =
+            recon_certspotter_optional_issuance_reference(collection.initial_after())?;
+        let (last_cursor_reference, last_cursor_byte_length) =
+            recon_certspotter_optional_issuance_reference(collection.last_cursor())?;
+        let document = Self {
+            schema: RECON_CERTSPOTTER_AUDIT_SCHEMA,
+            policy: RECON_CERTSPOTTER_POLICY_ID,
+            selected: true,
+            provider: AssessmentReconCertSpotterProviderDocument {
+                name: RECON_CERTSPOTTER_PROVIDER,
+                policy_schema: collection.schema(),
+                policy_revision: collection.policy_revision().to_owned(),
+                query_domain: collection.query_domain().to_owned(),
+                query_reference: collection.query_reference().to_owned(),
+                execution_mode: collection.execution_mode().as_str(),
+                origin: collection.provider_origin().to_owned(),
+            },
+            methodology: AssessmentReconCertSpotterMethodologyDocument {
+                request_path: "/v1/issuances",
+                pagination: "after_cursor",
+                retries: "none",
+                polling: "none",
+                credentials: "none",
+                maximum_pages: u64::try_from(collection.maximum_pages())
+                    .map_err(|_| ReportError::Serialization)?,
+                maximum_response_page_bytes: u64::try_from(MAX_CERT_SPOTTER_RESPONSE_PAGE_BYTES)
+                    .map_err(|_| ReportError::Serialization)?,
+                maximum_response_bytes: u64::try_from(collection.maximum_response_bytes())
+                    .map_err(|_| ReportError::Serialization)?,
+                maximum_elapsed_milliseconds: u64::try_from(
+                    collection.maximum_elapsed().as_millis(),
+                )
+                .map_err(|_| ReportError::Serialization)?,
+                maximum_in_flight_requests: u64::try_from(collection.maximum_in_flight_requests())
+                    .map_err(|_| ReportError::Serialization)?,
+                maximum_retained_names: u64::try_from(MAX_CERT_SPOTTER_RETAINED_NAMES)
+                    .map_err(|_| ReportError::Serialization)?,
+            },
+            coverage: AssessmentReconCertSpotterCoverageDocument {
+                terminal: collection.terminal().as_str(),
+                completeness: collection.completeness().as_str(),
+                first_failure: audit.first_failure().map(|failure| failure.as_str()),
+                initial_after_reference,
+                initial_after_byte_length,
+                last_cursor_reference,
+                last_cursor_byte_length,
+                request_attempt_count: u64::try_from(audit.request_attempt_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                request_admitted_count: u64::try_from(audit.request_admitted_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                response_completed_count: u64::try_from(audit.response_completed_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                observed_response_bytes: audit.observed_response_bytes(),
+                accepted_page_count: u64::try_from(collection.page_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                accepted_response_bytes: u64::try_from(collection.response_bytes())
+                    .map_err(|_| ReportError::Serialization)?,
+                issuance_count: u64::try_from(collection.issuance_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                retained_name_count: u64::try_from(collection.retained_name_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                foreign_name_count: u64::try_from(collection.foreign_name_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                duplicate_name_count: u64::try_from(collection.duplicate_name_count())
+                    .map_err(|_| ReportError::Serialization)?,
+                omitted_name_count: u64::try_from(collection.omitted_name_count())
+                    .map_err(|_| ReportError::Serialization)?,
+            },
+            hypotheses,
+            claim_limits: RECON_CERTSPOTTER_CLAIM_LIMITS,
+        };
+        document.validate()?;
+        Ok(document)
+    }
+
+    fn validate(&self) -> Result<(), ReportError> {
+        const MAX_ISSUANCES: u64 = 8_192;
+        const MAX_ISSUANCES_PER_PAGE: u64 = 4_096;
+        const MAX_NAME_EVENTS: u64 = 65_536;
+
+        let coverage = &self.coverage;
+        let mut names = std::collections::BTreeSet::new();
+        let mut identities = std::collections::BTreeSet::new();
+        let hypotheses_are_valid = self.hypotheses.iter().all(|hypothesis| {
+            names.insert(hypothesis.name.as_str())
+                && identities.insert((
+                    hypothesis.name.as_str(),
+                    hypothesis.source.provider,
+                    hypothesis.source.origin.as_str(),
+                    hypothesis.source.first_issuance_reference.as_str(),
+                    hypothesis.source.first_issuance_byte_length,
+                ))
+                && valid_recon_certspotter_name(&hypothesis.name, &self.provider.query_domain)
+                && hypothesis.source.provider == self.provider.name
+                && hypothesis.source.origin == self.provider.origin
+                && valid_recon_certspotter_issuance_reference(
+                    &hypothesis.source.first_issuance_reference,
+                )
+                && valid_recon_certspotter_issuance_byte_length(
+                    hypothesis.source.first_issuance_byte_length,
+                )
+                && hypothesis.claim_limits == RECON_CERTSPOTTER_CLAIM_LIMITS
+        });
+        let retained_count =
+            u64::try_from(self.hypotheses.len()).map_err(|_| ReportError::Serialization)?;
+        let total_name_events = coverage
+            .retained_name_count
+            .checked_add(coverage.foreign_name_count)
+            .and_then(|count| count.checked_add(coverage.duplicate_name_count))
+            .and_then(|count| count.checked_add(coverage.omitted_name_count));
+        let request_counts_are_valid = coverage.request_admitted_count
+            <= coverage.request_attempt_count
+            && coverage.request_attempt_count <= self.methodology.maximum_pages
+            && coverage.response_completed_count <= coverage.request_admitted_count
+            && coverage.accepted_page_count <= coverage.response_completed_count;
+        let completed_collection_accounting_is_exact = coverage.request_attempt_count
+            == coverage.accepted_page_count
+            && coverage.request_admitted_count == coverage.accepted_page_count
+            && coverage.response_completed_count == coverage.accepted_page_count
+            && coverage.observed_response_bytes == coverage.accepted_response_bytes;
+        let terminal_is_valid = match coverage.terminal {
+            "provider_exhausted" => {
+                coverage.completeness == "provider_exhausted_as_observed"
+                    && coverage.first_failure.is_none()
+                    && coverage.accepted_page_count > 0
+                    && completed_collection_accounting_is_exact
+            },
+            "hypothesis_limit_reached" => {
+                coverage.completeness == "bounded_partial"
+                    && coverage.first_failure.is_none()
+                    && coverage.retained_name_count == self.methodology.maximum_retained_names
+                    && completed_collection_accounting_is_exact
+            },
+            "page_limit_reached" => {
+                coverage.completeness == "bounded_partial"
+                    && coverage.first_failure.is_none()
+                    && coverage.accepted_page_count == self.methodology.maximum_pages
+                    && completed_collection_accounting_is_exact
+            },
+            "deadline_reached" => {
+                coverage.completeness == "unknown"
+                    && coverage.first_failure == Some("deadline_reached")
+                    && coverage.accepted_page_count < self.methodology.maximum_pages
+            },
+            "parent_authority_unavailable" => {
+                coverage.completeness == "unknown"
+                    && coverage.first_failure == Some("parent_authority_unavailable")
+                    && coverage.accepted_page_count < self.methodology.maximum_pages
+            },
+            "cancelled" => {
+                coverage.completeness == "unknown"
+                    && coverage.first_failure == Some("cancelled")
+                    && coverage.accepted_page_count < self.methodology.maximum_pages
+            },
+            "transport_failed" => {
+                coverage.completeness == "unknown"
+                    && coverage
+                        .first_failure
+                        .is_some_and(valid_recon_certspotter_transport_failure)
+                    && coverage.accepted_page_count < self.methodology.maximum_pages
+            },
+            _ => false,
+        };
+        let issuance_capacity = coverage
+            .accepted_page_count
+            .checked_mul(MAX_ISSUANCES_PER_PAGE);
+        let zero_issuance_accounting_is_empty = coverage.issuance_count != 0
+            || (coverage.retained_name_count == 0
+                && coverage.foreign_name_count == 0
+                && coverage.duplicate_name_count == 0
+                && coverage.omitted_name_count == 0);
+        if self.schema != RECON_CERTSPOTTER_AUDIT_SCHEMA
+            || self.policy != RECON_CERTSPOTTER_POLICY_ID
+            || !self.selected
+            || self.provider.name != RECON_CERTSPOTTER_PROVIDER
+            || self.provider.policy_schema != "security.recon-certspotter-policy/v1"
+            || !valid_recon_certspotter_opaque(&self.provider.policy_revision)
+            || !valid_recon_certspotter_query_domain(&self.provider.query_domain)
+            || !valid_recon_certspotter_opaque(&self.provider.query_reference)
+            || !valid_recon_certspotter_origin(self.provider.execution_mode, &self.provider.origin)
+            || self.methodology.request_path != "/v1/issuances"
+            || self.methodology.pagination != "after_cursor"
+            || self.methodology.retries != "none"
+            || self.methodology.polling != "none"
+            || self.methodology.credentials != "none"
+            || self.methodology.maximum_pages != MAX_CERT_SPOTTER_RESPONSE_PAGES as u64
+            || self.methodology.maximum_response_page_bytes
+                != MAX_CERT_SPOTTER_RESPONSE_PAGE_BYTES as u64
+            || self.methodology.maximum_response_bytes
+                != MAX_CERT_SPOTTER_TOTAL_RESPONSE_BYTES as u64
+            || self.methodology.maximum_elapsed_milliseconds
+                != MAX_CERT_SPOTTER_ELAPSED.as_millis() as u64
+            || self.methodology.maximum_in_flight_requests
+                != MAX_CERT_SPOTTER_IN_FLIGHT_REQUESTS as u64
+            || self.methodology.maximum_retained_names != MAX_CERT_SPOTTER_RETAINED_NAMES as u64
+            || self.claim_limits != RECON_CERTSPOTTER_CLAIM_LIMITS
+            || !hypotheses_are_valid
+            || retained_count != coverage.retained_name_count
+            || coverage.retained_name_count > self.methodology.maximum_retained_names
+            || coverage.accepted_page_count > self.methodology.maximum_pages
+            || coverage.accepted_response_bytes > self.methodology.maximum_response_bytes
+            || coverage.accepted_response_bytes > coverage.observed_response_bytes
+            || coverage.issuance_count > MAX_ISSUANCES
+            || issuance_capacity.is_none_or(|capacity| coverage.issuance_count > capacity)
+            || !zero_issuance_accounting_is_empty
+            || total_name_events.is_none_or(|count| count > MAX_NAME_EVENTS)
+            || !request_counts_are_valid
+            || !terminal_is_valid
+            || coverage.initial_after_reference.is_some()
+            || coverage.initial_after_byte_length.is_some()
+            || !valid_recon_certspotter_optional_issuance_reference(
+                coverage.last_cursor_reference.as_deref(),
+                coverage.last_cursor_byte_length,
+            )
+            || (coverage.issuance_count == 0) != coverage.last_cursor_reference.is_none()
+            || (coverage.accepted_page_count == 0) != (coverage.accepted_response_bytes == 0)
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> [(&'static str, String); 19] {
+        [
+            ("Audit schema", self.schema.to_owned()),
+            ("Policy", self.policy.to_owned()),
+            ("Provider", self.provider.name.to_owned()),
+            ("Provider origin", self.provider.origin.clone()),
+            ("Execution mode", self.provider.execution_mode.to_owned()),
+            ("Policy schema", self.provider.policy_schema.to_owned()),
+            ("Policy revision", self.provider.policy_revision.clone()),
+            ("Query domain", self.provider.query_domain.clone()),
+            ("Query reference", self.provider.query_reference.clone()),
+            ("Terminal", self.coverage.terminal.to_owned()),
+            ("Completeness", self.coverage.completeness.to_owned()),
+            (
+                "First failure",
+                self.coverage.first_failure.unwrap_or("none").to_owned(),
+            ),
+            (
+                "Request attempts",
+                self.coverage.request_attempt_count.to_string(),
+            ),
+            (
+                "Requests admitted",
+                self.coverage.request_admitted_count.to_string(),
+            ),
+            (
+                "Responses completed",
+                self.coverage.response_completed_count.to_string(),
+            ),
+            (
+                "Observed response bytes",
+                self.coverage.observed_response_bytes.to_string(),
+            ),
+            (
+                "Accepted provider pages",
+                self.coverage.accepted_page_count.to_string(),
+            ),
+            (
+                "Retained hypotheses",
+                self.coverage.retained_name_count.to_string(),
+            ),
+            ("Claim limits", self.claim_limits.join(",")),
+        ]
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_opaque(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_query_domain(value: &str) -> bool {
+    value.contains('.')
+        && !value.starts_with("*.")
+        && value.parse::<std::net::IpAddr>().is_err()
+        && valid_recon_certspotter_dns_name(value)
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_name(value: &str, query_domain: &str) -> bool {
+    let bare = value.strip_prefix("*.").unwrap_or(value);
+    valid_recon_certspotter_dns_name(bare)
+        && bare.parse::<std::net::IpAddr>().is_err()
+        && (bare == query_domain
+            || bare
+                .strip_suffix(query_domain)
+                .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1))
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_dns_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.is_ascii()
+        && value == value.to_ascii_lowercase()
+        && !value.starts_with('.')
+        && !value.ends_with('.')
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_issuance_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_RECON_CERTSPOTTER_ISSUANCE_ID_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn recon_certspotter_issuance_reference(value: &str) -> Result<(String, u64), ReportError> {
+    if !valid_recon_certspotter_issuance_id(value) {
+        return Err(ReportError::Serialization);
+    }
+    let byte_length = u64::try_from(value.len()).map_err(|_| ReportError::Serialization)?;
+    Ok((
+        format!(
+            "{RECON_CERTSPOTTER_ISSUANCE_REFERENCE_PREFIX}{:x}",
+            Sha256::digest(value.as_bytes())
+        ),
+        byte_length,
+    ))
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn recon_certspotter_optional_issuance_reference(
+    value: Option<&str>,
+) -> Result<(Option<String>, Option<u64>), ReportError> {
+    value
+        .map(recon_certspotter_issuance_reference)
+        .transpose()
+        .map(|parts| match parts {
+            Some((reference, byte_length)) => (Some(reference), Some(byte_length)),
+            None => (None, None),
+        })
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_issuance_reference(value: &str) -> bool {
+    value
+        .strip_prefix(RECON_CERTSPOTTER_ISSUANCE_REFERENCE_PREFIX)
+        .is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_issuance_byte_length(value: u64) -> bool {
+    (1..=MAX_RECON_CERTSPOTTER_ISSUANCE_ID_BYTES as u64).contains(&value)
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_optional_issuance_reference(
+    reference: Option<&str>,
+    byte_length: Option<u64>,
+) -> bool {
+    match (reference, byte_length) {
+        (Some(reference), Some(byte_length)) => {
+            valid_recon_certspotter_issuance_reference(reference)
+                && valid_recon_certspotter_issuance_byte_length(byte_length)
+        },
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_origin(mode: &str, origin: &str) -> bool {
+    if mode == "production" {
+        return origin == "https://api.certspotter.com";
+    }
+    if mode != "owned_loopback_fixture" || origin.is_empty() || origin.len() > 256 {
+        return false;
+    }
+    let Ok(parsed) = url::Url::parse(origin) else {
+        return false;
+    };
+    parsed.scheme() == "http"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.port().is_some_and(|port| port > 0)
+        && parsed.path() == "/"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.host().is_some_and(|host| match host {
+            url::Host::Ipv4(address) => address.is_loopback(),
+            url::Host::Ipv6(address) => address.is_loopback(),
+            url::Host::Domain(_) => false,
+        })
+        && parsed.origin().ascii_serialization() == origin
+}
+
+#[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+fn valid_recon_certspotter_transport_failure(value: &str) -> bool {
+    matches!(
+        value,
+        "client_initialization"
+            | "request_construction"
+            | "transport_failed"
+            | "redirect_refused"
+            | "access_rejected"
+            | "throttled"
+            | "provider_not_found"
+            | "server_failure"
+            | "unexpected_status"
+            | "unsupported_media"
+            | "unsupported_content_coding"
+            | "response_too_large"
+            | "invalid_response"
+    )
 }
 
 #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
@@ -15496,6 +16185,21 @@ mod tests {
     #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
     const WORDPRESS_DISCOVERY_POLICY_ID_V1: &str = "termivar.wordpress-metadata-discovery/v1";
 
+    #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
+    #[test]
+    fn certspotter_issuance_reference_contains_no_raw_bidi_input() {
+        let raw = "opaque/\u{202e}name@example.com";
+        let (reference, byte_length) = recon_certspotter_issuance_reference(raw).unwrap();
+
+        assert_eq!(byte_length, raw.len() as u64);
+        assert!(valid_recon_certspotter_issuance_reference(&reference));
+        assert!(reference.is_ascii());
+        assert!(!reference.contains(raw));
+        assert!(!reference.contains('\u{202e}'));
+        assert!(!reference.contains("opaque/"));
+        assert!(!reference.contains("name@example.com"));
+    }
+
     fn complete_report(target: &str, summary: &str) -> RunReport {
         report_for_status(
             RunStatus::Complete,
@@ -15654,6 +16358,8 @@ mod tests {
             control_reference_mapping: None,
             #[cfg(feature = "recon-snapshot-import")]
             recon_snapshot_import: None,
+            #[cfg(feature = "recon-ct-provider")]
+            recon_certspotter: None,
             #[cfg(feature = "wordpress-review")]
             wordpress_review: None,
             #[cfg(feature = "wordpress-review")]

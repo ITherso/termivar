@@ -34,6 +34,10 @@ required-features = ["control-reference-mapping"]
 name = "recon_snapshot_cli"
 required-features = ["recon-snapshot-import"]
 
+[[test]]
+name = "recon_ct_provider_cli"
+required-features = ["recon-ct-provider"]
+
 [features]
 default = []
 legacy-scanner = ["dep:reqwest", "termivar-scanner/legacy-scanner"]
@@ -54,6 +58,7 @@ jwt-target-acceptance-review = [
 ]
 control-reference-mapping = ["termivar-scanner/control-reference-mapping"]
 recon-snapshot-import = ["termivar-scanner/recon-snapshot-import"]
+recon-ct-provider = ["termivar-scanner/recon-ct-provider"]
 supplied-session-review = ["termivar-scanner/supplied-session-review"]
 ssrf-oast-review = ["termivar-scanner/ssrf-oast-review"]
 wordpress-review = ["termivar-scanner/wordpress-review"]

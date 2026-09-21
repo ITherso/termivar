@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tarfile
 import tempfile
@@ -57,6 +58,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "jwt-target-acceptance-review",
     "legacy-scanner",
     "proxy-adapter",
+    "recon-ct-provider",
     "recon-snapshot-import",
     "secret-exposure-review",
     "ssrf-oast-review",
@@ -75,6 +77,7 @@ EXPECTED_FEATURE_STATES = {
     "normalization-resilience": "compiled",
     "openapi-review": "compiled",
     "proxy-adapter": "not_compiled",
+    "recon-ct-provider": "not_compiled",
     "recon-snapshot-import": "not_compiled",
     "release-bundle": "compiled",
     "rest-review": "compiled",
@@ -118,6 +121,30 @@ EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION = (
     "source authenticity, applicability, or control fulfilment. The feature requires "
     "explicit --profile web-review and --control-reference-mapping, remains development-only, "
     "and is outside default, release-bundle, and published alpha.2 archives."
+)
+EXPECTED_RECON_CERTSPOTTER_OPTION = "--recon-certspotter-policy"
+EXPECTED_RECON_CERTSPOTTER_PREREQUISITES = (
+    "--profile web-review",
+    "--recon-certspotter-policy FILE",
+    "policy provider_use_authorized=true",
+    "policy privacy_disclosure_acknowledged=true",
+)
+EXPECTED_RECON_CERTSPOTTER_LIMITATION = (
+    "Queries only the fixed live endpoint https://api.certspotter.com/v1/issuances (the "
+    "production policy token selects this endpoint mode only) or an operator-owned "
+    "numeric-loopback fixture under one explicit security.recon-certspotter-policy/v1 file. "
+    "provider_use_authorized must be true and records the operator's decision that the "
+    "provider-documented limited unauthenticated personal/evaluation-use basis, hourly "
+    "quota, and current terms permit the request; it does not prove provider approval, an "
+    "account, or general production entitlement. privacy_disclosure_acknowledged must also "
+    "be true and records the operator's disclosure decision. V1 dispatches at most two "
+    "sequential pages, retains and interprets at most 256 KiB per page and 512 KiB total, "
+    "retains at most 256 names, and performs no retries or polling. Provider credentials are "
+    "unsupported in V1. Returned certificate-transparency names are source-qualified "
+    "hypotheses only and never scan authority, ownership evidence, authentication evidence, "
+    "assessment items, or findings. The feature requires explicit --profile web-review and "
+    "--recon-certspotter-policy FILE, remains development-only, and is outside default, "
+    "release-bundle, and published alpha.2 archives."
 )
 EXPECTED_RECON_SNAPSHOT_OPTION = "--recon-snapshot"
 EXPECTED_RECON_SNAPSHOT_PREREQUISITES = (
@@ -1136,6 +1163,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "prerequisites": list(EXPECTED_CONTROL_REFERENCE_MAPPING_PREREQUISITES),
             "limitation": EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION,
             "documentation": "docs/internals/control-reference-mapping.md",
+        },
+        {
+            "key": "option.recon-certspotter-provider",
+            "label": "Cert Spotter CT reconnaissance provider",
+            "compile_feature": "recon-ct-provider",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_RECON_CERTSPOTTER_PREREQUISITES),
+            "limitation": EXPECTED_RECON_CERTSPOTTER_LIMITATION,
+            "documentation": "docs/internals/recon-certspotter-provider.md",
         },
         {
             "key": "option.recon-snapshot",
@@ -2808,9 +2849,9 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 19)
+        self.assertEqual(len(rows), 20)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 11)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 12)
         self.assertNotIn(EXPECTED_CONTROL_REFERENCE_MAPPING_OPTION,
                          fake_help(["scan", "--help"]).decode("utf-8"))
         result = self.validate(document)
@@ -2843,6 +2884,19 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "target_requests": 0,
             "provider_requests": 0,
             "scope_authority": "unchanged",
+        })
+        self.assertEqual(result["recon_ct_provider_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "live_service_acceptance": "NOT_RUN_NO_INPUT",
+            "maximum_provider_pages": 2,
+            "maximum_page_bytes": 256 * 1024,
+            "maximum_total_bytes": 512 * 1024,
+            "maximum_retained_names": 256,
+            "credentials": "unsupported_in_v1",
+            "hypothesis_authority": "source_qualified_only",
         })
         self.assertEqual(result["secret_exposure_preview"], {
             "build_state": "not_compiled",
@@ -3133,6 +3187,166 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         document = capabilities()
         text = capabilities_text(document).replace(
             f"    limit: {EXPECTED_CONTROL_REFERENCE_MAPPING_LIMITATION}\n".encode(), b"")
+        self.assert_rejected(document, "limitation is absent", text)
+
+    def test_recon_certspotter_documentation_pins_bounds_claims_and_primary_sources(self):
+        documentation = (
+            REPOSITORY / "docs/internals/recon-certspotter-provider.md"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(documentation.split())
+        for required in (
+            "recon-ct-provider",
+            "--profile web-review",
+            "--recon-certspotter-policy FILE",
+            "provider_use_authorized: true",
+            "privacy_disclosure_acknowledged: true",
+            "security.recon-certspotter-policy/v1",
+            "https://api.certspotter.com/v1/issuances",
+            "owned numeric-loopback",
+            "at most two sequential pages",
+            "at most 256 KiB retained/interpreted per page and 512 KiB total",
+            "at most 256 retained unique names",
+            "no retries and no polling",
+            "no API token",
+            "limited number of unauthenticated list queries per hour for personal or evaluation purposes",
+            "does not prove provider approval, an account entitlement, or a general production entitlement",
+            "production token names only the fixed live-endpoint mode",
+            "source-qualified hypotheses",
+            "never become scan subjects, broker permits, target requests, ownership evidence, authentication evidence, assessment items, or findings",
+            "NOT_RUN_NO_INPUT",
+            "neither a passed live-service test nor evidence of current service availability or behavior",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, normalized)
+
+        self.assertEqual(
+            set(re.findall(r"\]\((https://[^)]+)\)", documentation)),
+            {
+                "https://sslmate.com/help/reference/ct_search_api_v1",
+                "https://sslmate.com/policies/privacy",
+                "https://sslmate.com/policies/tos",
+                "https://github.com/SSLMate/certspotter",
+            },
+        )
+
+    def test_recon_certspotter_surface_matches_producer_and_fails_closed(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.recon-certspotter-provider",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = '\n            "docs/internals/recon-certspotter-provider.md",'
+        self.assertEqual(block.count(documentation), 1)
+        limitation_line = block.split(documentation, 1)[0].splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_RECON_CERTSPOTTER_LIMITATION)
+
+        valid = capabilities()
+        surface = next(row for row in valid["surfaces"]
+                       if row["key"] == "option.recon-certspotter-provider")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_RECON_CERTSPOTTER_PREREQUISITES)
+        self.assertEqual(surface["limitation"],
+                         EXPECTED_RECON_CERTSPOTTER_LIMITATION)
+        self.assertNotIn(EXPECTED_RECON_CERTSPOTTER_OPTION,
+                         fake_help(["scan", "--help"]).decode("utf-8"))
+        self.validate(valid)
+
+        for field, wrong in (
+            ("label", "Generic CT provider"),
+            ("compile_feature", "threat-intel"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "ct"),
+            ("documentation", "docs/recon.md"),
+        ):
+            with self.subTest(field=field):
+                document = capabilities()
+                next(row for row in document["surfaces"]
+                     if row["key"] == "option.recon-certspotter-provider")[field] = wrong
+                self.assert_rejected(
+                    document, "Cert Spotter provider surface metadata")
+
+        for wrong in (
+            None,
+            True,
+            2,
+            {},
+            [True],
+            ["--recon-certspotter-policy FILE"],
+            [
+                "--profile web-review",
+                "--recon-certspotter-policy FILE",
+                "policy provider_use_authorized=true",
+            ],
+        ):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                next(row for row in document["surfaces"]
+                     if row["key"] == "option.recon-certspotter-provider")[
+                         "prerequisites"] = wrong
+                self.assert_rejected(
+                    document, "Cert Spotter provider opt-in contract")
+
+        for old, new in (
+            ("fixed live endpoint https://api.certspotter.com/v1/issuances",
+             "operator-selected provider endpoint"),
+            ("production policy token selects this endpoint mode only",
+             "production entitlement is established"),
+            ("operator-owned numeric-loopback fixture", "public fixture"),
+            ("provider-documented limited unauthenticated personal/evaluation-use basis, hourly quota, and current terms",
+             "unlimited anonymous use"),
+            ("does not prove provider approval, an account, or general production entitlement",
+             "proves provider approval"),
+            ("privacy_disclosure_acknowledged must also be true",
+             "privacy acknowledgement is optional"),
+            ("at most two sequential pages", "unbounded concurrent pages"),
+            ("256 KiB per page and 512 KiB total", "unbounded response bytes"),
+            ("at most 256 names", "unbounded names"),
+            ("no retries or polling", "automatic retries and polling"),
+            ("Provider credentials are unsupported in V1", "Credentials are required"),
+            ("source-qualified hypotheses only", "verified assets"),
+            ("never scan authority, ownership evidence, authentication evidence, assessment items, or findings",
+             "establish scan authority and findings"),
+            ("requires explicit --profile web-review and --recon-certspotter-policy FILE",
+             "runs automatically"),
+            ("outside default, release-bundle, and published alpha.2 archives",
+             "included in release-bundle"),
+        ):
+            with self.subTest(old=old):
+                self.assertEqual(EXPECTED_RECON_CERTSPOTTER_LIMITATION.count(old), 1)
+                document = capabilities()
+                row = next(row for row in document["surfaces"]
+                           if row["key"] == "option.recon-certspotter-provider")
+                row["limitation"] = row["limitation"].replace(old, new)
+                self.assert_rejected(document, "Cert Spotter provider limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            row for row in missing["surfaces"]
+            if row["key"] != "option.recon-certspotter-provider"
+        ]
+        self.assert_rejected(missing, "Cert Spotter provider surface identity")
+
+        duplicate = capabilities()
+        duplicate["surfaces"].append(copy.deepcopy(next(
+            row for row in duplicate["surfaces"]
+            if row["key"] == "option.recon-certspotter-provider")))
+        self.assert_rejected(duplicate, "invalid or duplicated")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"Cert Spotter CT reconnaissance provider", b"Other provider")
+        self.assert_rejected(document, "text and JSON views disagree", text)
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            f"    limit: {EXPECTED_RECON_CERTSPOTTER_LIMITATION}\n".encode(), b"")
         self.assert_rejected(document, "limitation is absent", text)
 
     def test_recon_snapshot_surface_matches_producer_and_fails_closed(self):
@@ -4021,7 +4235,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         next(row for row in counts_only["cli_package_features"]
              if row["name"] == "control-reference-mapping")["name"] = (
                  "unclassified-control-mapping")
-        self.assertEqual(len(counts_only["cli_package_features"]), 19)
+        self.assertEqual(len(counts_only["cli_package_features"]), 20)
         self.assertEqual(
             sum(row["build_state"] == "compiled"
                 for row in counts_only["cli_package_features"]),
@@ -4030,7 +4244,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assertEqual(
             sum(row["build_state"] == "not_compiled"
                 for row in counts_only["cli_package_features"]),
-            11,
+            12,
         )
         self.assert_rejected(counts_only, "feature names changed")
 
@@ -4044,6 +4258,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("jwt-policy-review", "compiled"),
             ("jwt-target-acceptance-review", "compiled"),
             ("control-reference-mapping", "compiled"),
+            ("recon-ct-provider", "compiled"),
             ("recon-snapshot-import", "compiled"),
         ]
         for name, state in cases:
@@ -5258,6 +5473,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn(
             "unexpectedly exposes non-bundled recon snapshot import",
+            result["failure"],
+        )
+
+    def test_packaged_help_must_not_expose_non_bundled_certspotter_option(self):
+        result, _ = self.execute(
+            exposed_session_option=EXPECTED_RECON_CERTSPOTTER_OPTION,
+            path_suffix="-recon-certspotter-help",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(
+            "unexpectedly exposes non-bundled Cert Spotter provider",
             result["failure"],
         )
 

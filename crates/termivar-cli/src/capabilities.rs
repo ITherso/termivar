@@ -262,6 +262,7 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
         ),
         ("openapi-review", cfg!(feature = "openapi-review")),
         ("proxy-adapter", cfg!(feature = "proxy-adapter")),
+        ("recon-ct-provider", cfg!(feature = "recon-ct-provider")),
         (
             "recon-snapshot-import",
             cfg!(feature = "recon-snapshot-import"),
@@ -582,6 +583,24 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             &["--profile web-review", "--control-reference-mapping"],
             "Maps only completed typed assessment items to a built-in, versioned finite control-reference catalogue and schedules zero target or provider requests. V1 embeds attributed OWASP Top 10:2025 identifiers and exact title references with original Termivar rationale. PCI DSS v4.0.1 and ISO/IEC 27001:2022 with Amendment 1:2024 are bibliographic rights_deferred sources with no embedded control mappings. KVKK Law No. 6698 Article 12 and Guide No. 72 (April 2025) are relevant technical context only; applicability is not established and the output is not legal advice. A mapped relationship is not a score, pass/fail result, certification, or compliance determination; absence of an assessment item is not control fulfilment. Mapping never raises severity, disposition, or claim authority. Report Compare classifies catalogue or source changes as methodology changes rather than target or remediation changes. Report Verify checks bundle integrity and schema consistency, not catalogue truth, source authenticity, applicability, or control fulfilment. The feature requires explicit --profile web-review and --control-reference-mapping, remains development-only, and is outside default, release-bundle, and published alpha.2 archives.",
             "docs/internals/control-reference-mapping.md",
+        ),
+        surface!(
+            "option.recon-certspotter-provider",
+            "Cert Spotter CT reconnaissance provider",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("recon-ct-provider"),
+            cfg!(feature = "recon-ct-provider"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &[
+                "--profile web-review",
+                "--recon-certspotter-policy FILE",
+                "policy provider_use_authorized=true",
+                "policy privacy_disclosure_acknowledged=true",
+            ],
+            "Queries only the fixed live endpoint https://api.certspotter.com/v1/issuances (the production policy token selects this endpoint mode only) or an operator-owned numeric-loopback fixture under one explicit security.recon-certspotter-policy/v1 file. provider_use_authorized must be true and records the operator's decision that the provider-documented limited unauthenticated personal/evaluation-use basis, hourly quota, and current terms permit the request; it does not prove provider approval, an account, or general production entitlement. privacy_disclosure_acknowledged must also be true and records the operator's disclosure decision. V1 dispatches at most two sequential pages, retains and interprets at most 256 KiB per page and 512 KiB total, retains at most 256 names, and performs no retries or polling. Provider credentials are unsupported in V1. Returned certificate-transparency names are source-qualified hypotheses only and never scan authority, ownership evidence, authentication evidence, assessment items, or findings. The feature requires explicit --profile web-review and --recon-certspotter-policy FILE, remains development-only, and is outside default, release-bundle, and published alpha.2 archives.",
+            "docs/internals/recon-certspotter-provider.md",
         ),
         surface!(
             "option.recon-snapshot",
@@ -910,7 +929,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 30);
+        assert_eq!(document.surfaces.len(), 31);
 
         let keys = document
             .surfaces
@@ -942,6 +961,7 @@ mod tests {
                 "option.rest-review",
                 "option.resource-authorization-review",
                 "option.control-reference-mapping",
+                "option.recon-certspotter-provider",
                 "option.recon-snapshot",
                 "option.secret-exposure-review",
                 "option.tls-observation",
@@ -1031,6 +1051,10 @@ mod tests {
             (
                 "option.control-reference-mapping",
                 "control-reference-mapping",
+            ),
+            (
+                "option.recon-certspotter-provider",
+                "recon-certspotter-policy",
             ),
             ("option.recon-snapshot", "recon-snapshot"),
             ("option.secret-exposure-review", "secret-exposure-review"),
@@ -1149,6 +1173,12 @@ mod tests {
             (
                 "option.control-reference-mapping",
                 Some("control-reference-mapping"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.recon-certspotter-provider",
+                Some("recon-ct-provider"),
                 "preview",
                 "implemented",
             ),
@@ -1398,6 +1428,43 @@ mod tests {
             assert!(
                 control_mapping.limitation.contains(required),
                 "missing control-reference-mapping limitation `{required}`"
+            );
+        }
+        let recon_certspotter = find("option.recon-certspotter-provider");
+        assert_eq!(
+            recon_certspotter.prerequisites,
+            [
+                "--profile web-review",
+                "--recon-certspotter-policy FILE",
+                "policy provider_use_authorized=true",
+                "policy privacy_disclosure_acknowledged=true",
+            ]
+        );
+        assert_eq!(recon_certspotter.compile_feature, Some("recon-ct-provider"));
+        assert_eq!(
+            recon_certspotter.documentation,
+            "docs/internals/recon-certspotter-provider.md"
+        );
+        for required in [
+            "fixed live endpoint https://api.certspotter.com/v1/issuances",
+            "production policy token selects this endpoint mode only",
+            "operator-owned numeric-loopback fixture",
+            "provider-documented limited unauthenticated personal/evaluation-use basis, hourly quota, and current terms",
+            "does not prove provider approval, an account, or general production entitlement",
+            "privacy_disclosure_acknowledged must also be true",
+            "at most two sequential pages",
+            "256 KiB per page and 512 KiB total",
+            "at most 256 names",
+            "no retries or polling",
+            "Provider credentials are unsupported in V1",
+            "source-qualified hypotheses only",
+            "never scan authority, ownership evidence, authentication evidence, assessment items, or findings",
+            "requires explicit --profile web-review and --recon-certspotter-policy FILE",
+            "outside default, release-bundle, and published alpha.2 archives",
+        ] {
+            assert!(
+                recon_certspotter.limitation.contains(required),
+                "missing Cert Spotter provider limitation `{required}`"
             );
         }
         let recon_snapshot = find("option.recon-snapshot");

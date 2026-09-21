@@ -42,6 +42,8 @@ use super::openapi_runtime::{
     OpenApiRuntimeOutcome, WebAssessmentOpenApiAudit, MAX_OPENAPI_REVIEW_REQUESTS,
     OPENAPI_REVIEW_CAPABILITY_ID,
 };
+#[cfg(feature = "recon-ct-provider")]
+use super::recon_ct_runtime::WebAssessmentReconCtProviderAudit;
 #[cfg(feature = "authorization-review")]
 use super::resource_authorization_runtime::{
     WebAssessmentAuthorizationAudit, MAX_AUTHORIZATION_REVIEW_REQUESTS,
@@ -261,6 +263,8 @@ pub struct AssessmentRunReport {
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<WebAssessmentTlsObservationAudit>,
+    #[cfg(feature = "recon-ct-provider")]
+    recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,
     #[cfg(feature = "jwt-policy-review")]
     jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "control-reference-mapping")]
@@ -289,6 +293,8 @@ struct AssessmentReviewAudits {
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<WebAssessmentTlsObservationAudit>,
+    #[cfg(feature = "recon-ct-provider")]
+    recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,
 }
 
 impl AssessmentRunReport {
@@ -317,6 +323,9 @@ impl AssessmentRunReport {
         #[cfg(feature = "tls-observation")] tls_observation: Option<
             WebAssessmentTlsObservationAudit,
         >,
+        #[cfg(feature = "recon-ct-provider")] recon_ct_provider: Option<
+            WebAssessmentReconCtProviderAudit,
+        >,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
         Self::new_validated(
@@ -342,6 +351,8 @@ impl AssessmentRunReport {
                 secret_exposure_review,
                 #[cfg(feature = "tls-observation")]
                 tls_observation,
+                #[cfg(feature = "recon-ct-provider")]
+                recon_ct_provider,
             },
         )
     }
@@ -380,6 +391,8 @@ impl AssessmentRunReport {
             secret_exposure_review,
             #[cfg(feature = "tls-observation")]
             tls_observation,
+            #[cfg(feature = "recon-ct-provider")]
+            recon_ct_provider,
         } = audits;
         validate_run_identity(&run_report, truth.target_identity)?;
         validate_run_completion(&run_report)?;
@@ -435,6 +448,12 @@ impl AssessmentRunReport {
             &truth.target,
             truth.expected_accounting.requests().consumed(),
         )?;
+        #[cfg(feature = "recon-ct-provider")]
+        validate_recon_ct_provider_audit(
+            recon_ct_provider.as_ref(),
+            truth.expected_accounting.requests().consumed(),
+            truth.expected_accounting.response_body_bytes().consumed(),
+        )?;
 
         Ok(Self {
             run_report,
@@ -460,6 +479,8 @@ impl AssessmentRunReport {
             secret_exposure_review,
             #[cfg(feature = "tls-observation")]
             tls_observation,
+            #[cfg(feature = "recon-ct-provider")]
+            recon_ct_provider,
             #[cfg(feature = "jwt-policy-review")]
             jwt_policy_review: None,
             #[cfg(feature = "control-reference-mapping")]
@@ -558,6 +579,12 @@ impl AssessmentRunReport {
     #[cfg(feature = "tls-observation")]
     pub const fn tls_observation_audit(&self) -> Option<&WebAssessmentTlsObservationAudit> {
         self.tls_observation.as_ref()
+    }
+
+    /// Returns the optional bounded certificate-transparency provider audit.
+    #[cfg(feature = "recon-ct-provider")]
+    pub const fn recon_ct_provider_audit(&self) -> Option<&WebAssessmentReconCtProviderAudit> {
+        self.recon_ct_provider.as_ref()
     }
 
     /// Attaches one independently evaluated, transport-free local JWT audit
@@ -885,6 +912,26 @@ fn validate_tls_observation_audit(
     } else {
         Err(AssessmentRunReportError::TlsObservationAuditMismatch)
     }
+}
+
+#[cfg(feature = "recon-ct-provider")]
+fn validate_recon_ct_provider_audit(
+    audit: Option<&WebAssessmentReconCtProviderAudit>,
+    total_request_count: Option<u64>,
+    total_response_bytes: Option<u64>,
+) -> Result<(), AssessmentRunReportError> {
+    let Some(audit) = audit else {
+        return Ok(());
+    };
+    let admitted = u64::try_from(audit.request_admitted_count())
+        .map_err(|_| AssessmentRunReportError::ReconCtProviderAuditMismatch)?;
+    if !audit.is_consistent()
+        || total_request_count.is_none_or(|total| admitted > total)
+        || total_response_bytes.is_none_or(|total| audit.observed_response_bytes() > total)
+    {
+        return Err(AssessmentRunReportError::ReconCtProviderAuditMismatch);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "secret-exposure-review")]
@@ -1292,6 +1339,11 @@ impl fmt::Debug for AssessmentRunReport {
         debug.field(
             "tls_observation_audit_present",
             &self.tls_observation.is_some(),
+        );
+        #[cfg(feature = "recon-ct-provider")]
+        debug.field(
+            "recon_ct_provider_audit_present",
+            &self.recon_ct_provider.is_some(),
         );
         #[cfg(feature = "jwt-policy-review")]
         debug.field(
@@ -2112,6 +2164,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "tls-observation")]
     #[error("TLS observation audit does not match transport truth")]
     TlsObservationAuditMismatch,
+    /// The optional CT provider audit disagreed with runtime-owned request and byte truth.
+    #[cfg(feature = "recon-ct-provider")]
+    #[error("certificate-transparency provider audit does not match runtime truth")]
+    ReconCtProviderAuditMismatch,
     /// The optional transport-free JWT audit violated its closed local contract.
     #[cfg(feature = "jwt-policy-review")]
     #[error("JWT policy review audit does not match its local evaluation contract")]

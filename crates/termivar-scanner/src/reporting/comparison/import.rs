@@ -69,6 +69,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "jwt_policy_review",
             "control_reference_mapping",
             "recon_snapshot_import",
+            "recon_certspotter",
             "supplied_session",
             "wordpress_review",
             "wordpress_discovery",
@@ -105,6 +106,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     let mut jwt_policy_review = None;
     let mut control_reference_mapping = None;
     let mut recon_snapshot_import = None;
+    let mut recon_certspotter = None;
     let mut wordpress_review = None;
     let mut wordpress_discovery = None;
     let mut wordpress_asset_fingerprints = None;
@@ -117,6 +119,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "jwt_policy_review",
         "control_reference_mapping",
         "recon_snapshot_import",
+        "recon_certspotter",
         "supplied_session",
         "wordpress_review",
         "wordpress_discovery",
@@ -136,6 +139,8 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
                     Some(audits::validate_control_reference_mapping(value, &items)?);
             } else if name == "recon_snapshot_import" {
                 recon_snapshot_import = Some(audits::validate_recon_snapshot_import(value)?);
+            } else if name == "recon_certspotter" {
+                recon_certspotter = Some(audits::validate_recon_certspotter(value)?);
             } else if name == "wordpress_discovery" {
                 wordpress_discovery = Some(audits::validate_wordpress_discovery(value, &items)?);
             } else if name == "wordpress_asset_fingerprints" {
@@ -230,6 +235,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         jwt_policy_review,
         control_reference_mapping,
         recon_snapshot_import,
+        recon_certspotter,
         wordpress_review,
     })
 }

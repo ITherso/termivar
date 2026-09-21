@@ -136,10 +136,10 @@ Preview. It does not activate any of them: WordPress still requires explicit
 `control-reference-mapping`, `supplied-session-review`,
 `secret-exposure-review`, `tls-observation`,
 `jwt-policy-review`, `jwt-target-acceptance-review`,
-`recon-snapshot-import`, `ssrf-oast-review`, `legacy-scanner`, `api-adapter`,
-and `proxy-adapter`.
-The stock curated inventory is therefore exactly 19 known identities: eight
-compiled (the `release-bundle` marker plus seven members) and eleven excluded.
+`recon-ct-provider`, `recon-snapshot-import`, `ssrf-oast-review`,
+`legacy-scanner`, `api-adapter`, and `proxy-adapter`.
+The stock curated inventory is therefore exactly 20 known identities: eight
+compiled (the `release-bundle` marker plus seven members) and twelve excluded.
 Enabling the seven current member features individually can therefore produce
 the same member surface states while `release-bundle` remains `not_compiled`.
 

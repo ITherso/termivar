@@ -648,7 +648,16 @@ impl ComparisonVisitor<'_> {
         let joined = parts.join("::");
         let exact_inert_advisory_url_parse = self.relative
             == "reporting/comparison/import/audits.rs"
-            && matches!(joined.as_str(), "url" | "url::Url" | "url::Url::parse");
+            && matches!(
+                joined.as_str(),
+                "url"
+                    | "url::Host"
+                    | "url::Host::Domain"
+                    | "url::Host::Ipv4"
+                    | "url::Host::Ipv6"
+                    | "url::Url"
+                    | "url::Url::parse"
+            );
         let exact_inert_wordpress_version = self.relative
             == "reporting/comparison/import/audits.rs"
             && matches!(
@@ -744,6 +753,7 @@ impl ComparisonVisitor<'_> {
                     "super::MAX_LEGACY_AUDIT_TEXT_BYTES",
                     "super::super::ImportedWordPressAudit",
                     "super::super::ImportedControlReferenceMappingAudit",
+                    "super::super::ImportedReconCertSpotterAudit",
                     "super::super::ImportedReconSnapshotAudit",
                     "super::super::ImportedJwtPolicyReviewAudit",
                     "super::super::ImportedSecretExposureAudit",
@@ -764,6 +774,7 @@ impl ComparisonVisitor<'_> {
                     "super::ControlReferenceMappingComparison",
                     "super::ItemProjection",
                     "super::JwtPolicyReviewComparison",
+                    "super::ReconCertSpotterComparison",
                     "super::ReconSnapshotImportComparison",
                     "super::SecretExposureComparison",
                     "super::SourceMetadata",
@@ -1155,6 +1166,40 @@ mod tests {
 
         for addition in [
             "use crate::recon_snapshot::ReconSnapshot;",
+            "use std::net::TcpStream;",
+            "fn escape() { let _ = reqwest::Client::new(); }",
+        ] {
+            let violations =
+                source_violations("reporting/comparison/import/audits.rs", addition).unwrap();
+            assert!(!violations.is_empty(), "accepted authority `{addition}`");
+        }
+    }
+
+    #[test]
+    fn recon_certspotter_import_uses_only_inert_display_projections() {
+        for (relative, addition) in [
+            (
+                "reporting/comparison/import/audits.rs",
+                "use super::super::ImportedReconCertSpotterAudit;",
+            ),
+            (
+                "reporting/comparison/import/audits.rs",
+                "use url::{Host, Url};",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::ReconCertSpotterComparison;",
+            ),
+        ] {
+            let violations = source_violations(relative, addition).unwrap();
+            assert!(
+                violations.is_empty(),
+                "rejected exact inert Cert Spotter projection `{addition}`: {violations:?}"
+            );
+        }
+
+        for addition in [
+            "use crate::recon_ct_provider::ReconCtProviderPolicy;",
             "use std::net::TcpStream;",
             "fn escape() { let _ = reqwest::Client::new(); }",
         ] {

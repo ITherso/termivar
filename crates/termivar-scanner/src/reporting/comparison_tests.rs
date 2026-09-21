@@ -10,6 +10,14 @@ const BUNDLE_SAMPLE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/examples/report-bundle/assessment-001/assessment.json"
 ));
+const RECON_CERTSPOTTER_ISSUANCE_REFERENCE_PREFIX: &str = "certspotter-issuance-sha256:";
+
+fn certspotter_issuance_reference(value: &str) -> String {
+    format!(
+        "{RECON_CERTSPOTTER_ISSUANCE_REFERENCE_PREFIX}{:x}",
+        Sha256::digest(value.as_bytes())
+    )
+}
 
 fn item(identity: u32) -> Value {
     json!({
@@ -106,6 +114,86 @@ fn recon_snapshot_import_audit() -> Value {
 fn report_with_recon_snapshot_import() -> Value {
     let mut document = report(Vec::new());
     document["recon_snapshot_import"] = recon_snapshot_import_audit();
+    document
+}
+
+fn recon_certspotter_audit() -> Value {
+    let issuance_id = "opaque/cert-AZ-7";
+    json!({
+        "schema":"security.recon-certspotter-audit/v1",
+        "policy":"termivar.recon-certspotter-provider/v1",
+        "selected":true,
+        "provider":{
+            "name":"cert_spotter",
+            "policy_schema":"security.recon-certspotter-policy/v1",
+            "policy_revision":"policy-r1",
+            "query_domain":"owned.example",
+            "query_reference":"query-baseline",
+            "execution_mode":"production",
+            "origin":"https://api.certspotter.com"
+        },
+        "methodology":{
+            "request_path":"/v1/issuances",
+            "pagination":"after_cursor",
+            "retries":"none",
+            "polling":"none",
+            "credentials":"none",
+            "maximum_pages":2,
+            "maximum_response_page_bytes":262_144,
+            "maximum_response_bytes":524_288,
+            "maximum_elapsed_milliseconds":10_000,
+            "maximum_in_flight_requests":1,
+            "maximum_retained_names":256
+        },
+        "coverage":{
+            "terminal":"provider_exhausted",
+            "completeness":"provider_exhausted_as_observed",
+            "first_failure":null,
+            "initial_after_reference":null,
+            "initial_after_byte_length":null,
+            "last_cursor_reference":certspotter_issuance_reference(issuance_id),
+            "last_cursor_byte_length":issuance_id.len(),
+            "request_attempt_count":1,
+            "request_admitted_count":1,
+            "response_completed_count":1,
+            "observed_response_bytes":128,
+            "accepted_page_count":1,
+            "accepted_response_bytes":128,
+            "issuance_count":1,
+            "retained_name_count":1,
+            "foreign_name_count":0,
+            "duplicate_name_count":0,
+            "omitted_name_count":0
+        },
+        "hypotheses":[{
+            "name":"api.owned.example",
+            "source":{
+                "provider":"cert_spotter",
+                "origin":"https://api.certspotter.com",
+                "first_issuance_reference":certspotter_issuance_reference(issuance_id),
+                "first_issuance_byte_length":issuance_id.len()
+            },
+            "claim_limits":[
+                "hypotheses_only",
+                "scan_authority_not_granted",
+                "ownership_not_established",
+                "currentness_not_established",
+                "source_authentication_not_established"
+            ]
+        }],
+        "claim_limits":[
+            "hypotheses_only",
+            "scan_authority_not_granted",
+            "ownership_not_established",
+            "currentness_not_established",
+            "source_authentication_not_established"
+        ]
+    })
+}
+
+fn report_with_recon_certspotter() -> Value {
+    let mut document = report(Vec::new());
+    document["recon_certspotter"] = recon_certspotter_audit();
     document
 }
 
@@ -7842,6 +7930,244 @@ fn recon_snapshot_import_rejects_authority_accounting_and_identity_mutations() {
     reject(&value);
     value = valid;
     value["recon_snapshot_import"]["unexpected"] = json!(0);
+    reject(&value);
+}
+
+#[test]
+fn recon_certspotter_is_strict_feature_independent_and_self_compares() {
+    let document = report_with_recon_certspotter();
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let comparison: Value =
+        serde_json::from_str(&compare_reports(&bytes, &bytes, ComparisonFormat::Json).unwrap())
+            .unwrap();
+    let audit = &comparison["recon_certspotter_comparison"];
+    assert_eq!(audit["schema"], "termivar-recon-certspotter-comparison/v1");
+    assert_eq!(audit["status"], "compared");
+    for facet in ["provider", "methodology", "coverage", "hypotheses"] {
+        assert_eq!(audit[facet]["status"], "unchanged", "{facet}");
+    }
+    assert_eq!(
+        audit["hypotheses"]["before"][0]["source"]["first_issuance_reference"],
+        certspotter_issuance_reference("opaque/cert-AZ-7")
+    );
+    for group in ["only_in_after", "only_in_before", "changed", "unchanged"] {
+        assert_eq!(comparison[group], json!([]), "{group}");
+    }
+
+    let markdown = compare_reports(&bytes, &bytes, ComparisonFormat::Markdown).unwrap();
+    assert!(markdown.contains("Cert Spotter provider differences"));
+    assert!(markdown.contains("source-qualified hypothesis"));
+    assert!(markdown.contains("not findings"));
+    assert!(markdown.contains("scan authority"));
+    let html = compare_reports(&bytes, &bytes, ComparisonFormat::Html).unwrap();
+    assert!(html.contains("Cert Spotter provider differences"));
+    assert!(html.contains("source-qualified hypothesis"));
+    assert!(html.contains("not findings"));
+    assert!(html.contains("source authentication"));
+}
+
+#[test]
+fn recon_certspotter_separates_provider_coverage_and_hypothesis_changes() {
+    let before = report_with_recon_certspotter();
+    let mut after = before.clone();
+    after["recon_certspotter"]["provider"]["query_reference"] = json!("query-after");
+    after["recon_certspotter"]["coverage"]["terminal"] = json!("page_limit_reached");
+    after["recon_certspotter"]["coverage"]["completeness"] = json!("bounded_partial");
+    let next_issuance_id = "opaque/cert-next";
+    after["recon_certspotter"]["coverage"]["last_cursor_reference"] =
+        json!(certspotter_issuance_reference(next_issuance_id));
+    after["recon_certspotter"]["coverage"]["last_cursor_byte_length"] =
+        json!(next_issuance_id.len());
+    after["recon_certspotter"]["coverage"]["request_attempt_count"] = json!(2);
+    after["recon_certspotter"]["coverage"]["request_admitted_count"] = json!(2);
+    after["recon_certspotter"]["coverage"]["response_completed_count"] = json!(2);
+    after["recon_certspotter"]["coverage"]["observed_response_bytes"] = json!(256);
+    after["recon_certspotter"]["coverage"]["accepted_page_count"] = json!(2);
+    after["recon_certspotter"]["coverage"]["accepted_response_bytes"] = json!(256);
+    after["recon_certspotter"]["coverage"]["issuance_count"] = json!(2);
+    after["recon_certspotter"]["hypotheses"][0]["name"] = json!("www.owned.example");
+    after["recon_certspotter"]["hypotheses"][0]["source"]["first_issuance_reference"] =
+        json!(certspotter_issuance_reference(next_issuance_id));
+    after["recon_certspotter"]["hypotheses"][0]["source"]["first_issuance_byte_length"] =
+        json!(next_issuance_id.len());
+
+    let comparison: Value = serde_json::from_str(
+        &compare_reports(
+            &serde_json::to_vec(&before).unwrap(),
+            &serde_json::to_vec(&after).unwrap(),
+            ComparisonFormat::Json,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let audit = &comparison["recon_certspotter_comparison"];
+    assert_eq!(audit["provider"]["status"], "changed");
+    assert_eq!(audit["methodology"]["status"], "unchanged");
+    assert_eq!(audit["coverage"]["status"], "changed");
+    assert_eq!(audit["hypotheses"]["status"], "changed");
+    for group in ["only_in_after", "only_in_before", "changed", "unchanged"] {
+        assert_eq!(comparison[group], json!([]), "{group}");
+    }
+}
+
+#[test]
+fn absent_and_selected_recon_certspotter_are_not_comparable() {
+    let absent = report(Vec::new());
+    let selected = report_with_recon_certspotter();
+    let compare = |before: &Value, after: &Value| -> Value {
+        serde_json::from_str(
+            &compare_reports(
+                &serde_json::to_vec(before).unwrap(),
+                &serde_json::to_vec(after).unwrap(),
+                ComparisonFormat::Json,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        compare(&absent, &selected)["recon_certspotter_comparison"]["reason"],
+        "before_audit_missing"
+    );
+    assert_eq!(
+        compare(&selected, &absent)["recon_certspotter_comparison"]["reason"],
+        "after_audit_missing"
+    );
+}
+
+#[test]
+fn recon_certspotter_rejects_limits_count_and_identity_mutations() {
+    let valid = report_with_recon_certspotter();
+    let reject = |document: &Value| {
+        assert_eq!(
+            import_assessment_summary(&serde_json::to_vec(document).unwrap()).unwrap_err(),
+            ComparisonError::InvalidDocument
+        );
+    };
+
+    let mut value = valid.clone();
+    value["recon_certspotter"]["schema"] = json!("security.recon-certspotter-audit/v2");
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["claim_limits"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["retained_name_count"] = json!(2);
+    reject(&value);
+    value = valid.clone();
+    let duplicate = value["recon_certspotter"]["hypotheses"][0].clone();
+    value["recon_certspotter"]["hypotheses"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate);
+    value["recon_certspotter"]["coverage"]["retained_name_count"] = json!(2);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["provider"]["policy_revision"] = json!("C:/Users/name/private");
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["provider"]["query_reference"] = json!("name@example.com");
+    reject(&value);
+    for unsafe_reference in [
+        "opaque/cert-AZ-7".to_owned(),
+        "name@example.com".to_owned(),
+        "C:/Users/name/private".to_owned(),
+        "opaque/\u{202e}bidi".to_owned(),
+        format!("certspotter-issuance-sha256:{}", "A".repeat(64)),
+        format!("certspotter-issuance-sha256:{}", "0".repeat(63)),
+    ] {
+        value = valid.clone();
+        value["recon_certspotter"]["hypotheses"][0]["source"]["first_issuance_reference"] =
+            json!(unsafe_reference);
+        reject(&value);
+    }
+    value = valid.clone();
+    value["recon_certspotter"]["hypotheses"][0]["source"]["first_issuance_byte_length"] = json!(0);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["hypotheses"][0]["source"]["first_issuance_byte_length"] =
+        json!(129);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["hypotheses"][0]["source"]["first_issuance_id"] =
+        json!("opaque/cert-AZ-7");
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["last_cursor_reference"] = Value::Null;
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["last_cursor_byte_length"] = Value::Null;
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["last_cursor_byte_length"] = json!(0);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["last_cursor_byte_length"] = json!(129);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["last_cursor"] = json!("opaque/cert-AZ-7");
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["initial_after_reference"] =
+        json!(certspotter_issuance_reference("unexpected-initial"));
+    value["recon_certspotter"]["coverage"]["initial_after_byte_length"] =
+        json!("unexpected-initial".len());
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["issuance_count"] = json!(4_097);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["terminal"] = json!("transport_failed");
+    value["recon_certspotter"]["coverage"]["completeness"] = json!("unknown");
+    value["recon_certspotter"]["coverage"]["first_failure"] = json!("throttled");
+    value["recon_certspotter"]["coverage"]["response_completed_count"] = json!(0);
+    value["recon_certspotter"]["coverage"]["accepted_page_count"] = json!(0);
+    value["recon_certspotter"]["coverage"]["accepted_response_bytes"] = json!(0);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["issuance_count"] = json!(0);
+    value["recon_certspotter"]["coverage"]["last_cursor_reference"] = Value::Null;
+    value["recon_certspotter"]["coverage"]["last_cursor_byte_length"] = Value::Null;
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["request_attempt_count"] = json!(2);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["request_attempt_count"] = json!(2);
+    value["recon_certspotter"]["coverage"]["request_admitted_count"] = json!(2);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["request_attempt_count"] = json!(2);
+    value["recon_certspotter"]["coverage"]["request_admitted_count"] = json!(2);
+    value["recon_certspotter"]["coverage"]["response_completed_count"] = json!(2);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["observed_response_bytes"] = json!(129);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["terminal"] = json!("transport_failed");
+    value["recon_certspotter"]["coverage"]["completeness"] = json!("unknown");
+    value["recon_certspotter"]["coverage"]["first_failure"] = json!("throttled");
+    value["recon_certspotter"]["coverage"]["request_attempt_count"] = json!(2);
+    value["recon_certspotter"]["coverage"]["request_admitted_count"] = json!(2);
+    value["recon_certspotter"]["coverage"]["response_completed_count"] = json!(2);
+    value["recon_certspotter"]["coverage"]["accepted_page_count"] = json!(2);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["hypotheses"][0]["source"]["origin"] =
+        json!("https://untrusted.example");
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["accepted_response_bytes"] = json!(0);
+    reject(&value);
+    value = valid.clone();
+    value["recon_certspotter"]["coverage"]["terminal"] = json!("transport_failed");
+    reject(&value);
+    value = valid;
+    value["recon_certspotter"]["unexpected"] = json!(0);
     reject(&value);
 }
 
