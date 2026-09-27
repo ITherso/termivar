@@ -1813,6 +1813,26 @@ mod tests {
         expected_response: &[u8],
         max_wall_time_ms: u64,
     ) -> WebSocketReviewPolicy {
+        loopback_policy_with_options(
+            application,
+            endpoint,
+            expected_response,
+            max_wall_time_ms,
+            None,
+            4,
+            4096,
+        )
+    }
+
+    fn loopback_policy_with_options(
+        application: &url::Url,
+        endpoint: &url::Url,
+        expected_response: &[u8],
+        max_wall_time_ms: u64,
+        subprotocol: Option<&str>,
+        max_control_frames: u16,
+        max_inbound_message_bytes: u64,
+    ) -> WebSocketReviewPolicy {
         let expected_sha256 = format!("{:x}", Sha256::digest(expected_response));
         let source = serde_json::to_vec(&json!({
             "schema": "security.websocket-review-policy/v1",
@@ -1821,7 +1841,7 @@ mod tests {
             "message_content_is_non_secret": true,
             "endpoint": endpoint.as_str(),
             "origin_mode": "application_origin",
-            "subprotocol": null,
+            "subprotocol": subprotocol,
             "compression": false,
             "reconnect": false,
             "messages": [{
@@ -1833,10 +1853,10 @@ mod tests {
                 }
             }],
             "limits": {
-                "max_inbound_message_bytes": 4096,
+                "max_inbound_message_bytes": max_inbound_message_bytes,
                 "max_outbound_message_bytes": 4096,
                 "max_messages": 1,
-                "max_control_frames": 4,
+                "max_control_frames": max_control_frames,
                 "max_wall_time_ms": max_wall_time_ms
             }
         }))
@@ -1857,6 +1877,522 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn audit_vocabulary_fallback_and_public_accessors_are_total() {
+        assert_eq!(
+            WebSocketReviewCompleteness::ConfiguredExchangeComplete.as_str(),
+            "configured_exchange_complete"
+        );
+        assert_eq!(
+            WebSocketReviewCompleteness::Incomplete.as_str(),
+            "incomplete"
+        );
+        for (terminal, token) in [
+            (WebSocketReviewTerminal::Completed, "completed"),
+            (WebSocketReviewTerminal::Incomplete, "incomplete"),
+            (WebSocketReviewTerminal::Cancelled, "cancelled"),
+            (WebSocketReviewTerminal::DeadlineReached, "deadline_reached"),
+            (WebSocketReviewTerminal::LimitReached, "limit_reached"),
+            (
+                WebSocketReviewTerminal::AuthorityRefused,
+                "authority_refused",
+            ),
+        ] {
+            assert_eq!(terminal.as_str(), token);
+        }
+        let failures = [
+            (
+                WebSocketReviewFailureKind::AuthorityAlreadyMinted,
+                "authority_already_minted",
+            ),
+            (
+                WebSocketReviewFailureKind::EndpointOutsideAuthority,
+                "endpoint_outside_authority",
+            ),
+            (
+                WebSocketReviewFailureKind::ParentAuthorityUnavailable,
+                "parent_authority_unavailable",
+            ),
+            (
+                WebSocketReviewFailureKind::RequestConstruction,
+                "request_construction",
+            ),
+            (
+                WebSocketReviewFailureKind::ConnectionFailed,
+                "connection_failed",
+            ),
+            (
+                WebSocketReviewFailureKind::HandshakeRejected,
+                "handshake_rejected",
+            ),
+            (
+                WebSocketReviewFailureKind::ExtensionNegotiationRefused,
+                "extension_negotiation_refused",
+            ),
+            (
+                WebSocketReviewFailureKind::SubprotocolNegotiationRefused,
+                "subprotocol_negotiation_refused",
+            ),
+            (WebSocketReviewFailureKind::SendFailed, "send_failed"),
+            (WebSocketReviewFailureKind::ReadFailed, "read_failed"),
+            (
+                WebSocketReviewFailureKind::BinaryMessageUnsupported,
+                "binary_message_unsupported",
+            ),
+            (WebSocketReviewFailureKind::CloseFailed, "close_failed"),
+            (WebSocketReviewFailureKind::PeerClosed, "peer_closed"),
+            (
+                WebSocketReviewFailureKind::MessageTooLarge,
+                "message_too_large",
+            ),
+            (
+                WebSocketReviewFailureKind::MessageLimitReached,
+                "message_limit_reached",
+            ),
+            (
+                WebSocketReviewFailureKind::ControlFrameLimitReached,
+                "control_frame_limit_reached",
+            ),
+            (
+                WebSocketReviewFailureKind::ApplicationByteLimitReached,
+                "application_byte_limit_reached",
+            ),
+            (
+                WebSocketReviewFailureKind::ParentResponseBudgetReached,
+                "parent_response_budget_reached",
+            ),
+            (WebSocketReviewFailureKind::Cancelled, "cancelled"),
+            (
+                WebSocketReviewFailureKind::DeadlineReached,
+                "deadline_reached",
+            ),
+            (
+                WebSocketReviewFailureKind::InternalInvariant,
+                "internal_invariant",
+            ),
+        ];
+        for (failure, token) in failures {
+            assert_eq!(failure.as_str(), token);
+            let expected_terminal = match failure {
+                WebSocketReviewFailureKind::AuthorityAlreadyMinted
+                | WebSocketReviewFailureKind::EndpointOutsideAuthority => {
+                    WebSocketReviewTerminal::AuthorityRefused
+                },
+                WebSocketReviewFailureKind::MessageTooLarge
+                | WebSocketReviewFailureKind::MessageLimitReached
+                | WebSocketReviewFailureKind::ControlFrameLimitReached
+                | WebSocketReviewFailureKind::ApplicationByteLimitReached
+                | WebSocketReviewFailureKind::ParentResponseBudgetReached => {
+                    WebSocketReviewTerminal::LimitReached
+                },
+                WebSocketReviewFailureKind::Cancelled => WebSocketReviewTerminal::Cancelled,
+                WebSocketReviewFailureKind::DeadlineReached => {
+                    WebSocketReviewTerminal::DeadlineReached
+                },
+                _ => WebSocketReviewTerminal::Incomplete,
+            };
+            assert_eq!(failure.terminal(), expected_terminal);
+        }
+        for (status, token) in [
+            (WebSocketReviewMessageStatus::NotSent, "not_sent"),
+            (
+                WebSocketReviewMessageStatus::SentNoResponse,
+                "sent_no_response",
+            ),
+            (
+                WebSocketReviewMessageStatus::ResponseMatched,
+                "response_matched",
+            ),
+            (
+                WebSocketReviewMessageStatus::ResponseMismatched,
+                "response_mismatched",
+            ),
+        ] {
+            assert_eq!(status.as_str(), token);
+        }
+
+        let application = url::Url::parse("http://127.0.0.1:9/application/").unwrap();
+        let endpoint = url::Url::parse("ws://127.0.0.1:9/application/socket").unwrap();
+        let policy = loopback_policy(&application, &endpoint, b"expected", 1_000);
+        let audit = websocket_review_not_run(
+            &policy,
+            WebSocketReviewFailureKind::ParentAuthorityUnavailable,
+        );
+        assert_eq!(audit.schema(), WEBSOCKET_REVIEW_AUDIT_SCHEMA);
+        assert_eq!(audit.capability_id(), WEBSOCKET_REVIEW_CAPABILITY_ID);
+        assert!(audit.selected());
+        assert_eq!(audit.policy_reference(), policy.policy_reference());
+        assert_eq!(audit.endpoint_reference(), policy.endpoint_reference());
+        assert_eq!(audit.origin_mode(), WebSocketOriginMode::ApplicationOrigin);
+        assert!(!audit.subprotocol_requested());
+        assert!(!audit.subprotocol_negotiated());
+        assert!(!audit.compression_enabled());
+        assert!(!audit.reconnect_enabled());
+        assert_eq!(audit.authentication(), "anonymous");
+        assert_eq!(audit.context(), "anonymous");
+        assert_eq!(audit.transport(), WEBSOCKET_REVIEW_TRANSPORT);
+        assert_eq!(audit.http2_extended_connect(), "unsupported");
+        assert_eq!(audit.request_count(), 0);
+        assert_eq!(audit.request_attempt_count(), 0);
+        assert_eq!(audit.request_admitted_count(), 0);
+        assert_eq!(audit.connection_count(), 0);
+        assert_eq!(audit.connection_attempt_count(), 0);
+        assert_eq!(audit.handshake_completed_count(), 0);
+        assert_eq!(audit.configured_message_count(), 1);
+        assert_eq!(audit.outbound_message_count(), 0);
+        assert_eq!(audit.inbound_message_count(), 0);
+        assert_eq!(audit.outbound_control_frame_count(), 0);
+        assert_eq!(audit.inbound_control_frame_count(), 0);
+        assert_eq!(audit.outbound_application_bytes(), 0);
+        assert_eq!(audit.inbound_application_bytes(), 0);
+        assert_eq!(audit.transport_read_bytes(), 0);
+        assert_eq!(audit.transport_write_bytes(), 0);
+        assert_eq!(
+            audit.transport_byte_scope(),
+            WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE
+        );
+        assert_eq!(audit.accounted_request_body_bytes(), 0);
+        assert_eq!(audit.accounted_response_bytes(), 0);
+        assert_eq!(audit.accounted_transport_response_bytes(), 0);
+        assert_eq!(audit.terminal(), WebSocketReviewTerminal::Incomplete);
+        assert_eq!(
+            audit.failure(),
+            Some(WebSocketReviewFailureKind::ParentAuthorityUnavailable)
+        );
+        assert_eq!(audit.first_failure(), audit.failure());
+        assert_eq!(
+            audit.completeness(),
+            WebSocketReviewCompleteness::Incomplete
+        );
+        assert_eq!(audit.expected_response_count(), 1);
+        assert_eq!(audit.matched_response_count(), 0);
+        assert_eq!(audit.mismatched_response_count(), 0);
+        assert_eq!(audit.messages().len(), 1);
+        let message = &audit.messages()[0];
+        assert_eq!(
+            message.message_reference(),
+            policy.messages().next().unwrap().message_reference()
+        );
+        assert_eq!(
+            message.expected_response_reference(),
+            policy
+                .messages()
+                .next()
+                .unwrap()
+                .expected_response_reference()
+        );
+        assert_eq!(message.observed_response_reference(), None);
+        assert_eq!(message.outbound_length(), 7);
+        assert_eq!(message.expected_response_length(), 8);
+        assert_eq!(message.inbound_length(), None);
+        assert_eq!(message.status(), WebSocketReviewMessageStatus::NotSent);
+        let limits = audit.limits();
+        assert_eq!(limits.max_connections(), 1);
+        assert_eq!(limits.max_outbound_application_bytes(), 64 * 1024);
+        assert_eq!(limits.max_inbound_application_bytes(), 64 * 1024);
+        assert_eq!(limits.max_outbound_message_bytes(), 4096);
+        assert_eq!(limits.max_inbound_message_bytes(), 4096);
+        assert_eq!(limits.max_messages(), 1);
+        assert_eq!(limits.max_control_frames(), 4);
+        assert_eq!(limits.max_wall_time_ms(), 1_000);
+        assert_eq!(audit.claim_limits().len(), 8);
+        assert!(audit.is_consistent());
+        assert_eq!(
+            WebSocketReviewRuntimeMintError::AuthorityAlreadyMinted.failure(),
+            WebSocketReviewFailureKind::AuthorityAlreadyMinted
+        );
+        assert_eq!(
+            WebSocketReviewRuntimeMintError::EndpointOutsideAuthority.failure(),
+            WebSocketReviewFailureKind::EndpointOutsideAuthority
+        );
+        assert_eq!(
+            WebSocketReviewRuntimeMintError::InternalInvariant.failure(),
+            WebSocketReviewFailureKind::InternalInvariant
+        );
+        assert!(lesser_deadline(None, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn parent_request_and_response_limits_refuse_transport_at_the_owned_boundary() {
+        let application = url::Url::parse("http://127.0.0.1:9/application/").unwrap();
+        let endpoint = url::Url::parse("ws://127.0.0.1:9/application/socket").unwrap();
+        let policy = loopback_policy(&application, &endpoint, b"expected", 1_000);
+        let request_refused = runtime(
+            &policy,
+            &application,
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(0)),
+        )
+        .execute()
+        .await;
+        assert_eq!(request_refused.request_attempt_count(), 1);
+        assert_eq!(request_refused.request_admitted_count(), 0);
+        assert_eq!(request_refused.connection_attempt_count(), 0);
+        assert_eq!(
+            request_refused.first_failure(),
+            Some(WebSocketReviewFailureKind::ParentAuthorityUnavailable)
+        );
+        assert!(request_refused.is_consistent());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = listener.accept().await.unwrap();
+        });
+        let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
+        let policy = loopback_policy(&application, &endpoint, b"expected", 1_000);
+        let response_refused = runtime(
+            &policy,
+            &application,
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_response_bytes(0)),
+        )
+        .execute()
+        .await;
+        server.await.unwrap();
+        assert_eq!(response_refused.request_attempt_count(), 1);
+        assert_eq!(response_refused.request_admitted_count(), 1);
+        assert_eq!(response_refused.connection_attempt_count(), 1);
+        assert_eq!(response_refused.handshake_completed_count(), 0);
+        assert_eq!(
+            response_refused.first_failure(),
+            Some(WebSocketReviewFailureKind::ParentResponseBudgetReached)
+        );
+        assert_eq!(
+            response_refused.terminal(),
+            WebSocketReviewTerminal::LimitReached
+        );
+        assert!(response_refused.is_consistent());
+    }
+
+    #[tokio::test]
+    async fn connection_and_http_upgrade_failures_are_distinct_and_value_free() {
+        let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = unused.local_addr().unwrap();
+        drop(unused);
+        let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
+        let policy = loopback_policy(&application, &endpoint, b"expected", 1_000);
+        let refused = runtime(
+            &policy,
+            &application,
+            RequestAccountingBroker::new(RuntimeBudget::default()),
+        )
+        .execute()
+        .await;
+        assert_eq!(refused.connection_attempt_count(), 1);
+        assert_eq!(refused.handshake_completed_count(), 0);
+        assert_eq!(
+            refused.first_failure(),
+            Some(WebSocketReviewFailureKind::ConnectionFailed)
+        );
+        assert!(refused.is_consistent());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(request[..read].starts_with(b"GET /application/socket HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+        });
+        let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
+        let policy = loopback_policy(&application, &endpoint, b"expected", 1_000);
+        let rejected = runtime(
+            &policy,
+            &application,
+            RequestAccountingBroker::new(RuntimeBudget::default()),
+        )
+        .execute()
+        .await;
+        server.await.unwrap();
+        assert_eq!(rejected.handshake_completed_count(), 0);
+        assert_eq!(
+            rejected.first_failure(),
+            Some(WebSocketReviewFailureKind::HandshakeRejected)
+        );
+        assert!(rejected.transport_read_bytes() > 0);
+        assert!(rejected.is_consistent());
+    }
+
+    #[tokio::test]
+    async fn backend_rejects_a_missing_negotiated_subprotocol_before_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = socket.next().await;
+        });
+        let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
+        let policy = loopback_policy_with_options(
+            &application,
+            &endpoint,
+            b"expected",
+            2_000,
+            Some("termivar-review"),
+            4,
+            4096,
+        );
+        let audit = runtime(
+            &policy,
+            &application,
+            RequestAccountingBroker::new(RuntimeBudget::default()),
+        )
+        .execute()
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(audit.handshake_completed_count(), 0);
+        assert!(audit.subprotocol_requested());
+        assert!(!audit.subprotocol_negotiated());
+        assert_eq!(
+            audit.first_failure(),
+            Some(WebSocketReviewFailureKind::HandshakeRejected)
+        );
+        assert!(audit.is_consistent());
+    }
+
+    #[test]
+    fn subprotocol_comparison_requires_an_exact_selected_value() {
+        let selected = Response::builder()
+            .status(101)
+            .header("sec-websocket-protocol", "termivar-review")
+            .body(())
+            .unwrap();
+        let absent = Response::builder().status(101).body(()).unwrap();
+        assert!(subprotocol_matches(&selected, Some("termivar-review")));
+        assert!(!subprotocol_matches(&selected, Some("other")));
+        assert!(!subprotocol_matches(&selected, None));
+        assert!(subprotocol_matches(&absent, None));
+        assert!(!subprotocol_matches(&absent, Some("termivar-review")));
+    }
+
+    #[tokio::test]
+    async fn ping_pong_is_bounded_and_does_not_replace_the_text_oracle() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            assert_eq!(
+                socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                "request"
+            );
+            socket.send(Message::Ping(Vec::new().into())).await.unwrap();
+            socket.send(Message::text("expected")).await.unwrap();
+            for _ in 0..2 {
+                if matches!(
+                    tokio::time::timeout(Duration::from_secs(1), socket.next()).await,
+                    Ok(Some(Ok(Message::Close(_)))) | Ok(None)
+                ) {
+                    break;
+                }
+            }
+        });
+        let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
+        let policy = loopback_policy(&application, &endpoint, b"expected", 2_000);
+        let audit = runtime(
+            &policy,
+            &application,
+            RequestAccountingBroker::new(RuntimeBudget::default()),
+        )
+        .execute()
+        .await;
+        server.await.unwrap();
+        assert_eq!(audit.terminal(), WebSocketReviewTerminal::Completed);
+        assert_eq!(audit.matched_response_count(), 1);
+        assert_eq!(audit.inbound_control_frame_count(), 1);
+        assert!(audit.outbound_control_frame_count() >= 2);
+        assert!(audit.is_consistent());
+    }
+
+    #[tokio::test]
+    async fn peer_close_and_control_limit_preserve_distinct_incomplete_evidence() {
+        for control_limit in [4_u16, 1_u16] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                if control_limit == 1 {
+                    socket.send(Message::Ping(Vec::new().into())).await.unwrap();
+                } else {
+                    socket.close(None).await.unwrap();
+                }
+            });
+            let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
+            let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
+            let policy = loopback_policy_with_options(
+                &application,
+                &endpoint,
+                b"expected",
+                2_000,
+                None,
+                control_limit,
+                4096,
+            );
+            let audit = runtime(
+                &policy,
+                &application,
+                RequestAccountingBroker::new(RuntimeBudget::default()),
+            )
+            .execute()
+            .await;
+            server.await.unwrap();
+            let expected = if control_limit == 1 {
+                WebSocketReviewFailureKind::ControlFrameLimitReached
+            } else {
+                WebSocketReviewFailureKind::PeerClosed
+            };
+            assert_eq!(audit.first_failure(), Some(expected));
+            assert_eq!(audit.outbound_message_count(), 1);
+            assert_eq!(audit.inbound_message_count(), 0);
+            assert!(audit.is_consistent());
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_text_response_is_a_limit_not_a_mismatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = socket.next().await;
+            socket.send(Message::text("oversized")).await.unwrap();
+        });
+        let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
+        let policy =
+            loopback_policy_with_options(&application, &endpoint, b"tiny", 2_000, None, 4, 4);
+        let audit = runtime(
+            &policy,
+            &application,
+            RequestAccountingBroker::new(RuntimeBudget::default()),
+        )
+        .execute()
+        .await;
+        server.await.unwrap();
+        assert_eq!(
+            audit.first_failure(),
+            Some(WebSocketReviewFailureKind::MessageTooLarge)
+        );
+        assert_eq!(audit.mismatched_response_count(), 0);
+        assert_eq!(audit.inbound_message_count(), 0);
+        assert!(audit.is_consistent());
     }
 
     #[tokio::test]

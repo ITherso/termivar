@@ -1158,6 +1158,170 @@ mod tests {
     }
 
     #[test]
+    fn policy_metadata_getters_and_internal_debug_remain_value_free() {
+        let policy = parse(&valid_value()).unwrap();
+        assert!(policy
+            .application_reference()
+            .starts_with("websocket-application-sha256:"));
+
+        let limits = policy.limits();
+        assert_eq!(limits.max_inbound_message_bytes(), 4096);
+        assert_eq!(limits.max_outbound_message_bytes(), 4096);
+        assert_eq!(limits.max_messages(), 1);
+        assert_eq!(limits.max_control_frames(), 4);
+        assert_eq!(limits.max_wall_time_ms(), 1000);
+        assert!(format!("{limits:?}").contains("max_wall_time_ms: 1000"));
+
+        let rendered = format!("{:?}", policy.messages.first().unwrap());
+        assert!(rendered.contains("id: \"<redacted>\""));
+        assert!(rendered.contains("text: \"<redacted>\""));
+        assert!(rendered.contains("expected_response: \"<redacted>\""));
+        assert!(rendered.contains("outbound_length: 18"));
+        assert!(rendered.contains("expected_response_length: 19"));
+        for canary in [ID_CANARY, TEXT_CANARY, DIGEST_CANARY] {
+            assert!(!rendered.contains(canary), "internal Debug leaked {canary}");
+        }
+    }
+
+    #[test]
+    fn policy_error_tokens_cover_every_static_failure_class() {
+        for (error, token) in [
+            (WebSocketReviewPolicyError::EmptyPolicy, "empty_policy"),
+            (
+                WebSocketReviewPolicyError::PolicyTooLarge,
+                "policy_too_large",
+            ),
+            (
+                WebSocketReviewPolicyError::MalformedPolicy,
+                "malformed_policy",
+            ),
+            (
+                WebSocketReviewPolicyError::DuplicateJsonKey,
+                "duplicate_json_key",
+            ),
+            (
+                WebSocketReviewPolicyError::UnsupportedSchema,
+                "unsupported_schema",
+            ),
+            (
+                WebSocketReviewPolicyError::InvalidApplicationTarget,
+                "invalid_application_target",
+            ),
+            (
+                WebSocketReviewPolicyError::TargetAuthorizationRequired,
+                "target_authorization_required",
+            ),
+            (
+                WebSocketReviewPolicyError::ReadOnlyAcknowledgementRequired,
+                "read_only_acknowledgement_required",
+            ),
+            (
+                WebSocketReviewPolicyError::NonSecretContentAcknowledgementRequired,
+                "non_secret_content_acknowledgement_required",
+            ),
+            (
+                WebSocketReviewPolicyError::InvalidEndpoint,
+                "invalid_endpoint",
+            ),
+            (
+                WebSocketReviewPolicyError::EndpointOutsideApplication,
+                "endpoint_outside_application",
+            ),
+            (
+                WebSocketReviewPolicyError::InsecureEndpoint,
+                "insecure_endpoint",
+            ),
+            (
+                WebSocketReviewPolicyError::UnsupportedOriginMode,
+                "unsupported_origin_mode",
+            ),
+            (
+                WebSocketReviewPolicyError::InvalidSubprotocol,
+                "invalid_subprotocol",
+            ),
+            (
+                WebSocketReviewPolicyError::CompressionNotPermitted,
+                "compression_not_permitted",
+            ),
+            (
+                WebSocketReviewPolicyError::ReconnectNotPermitted,
+                "reconnect_not_permitted",
+            ),
+            (
+                WebSocketReviewPolicyError::InvalidMessageCount,
+                "invalid_message_count",
+            ),
+            (
+                WebSocketReviewPolicyError::InvalidMessageId,
+                "invalid_message_id",
+            ),
+            (
+                WebSocketReviewPolicyError::DuplicateMessageId,
+                "duplicate_message_id",
+            ),
+            (
+                WebSocketReviewPolicyError::MessageTextTooLarge,
+                "message_text_too_large",
+            ),
+            (
+                WebSocketReviewPolicyError::MessageTextAggregateTooLarge,
+                "message_text_aggregate_too_large",
+            ),
+            (
+                WebSocketReviewPolicyError::InvalidExpectedResponse,
+                "invalid_expected_response",
+            ),
+            (
+                WebSocketReviewPolicyError::ExpectedResponseAggregateTooLarge,
+                "expected_response_aggregate_too_large",
+            ),
+            (WebSocketReviewPolicyError::InvalidLimits, "invalid_limits"),
+        ] {
+            assert_eq!(error.as_str(), token);
+        }
+    }
+
+    #[test]
+    fn strict_json_scalar_visitor_preserves_types_and_rejects_non_finite_numbers() {
+        struct Expectation;
+
+        impl fmt::Display for Expectation {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                StrictJsonVisitor.expecting(formatter)
+            }
+        }
+
+        type ValueError = de::value::Error;
+        assert_eq!(
+            Expectation.to_string(),
+            "strict WebSocket review policy JSON"
+        );
+        assert_eq!(
+            StrictJsonVisitor.visit_none::<ValueError>().unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            StrictJsonVisitor.visit_i64::<ValueError>(-17).unwrap(),
+            json!(-17)
+        );
+        assert_eq!(
+            StrictJsonVisitor.visit_f64::<ValueError>(1.25).unwrap(),
+            json!(1.25)
+        );
+        assert_eq!(
+            StrictJsonVisitor
+                .visit_string::<ValueError>("owned scalar".to_owned())
+                .unwrap(),
+            json!("owned scalar")
+        );
+        assert!(StrictJsonVisitor
+            .visit_f64::<ValueError>(f64::NAN)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid JSON number"));
+    }
+
+    #[test]
     fn public_references_do_not_form_a_dictionary_oracle_for_private_message_bytes() {
         let baseline = parse(&valid_value()).unwrap();
         let mut private_change = valid_value();
@@ -1228,6 +1392,7 @@ mod tests {
             "wss://other.test:8443/application/ws",
             "wss://example.test:9443/application/ws",
             "wss://example.test:8443/application-other/ws",
+            "wss://example.test:8443",
         ] {
             let mut value = valid_value();
             value["endpoint"] = json!(endpoint);
@@ -1258,6 +1423,32 @@ mod tests {
                 "{endpoint}"
             );
         }
+    }
+
+    #[test]
+    fn endpoint_scheme_root_scope_and_ipv6_loopback_are_explicit() {
+        let mut value = valid_value();
+        value["endpoint"] = json!("ws://example.test:8443/application/ws");
+        assert_eq!(
+            parse(&value),
+            Err(WebSocketReviewPolicyError::InvalidEndpoint)
+        );
+
+        let http_loopback = Url::parse("http://127.0.0.1:8080/application/").unwrap();
+        value["endpoint"] = json!("wss://127.0.0.1:8080/application/ws");
+        assert_eq!(
+            WebSocketReviewPolicy::parse_json(&http_loopback, &serde_json::to_vec(&value).unwrap()),
+            Err(WebSocketReviewPolicyError::InvalidEndpoint)
+        );
+
+        let root = Url::parse("https://example.test:8443/").unwrap();
+        value["endpoint"] = json!("wss://example.test:8443/socket");
+        WebSocketReviewPolicy::parse_json(&root, &serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let ipv6_loopback = Url::parse("http://[::1]:8080/application/").unwrap();
+        value["endpoint"] = json!("ws://[::1]:8080/application/socket");
+        WebSocketReviewPolicy::parse_json(&ipv6_loopback, &serde_json::to_vec(&value).unwrap())
+            .unwrap();
     }
 
     #[test]
@@ -1496,6 +1687,12 @@ mod tests {
         assert_eq!(
             WebSocketReviewPolicy::parse_json(&application(), b"not-json"),
             Err(WebSocketReviewPolicyError::MalformedPolicy)
+        );
+        let mut unsupported_schema = valid_value();
+        unsupported_schema["schema"] = json!("security.websocket-review-policy/v2");
+        assert_eq!(
+            parse(&unsupported_schema),
+            Err(WebSocketReviewPolicyError::UnsupportedSchema)
         );
         let mut unknown = valid_value();
         unknown["credential"] = json!("secret");
