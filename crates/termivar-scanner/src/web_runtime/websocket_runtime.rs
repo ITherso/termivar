@@ -1879,6 +1879,13 @@ mod tests {
         .unwrap()
     }
 
+    async fn await_server(server: tokio::task::JoinHandle<()>) {
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("loopback server did not finish within the bounded test window")
+            .expect("loopback server task failed");
+    }
+
     #[test]
     fn audit_vocabulary_fallback_and_public_accessors_are_total() {
         assert_eq!(
@@ -2135,10 +2142,34 @@ mod tests {
         );
         assert!(request_refused.is_consistent());
 
+        let response_preflight_refused = runtime(
+            &policy,
+            &application,
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_response_bytes(0)),
+        )
+        .execute()
+        .await;
+        assert_eq!(response_preflight_refused.request_attempt_count(), 1);
+        assert_eq!(response_preflight_refused.request_admitted_count(), 0);
+        assert_eq!(response_preflight_refused.connection_attempt_count(), 0);
+        assert_eq!(
+            response_preflight_refused.first_failure(),
+            Some(WebSocketReviewFailureKind::ParentAuthorityUnavailable)
+        );
+        assert!(response_preflight_refused.is_consistent());
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let _ = listener.accept().await.unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(request[..read].starts_with(b"GET /application/socket HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
         });
         let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
         let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
@@ -2146,11 +2177,11 @@ mod tests {
         let response_refused = runtime(
             &policy,
             &application,
-            RequestAccountingBroker::new(RuntimeBudget::default().with_max_response_bytes(0)),
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_response_bytes(1)),
         )
         .execute()
         .await;
-        server.await.unwrap();
+        await_server(server).await;
         assert_eq!(response_refused.request_attempt_count(), 1);
         assert_eq!(response_refused.request_admitted_count(), 1);
         assert_eq!(response_refused.connection_attempt_count(), 1);
@@ -2212,7 +2243,7 @@ mod tests {
         )
         .execute()
         .await;
-        server.await.unwrap();
+        await_server(server).await;
         assert_eq!(rejected.handshake_completed_count(), 0);
         assert_eq!(
             rejected.first_failure(),
@@ -2310,7 +2341,7 @@ mod tests {
         )
         .execute()
         .await;
-        server.await.unwrap();
+        await_server(server).await;
         assert_eq!(audit.terminal(), WebSocketReviewTerminal::Completed);
         assert_eq!(audit.matched_response_count(), 1);
         assert_eq!(audit.inbound_control_frame_count(), 1);
@@ -2351,7 +2382,7 @@ mod tests {
             )
             .execute()
             .await;
-            server.await.unwrap();
+            await_server(server).await;
             let expected = if control_limit == 1 {
                 WebSocketReviewFailureKind::ControlFrameLimitReached
             } else {
@@ -2385,7 +2416,7 @@ mod tests {
         )
         .execute()
         .await;
-        server.await.unwrap();
+        await_server(server).await;
         assert_eq!(
             audit.first_failure(),
             Some(WebSocketReviewFailureKind::MessageTooLarge)
@@ -2419,7 +2450,7 @@ mod tests {
         let audit = runtime(&policy, &application, accounting.clone())
             .execute()
             .await;
-        server.await.unwrap();
+        await_server(server).await;
 
         assert_eq!(audit.terminal(), WebSocketReviewTerminal::Completed);
         assert_eq!(
@@ -2478,7 +2509,7 @@ mod tests {
         let audit = runtime(&policy, &application, accounting.clone())
             .execute()
             .await;
-        server.await.unwrap();
+        await_server(server).await;
 
         assert_eq!(audit.terminal(), WebSocketReviewTerminal::Incomplete);
         assert_eq!(
