@@ -16644,6 +16644,55 @@ mod tests {
         .is_empty());
     }
 
+    #[test]
+    fn reporting_inventory_excludes_feature_gated_content_inside_exact_test_modules() {
+        let source = r#"
+            #[cfg(feature = "reporting")] fn production_0() {}
+            #[cfg(feature = "reporting")] fn production_1() {}
+            #[cfg(feature = "reporting")] fn production_2() {}
+            #[cfg(feature = "reporting")] fn production_3() {}
+            #[cfg(feature = "reporting")] fn production_4() {}
+            #[cfg(feature = "reporting")] fn production_5() {}
+            #[cfg(feature = "reporting")] fn production_6() {}
+
+            #[cfg(test)]
+            mod websocket_tests {
+                #[cfg(feature = "websocket-review")]
+                mod enabled {
+                    #[cfg(feature = "reporting")] fn helper_0() {}
+                    #[cfg(feature = "reporting")] fn helper_1() {}
+                    #[cfg(feature = "reporting")] fn helper_2() {}
+                    #[cfg(feature = "reporting")] fn helper_3() {}
+                    #[cfg(feature = "reporting")] fn helper_4() {}
+                }
+            }
+        "#;
+        assert!(reporting_cross_source_set_violations_with_inventory(
+            &[(
+                "web_runtime/web_assessment.rs".to_owned(),
+                source.to_owned()
+            )],
+            true,
+        )
+        .unwrap()
+        .is_empty());
+
+        let combined_gate = source.replace(
+            "#[cfg(test)]\n            mod websocket_tests",
+            "#[cfg(all(test, feature = \"websocket-review\"))]\n            mod websocket_tests",
+        );
+        assert_ne!(combined_gate, source);
+        assert!(reporting_cross_source_set_violations_with_inventory(
+            &[("web_runtime/web_assessment.rs".to_owned(), combined_gate,)],
+            true,
+        )
+        .unwrap()
+        .iter()
+        .any(
+            |violation| violation.contains("exact report-only cfg inventory of 7 sites, found 12")
+        ));
+    }
+
     fn valid_reporting_public_api_fixture() -> &'static str {
         r#"
             pub mod comparison;

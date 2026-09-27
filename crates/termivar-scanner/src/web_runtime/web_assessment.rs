@@ -7627,309 +7627,320 @@ fn form_method_for_predicate(
 
 #[cfg(test)]
 mod websocket_parent_completion_tests {
-    #![cfg(feature = "websocket-review")]
+    #[cfg(feature = "websocket-review")]
+    mod enabled {
 
-    use std::{future::pending, sync::Arc, time::Duration};
+        use std::{future::pending, sync::Arc, time::Duration};
 
-    use futures::StreamExt;
-    use serde_json::json;
-    use sha2::{Digest, Sha256};
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener, TcpStream},
-        sync::Notify,
-        task::JoinHandle,
-    };
-    use tokio_tungstenite::accept_async;
-    use url::Url;
+        use futures::StreamExt;
+        use serde_json::json;
+        use sha2::{Digest, Sha256};
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::{TcpListener, TcpStream},
+            sync::Notify,
+            task::JoinHandle,
+        };
+        use tokio_tungstenite::accept_async;
+        use url::Url;
 
-    use super::*;
+        use super::super::*;
 
-    struct ParentStopFixture {
-        application: Url,
-        endpoint: Url,
-        message_seen: Arc<Notify>,
-        task: JoinHandle<()>,
-    }
-
-    impl Drop for ParentStopFixture {
-        fn drop(&mut self) {
-            self.task.abort();
+        struct ParentStopFixture {
+            application: Url,
+            endpoint: Url,
+            message_seen: Arc<Notify>,
+            task: JoinHandle<()>,
         }
-    }
 
-    async fn parent_stop_fixture(stall_after_message: bool) -> ParentStopFixture {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let application = Url::parse(&format!("http://{address}/app/")).unwrap();
-        let endpoint = Url::parse(&format!("ws://{address}/app/socket")).unwrap();
-        let message_seen = Arc::new(Notify::new());
-        let fixture_message_seen = Arc::clone(&message_seen);
-        let task = tokio::spawn(async move {
-            let (mut root, _) = listener.accept().await.unwrap();
-            read_http_headers(&mut root).await;
-            root.write_all(
+        impl Drop for ParentStopFixture {
+            fn drop(&mut self) {
+                self.task.abort();
+            }
+        }
+
+        async fn parent_stop_fixture(stall_after_message: bool) -> ParentStopFixture {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let application = Url::parse(&format!("http://{address}/app/")).unwrap();
+            let endpoint = Url::parse(&format!("ws://{address}/app/socket")).unwrap();
+            let message_seen = Arc::new(Notify::new());
+            let fixture_message_seen = Arc::clone(&message_seen);
+            let task = tokio::spawn(async move {
+                let (mut root, _) = listener.accept().await.unwrap();
+                read_http_headers(&mut root).await;
+                root.write_all(
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 4\r\nConnection: close\r\n\r\nroot",
             )
             .await
             .unwrap();
-            root.shutdown().await.unwrap();
+                root.shutdown().await.unwrap();
 
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut websocket = accept_async(stream).await.unwrap();
-            if stall_after_message {
-                let _ = websocket.next().await;
-            }
-            fixture_message_seen.notify_one();
-            pending::<()>().await;
-        });
-        ParentStopFixture {
-            application,
-            endpoint,
-            message_seen,
-            task,
-        }
-    }
-
-    async fn read_http_headers(stream: &mut TcpStream) {
-        let mut bytes = Vec::new();
-        while bytes.len() <= 16 * 1024 {
-            let mut chunk = [0_u8; 1024];
-            let read = stream.read(&mut chunk).await.unwrap();
-            if read == 0 {
-                break;
-            }
-            bytes.extend_from_slice(&chunk[..read]);
-            if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-                return;
-            }
-        }
-        panic!("fixture did not receive one bounded HTTP request");
-    }
-
-    fn websocket_policy(application: &Url, endpoint: &Url) -> WebSocketReviewPolicy {
-        websocket_policy_with_wall_time(application, endpoint, 2_000)
-    }
-
-    fn websocket_policy_with_wall_time(
-        application: &Url,
-        endpoint: &Url,
-        max_wall_time_ms: u64,
-    ) -> WebSocketReviewPolicy {
-        let response = b"response";
-        let source = serde_json::to_vec(&json!({
-            "schema": "security.websocket-review-policy/v1",
-            "target_authorized": true,
-            "messages_read_only_acknowledged": true,
-            "message_content_is_non_secret": true,
-            "endpoint": endpoint.as_str(),
-            "origin_mode": "application_origin",
-            "subprotocol": null,
-            "compression": false,
-            "reconnect": false,
-            "messages": [{
-                "id": "parent-stop",
-                "text": "request",
-                "expected_response": {
-                    "sha256": format!("{:x}", Sha256::digest(response)),
-                    "length": response.len(),
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut websocket = accept_async(stream).await.unwrap();
+                if stall_after_message {
+                    let _ = websocket.next().await;
                 }
-            }],
-            "limits": {
-                "max_inbound_message_bytes": 4096,
-                "max_outbound_message_bytes": 4096,
-                "max_messages": 1,
-                "max_control_frames": 4,
-                "max_wall_time_ms": max_wall_time_ms,
+                fixture_message_seen.notify_one();
+                pending::<()>().await;
+            });
+            ParentStopFixture {
+                application,
+                endpoint,
+                message_seen,
+                task,
             }
-        }))
-        .unwrap();
-        WebSocketReviewPolicy::parse_json(application, &source).unwrap()
-    }
+        }
 
-    fn assert_parent_incomplete(
-        report: &WebAssessmentRunReport,
-        expected: WebAssessmentIncompleteReason,
-    ) {
-        assert!(report.completion().reasons().contains(&expected));
-        assert!(report.websocket_review_audit().is_some());
-    }
+        async fn read_http_headers(stream: &mut TcpStream) {
+            let mut bytes = Vec::new();
+            while bytes.len() <= 16 * 1024 {
+                let mut chunk = [0_u8; 1024];
+                let read = stream.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..read]);
+                if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    return;
+                }
+            }
+            panic!("fixture did not receive one bounded HTTP request");
+        }
 
-    #[cfg(feature = "reporting")]
-    fn assert_incomplete_precedes_usage_validation(report: WebAssessmentRunReport) {
-        let result = report.into_assessment_report(ScanProfileV1::web_review().unwrap());
-        assert!(matches!(
-            result,
-            Err(AssessmentRunReportError::AssessmentIncomplete)
-        ));
-    }
+        fn websocket_policy(application: &Url, endpoint: &Url) -> WebSocketReviewPolicy {
+            websocket_policy_with_wall_time(application, endpoint, 2_000)
+        }
 
-    #[test]
-    fn websocket_parent_refresh_is_inert_when_option_is_absent() {
-        let application = Url::parse("http://127.0.0.1:8123/app/").unwrap();
-        let runtime = WebAssessmentRuntime::builder(application).build().unwrap();
-        runtime.cancellation_token().cancel();
-        let started_at = tokio::time::Instant::now()
-            .checked_sub(runtime.limits.max_wall_time() + Duration::from_millis(1))
+        fn websocket_policy_with_wall_time(
+            application: &Url,
+            endpoint: &Url,
+            max_wall_time_ms: u64,
+        ) -> WebSocketReviewPolicy {
+            let response = b"response";
+            let source = serde_json::to_vec(&json!({
+                "schema": "security.websocket-review-policy/v1",
+                "target_authorized": true,
+                "messages_read_only_acknowledged": true,
+                "message_content_is_non_secret": true,
+                "endpoint": endpoint.as_str(),
+                "origin_mode": "application_origin",
+                "subprotocol": null,
+                "compression": false,
+                "reconnect": false,
+                "messages": [{
+                    "id": "parent-stop",
+                    "text": "request",
+                    "expected_response": {
+                        "sha256": format!("{:x}", Sha256::digest(response)),
+                        "length": response.len(),
+                    }
+                }],
+                "limits": {
+                    "max_inbound_message_bytes": 4096,
+                    "max_outbound_message_bytes": 4096,
+                    "max_messages": 1,
+                    "max_control_frames": 4,
+                    "max_wall_time_ms": max_wall_time_ms,
+                }
+            }))
             .unwrap();
-        let mut reasons = BTreeSet::new();
+            WebSocketReviewPolicy::parse_json(application, &source).unwrap()
+        }
 
-        runtime.refresh_parent_limits_after_websocket(&mut reasons, started_at);
+        fn assert_parent_incomplete(
+            report: &WebAssessmentRunReport,
+            expected: WebAssessmentIncompleteReason,
+        ) {
+            assert!(report.completion().reasons().contains(&expected));
+            assert!(report.websocket_review_audit().is_some());
+        }
 
-        assert!(runtime.websocket_review_audit.is_none());
-        assert!(reasons.is_empty());
-    }
-
-    #[tokio::test]
-    async fn websocket_host_cancellation_updates_outer_completion() {
-        let fixture = parent_stop_fixture(true).await;
-        let policy = websocket_policy(&fixture.application, &fixture.endpoint);
-        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
-            .with_websocket_review(policy)
-            .build()
-            .unwrap();
-        let cancellation = runtime.cancellation_token();
-        let message_seen = Arc::clone(&fixture.message_seen);
-        let running = tokio::spawn(async move { runtime.analyze().await });
-        tokio::time::timeout(Duration::from_secs(2), message_seen.notified())
-            .await
-            .unwrap();
-        cancellation.cancel();
-        let report = tokio::time::timeout(Duration::from_secs(2), running)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-
-        assert_parent_incomplete(&report, WebAssessmentIncompleteReason::HostCancellation);
-        let audit = report.websocket_review_audit().unwrap();
-        assert_eq!(
-            audit.terminal(),
-            crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::Cancelled
-        );
-        assert_eq!(
-            audit.first_failure(),
-            Some(WebSocketReviewFailureKind::Cancelled)
-        );
         #[cfg(feature = "reporting")]
-        assert_incomplete_precedes_usage_validation(report);
-    }
+        fn assert_incomplete_precedes_usage_validation(report: WebAssessmentRunReport) {
+            let profile = ScanProfileV1::web_review()
+                .unwrap()
+                .with_limits(report.limits)
+                .unwrap();
+            let result = report.into_assessment_report(profile);
+            assert!(
+                matches!(
+                    result.as_ref(),
+                    Err(AssessmentRunReportError::AssessmentIncomplete)
+                ),
+                "unexpected conversion result: {:?}",
+                result.as_ref().err()
+            );
+        }
 
-    #[tokio::test]
-    async fn websocket_parent_deadline_updates_outer_completion() {
-        let fixture = parent_stop_fixture(true).await;
-        let policy = websocket_policy(&fixture.application, &fixture.endpoint);
-        let limits = WebAssessmentLimits::default()
-            .with_max_wall_time(Duration::from_millis(200))
-            .unwrap();
-        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
-            .limits(limits)
-            .with_websocket_review(policy)
-            .build()
-            .unwrap();
-        let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
-            .await
-            .unwrap()
-            .unwrap();
+        #[test]
+        fn websocket_parent_refresh_is_inert_when_option_is_absent() {
+            let application = Url::parse("http://127.0.0.1:8123/app/").unwrap();
+            let runtime = WebAssessmentRuntime::builder(application).build().unwrap();
+            runtime.cancellation_token().cancel();
+            let started_at = tokio::time::Instant::now()
+                .checked_sub(runtime.limits.max_wall_time() + Duration::from_millis(1))
+                .unwrap();
+            let mut reasons = BTreeSet::new();
 
-        assert_parent_incomplete(&report, WebAssessmentIncompleteReason::WallTimeLimit);
-        let audit = report.websocket_review_audit().unwrap();
-        assert_eq!(
-            audit.terminal(),
-            crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::DeadlineReached
-        );
-        assert_eq!(
-            audit.first_failure(),
-            Some(WebSocketReviewFailureKind::DeadlineReached)
-        );
-        #[cfg(feature = "reporting")]
-        assert_incomplete_precedes_usage_validation(report);
-    }
+            runtime.refresh_parent_limits_after_websocket(&mut reasons, started_at);
 
-    #[tokio::test]
-    async fn websocket_local_deadline_does_not_change_outer_completion() {
-        let fixture = parent_stop_fixture(true).await;
-        let policy = websocket_policy_with_wall_time(&fixture.application, &fixture.endpoint, 100);
-        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
-            .with_websocket_review(policy)
-            .build()
-            .unwrap();
-        let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
-            .await
-            .unwrap()
-            .unwrap();
+            assert!(runtime.websocket_review_audit.is_none());
+            assert!(reasons.is_empty());
+        }
 
-        assert!(matches!(
-            report.completion(),
-            WebAssessmentCompletion::Complete
-        ));
-        let audit = report.websocket_review_audit().unwrap();
-        assert_eq!(
-            audit.terminal(),
-            crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::DeadlineReached
-        );
-        assert_eq!(
-            audit.first_failure(),
-            Some(WebSocketReviewFailureKind::DeadlineReached)
-        );
-    }
+        #[tokio::test]
+        async fn websocket_host_cancellation_updates_outer_completion() {
+            let fixture = parent_stop_fixture(true).await;
+            let policy = websocket_policy(&fixture.application, &fixture.endpoint);
+            let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+                .with_websocket_review(policy)
+                .build()
+                .unwrap();
+            let cancellation = runtime.cancellation_token();
+            let message_seen = Arc::clone(&fixture.message_seen);
+            let running = tokio::spawn(async move { runtime.analyze().await });
+            tokio::time::timeout(Duration::from_secs(2), message_seen.notified())
+                .await
+                .unwrap();
+            cancellation.cancel();
+            let report = tokio::time::timeout(Duration::from_secs(2), running)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
 
-    #[tokio::test]
-    async fn websocket_response_overrun_updates_outer_completion() {
-        let fixture = parent_stop_fixture(false).await;
-        let policy = websocket_policy(&fixture.application, &fixture.endpoint);
-        let limits = WebAssessmentLimits::default()
-            .with_max_total_response_bytes(64)
-            .unwrap();
-        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
-            .limits(limits)
-            .with_websocket_review(policy)
-            .build()
-            .unwrap();
-        let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
-            .await
-            .unwrap()
-            .unwrap();
+            assert_parent_incomplete(&report, WebAssessmentIncompleteReason::HostCancellation);
+            let audit = report.websocket_review_audit().unwrap();
+            assert_eq!(
+                audit.terminal(),
+                crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::Cancelled
+            );
+            assert_eq!(
+                audit.first_failure(),
+                Some(WebSocketReviewFailureKind::Cancelled)
+            );
+            #[cfg(feature = "reporting")]
+            assert_incomplete_precedes_usage_validation(report);
+        }
 
-        assert_parent_incomplete(&report, WebAssessmentIncompleteReason::ResponseBytesLimit);
-        let audit = report.websocket_review_audit().unwrap();
-        assert_eq!(
-            audit.first_failure(),
-            Some(WebSocketReviewFailureKind::ParentResponseBudgetReached)
-        );
-        assert!(report.usage().response_bytes() >= limits.max_total_response_bytes());
-        #[cfg(feature = "reporting")]
-        assert_incomplete_precedes_usage_validation(report);
-    }
+        #[tokio::test]
+        async fn websocket_parent_deadline_updates_outer_completion() {
+            let fixture = parent_stop_fixture(true).await;
+            let policy = websocket_policy(&fixture.application, &fixture.endpoint);
+            let limits = WebAssessmentLimits::default()
+                .with_max_wall_time(Duration::from_millis(200))
+                .unwrap();
+            let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+                .limits(limits)
+                .with_websocket_review(policy)
+                .build()
+                .unwrap();
+            let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
+                .await
+                .unwrap()
+                .unwrap();
 
-    #[tokio::test]
-    async fn websocket_parent_request_refusal_updates_outer_completion() {
-        let fixture = parent_stop_fixture(false).await;
-        let policy = websocket_policy(&fixture.application, &fixture.endpoint);
-        let limits = WebAssessmentLimits::default()
-            .with_max_total_requests(1)
-            .unwrap();
-        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
-            .limits(limits)
-            .with_websocket_review(policy)
-            .build()
-            .unwrap();
-        let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
-            .await
-            .unwrap()
-            .unwrap();
+            assert_parent_incomplete(&report, WebAssessmentIncompleteReason::WallTimeLimit);
+            let audit = report.websocket_review_audit().unwrap();
+            assert_eq!(
+                audit.terminal(),
+                crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::DeadlineReached
+            );
+            assert_eq!(
+                audit.first_failure(),
+                Some(WebSocketReviewFailureKind::DeadlineReached)
+            );
+            #[cfg(feature = "reporting")]
+            assert_incomplete_precedes_usage_validation(report);
+        }
 
-        assert_parent_incomplete(&report, WebAssessmentIncompleteReason::TotalRequestLimit);
-        let audit = report.websocket_review_audit().unwrap();
-        assert_eq!(audit.request_attempt_count(), 1);
-        assert_eq!(audit.request_admitted_count(), 0);
-        assert_eq!(
-            audit.first_failure(),
-            Some(WebSocketReviewFailureKind::ParentAuthorityUnavailable)
-        );
-        assert_eq!(report.usage().total_requests(), 1);
-        #[cfg(feature = "reporting")]
-        assert_incomplete_precedes_usage_validation(report);
+        #[tokio::test]
+        async fn websocket_local_deadline_does_not_change_outer_completion() {
+            let fixture = parent_stop_fixture(true).await;
+            let policy =
+                websocket_policy_with_wall_time(&fixture.application, &fixture.endpoint, 100);
+            let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+                .with_websocket_review(policy)
+                .build()
+                .unwrap();
+            let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert!(matches!(
+                report.completion(),
+                WebAssessmentCompletion::Complete
+            ));
+            let audit = report.websocket_review_audit().unwrap();
+            assert_eq!(
+                audit.terminal(),
+                crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::DeadlineReached
+            );
+            assert_eq!(
+                audit.first_failure(),
+                Some(WebSocketReviewFailureKind::DeadlineReached)
+            );
+        }
+
+        #[tokio::test]
+        async fn websocket_response_overrun_updates_outer_completion() {
+            let fixture = parent_stop_fixture(false).await;
+            let policy = websocket_policy(&fixture.application, &fixture.endpoint);
+            let limits = WebAssessmentLimits::default()
+                .with_max_total_response_bytes(64)
+                .unwrap();
+            let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+                .limits(limits)
+                .with_websocket_review(policy)
+                .build()
+                .unwrap();
+            let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_parent_incomplete(&report, WebAssessmentIncompleteReason::ResponseBytesLimit);
+            let audit = report.websocket_review_audit().unwrap();
+            assert_eq!(
+                audit.first_failure(),
+                Some(WebSocketReviewFailureKind::ParentResponseBudgetReached)
+            );
+            assert!(report.usage().response_bytes() >= limits.max_total_response_bytes());
+            #[cfg(feature = "reporting")]
+            assert_incomplete_precedes_usage_validation(report);
+        }
+
+        #[tokio::test]
+        async fn websocket_parent_request_refusal_updates_outer_completion() {
+            let fixture = parent_stop_fixture(false).await;
+            let policy = websocket_policy(&fixture.application, &fixture.endpoint);
+            let limits = WebAssessmentLimits::default()
+                .with_max_total_requests(1)
+                .unwrap();
+            let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+                .limits(limits)
+                .with_websocket_review(policy)
+                .build()
+                .unwrap();
+            let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_parent_incomplete(&report, WebAssessmentIncompleteReason::TotalRequestLimit);
+            let audit = report.websocket_review_audit().unwrap();
+            assert_eq!(audit.request_attempt_count(), 1);
+            assert_eq!(audit.request_admitted_count(), 0);
+            assert_eq!(
+                audit.first_failure(),
+                Some(WebSocketReviewFailureKind::ParentAuthorityUnavailable)
+            );
+            assert_eq!(report.usage().total_requests(), 1);
+            #[cfg(feature = "reporting")]
+            assert_incomplete_precedes_usage_validation(report);
+        }
     }
 }
 
