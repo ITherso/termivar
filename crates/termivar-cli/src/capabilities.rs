@@ -1942,7 +1942,10 @@ mod tests {
             "source_commit",
             "binary_hash",
             "127.0.0.1",
-            "Authorization",
+            "Authorization:",
+            "Cookie:",
+            "Bearer ",
+            "Basic ",
         ] {
             assert!(!json.contains(forbidden), "leaked {forbidden}");
         }

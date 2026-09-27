@@ -3375,6 +3375,58 @@ max_wall_time_ms = {max_wall_time_ms}
         WebSocketReviewPolicy::parse_json(application, &source).unwrap()
     }
 
+    #[cfg(feature = "websocket-review")]
+    struct ExactAuthorizationCallback(&'static str);
+
+    #[cfg(feature = "websocket-review")]
+    impl tokio_tungstenite::tungstenite::handshake::server::Callback for ExactAuthorizationCallback {
+        fn on_request(
+            self,
+            request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+            response: tokio_tungstenite::tungstenite::handshake::server::Response,
+        ) -> Result<
+            tokio_tungstenite::tungstenite::handshake::server::Response,
+            tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+        > {
+            assert!(
+                request
+                    .headers()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    == Some(self.0),
+                "fixture WebSocket authorization mismatch"
+            );
+            Ok(response)
+        }
+    }
+
+    #[cfg(feature = "websocket-review")]
+    struct ObserveAuthorizationCallback {
+        expected: &'static [u8],
+        observed: Arc<AtomicBool>,
+    }
+
+    #[cfg(feature = "websocket-review")]
+    impl tokio_tungstenite::tungstenite::handshake::server::Callback for ObserveAuthorizationCallback {
+        fn on_request(
+            self,
+            request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+            response: tokio_tungstenite::tungstenite::handshake::server::Response,
+        ) -> Result<
+            tokio_tungstenite::tungstenite::handshake::server::Response,
+            tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+        > {
+            self.observed.store(
+                request
+                    .headers()
+                    .get("authorization")
+                    .is_some_and(|value| value.as_bytes() == self.expected),
+                Ordering::SeqCst,
+            );
+            Ok(response)
+        }
+    }
+
     fn cookie_policy(application: &url::Url) -> SuppliedSessionPolicy {
         let bytes = format!(
             r#"schema = "security.supplied-session-policy/v2"
@@ -4299,17 +4351,7 @@ max_wall_time_ms = 5000
                     if preview.starts_with("GET /app/socket HTTP/1.1\r\n") {
                         let accepted = tokio_tungstenite::accept_hdr_async(
                             stream,
-                            |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                             response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-                                assert_eq!(
-                                    request
-                                        .headers()
-                                        .get("authorization")
-                                        .and_then(|value| value.to_str().ok()),
-                                    Some(SECRET)
-                                );
-                                Ok(response)
-                            },
+                            ExactAuthorizationCallback(SECRET),
                         )
                         .await;
                         if let Ok(mut socket) = accepted {
@@ -4444,15 +4486,9 @@ max_wall_time_ms = 5000
                     if preview.starts_with("GET /app/socket HTTP/1.1\r\n") {
                         let accepted = tokio_tungstenite::accept_hdr_async(
                             stream,
-                            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                                  response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-                                websocket_authorized.store(
-                                    request.headers().get("authorization").is_some_and(|value| {
-                                        value.as_bytes() == b"Bearer SESSION-DEADLINE-CANARY"
-                                    }),
-                                    Ordering::SeqCst,
-                                );
-                                Ok(response)
+                            ObserveAuthorizationCallback {
+                                expected: b"Bearer SESSION-DEADLINE-CANARY",
+                                observed: websocket_authorized,
                             },
                         )
                         .await;
