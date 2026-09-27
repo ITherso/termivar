@@ -4839,6 +4839,8 @@ impl WebAssessmentRuntime {
                     .secret_exposure_collector
                     .as_ref()
                     .map(|_| &self.secret_exposure_ledger),
+                #[cfg(feature = "websocket-review")]
+                websocket_selected: self.websocket_review.is_some(),
             },
             self.authority.knowledge(),
             &self.root,
@@ -7623,8 +7625,10 @@ fn form_method_for_predicate(
     }
 }
 
-#[cfg(all(test, feature = "websocket-review"))]
+#[cfg(test)]
 mod websocket_parent_completion_tests {
+    #![cfg(feature = "websocket-review")]
+
     use std::{future::pending, sync::Arc, time::Duration};
 
     use futures::StreamExt;

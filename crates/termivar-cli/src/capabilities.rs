@@ -632,7 +632,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "policy messages_read_only_acknowledged=true",
                 "policy message_content_is_non_secret=true",
             ],
-            "Reviews one explicitly declared application-contained same-authority ws/wss endpoint through one isolated anonymous connection. V1 sends one to eight sequential operator-declared read-oriented text messages, permits at most 64 KiB aggregate outbound and 64 KiB aggregate inbound application payload, and runs for at most ten seconds or the smaller parent deadline. Policy message bodies must be non-secret; message IDs are non-secret revision handles that must change when message or expected-response semantics change, and public references do not hash those private bytes. Binary application messages fail closed. Numeric-loopback fixtures may use ws; other targets require wss with normal certificate validation. The runtime performs no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended CONNECT. An optional Origin header is operator selected and does not establish browser exploitability because a non-browser client can choose it. Reports retain only bounded opaque references derived from non-secret identifiers, lengths, counts and classified outcomes, never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors. A successful upgrade or matched response does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact. The feature requires explicit --profile web-review and --websocket-review-policy FILE, remains development-only, and is outside default, release-bundle, published alpha.2 archives, and the initial curated package.",
+            "Reviews one explicitly declared application-contained same-authority ws/wss endpoint through one isolated anonymous connection. V1 sends one to eight sequential operator-declared read-oriented text messages, permits at most 64 KiB aggregate outbound and 64 KiB aggregate inbound application payload, and runs for at most ten seconds or the smaller parent deadline. Policy message bodies must be non-secret; message IDs are non-secret revision handles that must change when message or expected-response semantics change, and public references do not hash those private bytes. Binary application messages fail closed. Numeric-loopback fixtures may use ws; other targets require wss with normal certificate validation. The runtime performs no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookie forwarding, configured credential forwarding, session inheritance, or HTTP/2 extended CONNECT. An optional Origin header is operator selected and does not establish browser exploitability because a non-browser client can choose it. Reports retain only bounded opaque references derived from non-secret identifiers, lengths, counts and classified outcomes, never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors. A successful upgrade or matched response does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact. The feature requires explicit --profile web-review and --websocket-review-policy FILE, remains development-only, and is outside default, release-bundle, published alpha.2 archives, and the initial curated package.",
             "docs/internals/websocket-review.md",
         ),
         surface!(
@@ -1210,6 +1210,12 @@ mod tests {
                 "implemented",
             ),
             (
+                "option.websocket-review",
+                Some("websocket-review"),
+                "preview",
+                "implemented",
+            ),
+            (
                 "option.secret-exposure-review",
                 Some("secret-exposure-review"),
                 "preview",
@@ -1544,7 +1550,7 @@ mod tests {
             "ten seconds or the smaller parent deadline",
             "Numeric-loopback fixtures may use ws",
             "other targets require wss with normal certificate validation",
-            "no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended CONNECT",
+            "no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookie forwarding, configured credential forwarding, session inheritance, or HTTP/2 extended CONNECT",
             "does not establish browser exploitability",
             "never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors",
             "does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact",

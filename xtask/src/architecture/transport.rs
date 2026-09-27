@@ -443,6 +443,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(web_assessment_contract_violations(workspace_root)?);
     violations.extend(native_review_execution_contract_violations(workspace_root)?);
     violations.extend(openapi_runtime_contract_violations(workspace_root)?);
+    violations.extend(websocket_runtime_contract_violations(workspace_root)?);
 
     let expected_clients: BTreeSet<_> = DIRECT_CLIENT_SOURCE_ALLOWLIST
         .iter()
@@ -495,6 +496,166 @@ fn openapi_runtime_contract_violations(
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let source = fs::read_to_string(workspace_root.join(OPENAPI_RUNTIME_SOURCE))?;
     Ok(inspect_openapi_runtime_transport_boundary(&source)?)
+}
+
+fn websocket_runtime_contract_violations(
+    workspace_root: &Path,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let source = fs::read_to_string(workspace_root.join(WEBSOCKET_RUNTIME_SOURCE))?;
+    Ok(inspect_websocket_runtime_parent_accounting(&source)?)
+}
+
+fn inspect_websocket_runtime_parent_accounting(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+
+    let mut accounting_imports = Vec::new();
+    for item in &syntax.items {
+        let Item::Use(item) = item else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        collect_use_paths(&item.tree, Vec::new(), &mut paths);
+        accounting_imports.extend(paths.into_iter().filter(|(segments, _, _)| {
+            segments
+                .last()
+                .is_some_and(|segment| normalize_identifier(segment) == "RequestAccountingBroker")
+        }));
+    }
+    let exact_import = accounting_imports
+        .iter()
+        .filter_map(|(segments, binding, glob)| {
+            (!*glob
+                && segments
+                    .iter()
+                    .map(|segment| normalize_identifier(segment))
+                    .eq(["crate", "runtime_budget", "RequestAccountingBroker"])
+                && binding.as_deref().is_some_and(|binding| {
+                    normalize_identifier(binding) == "RequestAccountingBroker"
+                }))
+            .then_some(())
+        })
+        .count();
+    if accounting_imports.len() != 1 || exact_import != 1 {
+        violations.push(
+            "WebSocket runtime must import exactly one unaliased crate::runtime_budget::RequestAccountingBroker parent-accounting type"
+                .to_owned(),
+        );
+    }
+
+    let runtime_structs = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(item) if item.ident == "WebSocketReviewRuntime" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let exact_accounting_fields = runtime_structs
+        .iter()
+        .flat_map(|item| item.fields.iter())
+        .filter(|field| {
+            field
+                .ident
+                .as_ref()
+                .is_some_and(|ident| ident == "request_accounting")
+                && type_is_exact_path(&field.ty, &["RequestAccountingBroker"])
+        })
+        .count();
+    if runtime_structs.len() != 1 || exact_accounting_fields != 1 {
+        violations.push(
+            "WebSocketReviewRuntime must retain exactly one host-owned request_accounting: RequestAccountingBroker field"
+                .to_owned(),
+        );
+    }
+
+    let mut constructors = 0_usize;
+    let mut exact_constructor_arguments = 0_usize;
+    for item in &syntax.items {
+        let Item::Impl(item) = item else {
+            continue;
+        };
+        if item.trait_.is_some()
+            || !type_is_exact_path(item.self_ty.as_ref(), &["WebSocketReviewRuntime"])
+        {
+            continue;
+        }
+        for member in &item.items {
+            let syn::ImplItem::Fn(method) = member else {
+                continue;
+            };
+            if method.sig.ident != "new" {
+                continue;
+            }
+            constructors = constructors.saturating_add(1);
+            exact_constructor_arguments = exact_constructor_arguments.saturating_add(
+                method
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter(|argument| {
+                        exact_named_typed_argument(argument, "request_accounting", |item_type| {
+                            type_is_exact_path(item_type, &["RequestAccountingBroker"])
+                        })
+                    })
+                    .count(),
+            );
+        }
+    }
+    if constructors != 1 || exact_constructor_arguments != 1 {
+        violations.push(
+            "WebSocketReviewRuntime::new must consume exactly one host-owned RequestAccountingBroker argument"
+                .to_owned(),
+        );
+    }
+
+    let mut reference_visitor = WebSocketAccountingReferenceVisitor::default();
+    reference_visitor.visit_file(&syntax);
+    if reference_visitor.type_references != 2 || reference_visitor.macro_references != 0 {
+        violations.push(format!(
+            "WebSocket runtime must retain exactly two production RequestAccountingBroker type references and no macro references, found {}/{}",
+            reference_visitor.type_references, reference_visitor.macro_references,
+        ));
+    }
+
+    Ok(violations)
+}
+
+#[derive(Default)]
+struct WebSocketAccountingReferenceVisitor {
+    type_references: usize,
+    macro_references: usize,
+}
+
+impl<'ast> Visit<'ast> for WebSocketAccountingReferenceVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !transport_item_is_test_only(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_item_use(&mut self, _item: &'ast ItemUse) {}
+
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        if path.segments.last().is_some_and(|segment| {
+            normalize_identifier(&ident_name(&segment.ident)) == "RequestAccountingBroker"
+        }) {
+            self.type_references = self.type_references.saturating_add(1);
+        }
+        visit::visit_path(self, path);
+    }
+
+    fn visit_macro(&mut self, item: &'ast Macro) {
+        let mut identifiers = BTreeSet::new();
+        collect_token_identifiers(item.tokens.clone(), &mut identifiers);
+        if identifiers
+            .iter()
+            .any(|identifier| normalize_identifier(identifier) == "RequestAccountingBroker")
+        {
+            self.macro_references = self.macro_references.saturating_add(1);
+        }
+        visit::visit_macro(self, item);
+    }
 }
 
 fn inspect_openapi_runtime_transport_boundary(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -9618,10 +9779,10 @@ impl OwnershipVisitor<'_> {
             || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
             || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
             && segments.iter().any(|segment| {
-                matches!(
-                    normalize_identifier(segment),
-                    "HttpRequestBroker" | "RequestAccountingBroker" | "RuntimeBudget"
-                )
+                let segment = normalize_identifier(segment);
+                matches!(segment, "HttpRequestBroker" | "RuntimeBudget")
+                    || (segment == "RequestAccountingBroker"
+                        && self.source != WEBSOCKET_RUNTIME_SOURCE)
             })
         {
             self.violations.insert(format!(
@@ -9776,10 +9937,9 @@ impl OwnershipVisitor<'_> {
                     || self.source == WORDPRESS_RUNTIME_SOURCE
                     || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
                     || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
-                    && matches!(
-                        identifier.as_str(),
-                        "HttpRequestBroker" | "RequestAccountingBroker" | "RuntimeBudget"
-                    )
+                    && (matches!(identifier.as_str(), "HttpRequestBroker" | "RuntimeBudget")
+                        || (identifier == "RequestAccountingBroker"
+                            && self.source != WEBSOCKET_RUNTIME_SOURCE))
                 {
                     self.violations.insert(format!(
                         "{} hides forbidden transport-owning review authority {identifier} inside a macro",
@@ -11336,6 +11496,7 @@ mod tests {
             "use reqwest::Client;",
             "use tokio::{self};",
             "use crate::http_evidence::HttpRequestBroker;",
+            "use crate::runtime_budget::RuntimeBudget;",
         ] {
             let violations = inspect_bounded_source(WEBSOCKET_RUNTIME_SOURCE, forbidden)
                 .unwrap()
@@ -11345,6 +11506,67 @@ mod tests {
                 "WebSocket direct-socket exception unexpectedly admitted {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn websocket_runtime_receives_one_exact_parent_accounting_type_without_owning_it() {
+        const REVIEWED: &str = r#"
+            use crate::runtime_budget::RequestAccountingBroker;
+
+            pub(super) struct WebSocketReviewRuntime {
+                request_accounting: RequestAccountingBroker,
+            }
+
+            impl WebSocketReviewRuntime {
+                pub(super) fn new(request_accounting: RequestAccountingBroker) -> Self {
+                    Self { request_accounting }
+                }
+            }
+        "#;
+
+        assert!(inspect_websocket_runtime_parent_accounting(REVIEWED)
+            .unwrap()
+            .is_empty());
+        assert!(inspect_bounded_source(WEBSOCKET_RUNTIME_SOURCE, REVIEWED)
+            .unwrap()
+            .is_empty());
+
+        for mutation in [
+            REVIEWED.replace(
+                "RequestAccountingBroker;",
+                "RequestAccountingBroker as Accounting;",
+            ),
+            REVIEWED.replace(
+                "request_accounting: RequestAccountingBroker,",
+                "request_accounting: Accounting,",
+            ),
+            REVIEWED.replace(
+                "pub(super) fn new(request_accounting: RequestAccountingBroker)",
+                "pub(super) fn new(request_accounting: Accounting)",
+            ),
+            REVIEWED.replace(
+                "Self { request_accounting }",
+                "let _ = RequestAccountingBroker::new(budget()); Self { request_accounting }",
+            ),
+        ] {
+            assert!(
+                !inspect_websocket_runtime_parent_accounting(&mutation)
+                    .unwrap()
+                    .is_empty(),
+                "WebSocket parent-accounting mutation unexpectedly passed:\n{mutation}"
+            );
+        }
+
+        let foreign = inspect_bounded_source(
+            "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
+            "use crate::runtime_budget::RequestAccountingBroker;",
+        )
+        .unwrap()
+        .join("\n");
+        assert!(
+            foreign.contains("forbidden direct transport authority"),
+            "{foreign}"
+        );
     }
 
     #[test]

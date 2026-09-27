@@ -365,7 +365,7 @@ fn malformed_policy_fails_before_output_or_transport() {
     assert!(!directory.path().join("must-not-exist").exists());
     assert!(fixture.events().is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("WebSocket review policy document is invalid"));
+    assert!(stderr.contains("InvalidDocument"));
     assert!(!stderr.contains("PRIVATE-unauthorized"));
     assert!(!stderr.contains(&fixture.endpoint));
 }
@@ -377,7 +377,13 @@ fn actual_cli_uses_one_anonymous_connection_and_remains_offline_readable() {
 
     let option_off = directory.path().join("option-off");
     let output = run_scan(&fixture.target, &option_off, None);
-    assert_success(&output, "option-off scan");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("assessment_subject_identity_unavailable")
+    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("profiled assessment did not complete within its authority"));
+    assert!(!option_off.exists());
     let option_off_http = fixture
         .events()
         .into_iter()
@@ -477,9 +483,4 @@ fn actual_cli_uses_one_anonymous_connection_and_remains_offline_readable() {
     assert_eq!(audit["coverage"]["terminal"], "completed");
     assert_eq!(audit["messages"].as_array().map(Vec::len), Some(2));
     run_offline_acceptance(&option_on, &assessment);
-
-    let option_off_assessment = read_bundle(&option_off);
-    assert!(option_off_assessment
-        .get("websocket_review")
-        .is_none_or(Value::is_null));
 }

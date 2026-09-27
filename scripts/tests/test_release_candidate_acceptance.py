@@ -188,8 +188,9 @@ EXPECTED_WEBSOCKET_REVIEW_LIMITATION = (
     "bytes. Binary application messages fail closed. Numeric-loopback fixtures may use ws; other "
     "targets require wss with normal certificate validation. The runtime performs no "
     "endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy "
-    "use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended "
-    "CONNECT. An optional Origin header is operator selected and does not establish browser "
+    "use, cookie forwarding, configured credential forwarding, session inheritance, or "
+    "HTTP/2 extended CONNECT. An optional Origin header is operator selected and does not "
+    "establish browser "
     "exploitability because a non-browser client can choose it. Reports retain only bounded "
     "opaque references derived from non-secret identifiers, lengths, counts and classified "
     "outcomes, never message "
@@ -3568,7 +3569,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("ten seconds or the smaller parent deadline", "no deadline"),
             ("Numeric-loopback fixtures may use ws; other targets require wss with normal certificate validation",
              "all targets may use ws"),
-            ("no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended CONNECT",
+            ("no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookie forwarding, configured credential forwarding, session inheritance, or HTTP/2 extended CONNECT",
              "automatic endpoint discovery and session inheritance"),
             ("does not establish browser exploitability", "confirms browser exploitability"),
             ("never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors",

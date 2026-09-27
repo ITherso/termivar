@@ -874,7 +874,7 @@ impl WebSocketReviewRuntime {
         }
         if configured_bytes > MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION
             || configured_expected_bytes > MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION
-            || messages.len() > usize::from(MAX_WEBSOCKET_REVIEW_MESSAGES)
+            || messages.len() > MAX_WEBSOCKET_REVIEW_MESSAGES
         {
             return Err(WebSocketReviewRuntimeMintError::InternalInvariant);
         }
@@ -883,17 +883,14 @@ impl WebSocketReviewRuntime {
             max_connections: MAX_WEBSOCKET_REVIEW_CONNECTIONS,
             max_outbound_application_bytes: MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION,
             max_inbound_application_bytes: MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION,
-            max_outbound_message_bytes: u64::try_from(policy.max_outbound_message_bytes())
-                .unwrap_or(u64::MAX),
-            max_inbound_message_bytes: u64::try_from(policy.max_inbound_message_bytes())
-                .unwrap_or(u64::MAX),
-            max_messages: u64::try_from(policy.max_messages()).unwrap_or(u64::MAX),
-            max_control_frames: u64::try_from(policy.max_control_frames()).unwrap_or(u64::MAX),
+            max_outbound_message_bytes: policy.max_outbound_message_bytes(),
+            max_inbound_message_bytes: policy.max_inbound_message_bytes(),
+            max_messages: u64::from(policy.max_messages()),
+            max_control_frames: u64::from(policy.max_control_frames()),
             max_wall_time_ms: policy.max_wall_time_ms(),
         };
         if limits.max_messages > u64::try_from(MAX_WEBSOCKET_REVIEW_MESSAGES).unwrap_or(u64::MAX)
-            || limits.max_control_frames
-                > u64::try_from(MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES).unwrap_or(u64::MAX)
+            || limits.max_control_frames > u64::from(MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES)
             || limits.max_outbound_message_bytes
                 > MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION
             || limits.max_inbound_message_bytes
@@ -998,7 +995,7 @@ impl WebSocketReviewRuntime {
             .unwrap_or(usize::MAX)
             .min(usize::try_from(MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION).unwrap());
         let websocket_config = WebSocketConfig::default()
-            .read_buffer_size(max_inbound.min(16 * 1024).max(1024))
+            .read_buffer_size(max_inbound.clamp(1024, 16 * 1024))
             .write_buffer_size(0)
             .max_write_buffer_size(
                 usize::try_from(MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION)
@@ -1268,9 +1265,7 @@ impl WebSocketReviewRuntime {
             let next = bounded(&self.cancellation, deadline, socket.next()).await;
             let accounting = self.observe_transport_delta(lease, counters, before);
             drop(read_guard);
-            if let Err(outcome) = accounting {
-                return Err(outcome);
-            }
+            accounting?;
             let message = match next {
                 Ok(Some(Ok(message))) => message,
                 Ok(Some(Err(TungsteniteError::Capacity(_)))) => {
@@ -1304,12 +1299,8 @@ impl WebSocketReviewRuntime {
                     return Err(TransportDispatchOutcome::TransportFailure);
                 },
                 Message::Ping(_) => {
-                    if let Err(outcome) = self
-                        .observe_inbound_control_and_flush(socket, lease, counters, deadline)
-                        .await
-                    {
-                        return Err(outcome);
-                    }
+                    self.observe_inbound_control_and_flush(socket, lease, counters, deadline)
+                        .await?;
                 },
                 Message::Pong(_) => {
                     self.observe_inbound_control()?;
@@ -1343,9 +1334,7 @@ impl WebSocketReviewRuntime {
                         let flushed = bounded(&self.cancellation, deadline, socket.flush()).await;
                         let accounting = self.observe_transport_delta(lease, counters, before);
                         drop(read_guard);
-                        if let Err(outcome) = accounting {
-                            return Err(outcome);
-                        }
+                        accounting?;
                         match flushed {
                             Ok(Ok(())) => {
                                 self.audit.outbound_control_frame_count += 1;
@@ -1466,9 +1455,7 @@ impl WebSocketReviewRuntime {
         let flushed = bounded(&self.cancellation, deadline, socket.flush()).await;
         let accounting = self.observe_transport_delta(lease, counters, before);
         drop(read_guard);
-        if let Err(outcome) = accounting {
-            return Err(outcome);
-        }
+        accounting?;
         match flushed {
             Ok(Ok(())) => {
                 self.audit.outbound_control_frame_count += 1;
@@ -1523,9 +1510,7 @@ impl WebSocketReviewRuntime {
         let closed = bounded(&self.cancellation, deadline, socket.close(None)).await;
         let accounting = self.observe_transport_delta(lease, counters, before);
         drop(read_guard);
-        if let Err(outcome) = accounting {
-            return Err(outcome);
-        }
+        accounting?;
         match closed {
             Ok(Ok(())) => {
                 self.audit.outbound_control_frame_count += 1;
@@ -1705,7 +1690,7 @@ fn fallback_audit(
     let mut messages = Vec::new();
     for message in policy
         .execution_messages()
-        .take(usize::from(MAX_WEBSOCKET_REVIEW_MESSAGES))
+        .take(MAX_WEBSOCKET_REVIEW_MESSAGES)
     {
         messages.push(WebSocketReviewMessageAudit {
             message_reference: message.message_reference().to_owned(),
@@ -1745,12 +1730,10 @@ fn fallback_audit(
             max_connections: 1,
             max_outbound_application_bytes: MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION,
             max_inbound_application_bytes: MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION,
-            max_outbound_message_bytes: u64::try_from(policy.max_outbound_message_bytes())
-                .unwrap_or(u64::MAX),
-            max_inbound_message_bytes: u64::try_from(policy.max_inbound_message_bytes())
-                .unwrap_or(u64::MAX),
-            max_messages: u64::try_from(policy.max_messages()).unwrap_or(u64::MAX),
-            max_control_frames: u64::try_from(policy.max_control_frames()).unwrap_or(u64::MAX),
+            max_outbound_message_bytes: policy.max_outbound_message_bytes(),
+            max_inbound_message_bytes: policy.max_inbound_message_bytes(),
+            max_messages: u64::from(policy.max_messages()),
+            max_control_frames: u64::from(policy.max_control_frames()),
             max_wall_time_ms: policy.max_wall_time_ms(),
         },
     };

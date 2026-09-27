@@ -877,12 +877,14 @@ fn parse_sha256(value: &str) -> Result<[u8; 32], WebSocketReviewPolicyError> {
         return Err(WebSocketReviewPolicyError::InvalidExpectedResponse);
     }
     let mut decoded = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-        let high =
-            lower_hex_nibble(pair[0]).ok_or(WebSocketReviewPolicyError::InvalidExpectedResponse)?;
-        let low =
-            lower_hex_nibble(pair[1]).ok_or(WebSocketReviewPolicyError::InvalidExpectedResponse)?;
-        decoded[index] = (high << 4) | low;
+    let encoded = value.as_bytes();
+    for (index, byte) in decoded.iter_mut().enumerate() {
+        let offset = index * 2;
+        let high = lower_hex_nibble(encoded[offset])
+            .ok_or(WebSocketReviewPolicyError::InvalidExpectedResponse)?;
+        let low = lower_hex_nibble(encoded[offset + 1])
+            .ok_or(WebSocketReviewPolicyError::InvalidExpectedResponse)?;
+        *byte = (high << 4) | low;
     }
     Ok(decoded)
 }

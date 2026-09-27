@@ -367,7 +367,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "Binary application messages fail closed",
         "64 KiB aggregate outbound and 64 KiB aggregate inbound",
         "Numeric-loopback fixtures may use ws",
-        "no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended CONNECT",
+        "no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookie forwarding, configured credential forwarding, session inheritance, or HTTP/2 extended CONNECT",
         "does not establish browser exploitability",
         "never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors",
         "does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact",

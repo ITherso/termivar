@@ -1099,6 +1099,8 @@ pub(crate) struct AssessmentReviewProjectionSources<'a> {
     pub(crate) wordpress: Option<&'a CommittedWordPressReview>,
     #[cfg(feature = "secret-exposure-review")]
     pub(crate) secret_exposure: Option<&'a CommittedSecretExposureLedger>,
+    #[cfg(feature = "websocket-review")]
+    pub(crate) websocket_selected: bool,
 }
 
 /// Test adapter that projects only the explicitly authorized root.
@@ -1129,6 +1131,8 @@ pub(crate) fn project_passive_assessment_items(
             wordpress: None,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure: None,
+            #[cfg(feature = "websocket-review")]
+            websocket_selected: false,
         },
         knowledge,
         authorized_root,
@@ -1166,6 +1170,8 @@ pub(crate) fn project_assessment_items(
     #[cfg(feature = "secret-exposure-review")]
     let project_selected_application =
         project_selected_application || reviews.secret_exposure.is_some();
+    #[cfg(feature = "websocket-review")]
+    let project_selected_application = project_selected_application || reviews.websocket_selected;
     // Anonymous and WordPress-only projections retain `authorized-root@1`.
     // Supplied-session projections additionally bind the root item identity to
     // the already-redacted application reference so two declared applications
@@ -1302,6 +1308,8 @@ fn project_passive_assessment_items_for_root(
             wordpress: None,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure: None,
+            #[cfg(feature = "websocket-review")]
+            websocket_selected: false,
         },
         knowledge,
         scope,
