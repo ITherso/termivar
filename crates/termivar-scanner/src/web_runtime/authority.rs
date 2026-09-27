@@ -15,6 +15,11 @@ use crate::{
     HttpEvidencePolicy, KnowledgeBase, RuntimeBudget,
 };
 
+#[cfg(feature = "websocket-review")]
+use super::websocket_runtime::{WebSocketReviewRuntime, WebSocketReviewRuntimeMintError};
+#[cfg(feature = "websocket-review")]
+use crate::websocket_review::WebSocketReviewPolicy;
+
 #[cfg(feature = "tls-observation")]
 use super::{TlsObservationCollector, WebAssessmentTlsObservationAudit};
 
@@ -73,6 +78,7 @@ impl SharedWebRuntimeTiming {
 /// deadline remain common to every clone.
 #[derive(Clone)]
 pub(crate) struct SharedWebRuntimeAuthority {
+    selected_target: Url,
     policy: HttpEvidencePolicy,
     budget: RuntimeBudget,
     knowledge: KnowledgeBase,
@@ -84,6 +90,8 @@ pub(crate) struct SharedWebRuntimeAuthority {
     tls_observation: Option<TlsObservationCollector>,
     #[cfg(feature = "oast-native-provider")]
     native_oast_provider_minted: Arc<std::sync::Mutex<bool>>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review_minted: Arc<std::sync::Mutex<bool>>,
 }
 
 impl SharedWebRuntimeAuthority {
@@ -154,6 +162,7 @@ impl SharedWebRuntimeAuthority {
         )?;
 
         Ok(Self {
+            selected_target: target.clone(),
             policy,
             budget,
             knowledge: KnowledgeBase::new(),
@@ -164,6 +173,8 @@ impl SharedWebRuntimeAuthority {
             tls_observation: Some(tls_observation),
             #[cfg(feature = "oast-native-provider")]
             native_oast_provider_minted: Arc::new(std::sync::Mutex::new(false)),
+            #[cfg(feature = "websocket-review")]
+            websocket_review_minted: Arc::new(std::sync::Mutex::new(false)),
         })
     }
 
@@ -189,6 +200,7 @@ impl SharedWebRuntimeAuthority {
         let requests = HttpRequestBroker::new_metered(policy.clone(), request_accounting.clone())?;
 
         Ok(Self {
+            selected_target: target.clone(),
             policy,
             budget,
             knowledge: KnowledgeBase::new(),
@@ -200,6 +212,8 @@ impl SharedWebRuntimeAuthority {
             tls_observation,
             #[cfg(feature = "oast-native-provider")]
             native_oast_provider_minted: Arc::new(std::sync::Mutex::new(false)),
+            #[cfg(feature = "websocket-review")]
+            websocket_review_minted: Arc::new(std::sync::Mutex::new(false)),
         })
     }
 
@@ -253,6 +267,56 @@ impl SharedWebRuntimeAuthority {
                 deadline: started_at.checked_add(self.budget.max_wall_time()),
             }
         })
+    }
+
+    /// Mints the sole direct WebSocket connection authority for this assessment.
+    ///
+    /// The RFC 6455 endpoint is remapped to its HTTP(S) handshake origin and
+    /// checked against the already-narrowed parent policy immediately before
+    /// the consuming executor is created.
+    #[cfg(feature = "websocket-review")]
+    pub(super) fn mint_websocket_review(
+        &self,
+        policy: &WebSocketReviewPolicy,
+    ) -> Result<WebSocketReviewRuntime, WebSocketReviewRuntimeMintError> {
+        if !policy.is_bound_to_application(&self.selected_target) {
+            return Err(WebSocketReviewRuntimeMintError::EndpointOutsideAuthority);
+        }
+        let mut handshake_target = policy.execution_endpoint().clone();
+        let handshake_scheme = match handshake_target.scheme() {
+            "ws" => "http",
+            "wss" => "https",
+            _ => return Err(WebSocketReviewRuntimeMintError::EndpointOutsideAuthority),
+        };
+        handshake_target
+            .set_scheme(handshake_scheme)
+            .map_err(|()| WebSocketReviewRuntimeMintError::EndpointOutsideAuthority)?;
+        self.authorize_target(&handshake_target)
+            .map_err(|_| WebSocketReviewRuntimeMintError::EndpointOutsideAuthority)?;
+        let application_origin = handshake_target.origin().ascii_serialization();
+        if policy
+            .execution_origin()
+            .is_some_and(|origin| origin != application_origin)
+        {
+            return Err(WebSocketReviewRuntimeMintError::EndpointOutsideAuthority);
+        }
+
+        let mut minted = self
+            .websocket_review_minted
+            .lock()
+            .map_err(|_| WebSocketReviewRuntimeMintError::InternalInvariant)?;
+        if *minted {
+            return Err(WebSocketReviewRuntimeMintError::AuthorityAlreadyMinted);
+        }
+        let runtime = WebSocketReviewRuntime::new(
+            policy,
+            application_origin,
+            self.request_accounting.clone(),
+            self.cancellation.clone(),
+            self.start().deadline(),
+        )?;
+        *minted = true;
+        Ok(runtime)
     }
 
     /// Mints the single narrowing native-provider authority from the same
@@ -359,6 +423,44 @@ mod tests {
 
     fn target(path: &str) -> Url {
         Url::parse(&format!("https://example.test{path}")).unwrap()
+    }
+
+    #[cfg(feature = "websocket-review")]
+    fn websocket_policy(application: &Url) -> WebSocketReviewPolicy {
+        use sha2::{Digest, Sha256};
+
+        let expected_sha256 = format!("{:x}", Sha256::digest(b"ok"));
+        let endpoint = application.join("socket").unwrap();
+        let mut endpoint = endpoint;
+        endpoint.set_scheme("wss").unwrap();
+        let source = serde_json::to_vec(&serde_json::json!({
+            "schema": "security.websocket-review-policy/v1",
+            "target_authorized": true,
+            "messages_read_only_acknowledged": true,
+            "message_content_is_non_secret": true,
+            "endpoint": endpoint.as_str(),
+            "origin_mode": "application_origin",
+            "subprotocol": null,
+            "compression": false,
+            "reconnect": false,
+            "messages": [{
+                "id": "authority-message",
+                "text": "read",
+                "expected_response": {
+                    "sha256": expected_sha256,
+                    "length": 2
+                }
+            }],
+            "limits": {
+                "max_inbound_message_bytes": 4096,
+                "max_outbound_message_bytes": 4096,
+                "max_messages": 1,
+                "max_control_frames": 2,
+                "max_wall_time_ms": 1000
+            }
+        }))
+        .unwrap();
+        WebSocketReviewPolicy::parse_json(application, &source).unwrap()
     }
 
     #[cfg(feature = "tls-observation")]
@@ -829,6 +931,41 @@ mod tests {
             authority.authorize_target(&Url::parse("ftp://example.test/archive").unwrap()),
             Err(HttpEvidenceError::UnsupportedScheme { .. })
         ));
+    }
+
+    #[cfg(feature = "websocket-review")]
+    #[test]
+    fn websocket_mint_rechecks_exact_application_binding_and_is_one_shot() {
+        let application_a = target("/app-a/");
+        let application_b = target("/app-b/");
+        let policy = websocket_policy(&application_a);
+        let wrong_authority = SharedWebRuntimeAuthority::new_exact_origin(
+            &application_b,
+            HttpEvidencePolicy::for_origin(application_b.clone()).unwrap(),
+            RuntimeBudget::default(),
+            CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_authority
+                .mint_websocket_review(&policy)
+                .err()
+                .unwrap(),
+            WebSocketReviewRuntimeMintError::EndpointOutsideAuthority
+        );
+
+        let authority = SharedWebRuntimeAuthority::new_exact_origin(
+            &application_a,
+            HttpEvidencePolicy::for_origin(application_a.clone()).unwrap(),
+            RuntimeBudget::default(),
+            CancellationToken::new(),
+        )
+        .unwrap();
+        authority.mint_websocket_review(&policy).unwrap();
+        assert_eq!(
+            authority.mint_websocket_review(&policy).err().unwrap(),
+            WebSocketReviewRuntimeMintError::AuthorityAlreadyMinted
+        );
     }
 
     #[test]

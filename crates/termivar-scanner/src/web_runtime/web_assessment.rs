@@ -86,6 +86,11 @@ use super::supplied_session_runtime::{
 };
 #[cfg(feature = "tls-observation")]
 use super::tls_observation::WebAssessmentTlsObservationAudit;
+#[cfg(feature = "websocket-review")]
+use super::websocket_runtime::{
+    execute_websocket_review, websocket_review_not_run, WebAssessmentWebSocketReviewAudit,
+    WebSocketReviewFailureKind,
+};
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_fingerprint_runtime::{
     WordPressAssetFingerprintCollector, WordPressAssetFingerprintStop,
@@ -142,6 +147,8 @@ use crate::ssrf_oast_review::{
 use crate::supplied_session_review::SuppliedSessionPolicyVersion;
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{SuppliedSessionPolicy, SuppliedSessionRuntimeInput};
+#[cfg(feature = "websocket-review")]
+use crate::websocket_review::WebSocketReviewPolicy;
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::WordPressReviewInputs;
 use crate::{
@@ -1409,6 +1416,8 @@ pub struct WebAssessmentRunReport {
     jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<WebAssessmentOpenApiAudit>,
     #[cfg(feature = "rest-review")]
@@ -1448,6 +1457,8 @@ impl fmt::Debug for WebAssessmentRunReport {
             .field("defense", &self.defense);
         #[cfg(feature = "authorization-review")]
         debug.field("authorization_review", &self.authorization_review);
+        #[cfg(feature = "websocket-review")]
+        debug.field("websocket_review", &self.websocket_review);
         #[cfg(feature = "supplied-session-review")]
         debug.field("supplied_session", &self.supplied_session);
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1530,6 +1541,11 @@ impl WebAssessmentRunReport {
     #[cfg(feature = "authorization-review")]
     pub const fn authorization_review_audit(&self) -> Option<&WebAssessmentAuthorizationAudit> {
         self.authorization_review.as_ref()
+    }
+    /// Returns the optional bounded, anonymous WebSocket protocol audit.
+    #[cfg(feature = "websocket-review")]
+    pub const fn websocket_review_audit(&self) -> Option<&WebAssessmentWebSocketReviewAudit> {
+        self.websocket_review.as_ref()
     }
     /// Returns the optional value-free six-leg JWT target-acceptance audit.
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1626,6 +1642,8 @@ impl WebAssessmentRunReport {
             self.supplied_session,
             #[cfg(feature = "authorization-review")]
             self.authorization_review,
+            #[cfg(feature = "websocket-review")]
+            self.websocket_review,
             #[cfg(feature = "jwt-target-acceptance-review")]
             self.jwt_target_acceptance,
             #[cfg(feature = "openapi-review")]
@@ -1796,6 +1814,9 @@ pub enum WebAssessmentRuntimeError {
     #[cfg(feature = "authorization-review")]
     #[error("resource authorization review requires protected authenticated transport")]
     InsecureAuthorizationReviewTransport,
+    #[cfg(feature = "websocket-review")]
+    #[error("WebSocket review policy does not match the exact assessment application")]
+    WebSocketReviewApplicationMismatch,
     #[cfg(feature = "jwt-target-acceptance-review")]
     #[error("JWT target-acceptance policy does not match the exact assessment application")]
     JwtTargetAcceptanceApplicationMismatch,
@@ -1918,6 +1939,10 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             #[cfg(feature = "authorization-review")]
             Self::InsecureAuthorizationReviewTransport => formatter
                 .write_str("WebAssessmentRuntimeError::InsecureAuthorizationReviewTransport"),
+            #[cfg(feature = "websocket-review")]
+            Self::WebSocketReviewApplicationMismatch => {
+                formatter.write_str("WebAssessmentRuntimeError::WebSocketReviewApplicationMismatch")
+            },
             #[cfg(feature = "jwt-target-acceptance-review")]
             Self::JwtTargetAcceptanceApplicationMismatch => formatter
                 .write_str("WebAssessmentRuntimeError::JwtTargetAcceptanceApplicationMismatch"),
@@ -2085,6 +2110,8 @@ pub struct WebAssessmentRuntimeBuilder {
     tls_observation: bool,
     #[cfg(feature = "recon-ct-provider")]
     recon_ct_provider: Option<ReconCtProviderPolicy>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review: Option<WebSocketReviewPolicy>,
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     wordpress_supplied_session: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
@@ -2127,6 +2154,8 @@ impl WebAssessmentRuntimeBuilder {
             tls_observation: false,
             #[cfg(feature = "recon-ct-provider")]
             recon_ct_provider: None,
+            #[cfg(feature = "websocket-review")]
+            websocket_review: None,
             #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
             wordpress_supplied_session: false,
             root_authorization_context: None,
@@ -2281,6 +2310,17 @@ impl WebAssessmentRuntimeBuilder {
     #[cfg(feature = "recon-ct-provider")]
     pub fn with_recon_ct_provider(mut self, policy: ReconCtProviderPolicy) -> Self {
         self.recon_ct_provider = Some(policy);
+        self
+    }
+    /// Adds one explicitly declared anonymous WebSocket exchange.
+    ///
+    /// The policy remains a narrowing child of the selected application. It
+    /// owns no credentials, endpoint discovery, retry, reconnect, or second
+    /// assessment and is re-bound to the exact root again during build and
+    /// one-shot authority minting.
+    #[cfg(feature = "websocket-review")]
+    pub fn with_websocket_review(mut self, policy: WebSocketReviewPolicy) -> Self {
+        self.websocket_review = Some(policy);
         self
     }
     /// Adds one explicitly selected, four-view resource authorization review.
@@ -2449,6 +2489,14 @@ impl WebAssessmentRuntimeBuilder {
             .is_some_and(|(policy, _)| policy.application_url() != &root.url)
         {
             return Err(WebAssessmentRuntimeError::SuppliedSessionApplicationMismatch);
+        }
+        #[cfg(feature = "websocket-review")]
+        if self
+            .websocket_review
+            .as_ref()
+            .is_some_and(|policy| !policy.is_bound_to_application(&root.url))
+        {
+            return Err(WebAssessmentRuntimeError::WebSocketReviewApplicationMismatch);
         }
         #[cfg(feature = "supplied-session-review")]
         if self.supplied_session_review.is_some() && !authenticated_transport_is_allowed(&root.url)
@@ -2769,6 +2817,8 @@ impl WebAssessmentRuntimeBuilder {
             wordpress_review,
             #[cfg(feature = "recon-ct-provider")]
             recon_ct_provider: self.recon_ct_provider,
+            #[cfg(feature = "websocket-review")]
+            websocket_review: self.websocket_review,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure_collector: self
                 .secret_exposure_review
@@ -2806,6 +2856,8 @@ impl WebAssessmentRuntimeBuilder {
             ssrf_oast_review_audit: None,
             #[cfg(feature = "supplied-session-review")]
             supplied_session_audit: None,
+            #[cfg(feature = "websocket-review")]
+            websocket_review_audit: None,
             #[cfg(feature = "wordpress-review")]
             committed_wordpress_review: None,
             #[cfg(feature = "graphql-review")]
@@ -2855,6 +2907,8 @@ pub struct WebAssessmentRuntime {
     wordpress_review: Option<WordPressReviewBinding>,
     #[cfg(feature = "recon-ct-provider")]
     recon_ct_provider: Option<ReconCtProviderPolicy>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review: Option<WebSocketReviewPolicy>,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_collector: Option<SecretExposureCollector>,
     #[cfg(feature = "secret-exposure-review")]
@@ -2890,6 +2944,8 @@ pub struct WebAssessmentRuntime {
     ssrf_oast_review_audit: Option<WebAssessmentSsrfOastAudit>,
     #[cfg(feature = "supplied-session-review")]
     supplied_session_audit: Option<WebAssessmentSuppliedSessionAudit>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review_audit: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "wordpress-review")]
     committed_wordpress_review: Option<CommittedWordPressReview>,
     #[cfg(feature = "graphql-review")]
@@ -4818,6 +4874,19 @@ impl WebAssessmentRuntime {
             reasons.insert(WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable);
         }
         let semantics = self.extract_semantics_and_refresh_limits(&mut reasons, started_at);
+        #[cfg(feature = "websocket-review")]
+        if let Some(policy) = self.websocket_review.take() {
+            self.websocket_review_audit = Some(if reasons.is_empty() {
+                execute_websocket_review(&self.authority, &policy).await
+            } else {
+                websocket_review_not_run(
+                    &policy,
+                    WebSocketReviewFailureKind::ParentAuthorityUnavailable,
+                )
+            });
+        }
+        #[cfg(feature = "websocket-review")]
+        self.refresh_parent_limits_after_websocket(&mut reasons, started_at);
         #[cfg(feature = "recon-ct-provider")]
         let recon_ct_provider = if !reasons.is_empty() {
             // The incomplete-run diagnostic contract cannot carry a provider
@@ -4870,6 +4939,8 @@ impl WebAssessmentRuntime {
             jwt_target_acceptance: self.jwt_target_acceptance_audit.clone(),
             #[cfg(feature = "authorization-review")]
             authorization_review: self.authorization_review_audit.clone(),
+            #[cfg(feature = "websocket-review")]
+            websocket_review: self.websocket_review_audit.clone(),
             #[cfg(feature = "openapi-review")]
             openapi_review: self.openapi_review_audit.clone(),
             #[cfg(feature = "rest-review")]
@@ -5314,6 +5385,52 @@ impl WebAssessmentRuntime {
             reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
         }
         semantics
+    }
+
+    /// Reconciles only parent-global stop truth created while the optional
+    /// WebSocket child was executing.
+    ///
+    /// A child-local handshake, protocol, expectation, or ten-second policy
+    /// failure remains a first-class selected audit and does not make the
+    /// otherwise completed assessment incomplete. Host cancellation, the
+    /// parent wall deadline, and exhaustion of the shared request/response
+    /// authority do. Refreshing those facts here also prevents a later
+    /// third-party provider from starting after the parent has stopped.
+    #[cfg(feature = "websocket-review")]
+    fn refresh_parent_limits_after_websocket(
+        &self,
+        reasons: &mut BTreeSet<WebAssessmentIncompleteReason>,
+        started_at: tokio::time::Instant,
+    ) {
+        let Some(audit) = self.websocket_review_audit.as_ref() else {
+            return;
+        };
+        if self.authority.cancellation().is_cancelled() {
+            reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+        }
+        if started_at.elapsed() >= self.limits.max_wall_time() {
+            reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
+        }
+        if audit.first_failure() == Some(WebSocketReviewFailureKind::ParentResponseBudgetReached) {
+            reasons.insert(WebAssessmentIncompleteReason::ResponseBytesLimit);
+        }
+        if audit.first_failure() != Some(WebSocketReviewFailureKind::ParentAuthorityUnavailable)
+            || audit.request_attempt_count() == 0
+        {
+            return;
+        }
+
+        // A passive, zero-request-body WebSocket lease can be refused here
+        // only by the parent's total-request or already-consumed response-byte
+        // ceilings. Preserve either (or both) exact shared dimensions instead
+        // of projecting the child's value-free refusal as a local failure.
+        let accounting = self.authority.request_accounting().snapshot();
+        if accounting.total_requests() >= self.limits.max_total_requests() {
+            reasons.insert(WebAssessmentIncompleteReason::TotalRequestLimit);
+        }
+        if accounting.response_bytes() >= self.limits.max_total_response_bytes() {
+            reasons.insert(WebAssessmentIncompleteReason::ResponseBytesLimit);
+        }
     }
 
     fn replay_passive_bootstrap(
@@ -7503,6 +7620,312 @@ fn form_method_for_predicate(
         Some(WebAssessmentFormMethod::Dialog)
     } else {
         None
+    }
+}
+
+#[cfg(all(test, feature = "websocket-review"))]
+mod websocket_parent_completion_tests {
+    use std::{future::pending, sync::Arc, time::Duration};
+
+    use futures::StreamExt;
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+        sync::Notify,
+        task::JoinHandle,
+    };
+    use tokio_tungstenite::accept_async;
+    use url::Url;
+
+    use super::*;
+
+    struct ParentStopFixture {
+        application: Url,
+        endpoint: Url,
+        message_seen: Arc<Notify>,
+        task: JoinHandle<()>,
+    }
+
+    impl Drop for ParentStopFixture {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn parent_stop_fixture(stall_after_message: bool) -> ParentStopFixture {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let application = Url::parse(&format!("http://{address}/app/")).unwrap();
+        let endpoint = Url::parse(&format!("ws://{address}/app/socket")).unwrap();
+        let message_seen = Arc::new(Notify::new());
+        let fixture_message_seen = Arc::clone(&message_seen);
+        let task = tokio::spawn(async move {
+            let (mut root, _) = listener.accept().await.unwrap();
+            read_http_headers(&mut root).await;
+            root.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 4\r\nConnection: close\r\n\r\nroot",
+            )
+            .await
+            .unwrap();
+            root.shutdown().await.unwrap();
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = accept_async(stream).await.unwrap();
+            if stall_after_message {
+                let _ = websocket.next().await;
+            }
+            fixture_message_seen.notify_one();
+            pending::<()>().await;
+        });
+        ParentStopFixture {
+            application,
+            endpoint,
+            message_seen,
+            task,
+        }
+    }
+
+    async fn read_http_headers(stream: &mut TcpStream) {
+        let mut bytes = Vec::new();
+        while bytes.len() <= 16 * 1024 {
+            let mut chunk = [0_u8; 1024];
+            let read = stream.read(&mut chunk).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+            if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                return;
+            }
+        }
+        panic!("fixture did not receive one bounded HTTP request");
+    }
+
+    fn websocket_policy(application: &Url, endpoint: &Url) -> WebSocketReviewPolicy {
+        websocket_policy_with_wall_time(application, endpoint, 2_000)
+    }
+
+    fn websocket_policy_with_wall_time(
+        application: &Url,
+        endpoint: &Url,
+        max_wall_time_ms: u64,
+    ) -> WebSocketReviewPolicy {
+        let response = b"response";
+        let source = serde_json::to_vec(&json!({
+            "schema": "security.websocket-review-policy/v1",
+            "target_authorized": true,
+            "messages_read_only_acknowledged": true,
+            "message_content_is_non_secret": true,
+            "endpoint": endpoint.as_str(),
+            "origin_mode": "application_origin",
+            "subprotocol": null,
+            "compression": false,
+            "reconnect": false,
+            "messages": [{
+                "id": "parent-stop",
+                "text": "request",
+                "expected_response": {
+                    "sha256": format!("{:x}", Sha256::digest(response)),
+                    "length": response.len(),
+                }
+            }],
+            "limits": {
+                "max_inbound_message_bytes": 4096,
+                "max_outbound_message_bytes": 4096,
+                "max_messages": 1,
+                "max_control_frames": 4,
+                "max_wall_time_ms": max_wall_time_ms,
+            }
+        }))
+        .unwrap();
+        WebSocketReviewPolicy::parse_json(application, &source).unwrap()
+    }
+
+    fn assert_parent_incomplete(
+        report: &WebAssessmentRunReport,
+        expected: WebAssessmentIncompleteReason,
+    ) {
+        assert!(report.completion().reasons().contains(&expected));
+        assert!(report.websocket_review_audit().is_some());
+    }
+
+    #[cfg(feature = "reporting")]
+    fn assert_incomplete_precedes_usage_validation(report: WebAssessmentRunReport) {
+        let result = report.into_assessment_report(ScanProfileV1::web_review().unwrap());
+        assert!(matches!(
+            result,
+            Err(AssessmentRunReportError::AssessmentIncomplete)
+        ));
+    }
+
+    #[test]
+    fn websocket_parent_refresh_is_inert_when_option_is_absent() {
+        let application = Url::parse("http://127.0.0.1:8123/app/").unwrap();
+        let runtime = WebAssessmentRuntime::builder(application).build().unwrap();
+        runtime.cancellation_token().cancel();
+        let started_at = tokio::time::Instant::now()
+            .checked_sub(runtime.limits.max_wall_time() + Duration::from_millis(1))
+            .unwrap();
+        let mut reasons = BTreeSet::new();
+
+        runtime.refresh_parent_limits_after_websocket(&mut reasons, started_at);
+
+        assert!(runtime.websocket_review_audit.is_none());
+        assert!(reasons.is_empty());
+    }
+
+    #[tokio::test]
+    async fn websocket_host_cancellation_updates_outer_completion() {
+        let fixture = parent_stop_fixture(true).await;
+        let policy = websocket_policy(&fixture.application, &fixture.endpoint);
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .with_websocket_review(policy)
+            .build()
+            .unwrap();
+        let cancellation = runtime.cancellation_token();
+        let message_seen = Arc::clone(&fixture.message_seen);
+        let running = tokio::spawn(async move { runtime.analyze().await });
+        tokio::time::timeout(Duration::from_secs(2), message_seen.notified())
+            .await
+            .unwrap();
+        cancellation.cancel();
+        let report = tokio::time::timeout(Duration::from_secs(2), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert_parent_incomplete(&report, WebAssessmentIncompleteReason::HostCancellation);
+        let audit = report.websocket_review_audit().unwrap();
+        assert_eq!(
+            audit.terminal(),
+            crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::Cancelled
+        );
+        assert_eq!(
+            audit.first_failure(),
+            Some(WebSocketReviewFailureKind::Cancelled)
+        );
+        #[cfg(feature = "reporting")]
+        assert_incomplete_precedes_usage_validation(report);
+    }
+
+    #[tokio::test]
+    async fn websocket_parent_deadline_updates_outer_completion() {
+        let fixture = parent_stop_fixture(true).await;
+        let policy = websocket_policy(&fixture.application, &fixture.endpoint);
+        let limits = WebAssessmentLimits::default()
+            .with_max_wall_time(Duration::from_millis(200))
+            .unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .limits(limits)
+            .with_websocket_review(policy)
+            .build()
+            .unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_parent_incomplete(&report, WebAssessmentIncompleteReason::WallTimeLimit);
+        let audit = report.websocket_review_audit().unwrap();
+        assert_eq!(
+            audit.terminal(),
+            crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::DeadlineReached
+        );
+        assert_eq!(
+            audit.first_failure(),
+            Some(WebSocketReviewFailureKind::DeadlineReached)
+        );
+        #[cfg(feature = "reporting")]
+        assert_incomplete_precedes_usage_validation(report);
+    }
+
+    #[tokio::test]
+    async fn websocket_local_deadline_does_not_change_outer_completion() {
+        let fixture = parent_stop_fixture(true).await;
+        let policy = websocket_policy_with_wall_time(&fixture.application, &fixture.endpoint, 100);
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .with_websocket_review(policy)
+            .build()
+            .unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            report.completion(),
+            WebAssessmentCompletion::Complete
+        ));
+        let audit = report.websocket_review_audit().unwrap();
+        assert_eq!(
+            audit.terminal(),
+            crate::web_runtime::websocket_runtime::WebSocketReviewTerminal::DeadlineReached
+        );
+        assert_eq!(
+            audit.first_failure(),
+            Some(WebSocketReviewFailureKind::DeadlineReached)
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_response_overrun_updates_outer_completion() {
+        let fixture = parent_stop_fixture(false).await;
+        let policy = websocket_policy(&fixture.application, &fixture.endpoint);
+        let limits = WebAssessmentLimits::default()
+            .with_max_total_response_bytes(64)
+            .unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .limits(limits)
+            .with_websocket_review(policy)
+            .build()
+            .unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_parent_incomplete(&report, WebAssessmentIncompleteReason::ResponseBytesLimit);
+        let audit = report.websocket_review_audit().unwrap();
+        assert_eq!(
+            audit.first_failure(),
+            Some(WebSocketReviewFailureKind::ParentResponseBudgetReached)
+        );
+        assert!(report.usage().response_bytes() >= limits.max_total_response_bytes());
+        #[cfg(feature = "reporting")]
+        assert_incomplete_precedes_usage_validation(report);
+    }
+
+    #[tokio::test]
+    async fn websocket_parent_request_refusal_updates_outer_completion() {
+        let fixture = parent_stop_fixture(false).await;
+        let policy = websocket_policy(&fixture.application, &fixture.endpoint);
+        let limits = WebAssessmentLimits::default()
+            .with_max_total_requests(1)
+            .unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .limits(limits)
+            .with_websocket_review(policy)
+            .build()
+            .unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(2), runtime.analyze())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_parent_incomplete(&report, WebAssessmentIncompleteReason::TotalRequestLimit);
+        let audit = report.websocket_review_audit().unwrap();
+        assert_eq!(audit.request_attempt_count(), 1);
+        assert_eq!(audit.request_admitted_count(), 0);
+        assert_eq!(
+            audit.first_failure(),
+            Some(WebSocketReviewFailureKind::ParentAuthorityUnavailable)
+        );
+        assert_eq!(report.usage().total_requests(), 1);
+        #[cfg(feature = "reporting")]
+        assert_incomplete_precedes_usage_validation(report);
     }
 }
 

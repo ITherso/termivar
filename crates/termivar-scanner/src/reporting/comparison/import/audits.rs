@@ -3,7 +3,7 @@
 use super::super::{
     ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit,
     ImportedReconCertSpotterAudit, ImportedReconSnapshotAudit, ImportedSecretExposureAudit,
-    ImportedSuppliedSessionAudit, ImportedTlsObservationAudit,
+    ImportedSuppliedSessionAudit, ImportedTlsObservationAudit, ImportedWebSocketReviewAudit,
     ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit, SuppliedSessionResourceBinding,
     WordPressAdvisoryKey, WordPressAssetFingerprintComponentKey,
     WordPressAssetFingerprintResourceKey, WordPressComponentKey,
@@ -45,6 +45,25 @@ const TLS_OBSERVATION_REVOCATION: &str = "not_checked";
 const TLS_OBSERVATION_VALIDATION_SCOPE: &str = "successful_https_response_connection/v1";
 const TLS_OBSERVATION_SOURCE_SCOPE: &str = "assessment_exact_origin_existing_connections/v1";
 const TLS_OBSERVATION_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
+const WEBSOCKET_REVIEW_AUDIT_SCHEMA: &str = "security.websocket-review-audit/v1";
+const WEBSOCKET_REVIEW_CAPABILITY_ID: &str = "termivar.websocket-review/v1";
+const MAX_WEBSOCKET_REVIEW_MESSAGES: u64 = 8;
+const MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES: u64 = 16;
+const MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES: u64 = 64 * 1024;
+const MAX_WEBSOCKET_REVIEW_WALL_TIME_MS: u64 = 10_000;
+// Mirrors web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES without
+// making the saved-report reader depend on the scanning feature.
+const MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+const WEBSOCKET_REVIEW_CLAIM_LIMITS: [&str; 8] = [
+    "browser_origin_security_not_established",
+    "authentication_not_established",
+    "authorization_not_established",
+    "availability_not_established",
+    "vulnerability_not_established",
+    "exploitability_not_established",
+    "impact_not_established",
+    "source_authenticity_not_established",
+];
 const JWT_POLICY_REVIEW_AUDIT_SCHEMA: &str = "security.jwt-policy-review-audit/v1";
 const JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2: &str = "security.jwt-policy-review-audit/v2";
 const JWT_POLICY_REVIEW_POLICY: &str = "termivar.jwt-local-policy/es256-v1";
@@ -2441,6 +2460,482 @@ pub(super) fn validate_tls_observation(
         methodology,
         coverage,
         certificate_observations: Value::Array(certificate_observations),
+    })
+}
+
+pub(super) fn validate_websocket_review(
+    value: &Value,
+) -> Result<ImportedWebSocketReviewAudit, ComparisonError> {
+    const TERMINALS: [&str; 6] = [
+        "completed",
+        "incomplete",
+        "cancelled",
+        "deadline_reached",
+        "limit_reached",
+        "authority_refused",
+    ];
+    const FAILURES: [&str; 21] = [
+        "authority_already_minted",
+        "endpoint_outside_authority",
+        "parent_authority_unavailable",
+        "request_construction",
+        "connection_failed",
+        "handshake_rejected",
+        "extension_negotiation_refused",
+        "subprotocol_negotiation_refused",
+        "send_failed",
+        "read_failed",
+        "binary_message_unsupported",
+        "close_failed",
+        "peer_closed",
+        "message_too_large",
+        "message_limit_reached",
+        "control_frame_limit_reached",
+        "application_byte_limit_reached",
+        "parent_response_budget_reached",
+        "cancelled",
+        "deadline_reached",
+        "internal_invariant",
+    ];
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "capability_id",
+            "selected",
+            "policy_reference",
+            "endpoint_reference",
+            "context",
+            "methodology",
+            "coverage",
+            "messages",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == WEBSOCKET_REVIEW_AUDIT_SCHEMA)?;
+    check(string(fields, "capability_id")? == WEBSOCKET_REVIEW_CAPABILITY_ID)?;
+    check(boolean(fields, "selected")?)?;
+    check(digest(
+        string(fields, "policy_reference")?,
+        "websocket-policy-sha256:",
+    ))?;
+    check(digest(
+        string(fields, "endpoint_reference")?,
+        "websocket-endpoint-sha256:",
+    ))?;
+    check(string(fields, "context")? == "anonymous")?;
+
+    let methodology = object(required(fields, "methodology")?)?;
+    keys(
+        methodology,
+        &[
+            "origin_mode",
+            "compression",
+            "reconnect",
+            "http2_extended_connect",
+            "subprotocol",
+            "physical_frame_count",
+            "max_frame_size",
+            "limits",
+        ],
+        &[],
+    )?;
+    token(methodology, "origin_mode", &["application_origin", "omit"])?;
+    check(string(methodology, "compression")? == "disabled")?;
+    check(string(methodology, "reconnect")? == "disabled")?;
+    check(string(methodology, "http2_extended_connect")? == "unsupported")?;
+    token(methodology, "subprotocol", &["present", "absent"])?;
+    check(string(methodology, "physical_frame_count")? == "unavailable")?;
+    check(string(methodology, "max_frame_size")? == "bounded_by_max_inbound_message_bytes")?;
+
+    let limits = object(required(methodology, "limits")?)?;
+    keys(
+        limits,
+        &[
+            "max_connections",
+            "max_outbound_application_bytes",
+            "max_inbound_application_bytes",
+            "max_outbound_message_bytes",
+            "max_inbound_message_bytes",
+            "max_messages",
+            "max_control_frames",
+            "max_wall_time_ms",
+        ],
+        &[],
+    )?;
+    check(number(limits, "max_connections", 1)? == 1)?;
+    check(
+        number(
+            limits,
+            "max_outbound_application_bytes",
+            MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+        )? == MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+    )?;
+    check(
+        number(
+            limits,
+            "max_inbound_application_bytes",
+            MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+        )? == MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+    )?;
+    let max_outbound_message_bytes = number(
+        limits,
+        "max_outbound_message_bytes",
+        MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+    )?;
+    let max_inbound_message_bytes = number(
+        limits,
+        "max_inbound_message_bytes",
+        MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+    )?;
+    let max_messages = number(limits, "max_messages", MAX_WEBSOCKET_REVIEW_MESSAGES)?;
+    let max_control_frames = number(
+        limits,
+        "max_control_frames",
+        MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES,
+    )?;
+    let max_wall_time_ms = number(
+        limits,
+        "max_wall_time_ms",
+        MAX_WEBSOCKET_REVIEW_WALL_TIME_MS,
+    )?;
+    check(
+        max_outbound_message_bytes > 0
+            && max_inbound_message_bytes > 0
+            && max_messages > 0
+            && max_control_frames > 0
+            && max_wall_time_ms > 0,
+    )?;
+
+    let coverage = object(required(fields, "coverage")?)?;
+    keys(
+        coverage,
+        &[
+            "terminal",
+            "completeness",
+            "first_failure",
+            "request_attempt_count",
+            "request_admitted_count",
+            "connection_attempt_count",
+            "handshake_completed_count",
+            "outbound_message_count",
+            "inbound_message_count",
+            "outbound_control_frame_count",
+            "inbound_control_frame_count",
+            "outbound_application_bytes",
+            "inbound_application_bytes",
+            "transport_read_bytes",
+            "transport_write_bytes",
+            "accounted_request_body_bytes",
+            "accounted_transport_response_bytes",
+            "transport_byte_scope",
+            "expected_response_count",
+            "matched_response_count",
+            "mismatched_response_count",
+        ],
+        &[],
+    )?;
+    let terminal = token(coverage, "terminal", &TERMINALS)?;
+    let completeness = token(
+        coverage,
+        "completeness",
+        &["configured_exchange_complete", "incomplete"],
+    )?;
+    let first_failure = optional_token(coverage, "first_failure", &FAILURES)?;
+    check(
+        (terminal == "completed"
+            && completeness == "configured_exchange_complete"
+            && first_failure.is_none())
+            || (terminal != "completed" && completeness == "incomplete" && first_failure.is_some()),
+    )?;
+    check(match first_failure {
+        Some("authority_already_minted" | "endpoint_outside_authority") => {
+            terminal == "authority_refused"
+        },
+        Some(
+            "message_too_large"
+            | "message_limit_reached"
+            | "control_frame_limit_reached"
+            | "application_byte_limit_reached"
+            | "parent_response_budget_reached",
+        ) => terminal == "limit_reached",
+        Some("cancelled") => terminal == "cancelled",
+        Some("deadline_reached") => terminal == "deadline_reached",
+        Some(
+            "parent_authority_unavailable"
+            | "request_construction"
+            | "connection_failed"
+            | "handshake_rejected"
+            | "extension_negotiation_refused"
+            | "subprotocol_negotiation_refused"
+            | "send_failed"
+            | "read_failed"
+            | "binary_message_unsupported"
+            | "close_failed"
+            | "peer_closed"
+            | "internal_invariant",
+        ) => terminal == "incomplete",
+        Some(_) => false,
+        None => terminal == "completed",
+    })?;
+    let request_attempt_count = number(coverage, "request_attempt_count", 1)?;
+    let request_admitted_count = number(coverage, "request_admitted_count", 1)?;
+    let connection_attempt_count = number(coverage, "connection_attempt_count", 1)?;
+    let handshake_completed_count = number(coverage, "handshake_completed_count", 1)?;
+    let outbound_message_count = number(coverage, "outbound_message_count", max_messages)?;
+    let inbound_message_count = number(coverage, "inbound_message_count", max_messages)?;
+    let outbound_control_frame_count =
+        number(coverage, "outbound_control_frame_count", max_control_frames)?;
+    let inbound_control_frame_count =
+        number(coverage, "inbound_control_frame_count", max_control_frames)?;
+    let outbound_application_bytes = number(
+        coverage,
+        "outbound_application_bytes",
+        MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+    )?;
+    let inbound_application_bytes = number(
+        coverage,
+        "inbound_application_bytes",
+        MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+    )?;
+    let transport_read_bytes = number(
+        coverage,
+        "transport_read_bytes",
+        MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,
+    )?;
+    let transport_write_bytes = number(coverage, "transport_write_bytes", u64::MAX)?;
+    let accounted_request_body_bytes = number(coverage, "accounted_request_body_bytes", u64::MAX)?;
+    let accounted_transport_response_bytes = number(
+        coverage,
+        "accounted_transport_response_bytes",
+        MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,
+    )?;
+    check(
+        string(coverage, "transport_byte_scope")? == "socket_wire_bytes_tls_ciphertext_when_wss",
+    )?;
+    let expected_response_count = number(
+        coverage,
+        "expected_response_count",
+        MAX_WEBSOCKET_REVIEW_MESSAGES,
+    )?;
+    let matched_response_count = number(
+        coverage,
+        "matched_response_count",
+        MAX_WEBSOCKET_REVIEW_MESSAGES,
+    )?;
+    let mismatched_response_count = number(
+        coverage,
+        "mismatched_response_count",
+        MAX_WEBSOCKET_REVIEW_MESSAGES,
+    )?;
+    check(
+        request_admitted_count <= request_attempt_count
+            && connection_attempt_count <= request_admitted_count
+            && handshake_completed_count <= connection_attempt_count
+            && inbound_message_count <= outbound_message_count
+            && outbound_control_frame_count
+                .checked_add(inbound_control_frame_count)
+                .is_some_and(|count| count <= max_control_frames)
+            && matched_response_count.checked_add(mismatched_response_count)
+                == Some(inbound_message_count)
+            && transport_read_bytes >= inbound_application_bytes
+            && transport_write_bytes >= outbound_application_bytes
+            && (transport_read_bytes == 0 || connection_attempt_count == 1)
+            && (transport_write_bytes == 0 || connection_attempt_count == 1)
+            && accounted_request_body_bytes == 0
+            && accounted_transport_response_bytes == transport_read_bytes,
+    )?;
+    if request_admitted_count == 0 {
+        check(
+            connection_attempt_count == 0
+                && handshake_completed_count == 0
+                && outbound_message_count == 0
+                && inbound_message_count == 0
+                && outbound_control_frame_count == 0
+                && inbound_control_frame_count == 0
+                && outbound_application_bytes == 0
+                && inbound_application_bytes == 0
+                && transport_read_bytes == 0
+                && transport_write_bytes == 0,
+        )?;
+    }
+    check(
+        (outbound_message_count == 0 && inbound_message_count == 0)
+            || handshake_completed_count == 1,
+    )?;
+
+    let wire_messages = array(fields, "messages")?;
+    check(
+        !wire_messages.is_empty()
+            && wire_messages.len() as u64 == expected_response_count
+            && expected_response_count <= max_messages,
+    )?;
+    let mut references = BTreeSet::new();
+    let mut derived_outbound_message_count = 0_u64;
+    let mut derived_inbound_message_count = 0_u64;
+    let mut derived_outbound_bytes = 0_u64;
+    let mut derived_inbound_bytes = 0_u64;
+    let mut derived_matched = 0_u64;
+    let mut derived_mismatched = 0_u64;
+    let mut status_phase = 0_u8;
+    let mut canonical_messages = Vec::with_capacity(wire_messages.len());
+    for value in wire_messages {
+        let row = object(value)?;
+        keys(
+            row,
+            &[
+                "message_reference",
+                "expected_response_reference",
+                "outbound_length",
+                "inbound_length",
+                "status",
+            ],
+            &[],
+        )?;
+        let message_reference = string(row, "message_reference")?;
+        let expected_reference = string(row, "expected_response_reference")?;
+        check(
+            digest(message_reference, "websocket-message-revision-sha256:")
+                && references.insert(message_reference)
+                && digest(
+                    expected_reference,
+                    "websocket-expected-response-revision-sha256:",
+                ),
+        )?;
+        let outbound_length = number(
+            row,
+            "outbound_length",
+            MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+        )?;
+        check(outbound_length <= max_outbound_message_bytes)?;
+        let inbound_length = if required(row, "inbound_length")?.is_null() {
+            None
+        } else {
+            Some(number(
+                row,
+                "inbound_length",
+                MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES,
+            )?)
+        };
+        check(inbound_length.is_none_or(|length| length <= max_inbound_message_bytes))?;
+        let status = token(
+            row,
+            "status",
+            &[
+                "not_sent",
+                "sent_no_response",
+                "response_matched",
+                "response_mismatched",
+            ],
+        )?;
+        match status {
+            "response_matched" | "response_mismatched" => {
+                check(status_phase == 0 && inbound_length.is_some())?;
+                derived_outbound_message_count += 1;
+                derived_inbound_message_count += 1;
+                derived_outbound_bytes = derived_outbound_bytes
+                    .checked_add(outbound_length)
+                    .ok_or(ComparisonError::InvalidDocument)?;
+                derived_inbound_bytes = derived_inbound_bytes
+                    .checked_add(inbound_length.unwrap_or_default())
+                    .ok_or(ComparisonError::InvalidDocument)?;
+                if status == "response_matched" {
+                    derived_matched += 1;
+                } else {
+                    derived_mismatched += 1;
+                }
+            },
+            "sent_no_response" => {
+                check(status_phase == 0 && inbound_length.is_none())?;
+                status_phase = 1;
+                derived_outbound_message_count += 1;
+                derived_outbound_bytes = derived_outbound_bytes
+                    .checked_add(outbound_length)
+                    .ok_or(ComparisonError::InvalidDocument)?;
+            },
+            "not_sent" => {
+                check(inbound_length.is_none())?;
+                status_phase = 2;
+            },
+            _ => return Err(ComparisonError::InvalidDocument),
+        }
+        canonical_messages.push(canonical_value(value)?);
+    }
+    check(
+        derived_outbound_message_count == outbound_message_count
+            && derived_inbound_message_count == inbound_message_count
+            && derived_outbound_bytes == outbound_application_bytes
+            && derived_inbound_bytes == inbound_application_bytes
+            && derived_matched == matched_response_count
+            && derived_mismatched == mismatched_response_count,
+    )?;
+    if terminal == "completed" {
+        check(
+            request_admitted_count == 1
+                && connection_attempt_count == 1
+                && handshake_completed_count == 1
+                && outbound_message_count == expected_response_count
+                && inbound_message_count == expected_response_count,
+        )?;
+    }
+
+    let claim_limits = array(fields, "claim_limits")?;
+    check(claim_limits.len() == WEBSOCKET_REVIEW_CLAIM_LIMITS.len())?;
+    for (value, expected) in claim_limits.iter().zip(WEBSOCKET_REVIEW_CLAIM_LIMITS) {
+        check(value.as_str() == Some(expected))?;
+    }
+
+    let methodology_projection = selected_object(
+        fields,
+        &[
+            "schema",
+            "capability_id",
+            "selected",
+            "policy_reference",
+            "endpoint_reference",
+            "context",
+            "methodology",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    let coverage_projection = selected_object(
+        coverage,
+        &[
+            "request_attempt_count",
+            "request_admitted_count",
+            "connection_attempt_count",
+            "handshake_completed_count",
+            "outbound_message_count",
+            "inbound_message_count",
+            "outbound_control_frame_count",
+            "inbound_control_frame_count",
+            "outbound_application_bytes",
+            "inbound_application_bytes",
+            "transport_read_bytes",
+            "transport_write_bytes",
+            "accounted_request_body_bytes",
+            "accounted_transport_response_bytes",
+            "transport_byte_scope",
+            "expected_response_count",
+            "matched_response_count",
+            "mismatched_response_count",
+        ],
+        &[],
+    )?;
+    let mut outcome_projection = Map::new();
+    for name in ["terminal", "completeness", "first_failure"] {
+        outcome_projection.insert(name.to_owned(), canonical_value(required(coverage, name)?)?);
+    }
+    // Message order is part of the configured exchange. Do not apply the
+    // generic unordered-array canonicalizer used by several catalogue audits.
+    outcome_projection.insert("messages".to_owned(), Value::Array(canonical_messages));
+    Ok(ImportedWebSocketReviewAudit {
+        methodology: methodology_projection,
+        coverage: coverage_projection,
+        outcome: Value::Object(outcome_projection),
     })
 }
 

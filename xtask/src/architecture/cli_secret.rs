@@ -97,6 +97,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "rest_review",
     "secret_exposure_review",
     "tls_observation",
+    "websocket_review_policy",
     "wordpress_advisories",
     "wordpress_advisories_format",
     "wordpress_core_version_file",
@@ -1023,6 +1024,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("rest_review", "bool", None),
         ("secret_exposure_review", "bool", None),
         ("tls_observation", "bool", None),
+        ("websocket_review_policy", "Option", Some("PathBuf")),
         ("wordpress_review", "bool", None),
         ("wordpress_discovery", "bool", None),
         (
@@ -1409,6 +1411,33 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
+    if fields.get("websocket_review_policy").is_none_or(|field| {
+        !is_one_argument_type(&field.ty, "Option", "PathBuf")
+            || !exact_cfg_feature_attribute(&field.attrs, "websocket-review")
+            || !exact_arg_attribute(
+                &field.attrs,
+                "long,value_name=\"FILE\",requires=\"profile\"",
+            )
+    }) {
+        violations.push(
+            "CLI `websocket_review_policy` must remain an exact feature-gated local policy path requiring an explicit profile"
+                .to_owned(),
+        );
+    }
+
+    if !compact.contains(
+        "fnscan_websocket_review_flags_conflict(profile:Option<CliScanProfile>,selected:bool,)->Option<&'staticstr>{ifselected&&profile!=Some(CliScanProfile::WebReview){Some(\"`--websocket-review-policy`requires`--profileweb-review`\")}else{None}}",
+    ) || compact
+        .matches("fnscan_websocket_review_flags_conflict(")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI WebSocket review validation must retain the exact web-review-only, value-free preflight"
+                .to_owned(),
+        );
+    }
+
     if fields.get("progress").is_none_or(|field| {
         !is_plain_type(&field.ty, "bool")
             || !exact_arg_attribute(&field.attrs, "long,requires=\"profile\"")
@@ -1742,6 +1771,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_control_reference_mapping_flags_conflict",
         "scan_recon_snapshot_flags_conflict",
         "scan_recon_certspotter_flags_conflict",
+        "scan_websocket_review_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
@@ -1766,6 +1796,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "load",
         "load",
         "preflight_recon_ct_provider_composition",
+        "load",
         "prepare",
         "prepare",
         "prepare",
@@ -1814,6 +1845,16 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
     if compact
+        .matches("scan_websocket_review_flags_conflict(profile,websocket_review_policy.is_some())")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI WebSocket review validation must receive the exact selected policy state before any input or network work"
+                .to_owned(),
+        );
+    }
+    if compact
         .matches(
             "letrecon_snapshot_input=recon_snapshot.map(recon_input::ReconSnapshotInput::new);",
         )
@@ -1835,6 +1876,16 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
+    if compact
+        .matches("letwebsocket_review_policy_input=websocket_review_policy.map(websocket_input::WebSocketReviewPolicyInput::new);")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI WebSocket review policy path must be selected exactly once without opening it before the typed load boundary"
+                .to_owned(),
+        );
+    }
     if !contains_ordered_subsequence(&ordered, &expected)
         || ordered
             .iter()
@@ -1853,6 +1904,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             != 1
         || ordered
             .iter()
+            .filter(|name| name.as_str() == "scan_websocket_review_flags_conflict")
+            .count()
+            != 1
+        || ordered
+            .iter()
             .filter(|name| name.as_str() == "scan_progress_flags_conflict")
             .count()
             != 1
@@ -1860,7 +1916,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 8
+            != 9
         || ordered
             .iter()
             .filter(|name| name.as_str() == "preflight_recon_ct_provider_composition")
@@ -1886,6 +1942,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "letrecon_snapshot=recon_snapshot_input.map(recon_input::ReconSnapshotInput::load).transpose()?;",
         "letrecon_ct_provider=recon_certspotter_policy_input.map(recon_ct_input::ReconCtProviderPolicyInput::load).transpose()?;",
         "assessment_scan::preflight_recon_ct_provider_composition(&target,recon_ct_provider.as_ref(),)?;",
+        "letwebsocket_review=websocket_review_policy_input.map(|input|input.load(&target)).transpose()?;",
         "letprepared_jwt_policy_review={#[cfg(feature=\"jwt-target-acceptance-review\")]{jwt_policy_review_input.map(|input|input.prepare(&target)).transpose()?}#[cfg(not(feature=\"jwt-target-acceptance-review\"))]{jwt_policy_review_input.map(auth_input::JwtPolicyReviewInput::prepare).transpose()?}};",
         "letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?;",
         "scan_wordpress_supplied_session_policy_conflict(wordpress_supplied_session,prepared.policy_version(),)",
@@ -3015,6 +3072,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_control_reference_mapping_flags_conflict",
         "scan_recon_snapshot_flags_conflict",
         "scan_recon_certspotter_flags_conflict",
+        "scan_websocket_review_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",

@@ -137,9 +137,9 @@ Preview. It does not activate any of them: WordPress still requires explicit
 `secret-exposure-review`, `tls-observation`,
 `jwt-policy-review`, `jwt-target-acceptance-review`,
 `recon-ct-provider`, `recon-snapshot-import`, `ssrf-oast-review`,
-`legacy-scanner`, `api-adapter`, and `proxy-adapter`.
-The stock curated inventory is therefore exactly 20 known identities: eight
-compiled (the `release-bundle` marker plus seven members) and twelve excluded.
+`websocket-review`, `legacy-scanner`, `api-adapter`, and `proxy-adapter`.
+The stock curated inventory is therefore exactly 21 known identities: eight
+compiled (the `release-bundle` marker plus seven members) and thirteen excluded.
 Enabling the seven current member features individually can therefore produce
 the same member surface states while `release-bundle` remains `not_compiled`.
 
@@ -269,6 +269,82 @@ those assets or providers, extend target scope, or create assessment items.
 Its byte digest identifies the supplied bytes without authenticating their
 source, rights, freshness, completeness or truth. See the
 [local recon snapshot contract](internals/recon-snapshot-import.md).
+
+## Review one explicitly authorized WebSocket endpoint
+
+The development-only `websocket-review` feature is not part of `default`, the
+seven-member `release-bundle`, or the published alpha.2 archives. Build a
+feature-specific executable and supply one strict local policy:
+
+```bash
+cargo build --locked -p termivar-cli --no-default-features \
+  --features websocket-review
+
+termivar scan https://owned.example/app/ \
+  --profile web-review \
+  --websocket-review-policy websocket-review.json \
+  --report-dir assessment-websocket
+```
+
+A minimal policy shape is:
+
+```json
+{
+  "schema": "security.websocket-review-policy/v1",
+  "target_authorized": true,
+  "messages_read_only_acknowledged": true,
+  "message_content_is_non_secret": true,
+  "endpoint": "wss://owned.example/app/socket",
+  "origin_mode": "application_origin",
+  "subprotocol": null,
+  "compression": false,
+  "reconnect": false,
+  "messages": [
+    {
+      "id": "status",
+      "text": "{\"type\":\"status\"}",
+      "expected_response": {
+        "sha256": "a29ee2b15c494311c52521766e44af56a3ad2248e7a8ab465e5206463c13d288",
+        "length": 15
+      }
+    }
+  ],
+  "limits": {
+    "max_inbound_message_bytes": 4096,
+    "max_outbound_message_bytes": 4096,
+    "max_messages": 1,
+    "max_control_frames": 4,
+    "max_wall_time_ms": 3000
+  }
+}
+```
+
+The example is a template, not an executable fixture: replace the endpoint,
+message, digest, length and limits with independently reviewed values for an
+owned application. The three booleans record operator assertions; Termivar does
+not verify that a message is side-effect-free or that its content is non-secret.
+V1 does not support credentials or other secret material in message bodies.
+Each message `id` is a non-secret revision handle and must change whenever that
+message or its expected-response semantics change. Public report references do
+not hash either private byte sequence. V1 opens one isolated anonymous
+connection, sends at most eight sequential text messages, allows at most 64
+KiB of application payload in each direction, and stops at ten seconds or the
+smaller parent deadline. Plain `ws` is accepted only for numeric-loopback test
+fixtures; other targets require `wss` with normal certificate validation.
+
+There is no endpoint discovery, retry, reconnect, redirect following,
+compression, proxy inheritance, cookie or Authorization forwarding, supplied
+session inheritance, or HTTP/2 extended CONNECT. The report distinguishes raw
+socket transport accounting from complete application-message bytes. Binary
+application messages fail closed. The
+backend does not expose a reliable physical continuation-frame count, so it is
+reported as unavailable; message/frame-size ceilings, observable control-frame
+events and the absolute deadline still bound work. A client-selected `Origin`
+does not prove a browser exploit path, and an Upgrade or expected-response
+match does not establish authentication, authorization, availability, source
+authenticity, a vulnerability, exploitability or impact. This anonymous S11-A
+slice leaves S11 `IMPLEMENTING`; session/context integration is a later slice.
+See the [WebSocket review contract](internals/websocket-review.md).
 
 ## Live assessment progress
 

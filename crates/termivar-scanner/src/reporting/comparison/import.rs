@@ -66,6 +66,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "rest_review",
             "secret_exposure_review",
             "tls_observation",
+            "websocket_review",
             "jwt_policy_review",
             "control_reference_mapping",
             "recon_snapshot_import",
@@ -103,6 +104,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     let mut supplied_session = None;
     let mut secret_exposure = None;
     let mut tls_observation = None;
+    let mut websocket_review = None;
     let mut jwt_policy_review = None;
     let mut control_reference_mapping = None;
     let mut recon_snapshot_import = None;
@@ -116,6 +118,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "rest_review",
         "secret_exposure_review",
         "tls_observation",
+        "websocket_review",
         "jwt_policy_review",
         "control_reference_mapping",
         "recon_snapshot_import",
@@ -132,6 +135,8 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
                 secret_exposure = Some(audits::validate_secret_exposure(value, &items)?);
             } else if name == "tls_observation" {
                 tls_observation = Some(audits::validate_tls_observation(value)?);
+            } else if name == "websocket_review" {
+                websocket_review = Some(audits::validate_websocket_review(value)?);
             } else if name == "jwt_policy_review" {
                 jwt_policy_review = Some(audits::validate_jwt_policy_review(value)?);
             } else if name == "control_reference_mapping" {
@@ -232,6 +237,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         supplied_session,
         secret_exposure,
         tls_observation,
+        websocket_review,
         jwt_policy_review,
         control_reference_mapping,
         recon_snapshot_import,

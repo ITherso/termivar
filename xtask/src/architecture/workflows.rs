@@ -278,6 +278,12 @@ const RECON_SNAPSHOT_IMPORT_CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exe
         env:
           TERMIVAR_CAPABILITIES_MATRIX_CASE: recon-snapshot-import-only
         run: cargo test --release --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
+const WEBSOCKET_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise bounded WebSocket review through an owned loopback fixture
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review --test websocket_review_cli -- --nocapture"#;
+const WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exercise opt-in WebSocket capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE: &str = r#"      - name: Exercise trusted passive TLS observation broker path
         run: cargo test --locked -p termivar-scanner --no-default-features --features tls-observation web_runtime::authority::tests::selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch -- --exact --nocapture"#;
 const SECRET_EXPOSURE_SESSION_BOUNDARY_SMOKE_GATE: &str = r#"      - name: Reject authenticated session bodies from the anonymous secret-exposure context
@@ -419,6 +425,7 @@ const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capa
           TERMIVAR_CAPABILITIES_MATRIX_CASE=control-reference-mapping-only cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-ct-provider-only cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-snapshot-import-only cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only cargo test --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-in CLI contracts
@@ -438,12 +445,13 @@ const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-
           cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review
           cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping
           cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider
-          cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import"#;
+          cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import
+          cargo test --locked -p termivar-cli --no-default-features --features websocket-review"#;
 const SCANNER_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -970,6 +978,26 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must validate the exact release-profile feature-minimal recon-snapshot-import capability contract"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise bounded WebSocket review through an owned loopback fixture",
+        WEBSOCKET_REVIEW_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must execute the exact release-profile feature-minimal WebSocket review CLI against its owned loopback fixture"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise opt-in WebSocket capability contract",
+        WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must validate the exact release-profile feature-minimal WebSocket capability contract"
         ));
     }
     if !job_has_exact_step(
@@ -3420,16 +3448,49 @@ mod tests {
     }
 
     #[test]
+    fn websocket_review_capabilities_matrix_rejects_omission_and_aliasing() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let websocket_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only cargo test --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
+        for mutation in [
+            valid.replacen(websocket_case, "", 1),
+            valid.replacen(
+                websocket_case,
+                &websocket_case.replacen(
+                    "--features websocket-review",
+                    "--features release-bundle",
+                    1,
+                ),
+                1,
+            ),
+            valid.replacen(
+                websocket_case,
+                &websocket_case.replacen(
+                    "TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only",
+                    "TERMIVAR_CAPABILITIES_MATRIX_CASE=release-bundle",
+                    1,
+                ),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("capabilities"), "{violations:?}");
+        }
+    }
+
+    #[test]
     fn control_reference_mapping_feature_boundaries_reject_omission_and_bundle_substitution() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping";
         let scanner_member =
-            "jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner";
+            "jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "jwt-policy-review jwt-target-acceptance-review recon-ct-provider recon-snapshot-import legacy-scanner",
+                "jwt-policy-review jwt-target-acceptance-review recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3454,12 +3515,12 @@ mod tests {
     fn recon_snapshot_import_feature_boundaries_reject_omission_and_bundle_substitution() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import";
-        let scanner_member = "jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner";
+        let scanner_member = "jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "jwt-target-acceptance-review control-reference-mapping recon-ct-provider legacy-scanner",
+                "jwt-target-acceptance-review control-reference-mapping recon-ct-provider websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3485,12 +3546,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case =
             "cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider";
-        let scanner_member = "jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner";
+        let scanner_member = "jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "jwt-target-acceptance-review control-reference-mapping recon-snapshot-import legacy-scanner",
+                "jwt-target-acceptance-review control-reference-mapping recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3516,12 +3577,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner",
+                "ssrf-oast-review supplied-session-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3547,12 +3608,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner",
+                "ssrf-oast-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3579,12 +3640,12 @@ mod tests {
         let cli_case =
             "cargo test --locked -p termivar-cli --no-default-features --features tls-observation";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review secret-exposure-review jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner",
+                "ssrf-oast-review supplied-session-review secret-exposure-review jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3611,12 +3672,12 @@ mod tests {
         let cli_case =
             "cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner",
+                "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3642,12 +3703,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review";
         let scanner_member =
-            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner";
+            "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner",
+                "ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3658,6 +3719,37 @@ mod tests {
             valid.replacen(
                 cli_case,
                 "cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("feature boundaries")
+                    || violations[0].contains("isolated scanner features"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn websocket_review_feature_boundaries_reject_omission_and_bundle_substitution() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let cli_case =
+            "cargo test --locked -p termivar-cli --no-default-features --features websocket-review";
+        let scanner_member = "control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
+        for mutation in [
+            valid.replacen(cli_case, "", 1),
+            valid.replacen(
+                scanner_member,
+                "control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner",
+                1,
+            ),
+            valid.replacen(
+                cli_case,
+                "cargo test --locked -p termivar-cli --no-default-features --features release-bundle",
                 1,
             ),
         ] {
@@ -4018,6 +4110,67 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("recon-snapshot-import capability"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn websocket_review_runtime_smoke_rejects_omission_widening_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(WEBSOCKET_REVIEW_SMOKE_GATE, "", 1),
+            valid.replacen(
+                WEBSOCKET_REVIEW_SMOKE_GATE,
+                "      - name: Exercise bounded WebSocket review through an owned loopback fixture\n        run: cargo test --release --locked -p termivar-cli --all-features --test websocket_review_cli -- --nocapture",
+                1,
+            ),
+            valid.replacen(
+                WEBSOCKET_REVIEW_SMOKE_GATE,
+                &format!("{WEBSOCKET_REVIEW_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("WebSocket review CLI"), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn websocket_review_four_platform_capability_smoke_is_exact() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE, "", 1),
+            valid.replacen(
+                "TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-only",
+                "TERMIVAR_CAPABILITIES_MATRIX_CASE: release-bundle",
+                1,
+            ),
+            valid.replacen(
+                WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE,
+                &WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE.replace(
+                    "--no-default-features --features websocket-review --test capabilities_cli",
+                    "--all-features --test capabilities_cli",
+                ),
+                1,
+            ),
+            valid.replacen(
+                WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE,
+                &format!(
+                    "{WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE}\n        continue-on-error: true"
+                ),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("WebSocket capability"),
                 "{violations:?}"
             );
         }

@@ -64,6 +64,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "ssrf-oast-review",
     "supplied-session-review",
     "tls-observation",
+    "websocket-review",
 )
 EXPECTED_FEATURE_STATES = {
     "api-adapter": "not_compiled",
@@ -85,6 +86,7 @@ EXPECTED_FEATURE_STATES = {
     "ssrf-oast-review": "not_compiled",
     "supplied-session-review": "not_compiled",
     "tls-observation": "not_compiled",
+    "websocket-review": "not_compiled",
     "wordpress-review": "compiled",
 }
 EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES = (
@@ -166,6 +168,37 @@ EXPECTED_RECON_SNAPSHOT_LIMITATION = (
     "bundle integrity and schema consistency, not source authenticity or asset truth. The "
     "feature requires explicit --profile web-review and --recon-snapshot FILE, remains "
     "development-only, and is outside default, release-bundle, and published alpha.2 archives."
+)
+EXPECTED_WEBSOCKET_REVIEW_OPTION = "--websocket-review-policy"
+EXPECTED_WEBSOCKET_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--websocket-review-policy FILE",
+    "policy target_authorized=true",
+    "policy messages_read_only_acknowledged=true",
+    "policy message_content_is_non_secret=true",
+)
+EXPECTED_WEBSOCKET_REVIEW_LIMITATION = (
+    "Reviews one explicitly declared application-contained same-authority ws/wss endpoint "
+    "through one isolated anonymous connection. V1 sends one to eight sequential "
+    "operator-declared read-oriented text messages, permits at most 64 KiB aggregate "
+    "outbound and 64 KiB aggregate inbound application payload, and runs for at most ten "
+    "seconds or the smaller parent deadline. Policy message bodies must be non-secret; "
+    "message IDs are non-secret revision handles that must change when message or "
+    "expected-response semantics change, and public references do not hash those private "
+    "bytes. Binary application messages fail closed. Numeric-loopback fixtures may use ws; other "
+    "targets require wss with normal certificate validation. The runtime performs no "
+    "endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy "
+    "use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended "
+    "CONNECT. An optional Origin header is operator selected and does not establish browser "
+    "exploitability because a non-browser client can choose it. Reports retain only bounded "
+    "opaque references derived from non-secret identifiers, lengths, counts and classified "
+    "outcomes, never message "
+    "text, endpoint paths, queries, subprotocol values, credentials or raw transport errors. "
+    "A successful upgrade or matched response does not establish authentication, "
+    "authorization, availability, source authenticity, vulnerability, exploitability or "
+    "impact. The feature requires explicit --profile web-review and "
+    "--websocket-review-policy FILE, remains development-only, and is outside default, "
+    "release-bundle, published alpha.2 archives, and the initial curated package."
 )
 EXPECTED_SECRET_EXPOSURE_PREREQUISITES = (
     "--profile web-review",
@@ -1191,6 +1224,20 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "prerequisites": list(EXPECTED_RECON_SNAPSHOT_PREREQUISITES),
             "limitation": EXPECTED_RECON_SNAPSHOT_LIMITATION,
             "documentation": "docs/internals/recon-snapshot-import.md",
+        },
+        {
+            "key": "option.websocket-review",
+            "label": "Bounded same-authority WebSocket protocol review",
+            "compile_feature": "websocket-review",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(EXPECTED_WEBSOCKET_REVIEW_PREREQUISITES),
+            "limitation": EXPECTED_WEBSOCKET_REVIEW_LIMITATION,
+            "documentation": "docs/internals/websocket-review.md",
         },
         {
             "key": "option.secret-exposure-review",
@@ -2849,9 +2896,9 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 20)
+        self.assertEqual(len(rows), 21)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 12)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 13)
         self.assertNotIn(EXPECTED_CONTROL_REFERENCE_MAPPING_OPTION,
                          fake_help(["scan", "--help"]).decode("utf-8"))
         result = self.validate(document)
@@ -2909,6 +2956,18 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "maturity": "preview",
             "implementation_status": "implemented",
             "runtime_activation": "unavailable_in_release_bundle",
+        })
+        self.assertEqual(result["websocket_review_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "context": "anonymous_only",
+            "maximum_connections": 1,
+            "maximum_messages": 8,
+            "maximum_application_bytes_each_direction": 64 * 1024,
+            "maximum_wall_time_seconds": 10,
+            "session_inheritance": "not_supported_in_s11_a",
         })
         self.assertEqual(result["jwt_policy_review_preview"], {
             "build_state": "not_compiled",
@@ -3437,6 +3496,117 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         document = capabilities()
         text = capabilities_text(document).replace(
             f"    limit: {EXPECTED_RECON_SNAPSHOT_LIMITATION}\n".encode(), b"")
+        self.assert_rejected(document, "limitation is absent", text)
+
+    def test_websocket_review_surface_matches_producer_and_fails_closed(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.websocket-review",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = '\n            "docs/internals/websocket-review.md",'
+        self.assertEqual(block.count(documentation), 1)
+        limitation_line = block.split(documentation, 1)[0].splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_WEBSOCKET_REVIEW_LIMITATION)
+
+        valid = capabilities()
+        surface = next(row for row in valid["surfaces"]
+                       if row["key"] == "option.websocket-review")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_WEBSOCKET_REVIEW_PREREQUISITES)
+        self.assertEqual(surface["limitation"],
+                         EXPECTED_WEBSOCKET_REVIEW_LIMITATION)
+        self.assertNotIn(EXPECTED_WEBSOCKET_REVIEW_OPTION,
+                         fake_help(["scan", "--help"]).decode("utf-8"))
+        self.validate(valid)
+
+        for field, wrong in (
+            ("label", "WebSocket scanner"),
+            ("compile_feature", "supplied-session-review"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "websocket"),
+            ("documentation", "docs/websocket.md"),
+        ):
+            with self.subTest(field=field):
+                document = capabilities()
+                next(row for row in document["surfaces"]
+                     if row["key"] == "option.websocket-review")[field] = wrong
+                self.assert_rejected(document, "WebSocket-review surface metadata")
+
+        for wrong in (
+            None,
+            True,
+            2,
+            {},
+            [True],
+            ["--websocket-review-policy FILE"],
+            [
+                "--profile web-review",
+                "--websocket-review-policy FILE",
+                "policy target_authorized=true",
+            ],
+        ):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                next(row for row in document["surfaces"]
+                     if row["key"] == "option.websocket-review")["prerequisites"] = wrong
+                self.assert_rejected(document, "WebSocket-review opt-in contract")
+
+        for old, new in (
+            ("one isolated anonymous connection", "one inherited session connection"),
+            ("one to eight sequential operator-declared read-oriented text messages",
+             "unbounded concurrent messages"),
+            ("64 KiB aggregate outbound and 64 KiB aggregate inbound",
+             "640 KiB aggregate outbound and 640 KiB aggregate inbound"),
+            ("ten seconds or the smaller parent deadline", "no deadline"),
+            ("Numeric-loopback fixtures may use ws; other targets require wss with normal certificate validation",
+             "all targets may use ws"),
+            ("no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended CONNECT",
+             "automatic endpoint discovery and session inheritance"),
+            ("does not establish browser exploitability", "confirms browser exploitability"),
+            ("never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors",
+             "stores complete transcripts and credentials"),
+            ("does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact",
+             "confirms authentication and impact"),
+            ("requires explicit --profile web-review and --websocket-review-policy FILE",
+             "runs automatically"),
+            ("outside default, release-bundle, published alpha.2 archives, and the initial curated package",
+             "included in release-bundle"),
+        ):
+            with self.subTest(old=old):
+                document = capabilities()
+                row = next(row for row in document["surfaces"]
+                           if row["key"] == "option.websocket-review")
+                self.assertEqual(row["limitation"].count(old), 1)
+                row["limitation"] = row["limitation"].replace(old, new)
+                self.assert_rejected(document, "WebSocket-review limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [row for row in missing["surfaces"]
+                               if row["key"] != "option.websocket-review"]
+        self.assert_rejected(missing, "WebSocket-review surface identity")
+
+        duplicate = capabilities()
+        duplicate["surfaces"].append(copy.deepcopy(next(
+            row for row in duplicate["surfaces"]
+            if row["key"] == "option.websocket-review")))
+        self.assert_rejected(duplicate, "invalid or duplicated")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"Bounded same-authority WebSocket protocol review", b"Other review")
+        self.assert_rejected(document, "text and JSON views disagree", text)
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            f"    limit: {EXPECTED_WEBSOCKET_REVIEW_LIMITATION}\n".encode(), b"")
         self.assert_rejected(document, "limitation is absent", text)
 
     def test_pinned_secret_exposure_surface_matches_the_named_producer_literals(self):
@@ -4235,7 +4405,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         next(row for row in counts_only["cli_package_features"]
              if row["name"] == "control-reference-mapping")["name"] = (
                  "unclassified-control-mapping")
-        self.assertEqual(len(counts_only["cli_package_features"]), 20)
+        self.assertEqual(len(counts_only["cli_package_features"]), 21)
         self.assertEqual(
             sum(row["build_state"] == "compiled"
                 for row in counts_only["cli_package_features"]),
@@ -4244,7 +4414,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assertEqual(
             sum(row["build_state"] == "not_compiled"
                 for row in counts_only["cli_package_features"]),
-            12,
+            13,
         )
         self.assert_rejected(counts_only, "feature names changed")
 
@@ -4260,6 +4430,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("control-reference-mapping", "compiled"),
             ("recon-ct-provider", "compiled"),
             ("recon-snapshot-import", "compiled"),
+            ("websocket-review", "compiled"),
         ]
         for name, state in cases:
             with self.subTest(name=name, state=state):
@@ -5484,6 +5655,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn(
             "unexpectedly exposes non-bundled Cert Spotter provider",
+            result["failure"],
+        )
+
+    def test_packaged_help_must_not_expose_non_bundled_websocket_option(self):
+        result, _ = self.execute(
+            exposed_session_option=EXPECTED_WEBSOCKET_REVIEW_OPTION,
+            path_suffix="-websocket-review-help",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(
+            "unexpectedly exposes non-bundled WebSocket review",
             result["failure"],
         )
 

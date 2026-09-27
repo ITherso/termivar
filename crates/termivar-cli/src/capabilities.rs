@@ -279,6 +279,7 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
             cfg!(feature = "supplied-session-review"),
         ),
         ("tls-observation", cfg!(feature = "tls-observation")),
+        ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
     ]
     .into_iter()
@@ -616,6 +617,25 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/recon-snapshot-import.md",
         ),
         surface!(
+            "option.websocket-review",
+            "Bounded same-authority WebSocket protocol review",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("websocket-review"),
+            cfg!(feature = "websocket-review"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &[
+                "--profile web-review",
+                "--websocket-review-policy FILE",
+                "policy target_authorized=true",
+                "policy messages_read_only_acknowledged=true",
+                "policy message_content_is_non_secret=true",
+            ],
+            "Reviews one explicitly declared application-contained same-authority ws/wss endpoint through one isolated anonymous connection. V1 sends one to eight sequential operator-declared read-oriented text messages, permits at most 64 KiB aggregate outbound and 64 KiB aggregate inbound application payload, and runs for at most ten seconds or the smaller parent deadline. Policy message bodies must be non-secret; message IDs are non-secret revision handles that must change when message or expected-response semantics change, and public references do not hash those private bytes. Binary application messages fail closed. Numeric-loopback fixtures may use ws; other targets require wss with normal certificate validation. The runtime performs no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended CONNECT. An optional Origin header is operator selected and does not establish browser exploitability because a non-browser client can choose it. Reports retain only bounded opaque references derived from non-secret identifiers, lengths, counts and classified outcomes, never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors. A successful upgrade or matched response does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact. The feature requires explicit --profile web-review and --websocket-review-policy FILE, remains development-only, and is outside default, release-bundle, published alpha.2 archives, and the initial curated package.",
+            "docs/internals/websocket-review.md",
+        ),
+        surface!(
             "option.secret-exposure-review",
             "Passive response secret-exposure review",
             SurfaceGroup::Optional,
@@ -929,7 +949,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 31);
+        assert_eq!(document.surfaces.len(), 32);
 
         let keys = document
             .surfaces
@@ -963,6 +983,7 @@ mod tests {
                 "option.control-reference-mapping",
                 "option.recon-certspotter-provider",
                 "option.recon-snapshot",
+                "option.websocket-review",
                 "option.secret-exposure-review",
                 "option.tls-observation",
                 "option.jwt-policy-review",
@@ -1494,6 +1515,44 @@ mod tests {
             assert!(
                 recon_snapshot.limitation.contains(required),
                 "missing recon-snapshot limitation `{required}`"
+            );
+        }
+        let websocket = find("option.websocket-review");
+        assert_eq!(
+            websocket.prerequisites,
+            [
+                "--profile web-review",
+                "--websocket-review-policy FILE",
+                "policy target_authorized=true",
+                "policy messages_read_only_acknowledged=true",
+                "policy message_content_is_non_secret=true",
+            ]
+        );
+        assert_eq!(websocket.compile_feature, Some("websocket-review"));
+        assert_eq!(
+            websocket.documentation,
+            "docs/internals/websocket-review.md"
+        );
+        for required in [
+            "one isolated anonymous connection",
+            "one to eight sequential operator-declared read-oriented text messages",
+            "Policy message bodies must be non-secret",
+            "message IDs are non-secret revision handles",
+            "public references do not hash those private bytes",
+            "Binary application messages fail closed",
+            "64 KiB aggregate outbound and 64 KiB aggregate inbound",
+            "ten seconds or the smaller parent deadline",
+            "Numeric-loopback fixtures may use ws",
+            "other targets require wss with normal certificate validation",
+            "no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended CONNECT",
+            "does not establish browser exploitability",
+            "never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors",
+            "does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact",
+            "outside default, release-bundle, published alpha.2 archives, and the initial curated package",
+        ] {
+            assert!(
+                websocket.limitation.contains(required),
+                "missing WebSocket-review limitation `{required}`"
             );
         }
         let secret_exposure = find("option.secret-exposure-review");

@@ -24,6 +24,7 @@ reqwest = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 async-trait = { version = "0.1", optional = true }
 dashmap = { version = "5.5", optional = true }
@@ -67,6 +68,10 @@ normalization-resilience = ["scanning"]
 # Explicitly enabled, anonymous, bounded GraphQL surface review. The API
 # reasoner remains transport-neutral; the scanner runtime owns any requests.
 graphql-review = ["scanning"]
+
+# Explicitly enabled, bounded same-authority WebSocket protocol review. The
+# runtime owns one isolated connection and never retries or reconnects.
+websocket-review = ["scanning", "dep:futures", "dep:tokio-tungstenite"]
 
 # Explicitly enabled, bounded OpenAPI-described surface review. Contract
 # parsing remains transport-neutral; the scanner runtime owns any requests.
@@ -174,14 +179,14 @@ lua = ["core", "dep:mlua", "dep:tokio"]
 
 # Historical compatibility aggregate enabling every opt-in source surface.
 # This is not a supported product tier or a production-readiness claim.
-full = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "supplied-session-review", "secret-exposure-review", "tls-observation", "jwt-policy-review", "jwt-target-acceptance-review", "control-reference-mapping", "recon-snapshot-import", "recon-ct-provider", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "platform-models", "reporting", "plugins", "lua"]
+full = ["core", "scanning", "normalization-resilience", "graphql-review", "websocket-review", "openapi-review", "rest-review", "authorization-review", "supplied-session-review", "secret-exposure-review", "tls-observation", "jwt-policy-review", "jwt-target-acceptance-review", "control-reference-mapping", "recon-snapshot-import", "recon-ct-provider", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "threat-intel", "platform-models", "reporting", "plugins", "lua"]
 
 # Minimal deterministic scanner runtime
 minimal = ["core", "scanning"]
 
 # Historical compatibility aggregate excluding threat intelligence.
 # It is not an enterprise distribution or supported package.
-enterprise = ["core", "scanning", "normalization-resilience", "graphql-review", "openapi-review", "rest-review", "authorization-review", "supplied-session-review", "secret-exposure-review", "tls-observation", "jwt-policy-review", "jwt-target-acceptance-review", "control-reference-mapping", "recon-snapshot-import", "recon-ct-provider", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "platform-models", "reporting", "plugins", "lua"]
+enterprise = ["core", "scanning", "normalization-resilience", "graphql-review", "websocket-review", "openapi-review", "rest-review", "authorization-review", "supplied-session-review", "secret-exposure-review", "tls-observation", "jwt-policy-review", "jwt-target-acceptance-review", "control-reference-mapping", "recon-snapshot-import", "recon-ct-provider", "wordpress-review", "oast-correlation", "legacy-scanner", "detection", "ml", "distributed", "monitoring", "compliance", "platform-models", "reporting", "plugins", "lua"]
 
 # Historical alias for the all-opt-in compatibility aggregate.
 research = ["full"]

@@ -48,6 +48,7 @@ hex = "0.4"
 getrandom = "0.2"
 axum = { version = "0.7", default-features = false }
 futures = "0.3"
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 sha2 = "0.10"

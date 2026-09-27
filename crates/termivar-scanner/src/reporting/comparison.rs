@@ -30,6 +30,9 @@ pub(super) const SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
 pub(super) const SECRET_EXPOSURE_COMPARISON_SCHEMA: &str = "termivar-secret-exposure-comparison/v1";
 /// Additive, display-only passive TLS observation comparison section.
 pub(super) const TLS_OBSERVATION_COMPARISON_SCHEMA: &str = "termivar-tls-observation-comparison/v1";
+/// Additive, display-only bounded WebSocket exchange comparison section.
+pub(super) const WEBSOCKET_REVIEW_COMPARISON_SCHEMA: &str =
+    "termivar-websocket-review-comparison/v1";
 /// Additive, display-only local JWT policy comparison section.
 pub(super) const JWT_POLICY_REVIEW_COMPARISON_SCHEMA: &str =
     "termivar-jwt-policy-review-comparison/v1";
@@ -210,6 +213,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tls_observation_comparison: Option<TlsObservationComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) websocket_review_comparison: Option<WebSocketReviewComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) jwt_policy_review_comparison: Option<JwtPolicyReviewComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) control_reference_mapping_comparison: Option<ControlReferenceMappingComparison>,
@@ -259,6 +264,18 @@ pub(super) struct TlsObservationComparison {
     pub(super) coverage: WordPressFacetComparison,
     pub(super) certificate_observations: WordPressFacetComparison,
     pub(super) interpretation_limits: [&'static str; 5],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct WebSocketReviewComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) outcome: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 6],
 }
 
 #[derive(Debug, Serialize)]
@@ -449,6 +466,13 @@ pub(super) struct ImportedTlsObservationAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedWebSocketReviewAudit {
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+    pub(super) outcome: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedJwtPolicyReviewAudit {
     pub(super) schema: String,
     pub(super) methodology: Value,
@@ -563,6 +587,7 @@ struct ImportedDocument {
     supplied_session: Option<ImportedSuppliedSessionAudit>,
     secret_exposure: Option<ImportedSecretExposureAudit>,
     tls_observation: Option<ImportedTlsObservationAudit>,
+    websocket_review: Option<ImportedWebSocketReviewAudit>,
     jwt_policy_review: Option<ImportedJwtPolicyReviewAudit>,
     control_reference_mapping: Option<ImportedControlReferenceMappingAudit>,
     recon_snapshot_import: Option<ImportedReconSnapshotAudit>,
@@ -595,6 +620,10 @@ fn compare_documents(
     let tls_observation_comparison = compare_tls_observation(
         before.tls_observation.as_ref(),
         after.tls_observation.as_ref(),
+    );
+    let websocket_review_comparison = compare_websocket_review(
+        before.websocket_review.as_ref(),
+        after.websocket_review.as_ref(),
     );
     let jwt_policy_review_comparison = compare_jwt_policy_review(
         before.jwt_policy_review.as_ref(),
@@ -632,6 +661,7 @@ fn compare_documents(
         supplied_session_comparison,
         secret_exposure_comparison,
         tls_observation_comparison,
+        websocket_review_comparison,
         jwt_policy_review_comparison,
         control_reference_mapping_comparison,
         recon_snapshot_import_comparison,
@@ -880,6 +910,68 @@ fn compare_tls_observation(
             "Standard transport validation is scoped to a successful response connection and is not source authentication, a fresh signature check by this report, or worldwide trust.",
             "Revocation, AIA, CRL, OCSP, certificate-transparency, and active negotiation retrieval were not performed.",
             "A one-sided or changed certificate observation does not establish vulnerability, exploitation, impact, rotation quality, or remediation.",
+        ],
+    })
+}
+
+fn compare_websocket_review(
+    before: Option<&ImportedWebSocketReviewAudit>,
+    after: Option<&ImportedWebSocketReviewAudit>,
+) -> Option<WebSocketReviewComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    let facet_status = |before: Option<&Value>, after: Option<&Value>| {
+        if status == "compared" {
+            paired_status(before, after)
+        } else {
+            "not_comparable"
+        }
+    };
+    Some(WebSocketReviewComparison {
+        schema: WEBSOCKET_REVIEW_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            facet_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Policy, opaque endpoint reference, origin mode, subprotocol-selection state, observable-limit declarations, or claim-limit changes are methodology differences. Physical continuation-frame counts remain unavailable and no target security change is established.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            facet_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "Request, connection, message, observable control-event, application-byte, raw-socket transport-byte, and parent-accounted byte counts describe only each bounded exchange. Raw transport reads include Upgrade/framing overhead and WSS encrypted TLS records; reduced or missing coverage is not remediation or rejection evidence.",
+        ),
+        outcome: facet(
+            before.map(|audit| &audit.outcome),
+            after.map(|audit| &audit.outcome),
+            facet_status(
+                before.map(|audit| &audit.outcome),
+                after.map(|audit| &audit.outcome),
+            ),
+            "Terminal state and per-message length/status relationships describe the configured anonymous exchange only. A mismatched response exposes no body-derived reference. These values do not establish authorization, server state, exploitability, vulnerability, or remediation.",
+        ),
+        interpretation_limits: [
+            "The comparison retains no payload, URL, path, query, subprotocol value, token, raw error, header, cookie, or credential.",
+            "Only the configured anonymous RFC 6455 HTTP/1.1 upgrade exchange was observed; HTTP/2 extended CONNECT was not exercised.",
+            "Opaque policy, endpoint, and message references are not authenticated target identities. Expected-response references commit only to operator-supplied expectations; no mismatch-body digest is retained.",
+            "Transport bytes use raw socket scope, include HTTP Upgrade and WebSocket framing, and count encrypted TLS records for WSS; they are not application-byte measurements.",
+            "A one-sided audit is not comparable and does not establish introduction, disappearance, rejection, or remediation.",
+            "No authorization, server-state, vulnerability, exploitability, impact, or source-authentication conclusion is established by this audit.",
         ],
     })
 }
@@ -1613,6 +1705,9 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
     if let Some(tls_observation) = &document.tls_observation_comparison {
         write_tls_observation_comparison_markdown(&mut output, tls_observation)?;
     }
+    if let Some(websocket_review) = &document.websocket_review_comparison {
+        write_websocket_review_comparison_markdown(&mut output, websocket_review)?;
+    }
     if let Some(jwt_policy_review) = &document.jwt_policy_review_comparison {
         write_jwt_policy_review_comparison_markdown(&mut output, jwt_policy_review)?;
     }
@@ -1843,6 +1938,50 @@ fn write_tls_observation_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### TLS observation interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_websocket_review_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &WebSocketReviewComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## WebSocket review differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str(
+        "\n\nThis section compares strict, value-free projections of one bounded anonymous WebSocket exchange. It retains no payload, URL, path, query, subprotocol value, mismatched-response digest, token, or raw error. Raw transport-byte fields include HTTP Upgrade/framing overhead and WSS encrypted TLS records; they are not application bytes. The comparison does not establish authorization, server state, vulnerability, impact, or remediation.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+        ("Outcome", &comparison.outcome),
+    ] {
+        output.push_fmt(format_args!("### WebSocket {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### WebSocket review interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

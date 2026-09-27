@@ -81,6 +81,8 @@ mod tls_observation;
 mod web_assessment;
 mod web_review_decision;
 mod web_review_execution;
+#[cfg(feature = "websocket-review")]
+mod websocket_runtime;
 #[cfg(feature = "wordpress-review")]
 mod wordpress_discovery;
 #[cfg(feature = "wordpress-review")]
@@ -88,10 +90,29 @@ mod wordpress_fingerprint_runtime;
 #[cfg(feature = "wordpress-review")]
 mod wordpress_runtime;
 
+pub use api_visibility::{
+    ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
+    ApiVisibilityDifferentialDisposition, ApiVisibilityDifferentialRequest,
+    ApiVisibilityDifferentialRequestError, ApiVisibilityInconclusiveReason, ApiVisibilityLeg,
+    ApiVisibilityLegReceipt, RuntimeApiVisibilityError, RuntimeApiVisibilityExecutionError,
+    RuntimeApiVisibilityRunReport,
+};
+pub use assessment_api_visibility::{
+    WebAssessmentAuthorizationContextError, WebAssessmentRootAuthorizationContext,
+};
 use assessment_defense::AssessmentDefenseController;
 pub(crate) use assessment_defense::{
     project_assessment_defense_signal, AssessmentDefenseBodyCoverage,
     AssessmentDefenseProjectionContext, AssessmentDefenseSignal,
+};
+pub use assessment_item::{
+    AssessmentBasis, AssessmentCaseReference, AssessmentConfirmationDenial,
+    AssessmentDifferentialBasis, AssessmentDisposition, AssessmentEvidenceReference,
+    AssessmentItem, AssessmentItemProjectionError, AssessmentObservationBasis,
+    AssessmentOutcomeReference, AssessmentRemediation, AssessmentSubjectReference,
+    AssessmentVerifierBasis, ASSESSMENT_ITEM_SCHEMA, MAX_ASSESSMENT_CAPABILITY_ID_BYTES,
+    MAX_ASSESSMENT_DISPLAY_BYTES, MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES,
+    MAX_ASSESSMENT_ITEM_SET_ITEMS,
 };
 pub(crate) use assessment_review::AssessmentReviewObserverSet;
 #[cfg(any(
@@ -111,24 +132,15 @@ use web_review_execution::{
     NativeWebReviewExecutorProfile, NativeWebReviewQueryParameters, NativeWebReviewSeeds,
 };
 
-pub use api_visibility::{
-    ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
-    ApiVisibilityDifferentialDisposition, ApiVisibilityDifferentialRequest,
-    ApiVisibilityDifferentialRequestError, ApiVisibilityInconclusiveReason, ApiVisibilityLeg,
-    ApiVisibilityLegReceipt, RuntimeApiVisibilityError, RuntimeApiVisibilityExecutionError,
-    RuntimeApiVisibilityRunReport,
-};
-pub use assessment_api_visibility::{
-    WebAssessmentAuthorizationContextError, WebAssessmentRootAuthorizationContext,
-};
-pub use assessment_item::{
-    AssessmentBasis, AssessmentCaseReference, AssessmentConfirmationDenial,
-    AssessmentDifferentialBasis, AssessmentDisposition, AssessmentEvidenceReference,
-    AssessmentItem, AssessmentItemProjectionError, AssessmentObservationBasis,
-    AssessmentOutcomeReference, AssessmentRemediation, AssessmentSubjectReference,
-    AssessmentVerifierBasis, ASSESSMENT_ITEM_SCHEMA, MAX_ASSESSMENT_CAPABILITY_ID_BYTES,
-    MAX_ASSESSMENT_DISPLAY_BYTES, MAX_ASSESSMENT_ITEM_EVIDENCE_REFERENCES,
-    MAX_ASSESSMENT_ITEM_SET_ITEMS,
+#[cfg(feature = "websocket-review")]
+pub use websocket_runtime::{
+    WebAssessmentWebSocketReviewAudit, WebSocketReviewClaimLimit, WebSocketReviewCompleteness,
+    WebSocketReviewExecutionLimits, WebSocketReviewFailureKind, WebSocketReviewMessageAudit,
+    WebSocketReviewMessageStatus, WebSocketReviewTerminal,
+    MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION, MAX_WEBSOCKET_REVIEW_CONNECTIONS,
+    WEBSOCKET_REVIEW_ACTION_ID, WEBSOCKET_REVIEW_AUDIT_SCHEMA, WEBSOCKET_REVIEW_AUTHENTICATION,
+    WEBSOCKET_REVIEW_CAPABILITY_ID, WEBSOCKET_REVIEW_HTTP2_EXTENDED_CONNECT,
+    WEBSOCKET_REVIEW_TRANSPORT, WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE,
 };
 
 #[cfg(feature = "reporting")]

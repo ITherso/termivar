@@ -33,6 +33,8 @@ mod recon_input;
 mod report_bundle;
 mod report_compare;
 mod report_verify;
+#[cfg(feature = "websocket-review")]
+mod websocket_input;
 #[cfg(feature = "wordpress-review")]
 mod wordpress_input;
 
@@ -324,7 +326,8 @@ fn wordpress_review_target_conflict(
 #[cfg(any(
     feature = "wordpress-review",
     feature = "supplied-session-review",
-    feature = "jwt-target-acceptance-review"
+    feature = "jwt-target-acceptance-review",
+    feature = "websocket-review"
 ))]
 fn is_wordpress_application_target(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https")
@@ -469,6 +472,21 @@ fn scan_recon_certspotter_flags_conflict(
 ) -> Option<&'static str> {
     if selected && profile != Some(CliScanProfile::WebReview) {
         Some("`--recon-certspotter-policy` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
+/// Rejects bounded WebSocket review outside its explicit web-review contract.
+/// This runs before opening the selected policy, reserving output, or
+/// constructing target/network authority.
+#[cfg(feature = "websocket-review")]
+fn scan_websocket_review_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--websocket-review-policy` requires `--profile web-review`")
     } else {
         None
     }
@@ -632,6 +650,12 @@ struct ScanArgs {
     #[cfg(feature = "recon-ct-provider")]
     #[arg(long, value_name = "FILE", requires = "profile")]
     recon_certspotter_policy: Option<PathBuf>,
+    /// Review one explicitly declared same-authority WebSocket protocol using
+    /// a bounded local policy. V1 is anonymous, sequential and does not retry,
+    /// reconnect, discover endpoints or inherit an HTTP session.
+    #[cfg(feature = "websocket-review")]
+    #[arg(long, value_name = "FILE", requires = "profile")]
+    websocket_review_policy: Option<PathBuf>,
     /// Review one explicitly supplied compact JWT against a bounded local
     /// policy and one local ES256 public JWK. The token is never sent to the
     /// target and no remote key is retrieved.
@@ -1128,7 +1152,8 @@ struct ScanTarget {
     #[cfg(any(
         feature = "wordpress-review",
         feature = "supplied-session-review",
-        feature = "jwt-target-acceptance-review"
+        feature = "jwt-target-acceptance-review",
+        feature = "websocket-review"
     ))]
     raw: String,
 }
@@ -1142,7 +1167,8 @@ impl std::str::FromStr for ScanTarget {
             #[cfg(any(
                 feature = "wordpress-review",
                 feature = "supplied-session-review",
-                feature = "jwt-target-acceptance-review"
+                feature = "jwt-target-acceptance-review",
+                feature = "websocket-review"
             ))]
             raw: raw.to_owned(),
         })
@@ -1162,7 +1188,8 @@ impl ScanTarget {
     #[cfg(any(
         feature = "wordpress-review",
         feature = "supplied-session-review",
-        feature = "jwt-target-acceptance-review"
+        feature = "jwt-target-acceptance-review",
+        feature = "websocket-review"
     ))]
     fn selected_application_is_unambiguous(&self) -> bool {
         if !is_wordpress_application_target(&self.url) || self.url.as_str() != self.raw {
@@ -1192,7 +1219,8 @@ impl ScanTarget {
 #[cfg(any(
     feature = "wordpress-review",
     feature = "supplied-session-review",
-    feature = "jwt-target-acceptance-review"
+    feature = "jwt-target-acceptance-review",
+    feature = "websocket-review"
 ))]
 fn raw_http_directory_path(value: &str) -> Option<&str> {
     if value.is_empty()
@@ -1307,6 +1335,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         recon_snapshot,
         #[cfg(feature = "recon-ct-provider")]
         recon_certspotter_policy,
+        #[cfg(feature = "websocket-review")]
+        websocket_review_policy,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy,
         #[cfg(feature = "jwt-policy-review")]
@@ -1468,6 +1498,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
+    #[cfg(feature = "websocket-review")]
+    if let Some(message) =
+        scan_websocket_review_flags_conflict(profile, websocket_review_policy.is_some())
+    {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
     #[cfg(feature = "jwt-policy-review")]
     let jwt_policy_review_selected = jwt_policy.is_some()
         || jwt_public_jwk.is_some()
@@ -1600,6 +1639,14 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "JWT target-acceptance application must use an unambiguous raw trailing-slash path",
+        )
+        .into());
+    }
+    #[cfg(feature = "websocket-review")]
+    if websocket_review_policy.is_some() && !target.selected_application_is_unambiguous() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "WebSocket review application must use an unambiguous raw trailing-slash path",
         )
         .into());
     }
@@ -1748,6 +1795,9 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     #[cfg(feature = "recon-ct-provider")]
     let recon_certspotter_policy_input =
         recon_certspotter_policy.map(recon_ct_input::ReconCtProviderPolicyInput::new);
+    #[cfg(feature = "websocket-review")]
+    let websocket_review_policy_input =
+        websocket_review_policy.map(websocket_input::WebSocketReviewPolicyInput::new);
     #[cfg(feature = "authorization-review")]
     if resource_authorization_input.is_some()
         && !authorization_context_transport_is_allowed(&target)
@@ -1817,6 +1867,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             &target,
             recon_ct_provider.as_ref(),
         )?;
+        // This inert policy grants one narrow child transport authority. Parse
+        // and bind it to the selected application before output reservation,
+        // credential acquisition, or networking.
+        #[cfg(feature = "websocket-review")]
+        let websocket_review = websocket_review_policy_input
+            .map(|input| input.load(&target))
+            .transpose()?;
         // The JWT policy and explicitly trusted public key are non-secret and
         // validated before output reservation. The compact token remains
         // unread until reservation succeeds below.
@@ -1938,6 +1995,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 recon_snapshot,
                 #[cfg(feature = "recon-ct-provider")]
                 recon_ct_provider,
+                #[cfg(feature = "websocket-review")]
+                websocket_review,
                 #[cfg(feature = "jwt-policy-review")]
                 jwt_policy_review,
                 #[cfg(feature = "jwt-target-acceptance-review")]
@@ -2469,6 +2528,8 @@ mod tests {
         assert!(!args.secret_exposure_review);
         #[cfg(feature = "tls-observation")]
         assert!(!args.tls_observation);
+        #[cfg(feature = "websocket-review")]
+        assert_eq!(args.websocket_review_policy, None);
         #[cfg(feature = "jwt-policy-review")]
         {
             assert_eq!(args.jwt_policy, None);
@@ -3154,6 +3215,98 @@ mod tests {
             "--recon-certspotter-policy",
             "provider.json",
             "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "websocket-review")]
+    #[test]
+    fn websocket_review_is_explicit_web_review_only() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--websocket-review-policy <FILE>"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--websocket-review-policy",
+            "protocol.json",
+            "https://example.test/app/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--websocket-review-policy",
+            "protocol.json",
+            "https://example.test/app/",
+        ])
+        .expect("semantic profile guard runs before WebSocket policy acquisition");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(
+            baseline.websocket_review_policy.as_deref(),
+            Some(std::path::Path::new("protocol.json"))
+        );
+        assert_eq!(
+            scan_websocket_review_flags_conflict(
+                baseline.profile,
+                baseline.websocket_review_policy.is_some(),
+            ),
+            Some("`--websocket-review-policy` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--websocket-review-policy",
+            "protocol.json",
+            "https://example.test/app/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(
+            review.websocket_review_policy.as_deref(),
+            Some(std::path::Path::new("protocol.json"))
+        );
+        assert_eq!(
+            scan_websocket_review_flags_conflict(
+                review.profile,
+                review.websocket_review_policy.is_some(),
+            ),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "websocket-review"))]
+    #[test]
+    fn default_cli_does_not_expose_websocket_review() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--websocket-review-policy"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--websocket-review-policy",
+            "protocol.json",
+            "https://example.test/app/",
         ])
         .is_err());
     }

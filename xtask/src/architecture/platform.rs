@@ -43,6 +43,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "ssrf-oast-review",
     "supplied-session-review",
     "tls-observation",
+    "websocket-review",
     "wordpress-review",
     "platform-models",
     "plugins",
@@ -78,6 +79,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "ssrf-oast-review",
     "supplied-session-review",
     "tls-observation",
+    "websocket-review",
     "wordpress-review",
     "platform-models",
     "plugins",
@@ -114,6 +116,7 @@ const FULL_AGGREGATE_FEATURES: &[&str] = &[
     "scanning",
     "supplied-session-review",
     "tls-observation",
+    "websocket-review",
     "wordpress-review",
     "threat-intel",
 ];
@@ -145,6 +148,7 @@ const ENTERPRISE_AGGREGATE_FEATURES: &[&str] = &[
     "scanning",
     "supplied-session-review",
     "tls-observation",
+    "websocket-review",
     "wordpress-review",
 ];
 
@@ -162,6 +166,7 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "reqwest",
     "tokio",
     "tokio-util",
+    "tokio-tungstenite",
     "toml",
     "termivar-oast",
     "uuid",
@@ -226,6 +231,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "ssrf-oast-review",
     "supplied-session-review",
     "tls-observation",
+    "websocket-review",
     "wordpress-review",
 ];
 const REQUIRED_API_DEPENDENCIES: &[&str] = &["axum"];
@@ -303,6 +309,7 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     ("runner", "feature=\"legacy-scanner\""),
     ("sdk", "feature=\"legacy-scanner\""),
     ("threat_intelligence", "feature=\"threat-intel\""),
+    ("websocket_review", "feature=\"websocket-review\""),
 ];
 
 /// Pure, feature-independent implementation modules shared by optional
@@ -1412,6 +1419,10 @@ fn cli_feature_violations(
             &["termivar-scanner/supplied-session-review"][..],
         ),
         ("tls-observation", &["termivar-scanner/tls-observation"][..]),
+        (
+            "websocket-review",
+            &["termivar-scanner/websocket-review"][..],
+        ),
         (
             "wordpress-review",
             &["termivar-scanner/wordpress-review"][..],
@@ -5239,7 +5250,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 12
+        || report_call.args.len() != 13
     {
         return false;
     }
@@ -5254,6 +5265,9 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_authorization_field(argument, "authorization_review")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(argument, "websocket_review", "websocket-review")
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(
@@ -5546,6 +5560,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             (
                 "authorization_review",
                 "Option<AssessmentAuthorizationAuditDocument>",
+            ),
+            (
+                "websocket_review",
+                "Option<AssessmentWebSocketReviewAuditDocument>",
             ),
             ("openapi_review", "Option<AssessmentOpenApiAuditDocument>"),
             ("rest_review", "Option<AssessmentRestAuditDocument>"),
@@ -7080,6 +7098,91 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
         ],
     ),
     (
+        "AssessmentWebSocketReviewAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("capability_id", "&'static str"),
+            ("selected", "bool"),
+            ("policy_reference", "String"),
+            ("endpoint_reference", "String"),
+            ("context", "&'static str"),
+            (
+                "methodology",
+                "AssessmentWebSocketReviewMethodologyDocument",
+            ),
+            ("coverage", "AssessmentWebSocketReviewCoverageDocument"),
+            ("messages", "Vec<AssessmentWebSocketReviewMessageDocument>"),
+            ("claim_limits", "Vec<&'static str>"),
+        ],
+    ),
+    (
+        "AssessmentWebSocketReviewMethodologyDocument",
+        &[],
+        &[
+            ("origin_mode", "&'static str"),
+            ("compression", "&'static str"),
+            ("reconnect", "&'static str"),
+            ("http2_extended_connect", "&'static str"),
+            ("subprotocol", "&'static str"),
+            ("physical_frame_count", "&'static str"),
+            ("max_frame_size", "&'static str"),
+            ("limits", "AssessmentWebSocketReviewLimitsDocument"),
+        ],
+    ),
+    (
+        "AssessmentWebSocketReviewLimitsDocument",
+        &[],
+        &[
+            ("max_connections", "u8"),
+            ("max_outbound_application_bytes", "u64"),
+            ("max_inbound_application_bytes", "u64"),
+            ("max_outbound_message_bytes", "u64"),
+            ("max_inbound_message_bytes", "u64"),
+            ("max_messages", "u64"),
+            ("max_control_frames", "u64"),
+            ("max_wall_time_ms", "u64"),
+        ],
+    ),
+    (
+        "AssessmentWebSocketReviewCoverageDocument",
+        &[],
+        &[
+            ("terminal", "&'static str"),
+            ("completeness", "&'static str"),
+            ("first_failure", "Option<&'static str>"),
+            ("request_attempt_count", "u8"),
+            ("request_admitted_count", "u8"),
+            ("connection_attempt_count", "u8"),
+            ("handshake_completed_count", "u8"),
+            ("outbound_message_count", "u64"),
+            ("inbound_message_count", "u64"),
+            ("outbound_control_frame_count", "u64"),
+            ("inbound_control_frame_count", "u64"),
+            ("outbound_application_bytes", "u64"),
+            ("inbound_application_bytes", "u64"),
+            ("transport_read_bytes", "u64"),
+            ("transport_write_bytes", "u64"),
+            ("accounted_request_body_bytes", "u64"),
+            ("accounted_transport_response_bytes", "u64"),
+            ("transport_byte_scope", "&'static str"),
+            ("expected_response_count", "u64"),
+            ("matched_response_count", "u64"),
+            ("mismatched_response_count", "u64"),
+        ],
+    ),
+    (
+        "AssessmentWebSocketReviewMessageDocument",
+        &[],
+        &[
+            ("message_reference", "String"),
+            ("expected_response_reference", "String"),
+            ("outbound_length", "u64"),
+            ("inbound_length", "Option<u64>"),
+            ("status", "&'static str"),
+        ],
+    ),
+    (
         "AssessmentItemDocument",
         &["a"],
         &[
@@ -7219,6 +7322,7 @@ fn reporting_serde_recon_record_shape(attribute: &Attribute) -> bool {
 fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature: &str) -> bool {
     let expected = match feature {
         "authorization-review" => "feature=\"authorization-review\"",
+        "websocket-review" => "feature=\"websocket-review\"",
         "openapi-review" => "feature=\"openapi-review\"",
         "rest-review" => "feature=\"rest-review\"",
         "secret-exposure-review" => "feature=\"secret-exposure-review\"",
@@ -7269,6 +7373,11 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSuppliedSessionCheckpointDocument"
                 | "AssessmentSuppliedSessionResourceDocument"
                 | "AssessmentAuthorizationAuditDocument"
+                | "AssessmentWebSocketReviewAuditDocument"
+                | "AssessmentWebSocketReviewMethodologyDocument"
+                | "AssessmentWebSocketReviewLimitsDocument"
+                | "AssessmentWebSocketReviewCoverageDocument"
+                | "AssessmentWebSocketReviewMessageDocument"
                 | "AssessmentOpenApiAuditDocument"
                 | "AssessmentRestAuditDocument"
                 | "AssessmentSecretExposureAuditDocument"
@@ -7403,6 +7512,13 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 },
                 "AssessmentAuthorizationAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"authorization-review\")"
+                },
+                "AssessmentWebSocketReviewAuditDocument"
+                | "AssessmentWebSocketReviewMethodologyDocument"
+                | "AssessmentWebSocketReviewLimitsDocument"
+                | "AssessmentWebSocketReviewCoverageDocument"
+                | "AssessmentWebSocketReviewMessageDocument" => {
+                    "all(feature=\"scanning\",feature=\"websocket-review\")"
                 },
                 "AssessmentOpenApiAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"openapi-review\")"
@@ -7568,6 +7684,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                             &field.attrs,
                             "authorization-review",
                         )
+                    } else if name == "AssessmentDocument" && field_name == "websocket_review" {
+                        reporting_audit_field_attributes_are_exact(&field.attrs, "websocket-review")
                     } else if name == "AssessmentDocument" && field_name == "openapi_review" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "openapi-review")
                     } else if name == "AssessmentDocument" && field_name == "rest_review" {
@@ -10292,8 +10410,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 565_738;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x0d71_6795_bc4b_45fd_f2ca_3a07_6edb_4be8;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 588_948;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x951b_dc00_1859_7fc0_771b_cee5_1f03_f69d;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -10423,6 +10541,9 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES",
+    "crate::websocket_review::MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES",
+    "crate::websocket_review::MAX_WEBSOCKET_REVIEW_MESSAGES",
+    "crate::websocket_review::MAX_WEBSOCKET_REVIEW_WALL_TIME_MS",
     "crate::recon_ct_provider::MAX_CERT_SPOTTER_ELAPSED",
     "crate::recon_ct_provider::MAX_CERT_SPOTTER_IN_FLIGHT_REQUESTS",
     "crate::recon_ct_provider::MAX_CERT_SPOTTER_RESPONSE_PAGES",
@@ -10444,6 +10565,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::AssessmentRunReport",
     "crate::web_runtime::AssessmentRunReportError",
     "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS",
+    "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES",
     "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS",
     "crate::web_runtime::MAX_REST_REVIEW_ACTIVE_VERIFICATIONS",
     "crate::web_runtime::MAX_REST_REVIEW_REQUESTS",
@@ -10455,6 +10577,8 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::MAX_SUPPLIED_SESSION_CHECKPOINTS",
     "crate::web_runtime::MAX_SUPPLIED_SESSION_REQUESTS",
     "crate::web_runtime::MAX_SUPPLIED_SESSION_RESOURCES",
+    "crate::web_runtime::MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION",
+    "crate::web_runtime::MAX_WEBSOCKET_REVIEW_CONNECTIONS",
     "crate::web_runtime::OPENAPI_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::OpenApiRuntimeOutcome",
     "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID",
@@ -10473,6 +10597,8 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::TLS_OBSERVATION_REVOCATION_STATUS",
     "crate::web_runtime::TLS_OBSERVATION_SOURCE_SCOPE",
     "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE",
+    "crate::web_runtime::WEBSOCKET_REVIEW_AUDIT_SCHEMA",
+    "crate::web_runtime::WEBSOCKET_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
@@ -10494,6 +10620,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::WebAssessmentSecretExposureAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
     "crate::web_runtime::WebAssessmentTlsObservationAudit",
+    "crate::web_runtime::WebAssessmentWebSocketReviewAudit",
     "crate::web_runtime::WordPressAssetFingerprintExecution",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
@@ -10591,12 +10718,16 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentReconCertSpotterAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
+    "AssessmentWebSocketReviewAuditDocument::from_audit",
     "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA",
     "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_ID",
     "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION",
     "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_POLICY_ID",
     "crate::control_reference_mapping::ControlReferenceMappingAudit",
     "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS",
+    "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES",
+    "crate::web_runtime::MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION",
+    "crate::web_runtime::MAX_WEBSOCKET_REVIEW_CONNECTIONS",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_BODY_BYTES",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_OCCURRENCES",
     "crate::web_runtime::MAX_SECRET_EXPOSURE_RESPONSES",
@@ -10609,7 +10740,10 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::TLS_OBSERVATION_REVOCATION_STATUS",
     "crate::web_runtime::TLS_OBSERVATION_SOURCE_SCOPE",
     "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE",
+    "crate::web_runtime::WEBSOCKET_REVIEW_AUDIT_SCHEMA",
+    "crate::web_runtime::WEBSOCKET_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::WebAssessmentTlsObservationAudit",
+    "crate::web_runtime::WebAssessmentWebSocketReviewAudit",
     "crate::jwt_policy_review::JWT_POLICY_REVIEW_AUDIT_SCHEMA",
     "crate::jwt_policy_review::JWT_POLICY_REVIEW_POLICY_ID",
     "crate::jwt_policy_review::JwtClockAssurance",
@@ -10642,6 +10776,9 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_REQUESTS",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_RESPONSE_BYTES",
     "crate::jwt_target_acceptance::MAX_JWT_TARGET_ACCEPTANCE_TOTAL_RESPONSE_BYTES",
+    "crate::websocket_review::MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES",
+    "crate::websocket_review::MAX_WEBSOCKET_REVIEW_MESSAGES",
+    "crate::websocket_review::MAX_WEBSOCKET_REVIEW_WALL_TIME_MS",
     "crate::recon_ct_provider::MAX_CERT_SPOTTER_ELAPSED",
     "crate::recon_ct_provider::MAX_CERT_SPOTTER_IN_FLIGHT_REQUESTS",
     "crate::recon_ct_provider::MAX_CERT_SPOTTER_RESPONSE_PAGES",
@@ -11305,6 +11442,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "valid_recon_report_sha256",
     "valid_recon_report_text",
+    "valid_websocket_review_reference",
     "AccountingDimension::from_accounting",
     "AccountingDocument::from_report",
     "AssessmentBasisLinkageDocument::from_basis",
@@ -11315,6 +11453,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentJwtTargetAcceptanceAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
+    "AssessmentWebSocketReviewAuditDocument::from_audit",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentSuppliedSessionLoginDocument::validate",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
@@ -12264,6 +12403,46 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "source_supplied_session_page_references",
     "supplied_session_pages",
     "validate_against_supplied_session",
+    "accounted_request_body_bytes",
+    "accounted_transport_response_bytes",
+    "compression_enabled",
+    "connection_attempt_count",
+    "context",
+    "endpoint_reference",
+    "expected_response_count",
+    "expected_response_reference",
+    "handshake_completed_count",
+    "http2_extended_connect",
+    "inbound_application_bytes",
+    "inbound_control_frame_count",
+    "inbound_length",
+    "inbound_message_count",
+    "limits",
+    "matched_response_count",
+    "max_connections",
+    "max_control_frames",
+    "max_inbound_application_bytes",
+    "max_inbound_message_bytes",
+    "max_messages",
+    "max_outbound_application_bytes",
+    "max_outbound_message_bytes",
+    "max_wall_time_ms",
+    "message_reference",
+    "messages",
+    "mismatched_response_count",
+    "origin_mode",
+    "outbound_application_bytes",
+    "outbound_control_frame_count",
+    "outbound_length",
+    "outbound_message_count",
+    "reconnect_enabled",
+    "subprotocol_requested",
+    "transport_byte_scope",
+    "transport_read_bytes",
+    "transport_write_bytes",
+    "unwrap_or_default",
+    "validate_wire",
+    "websocket_review_audit",
 ];
 
 const ALLOWED_REPORTING_MACROS: &[&str] = &["format", "format_args", "matches", "vec"];
@@ -12306,6 +12485,21 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::MAX_AUTHORIZATION_REVIEW_REQUESTS"
                     | "crate::web_runtime::RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID"
             )
+            });
+        let websocket_review_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::web_runtime::HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES"
+                        | "crate::web_runtime::MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION"
+                        | "crate::web_runtime::MAX_WEBSOCKET_REVIEW_CONNECTIONS"
+                        | "crate::web_runtime::WEBSOCKET_REVIEW_AUDIT_SCHEMA"
+                        | "crate::web_runtime::WEBSOCKET_REVIEW_CAPABILITY_ID"
+                        | "crate::web_runtime::WebAssessmentWebSocketReviewAudit"
+                        | "crate::websocket_review::MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES"
+                        | "crate::websocket_review::MAX_WEBSOCKET_REVIEW_MESSAGES"
+                        | "crate::websocket_review::MAX_WEBSOCKET_REVIEW_WALL_TIME_MS"
+                )
             });
         let control_reference_mapping_import = !paths.is_empty()
             && paths.iter().all(|path| {
@@ -12550,6 +12744,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"authorization-review\")")
+        } else if websocket_review_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"websocket-review\")")
         } else if control_reference_mapping_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -12610,7 +12809,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, and WordPress audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -12681,6 +12880,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"recon-ct-provider\"")
                     | Some("feature=\"recon-snapshot-import\"")
                     | Some("feature=\"authorization-review\"")
+                    | Some("feature=\"websocket-review\"")
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
                     | Some("feature=\"secret-exposure-review\"")
@@ -12692,6 +12892,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("not(feature=\"supplied-session-review\")")
                     | Some("feature=\"wordpress-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"websocket-review\")")
                     | Some("all(feature=\"scanning\",feature=\"control-reference-mapping\")")
                     | Some("all(feature=\"scanning\",feature=\"recon-ct-provider\")")
                     | Some("all(feature=\"scanning\",feature=\"recon-snapshot-import\")")
@@ -12707,7 +12908,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, and WordPress audit feature gates"
+                "reporting production source may contain only the exact scanning, supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, and WordPress audit feature gates"
                     .to_owned(),
             );
         }
@@ -12994,6 +13195,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
             || key.starts_with("crate::recon_snapshot::")
             || key.starts_with("crate::rest_review::")
             || key.starts_with("crate::supplied_session_review::")
+            || key.starts_with("crate::websocket_review::")
             || key.starts_with("crate::wordpress_review::")
             || key.starts_with("crate::wordpress_version::"));
     if (root == "crate" || root == "super" || (root == "self" && segments.len() > 1))
@@ -13472,6 +13674,14 @@ mod tests {
         features.insert(
             "tls-observation".to_owned(),
             vec!["scanning".to_owned(), "dep:x509-parser".to_owned()],
+        );
+        features.insert(
+            "websocket-review".to_owned(),
+            vec![
+                "scanning".to_owned(),
+                "dep:futures".to_owned(),
+                "dep:tokio-tungstenite".to_owned(),
+            ],
         );
         features.insert(
             "jwt-policy-review".to_owned(),
@@ -16142,6 +16352,8 @@ mod tests {
                         self.supplied_session,
                         #[cfg(feature = "authorization-review")]
                         self.authorization_review,
+                        #[cfg(feature = "websocket-review")]
+                        self.websocket_review,
                         #[cfg(feature = "jwt-target-acceptance-review")]
                         self.jwt_target_acceptance,
                         #[cfg(feature = "openapi-review")]
@@ -16175,7 +16387,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"websocket-review\")]\n                        self.websocket_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -16211,6 +16423,10 @@ mod tests {
             typed_assessment_bridge.replace(
                 "self.authorization_review,",
                 "forged_authorization_review,",
+            ),
+            typed_assessment_bridge.replace(
+                "self.websocket_review,",
+                "forged_websocket_review,",
             ),
             typed_assessment_bridge
                 .replace("self.openapi_review,", "forged_openapi_review,"),
@@ -16863,6 +17079,22 @@ mod tests {
                     SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
                 },
             };
+            #[cfg(all(feature = "scanning", feature = "websocket-review"))]
+            use crate::{
+                web_runtime::{
+                    WebAssessmentWebSocketReviewAudit,
+                    HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,
+                    MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION,
+                    MAX_WEBSOCKET_REVIEW_CONNECTIONS,
+                    WEBSOCKET_REVIEW_AUDIT_SCHEMA,
+                    WEBSOCKET_REVIEW_CAPABILITY_ID,
+                },
+                websocket_review::{
+                    MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES,
+                    MAX_WEBSOCKET_REVIEW_MESSAGES,
+                    MAX_WEBSOCKET_REVIEW_WALL_TIME_MS,
+                },
+            };
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             use crate::{
                 web_runtime::{
@@ -16985,6 +17217,30 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_websocket_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"websocket-review\"))]",
+            "#[cfg(feature = \"scanning\")]",
+        );
+        assert_ne!(widened_websocket_import, imports);
+        let violations = reporting_source_import_violations(&widened_websocket_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let missing_websocket_response_bound = imports.replace(
+            "                    HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,\n",
+            "",
+        );
+        assert_ne!(missing_websocket_response_bound, imports);
+        let violations = reporting_source_import_violations(&missing_websocket_response_bound)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("imports must be exactly")
+                && violations.contains("HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES"),
+            "{violations}"
+        );
 
         let widened_jwt_target_import = imports.replace(
             "#[cfg(all(feature = \"scanning\", feature = \"jwt-target-acceptance-review\"))]\n            use crate::jwt_target_acceptance::{",
@@ -17404,6 +17660,9 @@ mod tests {
                 #[cfg(feature = "authorization-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 authorization_review: Option<AssessmentAuthorizationAuditDocument>,
+                #[cfg(feature = "websocket-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                websocket_review: Option<AssessmentWebSocketReviewAuditDocument>,
                 #[cfg(feature = "openapi-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 openapi_review: Option<AssessmentOpenApiAuditDocument>,
@@ -18684,6 +18943,78 @@ mod tests {
                 patch_id: Option<String>,
                 outcome: &'static str,
             }
+            #[cfg(all(feature = "scanning", feature = "websocket-review"))]
+            #[derive(Serialize)]
+            struct AssessmentWebSocketReviewAuditDocument {
+                schema: &'static str,
+                capability_id: &'static str,
+                selected: bool,
+                policy_reference: String,
+                endpoint_reference: String,
+                context: &'static str,
+                methodology: AssessmentWebSocketReviewMethodologyDocument,
+                coverage: AssessmentWebSocketReviewCoverageDocument,
+                messages: Vec<AssessmentWebSocketReviewMessageDocument>,
+                claim_limits: Vec<&'static str>,
+            }
+            #[cfg(all(feature = "scanning", feature = "websocket-review"))]
+            #[derive(Serialize)]
+            struct AssessmentWebSocketReviewMethodologyDocument {
+                origin_mode: &'static str,
+                compression: &'static str,
+                reconnect: &'static str,
+                http2_extended_connect: &'static str,
+                subprotocol: &'static str,
+                physical_frame_count: &'static str,
+                max_frame_size: &'static str,
+                limits: AssessmentWebSocketReviewLimitsDocument,
+            }
+            #[cfg(all(feature = "scanning", feature = "websocket-review"))]
+            #[derive(Serialize)]
+            struct AssessmentWebSocketReviewLimitsDocument {
+                max_connections: u8,
+                max_outbound_application_bytes: u64,
+                max_inbound_application_bytes: u64,
+                max_outbound_message_bytes: u64,
+                max_inbound_message_bytes: u64,
+                max_messages: u64,
+                max_control_frames: u64,
+                max_wall_time_ms: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "websocket-review"))]
+            #[derive(Serialize)]
+            struct AssessmentWebSocketReviewCoverageDocument {
+                terminal: &'static str,
+                completeness: &'static str,
+                first_failure: Option<&'static str>,
+                request_attempt_count: u8,
+                request_admitted_count: u8,
+                connection_attempt_count: u8,
+                handshake_completed_count: u8,
+                outbound_message_count: u64,
+                inbound_message_count: u64,
+                outbound_control_frame_count: u64,
+                inbound_control_frame_count: u64,
+                outbound_application_bytes: u64,
+                inbound_application_bytes: u64,
+                transport_read_bytes: u64,
+                transport_write_bytes: u64,
+                accounted_request_body_bytes: u64,
+                accounted_transport_response_bytes: u64,
+                transport_byte_scope: &'static str,
+                expected_response_count: u64,
+                matched_response_count: u64,
+                mismatched_response_count: u64,
+            }
+            #[cfg(all(feature = "scanning", feature = "websocket-review"))]
+            #[derive(Serialize)]
+            struct AssessmentWebSocketReviewMessageDocument {
+                message_reference: String,
+                expected_response_reference: String,
+                outbound_length: u64,
+                inbound_length: Option<u64>,
+                status: &'static str,
+            }
             #[cfg(all(feature = "scanning", feature = "rest-review"))]
             #[derive(Serialize)]
             struct AssessmentRestAuditDocument {
@@ -18950,6 +19281,48 @@ mod tests {
         assert!(
             violations.contains("AssessmentTlsObservationAuditDocument")
                 && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
+        let missing_websocket_document = source.replace(
+            "                #[cfg(feature = \"websocket-review\")]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                websocket_review: Option<AssessmentWebSocketReviewAuditDocument>,\n",
+            "",
+        );
+        assert_ne!(missing_websocket_document, source);
+        let violations = reporting_document_contract_violations(&missing_websocket_document)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let widened_websocket_gate = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"websocket-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentWebSocketReviewAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentWebSocketReviewAuditDocument",
+        );
+        assert_ne!(widened_websocket_gate, source);
+        let violations = reporting_document_contract_violations(&widened_websocket_gate)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentWebSocketReviewAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
+        let invalid_websocket_transport_bytes = source.replace(
+            "                transport_read_bytes: u64,",
+            "                transport_read_bytes: bool,",
+        );
+        assert_ne!(invalid_websocket_transport_bytes, source);
+        let violations = reporting_document_contract_violations(&invalid_websocket_transport_bytes)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentWebSocketReviewCoverageDocument")
+                && violations.contains("fields must remain exactly"),
             "{violations}"
         );
 
@@ -19617,6 +19990,10 @@ mod tests {
                 vec!["termivar-scanner/tls-observation".to_owned()],
             ),
             (
+                "websocket-review".to_owned(),
+                vec!["termivar-scanner/websocket-review".to_owned()],
+            ),
+            (
                 "jwt-policy-review".to_owned(),
                 vec![
                     "dep:toml".to_owned(),
@@ -20025,6 +20402,7 @@ mod tests {
             "ssrf-oast-review",
             "supplied-session-review",
             "tls-observation",
+            "websocket-review",
             "jwt-policy-review",
         ] {
             assert!(features
@@ -20590,6 +20968,7 @@ mod tests {
             #[cfg(feature = "oast-correlation")] pub mod oast;
             #[cfg(feature = "ssrf-oast-review")] pub mod ssrf_oast_review;
             #[cfg(feature = "supplied-session-review")] pub mod supplied_session_review;
+            #[cfg(feature = "websocket-review")] pub mod websocket_review;
             #[cfg(feature = "wordpress-review")] pub mod wordpress_review;
             mod wordpress_version;
             #[cfg(feature = "platform-models")] pub mod persistence;
@@ -20645,6 +21024,13 @@ mod tests {
         assert!(control_mapping_violations.iter().any(|violation| {
             violation.contains("module `control_reference_mapping`")
                 && violation.contains("exact cfg")
+        }));
+
+        let websocket_violations =
+            module_gate_violations(r#"#[cfg(feature = "scanning")] pub mod websocket_review;"#)
+                .unwrap();
+        assert!(websocket_violations.iter().any(|violation| {
+            violation.contains("module `websocket_review`") && violation.contains("exact cfg")
         }));
     }
 

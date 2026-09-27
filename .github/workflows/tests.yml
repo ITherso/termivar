@@ -182,6 +182,7 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping
           cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider
           cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import
+          cargo test --locked -p termivar-cli --no-default-features --features websocket-review
       - name: Verify compiled CLI capabilities matrix
         run: |
           set -euo pipefail
@@ -197,13 +198,14 @@ jobs:
           TERMIVAR_CAPABILITIES_MATRIX_CASE=control-reference-mapping-only cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-ct-provider-only cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-snapshot-import-only cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only cargo test --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -343,6 +345,12 @@ jobs:
         env:
           TERMIVAR_CAPABILITIES_MATRIX_CASE: recon-snapshot-import-only
         run: cargo test --release --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Exercise bounded WebSocket review through an owned loopback fixture
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review --test websocket_review_cli -- --nocapture
+      - name: Exercise opt-in WebSocket capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Reject authenticated session bodies from the anonymous secret-exposure context
         run: cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review,supplied-session-review --test supplied_session_cli passive_secret_review_does_not_select_authenticated_session_bodies -- --exact --nocapture
       - name: Exercise supplied-session WordPress integration CLI

@@ -72,6 +72,14 @@ use super::tls_observation::{
     TLS_OBSERVATION_CLOCK_ASSURANCE, TLS_OBSERVATION_POLICY_ID, TLS_OBSERVATION_REVOCATION_STATUS,
     TLS_OBSERVATION_SOURCE_SCOPE, TLS_OBSERVATION_VALIDATION_SCOPE,
 };
+#[cfg(feature = "websocket-review")]
+use super::websocket_runtime::{
+    WebAssessmentWebSocketReviewAudit, WebSocketReviewMessageStatus,
+    MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION, MAX_WEBSOCKET_REVIEW_CONNECTIONS,
+    WEBSOCKET_REVIEW_AUDIT_SCHEMA, WEBSOCKET_REVIEW_AUTHENTICATION, WEBSOCKET_REVIEW_CAPABILITY_ID,
+    WEBSOCKET_REVIEW_HTTP2_EXTENDED_CONNECT, WEBSOCKET_REVIEW_TRANSPORT,
+    WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE,
+};
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_fingerprint_runtime::{
     WordPressAssetFingerprintExecution, WordPressAssetFingerprintResourceReceipt,
@@ -116,6 +124,11 @@ use crate::recon_snapshot::ReconSnapshot;
 use crate::supplied_session_review::{
     SuppliedSessionCredentialAcquisition, SuppliedSessionCredentialMechanism,
     MAX_SUPPLIED_SESSION_COOKIES, MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES,
+};
+#[cfg(feature = "websocket-review")]
+use crate::websocket_review::{
+    MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES, MAX_WEBSOCKET_REVIEW_MESSAGES,
+    MAX_WEBSOCKET_REVIEW_WALL_TIME_MS,
 };
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::{
@@ -249,6 +262,8 @@ pub struct AssessmentRunReport {
     supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
     jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "openapi-review")]
@@ -279,6 +294,8 @@ struct AssessmentReviewAudits {
     supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
     jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "openapi-review")]
@@ -310,6 +327,9 @@ impl AssessmentRunReport {
         #[cfg(feature = "authorization-review")] authorization_review: Option<
             WebAssessmentAuthorizationAudit,
         >,
+        #[cfg(feature = "websocket-review")] websocket_review: Option<
+            WebAssessmentWebSocketReviewAudit,
+        >,
         #[cfg(feature = "jwt-target-acceptance-review")] jwt_target_acceptance: Option<
             JwtTargetAcceptanceAudit,
         >,
@@ -337,6 +357,8 @@ impl AssessmentRunReport {
                 supplied_session,
                 #[cfg(feature = "authorization-review")]
                 authorization_review,
+                #[cfg(feature = "websocket-review")]
+                websocket_review,
                 #[cfg(feature = "jwt-target-acceptance-review")]
                 jwt_target_acceptance,
                 #[cfg(feature = "openapi-review")]
@@ -377,6 +399,8 @@ impl AssessmentRunReport {
             supplied_session,
             #[cfg(feature = "authorization-review")]
             authorization_review,
+            #[cfg(feature = "websocket-review")]
+            websocket_review,
             #[cfg(feature = "jwt-target-acceptance-review")]
             jwt_target_acceptance,
             #[cfg(feature = "openapi-review")]
@@ -422,6 +446,14 @@ impl AssessmentRunReport {
         validate_supplied_session_audit(supplied_session.as_ref(), &items)?;
         #[cfg(feature = "authorization-review")]
         validate_authorization_audit(authorization_review.as_ref(), &items)?;
+        #[cfg(feature = "websocket-review")]
+        validate_websocket_review_audit(
+            websocket_review.as_ref(),
+            &items,
+            truth.expected_accounting.requests().consumed(),
+            truth.expected_accounting.request_body_bytes().consumed(),
+            truth.expected_accounting.response_body_bytes().consumed(),
+        )?;
         #[cfg(feature = "jwt-target-acceptance-review")]
         validate_jwt_target_acceptance_audit(
             jwt_target_acceptance.as_ref(),
@@ -465,6 +497,8 @@ impl AssessmentRunReport {
             supplied_session,
             #[cfg(feature = "authorization-review")]
             authorization_review,
+            #[cfg(feature = "websocket-review")]
+            websocket_review,
             #[cfg(feature = "jwt-target-acceptance-review")]
             jwt_target_acceptance,
             #[cfg(feature = "openapi-review")]
@@ -540,6 +574,11 @@ impl AssessmentRunReport {
     #[cfg(feature = "authorization-review")]
     pub const fn authorization_review_audit(&self) -> Option<&WebAssessmentAuthorizationAudit> {
         self.authorization_review.as_ref()
+    }
+    /// Returns the optional value-free WebSocket protocol review audit.
+    #[cfg(feature = "websocket-review")]
+    pub const fn websocket_review_audit(&self) -> Option<&WebAssessmentWebSocketReviewAudit> {
+        self.websocket_review.as_ref()
     }
     /// Returns the optional value-free target-side JWT control audit.
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1308,6 +1347,11 @@ impl fmt::Debug for AssessmentRunReport {
             "authorization_review_audit_present",
             &self.authorization_review.is_some(),
         );
+        #[cfg(feature = "websocket-review")]
+        debug.field(
+            "websocket_review_audit_present",
+            &self.websocket_review.is_some(),
+        );
         #[cfg(feature = "jwt-target-acceptance-review")]
         debug.field(
             "jwt_target_acceptance_audit_present",
@@ -2069,6 +2113,128 @@ fn validate_authorization_audit(
     Ok(())
 }
 
+#[cfg(feature = "websocket-review")]
+fn validate_websocket_review_audit(
+    audit: Option<&WebAssessmentWebSocketReviewAudit>,
+    items: &[AssessmentItem],
+    assessment_request_count: Option<u64>,
+    assessment_request_body_bytes: Option<u64>,
+    assessment_response_bytes: Option<u64>,
+) -> Result<(), AssessmentRunReportError> {
+    if items
+        .iter()
+        .any(|item| item.capability_id() == WEBSOCKET_REVIEW_CAPABILITY_ID)
+    {
+        return Err(AssessmentRunReportError::WebSocketReviewAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return Ok(());
+    };
+    let limits = audit.limits();
+    let mut message_references = BTreeSet::new();
+    let messages_are_safe = audit.messages().iter().all(|message| {
+        valid_websocket_review_reference(
+            message.message_reference(),
+            "websocket-message-revision-sha256:",
+        ) && message_references.insert(message.message_reference())
+            && valid_websocket_review_reference(
+                message.expected_response_reference(),
+                "websocket-expected-response-revision-sha256:",
+            )
+            && match message.status() {
+                WebSocketReviewMessageStatus::NotSent
+                | WebSocketReviewMessageStatus::SentNoResponse => {
+                    message.inbound_length().is_none()
+                        && message.observed_response_reference().is_none()
+                },
+                WebSocketReviewMessageStatus::ResponseMatched => {
+                    message.inbound_length().is_some()
+                        && message.observed_response_reference()
+                            == Some(message.expected_response_reference())
+                },
+                WebSocketReviewMessageStatus::ResponseMismatched => {
+                    message.inbound_length().is_some()
+                        && message.observed_response_reference().is_none()
+                },
+            }
+    });
+    let claim_limits = audit
+        .claim_limits()
+        .iter()
+        .map(|limit| limit.as_str())
+        .collect::<Vec<_>>();
+    let valid = audit.schema() == WEBSOCKET_REVIEW_AUDIT_SCHEMA
+        && audit.capability_id() == WEBSOCKET_REVIEW_CAPABILITY_ID
+        && audit.selected()
+        && audit.context() == WEBSOCKET_REVIEW_AUTHENTICATION
+        && audit.transport() == WEBSOCKET_REVIEW_TRANSPORT
+        && audit.http2_extended_connect() == WEBSOCKET_REVIEW_HTTP2_EXTENDED_CONNECT
+        && audit.transport_byte_scope() == WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE
+        && !audit.compression_enabled()
+        && !audit.reconnect_enabled()
+        && (!audit.subprotocol_negotiated() || audit.subprotocol_requested())
+        && valid_websocket_review_reference(audit.policy_reference(), "websocket-policy-sha256:")
+        && valid_websocket_review_reference(
+            audit.endpoint_reference(),
+            "websocket-endpoint-sha256:",
+        )
+        && limits.max_connections() == MAX_WEBSOCKET_REVIEW_CONNECTIONS
+        && limits.max_outbound_application_bytes()
+            == MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION
+        && limits.max_inbound_application_bytes()
+            == MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION
+        && (1..=MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION)
+            .contains(&limits.max_outbound_message_bytes())
+        && (1..=MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION)
+            .contains(&limits.max_inbound_message_bytes())
+        && (1..=u64::try_from(MAX_WEBSOCKET_REVIEW_MESSAGES).unwrap_or(u64::MAX))
+            .contains(&limits.max_messages())
+        && (1..=u64::from(MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES))
+            .contains(&limits.max_control_frames())
+        && (1..=MAX_WEBSOCKET_REVIEW_WALL_TIME_MS).contains(&limits.max_wall_time_ms())
+        && audit.request_attempt_count() <= MAX_WEBSOCKET_REVIEW_CONNECTIONS
+        && audit.request_admitted_count() <= audit.request_attempt_count()
+        && audit.connection_attempt_count() <= audit.request_admitted_count()
+        && audit.handshake_completed_count() <= audit.connection_attempt_count()
+        && audit.accounted_request_body_bytes() == 0
+        && audit.accounted_transport_response_bytes() == audit.transport_read_bytes()
+        && audit.transport_read_bytes() >= audit.inbound_application_bytes()
+        && audit.transport_write_bytes() >= audit.outbound_application_bytes()
+        && assessment_request_count
+            .is_some_and(|count| u64::from(audit.request_admitted_count()) <= count)
+        && assessment_request_body_bytes
+            .is_some_and(|count| audit.accounted_request_body_bytes() <= count)
+        && assessment_response_bytes
+            .is_some_and(|count| audit.accounted_transport_response_bytes() <= count)
+        && messages_are_safe
+        && claim_limits
+            == [
+                "browser_origin_security_not_established",
+                "authentication_not_established",
+                "authorization_not_established",
+                "availability_not_established",
+                "vulnerability_not_established",
+                "exploitability_not_established",
+                "impact_not_established",
+                "source_authenticity_not_established",
+            ]
+        && audit.is_consistent();
+    if valid {
+        Ok(())
+    } else {
+        Err(AssessmentRunReportError::WebSocketReviewAuditMismatch)
+    }
+}
+
+#[cfg(feature = "websocket-review")]
+fn valid_websocket_review_reference(value: &str, prefix: &str) -> bool {
+    value.len() == prefix.len() + 64
+        && value.starts_with(prefix)
+        && value[prefix.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
 /// Invalid relationship in a typed assessment-run envelope.
 ///
 /// Error variants retain only fixed classifications and bounded collection
@@ -2140,6 +2306,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "authorization-review")]
     #[error("authorization review audit does not match projected item truth")]
     AuthorizationAuditMismatch,
+    /// The optional WebSocket audit violated its audit-only runtime or parent-accounting contract.
+    #[cfg(feature = "websocket-review")]
+    #[error("WebSocket review audit does not match runtime accounting truth")]
+    WebSocketReviewAuditMismatch,
     /// The optional OpenAPI audit disagreed with projected item truth.
     #[cfg(feature = "openapi-review")]
     #[error("OpenAPI review audit does not match projected item truth")]

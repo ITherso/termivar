@@ -38,6 +38,10 @@ required-features = ["recon-snapshot-import"]
 name = "recon_ct_provider_cli"
 required-features = ["recon-ct-provider"]
 
+[[test]]
+name = "websocket_review_cli"
+required-features = ["websocket-review"]
+
 [features]
 default = []
 legacy-scanner = ["dep:reqwest", "termivar-scanner/legacy-scanner"]
@@ -59,6 +63,7 @@ jwt-target-acceptance-review = [
 control-reference-mapping = ["termivar-scanner/control-reference-mapping"]
 recon-snapshot-import = ["termivar-scanner/recon-snapshot-import"]
 recon-ct-provider = ["termivar-scanner/recon-ct-provider"]
+websocket-review = ["termivar-scanner/websocket-review"]
 supplied-session-review = ["termivar-scanner/supplied-session-review"]
 ssrf-oast-review = ["termivar-scanner/ssrf-oast-review"]
 wordpress-review = ["termivar-scanner/wordpress-review"]
@@ -97,3 +102,4 @@ libc = { workspace = true }
 base64 = { workspace = true }
 ring = { workspace = true }
 tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }

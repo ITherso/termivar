@@ -3270,7 +3270,11 @@ mod tests {
                 "one feature-gated crate-private &self method",
             ),
             (
-                production.replacen("*minted = true;", "let _ = &minted;", 1),
+                production.replacen(
+                    "        *minted = true;\n        Ok(adapter)",
+                    "        let _ = &minted;\n        Ok(adapter)",
+                    1,
+                ),
                 "exactly one mint-state commit",
             ),
         ] {

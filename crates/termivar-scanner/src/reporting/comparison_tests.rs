@@ -648,6 +648,109 @@ fn report_with_jwt_policy_review(audit: Value) -> Value {
     document
 }
 
+fn websocket_review_audit() -> Value {
+    json!({
+        "schema": "security.websocket-review-audit/v1",
+        "capability_id": "termivar.websocket-review/v1",
+        "selected": true,
+        "policy_reference": concat!(
+            "websocket-policy-sha256:",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ),
+        "endpoint_reference": concat!(
+            "websocket-endpoint-sha256:",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ),
+        "context": "anonymous",
+        "methodology": {
+            "origin_mode": "application_origin",
+            "compression": "disabled",
+            "reconnect": "disabled",
+            "http2_extended_connect": "unsupported",
+            "subprotocol": "present",
+            "physical_frame_count": "unavailable",
+            "max_frame_size": "bounded_by_max_inbound_message_bytes",
+            "limits": {
+                "max_connections": 1,
+                "max_outbound_application_bytes": 65_536,
+                "max_inbound_application_bytes": 65_536,
+                "max_outbound_message_bytes": 4_096,
+                "max_inbound_message_bytes": 4_096,
+                "max_messages": 2,
+                "max_control_frames": 4,
+                "max_wall_time_ms": 1_000
+            }
+        },
+        "coverage": {
+            "terminal": "completed",
+            "completeness": "configured_exchange_complete",
+            "first_failure": null,
+            "request_attempt_count": 1,
+            "request_admitted_count": 1,
+            "connection_attempt_count": 1,
+            "handshake_completed_count": 1,
+            "outbound_message_count": 2,
+            "inbound_message_count": 2,
+            "outbound_control_frame_count": 1,
+            "inbound_control_frame_count": 0,
+            "outbound_application_bytes": 9,
+            "inbound_application_bytes": 15,
+            "transport_read_bytes": 241,
+            "transport_write_bytes": 198,
+            "accounted_request_body_bytes": 0,
+            "accounted_transport_response_bytes": 241,
+            "transport_byte_scope": "socket_wire_bytes_tls_ciphertext_when_wss",
+            "expected_response_count": 2,
+            "matched_response_count": 2,
+            "mismatched_response_count": 0
+        },
+        "messages": [
+            {
+                "message_reference": concat!(
+                    "websocket-message-revision-sha256:",
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                ),
+                "expected_response_reference": concat!(
+                    "websocket-expected-response-revision-sha256:",
+                    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                ),
+                "outbound_length": 4,
+                "inbound_length": 7,
+                "status": "response_matched"
+            },
+            {
+                "message_reference": concat!(
+                    "websocket-message-revision-sha256:",
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                ),
+                "expected_response_reference": concat!(
+                    "websocket-expected-response-revision-sha256:",
+                    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                ),
+                "outbound_length": 5,
+                "inbound_length": 8,
+                "status": "response_matched"
+            }
+        ],
+        "claim_limits": [
+            "browser_origin_security_not_established",
+            "authentication_not_established",
+            "authorization_not_established",
+            "availability_not_established",
+            "vulnerability_not_established",
+            "exploitability_not_established",
+            "impact_not_established",
+            "source_authenticity_not_established"
+        ]
+    })
+}
+
+fn report_with_websocket_review(audit: Value) -> Value {
+    let mut document = report(Vec::new());
+    document["websocket_review"] = audit;
+    document
+}
+
 fn bytes(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
 }
@@ -736,6 +839,250 @@ fn imported_summary_accepts_a_complete_empty_assessment() {
     assert_eq!(summary.status(), "complete");
     assert_eq!(summary.subject_count(), 2);
     assert_eq!(summary.item_count(), 0);
+}
+
+#[test]
+fn websocket_review_is_strict_feature_independent_value_free_and_self_compares() {
+    let document = report_with_websocket_review(websocket_review_audit());
+    assert!(import_assessment_summary(&bytes(&document)).is_ok());
+
+    let comparison = compare(&document, &document);
+    assert_eq!(
+        comparison["before"]["optional_audits"]["websocket_review"]["schema"],
+        "security.websocket-review-audit/v1"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["schema"],
+        "termivar-websocket-review-comparison/v1"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["status"],
+        "compared"
+    );
+    for facet in ["methodology", "coverage", "outcome"] {
+        assert_eq!(
+            comparison["websocket_review_comparison"][facet]["status"],
+            "unchanged"
+        );
+    }
+    assert_eq!(
+        comparison["websocket_review_comparison"]["methodology"]["before"]["methodology"]
+            ["physical_frame_count"],
+        "unavailable"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["methodology"]["before"]["methodology"]
+            ["max_frame_size"],
+        "bounded_by_max_inbound_message_bytes"
+    );
+    for group in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+    let serialized = serde_json::to_string(&comparison).unwrap();
+    for forbidden in [
+        "wss://example.test/private",
+        "/private/socket",
+        "secret-message-payload",
+        "private-subprotocol",
+        "backend connection error",
+    ] {
+        assert!(!serialized.contains(forbidden));
+    }
+
+    for format in [ComparisonFormat::Markdown, ComparisonFormat::Html] {
+        let output = compare_reports(&bytes(&document), &bytes(&document), format).unwrap();
+        assert!(output.contains("termivar-websocket-review-comparison/v1"));
+        assert!(output.contains("WebSocket"));
+        assert!(!output.contains("secret-message-payload"));
+    }
+}
+
+#[test]
+fn websocket_review_changes_are_partitioned_and_one_sided_is_not_comparable() {
+    let before = report_with_websocket_review(websocket_review_audit());
+
+    let mut methodology_changed = before.clone();
+    methodology_changed["websocket_review"]["methodology"]["limits"]["max_wall_time_ms"] =
+        json!(2_000);
+    let comparison = compare(&before, &methodology_changed);
+    assert_eq!(
+        comparison["websocket_review_comparison"]["methodology"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+
+    let mut coverage_changed = before.clone();
+    coverage_changed["websocket_review"]["coverage"]["outbound_control_frame_count"] = json!(0);
+    let comparison = compare(&before, &coverage_changed);
+    assert_eq!(
+        comparison["websocket_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+
+    let mut outcome_changed = before.clone();
+    outcome_changed["websocket_review"]["coverage"]["terminal"] = json!("incomplete");
+    outcome_changed["websocket_review"]["coverage"]["completeness"] = json!("incomplete");
+    outcome_changed["websocket_review"]["coverage"]["first_failure"] = json!("close_failed");
+    let comparison = compare(&before, &outcome_changed);
+    assert_eq!(
+        comparison["websocket_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["outcome"]["status"],
+        "changed"
+    );
+
+    let comparison = compare(&before, &report(Vec::new()));
+    assert_eq!(
+        comparison["websocket_review_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["reason"],
+        "after_audit_missing"
+    );
+    for facet in ["methodology", "coverage", "outcome"] {
+        assert_eq!(
+            comparison["websocket_review_comparison"][facet]["status"],
+            "not_comparable"
+        );
+    }
+}
+
+#[test]
+fn websocket_review_reader_rejects_shape_privacy_bounds_and_conservation_mutations() {
+    let valid = report_with_websocket_review(websocket_review_audit());
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+
+    for field in [
+        "schema",
+        "capability_id",
+        "selected",
+        "policy_reference",
+        "endpoint_reference",
+        "context",
+        "methodology",
+        "coverage",
+        "messages",
+        "claim_limits",
+    ] {
+        let mut missing = valid.clone();
+        missing["websocket_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            import_assessment_summary(&bytes(&missing)).is_err(),
+            "missing {field} must be rejected"
+        );
+    }
+
+    for (field, value) in [
+        ("url", json!("wss://example.test/private")),
+        ("path", json!("/private/socket")),
+        ("query", json!("token=private")),
+        ("subprotocol", json!("private-subprotocol")),
+        ("payload", json!("secret-message-payload")),
+        ("error", json!("backend connection error")),
+    ] {
+        let mut forbidden = valid.clone();
+        forbidden["websocket_review"][field] = value;
+        assert!(
+            import_assessment_summary(&bytes(&forbidden)).is_err(),
+            "forbidden {field} must be rejected"
+        );
+    }
+
+    let mut physical_frames = valid.clone();
+    physical_frames["websocket_review"]["coverage"]["outbound_frame_count"] = json!(3);
+    assert!(import_assessment_summary(&bytes(&physical_frames)).is_err());
+    let mut frame_limit = valid.clone();
+    frame_limit["websocket_review"]["methodology"]["limits"]["max_frames"] = json!(64);
+    assert!(import_assessment_summary(&bytes(&frame_limit)).is_err());
+
+    let mut bad_reference = valid.clone();
+    bad_reference["websocket_review"]["messages"][0]["message_reference"] =
+        json!("websocket-message-revision-sha256:not-a-digest");
+    assert!(import_assessment_summary(&bytes(&bad_reference)).is_err());
+
+    let mut bad_type = valid.clone();
+    bad_type["websocket_review"]["coverage"]["outbound_message_count"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&bad_type)).is_err());
+
+    let mut bytes_disagree = valid.clone();
+    bytes_disagree["websocket_review"]["coverage"]["inbound_application_bytes"] = json!(14);
+    assert!(import_assessment_summary(&bytes(&bytes_disagree)).is_err());
+
+    let mut transport_below_application = valid.clone();
+    transport_below_application["websocket_review"]["coverage"]["transport_read_bytes"] = json!(14);
+    transport_below_application["websocket_review"]["coverage"]
+        ["accounted_transport_response_bytes"] = json!(14);
+    assert!(import_assessment_summary(&bytes(&transport_below_application)).is_err());
+
+    let mut accounting_disagrees = valid.clone();
+    accounting_disagrees["websocket_review"]["coverage"]["accounted_transport_response_bytes"] =
+        json!(240);
+    assert!(import_assessment_summary(&bytes(&accounting_disagrees)).is_err());
+
+    let mut transport_write_below_application = valid.clone();
+    transport_write_below_application["websocket_review"]["coverage"]["transport_write_bytes"] =
+        json!(8);
+    assert!(import_assessment_summary(&bytes(&transport_write_below_application)).is_err());
+
+    let mut wrong_failure_terminal = valid.clone();
+    wrong_failure_terminal["websocket_review"]["coverage"]["terminal"] = json!("authority_refused");
+    wrong_failure_terminal["websocket_review"]["coverage"]["completeness"] = json!("incomplete");
+    wrong_failure_terminal["websocket_review"]["coverage"]["first_failure"] =
+        json!("connection_failed");
+    assert!(import_assessment_summary(&bytes(&wrong_failure_terminal)).is_err());
+
+    let mut request_body_accounted = valid.clone();
+    request_body_accounted["websocket_review"]["coverage"]["accounted_request_body_bytes"] =
+        json!(9);
+    assert!(import_assessment_summary(&bytes(&request_body_accounted)).is_err());
+
+    let mut counts_disagree = valid.clone();
+    counts_disagree["websocket_review"]["coverage"]["matched_response_count"] = json!(1);
+    assert!(import_assessment_summary(&bytes(&counts_disagree)).is_err());
+
+    let mut impossible_order = valid.clone();
+    impossible_order["websocket_review"]["messages"][0]["inbound_length"] = Value::Null;
+    impossible_order["websocket_review"]["messages"][0]["status"] = json!("sent_no_response");
+    assert!(import_assessment_summary(&bytes(&impossible_order)).is_err());
+
+    let mut excessive_control_events = valid.clone();
+    excessive_control_events["websocket_review"]["coverage"]["outbound_control_frame_count"] =
+        json!(3);
+    excessive_control_events["websocket_review"]["coverage"]["inbound_control_frame_count"] =
+        json!(2);
+    assert!(import_assessment_summary(&bytes(&excessive_control_events)).is_err());
+
+    let mut wrong_claim_order = valid;
+    wrong_claim_order["websocket_review"]["claim_limits"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    assert!(import_assessment_summary(&bytes(&wrong_claim_order)).is_err());
 }
 
 #[test]

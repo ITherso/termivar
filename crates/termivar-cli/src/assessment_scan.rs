@@ -62,6 +62,8 @@ use termivar_scanner::web_runtime::{
 use termivar_scanner::web_runtime::{
     WebAssessmentAuthorizationAudit, RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID,
 };
+#[cfg(feature = "websocket-review")]
+use termivar_scanner::websocket_review::WebSocketReviewPolicy;
 #[cfg(feature = "wordpress-review")]
 use termivar_scanner::wordpress_review::WordPressReviewInputs;
 #[cfg(feature = "jwt-target-acceptance-review")]
@@ -984,6 +986,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) recon_snapshot: Option<ReconSnapshot>,
     #[cfg(feature = "recon-ct-provider")]
     pub(crate) recon_ct_provider: Option<ReconCtProviderPolicy>,
+    #[cfg(feature = "websocket-review")]
+    pub(crate) websocket_review: Option<WebSocketReviewPolicy>,
     #[cfg(feature = "jwt-policy-review")]
     pub(crate) jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1036,6 +1040,8 @@ pub(crate) async fn run_profile_scan(
         recon_snapshot,
         #[cfg(feature = "recon-ct-provider")]
         recon_ct_provider,
+        #[cfg(feature = "websocket-review")]
+        websocket_review,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1095,6 +1101,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "Cert Spotter reconnaissance provider requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "websocket-review")]
+            if websocket_review.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "WebSocket review requires the web-review profile",
                 )
                 .into());
             }
@@ -1240,6 +1254,8 @@ pub(crate) async fn run_profile_scan(
                     recon_snapshot,
                     #[cfg(feature = "recon-ct-provider")]
                     recon_ct_provider,
+                    #[cfg(feature = "websocket-review")]
+                    websocket_review,
                     #[cfg(feature = "jwt-policy-review")]
                     jwt_policy_review,
                     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1317,6 +1333,8 @@ struct WebReviewRunOptions {
     recon_snapshot: Option<ReconSnapshot>,
     #[cfg(feature = "recon-ct-provider")]
     recon_ct_provider: Option<ReconCtProviderPolicy>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review: Option<WebSocketReviewPolicy>,
     #[cfg(feature = "jwt-policy-review")]
     jwt_policy_review: Option<JwtPolicyReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1362,6 +1380,8 @@ async fn run_web_review(
         recon_snapshot,
         #[cfg(feature = "recon-ct-provider")]
         recon_ct_provider,
+        #[cfg(feature = "websocket-review")]
+        websocket_review,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy_review,
         #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1481,6 +1501,10 @@ async fn run_web_review(
     #[cfg(feature = "recon-ct-provider")]
     if let Some(policy) = recon_ct_provider {
         builder = builder.with_recon_ct_provider(policy);
+    }
+    #[cfg(feature = "websocket-review")]
+    if let Some(policy) = websocket_review {
+        builder = builder.with_websocket_review(policy);
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(inputs) = wordpress_review {

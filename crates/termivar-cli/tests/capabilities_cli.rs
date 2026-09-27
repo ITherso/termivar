@@ -30,6 +30,7 @@ const FEATURE_NAMES: &[&str] = &[
     "ssrf-oast-review",
     "supplied-session-review",
     "tls-observation",
+    "websocket-review",
     "wordpress-review",
 ];
 
@@ -165,6 +166,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             cfg!(feature = "supplied-session-review"),
         ),
         ("tls-observation", cfg!(feature = "tls-observation")),
+        ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
     ] {
         assert_eq!(
@@ -220,6 +222,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
     assert_eq!(
         surface_state(&document, "option.jwt-target-acceptance-review"),
         states["jwt-target-acceptance-review"]
+    );
+    assert_eq!(
+        surface_state(&document, "option.websocket-review"),
+        states["websocket-review"]
     );
     let authorization = document["surfaces"]
         .as_array()
@@ -328,6 +334,49 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "outside default, release-bundle, and published alpha.2 archives",
     ] {
         assert!(recon_limit.contains(required), "missing `{required}`");
+    }
+    let websocket = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.websocket-review")
+        .expect("WebSocket-review surface");
+    assert_eq!(
+        websocket["documentation"],
+        "docs/internals/websocket-review.md"
+    );
+    assert_eq!(
+        websocket["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--websocket-review-policy FILE",
+            "policy target_authorized=true",
+            "policy messages_read_only_acknowledged=true",
+            "policy message_content_is_non_secret=true"
+        ])
+    );
+    let websocket_limit = websocket["limitation"]
+        .as_str()
+        .expect("WebSocket limitation");
+    for required in [
+        "one isolated anonymous connection",
+        "one to eight sequential operator-declared read-oriented text messages",
+        "Policy message bodies must be non-secret",
+        "message IDs are non-secret revision handles",
+        "public references do not hash those private bytes",
+        "Binary application messages fail closed",
+        "64 KiB aggregate outbound and 64 KiB aggregate inbound",
+        "Numeric-loopback fixtures may use ws",
+        "no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookies, Authorization forwarding, session inheritance, or HTTP/2 extended CONNECT",
+        "does not establish browser exploitability",
+        "never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors",
+        "does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact",
+        "outside default, release-bundle, published alpha.2 archives, and the initial curated package",
+    ] {
+        assert!(
+            websocket_limit.contains(required),
+            "missing WebSocket limitation `{required}`"
+        );
     }
     let text_output = run(&binary(), &["capabilities"]);
     assert_success(&text_output);
@@ -904,6 +953,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "tls-observation",
         "jwt-policy-review",
         "jwt-target-acceptance-review",
+        "websocket-review",
     ];
     match case.as_str() {
         "default" | "no-default" => {
@@ -925,7 +975,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                12
+                13
             );
         },
         "rest-only" => {
@@ -986,6 +1036,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "recon-snapshot-import" || !compiled(feature) }));
+        },
+        "websocket-only" => {
+            assert!(compiled("websocket-review"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "websocket-review" || !compiled(feature) }));
         },
         "bundle-members-individual" => {
             assert!(!compiled("release-bundle"));

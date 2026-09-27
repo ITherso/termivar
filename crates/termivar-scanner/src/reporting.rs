@@ -96,6 +96,18 @@ use crate::{
         SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
     },
 };
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+use crate::{
+    web_runtime::{
+        WebAssessmentWebSocketReviewAudit, HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,
+        MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION, MAX_WEBSOCKET_REVIEW_CONNECTIONS,
+        WEBSOCKET_REVIEW_AUDIT_SCHEMA, WEBSOCKET_REVIEW_CAPABILITY_ID,
+    },
+    websocket_review::{
+        MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES, MAX_WEBSOCKET_REVIEW_MESSAGES,
+        MAX_WEBSOCKET_REVIEW_WALL_TIME_MS,
+    },
+};
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 use crate::{
     web_runtime::{
@@ -1095,6 +1107,46 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "websocket-review")]
+    if let Some(audit) = &document.websocket_review {
+        let message_count = audit.coverage.expected_response_count.to_string();
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "websocket_review_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                audit.coverage.terminal,
+                "",
+                "",
+                "",
+                audit.capability_id,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &message_count,
+                &summary,
+                "websocket-review",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     #[cfg(feature = "openapi-review")]
     if let Some(audit) = &document.openapi_review {
         let request_count = audit.request_count.to_string();
@@ -2058,6 +2110,45 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             output.push_str("</code></dd>")?;
         }
         output.push_str("</dl></section>")?;
+    }
+    #[cfg(feature = "websocket-review")]
+    if let Some(audit) = &document.websocket_review {
+        output.push_str(
+            "<section><h2>WebSocket protocol review audit</h2>\
+<p class=\"wp-note\">This audit describes one bounded, anonymous, operator-configured HTTP/1 Upgrade exchange. It is not a finding and provides no remediation inference. It retains no payload, raw URL, path, query, subprotocol token, body-derived mismatch reference, or backend error. Physical continuation-frame counts are unavailable. Transport bytes are raw socket bytes including the HTTP Upgrade and WebSocket framing; for WSS they are encrypted TLS records, not application bytes.</p><dl class=\"meta\">",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Configured exchange audit</h3><ol>")?;
+        for message in &audit.messages {
+            output.push_str("<li><code>")?;
+            write_html_text(
+                &mut output,
+                &format!(
+                    "message_reference={};expected_response_reference={};outbound_length={};inbound_length={};status={}",
+                    message.message_reference,
+                    message.expected_response_reference,
+                    message.outbound_length,
+                    message
+                        .inbound_length
+                        .map_or_else(|| "not_available".to_owned(), |length| length.to_string()),
+                    message.status,
+                ),
+            )?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ol><h3>Interpretation limits</h3><ul>")?;
+        for limit in &audit.claim_limits {
+            output.push_str("<li><code>")?;
+            write_html_text(&mut output, limit)?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul></section>")?;
     }
     #[cfg(feature = "openapi-review")]
     if let Some(audit) = &document.openapi_review {
@@ -4501,6 +4592,41 @@ fn render_assessment_markdown(
             output.push_char('\n')?;
         }
     }
+    #[cfg(feature = "websocket-review")]
+    if let Some(audit) = &document.websocket_review {
+        output.push_str(
+            "\n### WebSocket protocol review audit\n\nThis audit describes one bounded, anonymous, operator-configured HTTP/1 Upgrade exchange. It is not a finding and provides no remediation inference. It retains no payload, raw URL, path, query, subprotocol token, body-derived mismatch reference, or backend error. Physical continuation-frame counts are unavailable. Transport bytes are raw socket bytes including the HTTP Upgrade and WebSocket framing; for WSS they are encrypted TLS records, not application bytes.\n\n",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Configured exchange audit\n\n")?;
+        for message in &audit.messages {
+            output.push_str("- ")?;
+            write_markdown_code_span(
+                &mut output,
+                &format!(
+                    "message_reference={};expected_response_reference={};outbound_length={};inbound_length={};status={}",
+                    message.message_reference,
+                    message.expected_response_reference,
+                    message.outbound_length,
+                    message
+                        .inbound_length
+                        .map_or_else(|| "not_available".to_owned(), |length| length.to_string()),
+                    message.status,
+                ),
+            )?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Interpretation limits\n\n")?;
+        for limit in &audit.claim_limits {
+            output.push_str("- ")?;
+            write_markdown_code_span(&mut output, limit)?;
+            output.push_char('\n')?;
+        }
+    }
     #[cfg(feature = "openapi-review")]
     if let Some(audit) = &document.openapi_review {
         output.push_str("\n### OpenAPI review audit\n\n")?;
@@ -4856,6 +4982,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "authorization-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization_review: Option<AssessmentAuthorizationAuditDocument>,
+    #[cfg(feature = "websocket-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    websocket_review: Option<AssessmentWebSocketReviewAuditDocument>,
     #[cfg(feature = "openapi-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     openapi_review: Option<AssessmentOpenApiAuditDocument>,
@@ -5000,6 +5129,11 @@ impl<'a> AssessmentDocument<'a> {
             authorization_review: report
                 .authorization_review_audit()
                 .map(AssessmentAuthorizationAuditDocument::from_audit),
+            #[cfg(feature = "websocket-review")]
+            websocket_review: report
+                .websocket_review_audit()
+                .map(AssessmentWebSocketReviewAuditDocument::from_audit)
+                .transpose()?,
             #[cfg(feature = "openapi-review")]
             openapi_review: report
                 .openapi_review_audit()
@@ -5095,6 +5229,16 @@ impl<'a> AssessmentDocument<'a> {
         #[cfg(feature = "authorization-review")]
         if let Some(audit) = &self.authorization_review {
             audit.validate(&self.items)?;
+        }
+        #[cfg(feature = "websocket-review")]
+        if let Some(audit) = &self.websocket_review {
+            audit.validate(&self.items)?;
+        } else if self
+            .items
+            .iter()
+            .any(|item| item.capability_id == WEBSOCKET_REVIEW_CAPABILITY_ID)
+        {
+            return Err(ReportError::Serialization);
         }
         #[cfg(feature = "openapi-review")]
         if let Some(audit) = &self.openapi_review {
@@ -10099,6 +10243,492 @@ impl AssessmentAuthorizationAuditDocument {
             ("Item projected", self.item_projected.to_string()),
         ]
     }
+}
+
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+const WEBSOCKET_REVIEW_PHYSICAL_FRAME_COUNT: &str = "unavailable";
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+const WEBSOCKET_REVIEW_MAX_FRAME_SIZE: &str = "bounded_by_max_inbound_message_bytes";
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+const WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE: &str = "socket_wire_bytes_tls_ciphertext_when_wss";
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+const WEBSOCKET_REVIEW_CLAIM_LIMITS: [&str; 8] = [
+    "browser_origin_security_not_established",
+    "authentication_not_established",
+    "authorization_not_established",
+    "availability_not_established",
+    "vulnerability_not_established",
+    "exploitability_not_established",
+    "impact_not_established",
+    "source_authenticity_not_established",
+];
+
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+#[derive(Serialize)]
+struct AssessmentWebSocketReviewAuditDocument {
+    schema: &'static str,
+    capability_id: &'static str,
+    selected: bool,
+    policy_reference: String,
+    endpoint_reference: String,
+    context: &'static str,
+    methodology: AssessmentWebSocketReviewMethodologyDocument,
+    coverage: AssessmentWebSocketReviewCoverageDocument,
+    messages: Vec<AssessmentWebSocketReviewMessageDocument>,
+    claim_limits: Vec<&'static str>,
+}
+
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+#[derive(Serialize)]
+struct AssessmentWebSocketReviewMethodologyDocument {
+    origin_mode: &'static str,
+    compression: &'static str,
+    reconnect: &'static str,
+    http2_extended_connect: &'static str,
+    subprotocol: &'static str,
+    physical_frame_count: &'static str,
+    max_frame_size: &'static str,
+    limits: AssessmentWebSocketReviewLimitsDocument,
+}
+
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+#[derive(Serialize)]
+struct AssessmentWebSocketReviewLimitsDocument {
+    max_connections: u8,
+    max_outbound_application_bytes: u64,
+    max_inbound_application_bytes: u64,
+    max_outbound_message_bytes: u64,
+    max_inbound_message_bytes: u64,
+    max_messages: u64,
+    max_control_frames: u64,
+    max_wall_time_ms: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+#[derive(Serialize)]
+struct AssessmentWebSocketReviewCoverageDocument {
+    terminal: &'static str,
+    completeness: &'static str,
+    first_failure: Option<&'static str>,
+    request_attempt_count: u8,
+    request_admitted_count: u8,
+    connection_attempt_count: u8,
+    handshake_completed_count: u8,
+    outbound_message_count: u64,
+    inbound_message_count: u64,
+    outbound_control_frame_count: u64,
+    inbound_control_frame_count: u64,
+    outbound_application_bytes: u64,
+    inbound_application_bytes: u64,
+    transport_read_bytes: u64,
+    transport_write_bytes: u64,
+    accounted_request_body_bytes: u64,
+    accounted_transport_response_bytes: u64,
+    transport_byte_scope: &'static str,
+    expected_response_count: u64,
+    matched_response_count: u64,
+    mismatched_response_count: u64,
+}
+
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+#[derive(Serialize)]
+struct AssessmentWebSocketReviewMessageDocument {
+    message_reference: String,
+    expected_response_reference: String,
+    outbound_length: u64,
+    inbound_length: Option<u64>,
+    status: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+impl AssessmentWebSocketReviewAuditDocument {
+    fn from_audit(audit: &WebAssessmentWebSocketReviewAudit) -> Result<Self, ReportError> {
+        let limits = audit.limits();
+        let document = Self {
+            schema: audit.schema(),
+            capability_id: audit.capability_id(),
+            selected: audit.selected(),
+            policy_reference: audit.policy_reference().to_owned(),
+            endpoint_reference: audit.endpoint_reference().to_owned(),
+            context: audit.context(),
+            methodology: AssessmentWebSocketReviewMethodologyDocument {
+                origin_mode: audit.origin_mode().as_str(),
+                compression: if audit.compression_enabled() {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                reconnect: if audit.reconnect_enabled() {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                http2_extended_connect: audit.http2_extended_connect(),
+                subprotocol: if audit.subprotocol_requested() {
+                    "present"
+                } else {
+                    "absent"
+                },
+                physical_frame_count: WEBSOCKET_REVIEW_PHYSICAL_FRAME_COUNT,
+                max_frame_size: WEBSOCKET_REVIEW_MAX_FRAME_SIZE,
+                limits: AssessmentWebSocketReviewLimitsDocument {
+                    max_connections: limits.max_connections(),
+                    max_outbound_application_bytes: limits.max_outbound_application_bytes(),
+                    max_inbound_application_bytes: limits.max_inbound_application_bytes(),
+                    max_outbound_message_bytes: limits.max_outbound_message_bytes(),
+                    max_inbound_message_bytes: limits.max_inbound_message_bytes(),
+                    max_messages: limits.max_messages(),
+                    max_control_frames: limits.max_control_frames(),
+                    max_wall_time_ms: limits.max_wall_time_ms(),
+                },
+            },
+            coverage: AssessmentWebSocketReviewCoverageDocument {
+                terminal: audit.terminal().as_str(),
+                completeness: audit.completeness().as_str(),
+                first_failure: audit.first_failure().map(|failure| failure.as_str()),
+                request_attempt_count: audit.request_attempt_count(),
+                request_admitted_count: audit.request_admitted_count(),
+                connection_attempt_count: audit.connection_attempt_count(),
+                handshake_completed_count: audit.handshake_completed_count(),
+                outbound_message_count: audit.outbound_message_count(),
+                inbound_message_count: audit.inbound_message_count(),
+                outbound_control_frame_count: audit.outbound_control_frame_count(),
+                inbound_control_frame_count: audit.inbound_control_frame_count(),
+                outbound_application_bytes: audit.outbound_application_bytes(),
+                inbound_application_bytes: audit.inbound_application_bytes(),
+                transport_read_bytes: audit.transport_read_bytes(),
+                transport_write_bytes: audit.transport_write_bytes(),
+                accounted_request_body_bytes: audit.accounted_request_body_bytes(),
+                accounted_transport_response_bytes: audit.accounted_transport_response_bytes(),
+                transport_byte_scope: audit.transport_byte_scope(),
+                expected_response_count: audit.expected_response_count(),
+                matched_response_count: audit.matched_response_count(),
+                mismatched_response_count: audit.mismatched_response_count(),
+            },
+            messages: audit
+                .messages()
+                .iter()
+                .map(|message| AssessmentWebSocketReviewMessageDocument {
+                    message_reference: message.message_reference().to_owned(),
+                    expected_response_reference: message.expected_response_reference().to_owned(),
+                    outbound_length: message.outbound_length(),
+                    inbound_length: message.inbound_length(),
+                    status: message.status().as_str(),
+                })
+                .collect(),
+            claim_limits: audit
+                .claim_limits()
+                .iter()
+                .map(|limit| limit.as_str())
+                .collect(),
+        };
+        document.validate_wire()?;
+        Ok(document)
+    }
+
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        if items
+            .iter()
+            .any(|item| item.capability_id == WEBSOCKET_REVIEW_CAPABILITY_ID)
+        {
+            return Err(ReportError::Serialization);
+        }
+        self.validate_wire()
+    }
+
+    fn validate_wire(&self) -> Result<(), ReportError> {
+        let limits = &self.methodology.limits;
+        let coverage = &self.coverage;
+        let mut message_references = std::collections::BTreeSet::new();
+        let mut outbound_messages = 0_u64;
+        let mut inbound_messages = 0_u64;
+        let mut outbound_bytes = 0_u64;
+        let mut inbound_bytes = 0_u64;
+        let mut matched = 0_u64;
+        let mut mismatched = 0_u64;
+        let mut phase = 0_u8;
+        for message in &self.messages {
+            if !valid_websocket_review_reference(
+                &message.message_reference,
+                "websocket-message-revision-sha256:",
+            ) || !message_references.insert(message.message_reference.as_str())
+                || !valid_websocket_review_reference(
+                    &message.expected_response_reference,
+                    "websocket-expected-response-revision-sha256:",
+                )
+                || message.outbound_length > limits.max_outbound_message_bytes
+                || message
+                    .inbound_length
+                    .is_some_and(|length| length > limits.max_inbound_message_bytes)
+            {
+                return Err(ReportError::Serialization);
+            }
+            match message.status {
+                "response_matched" | "response_mismatched"
+                    if phase == 0 && message.inbound_length.is_some() =>
+                {
+                    outbound_messages = outbound_messages
+                        .checked_add(1)
+                        .ok_or(ReportError::Serialization)?;
+                    inbound_messages = inbound_messages
+                        .checked_add(1)
+                        .ok_or(ReportError::Serialization)?;
+                    outbound_bytes = outbound_bytes
+                        .checked_add(message.outbound_length)
+                        .ok_or(ReportError::Serialization)?;
+                    inbound_bytes = inbound_bytes
+                        .checked_add(message.inbound_length.unwrap_or_default())
+                        .ok_or(ReportError::Serialization)?;
+                    if message.status == "response_matched" {
+                        matched += 1;
+                    } else {
+                        mismatched += 1;
+                    }
+                },
+                "sent_no_response" if phase == 0 && message.inbound_length.is_none() => {
+                    phase = 1;
+                    outbound_messages = outbound_messages
+                        .checked_add(1)
+                        .ok_or(ReportError::Serialization)?;
+                    outbound_bytes = outbound_bytes
+                        .checked_add(message.outbound_length)
+                        .ok_or(ReportError::Serialization)?;
+                },
+                "not_sent" if message.inbound_length.is_none() => phase = 2,
+                _ => return Err(ReportError::Serialization),
+            }
+        }
+        let failure_shape = match coverage.first_failure {
+            None => coverage.terminal == "completed",
+            Some("authority_already_minted" | "endpoint_outside_authority") => {
+                coverage.terminal == "authority_refused"
+            },
+            Some(
+                "message_too_large"
+                | "message_limit_reached"
+                | "control_frame_limit_reached"
+                | "application_byte_limit_reached"
+                | "parent_response_budget_reached",
+            ) => coverage.terminal == "limit_reached",
+            Some("cancelled") => coverage.terminal == "cancelled",
+            Some("deadline_reached") => coverage.terminal == "deadline_reached",
+            Some(
+                "parent_authority_unavailable"
+                | "request_construction"
+                | "connection_failed"
+                | "handshake_rejected"
+                | "extension_negotiation_refused"
+                | "subprotocol_negotiation_refused"
+                | "send_failed"
+                | "read_failed"
+                | "binary_message_unsupported"
+                | "close_failed"
+                | "peer_closed"
+                | "internal_invariant",
+            ) => coverage.terminal == "incomplete",
+            Some(_) => false,
+        };
+        let complete = coverage.terminal == "completed"
+            && coverage.completeness == "configured_exchange_complete"
+            && coverage.first_failure.is_none();
+        let incomplete = coverage.terminal != "completed"
+            && coverage.completeness == "incomplete"
+            && coverage.first_failure.is_some();
+        let no_admitted_activity = coverage.request_admitted_count != 0
+            || (coverage.connection_attempt_count == 0
+                && coverage.handshake_completed_count == 0
+                && coverage.outbound_message_count == 0
+                && coverage.inbound_message_count == 0
+                && coverage.outbound_control_frame_count == 0
+                && coverage.inbound_control_frame_count == 0
+                && coverage.outbound_application_bytes == 0
+                && coverage.inbound_application_bytes == 0
+                && coverage.transport_read_bytes == 0
+                && coverage.transport_write_bytes == 0);
+        let completed_exchange = coverage.terminal != "completed"
+            || (coverage.request_attempt_count == 1
+                && coverage.request_admitted_count == 1
+                && coverage.connection_attempt_count == 1
+                && coverage.handshake_completed_count == 1
+                && coverage.outbound_message_count == coverage.expected_response_count
+                && coverage.inbound_message_count == coverage.expected_response_count);
+        if self.schema != WEBSOCKET_REVIEW_AUDIT_SCHEMA
+            || self.capability_id != WEBSOCKET_REVIEW_CAPABILITY_ID
+            || !self.selected
+            || self.context != "anonymous"
+            || !valid_websocket_review_reference(&self.policy_reference, "websocket-policy-sha256:")
+            || !valid_websocket_review_reference(
+                &self.endpoint_reference,
+                "websocket-endpoint-sha256:",
+            )
+            || !matches!(self.methodology.origin_mode, "application_origin" | "omit")
+            || self.methodology.compression != "disabled"
+            || self.methodology.reconnect != "disabled"
+            || self.methodology.http2_extended_connect != "unsupported"
+            || !matches!(self.methodology.subprotocol, "present" | "absent")
+            || self.methodology.physical_frame_count != WEBSOCKET_REVIEW_PHYSICAL_FRAME_COUNT
+            || self.methodology.max_frame_size != WEBSOCKET_REVIEW_MAX_FRAME_SIZE
+            || limits.max_connections != MAX_WEBSOCKET_REVIEW_CONNECTIONS
+            || limits.max_outbound_application_bytes
+                != MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION
+            || limits.max_inbound_application_bytes
+                != MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION
+            || !(1..=MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION)
+                .contains(&limits.max_outbound_message_bytes)
+            || !(1..=MAX_WEBSOCKET_REVIEW_APPLICATION_BYTES_PER_DIRECTION)
+                .contains(&limits.max_inbound_message_bytes)
+            || !(1..=u64::try_from(MAX_WEBSOCKET_REVIEW_MESSAGES)
+                .map_err(|_| ReportError::Serialization)?)
+                .contains(&limits.max_messages)
+            || !(1..=u64::from(MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES))
+                .contains(&limits.max_control_frames)
+            || !(1..=MAX_WEBSOCKET_REVIEW_WALL_TIME_MS).contains(&limits.max_wall_time_ms)
+            || self.messages.is_empty()
+            || u64::try_from(self.messages.len()).map_err(|_| ReportError::Serialization)?
+                != coverage.expected_response_count
+            || coverage.expected_response_count > limits.max_messages
+            || coverage.request_attempt_count > 1
+            || coverage.request_admitted_count > coverage.request_attempt_count
+            || coverage.connection_attempt_count > coverage.request_admitted_count
+            || coverage.handshake_completed_count > coverage.connection_attempt_count
+            || coverage.inbound_message_count > coverage.outbound_message_count
+            || coverage
+                .outbound_control_frame_count
+                .checked_add(coverage.inbound_control_frame_count)
+                .is_none_or(|count| count > limits.max_control_frames)
+            || coverage.outbound_application_bytes > limits.max_outbound_application_bytes
+            || coverage.inbound_application_bytes > limits.max_inbound_application_bytes
+            || coverage.transport_read_bytes > HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES
+            || coverage.transport_read_bytes < coverage.inbound_application_bytes
+            || coverage.transport_write_bytes < coverage.outbound_application_bytes
+            || coverage.accounted_request_body_bytes != 0
+            || coverage.accounted_transport_response_bytes != coverage.transport_read_bytes
+            || coverage.transport_byte_scope != WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE
+            || coverage.outbound_message_count != outbound_messages
+            || coverage.inbound_message_count != inbound_messages
+            || coverage.outbound_application_bytes != outbound_bytes
+            || coverage.inbound_application_bytes != inbound_bytes
+            || coverage.matched_response_count != matched
+            || coverage.mismatched_response_count != mismatched
+            || coverage
+                .matched_response_count
+                .checked_add(coverage.mismatched_response_count)
+                != Some(coverage.inbound_message_count)
+            || !(complete || incomplete)
+            || !failure_shape
+            || !no_admitted_activity
+            || !completed_exchange
+            || self.claim_limits.as_slice() != WEBSOCKET_REVIEW_CLAIM_LIMITS
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        let mut metadata = Vec::with_capacity(23);
+        metadata.push(("Audit schema", self.schema.to_owned()));
+        metadata.push(("Capability", self.capability_id.to_owned()));
+        metadata.push(("Selected", self.selected.to_string()));
+        metadata.push(("Policy reference", self.policy_reference.clone()));
+        metadata.push(("Endpoint reference", self.endpoint_reference.clone()));
+        metadata.push(("Context", self.context.to_owned()));
+        metadata.push(("Origin mode", self.methodology.origin_mode.to_owned()));
+        metadata.push(("Compression", self.methodology.compression.to_owned()));
+        metadata.push(("Reconnect", self.methodology.reconnect.to_owned()));
+        metadata.push((
+            "HTTP/2 extended CONNECT",
+            self.methodology.http2_extended_connect.to_owned(),
+        ));
+        metadata.push((
+            "Subprotocol declaration",
+            self.methodology.subprotocol.to_owned(),
+        ));
+        metadata.push((
+            "Physical frame count",
+            self.methodology.physical_frame_count.to_owned(),
+        ));
+        metadata.push(("Terminal", self.coverage.terminal.to_owned()));
+        metadata.push(("Completeness", self.coverage.completeness.to_owned()));
+        metadata.push((
+            "First failure",
+            self.coverage.first_failure.unwrap_or("none").to_owned(),
+        ));
+        metadata.push((
+            "Request attempts/admitted",
+            format!(
+                "{}/{}",
+                self.coverage.request_attempt_count, self.coverage.request_admitted_count
+            ),
+        ));
+        metadata.push((
+            "Connection attempts/handshakes",
+            format!(
+                "{}/{}",
+                self.coverage.connection_attempt_count, self.coverage.handshake_completed_count
+            ),
+        ));
+        metadata.push((
+            "Application messages outbound/inbound",
+            format!(
+                "{}/{}",
+                self.coverage.outbound_message_count, self.coverage.inbound_message_count
+            ),
+        ));
+        metadata.push((
+            "Observable control events outbound/inbound",
+            format!(
+                "{}/{}",
+                self.coverage.outbound_control_frame_count,
+                self.coverage.inbound_control_frame_count
+            ),
+        ));
+        metadata.push((
+            "Application bytes outbound/inbound",
+            format!(
+                "{}/{}",
+                self.coverage.outbound_application_bytes, self.coverage.inbound_application_bytes
+            ),
+        ));
+        metadata.push((
+            "Transport bytes written/read",
+            format!(
+                "{}/{}",
+                self.coverage.transport_write_bytes, self.coverage.transport_read_bytes
+            ),
+        ));
+        metadata.push((
+            "Accounted request/response bytes",
+            format!(
+                "{}/{}",
+                self.coverage.accounted_request_body_bytes,
+                self.coverage.accounted_transport_response_bytes
+            ),
+        ));
+        metadata.push((
+            "Responses expected/matched/mismatched",
+            format!(
+                "{}/{}/{}",
+                self.coverage.expected_response_count,
+                self.coverage.matched_response_count,
+                self.coverage.mismatched_response_count
+            ),
+        ));
+        metadata
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        serde_json::to_string(self).map_err(|_| ReportError::Serialization)
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+fn valid_websocket_review_reference(value: &str, prefix: &str) -> bool {
+    value.len() == prefix.len() + 64
+        && value.starts_with(prefix)
+        && value[prefix.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 #[cfg(all(feature = "scanning", feature = "authorization-review"))]
@@ -16344,6 +16974,8 @@ mod tests {
             supplied_session: None,
             #[cfg(feature = "authorization-review")]
             authorization_review: None,
+            #[cfg(feature = "websocket-review")]
+            websocket_review: None,
             #[cfg(feature = "openapi-review")]
             openapi_review: None,
             #[cfg(feature = "rest-review")]
@@ -16392,6 +17024,89 @@ mod tests {
                 outcome_reference: None,
                 verification_stage: None,
             }],
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "websocket-review"))]
+    fn websocket_review_document() -> AssessmentWebSocketReviewAuditDocument {
+        AssessmentWebSocketReviewAuditDocument {
+            schema: WEBSOCKET_REVIEW_AUDIT_SCHEMA,
+            capability_id: WEBSOCKET_REVIEW_CAPABILITY_ID,
+            selected: true,
+            policy_reference: format!("websocket-policy-sha256:{}", "a".repeat(64)),
+            endpoint_reference: format!("websocket-endpoint-sha256:{}", "b".repeat(64)),
+            context: "anonymous",
+            methodology: AssessmentWebSocketReviewMethodologyDocument {
+                origin_mode: "application_origin",
+                compression: "disabled",
+                reconnect: "disabled",
+                http2_extended_connect: "unsupported",
+                subprotocol: "present",
+                physical_frame_count: WEBSOCKET_REVIEW_PHYSICAL_FRAME_COUNT,
+                max_frame_size: WEBSOCKET_REVIEW_MAX_FRAME_SIZE,
+                limits: AssessmentWebSocketReviewLimitsDocument {
+                    max_connections: 1,
+                    max_outbound_application_bytes: 65_536,
+                    max_inbound_application_bytes: 65_536,
+                    max_outbound_message_bytes: 4_096,
+                    max_inbound_message_bytes: 4_096,
+                    max_messages: 2,
+                    max_control_frames: 4,
+                    max_wall_time_ms: 1_000,
+                },
+            },
+            coverage: AssessmentWebSocketReviewCoverageDocument {
+                terminal: "completed",
+                completeness: "configured_exchange_complete",
+                first_failure: None,
+                request_attempt_count: 1,
+                request_admitted_count: 1,
+                connection_attempt_count: 1,
+                handshake_completed_count: 1,
+                outbound_message_count: 2,
+                inbound_message_count: 2,
+                outbound_control_frame_count: 1,
+                inbound_control_frame_count: 0,
+                outbound_application_bytes: 9,
+                inbound_application_bytes: 15,
+                transport_read_bytes: 241,
+                transport_write_bytes: 198,
+                accounted_request_body_bytes: 0,
+                accounted_transport_response_bytes: 241,
+                transport_byte_scope: WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE,
+                expected_response_count: 2,
+                matched_response_count: 2,
+                mismatched_response_count: 0,
+            },
+            messages: vec![
+                AssessmentWebSocketReviewMessageDocument {
+                    message_reference: format!(
+                        "websocket-message-revision-sha256:{}",
+                        "c".repeat(64)
+                    ),
+                    expected_response_reference: format!(
+                        "websocket-expected-response-revision-sha256:{}",
+                        "d".repeat(64)
+                    ),
+                    outbound_length: 4,
+                    inbound_length: Some(7),
+                    status: "response_matched",
+                },
+                AssessmentWebSocketReviewMessageDocument {
+                    message_reference: format!(
+                        "websocket-message-revision-sha256:{}",
+                        "e".repeat(64)
+                    ),
+                    expected_response_reference: format!(
+                        "websocket-expected-response-revision-sha256:{}",
+                        "f".repeat(64)
+                    ),
+                    outbound_length: 5,
+                    inbound_length: Some(8),
+                    status: "response_matched",
+                },
+            ],
+            claim_limits: WEBSOCKET_REVIEW_CLAIM_LIMITS.to_vec(),
         }
     }
 
@@ -19954,6 +20669,65 @@ mod tests {
         let markdown =
             render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
         assert!(!markdown.contains("Resource authorization review audit"));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "websocket-review"))]
+    #[test]
+    fn websocket_review_writer_is_value_free_strict_and_honest_in_every_format() {
+        let mut document = observation_assessment_document("ordinary-observation");
+        document.items.clear();
+        document.item_count = 0;
+        document.websocket_review = Some(websocket_review_document());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &parsed["websocket_review"];
+        assert_eq!(audit["schema"], WEBSOCKET_REVIEW_AUDIT_SCHEMA);
+        assert_eq!(audit["coverage"]["transport_read_bytes"], 241);
+        assert_eq!(audit["coverage"]["accounted_transport_response_bytes"], 241);
+        assert_eq!(audit["methodology"]["physical_frame_count"], "unavailable");
+        assert_eq!(audit["messages"].as_array().unwrap().len(), 2);
+        for forbidden in [
+            "observed_response_reference",
+            "outbound_frame_count",
+            "inbound_frame_count",
+            "max_frames",
+            "wss://",
+            "payload",
+            "private-subprotocol",
+            "backend error",
+        ] {
+            assert!(!json.contains(forbidden));
+        }
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(csv.contains("websocket_review_audit"));
+        assert!(csv.contains("accounted_transport_response_bytes"));
+        assert!(!csv.contains("observed_response_reference"));
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        for rendered in [&html, &markdown] {
+            assert!(rendered.contains("WebSocket protocol review audit"));
+            assert!(rendered.contains("encrypted TLS records"));
+            assert!(rendered.contains("websocket-message-revision-sha256:"));
+            assert!(!rendered.contains("observed_response_reference"));
+        }
+
+        document
+            .websocket_review
+            .as_mut()
+            .unwrap()
+            .coverage
+            .transport_read_bytes = 14;
+        document
+            .websocket_review
+            .as_mut()
+            .unwrap()
+            .coverage
+            .accounted_transport_response_bytes = 14;
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
     }
 
     #[cfg(all(feature = "scanning", feature = "openapi-review"))]

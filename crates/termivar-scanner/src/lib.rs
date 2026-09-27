@@ -88,6 +88,8 @@ pub mod web_actions;
 pub mod web_planning;
 pub mod web_reasoning;
 pub mod web_verification;
+#[cfg(feature = "websocket-review")]
+pub mod websocket_review;
 #[cfg(feature = "wordpress-review")]
 pub mod wordpress_review;
 mod wordpress_version;
