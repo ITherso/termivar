@@ -160,6 +160,12 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             optional_audits.insert(name.to_owned(), value.clone());
         }
     }
+    if let Some(websocket) = websocket_review.as_ref() {
+        audits::validate_websocket_supplied_session_cross_links(
+            websocket,
+            supplied_session.as_ref(),
+        )?;
+    }
     let review_uses_discovery = root
         .get("wordpress_review")
         .map(object)

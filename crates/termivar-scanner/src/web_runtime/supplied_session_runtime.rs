@@ -12,7 +12,15 @@ use termivar_core::{
     KnowledgePredicate,
 };
 
+#[cfg(feature = "websocket-review")]
+use super::websocket_runtime::{
+    execute_supplied_session_websocket_review, websocket_review_not_run,
+    WebAssessmentWebSocketReviewAudit, WebSocketSuppliedSessionContextAudit,
+    WebSocketSuppliedSessionHealthAudit, WebSocketSuppliedSessionQualification,
+};
 use super::{authority::SharedWebRuntimeAuthority, RuntimeExecution};
+#[cfg(feature = "websocket-review")]
+use crate::supplied_session_review::SuppliedSessionAuthorization;
 use crate::{
     http_evidence::{
         extract_supplied_session_login_csrf, CollectedHttpResponse, HttpRequestBroker,
@@ -29,6 +37,8 @@ use crate::{
     },
     DecisionActionOrigin, DecisionExecutionLimits, DecisionExecutionStage, KnowledgeBase,
 };
+#[cfg(feature = "websocket-review")]
+use crate::{web_runtime::WebSocketReviewFailureKind, websocket_review::WebSocketReviewPolicy};
 
 /// Sealed runtime observer for consumers of health-qualified supplied-session
 /// resource responses. Implementations may reduce a body while it is alive,
@@ -123,6 +133,160 @@ impl CommittedSuppliedSessionResourceReceipt {
             && self.expected_evidence.kind() == &EvidenceKind::Authentication
             && self.expected_evidence.predicate().namespace() == RESOURCE_COMMIT_EVIDENCE_NAMESPACE
             && self.expected_evidence.predicate().name() == RESOURCE_COMMIT_EVIDENCE_PREDICATE
+    }
+}
+
+/// Exact, value-safe startup/terminal health proof used only to narrow the
+/// supplied-session WebSocket authority. The proof is sealed to this module
+/// and revalidates its committed parent evidence before minting transport.
+#[cfg(feature = "websocket-review")]
+struct CommittedSuppliedSessionHealthReceipt {
+    sequence: u8,
+    phase: SuppliedSessionHealthCheckpointPhase,
+    after_subject_count: u8,
+    policy_reference: String,
+    application_reference: String,
+    principal_reference: String,
+    credential_mechanism: SuppliedSessionCredentialMechanism,
+    epoch: u8,
+    evidence_reference: String,
+    expected_evidence: Evidence,
+}
+
+#[cfg(feature = "websocket-review")]
+impl CommittedSuppliedSessionHealthReceipt {
+    fn from_checkpoint(
+        policy: &SuppliedSessionPolicy,
+        checkpoint: &WebAssessmentSuppliedSessionCheckpointAudit,
+        expected_phase: SuppliedSessionHealthCheckpointPhase,
+        expected_after_subject_count: u8,
+        knowledge: &KnowledgeBase,
+    ) -> Option<Self> {
+        if checkpoint.phase() != expected_phase
+            || checkpoint.after_subject_count() != expected_after_subject_count
+            || checkpoint.outcome() != SuppliedSessionHealthOutcome::Healthy
+            || checkpoint.body_state() != SuppliedSessionBodyState::Complete
+            || checkpoint.predicate() != SuppliedSessionPredicateOutcome::Matched
+        {
+            return None;
+        }
+        let evidence_reference = checkpoint.evidence_reference()?.to_owned();
+        let evidence_id = EvidenceId::parse(evidence_reference.clone()).ok()?;
+        let expected_evidence = knowledge.inspect_evidence(&evidence_id, Clone::clone)?;
+        Some(Self {
+            sequence: checkpoint.sequence(),
+            phase: checkpoint.phase(),
+            after_subject_count: checkpoint.after_subject_count(),
+            policy_reference: policy.policy_reference().to_owned(),
+            application_reference: policy.application_reference().to_owned(),
+            principal_reference: policy.principal_reference().to_owned(),
+            credential_mechanism: policy.credential_mechanism(),
+            epoch: 1,
+            evidence_reference,
+            expected_evidence,
+        })
+    }
+
+    fn is_valid_for(
+        &self,
+        policy: &SuppliedSessionPolicy,
+        expected_phase: SuppliedSessionHealthCheckpointPhase,
+        expected_after_subject_count: u8,
+        knowledge: &KnowledgeBase,
+    ) -> bool {
+        EvidenceId::parse(self.evidence_reference.clone())
+            .ok()
+            .and_then(|id| {
+                knowledge.inspect_evidence(&id, |stored| stored == &self.expected_evidence)
+            })
+            == Some(true)
+            && self.sequence
+                == match expected_phase {
+                    SuppliedSessionHealthCheckpointPhase::Startup => 0,
+                    SuppliedSessionHealthCheckpointPhase::Terminal => 1,
+                    SuppliedSessionHealthCheckpointPhase::SubjectBoundary => return false,
+                }
+            && self.phase == expected_phase
+            && self.after_subject_count == expected_after_subject_count
+            && self.policy_reference == policy.policy_reference()
+            && self.application_reference == policy.application_reference()
+            && self.principal_reference == policy.principal_reference()
+            && self.credential_mechanism == SuppliedSessionCredentialMechanism::AuthorizationHeader
+            && policy.version() == SuppliedSessionPolicyVersion::V1
+            && policy.credential_mechanism()
+                == SuppliedSessionCredentialMechanism::AuthorizationHeader
+            && policy.resource_count() == 1
+            && self.epoch == 1
+            && self.expected_evidence.kind() == &EvidenceKind::Authentication
+            && self.expected_evidence.predicate().namespace() == RESOURCE_COMMIT_EVIDENCE_NAMESPACE
+            && self.expected_evidence.predicate().name() == HEALTH_COMMIT_EVIDENCE_PREDICATE
+    }
+}
+
+/// Move-only, module-sealed authorization for one supplied-session WebSocket
+/// handshake. It borrows the guarded header and never stores or hashes it.
+#[cfg(feature = "websocket-review")]
+pub(super) struct SuppliedSessionWebSocketPermit<'a> {
+    policy: &'a SuppliedSessionPolicy,
+    authorization: &'a SuppliedSessionAuthorization,
+    websocket_policy_reference: &'a str,
+    websocket_endpoint_reference: &'a str,
+    session_deadline: Option<tokio::time::Instant>,
+    startup: CommittedSuppliedSessionHealthReceipt,
+}
+
+#[cfg(feature = "websocket-review")]
+impl<'a> SuppliedSessionWebSocketPermit<'a> {
+    fn new(
+        policy: &'a SuppliedSessionPolicy,
+        authorization: &'a SuppliedSessionAuthorization,
+        websocket: &'a WebSocketReviewPolicy,
+        session_deadline: Option<tokio::time::Instant>,
+        startup: CommittedSuppliedSessionHealthReceipt,
+    ) -> Self {
+        Self {
+            policy,
+            authorization,
+            websocket_policy_reference: websocket.policy_reference(),
+            websocket_endpoint_reference: websocket.endpoint_reference(),
+            session_deadline,
+            startup,
+        }
+    }
+
+    pub(super) fn is_valid_for(
+        &self,
+        selected_application: &url::Url,
+        websocket: &WebSocketReviewPolicy,
+        knowledge: &KnowledgeBase,
+        parent_deadline: Option<tokio::time::Instant>,
+    ) -> bool {
+        self.policy.application_url() == selected_application
+            && self.policy.version() == SuppliedSessionPolicyVersion::V1
+            && self.policy.credential_mechanism()
+                == SuppliedSessionCredentialMechanism::AuthorizationHeader
+            && self.policy.resource_count() == 1
+            && self.websocket_policy_reference == websocket.policy_reference()
+            && self.websocket_endpoint_reference == websocket.endpoint_reference()
+            && self.session_deadline.is_some()
+            && parent_deadline.is_none_or(|parent| {
+                self.session_deadline
+                    .is_some_and(|session| session <= parent)
+            })
+            && self.startup.is_valid_for(
+                self.policy,
+                SuppliedSessionHealthCheckpointPhase::Startup,
+                0,
+                knowledge,
+            )
+    }
+
+    pub(super) const fn authorization(&self) -> &SuppliedSessionAuthorization {
+        self.authorization
+    }
+
+    pub(super) const fn session_deadline(&self) -> Option<tokio::time::Instant> {
+        self.session_deadline
     }
 }
 
@@ -971,6 +1135,299 @@ impl SuppliedSessionRuntimeConfig {
         state.outcome = SuppliedSessionAuditOutcome::Complete;
         state.finish(policy)
     }
+
+    /// Executes the first supplied-Authorization WebSocket integration as one
+    /// fixed health window: startup health, one staged protected resource, one
+    /// bounded WebSocket exchange, then terminal health. No cookie or login
+    /// policy can enter this path and the credential is borrowed only at the
+    /// handshake boundary.
+    #[cfg(feature = "websocket-review")]
+    pub(super) async fn execute_with_websocket(
+        self,
+        authority: &SharedWebRuntimeAuthority,
+        websocket: &WebSocketReviewPolicy,
+    ) -> (
+        WebAssessmentSuppliedSessionAudit,
+        WebAssessmentWebSocketReviewAudit,
+    ) {
+        let Self {
+            policy,
+            input,
+            requests,
+            login_page,
+            login_submit,
+            health,
+            resources,
+        } = self;
+        let selected_resource_count = u8::try_from(resources.len()).unwrap_or(u8::MAX);
+        let timing = authority.start();
+        let local_deadline = tokio::time::Instant::now()
+            .checked_add(Duration::from_millis(policy.max_wall_time_ms()));
+        let deadline = earliest_deadline(timing.deadline(), local_deadline);
+        let mut state = ExecutionState::new(&policy, selected_resource_count);
+
+        if policy.version() != SuppliedSessionPolicyVersion::V1
+            || policy.credential_mechanism()
+                != SuppliedSessionCredentialMechanism::AuthorizationHeader
+            || policy.resource_count() != 1
+            || login_page.is_some()
+            || login_submit.is_some()
+            || resources.len() != 1
+        {
+            state.outcome = SuppliedSessionAuditOutcome::ResourceUnavailable;
+            state.add_not_dispatched(&resources);
+            let websocket_audit = supplied_session_websocket_not_run(
+                websocket,
+                &policy,
+                &state,
+                WebSocketReviewFailureKind::ParentAuthorityUnavailable,
+            );
+            return (state.finish(policy), websocket_audit);
+        }
+        let credential = match input {
+            SuppliedSessionRuntimeInput::Ready(SuppliedSessionCredential::Authorization(value)) => {
+                SuppliedSessionCredential::Authorization(value)
+            },
+            SuppliedSessionRuntimeInput::Ready(SuppliedSessionCredential::SuppliedCookies(_))
+            | SuppliedSessionRuntimeInput::FormLogin(_) => {
+                state.outcome = SuppliedSessionAuditOutcome::ResourceUnavailable;
+                state.add_not_dispatched(&resources);
+                let websocket_audit = supplied_session_websocket_not_run(
+                    websocket,
+                    &policy,
+                    &state,
+                    WebSocketReviewFailureKind::ParentAuthorityUnavailable,
+                );
+                return (state.finish(policy), websocket_audit);
+            },
+        };
+        let dispatch_context = DispatchContext {
+            authority,
+            requests: &requests,
+            credential: &credential,
+            policy: &policy,
+            deadline,
+        };
+        let resource_commit_context = ResourceCommitContext {
+            policy: &policy,
+            knowledge: authority.knowledge(),
+            observer: None,
+        };
+
+        let startup = dispatch(
+            &dispatch_context,
+            &health,
+            state.dispatch_budget(),
+            DecisionActionOrigin::Bootstrap,
+            SuppliedSessionRequestPurpose::Health,
+        )
+        .await;
+        match state.record_health(
+            startup,
+            &health,
+            SuppliedSessionHealthCheckpointPhase::Startup,
+            0,
+            &policy,
+            authority.knowledge(),
+        ) {
+            Continue::Yes => state.mark_login_authenticated(),
+            Continue::No(outcome) => {
+                state.outcome = outcome;
+                state.add_not_dispatched(&resources);
+                let websocket_audit = supplied_session_websocket_not_run(
+                    websocket,
+                    &policy,
+                    &state,
+                    WebSocketReviewFailureKind::ParentAuthorityUnavailable,
+                );
+                return (state.finish(policy), websocket_audit);
+            },
+        }
+        let Some(startup_receipt) = state.checkpoints.last().and_then(|checkpoint| {
+            CommittedSuppliedSessionHealthReceipt::from_checkpoint(
+                &policy,
+                checkpoint,
+                SuppliedSessionHealthCheckpointPhase::Startup,
+                0,
+                authority.knowledge(),
+            )
+        }) else {
+            state.outcome = SuppliedSessionAuditOutcome::ResourceUnavailable;
+            state.add_not_dispatched(&resources);
+            let websocket_audit = supplied_session_websocket_not_run(
+                websocket,
+                &policy,
+                &state,
+                WebSocketReviewFailureKind::ParentAuthorityUnavailable,
+            );
+            return (state.finish(policy), websocket_audit);
+        };
+
+        let (descriptor, reference) = &resources[0];
+        let resource = dispatch(
+            &dispatch_context,
+            descriptor,
+            state.dispatch_budget(),
+            DecisionActionOrigin::Planned,
+            SuppliedSessionRequestPurpose::Resource,
+        )
+        .await;
+        let staged = match state.record_resource(
+            0,
+            descriptor,
+            reference,
+            resource,
+            resource_commit_context,
+        ) {
+            ResourceContinuation::AwaitingHealth(staged) => staged,
+            ResourceContinuation::No(outcome) => {
+                state.outcome = outcome;
+                let websocket_audit = supplied_session_websocket_not_run(
+                    websocket,
+                    &policy,
+                    &state,
+                    WebSocketReviewFailureKind::ParentAuthorityUnavailable,
+                );
+                return (state.finish(policy), websocket_audit);
+            },
+        };
+
+        let authorization = credential
+            .authorization()
+            .expect("combined V1 credential was matched above");
+        let permit = SuppliedSessionWebSocketPermit::new(
+            &policy,
+            authorization,
+            websocket,
+            deadline,
+            startup_receipt,
+        );
+        let mut websocket_audit =
+            execute_supplied_session_websocket_review(authority, websocket, &permit).await;
+
+        let terminal = dispatch(
+            &dispatch_context,
+            &health,
+            state.dispatch_budget_with_pending_resource(staged),
+            DecisionActionOrigin::Planned,
+            SuppliedSessionRequestPurpose::Health,
+        )
+        .await;
+        let health_qualification = match state.record_health(
+            terminal,
+            &health,
+            SuppliedSessionHealthCheckpointPhase::Terminal,
+            1,
+            &policy,
+            authority.knowledge(),
+        ) {
+            Continue::Yes => {
+                let terminal_receipt = state.checkpoints.last().and_then(|checkpoint| {
+                    CommittedSuppliedSessionHealthReceipt::from_checkpoint(
+                        &policy,
+                        checkpoint,
+                        SuppliedSessionHealthCheckpointPhase::Terminal,
+                        1,
+                        authority.knowledge(),
+                    )
+                });
+                if terminal_receipt.is_none() {
+                    state.record_health_unqualified_resource(
+                        0,
+                        descriptor,
+                        reference,
+                        staged,
+                        &policy,
+                        authority.knowledge(),
+                    );
+                    state.outcome = SuppliedSessionAuditOutcome::ResourceUnavailable;
+                    WebSocketSuppliedSessionQualification::ContextUnqualified
+                } else if let Continue::No(outcome) = state.record_health_qualified_resource(
+                    0,
+                    descriptor,
+                    reference,
+                    staged,
+                    resource_commit_context,
+                ) {
+                    state.outcome = outcome;
+                    WebSocketSuppliedSessionQualification::ContextQualified
+                } else {
+                    state.outcome = SuppliedSessionAuditOutcome::Complete;
+                    WebSocketSuppliedSessionQualification::ContextQualified
+                }
+            },
+            Continue::No(outcome) => {
+                state.record_health_unqualified_resource(
+                    0,
+                    descriptor,
+                    reference,
+                    staged,
+                    &policy,
+                    authority.knowledge(),
+                );
+                state.outcome = outcome;
+                WebSocketSuppliedSessionQualification::ContextUnqualified
+            },
+        };
+        let qualification = if websocket_audit.request_admitted_count() == 0 {
+            WebSocketSuppliedSessionQualification::NotEstablished
+        } else {
+            health_qualification
+        };
+        websocket_audit.bind_supplied_session_context(supplied_session_websocket_context(
+            &policy,
+            &state,
+            qualification,
+        ));
+        debug_assert!(websocket_audit.is_consistent());
+        (state.finish(policy), websocket_audit)
+    }
+}
+
+#[cfg(feature = "websocket-review")]
+fn supplied_session_websocket_not_run(
+    websocket: &WebSocketReviewPolicy,
+    policy: &SuppliedSessionPolicy,
+    state: &ExecutionState,
+    failure: WebSocketReviewFailureKind,
+) -> WebAssessmentWebSocketReviewAudit {
+    let mut audit = websocket_review_not_run(websocket, failure);
+    audit.bind_supplied_session_context(supplied_session_websocket_context(
+        policy,
+        state,
+        WebSocketSuppliedSessionQualification::NotEstablished,
+    ));
+    debug_assert!(audit.is_consistent());
+    audit
+}
+
+#[cfg(feature = "websocket-review")]
+fn supplied_session_websocket_context(
+    policy: &SuppliedSessionPolicy,
+    state: &ExecutionState,
+    qualification: WebSocketSuppliedSessionQualification,
+) -> WebSocketSuppliedSessionContextAudit {
+    let health = |phase| {
+        state
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.phase() == phase)
+            .map(|checkpoint| {
+                WebSocketSuppliedSessionHealthAudit::new(
+                    health_outcome_token(checkpoint.outcome()),
+                    checkpoint.evidence_reference(),
+                )
+            })
+    };
+    WebSocketSuppliedSessionContextAudit::new(
+        policy.policy_reference(),
+        policy.application_reference(),
+        policy.principal_reference(),
+        policy.principal_alias(),
+        health(SuppliedSessionHealthCheckpointPhase::Startup),
+        health(SuppliedSessionHealthCheckpointPhase::Terminal),
+        qualification,
+    )
 }
 
 struct ExecutionState {
@@ -2840,9 +3297,17 @@ mod tests {
     use crate::supplied_session_review::{
         SuppliedSessionAuthorization, SuppliedSessionCookies, SuppliedSessionFormCredential,
     };
-    use crate::web_runtime::{WebAssessmentRuntimeBuilder, WebAssessmentRuntimeError};
+    use crate::web_runtime::{
+        WebAssessmentLimits, WebAssessmentRuntimeBuilder, WebAssessmentRuntimeError,
+    };
     #[cfg(feature = "wordpress-review")]
     use crate::wordpress_review::WordPressReviewInputs;
+    #[cfg(feature = "websocket-review")]
+    use futures::{SinkExt, StreamExt};
+    #[cfg(feature = "websocket-review")]
+    use serde_json::json;
+    #[cfg(feature = "websocket-review")]
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -2851,9 +3316,15 @@ mod tests {
     };
 
     fn policy(application: &url::Url) -> SuppliedSessionPolicy {
-        SuppliedSessionPolicy::parse_toml(
-            application,
-            br#"schema = "security.supplied-session-policy/v1"
+        policy_with_wall_time(application, 5_000)
+    }
+
+    fn policy_with_wall_time(
+        application: &url::Url,
+        max_wall_time_ms: u64,
+    ) -> SuppliedSessionPolicy {
+        let source = format!(
+            r#"schema = "security.supplied-session-policy/v1"
 principal_alias = "fixture-principal"
 credential_mechanism = "authorization_header"
 health_path = "/app/session-health"
@@ -2862,10 +3333,46 @@ resources = ["/app/private"]
 max_session_requests = 3
 max_total_response_bytes = 65536
 max_response_body_bytes = 16384
-max_wall_time_ms = 5000
-"#,
-        )
-        .unwrap()
+max_wall_time_ms = {max_wall_time_ms}
+"#
+        );
+        SuppliedSessionPolicy::parse_toml(application, source.as_bytes()).unwrap()
+    }
+
+    #[cfg(feature = "websocket-review")]
+    fn websocket_policy(
+        application: &url::Url,
+        endpoint: &url::Url,
+        max_wall_time_ms: u64,
+    ) -> WebSocketReviewPolicy {
+        let expected = b"expected";
+        let source = serde_json::to_vec(&json!({
+            "schema": "security.websocket-review-policy/v1",
+            "target_authorized": true,
+            "messages_read_only_acknowledged": true,
+            "message_content_is_non_secret": true,
+            "endpoint": endpoint.as_str(),
+            "origin_mode": "application_origin",
+            "compression": false,
+            "reconnect": false,
+            "messages": [{
+                "id": "combined-session-message",
+                "text": "request",
+                "expected_response": {
+                    "sha256": format!("{:x}", Sha256::digest(expected)),
+                    "length": expected.len()
+                }
+            }],
+            "limits": {
+                "max_inbound_message_bytes": 4096,
+                "max_outbound_message_bytes": 4096,
+                "max_messages": 1,
+                "max_control_frames": 4,
+                "max_wall_time_ms": max_wall_time_ms
+            }
+        }))
+        .unwrap();
+        WebSocketReviewPolicy::parse_json(application, &source).unwrap()
     }
 
     fn cookie_policy(application: &url::Url) -> SuppliedSessionPolicy {
@@ -3092,6 +3599,74 @@ same_site = "lax"
             wrong_target.outcome(),
             SuppliedSessionHealthOutcome::Indeterminate
         );
+    }
+
+    #[cfg(feature = "websocket-review")]
+    #[test]
+    fn startup_health_permit_rejects_mutated_binding_and_widened_deadline() {
+        let application = url::Url::parse("http://127.0.0.1:8123/app/").unwrap();
+        let endpoint = url::Url::parse("ws://127.0.0.1:8123/app/socket").unwrap();
+        let policy = policy(&application);
+        let websocket = websocket_policy(&application, &endpoint, 1_000);
+        let descriptor = SuppliedSessionRequestDescriptor::health(&policy);
+        let knowledge = KnowledgeBase::new();
+        let mut checkpoint = WebAssessmentSuppliedSessionCheckpointAudit {
+            sequence: 0,
+            evidence_reference: None,
+            phase: SuppliedSessionHealthCheckpointPhase::Startup,
+            after_subject_count: 0,
+            outcome: SuppliedSessionHealthOutcome::Healthy,
+            status: Some(200),
+            body_state: SuppliedSessionBodyState::Complete,
+            predicate: SuppliedSessionPredicateOutcome::Matched,
+            response_bytes: 22,
+            cookie_update: None,
+        };
+        bind_health_evidence(
+            &mut checkpoint,
+            &policy,
+            &descriptor,
+            Some(true),
+            &knowledge,
+        );
+        let startup = CommittedSuppliedSessionHealthReceipt::from_checkpoint(
+            &policy,
+            &checkpoint,
+            SuppliedSessionHealthCheckpointPhase::Startup,
+            0,
+            &knowledge,
+        )
+        .expect("fixture must commit one exact startup receipt");
+        let authorization =
+            SuppliedSessionAuthorization::new("Bearer STARTUP-PERMIT-CANARY").unwrap();
+        let parent_deadline = tokio::time::Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .unwrap();
+        let session_deadline = tokio::time::Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .unwrap();
+        let mut permit = SuppliedSessionWebSocketPermit::new(
+            &policy,
+            &authorization,
+            &websocket,
+            Some(session_deadline),
+            startup,
+        );
+        assert!(permit.is_valid_for(&application, &websocket, &knowledge, Some(parent_deadline)));
+
+        permit.startup.epoch = 2;
+        assert!(!permit.is_valid_for(&application, &websocket, &knowledge, Some(parent_deadline)));
+        permit.startup.epoch = 1;
+        permit.startup.after_subject_count = 1;
+        assert!(!permit.is_valid_for(&application, &websocket, &knowledge, Some(parent_deadline)));
+        permit.startup.after_subject_count = 0;
+        permit.websocket_endpoint_reference = "websocket-endpoint-sha256:wrong";
+        assert!(!permit.is_valid_for(&application, &websocket, &knowledge, Some(parent_deadline)));
+        permit.websocket_endpoint_reference = websocket.endpoint_reference();
+        permit.session_deadline = None;
+        assert!(!permit.is_valid_for(&application, &websocket, &knowledge, Some(parent_deadline)));
+        permit.session_deadline = parent_deadline.checked_add(Duration::from_millis(1));
+        assert!(!permit.is_valid_for(&application, &websocket, &knowledge, Some(parent_deadline)));
     }
 
     #[test]
@@ -3588,6 +4163,406 @@ max_wall_time_ms = 5000
         assert_eq!(observed[1], ("/app/private".to_owned(), true, false));
         assert_eq!(observed[2], ("/app/session-health".to_owned(), true, false));
         assert_eq!(observed[3], ("/app/".to_owned(), false, false));
+        server.abort();
+    }
+
+    #[cfg(feature = "websocket-review")]
+    #[tokio::test]
+    async fn shared_request_refusal_retains_health_projection_without_claiming_ws_context() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let server_observed = Arc::clone(&observed);
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 1024];
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n")
+                        || request.len() > 16 * 1024
+                    {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_ascii_whitespace().nth(1))
+                    .unwrap_or("")
+                    .to_owned();
+                server_observed.lock().await.push(path.clone());
+                let (media_type, body) = match path.as_str() {
+                    "/app/session-health" => ("application/json", r#"{"authenticated":true}"#),
+                    "/app/private" => ("text/html", "PRIVATE-ZERO-ADMISSION-CANARY"),
+                    _ => ("text/html", "unexpected"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let application = url::Url::parse(&format!("http://{address}/app/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/app/socket")).unwrap();
+        let limits = WebAssessmentLimits::default()
+            .with_max_total_requests(2)
+            .unwrap();
+        let mut runtime = WebAssessmentRuntimeBuilder::new(application.clone())
+            .limits(limits)
+            .with_supplied_session_review(
+                policy(&application),
+                SuppliedSessionAuthorization::new("Bearer ZERO-ADMISSION-SECRET-CANARY").unwrap(),
+            )
+            .with_websocket_review(websocket_policy(&application, &endpoint, 2_000))
+            .with_websocket_supplied_session()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&crate::web_runtime::WebAssessmentIncompleteReason::TotalRequestLimit));
+
+        let session = report.supplied_session_audit().unwrap();
+        assert_eq!(session.checkpoints().len(), 1);
+        assert_eq!(
+            session.checkpoints()[0].outcome(),
+            SuppliedSessionHealthOutcome::Healthy
+        );
+        let websocket = report.websocket_review_audit().unwrap();
+        assert_eq!(websocket.request_attempt_count(), 1);
+        assert_eq!(websocket.request_admitted_count(), 0);
+        assert_eq!(websocket.connection_attempt_count(), 0);
+        assert_eq!(websocket.handshake_completed_count(), 0);
+        let context = websocket.supplied_session_context().unwrap();
+        assert_eq!(
+            context.qualification(),
+            WebSocketSuppliedSessionQualification::NotEstablished
+        );
+        assert_eq!(
+            context
+                .startup_health()
+                .map(WebSocketSuppliedSessionHealthAudit::outcome),
+            Some("healthy")
+        );
+        assert!(context.terminal_health().is_none());
+        assert!(websocket.is_consistent());
+
+        let diagnostic = format!("{websocket:?}");
+        for forbidden in [
+            "ZERO-ADMISSION-SECRET-CANARY",
+            "PRIVATE-ZERO-ADMISSION-CANARY",
+            "/app/private",
+            "/app/socket",
+        ] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        assert_eq!(
+            observed.lock().await.clone(),
+            vec!["/app/session-health".to_owned(), "/app/private".to_owned()]
+        );
+        server.abort();
+    }
+
+    #[cfg(feature = "websocket-review")]
+    #[tokio::test]
+    async fn completed_combined_ws_prefix_survives_later_ordinary_runtime_failure() {
+        const SECRET: &str = "Bearer FAILURE-RECEIPT-SECRET-CANARY";
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut preview = [0_u8; 4096];
+                    let Ok(Ok(preview_len)) =
+                        tokio::time::timeout(Duration::from_secs(1), stream.peek(&mut preview))
+                            .await
+                    else {
+                        return;
+                    };
+                    let preview = String::from_utf8_lossy(&preview[..preview_len]);
+                    if preview.starts_with("GET /app/socket HTTP/1.1\r\n") {
+                        let accepted = tokio_tungstenite::accept_hdr_async(
+                            stream,
+                            |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                             response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                                assert_eq!(
+                                    request
+                                        .headers()
+                                        .get("authorization")
+                                        .and_then(|value| value.to_str().ok()),
+                                    Some(SECRET)
+                                );
+                                Ok(response)
+                            },
+                        )
+                        .await;
+                        if let Ok(mut socket) = accepted {
+                            if socket.next().await.is_some() {
+                                let _ = socket
+                                    .send(tokio_tungstenite::tungstenite::Message::Text(
+                                        "expected".into(),
+                                    ))
+                                    .await;
+                            }
+                            let _ = socket.close(None).await;
+                        }
+                        return;
+                    }
+
+                    let mut request = Vec::new();
+                    loop {
+                        let mut chunk = [0_u8; 1024];
+                        let read = stream.read(&mut chunk).await.unwrap_or(0);
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n")
+                            || request.len() > 16 * 1024
+                        {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&request);
+                    let path = text
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_ascii_whitespace().nth(1))
+                        .unwrap_or("");
+                    if path == "/app/" {
+                        let _ = stream.shutdown().await;
+                        return;
+                    }
+                    let (media_type, body) = match path {
+                        "/app/session-health" => ("application/json", r#"{"authenticated":true}"#),
+                        "/app/private" => ("text/html", "PRIVATE-FAILURE-BODY-CANARY"),
+                        _ => ("text/html", "unexpected"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        let application = url::Url::parse(&format!("http://{address}/app/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/app/socket")).unwrap();
+        let mut runtime = WebAssessmentRuntimeBuilder::new(application.clone())
+            .with_supplied_session_review(
+                policy(&application),
+                SuppliedSessionAuthorization::new(SECRET).unwrap(),
+            )
+            .with_websocket_review(websocket_policy(&application, &endpoint, 2_000))
+            .with_websocket_supplied_session()
+            .build()
+            .unwrap();
+        let error = runtime
+            .analyze()
+            .await
+            .expect_err("ordinary root failure must preserve the completed combined prefix");
+        let receipt = error.failure_receipt().expect("started failure receipt");
+
+        let session = receipt.supplied_session_audit().unwrap();
+        assert_eq!(session.outcome(), SuppliedSessionAuditOutcome::Complete);
+        assert_eq!(session.checkpoints().len(), 2);
+        let websocket = receipt.websocket_review_audit().unwrap();
+        assert_eq!(
+            websocket.schema(),
+            crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA
+        );
+        assert_eq!(websocket.request_attempt_count(), 1);
+        assert_eq!(websocket.request_admitted_count(), 1);
+        assert_eq!(websocket.handshake_completed_count(), 1);
+        assert_eq!(websocket.outbound_message_count(), 1);
+        assert_eq!(websocket.inbound_message_count(), 1);
+        assert_eq!(websocket.matched_response_count(), 1);
+        assert_eq!(
+            websocket
+                .supplied_session_context()
+                .unwrap()
+                .qualification(),
+            WebSocketSuppliedSessionQualification::ContextQualified
+        );
+        assert!(websocket.is_consistent());
+
+        let diagnostic = format!("{error:?}{websocket:?}");
+        for forbidden in [
+            "FAILURE-RECEIPT-SECRET-CANARY",
+            "PRIVATE-FAILURE-BODY-CANARY",
+            "/app/private",
+            "/app/socket",
+        ] {
+            assert!(!diagnostic.contains(forbidden));
+        }
+        server.abort();
+    }
+
+    #[cfg(feature = "websocket-review")]
+    #[tokio::test]
+    async fn supplied_session_deadline_bounds_websocket_and_leaves_context_unqualified() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let http_observed = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
+        let websocket_authorized = Arc::new(AtomicBool::new(false));
+        let server_http_observed = http_observed.clone();
+        let server_websocket_authorized = websocket_authorized.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let observed = server_http_observed.clone();
+                let websocket_authorized = server_websocket_authorized.clone();
+                tokio::spawn(async move {
+                    let mut preview = [0_u8; 4096];
+                    let Ok(Ok(preview_len)) =
+                        tokio::time::timeout(Duration::from_secs(1), stream.peek(&mut preview))
+                            .await
+                    else {
+                        return;
+                    };
+                    let preview = String::from_utf8_lossy(&preview[..preview_len]);
+                    if preview.starts_with("GET /app/socket HTTP/1.1\r\n") {
+                        let accepted = tokio_tungstenite::accept_hdr_async(
+                            stream,
+                            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                                  response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                                websocket_authorized.store(
+                                    request.headers().get("authorization").is_some_and(|value| {
+                                        value.as_bytes() == b"Bearer SESSION-DEADLINE-CANARY"
+                                    }),
+                                    Ordering::SeqCst,
+                                );
+                                Ok(response)
+                            },
+                        )
+                        .await;
+                        if let Ok(mut socket) = accepted {
+                            let _ = socket.next().await;
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                        }
+                        return;
+                    }
+
+                    let mut request = Vec::new();
+                    loop {
+                        let mut chunk = [0_u8; 1024];
+                        let read = stream.read(&mut chunk).await.unwrap_or(0);
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n")
+                            || request.len() > 16 * 1024
+                        {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&request);
+                    let path = text
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_ascii_whitespace().nth(1))
+                        .unwrap_or("")
+                        .to_owned();
+                    let authorized = text.lines().any(|line| {
+                        line.eq_ignore_ascii_case("authorization: Bearer SESSION-DEADLINE-CANARY")
+                    });
+                    observed.lock().await.push((path.clone(), authorized));
+                    let (media_type, body) = match path.as_str() {
+                        "/app/session-health" => ("application/json", r#"{"authenticated":true}"#),
+                        "/app/private" => ("text/html", "PRIVATE-DEADLINE-BODY"),
+                        _ => ("text/html", "<!doctype html><title>public root</title>"),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        let application = url::Url::parse(&format!("http://{address}/app/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/app/socket")).unwrap();
+        let mut runtime = WebAssessmentRuntimeBuilder::new(application.clone())
+            .with_supplied_session_review(
+                policy_with_wall_time(&application, 250),
+                SuppliedSessionAuthorization::new("Bearer SESSION-DEADLINE-CANARY").unwrap(),
+            )
+            .with_websocket_review(websocket_policy(&application, &endpoint, 2_000))
+            .with_websocket_supplied_session()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        let session = report.supplied_session_audit().unwrap();
+        assert_eq!(session.outcome(), SuppliedSessionAuditOutcome::RuntimeLimit);
+        assert_eq!(session.checkpoints().len(), 1);
+        assert_eq!(session.committed_resource_count(), 0);
+        assert_eq!(
+            session.resources()[0].outcome(),
+            SuppliedSessionResourceOutcome::HealthUnqualified
+        );
+
+        let websocket = report.websocket_review_audit().unwrap();
+        assert_eq!(
+            websocket.schema(),
+            crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA
+        );
+        assert_eq!(
+            websocket.terminal(),
+            crate::web_runtime::WebSocketReviewTerminal::DeadlineReached
+        );
+        assert_eq!(websocket.request_attempt_count(), 1);
+        assert_eq!(websocket.request_admitted_count(), 1);
+        assert_eq!(websocket.handshake_completed_count(), 1);
+        let context = websocket.supplied_session_context().unwrap();
+        assert_eq!(
+            context.qualification(),
+            WebSocketSuppliedSessionQualification::ContextUnqualified
+        );
+        assert!(context.startup_health().is_some_and(|health| {
+            health.outcome() == "healthy" && health.evidence_reference().is_some()
+        }));
+        assert_eq!(context.terminal_health(), None);
+        assert!(websocket.is_consistent());
+        assert!(websocket_authorized.load(Ordering::SeqCst));
+
+        let observed = http_observed.lock().await.clone();
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|(path, authorized)| { path == "/app/session-health" && *authorized })
+                .count(),
+            1,
+            "the elapsed child deadline must prevent a terminal-health dispatch"
+        );
+        assert!(observed
+            .iter()
+            .any(|(path, authorized)| path == "/app/private" && *authorized));
+        assert!(observed
+            .iter()
+            .any(|(path, authorized)| path == "/app/" && !authorized));
         server.abort();
     }
 

@@ -132,6 +132,8 @@ use web_review_execution::{
     NativeWebReviewExecutorProfile, NativeWebReviewQueryParameters, NativeWebReviewSeeds,
 };
 
+#[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+pub use websocket_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA;
 #[cfg(feature = "websocket-review")]
 pub use websocket_runtime::{
     WebAssessmentWebSocketReviewAudit, WebSocketReviewClaimLimit, WebSocketReviewCompleteness,

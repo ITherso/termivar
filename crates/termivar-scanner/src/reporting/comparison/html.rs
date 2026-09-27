@@ -243,7 +243,12 @@ fn websocket_review(
     output: &mut RenderBuffer,
     comparison: &WebSocketReviewComparison,
 ) -> Result<(), ReportError> {
-    output.push_str("<section class=\"wp-review\" aria-labelledby=\"websocket-review-differences\"><h2 id=\"websocket-review-differences\">WebSocket review differences</h2><p class=\"muted\">Strict value-free projections of one bounded anonymous WebSocket exchange are compared without retaining payload, URL, path, query, subprotocol value, mismatched-response digest, token, or raw error. Raw transport-byte fields include HTTP Upgrade and WebSocket framing and, for WSS, encrypted TLS records; they are not application bytes. This display establishes no authorization, server state, vulnerability, impact, or remediation.</p><div class=\"wp-summary\">")?;
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"websocket-review-differences\"><h2 id=\"websocket-review-differences\">WebSocket review differences</h2>")?;
+    if comparison.supplied_session_context.is_some() {
+        output.push_str("<p class=\"muted\">Strict value-free projections of one bounded supplied-session WebSocket exchange are compared without retaining payload, URL, path, query, subprotocol value, mismatched-response digest, token, credential, or raw error. Protocol completion is distinct from startup/terminal session-health qualification, and continuous authentication remains not established. Raw transport-byte fields include HTTP Upgrade and WebSocket framing and, for WSS, encrypted TLS records; they are not application bytes. This display establishes no authenticated identity, authorization, server state, vulnerability, impact, or remediation.</p><div class=\"wp-summary\">")?;
+    } else {
+        output.push_str("<p class=\"muted\">Strict value-free projections of one bounded anonymous WebSocket exchange are compared without retaining payload, URL, path, query, subprotocol value, mismatched-response digest, token, or raw error. Raw transport-byte fields include HTTP Upgrade and WebSocket framing and, for WSS, encrypted TLS records; they are not application bytes. This display establishes no authorization, server state, vulnerability, impact, or remediation.</p><div class=\"wp-summary\">")?;
+    }
     for (label, value) in [
         ("Comparison", comparison.status),
         ("Methodology", comparison.methodology.status.as_str()),
@@ -263,6 +268,9 @@ fn websocket_review(
         output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
         write_html_text(output, reason)?;
         output.push_str("</span>. One-sided audit presence is not exchange rejection, vulnerability absence, or remediation.</p>")?;
+    }
+    if let Some(context) = &comparison.supplied_session_context {
+        wordpress_facet(output, "WebSocket supplied-session context", context)?;
     }
     for (label, facet) in [
         ("WebSocket methodology", &comparison.methodology),

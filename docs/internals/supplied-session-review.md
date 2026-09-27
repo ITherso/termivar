@@ -331,6 +331,42 @@ in this initial integration. The authenticated page ledger is separate from the
 anonymous observed-page collection, and a different principal or epoch is a
 context change rather than evidence of installation change or remediation.
 
+### Explicit WebSocket consumer
+
+When the executable is compiled with both `supplied-session-review` and
+`websocket-review`, the V1 Authorization-header session may be consumed by the
+bounded WebSocket review only when the operator additionally selects
+`--websocket-supplied-session`. The combined invocation requires exactly one
+selected protected resource:
+
+```text
+termivar scan http://127.0.0.1:<owned-fixture-port>/app/ \
+  --profile web-review \
+  --session-policy session-policy.toml \
+  --session-auth-file authorization.secret \
+  --websocket-review-policy websocket-policy.json \
+  --websocket-supplied-session \
+  --report-dir assessment
+```
+
+The fixed schedule is startup health, protected-resource staging, one
+credentialed WebSocket handshake and bounded exchange, then terminal health.
+Both health checkpoints are required before either the staged resource or the
+WebSocket result is qualified for the declared application, principal and epoch.
+Startup loss prevents the WebSocket dispatch. Terminal loss preserves only the
+value-free wire result and leaves the context unqualified; it does not publish
+the protected resource as committed evidence.
+
+V2 cookie and V3 form-login policies are intentionally unsupported by this
+consumer and are rejected before credential or output acquisition. The same
+session cannot be selected simultaneously by the WordPress and WebSocket
+consumers. Without the explicit integration flag, WebSocket review remains its
+existing anonymous isolated connection and receives neither the Authorization
+value nor supplied-session context. The WebSocket connection shares the parent
+deadline and accounting; it does not create a fresh session-request allowance.
+Health checkpoints qualify only the bounded declared context window and do not
+establish continuous authentication.
+
 ## Secret boundary
 
 Policy validation happens before the selected secret source is read. File input

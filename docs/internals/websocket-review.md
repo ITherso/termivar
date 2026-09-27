@@ -1,8 +1,8 @@
 # Bounded WebSocket review
 
-Status: Preview, development-only, explicit opt-in. This document describes
-the anonymous S11-A slice. S11 remains `IMPLEMENTING`; authenticated/session
-context integration is deliberately deferred to S11-B.
+Status: Preview, development-only, explicit opt-in. The anonymous S11-A path
+remains the default. S11-B adds one explicit health-qualified V1
+Authorization-header supplied-session composition without changing that default.
 
 ## Selection and authority
 
@@ -31,6 +31,35 @@ only when both the target and endpoint use numeric loopback. Other execution
 requires `wss` and ordinary certificate validation. Userinfo, fragments, query
 strings, unsafe raw encodings and path traversal are rejected before dispatch.
 
+When both `websocket-review` and `supplied-session-review` are compiled, the
+same assessment may explicitly select the narrow session composition:
+
+```text
+termivar scan AUTHORIZED_TARGET \
+  --profile web-review \
+  --websocket-review-policy WEBSOCKET_POLICY \
+  --websocket-supplied-session \
+  --session-policy SESSION_POLICY \
+  --session-auth-file AUTHORIZATION_SECRET \
+  --report-dir NEW_DIRECTORY
+```
+
+This composition accepts only `security.supplied-session-policy/v1` with the
+`authorization_header` mechanism and exactly one protected resource. Cookie V2
+and bounded-form-login V3 policies are rejected after non-secret policy
+validation but before output reservation or secret acquisition. The WebSocket
+and WordPress supplied-session consumers cannot be selected together. Without
+`--websocket-supplied-session`, selecting both policies still runs the original
+standalone supplied-session review and anonymous WebSocket review.
+
+The combined sequence is startup health, one protected resource staged but not
+yet committed, one credentialed WebSocket handshake/exchange, then terminal
+health. Startup loss prevents the WebSocket request. Only healthy startup and
+terminal checkpoints qualify the declared application, operator-declared
+principal and fixed epoch; terminal loss retains bounded value-free wire facts
+but leaves the WebSocket context unqualified and the resource uncommitted.
+Health checkpoints do not prove continuous authentication or identity.
+
 The runtime mints one one-shot child from the existing assessment authority.
 One connection attempt consumes one request-accounting lease and shares the
 parent deadline, cancellation and response-byte ceiling. There is no second
@@ -41,11 +70,13 @@ authority.
 ## Transport contract
 
 V1 implements RFC 6455 over an HTTP/1.1 Upgrade. HTTP/2 extended CONNECT is
-unsupported. It uses one isolated anonymous connection and never inherits a
-supplied session. It sends no Cookie, Authorization or Proxy-Authorization
-header and does not use ambient proxies. Redirect following, retries,
-reconnection and per-message connection resets are absent. Compression is
-disabled and an unexpected negotiated extension is refused.
+unsupported. It uses one isolated connection. The default path sends no Cookie,
+Authorization or Proxy-Authorization header. The combined S11-B path sends only
+the selected V1 Authorization value to the exact admitted WebSocket endpoint;
+it never sends Cookie or Proxy-Authorization and never imports another ambient
+credential. Ambient proxies, redirect following, retries, reconnection and
+per-message connection resets are absent. Compression is disabled and an
+unexpected negotiated extension is refused.
 
 An optional subprotocol is an exact bounded token. The server must select that
 exact token when one was requested, and must not invent one when none was
@@ -98,8 +129,9 @@ leaves the review incomplete with a bounded value-free failure class.
 
 ## Evidence and claims
 
-The report section uses `security.websocket-review-audit/v1` and capability
-identity `termivar.websocket-review/v1`. It retains only opaque policy,
+The anonymous report section uses `security.websocket-review-audit/v1`; the
+selected S11-B context uses `security.websocket-review-audit/v2`. Both retain
+capability identity `termivar.websocket-review/v1` and only opaque policy,
 application, endpoint, message and expected/observed response references;
 lengths; bounded counters; classified outcomes; limits; and completeness. It
 does not retain endpoint paths or queries, message IDs/text, subprotocol values,
@@ -122,6 +154,14 @@ establish:
 - availability;
 - source authenticity;
 - a vulnerability, exploitability or impact.
+
+The v2 context additionally retains opaque supplied-session policy,
+application, principal and epoch references, operator-declared assurance,
+credential-mechanism class, startup/terminal health outcomes and the exact
+`context_qualified` or `context_unqualified` state. It never retains the
+Authorization value or a credential-derived public digest. Authentication and
+authorization claim limits remain not established, including after a matched
+exchange.
 
 The capability adds no assessment item or severity. Report Verify checks saved
 bundle integrity and schema consistency, not endpoint truth. Report Compare

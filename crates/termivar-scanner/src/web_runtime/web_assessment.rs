@@ -143,7 +143,12 @@ use crate::ssrf_oast_review::{
     select_observed_query_candidate, SsrfOastAdminToken, SsrfOastReviewPolicy,
     SsrfOastTerminalState,
 };
-#[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
+#[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+use crate::supplied_session_review::SuppliedSessionCredentialMechanism;
+#[cfg(any(
+    all(feature = "wordpress-review", feature = "supplied-session-review"),
+    all(feature = "websocket-review", feature = "supplied-session-review")
+))]
 use crate::supplied_session_review::SuppliedSessionPolicyVersion;
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{SuppliedSessionPolicy, SuppliedSessionRuntimeInput};
@@ -1412,12 +1417,12 @@ pub struct WebAssessmentRunReport {
     defense: WebAssessmentDefenseAudit,
     #[cfg(feature = "supplied-session-review")]
     supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
     jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
-    #[cfg(feature = "websocket-review")]
-    websocket_review: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "openapi-review")]
     openapi_review: Option<WebAssessmentOpenApiAudit>,
     #[cfg(feature = "rest-review")]
@@ -1457,10 +1462,13 @@ impl fmt::Debug for WebAssessmentRunReport {
             .field("defense", &self.defense);
         #[cfg(feature = "authorization-review")]
         debug.field("authorization_review", &self.authorization_review);
-        #[cfg(feature = "websocket-review")]
-        debug.field("websocket_review", &self.websocket_review);
         #[cfg(feature = "supplied-session-review")]
         debug.field("supplied_session", &self.supplied_session);
+        #[cfg(feature = "websocket-review")]
+        debug.field(
+            "websocket_review",
+            &self.websocket_review.as_ref().map(|_| "<redacted-audit>"),
+        );
         #[cfg(feature = "jwt-target-acceptance-review")]
         debug.field("jwt_target_acceptance", &self.jwt_target_acceptance);
         #[cfg(feature = "openapi-review")]
@@ -1673,6 +1681,8 @@ pub struct WebAssessmentFailureReceipt {
     defense: WebAssessmentDefenseAudit,
     #[cfg(feature = "supplied-session-review")]
     supplied_session: Option<WebAssessmentSuppliedSessionAudit>,
+    #[cfg(feature = "websocket-review")]
+    websocket_review: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
     jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     current_subject: WebAssessmentSubjectReport,
@@ -1695,6 +1705,11 @@ impl fmt::Debug for WebAssessmentFailureReceipt {
             .field("defense", &self.defense);
         #[cfg(feature = "supplied-session-review")]
         debug.field("supplied_session", &self.supplied_session);
+        #[cfg(feature = "websocket-review")]
+        debug.field(
+            "websocket_review",
+            &self.websocket_review.as_ref().map(|_| "<redacted-audit>"),
+        );
         #[cfg(feature = "jwt-target-acceptance-review")]
         debug.field("jwt_target_acceptance", &self.jwt_target_acceptance);
         debug
@@ -1738,6 +1753,11 @@ impl WebAssessmentFailureReceipt {
     #[cfg(feature = "supplied-session-review")]
     pub const fn supplied_session_audit(&self) -> Option<&WebAssessmentSuppliedSessionAudit> {
         self.supplied_session.as_ref()
+    }
+    /// Returns the value-free WebSocket prefix preserved before a later run failure.
+    #[cfg(feature = "websocket-review")]
+    pub const fn websocket_review_audit(&self) -> Option<&WebAssessmentWebSocketReviewAudit> {
+        self.websocket_review.as_ref()
     }
     /// Returns the value-free JWT target prefix preserved before a later run failure.
     #[cfg(feature = "jwt-target-acceptance-review")]
@@ -1817,6 +1837,19 @@ pub enum WebAssessmentRuntimeError {
     #[cfg(feature = "websocket-review")]
     #[error("WebSocket review policy does not match the exact assessment application")]
     WebSocketReviewApplicationMismatch,
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    #[error("WebSocket supplied-session integration requires both selected reviews")]
+    WebSocketSuppliedSessionRequiresInputs,
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    #[error("WebSocket supplied-session integration supports one V1 Authorization resource")]
+    WebSocketSuppliedSessionUnsupportedPolicy,
+    #[cfg(all(
+        feature = "websocket-review",
+        feature = "supplied-session-review",
+        feature = "wordpress-review"
+    ))]
+    #[error("WebSocket and WordPress supplied-session integrations cannot share one session")]
+    WebSocketSuppliedSessionWordPressConflict,
     #[cfg(feature = "jwt-target-acceptance-review")]
     #[error("JWT target-acceptance policy does not match the exact assessment application")]
     JwtTargetAcceptanceApplicationMismatch,
@@ -1943,6 +1976,19 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             Self::WebSocketReviewApplicationMismatch => {
                 formatter.write_str("WebAssessmentRuntimeError::WebSocketReviewApplicationMismatch")
             },
+            #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+            Self::WebSocketSuppliedSessionRequiresInputs => formatter
+                .write_str("WebAssessmentRuntimeError::WebSocketSuppliedSessionRequiresInputs"),
+            #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+            Self::WebSocketSuppliedSessionUnsupportedPolicy => formatter
+                .write_str("WebAssessmentRuntimeError::WebSocketSuppliedSessionUnsupportedPolicy"),
+            #[cfg(all(
+                feature = "websocket-review",
+                feature = "supplied-session-review",
+                feature = "wordpress-review"
+            ))]
+            Self::WebSocketSuppliedSessionWordPressConflict => formatter
+                .write_str("WebAssessmentRuntimeError::WebSocketSuppliedSessionWordPressConflict"),
             #[cfg(feature = "jwt-target-acceptance-review")]
             Self::JwtTargetAcceptanceApplicationMismatch => formatter
                 .write_str("WebAssessmentRuntimeError::JwtTargetAcceptanceApplicationMismatch"),
@@ -2112,6 +2158,8 @@ pub struct WebAssessmentRuntimeBuilder {
     recon_ct_provider: Option<ReconCtProviderPolicy>,
     #[cfg(feature = "websocket-review")]
     websocket_review: Option<WebSocketReviewPolicy>,
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    websocket_supplied_session: bool,
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     wordpress_supplied_session: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
@@ -2156,6 +2204,8 @@ impl WebAssessmentRuntimeBuilder {
             recon_ct_provider: None,
             #[cfg(feature = "websocket-review")]
             websocket_review: None,
+            #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+            websocket_supplied_session: false,
             #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
             wordpress_supplied_session: false,
             root_authorization_context: None,
@@ -2323,6 +2373,14 @@ impl WebAssessmentRuntimeBuilder {
         self.websocket_review = Some(policy);
         self
     }
+    /// Binds the selected WebSocket handshake to the one supplied V1
+    /// Authorization session. Build requires both policies, exactly one
+    /// protected session resource, and rejects competing WordPress ownership.
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    pub fn with_websocket_supplied_session(mut self) -> Self {
+        self.websocket_supplied_session = true;
+        self
+    }
     /// Adds one explicitly selected, four-view resource authorization review.
     ///
     /// The policy and move-only principals are consumed by this builder. The
@@ -2451,6 +2509,34 @@ impl WebAssessmentRuntimeBuilder {
                 .is_some_and(|(policy, _)| policy.version() == SuppliedSessionPolicyVersion::V3)
         {
             return Err(WebAssessmentRuntimeError::WordPressSuppliedSessionUnsupportedPolicy);
+        }
+        #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+        if self.websocket_supplied_session
+            && (self.websocket_review.is_none() || self.supplied_session_review.is_none())
+        {
+            return Err(WebAssessmentRuntimeError::WebSocketSuppliedSessionRequiresInputs);
+        }
+        #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+        if self.websocket_supplied_session
+            && self
+                .supplied_session_review
+                .as_ref()
+                .is_some_and(|(policy, _)| {
+                    policy.version() != SuppliedSessionPolicyVersion::V1
+                        || policy.credential_mechanism()
+                            != SuppliedSessionCredentialMechanism::AuthorizationHeader
+                        || policy.resource_count() != 1
+                })
+        {
+            return Err(WebAssessmentRuntimeError::WebSocketSuppliedSessionUnsupportedPolicy);
+        }
+        #[cfg(all(
+            feature = "websocket-review",
+            feature = "supplied-session-review",
+            feature = "wordpress-review"
+        ))]
+        if self.websocket_supplied_session && self.wordpress_supplied_session {
+            return Err(WebAssessmentRuntimeError::WebSocketSuppliedSessionWordPressConflict);
         }
         #[cfg(feature = "wordpress-review")]
         if self.wordpress_review.is_some() && !wordpress_application_target_is_valid(&self.target) {
@@ -2819,6 +2905,8 @@ impl WebAssessmentRuntimeBuilder {
             recon_ct_provider: self.recon_ct_provider,
             #[cfg(feature = "websocket-review")]
             websocket_review: self.websocket_review,
+            #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+            websocket_supplied_session: self.websocket_supplied_session,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure_collector: self
                 .secret_exposure_review
@@ -2909,6 +2997,8 @@ pub struct WebAssessmentRuntime {
     recon_ct_provider: Option<ReconCtProviderPolicy>,
     #[cfg(feature = "websocket-review")]
     websocket_review: Option<WebSocketReviewPolicy>,
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    websocket_supplied_session: bool,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_collector: Option<SecretExposureCollector>,
     #[cfg(feature = "secret-exposure-review")]
@@ -3158,13 +3248,23 @@ impl WebAssessmentRuntime {
         // while the independent anonymous assessment may still complete.
         #[cfg(feature = "supplied-session-review")]
         let defer_supplied_session = {
-            #[cfg(feature = "wordpress-review")]
+            let defer_for_wordpress = {
+                #[cfg(feature = "wordpress-review")]
+                {
+                    self.wordpress_supplied_session
+                }
+                #[cfg(not(feature = "wordpress-review"))]
+                {
+                    false
+                }
+            };
+            #[cfg(feature = "websocket-review")]
             {
-                self.wordpress_supplied_session
+                defer_for_wordpress || self.websocket_supplied_session
             }
-            #[cfg(not(feature = "wordpress-review"))]
+            #[cfg(not(feature = "websocket-review"))]
             {
-                false
+                defer_for_wordpress
             }
         };
         #[cfg(feature = "supplied-session-review")]
@@ -3172,6 +3272,22 @@ impl WebAssessmentRuntime {
             if let Some(session) = self.supplied_session_review.take() {
                 self.supplied_session_audit = Some(session.execute(&self.authority, None).await);
             }
+        }
+        #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+        if self.websocket_supplied_session {
+            let session = self
+                .supplied_session_review
+                .take()
+                .expect("combined supplied-session inputs were validated during build");
+            let websocket = self
+                .websocket_review
+                .take()
+                .expect("combined WebSocket inputs were validated during build");
+            let (session_audit, websocket_audit) = session
+                .execute_with_websocket(&self.authority, &websocket)
+                .await;
+            self.supplied_session_audit = Some(session_audit);
+            self.websocket_review_audit = Some(websocket_audit);
         }
 
         // The explicit target-acceptance review consumes the S06 local proof
@@ -4840,7 +4956,8 @@ impl WebAssessmentRuntime {
                     .as_ref()
                     .map(|_| &self.secret_exposure_ledger),
                 #[cfg(feature = "websocket-review")]
-                websocket_selected: self.websocket_review.is_some(),
+                websocket_selected: self.websocket_review.is_some()
+                    || self.websocket_review_audit.is_some(),
             },
             self.authority.knowledge(),
             &self.root,
@@ -4937,12 +5054,12 @@ impl WebAssessmentRuntime {
             defense: self.defense_audit.clone(),
             #[cfg(feature = "supplied-session-review")]
             supplied_session: self.supplied_session_audit.clone(),
+            #[cfg(feature = "websocket-review")]
+            websocket_review: self.websocket_review_audit.clone(),
             #[cfg(feature = "jwt-target-acceptance-review")]
             jwt_target_acceptance: self.jwt_target_acceptance_audit.clone(),
             #[cfg(feature = "authorization-review")]
             authorization_review: self.authorization_review_audit.clone(),
-            #[cfg(feature = "websocket-review")]
-            websocket_review: self.websocket_review_audit.clone(),
             #[cfg(feature = "openapi-review")]
             openapi_review: self.openapi_review_audit.clone(),
             #[cfg(feature = "rest-review")]
@@ -5338,6 +5455,8 @@ impl WebAssessmentRuntime {
             defense: self.defense_audit.clone(),
             #[cfg(feature = "supplied-session-review")]
             supplied_session: self.supplied_session_audit.clone(),
+            #[cfg(feature = "websocket-review")]
+            websocket_review: self.websocket_review_audit.clone(),
             #[cfg(feature = "jwt-target-acceptance-review")]
             jwt_target_acceptance: self.jwt_target_acceptance_audit.clone(),
             current_subject,

@@ -284,6 +284,12 @@ const WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exercise
         env:
           TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-only
         run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
+const WEBSOCKET_SUPPLIED_SESSION_SMOKE_GATE: &str = r#"      - name: Exercise supplied-session WebSocket review through an owned loopback fixture
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test websocket_supplied_session_cli -- --nocapture"#;
+const WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exercise supplied-session WebSocket capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-session
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE: &str = r#"      - name: Exercise trusted passive TLS observation broker path
         run: cargo test --locked -p termivar-scanner --no-default-features --features tls-observation web_runtime::authority::tests::selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch -- --exact --nocapture"#;
 const SECRET_EXPOSURE_SESSION_BOUNDARY_SMOKE_GATE: &str = r#"      - name: Reject authenticated session bodies from the anonymous secret-exposure context
@@ -426,6 +432,7 @@ const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capa
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-ct-provider-only cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-snapshot-import-only cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only cargo test --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-session cargo test --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-in CLI contracts
@@ -446,7 +453,8 @@ const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-
           cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping
           cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider
           cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import
-          cargo test --locked -p termivar-cli --no-default-features --features websocket-review"#;
+          cargo test --locked -p termivar-cli --no-default-features --features websocket-review
+          cargo test --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review"#;
 const SCANNER_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify scanner feature boundaries independently
         run: |
           set -euo pipefail
@@ -456,6 +464,7 @@ const SCANNER_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify scanner feat
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
           done
+          cargo test --locked -p termivar-scanner --no-default-features --features scanning,reporting,websocket-review,supplied-session-review --lib
           for aggregate in minimal full enterprise research
           do
             cargo check --locked -p termivar-scanner --no-default-features --features "$aggregate"
@@ -998,6 +1007,26 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must validate the exact release-profile feature-minimal WebSocket capability contract"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise supplied-session WebSocket review through an owned loopback fixture",
+        WEBSOCKET_SUPPLIED_SESSION_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must execute the exact release-profile supplied-session WebSocket CLI against its owned loopback fixture"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise supplied-session WebSocket capability contract",
+        WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must validate the exact release-profile supplied-session WebSocket capability contract"
         ));
     }
     if !job_has_exact_step(
@@ -3289,6 +3318,7 @@ mod tests {
         let secret_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=secret-only cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
         let tls_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=tls-only cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
         let jwt_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=jwt-only cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
+        let websocket_session_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-session cargo test --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
         for mutation in [
             valid.replacen(CAPABILITIES_MATRIX_GATE, "", 1),
             valid.replacen(rest_case, "", 1),
@@ -3296,6 +3326,7 @@ mod tests {
             valid.replacen(secret_case, "", 1),
             valid.replacen(tls_case, "", 1),
             valid.replacen(jwt_case, "", 1),
+            valid.replacen(websocket_session_case, "", 1),
             valid.replacen(
                 "--features release-bundle --test capabilities_cli",
                 "--features graphql-review --test capabilities_cli",
@@ -4171,6 +4202,79 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("WebSocket capability"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn websocket_supplied_session_runtime_smoke_rejects_omission_widening_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(WEBSOCKET_SUPPLIED_SESSION_SMOKE_GATE, "", 1),
+            valid.replacen(
+                WEBSOCKET_SUPPLIED_SESSION_SMOKE_GATE,
+                &WEBSOCKET_SUPPLIED_SESSION_SMOKE_GATE.replace(
+                    "--features websocket-review,supplied-session-review",
+                    "--features websocket-review",
+                ),
+                1,
+            ),
+            valid.replacen(
+                WEBSOCKET_SUPPLIED_SESSION_SMOKE_GATE,
+                &format!(
+                    "{WEBSOCKET_SUPPLIED_SESSION_SMOKE_GATE}\n        continue-on-error: true"
+                ),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("supplied-session WebSocket CLI"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn websocket_supplied_session_four_platform_capability_smoke_is_exact() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for mutation in [
+            valid.replacen(
+                WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE,
+                "",
+                1,
+            ),
+            valid.replacen(
+                "TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-session",
+                "TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-only",
+                1,
+            ),
+            valid.replacen(
+                WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE,
+                &WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE.replace(
+                    "--features websocket-review,supplied-session-review --test capabilities_cli",
+                    "--features websocket-review --test capabilities_cli",
+                ),
+                1,
+            ),
+            valid.replacen(
+                WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE,
+                &format!(
+                    "{WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE}\n        continue-on-error: true"
+                ),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("supplied-session WebSocket capability"),
                 "{violations:?}"
             );
         }

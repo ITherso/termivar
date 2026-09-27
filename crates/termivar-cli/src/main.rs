@@ -492,6 +492,56 @@ fn scan_websocket_review_flags_conflict(
     }
 }
 
+/// Rejects supplied-session WebSocket composition unless every independently
+/// selected authority is present. This remains separate from the ordinary
+/// WebSocket guard so absence of the integration flag preserves the anonymous
+/// V1 behavior.
+#[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+fn scan_websocket_supplied_session_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+    websocket_review_selected: bool,
+    supplied_session_policy_selected: bool,
+    supplied_session_credential_selected: bool,
+    wordpress_supplied_session_selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--websocket-supplied-session` requires `--profile web-review`")
+    } else if selected && !websocket_review_selected {
+        Some("`--websocket-supplied-session` requires `--websocket-review-policy`")
+    } else if selected && !supplied_session_policy_selected {
+        Some("`--websocket-supplied-session` requires `--session-policy`")
+    } else if selected && !supplied_session_credential_selected {
+        Some("`--websocket-supplied-session` requires one supplied-session credential source")
+    } else if selected && wordpress_supplied_session_selected {
+        Some("`--websocket-supplied-session` conflicts with `--wordpress-supplied-session`")
+    } else {
+        None
+    }
+}
+
+/// V1 deliberately admits only the already reviewed Authorization-header
+/// supplied-session mechanism. Cookie and form-login sessions remain valid for
+/// their standalone paths but cannot be inherited by WebSocket review.
+#[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+fn scan_websocket_supplied_session_policy_conflict(
+    selected: bool,
+    version: termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,
+    resource_count: usize,
+) -> Option<&'static str> {
+    if selected
+        && version != termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V1
+    {
+        Some(
+            "`--websocket-supplied-session` supports only authorization-header V1 supplied-session policies",
+        )
+    } else if selected && resource_count != 1 {
+        Some("`--websocket-supplied-session` requires exactly one selected session resource")
+    } else {
+        None
+    }
+}
+
 /// Rejects local JWT policy review outside its explicit web-review contract.
 /// This runs before policy, key, token, output, or network acquisition.
 #[cfg(feature = "jwt-policy-review")]
@@ -656,6 +706,19 @@ struct ScanArgs {
     #[cfg(feature = "websocket-review")]
     #[arg(long, value_name = "FILE", requires = "profile")]
     websocket_review_policy: Option<PathBuf>,
+    /// Bind the selected WebSocket review to the healthy V1 Authorization-header
+    /// supplied-session context. Without this flag WebSocket review remains
+    /// anonymous, even when a supplied-session assessment is also selected.
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    #[arg(
+        long,
+        requires_all = ["profile", "websocket_review_policy", "session_policy"]
+    )]
+    #[cfg_attr(
+        feature = "wordpress-review",
+        arg(conflicts_with = "wordpress_supplied_session")
+    )]
+    websocket_supplied_session: bool,
     /// Review one explicitly supplied compact JWT against a bounded local
     /// policy and one local ES256 public JWK. The token is never sent to the
     /// target and no remote key is retrieved.
@@ -1337,6 +1400,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         recon_certspotter_policy,
         #[cfg(feature = "websocket-review")]
         websocket_review_policy,
+        #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+        websocket_supplied_session,
         #[cfg(feature = "jwt-policy-review")]
         jwt_policy,
         #[cfg(feature = "jwt-policy-review")]
@@ -1599,6 +1664,12 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         || session_auth_stdin
         || session_cookie_file.is_some()
         || session_login_file.is_some();
+    #[cfg(feature = "supplied-session-review")]
+    let supplied_session_credential_selected = session_auth_env.is_some()
+        || session_auth_file.is_some()
+        || session_auth_stdin
+        || session_cookie_file.is_some()
+        || session_login_file.is_some();
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     if let Some(message) = scan_wordpress_supplied_session_flags_conflict(
         profile,
@@ -1606,6 +1677,32 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         wordpress_review,
         wordpress_discovery,
         supplied_session_selected,
+    ) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(all(
+        feature = "websocket-review",
+        feature = "supplied-session-review",
+        feature = "wordpress-review"
+    ))]
+    let wordpress_supplied_session_selected = wordpress_supplied_session;
+    #[cfg(all(
+        feature = "websocket-review",
+        feature = "supplied-session-review",
+        not(feature = "wordpress-review")
+    ))]
+    let wordpress_supplied_session_selected = false;
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    if let Some(message) = scan_websocket_supplied_session_flags_conflict(
+        profile,
+        websocket_supplied_session,
+        websocket_review_policy.is_some(),
+        session_policy.is_some(),
+        supplied_session_credential_selected,
+        wordpress_supplied_session_selected,
     ) {
         use clap::CommandFactory;
         Cli::command()
@@ -1899,6 +1996,19 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         let prepared_supplied_session_review = supplied_session_input
             .map(|input| input.prepare(&target))
             .transpose()?;
+        #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+        if let Some(message) = prepared_supplied_session_review
+            .as_ref()
+            .and_then(|prepared| {
+                scan_websocket_supplied_session_policy_conflict(
+                    websocket_supplied_session,
+                    prepared.policy_version(),
+                    prepared.resource_count(),
+                )
+            })
+        {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
+        }
         #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
         if let Some(message) = prepared_supplied_session_review
             .as_ref()
@@ -1997,6 +2107,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 recon_ct_provider,
                 #[cfg(feature = "websocket-review")]
                 websocket_review,
+                #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+                websocket_supplied_session,
                 #[cfg(feature = "jwt-policy-review")]
                 jwt_policy_review,
                 #[cfg(feature = "jwt-target-acceptance-review")]
@@ -2530,6 +2642,8 @@ mod tests {
         assert!(!args.tls_observation);
         #[cfg(feature = "websocket-review")]
         assert_eq!(args.websocket_review_policy, None);
+        #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+        assert!(!args.websocket_supplied_session);
         #[cfg(feature = "jwt-policy-review")]
         {
             assert_eq!(args.jwt_policy, None);
@@ -3284,6 +3398,152 @@ mod tests {
                 review.websocket_review_policy.is_some(),
             ),
             None
+        );
+    }
+
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    #[test]
+    fn websocket_supplied_session_requires_the_complete_explicit_v1_composition() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--websocket-supplied-session"));
+
+        for incomplete in [
+            vec![
+                "termivar",
+                "scan",
+                "--profile",
+                "web-review",
+                "--websocket-supplied-session",
+                "https://example.test/app/",
+            ],
+            vec![
+                "termivar",
+                "scan",
+                "--profile",
+                "web-review",
+                "--websocket-supplied-session",
+                "--websocket-review-policy",
+                "protocol.json",
+                "https://example.test/app/",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(incomplete).is_err());
+        }
+
+        let parsed = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--websocket-review-policy",
+            "protocol.json",
+            "--websocket-supplied-session",
+            "--session-policy",
+            "session.toml",
+            "--session-auth-file",
+            "authorization.secret",
+            "https://example.test/app/",
+        ])
+        .expect("complete WebSocket supplied-session composition parses without opening inputs");
+        let parsed = parsed_scan_args(&parsed);
+        assert!(parsed.websocket_supplied_session);
+        assert_eq!(
+            scan_websocket_supplied_session_flags_conflict(
+                parsed.profile,
+                parsed.websocket_supplied_session,
+                parsed.websocket_review_policy.is_some(),
+                parsed.session_policy.is_some(),
+                parsed.session_auth_file.is_some(),
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            scan_websocket_supplied_session_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                true,
+                true,
+                false,
+                false,
+            ),
+            Some("`--websocket-supplied-session` requires one supplied-session credential source")
+        );
+        assert_eq!(
+            scan_websocket_supplied_session_policy_conflict(
+                true,
+                termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V1,
+                1,
+            ),
+            None
+        );
+        for version in [
+            termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V2,
+            termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3,
+        ] {
+            assert_eq!(
+                scan_websocket_supplied_session_policy_conflict(true, version, 1),
+                Some(
+                    "`--websocket-supplied-session` supports only authorization-header V1 supplied-session policies"
+                )
+            );
+        }
+        for resource_count in [0, 2] {
+            assert_eq!(
+                scan_websocket_supplied_session_policy_conflict(
+                    true,
+                    termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V1,
+                    resource_count,
+                ),
+                Some(
+                    "`--websocket-supplied-session` requires exactly one selected session resource"
+                )
+            );
+        }
+    }
+
+    #[cfg(all(
+        feature = "websocket-review",
+        feature = "supplied-session-review",
+        feature = "wordpress-review"
+    ))]
+    #[test]
+    fn websocket_and_wordpress_cannot_both_consume_the_supplied_session() {
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--websocket-review-policy",
+            "protocol.json",
+            "--websocket-supplied-session",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-supplied-session",
+            "--session-policy",
+            "session.toml",
+            "--session-auth-file",
+            "authorization.secret",
+            "https://example.test/app/",
+        ])
+        .is_err());
+        assert_eq!(
+            scan_websocket_supplied_session_flags_conflict(
+                Some(CliScanProfile::WebReview),
+                true,
+                true,
+                true,
+                true,
+                true,
+            ),
+            Some("`--websocket-supplied-session` conflicts with `--wordpress-supplied-session`")
         );
     }
 

@@ -183,6 +183,7 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider
           cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import
           cargo test --locked -p termivar-cli --no-default-features --features websocket-review
+          cargo test --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review
       - name: Verify compiled CLI capabilities matrix
         run: |
           set -euo pipefail
@@ -199,6 +200,7 @@ jobs:
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-ct-provider-only cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-snapshot-import-only cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only cargo test --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-session cargo test --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Verify scanner feature boundaries independently
@@ -210,6 +212,7 @@ jobs:
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
           done
+          cargo test --locked -p termivar-scanner --no-default-features --features scanning,reporting,websocket-review,supplied-session-review --lib
           for aggregate in minimal full enterprise research
           do
             cargo check --locked -p termivar-scanner --no-default-features --features "$aggregate"
@@ -351,6 +354,12 @@ jobs:
         env:
           TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-only
         run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Exercise supplied-session WebSocket review through an owned loopback fixture
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test websocket_supplied_session_cli -- --nocapture
+      - name: Exercise supplied-session WebSocket capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-session
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Reject authenticated session bodies from the anonymous secret-exposure context
         run: cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review,supplied-session-review --test supplied_session_cli passive_secret_review_does_not_select_authenticated_session_bodies -- --exact --nocapture
       - name: Exercise supplied-session WordPress integration CLI

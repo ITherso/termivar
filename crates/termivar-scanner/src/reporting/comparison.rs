@@ -33,6 +33,8 @@ pub(super) const TLS_OBSERVATION_COMPARISON_SCHEMA: &str = "termivar-tls-observa
 /// Additive, display-only bounded WebSocket exchange comparison section.
 pub(super) const WEBSOCKET_REVIEW_COMPARISON_SCHEMA: &str =
     "termivar-websocket-review-comparison/v1";
+pub(super) const WEBSOCKET_SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
+    "termivar-websocket-review-comparison/v2";
 /// Additive, display-only local JWT policy comparison section.
 pub(super) const JWT_POLICY_REVIEW_COMPARISON_SCHEMA: &str =
     "termivar-jwt-policy-review-comparison/v1";
@@ -272,6 +274,8 @@ pub(super) struct WebSocketReviewComparison {
     pub(super) status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) supplied_session_context: Option<WordPressFacetComparison>,
     pub(super) methodology: WordPressFacetComparison,
     pub(super) coverage: WordPressFacetComparison,
     pub(super) outcome: WordPressFacetComparison,
@@ -467,6 +471,9 @@ pub(super) struct ImportedTlsObservationAudit {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedWebSocketReviewAudit {
+    pub(super) schema: String,
+    pub(super) supplied_session_identity: Option<Value>,
+    pub(super) supplied_session_context: Option<Value>,
     pub(super) methodology: Value,
     pub(super) coverage: Value,
     pub(super) outcome: Value,
@@ -921,7 +928,20 @@ fn compare_websocket_review(
     if before.is_none() && after.is_none() {
         return None;
     }
+    let supplied_session_semantics = before
+        .into_iter()
+        .chain(after)
+        .any(|audit| audit.schema == "security.websocket-review-audit/v2");
     let (status, reason) = match (before, after) {
+        (Some(before), Some(after)) if before.schema != after.schema => {
+            ("not_comparable", Some("audit_schema_changed"))
+        },
+        (Some(before), Some(after))
+            if before.schema == "security.websocket-review-audit/v2"
+                && before.supplied_session_identity != after.supplied_session_identity =>
+        {
+            ("not_comparable", Some("supplied_session_context_changed"))
+        },
         (Some(_), Some(_)) => ("compared", None),
         (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
         (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
@@ -935,9 +955,24 @@ fn compare_websocket_review(
         }
     };
     Some(WebSocketReviewComparison {
-        schema: WEBSOCKET_REVIEW_COMPARISON_SCHEMA,
+        schema: if supplied_session_semantics {
+            WEBSOCKET_SUPPLIED_SESSION_COMPARISON_SCHEMA
+        } else {
+            WEBSOCKET_REVIEW_COMPARISON_SCHEMA
+        },
         status,
         reason,
+        supplied_session_context: supplied_session_semantics.then(|| {
+            facet(
+                before.and_then(|audit| audit.supplied_session_context.as_ref()),
+                after.and_then(|audit| audit.supplied_session_context.as_ref()),
+                facet_status(
+                    before.and_then(|audit| audit.supplied_session_context.as_ref()),
+                    after.and_then(|audit| audit.supplied_session_context.as_ref()),
+                ),
+                "The declared principal/application/session epoch and the startup/terminal health qualification describe observation context only. A changed or missing health reference does not establish logout, authorization loss, vulnerability, or remediation; continuous authentication remains not established.",
+            )
+        }),
         methodology: facet(
             before.map(|audit| &audit.methodology),
             after.map(|audit| &audit.methodology),
@@ -963,16 +998,31 @@ fn compare_websocket_review(
                 before.map(|audit| &audit.outcome),
                 after.map(|audit| &audit.outcome),
             ),
-            "Terminal state and per-message length/status relationships describe the configured anonymous exchange only. A mismatched response exposes no body-derived reference. These values do not establish authorization, server state, exploitability, vulnerability, or remediation.",
+            if supplied_session_semantics {
+                "Terminal state and per-message length/status relationships describe protocol completion independently of supplied-session health qualification. A mismatched response exposes no body-derived reference. These values do not establish authenticated identity, authorization, server state, exploitability, vulnerability, or remediation."
+            } else {
+                "Terminal state and per-message length/status relationships describe the configured anonymous exchange only. A mismatched response exposes no body-derived reference. These values do not establish authorization, server state, exploitability, vulnerability, or remediation."
+            },
         ),
-        interpretation_limits: [
-            "The comparison retains no payload, URL, path, query, subprotocol value, token, raw error, header, cookie, or credential.",
-            "Only the configured anonymous RFC 6455 HTTP/1.1 upgrade exchange was observed; HTTP/2 extended CONNECT was not exercised.",
-            "Opaque policy, endpoint, and message references are not authenticated target identities. Expected-response references commit only to operator-supplied expectations; no mismatch-body digest is retained.",
-            "Transport bytes use raw socket scope, include HTTP Upgrade and WebSocket framing, and count encrypted TLS records for WSS; they are not application-byte measurements.",
-            "A one-sided audit is not comparable and does not establish introduction, disappearance, rejection, or remediation.",
-            "No authorization, server-state, vulnerability, exploitability, impact, or source-authentication conclusion is established by this audit.",
-        ],
+        interpretation_limits: if supplied_session_semantics {
+            [
+                "The comparison retains no payload, URL, path, query, subprotocol value, token, raw error, header, cookie, or credential.",
+                "Only the configured supplied-session RFC 6455 HTTP/1.1 upgrade exchange was observed; HTTP/2 extended CONNECT was not exercised.",
+                "Opaque policy, endpoint, principal, checkpoint, and message references are not authenticated identities. Expected-response references commit only to operator-supplied expectations; no mismatch-body digest is retained.",
+                "Protocol completion and supplied-session health qualification are separate. Even healthy startup and terminal checkpoints do not establish continuous authentication or authorization.",
+                "Transport bytes use raw socket scope, include HTTP Upgrade and WebSocket framing, and count encrypted TLS records for WSS; they are not application-byte measurements.",
+                "A schema, declared context, or one-sided audit mismatch is not comparable and establishes no vulnerability, impact, rejection, or remediation.",
+            ]
+        } else {
+            [
+                "The comparison retains no payload, URL, path, query, subprotocol value, token, raw error, header, cookie, or credential.",
+                "Only the configured anonymous RFC 6455 HTTP/1.1 upgrade exchange was observed; HTTP/2 extended CONNECT was not exercised.",
+                "Opaque policy, endpoint, and message references are not authenticated target identities. Expected-response references commit only to operator-supplied expectations; no mismatch-body digest is retained.",
+                "Transport bytes use raw socket scope, include HTTP Upgrade and WebSocket framing, and count encrypted TLS records for WSS; they are not application-byte measurements.",
+                "A one-sided audit is not comparable and does not establish introduction, disappearance, rejection, or remediation.",
+                "No authorization, server-state, vulnerability, exploitability, impact, or source-authentication conclusion is established by this audit.",
+            ]
+        },
     })
 }
 
@@ -1959,9 +2009,30 @@ fn write_websocket_review_comparison_markdown(
         output.push_str("\n- Reason: ")?;
         write_markdown_code_span(output, reason)?;
     }
-    output.push_str(
-        "\n\nThis section compares strict, value-free projections of one bounded anonymous WebSocket exchange. It retains no payload, URL, path, query, subprotocol value, mismatched-response digest, token, or raw error. Raw transport-byte fields include HTTP Upgrade/framing overhead and WSS encrypted TLS records; they are not application bytes. The comparison does not establish authorization, server state, vulnerability, impact, or remediation.\n\n",
-    )?;
+    if comparison.supplied_session_context.is_some() {
+        output.push_str(
+            "\n\nThis section compares strict, value-free projections of one bounded supplied-session WebSocket exchange. It retains no payload, URL, path, query, subprotocol value, mismatched-response digest, token, credential, or raw error. Protocol completion is distinct from startup/terminal session-health qualification, and continuous authentication remains not established. Raw transport-byte fields include HTTP Upgrade/framing overhead and WSS encrypted TLS records; they are not application bytes. The comparison does not establish authenticated identity, authorization, server state, vulnerability, impact, or remediation.\n\n",
+        )?;
+    } else {
+        output.push_str(
+            "\n\nThis section compares strict, value-free projections of one bounded anonymous WebSocket exchange. It retains no payload, URL, path, query, subprotocol value, mismatched-response digest, token, or raw error. Raw transport-byte fields include HTTP Upgrade/framing overhead and WSS encrypted TLS records; they are not application bytes. The comparison does not establish authorization, server state, vulnerability, impact, or remediation.\n\n",
+        )?;
+    }
+    if let Some(context) = &comparison.supplied_session_context {
+        output.push_str("### WebSocket supplied-session context\n\n- Status: ")?;
+        write_markdown_code_span(output, &context.status)?;
+        if !context.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &context.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(context.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(context.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, context.note)?;
+        output.push_str("\n\n")?;
+    }
     for (label, facet) in [
         ("Methodology", &comparison.methodology),
         ("Coverage", &comparison.coverage),

@@ -166,29 +166,44 @@ WEBSOCKET_REVIEW_OPTION = "--websocket-review-policy"
 WEBSOCKET_REVIEW_PREREQUISITES = (
     "--profile web-review",
     "--websocket-review-policy FILE",
+    "optional --websocket-supplied-session with one V1 --session-policy and Authorization "
+    "credential when also compiled with supplied-session-review",
     "policy target_authorized=true",
     "policy messages_read_only_acknowledged=true",
     "policy message_content_is_non_secret=true",
 )
 WEBSOCKET_REVIEW_LIMITATION = (
     "Reviews one explicitly declared application-contained same-authority ws/wss endpoint "
-    "through one isolated anonymous connection. V1 sends one to eight sequential "
+    "through one isolated connection that is anonymous by default. V1 sends one to eight sequential "
     "operator-declared read-oriented text messages, permits at most 64 KiB aggregate "
     "outbound and 64 KiB aggregate inbound application payload, and runs for at most ten "
     "seconds or the smaller parent deadline. Policy message bodies must be non-secret; "
     "message IDs are non-secret revision handles that must change when message or "
     "expected-response semantics change, and public references do not hash those private "
     "bytes. Binary application messages fail closed. Numeric-loopback fixtures may use ws; other "
-    "targets require wss with normal certificate validation. The runtime performs no "
+    "targets require wss with normal certificate validation. When both features are compiled, "
+    "explicit --websocket-supplied-session additionally requires one V1 authorization_header "
+    "supplied-session policy, exactly one selected protected resource, and one out-of-band "
+    "Authorization credential. The bounded order is startup health, protected resource staging, "
+    "one credentialed WebSocket handshake and exchange, then terminal health; only both healthy "
+    "checkpoints qualify the declared application, principal and epoch context. Startup loss "
+    "prevents the WebSocket dispatch, while terminal loss preserves value-free wire evidence but "
+    "leaves the context unqualified and the protected resource uncommitted. V2 cookie and V3 "
+    "form-login policies are rejected before credential or output acquisition, and the integration "
+    "conflicts with --wordpress-supplied-session. Without the explicit integration flag no "
+    "credential or session context reaches WebSocket review. The runtime performs no "
     "endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy "
-    "use, cookie forwarding, configured credential forwarding, session inheritance, or "
-    "HTTP/2 extended CONNECT. An optional Origin header is operator selected and does not "
+    "use, cookie forwarding, arbitrary configured credential forwarding, or HTTP/2 extended "
+    "CONNECT. All work remains under the same parent deadline and accounting; the WebSocket "
+    "connection does not reset supplied-session or parent limits. An optional Origin header is "
+    "operator selected and does not "
     "establish browser "
     "exploitability because a non-browser client can choose it. Reports retain only bounded "
     "opaque references derived from non-secret identifiers, lengths, counts and classified "
     "outcomes, never message "
     "text, endpoint paths, queries, subprotocol values, credentials or raw transport errors. "
-    "A successful upgrade or matched response does not establish authentication, "
+    "Session health qualifies only the declared context window; it does not authenticate the "
+    "principal continuously. A successful upgrade or matched response does not establish authentication, "
     "authorization, availability, source authenticity, vulnerability, exploitability or "
     "impact. The feature requires explicit --profile web-review and "
     "--websocket-review-policy FILE, remains development-only, and is outside default, "
@@ -1494,12 +1509,12 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "maturity": "preview",
             "implementation_status": "implemented",
             "runtime_activation": "unavailable_in_release_bundle",
-            "context": "anonymous_only",
+            "context": "anonymous_default_or_explicit_supplied_session_v1",
             "maximum_connections": 1,
             "maximum_messages": 8,
             "maximum_application_bytes_each_direction": 64 * 1024,
             "maximum_wall_time_seconds": 10,
-            "session_inheritance": "not_supported_in_s11_a",
+            "session_inheritance": "explicit_flag_health_qualified_v1_only",
         },
         "jwt_policy_review_preview": {
             "build_state": "not_compiled",

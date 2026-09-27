@@ -350,6 +350,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         serde_json::json!([
             "--profile web-review",
             "--websocket-review-policy FILE",
+            "optional --websocket-supplied-session with one V1 --session-policy and Authorization credential when also compiled with supplied-session-review",
             "policy target_authorized=true",
             "policy messages_read_only_acknowledged=true",
             "policy message_content_is_non_secret=true"
@@ -359,7 +360,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         .as_str()
         .expect("WebSocket limitation");
     for required in [
-        "one isolated anonymous connection",
+        "one isolated connection that is anonymous by default",
         "one to eight sequential operator-declared read-oriented text messages",
         "Policy message bodies must be non-secret",
         "message IDs are non-secret revision handles",
@@ -367,7 +368,16 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "Binary application messages fail closed",
         "64 KiB aggregate outbound and 64 KiB aggregate inbound",
         "Numeric-loopback fixtures may use ws",
-        "no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookie forwarding, configured credential forwarding, session inheritance, or HTTP/2 extended CONNECT",
+        "explicit --websocket-supplied-session additionally requires one V1 authorization_header supplied-session policy",
+        "exactly one selected protected resource",
+        "startup health, protected resource staging, one credentialed WebSocket handshake and exchange, then terminal health",
+        "Startup loss prevents the WebSocket dispatch",
+        "terminal loss preserves value-free wire evidence but leaves the context unqualified",
+        "V2 cookie and V3 form-login policies are rejected before credential or output acquisition",
+        "conflicts with --wordpress-supplied-session",
+        "Without the explicit integration flag no credential or session context reaches WebSocket review",
+        "no endpoint discovery, retry, reconnect, redirect following, compression, ambient proxy use, cookie forwarding, arbitrary configured credential forwarding, or HTTP/2 extended CONNECT",
+        "does not reset supplied-session or parent limits",
         "does not establish browser exploitability",
         "never message text, endpoint paths, queries, subprotocol values, credentials or raw transport errors",
         "does not establish authentication, authorization, availability, source authenticity, vulnerability, exploitability or impact",
@@ -1042,6 +1052,14 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "websocket-review" || !compiled(feature) }));
+        },
+        "websocket-session" => {
+            assert!(compiled("websocket-review"));
+            assert!(compiled("supplied-session-review"));
+            assert!(FEATURE_NAMES.iter().all(|feature| {
+                matches!(*feature, "websocket-review" | "supplied-session-review")
+                    || !compiled(feature)
+            }));
         },
         "bundle-members-individual" => {
             assert!(!compiled("release-bundle"));

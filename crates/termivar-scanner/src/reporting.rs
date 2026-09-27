@@ -43,6 +43,12 @@ use crate::jwt_target_acceptance::{
 use crate::rest_review::RestDocumentedResponseClass;
 #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
 use crate::web_runtime::WebAssessmentReconCtProviderAudit;
+#[cfg(all(
+    feature = "scanning",
+    feature = "websocket-review",
+    feature = "supplied-session-review"
+))]
+use crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA;
 #[cfg(feature = "scanning")]
 use crate::web_runtime::{
     AssessmentBasis, AssessmentRunReport, AssessmentRunReportError, ScanProfileV1,
@@ -2113,10 +2119,16 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
     }
     #[cfg(feature = "websocket-review")]
     if let Some(audit) = &document.websocket_review {
-        output.push_str(
-            "<section><h2>WebSocket protocol review audit</h2>\
-<p class=\"wp-note\">This audit describes one bounded, anonymous, operator-configured HTTP/1 Upgrade exchange. It is not a finding and provides no remediation inference. It retains no payload, raw URL, path, query, subprotocol token, body-derived mismatch reference, or backend error. Physical continuation-frame counts are unavailable. Transport bytes are raw socket bytes including the HTTP Upgrade and WebSocket framing; for WSS they are encrypted TLS records, not application bytes.</p><dl class=\"meta\">",
-        )?;
+        output.push_str("<section><h2>WebSocket protocol review audit</h2>")?;
+        if audit.has_supplied_session_context() {
+            output.push_str(
+                "<p class=\"wp-note\">This audit separates bounded protocol-exchange completion from supplied-session health qualification. Healthy startup and terminal checkpoints qualify only the declared observation context; they do not establish continuous authentication, authenticated identity, authorization, vulnerability, impact, or remediation. It retains no credential, payload, raw URL, path, query, subprotocol token, body-derived mismatch reference, or backend error. Physical continuation-frame counts are unavailable. Transport bytes are raw socket bytes including the HTTP Upgrade and WebSocket framing; for WSS they are encrypted TLS records, not application bytes.</p><dl class=\"meta\">",
+            )?;
+        } else {
+            output.push_str(
+                "<p class=\"wp-note\">This audit describes one bounded, anonymous, operator-configured HTTP/1 Upgrade exchange. It is not a finding and provides no remediation inference. It retains no payload, raw URL, path, query, subprotocol token, body-derived mismatch reference, or backend error. Physical continuation-frame counts are unavailable. Transport bytes are raw socket bytes including the HTTP Upgrade and WebSocket framing; for WSS they are encrypted TLS records, not application bytes.</p><dl class=\"meta\">",
+            )?;
+        }
         for (label, value) in audit.metadata() {
             output.push_str("<dt>")?;
             write_html_text(&mut output, label)?;
@@ -4594,9 +4606,16 @@ fn render_assessment_markdown(
     }
     #[cfg(feature = "websocket-review")]
     if let Some(audit) = &document.websocket_review {
-        output.push_str(
-            "\n### WebSocket protocol review audit\n\nThis audit describes one bounded, anonymous, operator-configured HTTP/1 Upgrade exchange. It is not a finding and provides no remediation inference. It retains no payload, raw URL, path, query, subprotocol token, body-derived mismatch reference, or backend error. Physical continuation-frame counts are unavailable. Transport bytes are raw socket bytes including the HTTP Upgrade and WebSocket framing; for WSS they are encrypted TLS records, not application bytes.\n\n",
-        )?;
+        output.push_str("\n### WebSocket protocol review audit\n\n")?;
+        if audit.has_supplied_session_context() {
+            output.push_str(
+                "This audit separates bounded protocol-exchange completion from supplied-session health qualification. Healthy startup and terminal checkpoints qualify only the declared observation context; they do not establish continuous authentication, authenticated identity, authorization, vulnerability, impact, or remediation. It retains no credential, payload, raw URL, path, query, subprotocol token, body-derived mismatch reference, or backend error. Physical continuation-frame counts are unavailable. Transport bytes are raw socket bytes including the HTTP Upgrade and WebSocket framing; for WSS they are encrypted TLS records, not application bytes.\n\n",
+            )?;
+        } else {
+            output.push_str(
+                "This audit describes one bounded, anonymous, operator-configured HTTP/1 Upgrade exchange. It is not a finding and provides no remediation inference. It retains no payload, raw URL, path, query, subprotocol token, body-derived mismatch reference, or backend error. Physical continuation-frame counts are unavailable. Transport bytes are raw socket bytes including the HTTP Upgrade and WebSocket framing; for WSS they are encrypted TLS records, not application bytes.\n\n",
+            )?;
+        }
         for (label, value) in audit.metadata() {
             output.push_fmt(format_args!("- {label}: "))?;
             write_markdown_code_span(&mut output, &value)?;
@@ -5233,6 +5252,14 @@ impl<'a> AssessmentDocument<'a> {
         #[cfg(feature = "websocket-review")]
         if let Some(audit) = &self.websocket_review {
             audit.validate(&self.items)?;
+            #[cfg(feature = "supplied-session-review")]
+            if let Some(context) = &audit.supplied_session_context {
+                context.validate_against_supplied_session(
+                    self.supplied_session
+                        .as_ref()
+                        .ok_or(ReportError::Serialization)?,
+                )?;
+            }
         } else if self
             .items
             .iter()
@@ -10262,6 +10289,18 @@ const WEBSOCKET_REVIEW_CLAIM_LIMITS: [&str; 8] = [
     "impact_not_established",
     "source_authenticity_not_established",
 ];
+#[cfg(all(feature = "scanning", feature = "websocket-review"))]
+const WEBSOCKET_SUPPLIED_SESSION_CLAIM_LIMITS: [&str; 9] = [
+    "browser_origin_security_not_established",
+    "authentication_not_established",
+    "authorization_not_established",
+    "availability_not_established",
+    "vulnerability_not_established",
+    "exploitability_not_established",
+    "impact_not_established",
+    "source_authenticity_not_established",
+    "continuous_authentication_not_established",
+];
 
 #[cfg(all(feature = "scanning", feature = "websocket-review"))]
 #[derive(Serialize)]
@@ -10272,10 +10311,179 @@ struct AssessmentWebSocketReviewAuditDocument {
     policy_reference: String,
     endpoint_reference: String,
     context: &'static str,
+    #[cfg(feature = "supplied-session-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supplied_session_context: Option<AssessmentWebSocketSuppliedSessionContextDocument>,
     methodology: AssessmentWebSocketReviewMethodologyDocument,
     coverage: AssessmentWebSocketReviewCoverageDocument,
     messages: Vec<AssessmentWebSocketReviewMessageDocument>,
     claim_limits: Vec<&'static str>,
+}
+
+#[cfg(all(
+    feature = "scanning",
+    feature = "websocket-review",
+    feature = "supplied-session-review"
+))]
+#[derive(Serialize)]
+struct AssessmentWebSocketSuppliedSessionContextDocument {
+    mode: &'static str,
+    policy_reference: String,
+    application_reference: String,
+    principal_reference: String,
+    principal_alias: String,
+    principal_assurance: &'static str,
+    credential_mechanism: &'static str,
+    session_epoch: u8,
+    startup_health: Option<AssessmentWebSocketSuppliedSessionHealthDocument>,
+    terminal_health: Option<AssessmentWebSocketSuppliedSessionHealthDocument>,
+    qualification: &'static str,
+    continuous_authentication_established: bool,
+}
+
+#[cfg(all(
+    feature = "scanning",
+    feature = "websocket-review",
+    feature = "supplied-session-review"
+))]
+#[derive(Serialize)]
+struct AssessmentWebSocketSuppliedSessionHealthDocument {
+    outcome: &'static str,
+    evidence_reference: Option<String>,
+}
+
+#[cfg(all(
+    feature = "scanning",
+    feature = "websocket-review",
+    feature = "supplied-session-review"
+))]
+impl AssessmentWebSocketSuppliedSessionContextDocument {
+    fn validate_internal(
+        &self,
+        request_attempt_count: u8,
+        request_admitted_count: u8,
+    ) -> Result<(), ReportError> {
+        let health_is_valid = |health: &AssessmentWebSocketSuppliedSessionHealthDocument| {
+            matches!(health.outcome, "healthy" | "unhealthy" | "indeterminate")
+                && health
+                    .evidence_reference
+                    .as_deref()
+                    .is_none_or(|reference| {
+                        valid_supplied_session_reference(
+                            reference,
+                            "supplied-session-checkpoint-evidence-sha256:",
+                        )
+                    })
+        };
+        if self.mode != "health_qualified_authorization_header"
+            || !valid_supplied_session_reference(
+                &self.policy_reference,
+                "supplied-session-policy-sha256:",
+            )
+            || !valid_supplied_session_reference(
+                &self.application_reference,
+                "supplied-session-application-sha256:",
+            )
+            || self.principal_reference != "supplied-session-principal-0001"
+            || !valid_supplied_session_principal_alias(&self.principal_alias)
+            || self.principal_assurance != "operator_declared"
+            || self.credential_mechanism != "authorization_header"
+            || self.session_epoch != 1
+            || self.continuous_authentication_established
+            || self
+                .startup_health
+                .as_ref()
+                .is_some_and(|health| !health_is_valid(health))
+            || self
+                .terminal_health
+                .as_ref()
+                .is_some_and(|health| !health_is_valid(health))
+        {
+            return Err(ReportError::Serialization);
+        }
+        let startup_healthy = self.startup_health.as_ref().is_some_and(|health| {
+            health.outcome == "healthy" && health.evidence_reference.is_some()
+        });
+        let terminal_healthy = self.terminal_health.as_ref().is_some_and(|health| {
+            health.outcome == "healthy" && health.evidence_reference.is_some()
+        });
+        let qualification_is_valid = match self.qualification {
+            "context_qualified" => {
+                request_admitted_count == 1 && startup_healthy && terminal_healthy
+            },
+            "context_unqualified" => {
+                request_admitted_count == 1 && startup_healthy && !terminal_healthy
+            },
+            "not_established" => request_admitted_count == 0 && request_attempt_count <= 1,
+            _ => false,
+        };
+        if qualification_is_valid {
+            Ok(())
+        } else {
+            Err(ReportError::Serialization)
+        }
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    fn validate_against_supplied_session(
+        &self,
+        session: &AssessmentSuppliedSessionAuditDocument,
+    ) -> Result<(), ReportError> {
+        if session.schema != SUPPLIED_SESSION_AUDIT_SCHEMA
+            || session.policy_reference != self.policy_reference
+            || session.application_reference != self.application_reference
+            || session.principal_reference != self.principal_reference
+            || session.principal_alias != self.principal_alias
+            || session.principal_assurance != self.principal_assurance
+            || session.credential_mechanism != self.credential_mechanism
+            || session.selected_resource_count != 1
+            || session.resources.len() != 1
+            || session.continuous_authentication_established
+        {
+            return Err(ReportError::Serialization);
+        }
+        let startup = session
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.phase == "startup");
+        let terminal = session
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.phase == "terminal");
+        if session
+            .checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.phase == "startup")
+            .count()
+            > 1
+            || session
+                .checkpoints
+                .iter()
+                .filter(|checkpoint| checkpoint.phase == "terminal")
+                .count()
+                > 1
+        {
+            return Err(ReportError::Serialization);
+        }
+        let health_matches =
+            |projected: Option<&AssessmentWebSocketSuppliedSessionHealthDocument>,
+             checkpoint: Option<&AssessmentSuppliedSessionCheckpointDocument>| {
+                projected.is_some() == checkpoint.is_some()
+                    && projected
+                        .zip(checkpoint)
+                        .is_none_or(|(projected, checkpoint)| {
+                            projected.outcome == checkpoint.outcome
+                                && projected.evidence_reference == checkpoint.evidence_reference
+                        })
+            };
+        if health_matches(self.startup_health.as_ref(), startup)
+            && health_matches(self.terminal_health.as_ref(), terminal)
+        {
+            Ok(())
+        } else {
+            Err(ReportError::Serialization)
+        }
+    }
 }
 
 #[cfg(all(feature = "scanning", feature = "websocket-review"))]
@@ -10342,8 +10550,32 @@ struct AssessmentWebSocketReviewMessageDocument {
 
 #[cfg(all(feature = "scanning", feature = "websocket-review"))]
 impl AssessmentWebSocketReviewAuditDocument {
+    fn has_supplied_session_context(&self) -> bool {
+        #[cfg(feature = "supplied-session-review")]
+        {
+            self.supplied_session_context.is_some()
+        }
+        #[cfg(not(feature = "supplied-session-review"))]
+        {
+            false
+        }
+    }
+
     fn from_audit(audit: &WebAssessmentWebSocketReviewAudit) -> Result<Self, ReportError> {
         let limits = audit.limits();
+        let claim_limits = audit
+            .claim_limits()
+            .iter()
+            .map(|limit| limit.as_str())
+            .collect::<Vec<_>>();
+        #[cfg(feature = "supplied-session-review")]
+        let claim_limits = {
+            let mut claim_limits = claim_limits;
+            if audit.schema() == WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA {
+                claim_limits.push("continuous_authentication_not_established");
+            }
+            claim_limits
+        };
         let document = Self {
             schema: audit.schema(),
             capability_id: audit.capability_id(),
@@ -10351,6 +10583,34 @@ impl AssessmentWebSocketReviewAuditDocument {
             policy_reference: audit.policy_reference().to_owned(),
             endpoint_reference: audit.endpoint_reference().to_owned(),
             context: audit.context(),
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_context: audit.supplied_session_context().map(|context| {
+                AssessmentWebSocketSuppliedSessionContextDocument {
+                    mode: "health_qualified_authorization_header",
+                    policy_reference: context.policy_reference().to_owned(),
+                    application_reference: context.application_reference().to_owned(),
+                    principal_reference: context.principal_reference().to_owned(),
+                    principal_alias: context.principal_alias().to_owned(),
+                    principal_assurance: context.principal_assurance(),
+                    credential_mechanism: context.credential_mechanism(),
+                    session_epoch: context.epoch(),
+                    startup_health: context.startup_health().map(|health| {
+                        AssessmentWebSocketSuppliedSessionHealthDocument {
+                            outcome: health.outcome(),
+                            evidence_reference: health.evidence_reference().map(str::to_owned),
+                        }
+                    }),
+                    terminal_health: context.terminal_health().map(|health| {
+                        AssessmentWebSocketSuppliedSessionHealthDocument {
+                            outcome: health.outcome(),
+                            evidence_reference: health.evidence_reference().map(str::to_owned),
+                        }
+                    }),
+                    qualification: context.qualification().as_str(),
+                    continuous_authentication_established: context
+                        .continuous_authentication_established(),
+                }
+            }),
             methodology: AssessmentWebSocketReviewMethodologyDocument {
                 origin_mode: audit.origin_mode().as_str(),
                 compression: if audit.compression_enabled() {
@@ -10416,11 +10676,7 @@ impl AssessmentWebSocketReviewAuditDocument {
                     status: message.status().as_str(),
                 })
                 .collect(),
-            claim_limits: audit
-                .claim_limits()
-                .iter()
-                .map(|limit| limit.as_str())
-                .collect(),
+            claim_limits,
         };
         document.validate_wire()?;
         Ok(document)
@@ -10552,10 +10808,44 @@ impl AssessmentWebSocketReviewAuditDocument {
                 && coverage.handshake_completed_count == 1
                 && coverage.outbound_message_count == coverage.expected_response_count
                 && coverage.inbound_message_count == coverage.expected_response_count);
-        if self.schema != WEBSOCKET_REVIEW_AUDIT_SCHEMA
+        let context_is_valid = match self.schema {
+            WEBSOCKET_REVIEW_AUDIT_SCHEMA => {
+                self.context == "anonymous" && {
+                    #[cfg(feature = "supplied-session-review")]
+                    {
+                        self.supplied_session_context.is_none()
+                    }
+                    #[cfg(not(feature = "supplied-session-review"))]
+                    {
+                        true
+                    }
+                }
+            },
+            #[cfg(feature = "supplied-session-review")]
+            WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA => {
+                self.context == "supplied_session"
+                    && self
+                        .supplied_session_context
+                        .as_ref()
+                        .is_some_and(|context| {
+                            context
+                                .validate_internal(
+                                    coverage.request_attempt_count,
+                                    coverage.request_admitted_count,
+                                )
+                                .is_ok()
+                        })
+            },
+            _ => false,
+        };
+        let expected_claim_limits: &[&str] = if self.schema == WEBSOCKET_REVIEW_AUDIT_SCHEMA {
+            &WEBSOCKET_REVIEW_CLAIM_LIMITS
+        } else {
+            &WEBSOCKET_SUPPLIED_SESSION_CLAIM_LIMITS
+        };
+        if !context_is_valid
             || self.capability_id != WEBSOCKET_REVIEW_CAPABILITY_ID
             || !self.selected
-            || self.context != "anonymous"
             || !valid_websocket_review_reference(&self.policy_reference, "websocket-policy-sha256:")
             || !valid_websocket_review_reference(
                 &self.endpoint_reference,
@@ -10618,7 +10908,7 @@ impl AssessmentWebSocketReviewAuditDocument {
             || !failure_shape
             || !no_admitted_activity
             || !completed_exchange
-            || self.claim_limits.as_slice() != WEBSOCKET_REVIEW_CLAIM_LIMITS
+            || self.claim_limits.as_slice() != expected_claim_limits
         {
             return Err(ReportError::Serialization);
         }
@@ -10626,13 +10916,39 @@ impl AssessmentWebSocketReviewAuditDocument {
     }
 
     fn metadata(&self) -> Vec<(&'static str, String)> {
-        let mut metadata = Vec::with_capacity(23);
+        let mut metadata = Vec::with_capacity(29);
         metadata.push(("Audit schema", self.schema.to_owned()));
         metadata.push(("Capability", self.capability_id.to_owned()));
         metadata.push(("Selected", self.selected.to_string()));
         metadata.push(("Policy reference", self.policy_reference.clone()));
         metadata.push(("Endpoint reference", self.endpoint_reference.clone()));
         metadata.push(("Context", self.context.to_owned()));
+        #[cfg(feature = "supplied-session-review")]
+        if let Some(context) = &self.supplied_session_context {
+            metadata.push(("Session principal alias", context.principal_alias.clone()));
+            metadata.push(("Session epoch", context.session_epoch.to_string()));
+            metadata.push((
+                "Session startup health",
+                context
+                    .startup_health
+                    .as_ref()
+                    .map_or("not_observed", |health| health.outcome)
+                    .to_owned(),
+            ));
+            metadata.push((
+                "Session terminal health",
+                context
+                    .terminal_health
+                    .as_ref()
+                    .map_or("not_observed", |health| health.outcome)
+                    .to_owned(),
+            ));
+            metadata.push(("Session qualification", context.qualification.to_owned()));
+            metadata.push((
+                "Continuous authentication established",
+                context.continuous_authentication_established.to_string(),
+            ));
+        }
         metadata.push(("Origin mode", self.methodology.origin_mode.to_owned()));
         metadata.push(("Compression", self.methodology.compression.to_owned()));
         metadata.push(("Reconnect", self.methodology.reconnect.to_owned()));
@@ -17036,6 +17352,8 @@ mod tests {
             policy_reference: format!("websocket-policy-sha256:{}", "a".repeat(64)),
             endpoint_reference: format!("websocket-endpoint-sha256:{}", "b".repeat(64)),
             context: "anonymous",
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_context: None,
             methodology: AssessmentWebSocketReviewMethodologyDocument {
                 origin_mode: "application_origin",
                 compression: "disabled",
@@ -17108,6 +17426,90 @@ mod tests {
             ],
             claim_limits: WEBSOCKET_REVIEW_CLAIM_LIMITS.to_vec(),
         }
+    }
+
+    #[cfg(all(
+        feature = "scanning",
+        feature = "websocket-review",
+        feature = "supplied-session-review"
+    ))]
+    fn supplied_session_websocket_review_document() -> AssessmentWebSocketReviewAuditDocument {
+        let mut document = websocket_review_document();
+        document.schema = WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA;
+        document.context = "supplied_session";
+        document.supplied_session_context =
+            Some(AssessmentWebSocketSuppliedSessionContextDocument {
+                mode: "health_qualified_authorization_header",
+                policy_reference: format!("supplied-session-policy-sha256:{}", "1".repeat(64)),
+                application_reference: format!(
+                    "supplied-session-application-sha256:{}",
+                    "2".repeat(64)
+                ),
+                principal_reference: "supplied-session-principal-0001".to_owned(),
+                principal_alias: "fixture-user".to_owned(),
+                principal_assurance: "operator_declared",
+                credential_mechanism: "authorization_header",
+                session_epoch: 1,
+                startup_health: Some(AssessmentWebSocketSuppliedSessionHealthDocument {
+                    outcome: "healthy",
+                    evidence_reference: Some(format!(
+                        "supplied-session-checkpoint-evidence-sha256:{}",
+                        "6".repeat(64)
+                    )),
+                }),
+                terminal_health: Some(AssessmentWebSocketSuppliedSessionHealthDocument {
+                    outcome: "healthy",
+                    evidence_reference: Some(format!(
+                        "supplied-session-checkpoint-evidence-sha256:{}",
+                        "7".repeat(64)
+                    )),
+                }),
+                qualification: "context_qualified",
+                continuous_authentication_established: false,
+            });
+        document
+            .claim_limits
+            .push("continuous_authentication_not_established");
+        document
+    }
+
+    #[cfg(all(
+        feature = "scanning",
+        feature = "websocket-review",
+        feature = "supplied-session-review"
+    ))]
+    fn not_established_supplied_session_websocket_review_document(
+    ) -> AssessmentWebSocketReviewAuditDocument {
+        let mut document = supplied_session_websocket_review_document();
+        let context = document
+            .supplied_session_context
+            .as_mut()
+            .expect("V2 fixture has supplied-session context");
+        context.qualification = "not_established";
+        document.coverage.terminal = "incomplete";
+        document.coverage.completeness = "incomplete";
+        document.coverage.first_failure = Some("parent_authority_unavailable");
+        document.coverage.request_attempt_count = 1;
+        document.coverage.request_admitted_count = 0;
+        document.coverage.connection_attempt_count = 0;
+        document.coverage.handshake_completed_count = 0;
+        document.coverage.outbound_message_count = 0;
+        document.coverage.inbound_message_count = 0;
+        document.coverage.outbound_control_frame_count = 0;
+        document.coverage.inbound_control_frame_count = 0;
+        document.coverage.outbound_application_bytes = 0;
+        document.coverage.inbound_application_bytes = 0;
+        document.coverage.transport_read_bytes = 0;
+        document.coverage.transport_write_bytes = 0;
+        document.coverage.accounted_request_body_bytes = 0;
+        document.coverage.accounted_transport_response_bytes = 0;
+        document.coverage.matched_response_count = 0;
+        document.coverage.mismatched_response_count = 0;
+        for message in &mut document.messages {
+            message.inbound_length = None;
+            message.status = "not_sent";
+        }
+        document
     }
 
     #[cfg(all(feature = "scanning", feature = "control-reference-mapping"))]
@@ -20683,6 +21085,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         let audit = &parsed["websocket_review"];
         assert_eq!(audit["schema"], WEBSOCKET_REVIEW_AUDIT_SCHEMA);
+        assert!(audit.get("supplied_session_context").is_none());
         assert_eq!(audit["coverage"]["transport_read_bytes"], 241);
         assert_eq!(audit["coverage"]["accounted_transport_response_bytes"], 241);
         assert_eq!(audit["methodology"]["physical_frame_count"], "unavailable");
@@ -20727,6 +21130,188 @@ mod tests {
             .unwrap()
             .coverage
             .accounted_transport_response_bytes = 14;
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
+    }
+
+    #[cfg(all(
+        feature = "scanning",
+        feature = "websocket-review",
+        feature = "supplied-session-review"
+    ))]
+    #[test]
+    fn websocket_v2_writer_cross_validates_session_health_and_separates_protocol_completion() {
+        let mut document = observation_assessment_document("ordinary-observation");
+        document.items.clear();
+        document.item_count = 0;
+        document.supplied_session = Some(complete_supplied_session_audit_document());
+        document.websocket_review = Some(supplied_session_websocket_review_document());
+        assert!(document.validate().is_ok());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &parsed["websocket_review"];
+        assert_eq!(audit["schema"], "security.websocket-review-audit/v2");
+        assert_eq!(audit["context"], "supplied_session");
+        assert_eq!(
+            audit["supplied_session_context"]["qualification"],
+            "context_qualified"
+        );
+        assert_eq!(
+            audit["supplied_session_context"]["continuous_authentication_established"],
+            false
+        );
+        for format in [ReportFormat::Html, ReportFormat::Markdown] {
+            let rendered = render_assessment_with_limit(&document, format, usize::MAX).unwrap();
+            assert!(rendered.contains("protocol-exchange completion"));
+            assert!(rendered.contains("continuous authentication"));
+            assert!(!rendered.contains("Authorization: Bearer"));
+        }
+
+        let mut multiple_resources = observation_assessment_document("ordinary-observation");
+        multiple_resources.items.clear();
+        multiple_resources.item_count = 0;
+        let mut session = complete_supplied_session_audit_document();
+        session.checkpoints.insert(
+            1,
+            AssessmentSuppliedSessionCheckpointDocument {
+                sequence: 1,
+                phase: "subject_boundary",
+                after_subject_count: 1,
+                evidence_reference: Some(format!(
+                    "supplied-session-checkpoint-evidence-sha256:{}",
+                    "8".repeat(64)
+                )),
+                outcome: "healthy",
+                status: Some(200),
+                body_state: "complete",
+                predicate: "matched",
+                response_bytes: 31,
+            },
+        );
+        session.checkpoints[2].sequence = 2;
+        session.checkpoints[2].after_subject_count = 2;
+        session
+            .resources
+            .push(AssessmentSuppliedSessionResourceDocument {
+                sequence: 1,
+                resource_reference: format!("supplied-session-resource-sha256:{}", "9".repeat(64)),
+                evidence_reference: Some(format!(
+                    "supplied-session-resource-evidence-sha256:{}",
+                    "a".repeat(64)
+                )),
+                outcome: "committed",
+                status: Some(200),
+                response_bytes: 29,
+                epoch: 1,
+            });
+        session.selected_resource_count = 2;
+        session.dispatched_resource_count = 2;
+        session.committed_resource_count = 2;
+        session.dispatched_request_count = 5;
+        session.response_bytes = 119;
+        assert!(session.validate(&[]).is_ok());
+        multiple_resources.supplied_session = Some(session);
+        multiple_resources.websocket_review = Some(supplied_session_websocket_review_document());
+        assert_eq!(
+            multiple_resources.validate(),
+            Err(ReportError::Serialization)
+        );
+
+        document
+            .websocket_review
+            .as_mut()
+            .unwrap()
+            .coverage
+            .terminal = "incomplete";
+        document
+            .websocket_review
+            .as_mut()
+            .unwrap()
+            .coverage
+            .completeness = "incomplete";
+        document
+            .websocket_review
+            .as_mut()
+            .unwrap()
+            .coverage
+            .first_failure = Some("close_failed");
+        assert!(document.validate().is_ok());
+
+        document
+            .websocket_review
+            .as_mut()
+            .unwrap()
+            .supplied_session_context
+            .as_mut()
+            .unwrap()
+            .terminal_health
+            .as_mut()
+            .unwrap()
+            .evidence_reference = Some(format!(
+            "supplied-session-checkpoint-evidence-sha256:{}",
+            "9".repeat(64)
+        ));
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
+    }
+
+    #[cfg(all(
+        feature = "scanning",
+        feature = "websocket-review",
+        feature = "supplied-session-review"
+    ))]
+    #[test]
+    fn websocket_v2_writer_accepts_zero_admission_only_as_not_established() {
+        let mut document = observation_assessment_document("ordinary-observation");
+        document.items.clear();
+        document.item_count = 0;
+        document.supplied_session = Some(complete_supplied_session_audit_document());
+        document.websocket_review =
+            Some(not_established_supplied_session_websocket_review_document());
+        assert!(document.validate().is_ok());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let audit = &parsed["websocket_review"];
+        assert_eq!(
+            audit["supplied_session_context"]["qualification"],
+            "not_established"
+        );
+        assert_eq!(audit["coverage"]["request_attempt_count"], 1);
+        assert_eq!(audit["coverage"]["request_admitted_count"], 0);
+        assert_eq!(
+            audit["supplied_session_context"]["startup_health"]["outcome"],
+            "healthy"
+        );
+        assert_eq!(
+            audit["supplied_session_context"]["terminal_health"]["outcome"],
+            "healthy"
+        );
+
+        for invalid_qualification in ["context_qualified", "context_unqualified"] {
+            document
+                .websocket_review
+                .as_mut()
+                .unwrap()
+                .supplied_session_context
+                .as_mut()
+                .unwrap()
+                .qualification = invalid_qualification;
+            assert_eq!(document.validate(), Err(ReportError::Serialization));
+        }
+        document
+            .websocket_review
+            .as_mut()
+            .unwrap()
+            .supplied_session_context
+            .as_mut()
+            .unwrap()
+            .qualification = "not_established";
+        document
+            .websocket_review
+            .as_mut()
+            .unwrap()
+            .coverage
+            .request_admitted_count = 1;
         assert_eq!(document.validate(), Err(ReportError::Serialization));
     }
 

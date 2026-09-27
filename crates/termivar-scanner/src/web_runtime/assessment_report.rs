@@ -80,6 +80,11 @@ use super::websocket_runtime::{
     WEBSOCKET_REVIEW_HTTP2_EXTENDED_CONNECT, WEBSOCKET_REVIEW_TRANSPORT,
     WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE,
 };
+#[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+use super::websocket_runtime::{
+    WebSocketSuppliedSessionHealthAudit, WebSocketSuppliedSessionQualification,
+    WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA, WEBSOCKET_SUPPLIED_SESSION_CONTEXT,
+};
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_fingerprint_runtime::{
     WordPressAssetFingerprintExecution, WordPressAssetFingerprintResourceReceipt,
@@ -449,6 +454,8 @@ impl AssessmentRunReport {
         #[cfg(feature = "websocket-review")]
         validate_websocket_review_audit(
             websocket_review.as_ref(),
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session.as_ref(),
             &items,
             truth.expected_accounting.requests().consumed(),
             truth.expected_accounting.request_body_bytes().consumed(),
@@ -2116,6 +2123,9 @@ fn validate_authorization_audit(
 #[cfg(feature = "websocket-review")]
 fn validate_websocket_review_audit(
     audit: Option<&WebAssessmentWebSocketReviewAudit>,
+    #[cfg(feature = "supplied-session-review")] supplied_session: Option<
+        &WebAssessmentSuppliedSessionAudit,
+    >,
     items: &[AssessmentItem],
     assessment_request_count: Option<u64>,
     assessment_request_body_bytes: Option<u64>,
@@ -2163,10 +2173,64 @@ fn validate_websocket_review_audit(
         .iter()
         .map(|limit| limit.as_str())
         .collect::<Vec<_>>();
-    let valid = audit.schema() == WEBSOCKET_REVIEW_AUDIT_SCHEMA
+    #[cfg(feature = "supplied-session-review")]
+    let claim_limits = {
+        let mut claim_limits = claim_limits;
+        if audit.schema() == WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA {
+            claim_limits.push("continuous_authentication_not_established");
+        }
+        claim_limits
+    };
+    let context_is_valid = if audit.schema() == WEBSOCKET_REVIEW_AUDIT_SCHEMA {
+        audit.context() == WEBSOCKET_REVIEW_AUTHENTICATION && {
+            #[cfg(feature = "supplied-session-review")]
+            {
+                audit.supplied_session_context().is_none()
+            }
+            #[cfg(not(feature = "supplied-session-review"))]
+            {
+                true
+            }
+        }
+    } else {
+        #[cfg(feature = "supplied-session-review")]
+        {
+            audit.schema() == WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA
+                && audit.context() == WEBSOCKET_SUPPLIED_SESSION_CONTEXT
+                && validate_websocket_supplied_session_context(audit, supplied_session)
+        }
+        #[cfg(not(feature = "supplied-session-review"))]
+        {
+            false
+        }
+    };
+    let expected_claim_limits: &[&str] = if audit.schema() == WEBSOCKET_REVIEW_AUDIT_SCHEMA {
+        &[
+            "browser_origin_security_not_established",
+            "authentication_not_established",
+            "authorization_not_established",
+            "availability_not_established",
+            "vulnerability_not_established",
+            "exploitability_not_established",
+            "impact_not_established",
+            "source_authenticity_not_established",
+        ]
+    } else {
+        &[
+            "browser_origin_security_not_established",
+            "authentication_not_established",
+            "authorization_not_established",
+            "availability_not_established",
+            "vulnerability_not_established",
+            "exploitability_not_established",
+            "impact_not_established",
+            "source_authenticity_not_established",
+            "continuous_authentication_not_established",
+        ]
+    };
+    let valid = context_is_valid
         && audit.capability_id() == WEBSOCKET_REVIEW_CAPABILITY_ID
         && audit.selected()
-        && audit.context() == WEBSOCKET_REVIEW_AUTHENTICATION
         && audit.transport() == WEBSOCKET_REVIEW_TRANSPORT
         && audit.http2_extended_connect() == WEBSOCKET_REVIEW_HTTP2_EXTENDED_CONNECT
         && audit.transport_byte_scope() == WEBSOCKET_REVIEW_TRANSPORT_BYTE_SCOPE
@@ -2207,22 +2271,104 @@ fn validate_websocket_review_audit(
         && assessment_response_bytes
             .is_some_and(|count| audit.accounted_transport_response_bytes() <= count)
         && messages_are_safe
-        && claim_limits
-            == [
-                "browser_origin_security_not_established",
-                "authentication_not_established",
-                "authorization_not_established",
-                "availability_not_established",
-                "vulnerability_not_established",
-                "exploitability_not_established",
-                "impact_not_established",
-                "source_authenticity_not_established",
-            ]
+        && claim_limits == expected_claim_limits
         && audit.is_consistent();
     if valid {
         Ok(())
     } else {
         Err(AssessmentRunReportError::WebSocketReviewAuditMismatch)
+    }
+}
+
+#[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+fn validate_websocket_supplied_session_context(
+    audit: &WebAssessmentWebSocketReviewAudit,
+    supplied_session: Option<&WebAssessmentSuppliedSessionAudit>,
+) -> bool {
+    let Some(context) = audit.supplied_session_context() else {
+        return false;
+    };
+    let Some(session) = supplied_session else {
+        return false;
+    };
+    if session.schema() != SUPPLIED_SESSION_AUDIT_SCHEMA
+        || session.credential_mechanism() != SuppliedSessionCredentialMechanism::AuthorizationHeader
+        || session.continuous_authentication_established()
+        || context.policy_reference() != session.policy_reference()
+        || context.application_reference() != session.application_reference()
+        || context.principal_reference() != session.principal_reference()
+        || context.principal_alias() != session.principal_alias()
+        || context.principal_assurance() != "operator_declared"
+        || context.credential_mechanism() != "authorization_header"
+        || context.epoch() != 1
+        || context.continuous_authentication_established()
+    {
+        return false;
+    }
+
+    let startup = session
+        .checkpoints()
+        .iter()
+        .find(|checkpoint| checkpoint.phase() == SuppliedSessionHealthCheckpointPhase::Startup);
+    let terminal = session
+        .checkpoints()
+        .iter()
+        .find(|checkpoint| checkpoint.phase() == SuppliedSessionHealthCheckpointPhase::Terminal);
+    if session
+        .checkpoints()
+        .iter()
+        .filter(|checkpoint| checkpoint.phase() == SuppliedSessionHealthCheckpointPhase::Startup)
+        .count()
+        > 1
+        || session
+            .checkpoints()
+            .iter()
+            .filter(|checkpoint| {
+                checkpoint.phase() == SuppliedSessionHealthCheckpointPhase::Terminal
+            })
+            .count()
+            > 1
+    {
+        return false;
+    }
+    let health_matches =
+        |projected: Option<&WebSocketSuppliedSessionHealthAudit>,
+         checkpoint: Option<&super::WebAssessmentSuppliedSessionCheckpointAudit>| {
+            projected
+                .zip(checkpoint)
+                .is_none_or(|(projected, checkpoint)| {
+                    projected.outcome()
+                        == match checkpoint.outcome() {
+                            SuppliedSessionHealthOutcome::Healthy => "healthy",
+                            SuppliedSessionHealthOutcome::Unhealthy => "unhealthy",
+                            SuppliedSessionHealthOutcome::Indeterminate => "indeterminate",
+                        }
+                        && projected.evidence_reference() == checkpoint.evidence_reference()
+                })
+                && projected.is_some() == checkpoint.is_some()
+        };
+    if !health_matches(context.startup_health(), startup)
+        || !health_matches(context.terminal_health(), terminal)
+    {
+        return false;
+    }
+
+    let startup_healthy = context.startup_health().is_some_and(|health| {
+        health.outcome() == "healthy" && health.evidence_reference().is_some()
+    });
+    let terminal_healthy = context.terminal_health().is_some_and(|health| {
+        health.outcome() == "healthy" && health.evidence_reference().is_some()
+    });
+    match context.qualification() {
+        WebSocketSuppliedSessionQualification::ContextQualified => {
+            audit.request_admitted_count() == 1 && startup_healthy && terminal_healthy
+        },
+        WebSocketSuppliedSessionQualification::ContextUnqualified => {
+            audit.request_admitted_count() == 1 && startup_healthy && !terminal_healthy
+        },
+        WebSocketSuppliedSessionQualification::NotEstablished => {
+            audit.request_admitted_count() == 0
+        },
     }
 }
 

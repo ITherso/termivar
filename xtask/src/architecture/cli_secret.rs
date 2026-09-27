@@ -98,6 +98,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "secret_exposure_review",
     "tls_observation",
     "websocket_review_policy",
+    "websocket_supplied_session",
     "wordpress_advisories",
     "wordpress_advisories_format",
     "wordpress_core_version_file",
@@ -796,7 +797,7 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         ),
         (
             "PreparedSuppliedSessionInput",
-            &["load", "policy_version"][..],
+            &["load", "policy_version", "resource_count"][..],
             "formatter.debug_struct(\"PreparedSuppliedSessionInput\").field(\"policy\",&\"<validated>\").field(\"secret\",&\"<redacted>\").finish()",
         ),
         (
@@ -1025,6 +1026,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("secret_exposure_review", "bool", None),
         ("tls_observation", "bool", None),
         ("websocket_review_policy", "Option", Some("PathBuf")),
+        ("websocket_supplied_session", "bool", None),
         ("wordpress_review", "bool", None),
         ("wordpress_discovery", "bool", None),
         (
@@ -1438,6 +1440,43 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
+    if fields.get("websocket_supplied_session").is_none_or(|field| {
+        !is_plain_type(&field.ty, "bool")
+            || !field.attrs.iter().any(|attribute| match &attribute.meta {
+                Meta::List(list) if list.path.is_ident("cfg") => compact_tokens(&list.tokens)
+                    == "all(feature=\"websocket-review\",feature=\"supplied-session-review\")",
+                _ => false,
+            })
+            || !exact_arg_attribute(
+                &field.attrs,
+                "long,requires_all=[\"profile\",\"websocket_review_policy\",\"session_policy\"]",
+            )
+            || !exact_cfg_attr_attributes(
+                &field.attrs,
+                &["feature=\"wordpress-review\",arg(conflicts_with=\"wordpress_supplied_session\")"],
+            )
+    }) {
+        violations.push(
+            "CLI `websocket_supplied_session` must remain an exact two-feature-gated explicit composition flag with required policies and WordPress-consumer conflict"
+                .to_owned(),
+        );
+    }
+
+    for marker in [
+        "fnscan_websocket_supplied_session_flags_conflict(",
+        "`--websocket-supplied-session`requiresonesupplied-sessioncredentialsource",
+        "`--websocket-supplied-session`conflictswith`--wordpress-supplied-session`",
+        "fnscan_websocket_supplied_session_policy_conflict(",
+        "`--websocket-supplied-session`supportsonlyauthorization-headerV1supplied-sessionpolicies",
+        "`--websocket-supplied-session`requiresexactlyoneselectedsessionresource",
+    ] {
+        if !compact.contains(marker) {
+            violations.push(format!(
+                "CLI supplied-session WebSocket validation must retain its exact value-free explicit-composition and V1/single-resource preflight: missing `{marker}`"
+            ));
+        }
+    }
+
     if fields.get("progress").is_none_or(|field| {
         !is_plain_type(&field.ty, "bool")
             || !exact_arg_attribute(&field.attrs, "long,requires=\"profile\"")
@@ -1682,12 +1721,17 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
     let supplied_session_selection = "letsupplied_session_selected=session_policy.is_some()||session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some();";
+    let supplied_session_credential_selection = "letsupplied_session_credential_selected=session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some();";
     let supplied_session_input = "auth_input::SuppliedSessionInput::select(session_policy,auth_input::AuthorizationSourceOptions::new(session_auth_env,session_auth_file,session_auth_stdin,),session_cookie_file,session_login_file,)?";
     if compact.matches(supplied_session_selection).count() != 1
+        || compact
+            .matches(supplied_session_credential_selection)
+            .count()
+            != 1
         || compact.matches(supplied_session_input).count() != 1
     {
         violations.push(
-            "CLI must bind the exact V1/V2/V3 supplied-session source union and select one policy-compatible out-of-band source without reading it"
+            "CLI must bind the exact V1/V2/V3 supplied-session source union, distinguish an actual credential selection, and select one policy-compatible out-of-band source without reading it"
                 .to_owned(),
         );
     }
@@ -1778,6 +1822,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_ssrf_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
+        "scan_websocket_supplied_session_flags_conflict",
         "wordpress_review_target_conflict",
         "scan_resource_authorization_flags_conflict",
         "scan_supplied_session_flags_conflict",
@@ -1800,6 +1845,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "prepare",
         "prepare",
         "prepare",
+        "scan_websocket_supplied_session_policy_conflict",
         "scan_wordpress_supplied_session_policy_conflict",
         "prepare",
         "preflight_report_output",
@@ -1851,6 +1897,24 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     {
         violations.push(
             "CLI WebSocket review validation must receive the exact selected policy state before any input or network work"
+                .to_owned(),
+        );
+    }
+    if compact
+        .matches(
+            "scan_websocket_supplied_session_flags_conflict(profile,websocket_supplied_session,websocket_review_policy.is_some(),session_policy.is_some(),supplied_session_credential_selected,wordpress_supplied_session_selected,)",
+        )
+        .count()
+        != 1
+        || compact
+            .matches(
+                "letsupplied_session_credential_selected=session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some();",
+            )
+            .count()
+            != 1
+    {
+        violations.push(
+            "CLI supplied-session WebSocket validation must receive the exact explicit flag, policy states, distinct credential-selection state, and WordPress-consumer state before any input or network work"
                 .to_owned(),
         );
     }
@@ -1909,6 +1973,16 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             != 1
         || ordered
             .iter()
+            .filter(|name| name.as_str() == "scan_websocket_supplied_session_flags_conflict")
+            .count()
+            != 1
+        || ordered
+            .iter()
+            .filter(|name| name.as_str() == "scan_websocket_supplied_session_policy_conflict")
+            .count()
+            != 1
+        || ordered
+            .iter()
             .filter(|name| name.as_str() == "scan_progress_flags_conflict")
             .count()
             != 1
@@ -1945,6 +2019,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "letwebsocket_review=websocket_review_policy_input.map(|input|input.load(&target)).transpose()?;",
         "letprepared_jwt_policy_review={#[cfg(feature=\"jwt-target-acceptance-review\")]{jwt_policy_review_input.map(|input|input.prepare(&target)).transpose()?}#[cfg(not(feature=\"jwt-target-acceptance-review\"))]{jwt_policy_review_input.map(auth_input::JwtPolicyReviewInput::prepare).transpose()?}};",
         "letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?;",
+        "scan_websocket_supplied_session_policy_conflict(websocket_supplied_session,prepared.policy_version(),prepared.resource_count(),)",
         "scan_wordpress_supplied_session_policy_conflict(wordpress_supplied_session,prepared.policy_version(),)",
         "letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?;",
         "preflight_report_output(report_output.as_deref())?;",
@@ -3079,9 +3154,11 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_ssrf_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
+        "scan_websocket_supplied_session_flags_conflict",
         "wordpress_review_target_conflict",
         "scan_resource_authorization_flags_conflict",
         "scan_supplied_session_flags_conflict",
+        "scan_websocket_supplied_session_policy_conflict",
         "scan_wordpress_supplied_session_policy_conflict",
         "select",
         "scan_authorization_flags_conflict",
@@ -3758,6 +3835,21 @@ mod tests {
                 "    #[cfg(feature = \"recon-ct-provider\")]\n    #[arg(long, value_name = \"FILE\", requires = \"profile\")]\n    recon_certspotter_policy: Option<PathBuf>,",
                 "    #[arg(long, value_name = \"FILE\", requires = \"profile\")]\n    recon_certspotter_policy: Option<PathBuf>,",
                 "recon_certspotter_policy",
+            ),
+            (
+                "    #[cfg(all(feature = \"websocket-review\", feature = \"supplied-session-review\"))]\n    #[arg(\n        long,\n        requires_all = [\"profile\", \"websocket_review_policy\", \"session_policy\"]\n    )]",
+                "    #[cfg(feature = \"websocket-review\")]\n    #[arg(long)]",
+                "websocket_supplied_session",
+            ),
+            (
+                "scan_websocket_supplied_session_flags_conflict(\n        profile,\n        websocket_supplied_session,",
+                "scan_websocket_supplied_session_flags_conflict(\n        profile,\n        false,",
+                "must receive the exact explicit flag",
+            ),
+            (
+                "                    prepared.policy_version(),\n                    prepared.resource_count(),",
+                "                    prepared.policy_version(),\n                    1,",
+                "exact non-secret preparation, report preflight/reservation, secret-load, and failure-cleanup order",
             ),
             (
                 "    #[cfg(feature = \"jwt-policy-review\")]\n    #[arg(\n        long,\n        value_name = \"FILE\",\n        requires_all = [\"profile\", \"jwt_public_jwk\", \"jwt_token_source\"]\n    )]\n    jwt_policy: Option<PathBuf>,",

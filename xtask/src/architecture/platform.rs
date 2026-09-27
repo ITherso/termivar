@@ -7108,12 +7108,48 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("endpoint_reference", "String"),
             ("context", "&'static str"),
             (
+                "supplied_session_context",
+                "Option<AssessmentWebSocketSuppliedSessionContextDocument>",
+            ),
+            (
                 "methodology",
                 "AssessmentWebSocketReviewMethodologyDocument",
             ),
             ("coverage", "AssessmentWebSocketReviewCoverageDocument"),
             ("messages", "Vec<AssessmentWebSocketReviewMessageDocument>"),
             ("claim_limits", "Vec<&'static str>"),
+        ],
+    ),
+    (
+        "AssessmentWebSocketSuppliedSessionContextDocument",
+        &[],
+        &[
+            ("mode", "&'static str"),
+            ("policy_reference", "String"),
+            ("application_reference", "String"),
+            ("principal_reference", "String"),
+            ("principal_alias", "String"),
+            ("principal_assurance", "&'static str"),
+            ("credential_mechanism", "&'static str"),
+            ("session_epoch", "u8"),
+            (
+                "startup_health",
+                "Option<AssessmentWebSocketSuppliedSessionHealthDocument>",
+            ),
+            (
+                "terminal_health",
+                "Option<AssessmentWebSocketSuppliedSessionHealthDocument>",
+            ),
+            ("qualification", "&'static str"),
+            ("continuous_authentication_established", "bool"),
+        ],
+    ),
+    (
+        "AssessmentWebSocketSuppliedSessionHealthDocument",
+        &[],
+        &[
+            ("outcome", "&'static str"),
+            ("evidence_reference", "Option<String>"),
         ],
     ),
     (
@@ -7374,6 +7410,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSuppliedSessionResourceDocument"
                 | "AssessmentAuthorizationAuditDocument"
                 | "AssessmentWebSocketReviewAuditDocument"
+                | "AssessmentWebSocketSuppliedSessionContextDocument"
+                | "AssessmentWebSocketSuppliedSessionHealthDocument"
                 | "AssessmentWebSocketReviewMethodologyDocument"
                 | "AssessmentWebSocketReviewLimitsDocument"
                 | "AssessmentWebSocketReviewCoverageDocument"
@@ -7519,6 +7557,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentWebSocketReviewCoverageDocument"
                 | "AssessmentWebSocketReviewMessageDocument" => {
                     "all(feature=\"scanning\",feature=\"websocket-review\")"
+                },
+                "AssessmentWebSocketSuppliedSessionContextDocument"
+                | "AssessmentWebSocketSuppliedSessionHealthDocument" => {
+                    "all(feature=\"scanning\",feature=\"websocket-review\",feature=\"supplied-session-review\")"
                 },
                 "AssessmentOpenApiAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"openapi-review\")"
@@ -7686,6 +7728,13 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         )
                     } else if name == "AssessmentDocument" && field_name == "websocket_review" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "websocket-review")
+                    } else if name == "AssessmentWebSocketReviewAuditDocument"
+                        && field_name == "supplied_session_context"
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "supplied-session-review",
+                        )
                     } else if name == "AssessmentDocument" && field_name == "openapi_review" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "openapi-review")
                     } else if name == "AssessmentDocument" && field_name == "rest_review" {
@@ -10410,8 +10459,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 588_997;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x8806_3a53_ccc5_08db_f1b3_4879_9483_aeae;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 599_933;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xa316_3591_abd0_6c22_ff5d_4b3c_31ae_54f1;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -10599,6 +10648,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE",
     "crate::web_runtime::WEBSOCKET_REVIEW_AUDIT_SCHEMA",
     "crate::web_runtime::WEBSOCKET_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::ScanProfileV1",
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
@@ -10742,6 +10792,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE",
     "crate::web_runtime::WEBSOCKET_REVIEW_AUDIT_SCHEMA",
     "crate::web_runtime::WEBSOCKET_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::WebAssessmentTlsObservationAudit",
     "crate::web_runtime::WebAssessmentWebSocketReviewAudit",
     "crate::jwt_policy_review::JWT_POLICY_REVIEW_AUDIT_SCHEMA",
@@ -11440,6 +11491,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
+    "health_is_valid",
+    "health_matches",
     "valid_recon_report_sha256",
     "valid_recon_report_text",
     "valid_websocket_review_reference",
@@ -11692,6 +11745,12 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "address",
+    "has_supplied_session_context",
+    "qualification",
+    "startup_health",
+    "supplied_session_context",
+    "terminal_health",
+    "validate_internal",
     "as_bytes",
     "as_millis",
     "ascii_serialization",
@@ -12501,6 +12560,10 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::websocket_review::MAX_WEBSOCKET_REVIEW_WALL_TIME_MS"
                 )
             });
+        let websocket_supplied_session_import = !paths.is_empty()
+            && paths
+                .iter()
+                .all(|path| path == "crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA");
         let control_reference_mapping_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -12744,6 +12807,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"authorization-review\")")
+        } else if websocket_supplied_session_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"websocket-review\",feature=\"supplied-session-review\")")
         } else if websocket_review_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -12903,6 +12971,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("all(feature=\"scanning\",feature=\"jwt-policy-review\")")
                     | Some("all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")")
                     | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"websocket-review\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
                     | Some("all(feature=\"scanning\",any(feature=\"wordpress-review\",feature=\"control-reference-mapping\"))")
             );
@@ -17144,6 +17213,12 @@ mod tests {
                     MAX_WEBSOCKET_REVIEW_WALL_TIME_MS,
                 },
             };
+            #[cfg(all(
+                feature = "scanning",
+                feature = "websocket-review",
+                feature = "supplied-session-review"
+            ))]
+            use crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA;
             #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
             use crate::{
                 web_runtime::{
@@ -17276,6 +17351,32 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_websocket_supplied_session_import = imports.replace(
+            "#[cfg(all(\n                feature = \"scanning\",\n                feature = \"websocket-review\",\n                feature = \"supplied-session-review\"\n            ))]\n            use crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA;",
+            "#[cfg(all(feature = \"scanning\", feature = \"websocket-review\"))]\n            use crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA;",
+        );
+        assert_ne!(widened_websocket_supplied_session_import, imports);
+        let violations =
+            reporting_source_import_violations(&widened_websocket_supplied_session_import)
+                .unwrap()
+                .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let missing_websocket_supplied_session_import = imports.replace(
+            "#[cfg(all(\n                feature = \"scanning\",\n                feature = \"websocket-review\",\n                feature = \"supplied-session-review\"\n            ))]\n            use crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA;\n",
+            "",
+        );
+        assert_ne!(missing_websocket_supplied_session_import, imports);
+        let violations =
+            reporting_source_import_violations(&missing_websocket_supplied_session_import)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("imports must be exactly")
+                && violations.contains("WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA"),
+            "{violations}"
+        );
 
         let missing_websocket_response_bound = imports.replace(
             "                    HARD_MAX_WEB_ASSESSMENT_TOTAL_RESPONSE_BYTES,\n",
@@ -19001,10 +19102,43 @@ mod tests {
                 policy_reference: String,
                 endpoint_reference: String,
                 context: &'static str,
+                #[cfg(feature = "supplied-session-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                supplied_session_context: Option<AssessmentWebSocketSuppliedSessionContextDocument>,
                 methodology: AssessmentWebSocketReviewMethodologyDocument,
                 coverage: AssessmentWebSocketReviewCoverageDocument,
                 messages: Vec<AssessmentWebSocketReviewMessageDocument>,
                 claim_limits: Vec<&'static str>,
+            }
+            #[cfg(all(
+                feature = "scanning",
+                feature = "websocket-review",
+                feature = "supplied-session-review"
+            ))]
+            #[derive(Serialize)]
+            struct AssessmentWebSocketSuppliedSessionContextDocument {
+                mode: &'static str,
+                policy_reference: String,
+                application_reference: String,
+                principal_reference: String,
+                principal_alias: String,
+                principal_assurance: &'static str,
+                credential_mechanism: &'static str,
+                session_epoch: u8,
+                startup_health: Option<AssessmentWebSocketSuppliedSessionHealthDocument>,
+                terminal_health: Option<AssessmentWebSocketSuppliedSessionHealthDocument>,
+                qualification: &'static str,
+                continuous_authentication_established: bool,
+            }
+            #[cfg(all(
+                feature = "scanning",
+                feature = "websocket-review",
+                feature = "supplied-session-review"
+            ))]
+            #[derive(Serialize)]
+            struct AssessmentWebSocketSuppliedSessionHealthDocument {
+                outcome: &'static str,
+                evidence_reference: Option<String>,
             }
             #[cfg(all(feature = "scanning", feature = "websocket-review"))]
             #[derive(Serialize)]
@@ -19357,6 +19491,35 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains("AssessmentWebSocketReviewAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
+        let missing_websocket_session_context = source.replace(
+            "                #[cfg(feature = \"supplied-session-review\")]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                supplied_session_context: Option<AssessmentWebSocketSuppliedSessionContextDocument>,\n",
+            "",
+        );
+        assert_ne!(missing_websocket_session_context, source);
+        let violations = reporting_document_contract_violations(&missing_websocket_session_context)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentWebSocketReviewAuditDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let widened_websocket_session_context_gate = source.replace(
+            "#[cfg(all(\n                feature = \"scanning\",\n                feature = \"websocket-review\",\n                feature = \"supplied-session-review\"\n            ))]\n            #[derive(Serialize)]\n            struct AssessmentWebSocketSuppliedSessionContextDocument",
+            "#[cfg(all(feature = \"scanning\", feature = \"websocket-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentWebSocketSuppliedSessionContextDocument",
+        );
+        assert_ne!(widened_websocket_session_context_gate, source);
+        let violations =
+            reporting_document_contract_violations(&widened_websocket_session_context_gate)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("AssessmentWebSocketSuppliedSessionContextDocument")
                 && violations.contains("exactly cfg"),
             "{violations}"
         );

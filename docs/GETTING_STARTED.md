@@ -326,15 +326,24 @@ not verify that a message is side-effect-free or that its content is non-secret.
 V1 does not support credentials or other secret material in message bodies.
 Each message `id` is a non-secret revision handle and must change whenever that
 message or its expected-response semantics change. Public report references do
-not hash either private byte sequence. V1 opens one isolated anonymous
-connection, sends at most eight sequential text messages, allows at most 64
-KiB of application payload in each direction, and stops at ten seconds or the
+not hash either private byte sequence. By default V1 opens one isolated
+anonymous connection. When both `websocket-review` and
+`supplied-session-review` are compiled, an operator may explicitly add
+`--websocket-supplied-session` to one V1 Authorization-header session policy
+with exactly one protected resource. That composition runs startup health,
+resource staging, one credentialed WebSocket exchange and terminal health;
+both checkpoints must be healthy before the declared context and resource are
+qualified. Without the flag, the WebSocket remains anonymous. V2 cookie and V3
+form-login policies are rejected before secret/output acquisition, and the
+same session cannot feed both the WordPress and WebSocket consumers.
+
+Both paths send at most eight sequential text messages, allow at most 64 KiB
+of application payload in each direction, and stop at ten seconds or the
 smaller parent deadline. Plain `ws` is accepted only for numeric-loopback test
 fixtures; other targets require `wss` with normal certificate validation.
-
 There is no endpoint discovery, retry, reconnect, redirect following,
-compression, proxy inheritance, cookie or Authorization forwarding, supplied
-session inheritance, or HTTP/2 extended CONNECT. The report distinguishes raw
+compression, proxy inheritance, cookie forwarding, arbitrary credential
+forwarding, or HTTP/2 extended CONNECT. The report distinguishes raw
 socket transport accounting from complete application-message bytes. Binary
 application messages fail closed. The
 backend does not expose a reliable physical continuation-frame count, so it is
@@ -342,8 +351,9 @@ reported as unavailable; message/frame-size ceilings, observable control-frame
 events and the absolute deadline still bound work. A client-selected `Origin`
 does not prove a browser exploit path, and an Upgrade or expected-response
 match does not establish authentication, authorization, availability, source
-authenticity, a vulnerability, exploitability or impact. This anonymous S11-A
-slice leaves S11 `IMPLEMENTING`; session/context integration is a later slice.
+authenticity, a vulnerability, exploitability or impact. Session checkpoints
+qualify only the declared bounded context window; they do not prove continuous
+authentication.
 See the [WebSocket review contract](internals/websocket-review.md).
 
 ## Live assessment progress

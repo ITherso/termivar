@@ -46,6 +46,7 @@ const TLS_OBSERVATION_VALIDATION_SCOPE: &str = "successful_https_response_connec
 const TLS_OBSERVATION_SOURCE_SCOPE: &str = "assessment_exact_origin_existing_connections/v1";
 const TLS_OBSERVATION_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
 const WEBSOCKET_REVIEW_AUDIT_SCHEMA: &str = "security.websocket-review-audit/v1";
+const WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA: &str = "security.websocket-review-audit/v2";
 const WEBSOCKET_REVIEW_CAPABILITY_ID: &str = "termivar.websocket-review/v1";
 const MAX_WEBSOCKET_REVIEW_MESSAGES: u64 = 8;
 const MAX_WEBSOCKET_REVIEW_CONTROL_FRAMES: u64 = 16;
@@ -63,6 +64,17 @@ const WEBSOCKET_REVIEW_CLAIM_LIMITS: [&str; 8] = [
     "exploitability_not_established",
     "impact_not_established",
     "source_authenticity_not_established",
+];
+const WEBSOCKET_SUPPLIED_SESSION_CLAIM_LIMITS: [&str; 9] = [
+    "browser_origin_security_not_established",
+    "authentication_not_established",
+    "authorization_not_established",
+    "availability_not_established",
+    "vulnerability_not_established",
+    "exploitability_not_established",
+    "impact_not_established",
+    "source_authenticity_not_established",
+    "continuous_authentication_not_established",
 ];
 const JWT_POLICY_REVIEW_AUDIT_SCHEMA: &str = "security.jwt-policy-review-audit/v1";
 const JWT_POLICY_REVIEW_AUDIT_SCHEMA_V2: &str = "security.jwt-policy-review-audit/v2";
@@ -2463,6 +2475,123 @@ pub(super) fn validate_tls_observation(
     })
 }
 
+struct ValidatedWebSocketSuppliedSessionContext {
+    identity: Value,
+    document: Value,
+    qualification: String,
+}
+
+fn validate_websocket_supplied_session_context(
+    value: &Value,
+) -> Result<ValidatedWebSocketSuppliedSessionContext, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "mode",
+            "policy_reference",
+            "application_reference",
+            "principal_reference",
+            "principal_alias",
+            "principal_assurance",
+            "credential_mechanism",
+            "session_epoch",
+            "startup_health",
+            "terminal_health",
+            "qualification",
+            "continuous_authentication_established",
+        ],
+        &[],
+    )?;
+    check(string(fields, "mode")? == "health_qualified_authorization_header")?;
+    check(digest(
+        text(fields, "policy_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-policy-sha256:",
+    ))?;
+    check(digest(
+        text(fields, "application_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-application-sha256:",
+    ))?;
+    check(
+        text(fields, "principal_reference", MAX_IDENTIFIER_BYTES)?
+            == "supplied-session-principal-0001",
+    )?;
+    check(valid_supplied_session_principal_alias(text(
+        fields,
+        "principal_alias",
+        128,
+    )?))?;
+    check(string(fields, "principal_assurance")? == "operator_declared")?;
+    check(string(fields, "credential_mechanism")? == "authorization_header")?;
+    check(number(fields, "session_epoch", 1)? == 1)?;
+    check(!boolean(fields, "continuous_authentication_established")?)?;
+
+    let validate_health = |value: &Value| -> Result<(String, Option<String>), ComparisonError> {
+        let health = object(value)?;
+        keys(health, &["outcome", "evidence_reference"], &[])?;
+        let outcome = token(
+            health,
+            "outcome",
+            &["healthy", "unhealthy", "indeterminate"],
+        )?;
+        let evidence_reference = optional_text(health, "evidence_reference", MAX_IDENTIFIER_BYTES)?;
+        check(evidence_reference.is_none_or(|reference| {
+            digest(reference, "supplied-session-checkpoint-evidence-sha256:")
+        }))?;
+        Ok((outcome.to_owned(), evidence_reference.map(str::to_owned)))
+    };
+    let startup = if required(fields, "startup_health")?.is_null() {
+        None
+    } else {
+        Some(validate_health(required(fields, "startup_health")?)?)
+    };
+    let terminal = if required(fields, "terminal_health")?.is_null() {
+        None
+    } else {
+        Some(validate_health(required(fields, "terminal_health")?)?)
+    };
+    let startup_qualified = startup
+        .as_ref()
+        .is_some_and(|(outcome, evidence)| outcome == "healthy" && evidence.is_some());
+    let terminal_qualified = terminal
+        .as_ref()
+        .is_some_and(|(outcome, evidence)| outcome == "healthy" && evidence.is_some());
+    let qualification = token(
+        fields,
+        "qualification",
+        &[
+            "context_qualified",
+            "context_unqualified",
+            "not_established",
+        ],
+    )?;
+    check(match qualification {
+        "context_qualified" => startup_qualified && terminal_qualified,
+        "context_unqualified" => startup_qualified && !terminal_qualified,
+        "not_established" => true,
+        _ => false,
+    })?;
+    let identity = selected_object(
+        fields,
+        &[
+            "mode",
+            "policy_reference",
+            "application_reference",
+            "principal_reference",
+            "principal_alias",
+            "principal_assurance",
+            "credential_mechanism",
+            "session_epoch",
+        ],
+        &[],
+    )?;
+    Ok(ValidatedWebSocketSuppliedSessionContext {
+        identity,
+        document: canonical_value(value)?,
+        qualification: qualification.to_owned(),
+    })
+}
+
 pub(super) fn validate_websocket_review(
     value: &Value,
 ) -> Result<ImportedWebSocketReviewAudit, ComparisonError> {
@@ -2498,23 +2627,54 @@ pub(super) fn validate_websocket_review(
         "internal_invariant",
     ];
     let fields = object(value)?;
-    keys(
-        fields,
-        &[
-            "schema",
-            "capability_id",
-            "selected",
-            "policy_reference",
-            "endpoint_reference",
-            "context",
-            "methodology",
-            "coverage",
-            "messages",
-            "claim_limits",
-        ],
-        &[],
-    )?;
-    check(string(fields, "schema")? == WEBSOCKET_REVIEW_AUDIT_SCHEMA)?;
+    let schema = string(fields, "schema")?;
+    let supplied_session = match schema {
+        WEBSOCKET_REVIEW_AUDIT_SCHEMA => {
+            keys(
+                fields,
+                &[
+                    "schema",
+                    "capability_id",
+                    "selected",
+                    "policy_reference",
+                    "endpoint_reference",
+                    "context",
+                    "methodology",
+                    "coverage",
+                    "messages",
+                    "claim_limits",
+                ],
+                &[],
+            )?;
+            check(string(fields, "context")? == "anonymous")?;
+            None
+        },
+        WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA => {
+            keys(
+                fields,
+                &[
+                    "schema",
+                    "capability_id",
+                    "selected",
+                    "policy_reference",
+                    "endpoint_reference",
+                    "context",
+                    "supplied_session_context",
+                    "methodology",
+                    "coverage",
+                    "messages",
+                    "claim_limits",
+                ],
+                &[],
+            )?;
+            check(string(fields, "context")? == "supplied_session")?;
+            Some(validate_websocket_supplied_session_context(required(
+                fields,
+                "supplied_session_context",
+            )?)?)
+        },
+        _ => return Err(ComparisonError::InvalidDocument),
+    };
     check(string(fields, "capability_id")? == WEBSOCKET_REVIEW_CAPABILITY_ID)?;
     check(boolean(fields, "selected")?)?;
     check(digest(
@@ -2525,7 +2685,6 @@ pub(super) fn validate_websocket_review(
         string(fields, "endpoint_reference")?,
         "websocket-endpoint-sha256:",
     ))?;
-    check(string(fields, "context")? == "anonymous")?;
 
     let methodology = object(required(fields, "methodology")?)?;
     keys(
@@ -2747,6 +2906,13 @@ pub(super) fn validate_websocket_review(
             && accounted_request_body_bytes == 0
             && accounted_transport_response_bytes == transport_read_bytes,
     )?;
+    if let Some(context) = supplied_session.as_ref() {
+        check(match context.qualification.as_str() {
+            "context_qualified" | "context_unqualified" => request_admitted_count == 1,
+            "not_established" => request_admitted_count == 0,
+            _ => false,
+        })?;
+    }
     if request_admitted_count == 0 {
         check(
             connection_attempt_count == 0
@@ -2882,9 +3048,14 @@ pub(super) fn validate_websocket_review(
     }
 
     let claim_limits = array(fields, "claim_limits")?;
-    check(claim_limits.len() == WEBSOCKET_REVIEW_CLAIM_LIMITS.len())?;
-    for (value, expected) in claim_limits.iter().zip(WEBSOCKET_REVIEW_CLAIM_LIMITS) {
-        check(value.as_str() == Some(expected))?;
+    let expected_claim_limits: &[&str] = if schema == WEBSOCKET_REVIEW_AUDIT_SCHEMA {
+        &WEBSOCKET_REVIEW_CLAIM_LIMITS
+    } else {
+        &WEBSOCKET_SUPPLIED_SESSION_CLAIM_LIMITS
+    };
+    check(claim_limits.len() == expected_claim_limits.len())?;
+    for (value, expected) in claim_limits.iter().zip(expected_claim_limits) {
+        check(value.as_str() == Some(*expected))?;
     }
 
     let methodology_projection = selected_object(
@@ -2933,10 +3104,101 @@ pub(super) fn validate_websocket_review(
     // generic unordered-array canonicalizer used by several catalogue audits.
     outcome_projection.insert("messages".to_owned(), Value::Array(canonical_messages));
     Ok(ImportedWebSocketReviewAudit {
+        schema: schema.to_owned(),
+        supplied_session_identity: supplied_session
+            .as_ref()
+            .map(|context| context.identity.clone()),
+        supplied_session_context: supplied_session.map(|context| context.document),
         methodology: methodology_projection,
         coverage: coverage_projection,
         outcome: Value::Object(outcome_projection),
     })
+}
+
+pub(super) fn validate_websocket_supplied_session_cross_links(
+    websocket: &ImportedWebSocketReviewAudit,
+    supplied_session: Option<&ImportedSuppliedSessionAudit>,
+) -> Result<(), ComparisonError> {
+    if websocket.schema == WEBSOCKET_REVIEW_AUDIT_SCHEMA {
+        return check(
+            websocket.supplied_session_identity.is_none()
+                && websocket.supplied_session_context.is_none(),
+        );
+    }
+    check(websocket.schema == WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA)?;
+    let session = supplied_session.ok_or(ComparisonError::InvalidDocument)?;
+    let root_context = object(&session.context)?;
+    check(string(root_context, "schema")? == SUPPLIED_SESSION_AUDIT_SCHEMA_V1)?;
+    let websocket_identity = object(
+        websocket
+            .supplied_session_identity
+            .as_ref()
+            .ok_or(ComparisonError::InvalidDocument)?,
+    )?;
+    for field in [
+        "policy_reference",
+        "application_reference",
+        "principal_reference",
+        "principal_alias",
+        "principal_assurance",
+        "credential_mechanism",
+        "session_epoch",
+    ] {
+        check(websocket_identity.get(field) == root_context.get(field))?;
+    }
+    check(
+        string(websocket_identity, "mode")? == "health_qualified_authorization_header"
+            && string(root_context, "credential_mechanism")? == "authorization_header",
+    )?;
+    let accounting = object(&session.accounting)?;
+    check(
+        number(
+            accounting,
+            "selected_resource_count",
+            MAX_SUPPLIED_SESSION_RESOURCES,
+        )? == 1
+            && session.resources.len() == 1,
+    )?;
+
+    let websocket_context = object(
+        websocket
+            .supplied_session_context
+            .as_ref()
+            .ok_or(ComparisonError::InvalidDocument)?,
+    )?;
+    let health = object(&session.health_and_coverage)?;
+    let checkpoints = array(health, "checkpoints")?;
+    for phase in ["startup", "terminal"] {
+        check(
+            checkpoints
+                .iter()
+                .filter(|value| {
+                    object(value)
+                        .ok()
+                        .and_then(|fields| string(fields, "phase").ok())
+                        == Some(phase)
+                })
+                .count()
+                <= 1,
+        )?;
+    }
+    let projected_checkpoint = |phase: &str| -> Result<Value, ComparisonError> {
+        let checkpoint = checkpoints.iter().find_map(|value| {
+            let fields = object(value).ok()?;
+            (string(fields, "phase").ok()? == phase).then_some(fields)
+        });
+        checkpoint.map_or(Ok(Value::Null), |fields| {
+            selected_object(fields, &["outcome", "evidence_reference"], &[])
+        })
+    };
+    check(
+        websocket_context.get("startup_health") == Some(&projected_checkpoint("startup")?)
+            && websocket_context.get("terminal_health") == Some(&projected_checkpoint("terminal")?),
+    )?;
+    check(
+        object(&session.accounting)?.get("continuous_authentication_established")
+            == websocket_context.get("continuous_authentication_established"),
+    )
 }
 
 pub(super) fn validate_jwt_policy_review(
@@ -12848,6 +13110,54 @@ mod tests {
 
     fn supplied_session_reference(prefix: &str, byte: char) -> String {
         format!("{prefix}{}", byte.to_string().repeat(64))
+    }
+
+    #[test]
+    fn websocket_session_health_without_a_receipt_is_unqualified_not_invalid() {
+        let mut context = serde_json::json!({
+            "mode": "health_qualified_authorization_header",
+            "policy_reference": supplied_session_reference(
+                "supplied-session-policy-sha256:",
+                '1',
+            ),
+            "application_reference": supplied_session_reference(
+                "supplied-session-application-sha256:",
+                '2',
+            ),
+            "principal_reference": "supplied-session-principal-0001",
+            "principal_alias": "fixture-reader",
+            "principal_assurance": "operator_declared",
+            "credential_mechanism": "authorization_header",
+            "session_epoch": 1,
+            "startup_health": {
+                "outcome": "healthy",
+                "evidence_reference": supplied_session_reference(
+                    "supplied-session-checkpoint-evidence-sha256:",
+                    '3',
+                ),
+            },
+            "terminal_health": {
+                "outcome": "healthy",
+                "evidence_reference": null,
+            },
+            "qualification": "context_unqualified",
+            "continuous_authentication_established": false,
+        });
+        assert!(validate_websocket_supplied_session_context(&context).is_ok());
+
+        context["qualification"] = Value::String("context_qualified".to_owned());
+        assert_eq!(
+            validate_websocket_supplied_session_context(&context).map(|_| ()),
+            Err(ComparisonError::InvalidDocument)
+        );
+
+        context["qualification"] = Value::String("context_unqualified".to_owned());
+        context["terminal_health"]["evidence_reference"] =
+            Value::String("not-a-checkpoint-reference".to_owned());
+        assert_eq!(
+            validate_websocket_supplied_session_context(&context).map(|_| ()),
+            Err(ComparisonError::InvalidDocument)
+        );
     }
 
     fn complete_supplied_session_audit() -> Value {

@@ -42,7 +42,7 @@ use termivar_scanner::ssrf_oast_review::{
 };
 #[cfg(all(
     feature = "supplied-session-review",
-    any(feature = "wordpress-review", test)
+    any(feature = "wordpress-review", feature = "websocket-review", test)
 ))]
 use termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion;
 #[cfg(feature = "supplied-session-review")]
@@ -872,9 +872,24 @@ impl SuppliedSessionInput {
 impl PreparedSuppliedSessionInput {
     /// Policy generation is non-secret and may be used for cross-capability
     /// preflight before any credential source or output destination is opened.
-    #[cfg(any(feature = "wordpress-review", test))]
+    #[cfg(any(
+        feature = "wordpress-review",
+        all(feature = "websocket-review", feature = "supplied-session-review"),
+        test
+    ))]
     pub(crate) const fn policy_version(&self) -> SuppliedSessionPolicyVersion {
         self.policy.version()
+    }
+
+    /// Number of protected resources selected by the validated non-secret
+    /// policy. Combined WebSocket session preflight uses this before output
+    /// reservation or secret acquisition.
+    #[cfg(any(
+        all(feature = "websocket-review", feature = "supplied-session-review"),
+        test
+    ))]
+    pub(crate) fn resource_count(&self) -> usize {
+        self.policy.resource_count()
     }
 
     /// Reads the selected secret exactly once after all non-secret preflight

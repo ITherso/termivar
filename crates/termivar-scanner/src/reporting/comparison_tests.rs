@@ -745,6 +745,132 @@ fn websocket_review_audit() -> Value {
     })
 }
 
+fn supplied_session_websocket_review_audit() -> Value {
+    let mut audit = websocket_review_audit();
+    audit["schema"] = json!("security.websocket-review-audit/v2");
+    audit["context"] = json!("supplied_session");
+    audit["supplied_session_context"] = json!({
+        "mode":"health_qualified_authorization_header",
+        "policy_reference":format!("supplied-session-policy-sha256:{}", "1".repeat(64)),
+        "application_reference":format!(
+            "supplied-session-application-sha256:{}",
+            "2".repeat(64)
+        ),
+        "principal_reference":"supplied-session-principal-0001",
+        "principal_alias":"fixture-user",
+        "principal_assurance":"operator_declared",
+        "credential_mechanism":"authorization_header",
+        "session_epoch":1,
+        "startup_health":{
+            "outcome":"healthy",
+            "evidence_reference":format!(
+                "supplied-session-checkpoint-evidence-sha256:{}",
+                "7".repeat(64)
+            )
+        },
+        "terminal_health":{
+            "outcome":"healthy",
+            "evidence_reference":format!(
+                "supplied-session-checkpoint-evidence-sha256:{}",
+                "8".repeat(64)
+            )
+        },
+        "qualification":"context_qualified",
+        "continuous_authentication_established":false
+    });
+    audit["claim_limits"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("continuous_authentication_not_established"));
+    audit
+}
+
+fn not_established_supplied_session_websocket_review_audit() -> Value {
+    let mut audit = supplied_session_websocket_review_audit();
+    audit["supplied_session_context"]["qualification"] = json!("not_established");
+    audit["coverage"]["terminal"] = json!("incomplete");
+    audit["coverage"]["completeness"] = json!("incomplete");
+    audit["coverage"]["first_failure"] = json!("parent_authority_unavailable");
+    for field in [
+        "request_admitted_count",
+        "connection_attempt_count",
+        "handshake_completed_count",
+        "outbound_message_count",
+        "inbound_message_count",
+        "outbound_control_frame_count",
+        "inbound_control_frame_count",
+        "outbound_application_bytes",
+        "inbound_application_bytes",
+        "transport_read_bytes",
+        "transport_write_bytes",
+        "accounted_request_body_bytes",
+        "accounted_transport_response_bytes",
+        "matched_response_count",
+        "mismatched_response_count",
+    ] {
+        audit["coverage"][field] = json!(0);
+    }
+    audit["coverage"]["request_attempt_count"] = json!(1);
+    for message in audit["messages"].as_array_mut().unwrap() {
+        message["inbound_length"] = Value::Null;
+        message["status"] = json!("not_sent");
+    }
+    audit
+}
+
+fn report_with_supplied_session_websocket_review() -> Value {
+    let mut document = report_with_websocket_review(supplied_session_websocket_review_audit());
+    document["supplied_session"] = supplied_session_audit();
+    document
+}
+
+fn report_with_not_established_supplied_session_websocket_review() -> Value {
+    let mut document =
+        report_with_websocket_review(not_established_supplied_session_websocket_review_audit());
+    document["supplied_session"] = supplied_session_audit();
+    document
+}
+
+fn extend_supplied_session_to_two_resources(document: &mut Value) {
+    let session = &mut document["supplied_session"];
+    session["checkpoints"].as_array_mut().unwrap().insert(
+        1,
+        json!({
+            "sequence":1,
+            "phase":"subject_boundary",
+            "after_subject_count":1,
+            "evidence_reference":format!(
+                "supplied-session-checkpoint-evidence-sha256:{}",
+                "b".repeat(64)
+            ),
+            "outcome":"healthy",
+            "status":200,
+            "body_state":"complete",
+            "predicate":"matched",
+            "response_bytes":31
+        }),
+    );
+    session["checkpoints"][2]["sequence"] = json!(2);
+    session["checkpoints"][2]["after_subject_count"] = json!(2);
+    session["resources"].as_array_mut().unwrap().push(json!({
+        "sequence":1,
+        "resource_reference":format!("supplied-session-resource-sha256:{}", "9".repeat(64)),
+        "evidence_reference":format!(
+            "supplied-session-resource-evidence-sha256:{}",
+            "a".repeat(64)
+        ),
+        "outcome":"committed",
+        "status":200,
+        "response_bytes":29,
+        "epoch":1
+    }));
+    session["selected_resource_count"] = json!(2);
+    session["dispatched_resource_count"] = json!(2);
+    session["committed_resource_count"] = json!(2);
+    session["dispatched_request_count"] = json!(5);
+    session["response_bytes"] = json!(119);
+}
+
 fn report_with_websocket_review(audit: Value) -> Value {
     let mut document = report(Vec::new());
     document["websocket_review"] = audit;
@@ -859,6 +985,9 @@ fn websocket_review_is_strict_feature_independent_value_free_and_self_compares()
         comparison["websocket_review_comparison"]["status"],
         "compared"
     );
+    assert!(comparison["websocket_review_comparison"]
+        .get("supplied_session_context")
+        .is_none());
     for facet in ["methodology", "coverage", "outcome"] {
         assert_eq!(
             comparison["websocket_review_comparison"][facet]["status"],
@@ -895,6 +1024,189 @@ fn websocket_review_is_strict_feature_independent_value_free_and_self_compares()
         assert!(output.contains("WebSocket"));
         assert!(!output.contains("secret-message-payload"));
     }
+}
+
+#[test]
+fn supplied_session_websocket_v2_is_strict_cross_linked_and_self_compares() {
+    let document = report_with_supplied_session_websocket_review();
+    assert!(import_assessment_summary(&bytes(&document)).is_ok());
+
+    let comparison = compare(&document, &document);
+    assert_eq!(
+        comparison["websocket_review_comparison"]["schema"],
+        "termivar-websocket-review-comparison/v2"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["status"],
+        "compared"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["supplied_session_context"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+
+    let mut protocol_incomplete = document.clone();
+    protocol_incomplete["websocket_review"]["coverage"]["terminal"] = json!("incomplete");
+    protocol_incomplete["websocket_review"]["coverage"]["completeness"] = json!("incomplete");
+    protocol_incomplete["websocket_review"]["coverage"]["first_failure"] = json!("close_failed");
+    let comparison = compare(&document, &protocol_incomplete);
+    assert_eq!(
+        comparison["websocket_review_comparison"]["supplied_session_context"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["outcome"]["status"],
+        "changed"
+    );
+
+    for format in [ComparisonFormat::Markdown, ComparisonFormat::Html] {
+        let output = compare_reports(&bytes(&document), &bytes(&document), format).unwrap();
+        assert!(output.contains("termivar-websocket-review-comparison/v2"));
+        assert!(output.contains("continuous authentication"));
+        assert!(!output.contains("secret-message-payload"));
+    }
+}
+
+#[test]
+fn supplied_session_websocket_v2_zero_admission_is_not_established_and_self_compares() {
+    let document = report_with_not_established_supplied_session_websocket_review();
+    assert!(import_assessment_summary(&bytes(&document)).is_ok());
+
+    let comparison = compare(&document, &document);
+    assert_eq!(
+        comparison["websocket_review_comparison"]["schema"],
+        "termivar-websocket-review-comparison/v2"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["supplied_session_context"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["coverage"]["before"]["request_attempt_count"],
+        1
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["coverage"]["before"]["request_admitted_count"],
+        0
+    );
+
+    for invalid_qualification in ["context_qualified", "context_unqualified"] {
+        let mut invalid = document.clone();
+        invalid["websocket_review"]["supplied_session_context"]["qualification"] =
+            json!(invalid_qualification);
+        assert!(import_assessment_summary(&bytes(&invalid)).is_err());
+    }
+    let mut admitted_without_context = document.clone();
+    admitted_without_context["websocket_review"]["coverage"]["request_admitted_count"] = json!(1);
+    assert!(import_assessment_summary(&bytes(&admitted_without_context)).is_err());
+
+    let mut substituted_terminal = document.clone();
+    substituted_terminal["websocket_review"]["supplied_session_context"]["terminal_health"]
+        ["evidence_reference"] = json!(format!(
+        "supplied-session-checkpoint-evidence-sha256:{}",
+        "9".repeat(64)
+    ));
+    assert!(import_assessment_summary(&bytes(&substituted_terminal)).is_err());
+}
+
+#[test]
+fn supplied_session_websocket_v2_rejects_cross_link_and_shape_mutations() {
+    let valid = report_with_supplied_session_websocket_review();
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+
+    for field in [
+        "mode",
+        "policy_reference",
+        "application_reference",
+        "principal_reference",
+        "principal_alias",
+        "principal_assurance",
+        "credential_mechanism",
+        "session_epoch",
+        "startup_health",
+        "terminal_health",
+        "qualification",
+        "continuous_authentication_established",
+    ] {
+        let mut missing = valid.clone();
+        missing["websocket_review"]["supplied_session_context"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            import_assessment_summary(&bytes(&missing)).is_err(),
+            "missing v2 field {field} must be rejected"
+        );
+    }
+
+    let mut wrong_root_policy = valid.clone();
+    wrong_root_policy["supplied_session"]["policy_reference"] =
+        json!(format!("supplied-session-policy-sha256:{}", "9".repeat(64)));
+    assert!(import_assessment_summary(&bytes(&wrong_root_policy)).is_err());
+
+    let mut wrong_checkpoint = valid.clone();
+    wrong_checkpoint["websocket_review"]["supplied_session_context"]["terminal_health"]
+        ["evidence_reference"] = json!(format!(
+        "supplied-session-checkpoint-evidence-sha256:{}",
+        "9".repeat(64)
+    ));
+    assert!(import_assessment_summary(&bytes(&wrong_checkpoint)).is_err());
+
+    let mut continuous = valid.clone();
+    continuous["websocket_review"]["supplied_session_context"]
+        ["continuous_authentication_established"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&continuous)).is_err());
+
+    let mut multiple_resources = valid.clone();
+    extend_supplied_session_to_two_resources(&mut multiple_resources);
+    let mut supplied_session_only = multiple_resources.clone();
+    supplied_session_only
+        .as_object_mut()
+        .unwrap()
+        .remove("websocket_review");
+    assert!(import_assessment_summary(&bytes(&supplied_session_only)).is_ok());
+    assert!(import_assessment_summary(&bytes(&multiple_resources)).is_err());
+
+    let mut schema_downgrade = valid.clone();
+    schema_downgrade["websocket_review"]["schema"] = json!("security.websocket-review-audit/v1");
+    assert!(import_assessment_summary(&bytes(&schema_downgrade)).is_err());
+}
+
+#[test]
+fn websocket_v1_and_v2_are_not_comparable_and_v2_context_identity_must_match() {
+    let v1 = report_with_websocket_review(websocket_review_audit());
+    let v2 = report_with_supplied_session_websocket_review();
+    let comparison = compare(&v1, &v2);
+    assert_eq!(
+        comparison["websocket_review_comparison"]["schema"],
+        "termivar-websocket-review-comparison/v2"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["reason"],
+        "audit_schema_changed"
+    );
+
+    let mut different_principal = v2.clone();
+    different_principal["supplied_session"]["principal_alias"] = json!("fixture-peer");
+    different_principal["websocket_review"]["supplied_session_context"]["principal_alias"] =
+        json!("fixture-peer");
+    let comparison = compare(&v2, &different_principal);
+    assert_eq!(
+        comparison["websocket_review_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["websocket_review_comparison"]["reason"],
+        "supplied_session_context_changed"
+    );
 }
 
 #[test]

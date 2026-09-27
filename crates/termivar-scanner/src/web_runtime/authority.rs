@@ -15,6 +15,8 @@ use crate::{
     HttpEvidencePolicy, KnowledgeBase, RuntimeBudget,
 };
 
+#[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+use super::supplied_session_runtime::SuppliedSessionWebSocketPermit;
 #[cfg(feature = "websocket-review")]
 use super::websocket_runtime::{WebSocketReviewRuntime, WebSocketReviewRuntimeMintError};
 #[cfg(feature = "websocket-review")]
@@ -314,6 +316,62 @@ impl SharedWebRuntimeAuthority {
             self.request_accounting.clone(),
             self.cancellation.clone(),
             self.start().deadline(),
+        )?;
+        *minted = true;
+        Ok(runtime)
+    }
+
+    /// Mints the same one-shot WebSocket child only after the supplied-session
+    /// runtime presents its exact committed startup-health proof. The permit
+    /// borrows the guarded Authorization value; this authority never retains it.
+    #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+    pub(super) fn mint_supplied_session_websocket(
+        &self,
+        policy: &WebSocketReviewPolicy,
+        permit: &SuppliedSessionWebSocketPermit<'_>,
+    ) -> Result<WebSocketReviewRuntime, WebSocketReviewRuntimeMintError> {
+        let parent_deadline = self.start().deadline();
+        if !permit.is_valid_for(
+            &self.selected_target,
+            policy,
+            &self.knowledge,
+            parent_deadline,
+        ) || !policy.is_bound_to_application(&self.selected_target)
+        {
+            return Err(WebSocketReviewRuntimeMintError::EndpointOutsideAuthority);
+        }
+        let mut handshake_target = policy.execution_endpoint().clone();
+        let handshake_scheme = match handshake_target.scheme() {
+            "ws" => "http",
+            "wss" => "https",
+            _ => return Err(WebSocketReviewRuntimeMintError::EndpointOutsideAuthority),
+        };
+        handshake_target
+            .set_scheme(handshake_scheme)
+            .map_err(|()| WebSocketReviewRuntimeMintError::EndpointOutsideAuthority)?;
+        self.authorize_target(&handshake_target)
+            .map_err(|_| WebSocketReviewRuntimeMintError::EndpointOutsideAuthority)?;
+        let application_origin = handshake_target.origin().ascii_serialization();
+        if policy
+            .execution_origin()
+            .is_some_and(|origin| origin != application_origin)
+        {
+            return Err(WebSocketReviewRuntimeMintError::EndpointOutsideAuthority);
+        }
+
+        let mut minted = self
+            .websocket_review_minted
+            .lock()
+            .map_err(|_| WebSocketReviewRuntimeMintError::InternalInvariant)?;
+        if *minted {
+            return Err(WebSocketReviewRuntimeMintError::AuthorityAlreadyMinted);
+        }
+        let runtime = WebSocketReviewRuntime::new(
+            policy,
+            application_origin,
+            self.request_accounting.clone(),
+            self.cancellation.clone(),
+            permit.session_deadline(),
         )?;
         *minted = true;
         Ok(runtime)
