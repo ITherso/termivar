@@ -366,6 +366,8 @@ jobs:
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review --test wordpress_supplied_session_cli -- --nocapture
       - name: Exercise supplied-session and OAST preflight composition
         run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,supplied-session-review,ssrf-oast-review --test supplied_session_cli oast_policy_precedes_every_compatible_secret_and_output_acquisition -- --exact --nocapture
+      - name: Exercise delayed native OAST replay polling
+        run: cargo test --locked -p termivar-scanner --no-default-features --features ssrf-oast-review --lib web_runtime::ssrf_oast_runtime::tests::polling_waits_for_the_expected_replay_event_after_an_empty_first_poll -- --exact --nocapture
       - name: Test first-use fixture and checked-in sample contracts
         run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
       - name: Test release archive verification contracts
