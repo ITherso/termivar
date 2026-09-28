@@ -40,11 +40,14 @@ pub use protocol::{
 pub use secret::AdminToken;
 pub use state::ProviderState;
 
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub use server::serve_provider_on_listener;
 #[cfg(feature = "server")]
 pub use server::{serve_provider, ProviderServerError};
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use server::{
+    serve_provider_on_listener, serve_provider_on_listener_with_poll_barrier,
+    ProviderTestPollBarrier,
+};
 
 /// Closed failures for native-provider configuration and state transitions.
 ///

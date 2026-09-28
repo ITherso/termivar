@@ -1656,24 +1656,88 @@ fn server_surface_violations(
             ));
         }
     }
-    let fixture_listeners = server
+    for fixture_name in [
+        "serve_provider_on_listener",
+        "serve_provider_on_listener_with_poll_barrier",
+    ] {
+        let fixtures = server
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Fn(function) if function.sig.ident == fixture_name => Some(function),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if fixtures.len() != 1
+            || !matches!(fixtures[0].vis, Visibility::Public(_))
+            || cfg_feature_names(&fixtures[0].attrs) != BTreeSet::from(["test-support".to_owned()])
+            || !has_doc_hidden(&fixtures[0].attrs)
+        {
+            violations.push(format!(
+                "{PACKAGE} fixture `{fixture_name}` must be exactly public, doc-hidden, and gated only by `test-support`"
+            ));
+        }
+    }
+    let fixture_barriers = server
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "serve_provider_on_listener" => {
-                Some(function)
+            Item::Struct(item) if item.ident == "ProviderTestPollBarrier" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if fixture_barriers.len() != 1
+        || !matches!(fixture_barriers[0].vis, Visibility::Public(_))
+        || cfg_feature_names(&fixture_barriers[0].attrs)
+            != BTreeSet::from(["test-support".to_owned()])
+        || !has_doc_hidden(&fixture_barriers[0].attrs)
+    {
+        violations.push(format!(
+            "{PACKAGE} fixture poll barrier must be exactly public, doc-hidden, and gated only by `test-support`"
+        ));
+    }
+    let fixture_barrier_impls = server
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if implementation.trait_.is_none()
+                    && matches!(implementation.self_ty.as_ref(), Type::Path(path)
+                        if path.qself.is_none()
+                            && path.path.is_ident("ProviderTestPollBarrier")) =>
+            {
+                Some(implementation)
             },
             _ => None,
         })
         .collect::<Vec<_>>();
-    if fixture_listeners.len() != 1
-        || !matches!(fixture_listeners[0].vis, Visibility::Public(_))
-        || cfg_feature_names(&fixture_listeners[0].attrs)
+    let public_barrier_methods = fixture_barrier_impls
+        .first()
+        .map(|implementation| {
+            implementation
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    syn::ImplItem::Fn(method) if matches!(method.vis, Visibility::Public(_)) => {
+                        Some(method.sig.ident.to_string())
+                    },
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if fixture_barrier_impls.len() != 1
+        || cfg_feature_names(&fixture_barrier_impls[0].attrs)
             != BTreeSet::from(["test-support".to_owned()])
-        || !has_doc_hidden(&fixture_listeners[0].attrs)
+        || public_barrier_methods
+            != BTreeSet::from([
+                "arm".to_owned(),
+                "new".to_owned(),
+                "wait_for_poll_snapshot".to_owned(),
+            ])
     {
         violations.push(format!(
-            "{PACKAGE} fixture listener must be exactly public, doc-hidden, and gated only by `test-support`"
+            "{PACKAGE} fixture poll barrier must expose only the exact test-support coordination methods"
         ));
     }
     for function in server.items.iter().filter_map(|item| match item {
@@ -1683,7 +1747,9 @@ fn server_surface_violations(
         if matches!(function.vis, Visibility::Public(_))
             && !matches!(
                 function.sig.ident.to_string().as_str(),
-                "serve_provider" | "serve_provider_on_listener"
+                "serve_provider"
+                    | "serve_provider_on_listener"
+                    | "serve_provider_on_listener_with_poll_barrier"
             )
         {
             violations.push(format!(
@@ -1749,10 +1815,20 @@ fn server_surface_violations(
                 BTreeSet::from(["test-support".to_owned()]),
                 true,
             ),
+            (
+                "server::serve_provider_on_listener_with_poll_barrier".to_owned(),
+                BTreeSet::from(["test-support".to_owned()]),
+                true,
+            ),
+            (
+                "server::ProviderTestPollBarrier".to_owned(),
+                BTreeSet::from(["test-support".to_owned()]),
+                true,
+            ),
         ])
     {
         violations.push(format!(
-            "{PACKAGE} library must export only its server API plus the exact doc-hidden test-support listener fixture"
+            "{PACKAGE} library must export only its server API plus the exact doc-hidden test-support fixture surface"
         ));
     }
 
@@ -2603,6 +2679,26 @@ mod tests {
             pub async fn serve_provider_on_listener(listener: TcpListener, provider: ProviderState) -> Result<(), Error> {
                 serve_listener(listener, provider).await
             }
+            #[cfg(feature = "test-support")]
+            #[doc(hidden)]
+            pub struct ProviderTestPollBarrier;
+            #[cfg(feature = "test-support")]
+            impl ProviderTestPollBarrier {
+                pub fn new() -> Self { Self }
+                pub fn arm(&self) {}
+                pub async fn wait_for_poll_snapshot(&self) -> bool { true }
+                fn record_callback(&self) {}
+            }
+            #[cfg(feature = "test-support")]
+            #[doc(hidden)]
+            pub async fn serve_provider_on_listener_with_poll_barrier(
+                listener: TcpListener,
+                provider: ProviderState,
+                barrier: ProviderTestPollBarrier,
+            ) -> Result<(), Error> {
+                let _ = barrier;
+                serve_listener(listener, provider).await
+            }
             async fn serve_listener(listener: TcpListener, provider: ProviderState) -> Result<(), Error> {
                 let connection_limit = usize::from(provider.max_concurrent_requests());
                 let router = provider_router(provider);
@@ -2703,7 +2799,11 @@ mod tests {
             mod server;
             #[cfg(feature = "test-support")]
             #[doc(hidden)]
-            pub use server::serve_provider_on_listener;
+            pub use server::{
+                serve_provider_on_listener,
+                serve_provider_on_listener_with_poll_barrier,
+                ProviderTestPollBarrier,
+            };
             #[cfg(feature = "server")]
             pub use server::{serve_provider, ProviderServerError};
         "#
@@ -2744,6 +2844,30 @@ mod tests {
             (
                 valid_server_source().replacen("#[doc(hidden)]", "", 1),
                 valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "pub struct ProviderTestPollBarrier;",
+                    "pub struct RenamedTestPollBarrier;",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "pub async fn wait_for_poll_snapshot",
+                    "pub async fn wait_for_any_poll_snapshot",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().to_owned(),
+                valid_library_source().replacen(
+                    "serve_provider_on_listener_with_poll_barrier,",
+                    "",
+                    1,
+                ),
             ),
         ] {
             assert!(!server_surface_violations(&server, &library)

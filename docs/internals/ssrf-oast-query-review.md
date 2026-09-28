@@ -38,8 +38,8 @@ closed. Unrelated query pairs keep their order and exact encoded values.
 
 ## Bounded execution
 
-One complete review owns one logical active verification and exactly three
-target request legs:
+One review is bounded to at most one logical active verification and at most
+three target request legs. A completed positive path uses all three legs:
 
 1. `Control`, using a case-bound HTTPS URL under the reserved `.invalid` TLD;
 2. `Candidate`, using a freshly allocated provider callback;

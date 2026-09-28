@@ -147,8 +147,9 @@ feature is not runtime opt-in. The [feature lifecycle](FEATURES.md) and
 [runtime map](docs/internals/runtime-map.md) describe the actual boundaries,
 including the separately gated historical runner. Current development source
 corrects the F3 candidate/replay polling-phase completion defect without raising
-the optional OAST review above `NeedsReview` / `KnowledgeOnly`; published
-archives retain their original behavior. See the
+the optional OAST review above `NeedsReview` / `KnowledgeOnly`. The published
+alpha.2 tag retains the historical source defect, while its downloadable
+`release-bundle` binaries did not compile this review. See the
 [maintenance ledger](docs/audits/native-oast-corrective-maintenance.md#finding-ledger).
 
 ## Documentation

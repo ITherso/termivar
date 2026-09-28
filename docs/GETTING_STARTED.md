@@ -175,10 +175,11 @@ The hashes identify the two files that were executed; they are not build
 attestations. The historical `v0.10.0-alpha.1` archives and earlier pinned
 `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` source walkthrough predate this
 command; the published alpha.2 archives include it. Those published archives
-retain the historical unresolved F3 behavior. Current development source
-corrects candidate/replay polling-phase completion, but compiling
-`ssrf-oast-review` still does not activate it or raise its maximum result above
-`NeedsReview` / `KnowledgeOnly`.
+report `ssrf-oast-review=not_compiled`, as shown above. The published alpha.2
+tag retains the historical source defect; current development source corrects
+candidate/replay polling-phase completion. Compiling `ssrf-oast-review` still
+does not activate it or raise its maximum result above `NeedsReview` /
+`KnowledgeOnly`.
 
 ## Review one supplied JWT against a local policy
 

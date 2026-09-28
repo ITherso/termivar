@@ -715,7 +715,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "--ssrf-oast-policy FILE",
                 "one of --oast-admin-token-env, --oast-admin-token-file, or --oast-admin-token-stdin",
             ],
-            "Explicit non-bundled opt-in with exactly three anonymous bodyless target GETs, one active verification, at most seven post-dispatch polls, and at most twelve provider operations. Candidate polling may finish after the fresh candidate event; replay polling finishes only after both distinct fresh callback events or an existing bound/terminal state. Both events are required for one NeedsReview / KnowledgeOnly item. It never produces Confirmed, establishes SSRF or exploitability, or validates impact; published alpha.2 archives retain their historical F3 behavior.",
+            "Explicit non-bundled opt-in with at most three anonymous bodyless target GETs, at most one active verification, at most seven post-dispatch polls, and at most twelve provider operations. A completed positive path uses all three target legs and the single active verification. Candidate polling may finish after the fresh candidate event; replay polling finishes only after both distinct fresh callback events or an existing bound/terminal state. Both events are required for one NeedsReview / KnowledgeOnly item. It never produces Confirmed, establishes SSRF or exploitability, or validates impact. The published alpha.2 tag retains the historical source defect; its downloadable release-bundle binaries did not compile this review.",
             "docs/audits/native-oast-corrective-maintenance.md",
         ),
         surface!(

@@ -10,6 +10,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "test-support")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use axum::{
     body::{Body, Bytes},
     extract::{rejection::BytesRejection, DefaultBodyLimit, OriginalUri, State},
@@ -26,6 +29,8 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use serde::Serialize;
+#[cfg(feature = "test-support")]
+use tokio::sync::Notify;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpListener,
@@ -53,6 +58,8 @@ const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECTION_LIFETIME: Duration = Duration::from_secs(120);
+#[cfg(feature = "test-support")]
+const TEST_POLL_BARRIER_TIMEOUT: Duration = Duration::from_secs(2);
 const _: () = assert!(
     !HEADER_READ_TIMEOUT.is_zero()
         && HEADER_READ_TIMEOUT.as_secs() < REQUEST_TIMEOUT.as_secs()
@@ -64,6 +71,8 @@ const _: () = assert!(
 struct AppState {
     provider: Arc<Mutex<ProviderState>>,
     requests: Arc<Semaphore>,
+    #[cfg(feature = "test-support")]
+    test_poll_barrier: Option<ProviderTestPollBarrier>,
 }
 
 impl AppState {
@@ -72,7 +81,15 @@ impl AppState {
         Self {
             provider: Arc::new(Mutex::new(provider)),
             requests: Arc::new(Semaphore::new(permits)),
+            #[cfg(feature = "test-support")]
+            test_poll_barrier: None,
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    fn with_test_poll_barrier(mut self, barrier: ProviderTestPollBarrier) -> Self {
+        self.test_poll_barrier = Some(barrier);
+        self
     }
 
     fn admit(&self) -> Result<OwnedSemaphorePermit, HttpFailure> {
@@ -80,6 +97,101 @@ impl AppState {
             .try_acquire_owned()
             .map_err(|_| HttpFailure::unavailable())
     }
+
+    #[cfg(feature = "test-support")]
+    fn request_limit(&self) -> usize {
+        self.requests.available_permits()
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Default)]
+struct ProviderTestPollBarrierState {
+    armed: AtomicBool,
+    poll_snapshot_taken: AtomicBool,
+    callback_recorded: AtomicBool,
+    poll_snapshot_notify: Notify,
+    callback_recorded_notify: Notify,
+}
+
+/// Test-only synchronization for one deliberately empty provider poll.
+///
+/// This hook coordinates an owned callback fixture without changing provider
+/// state, poll contents, request accounting, or production scheduling.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct ProviderTestPollBarrier {
+    state: Arc<ProviderTestPollBarrierState>,
+}
+
+#[cfg(feature = "test-support")]
+impl ProviderTestPollBarrier {
+    /// Creates a disarmed one-shot fixture barrier.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Arms the next provider poll as the fixture accepts its replay target leg.
+    pub fn arm(&self) {
+        self.state
+            .poll_snapshot_taken
+            .store(false, Ordering::SeqCst);
+        self.state.callback_recorded.store(false, Ordering::SeqCst);
+        self.state.armed.store(true, Ordering::SeqCst);
+    }
+
+    /// Waits until the armed poll has taken its immutable response snapshot.
+    ///
+    /// The return value is false only when the bounded fixture guard expires.
+    pub async fn wait_for_poll_snapshot(&self) -> bool {
+        wait_for_test_flag(
+            &self.state.poll_snapshot_taken,
+            &self.state.poll_snapshot_notify,
+        )
+        .await
+    }
+
+    async fn hold_first_armed_poll(&self) {
+        if !self.state.armed.load(Ordering::SeqCst)
+            || self
+                .state
+                .poll_snapshot_taken
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+        {
+            return;
+        }
+        self.state.poll_snapshot_notify.notify_waiters();
+        let _ = wait_for_test_flag(
+            &self.state.callback_recorded,
+            &self.state.callback_recorded_notify,
+        )
+        .await;
+        self.state.armed.store(false, Ordering::SeqCst);
+    }
+
+    fn record_callback(&self) {
+        if self.state.armed.load(Ordering::SeqCst) {
+            self.state.callback_recorded.store(true, Ordering::SeqCst);
+            self.state.callback_recorded_notify.notify_waiters();
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+async fn wait_for_test_flag(flag: &AtomicBool, notify: &Notify) -> bool {
+    timeout(TEST_POLL_BARRIER_TIMEOUT, async {
+        loop {
+            let notified = notify.notified();
+            if flag.load(Ordering::SeqCst) {
+                break;
+            }
+            notified.await;
+        }
+    })
+    .await
+    .is_ok()
 }
 
 /// Static, value-free listener failures.
@@ -207,12 +319,40 @@ pub async fn serve_provider_on_listener(
     serve_listener(listener, provider).await
 }
 
+/// Serves an owned fixture with one test-controlled poll snapshot barrier.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub async fn serve_provider_on_listener_with_poll_barrier(
+    listener: TcpListener,
+    provider: ProviderState,
+    barrier: ProviderTestPollBarrier,
+) -> Result<(), ProviderServerError> {
+    let address = listener
+        .local_addr()
+        .map_err(|_| ProviderServerError::Bind)?;
+    if !address.ip().is_loopback() || address != provider.bind().socket_addr() {
+        return Err(ProviderServerError::Bind);
+    }
+    let state = AppState::new(provider).with_test_poll_barrier(barrier);
+    let connection_limit = state.request_limit();
+    let router = router_with_state(state);
+    serve_router(listener, router, connection_limit).await
+}
+
 async fn serve_listener(
     listener: TcpListener,
     provider: ProviderState,
 ) -> Result<(), ProviderServerError> {
     let connection_limit = usize::from(provider.max_concurrent_requests());
     let router = provider_router(provider);
+    serve_router(listener, router, connection_limit).await
+}
+
+async fn serve_router(
+    listener: TcpListener,
+    router: Router,
+    connection_limit: usize,
+) -> Result<(), ProviderServerError> {
     let mut connections = FuturesUnordered::new();
 
     loop {
@@ -410,12 +550,18 @@ async fn poll(
     let body = body.map_err(HttpFailure::from_bytes_rejection)?;
     require_empty_body(&body)?;
     let bearer = session_bearer(&headers)?;
-    let page = state
-        .provider
-        .lock()
-        .await
-        .poll_bearer(&session_id, bearer.expose_bytes(), after)
-        .map_err(HttpFailure::from_provider)?;
+    let page = {
+        state
+            .provider
+            .lock()
+            .await
+            .poll_bearer(&session_id, bearer.expose_bytes(), after)
+            .map_err(HttpFailure::from_provider)?
+    };
+    #[cfg(feature = "test-support")]
+    if let Some(barrier) = &state.test_poll_barrier {
+        barrier.hold_first_armed_poll().await;
+    }
     poll_response(page)
 }
 
@@ -472,11 +618,20 @@ async fn observe_callback(
     // Every internal disposition, including entropy/capacity failure, is
     // deliberately collapsed to the same public response. Retention failures
     // are sticky in provider state and prevent a later complete poll.
-    let _ = state
+    let recorded = state
         .provider
         .lock()
         .await
-        .observe_callback(&session_id, &callback_id, method);
+        .observe_callback(&session_id, &callback_id, method)
+        .is_ok_and(|disposition| disposition == crate::CallbackDisposition::Recorded);
+    #[cfg(feature = "test-support")]
+    if recorded {
+        if let Some(barrier) = &state.test_poll_barrier {
+            barrier.record_callback();
+        }
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = recorded;
     callback_no_content()
 }
 

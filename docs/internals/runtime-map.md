@@ -434,11 +434,12 @@ The separately gated [SSRF OAST query review](ssrf-oast-query-review.md) is the
 only product caller that joins this narrowing provider authority to target-side
 authority. One strict policy may select one structurally eligible query
 occurrence. One `.invalid` control and two independent callback mutations use
-exactly three anonymous bodyless target GETs, one logical active verification,
-and at most twelve fixed provider requests. Both fresh callback identities must
-be observed after their respective dispatches; one-sided or noisy interaction
-never creates an item. The maximum conclusion is `NeedsReview` /
-`KnowledgeOnly`, never confirmed SSRF or inferred impact.
+at most three anonymous bodyless target GETs, at most one logical active
+verification, and at most twelve fixed provider requests. A completed positive
+path uses all three target legs and the single active verification. Both fresh
+callback identities must be observed after their respective dispatches;
+one-sided or noisy interaction never creates an item. The maximum conclusion is
+`NeedsReview` / `KnowledgeOnly`, never confirmed SSRF or inferred impact.
 
 The [OpenAPI contract catalog](openapi-contract-catalog.md) is a
 transport-neutral foundation rather than a product runtime. It accepts only

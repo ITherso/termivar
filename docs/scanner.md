@@ -15,9 +15,11 @@ V1 selects at most one exact query-parameter occurrence whose observed value
 is an absolute HTTP(S) URL, or one eligible optional `url`/`uri` query
 parameter from a complete same-run OpenAPI catalog. It never guesses from a
 name or materializes an example/default. The target plan is exactly one inert
-`.invalid` control plus candidate and replay: three anonymous bodyless GETs and
-one logical active verification. Candidate and replay use distinct provider
-callbacks and both must yield fresh, correctly correlated HTTP events before
+`.invalid` control plus candidate and replay. Execution is bounded to at most
+three anonymous bodyless GETs and at most one logical active verification; a
+completed positive path uses all three target legs and the single active
+verification. Candidate and replay use distinct provider callbacks and both
+must yield fresh, correctly correlated HTTP events before
 `ssrf.oast-repeated-outbound-interaction@1` may be projected as
 `NeedsReview` / `KnowledgeOnly` with no severity. One-sided callbacks, timing,
 status codes, provider noise, and business-impact inference are insufficient.
@@ -30,8 +32,9 @@ See [SSRF OAST query review](internals/ssrf-oast-query-review.md).
     bound/terminal state. The target plan remains exactly three requests and
     provider work remains bounded by seven post-dispatch polls and twelve total
     operations. This correction does not establish SSRF, exploitability, or
-    impact and cannot produce a `Confirmed` item. Published archives retain
-    their historical behavior. See the
+    impact and cannot produce a `Confirmed` item. Published alpha.2
+    `release-bundle` binaries have no executable F3 path because they did not
+    compile this review; the tag retains the historical source defect. See the
     [maintenance ledger](audits/native-oast-corrective-maintenance.md#finding-ledger).
 
 ## Optional OpenAPI surface review

@@ -1849,9 +1849,9 @@ mod tests {
     };
 
     use termivar_oast::{
-        serve_provider_on_listener, AdminToken, LoopbackBind, ProviderConfig, ProviderLimits,
-        ProviderState, CALLBACK_SCHEMA, CLEANUP_SCHEMA, NATIVE_OAST_PROTOCOL_REVISION,
-        SESSION_SCHEMA,
+        serve_provider_on_listener, serve_provider_on_listener_with_poll_barrier, AdminToken,
+        LoopbackBind, ProviderConfig, ProviderLimits, ProviderState, ProviderTestPollBarrier,
+        CALLBACK_SCHEMA, CLEANUP_SCHEMA, NATIVE_OAST_PROTOCOL_REVISION, SESSION_SCHEMA,
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1895,10 +1895,12 @@ mod tests {
     }
 
     async fn loopback_fixture() -> LoopbackFixture {
-        loopback_fixture_with_replay_delay(None).await
+        loopback_fixture_with_replay_barrier(None).await
     }
 
-    async fn loopback_fixture_with_replay_delay(replay_delay: Option<Duration>) -> LoopbackFixture {
+    async fn loopback_fixture_with_replay_barrier(
+        replay_barrier: Option<ProviderTestPollBarrier>,
+    ) -> LoopbackFixture {
         let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_address = provider_listener.local_addr().unwrap();
         let provider_origin = PublicOrigin::from_test_loopback(provider_address).unwrap();
@@ -1920,8 +1922,14 @@ mod tests {
             AdminToken::new(ADMIN_SECRET.to_vec()).unwrap(),
         )
         .unwrap();
+        let provider_barrier = replay_barrier.clone();
         let provider_task = tokio::spawn(async move {
-            let _ = serve_provider_on_listener(provider_listener, provider).await;
+            let _ = if let Some(barrier) = provider_barrier {
+                serve_provider_on_listener_with_poll_barrier(provider_listener, provider, barrier)
+                    .await
+            } else {
+                serve_provider_on_listener(provider_listener, provider).await
+            };
         });
 
         let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1967,9 +1975,13 @@ mod tests {
                                 .is_some_and(|host| host.ends_with(".invalid"));
                             if !is_inert {
                                 let ordinal = callback_ordinal.fetch_add(1, Ordering::SeqCst);
-                                if let (1, Some(delay)) = (ordinal, replay_delay) {
+                                if let (1, Some(barrier)) = (ordinal, replay_barrier.as_ref()) {
+                                    barrier.arm();
+                                    let barrier = barrier.clone();
                                     tokio::spawn(async move {
-                                        tokio::time::sleep(delay).await;
+                                        if !barrier.wait_for_poll_snapshot().await {
+                                            return;
+                                        }
                                         let client = reqwest::Client::builder()
                                             .redirect(reqwest::redirect::Policy::none())
                                             .build()
@@ -2788,7 +2800,8 @@ mod tests {
 
     #[tokio::test]
     async fn polling_waits_for_the_expected_replay_event_after_an_empty_first_poll() {
-        let fixture = loopback_fixture_with_replay_delay(Some(Duration::from_millis(375))).await;
+        let fixture =
+            loopback_fixture_with_replay_barrier(Some(ProviderTestPollBarrier::new())).await;
         let policy = SsrfOastReviewPolicy::for_loopback(
             fixture.target.clone(),
             fixture.provider_origin.clone(),

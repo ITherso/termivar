@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use syn::{Fields, Item, Visibility};
+use syn::{visit::Visit, Expr, Fields, Item, Visibility};
 
 const SCANNER_MANIFEST: &str = "crates/termivar-scanner/Cargo.toml";
 const CLI_MANIFEST: &str = "crates/termivar-cli/Cargo.toml";
@@ -490,8 +490,13 @@ fn contract_violations(sources: &ContractSources) -> Result<Vec<String>, Box<dyn
                 .count()
                 == 1
             && runtime.contains("phase:SsrfOastPollPhase,")
-            && runtime.matches("SsrfOastPollPhase::Candidate,").count() == 1
-            && runtime.matches("SsrfOastPollPhase::Replay,").count() == 1
+            && execute_active_poll_trace(&sources.runtime)?
+                == Some(vec![
+                    ExecuteActiveTraceEvent::CandidateTarget,
+                    ExecuteActiveTraceEvent::CandidatePoll,
+                    ExecuteActiveTraceEvent::ReplayTarget,
+                    ExecuteActiveTraceEvent::ReplayPoll,
+                ])
             && runtime.contains(
                 "ifphase.expected_event_observed(prepared.facts.candidate_event.is_some(),prepared.facts.replay_event.is_some(),){break;}",
             )
@@ -793,6 +798,120 @@ fn exact_private_unit_enum_variants(
             .map(|variant| variant.ident.to_string())
             .collect(),
     ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecuteActiveTraceEvent {
+    CandidateTarget,
+    CandidatePoll,
+    ReplayTarget,
+    ReplayPoll,
+}
+
+fn execute_active_poll_trace(
+    source: &str,
+) -> Result<Option<Vec<ExecuteActiveTraceEvent>>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let methods = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if implementation.trait_.is_none()
+                    && matches!(implementation.self_ty.as_ref(), syn::Type::Path(path)
+                        if path.qself.is_none()
+                            && path.path.is_ident("SsrfOastDecisionExecutor")) =>
+            {
+                implementation.items.iter().find_map(|item| match item {
+                    syn::ImplItem::Fn(method) if method.sig.ident == "execute_active" => {
+                        Some(method)
+                    },
+                    _ => None,
+                })
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [method] = methods.as_slice() else {
+        return Ok(None);
+    };
+    let mut visitor = ExecuteActiveTraceVisitor::default();
+    visitor.visit_block(&method.block);
+    if visitor.invalid {
+        Ok(None)
+    } else {
+        Ok(Some(visitor.events))
+    }
+}
+
+#[derive(Default)]
+struct ExecuteActiveTraceVisitor {
+    events: Vec<ExecuteActiveTraceEvent>,
+    invalid: bool,
+}
+
+impl<'ast> Visit<'ast> for ExecuteActiveTraceVisitor {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        let Expr::Path(function) = call.func.as_ref() else {
+            syn::visit::visit_expr_call(self, call);
+            return;
+        };
+        if function.qself.is_none() && function.path.is_ident("collect_target") {
+            match call.args.last().and_then(target_leg_from_argument) {
+                Some(event) => self.events.push(event),
+                None => self.invalid = true,
+            }
+        } else if function.qself.is_none() && function.path.is_ident("poll_for_events") {
+            match call.args.iter().nth(3).and_then(poll_phase_from_argument) {
+                Some(event) => self.events.push(event),
+                None => self.invalid = true,
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+}
+
+fn target_leg_from_argument(argument: &Expr) -> Option<ExecuteActiveTraceEvent> {
+    let Expr::Reference(reference) = argument else {
+        return None;
+    };
+    if reference.mutability.is_some() {
+        return None;
+    }
+    let Expr::Path(path) = reference.expr.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    match path.path.segments.first()?.ident.to_string().as_str() {
+        "candidate_url" => Some(ExecuteActiveTraceEvent::CandidateTarget),
+        "replay_url" => Some(ExecuteActiveTraceEvent::ReplayTarget),
+        _ => None,
+    }
+}
+
+fn poll_phase_from_argument(argument: &Expr) -> Option<ExecuteActiveTraceEvent> {
+    let Expr::Path(path) = argument else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.leading_colon.is_some() || path.path.segments.len() != 2 {
+        return None;
+    }
+    let mut segments = path.path.segments.iter();
+    let owner = segments.next()?;
+    let phase = segments.next()?;
+    if owner.ident != "SsrfOastPollPhase"
+        || !matches!(&owner.arguments, syn::PathArguments::None)
+        || !matches!(&phase.arguments, syn::PathArguments::None)
+    {
+        return None;
+    }
+    match phase.ident.to_string().as_str() {
+        "Candidate" => Some(ExecuteActiveTraceEvent::CandidatePoll),
+        "Replay" => Some(ExecuteActiveTraceEvent::ReplayPoll),
+        _ => None,
+    }
 }
 
 fn diagnostic_field_type_is_closed(ty: &syn::Type) -> bool {
@@ -1207,6 +1326,15 @@ mod tests {
             exact_private_unit_enum_variants(&sources.runtime, "SsrfOastPollPhase").unwrap(),
             Some(string_set(&["Candidate", "Replay"]))
         );
+        assert_eq!(
+            execute_active_poll_trace(&sources.runtime).unwrap(),
+            Some(vec![
+                ExecuteActiveTraceEvent::CandidateTarget,
+                ExecuteActiveTraceEvent::CandidatePoll,
+                ExecuteActiveTraceEvent::ReplayTarget,
+                ExecuteActiveTraceEvent::ReplayPoll,
+            ])
+        );
 
         for (from, to) in [
             (
@@ -1229,6 +1357,28 @@ mod tests {
             "enum SsrfOastPollPhase {",
             "pub(crate) enum SsrfOastPollPhase {",
         );
+        assert_gate_fails(&mutation, 27);
+
+        let sources = current_sources();
+        let mut mutation = sources.clone();
+        mutation.runtime = mutation
+            .runtime
+            .replacen(
+                "SsrfOastPollPhase::Candidate,",
+                "SsrfOastPollPhase::__SWAP__,",
+                1,
+            )
+            .replacen(
+                "SsrfOastPollPhase::Replay,",
+                "SsrfOastPollPhase::Candidate,",
+                1,
+            )
+            .replacen(
+                "SsrfOastPollPhase::__SWAP__,",
+                "SsrfOastPollPhase::Replay,",
+                1,
+            );
+        assert_ne!(mutation.runtime, sources.runtime);
         assert_gate_fails(&mutation, 27);
     }
 

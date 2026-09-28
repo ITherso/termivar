@@ -32,7 +32,8 @@ All notable changes to Termivar are recorded here. Releases use the categories f
   requires both distinct expected events or an existing bound/terminal state.
   The three-target-request, seven-post-dispatch-poll and twelve-provider-operation
   ceilings remain unchanged, as does the `NeedsReview` / `KnowledgeOnly` claim
-  ceiling. Published alpha.2 archives retain their historical F3 behavior.
+  ceiling. The published alpha.2 tag retains the historical source defect, while
+  its downloadable `release-bundle` binaries did not compile this review.
 
 ## [0.10.0-alpha.2] - 2026-09-06
 
@@ -60,13 +61,14 @@ All notable changes to Termivar are recorded here. Releases use the categories f
   `release-bundle` marker is composition metadata, not trusted provenance.
 - Added a non-default SSRF OAST query review for one operator-authorized,
   structurally eligible query parameter. One `.invalid` control and two
-  independently allocated HTTPS callback targets use exactly three anonymous,
-  bodyless target GETs, one logical active verification, and at most twelve
-  fixed provider-management requests. Only two correctly correlated callback
-  observations can produce `NeedsReview` / `KnowledgeOnly` evidence; one-sided
-  callbacks, timing, target status, and provider noise produce no item. The
-  feature retains no raw target/provider traffic, remains outside
-  `release-bundle`, and does not confirm SSRF or infer business impact.
+  independently allocated HTTPS callback targets use at most three anonymous,
+  bodyless target GETs, at most one logical active verification, and at most
+  twelve fixed provider-management requests. A completed positive path uses all
+  three target legs and the single active verification. Only two correctly
+  correlated callback observations can produce `NeedsReview` / `KnowledgeOnly`
+  evidence; one-sided callbacks, timing, target status, and provider noise
+  produce no item. The feature retains no raw target/provider traffic, remains
+  outside `release-bundle`, and does not confirm SSRF or infer business impact.
 - Added a non-default native OAST provider adapter that binds one explicitly
   self-hosted HTTPS management origin, one assessment and authority epoch,
   fixed register/allocate/poll/cleanup operations, and checked request, byte,
