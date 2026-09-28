@@ -74,8 +74,9 @@ matrix or request totals: those must not be invented. Fixture request counts
 come from the separate acceptance provenance, not a new report field.
 
 The archive predates maintenance PRs #109–#111. It is not recommended for
-credentialed or production use. F3 remains deferred, out of scope, and
-unresolved in the [maintenance ledger](../../audits/native-oast-corrective-maintenance.md).
+credentialed or production use. F3 was unresolved in this historical alpha.1
+archive; the later development-source correction does not rewrite this capture.
+See the [maintenance ledger](../../audits/native-oast-corrective-maintenance.md).
 
 ## Provenance and normalization
 

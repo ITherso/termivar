@@ -174,9 +174,11 @@ ssrf-oast-review=not_compiled
 The hashes identify the two files that were executed; they are not build
 attestations. The historical `v0.10.0-alpha.1` archives and earlier pinned
 `a29ba40c8cfdc7d0385431ea4d9e374e213ca4e0` source walkthrough predate this
-command; the published alpha.2 archives include it. Compiling
-`ssrf-oast-review` separately does not close corrective-maintenance F3, which
-remains deferred, out of scope, and unresolved.
+command; the published alpha.2 archives include it. Those published archives
+retain the historical unresolved F3 behavior. Current development source
+corrects candidate/replay polling-phase completion, but compiling
+`ssrf-oast-review` still does not activate it or raise its maximum result above
+`NeedsReview` / `KnowledgeOnly`.
 
 ## Review one supplied JWT against a local policy
 
@@ -666,8 +668,8 @@ errors are not rewritten. Raw captures are retained as local/CI evidence.
 - [Versioned control-reference mapping](internals/control-reference-mapping.md)
 - [Local reconnaissance snapshot import](internals/recon-snapshot-import.md)
 - [Credential-input limits](internals/credential-input.md) and
-  [maintenance ledger](audits/native-oast-corrective-maintenance.md);
-  F3 remains deferred, out of scope, and unresolved
+  [maintenance ledger](audits/native-oast-corrective-maintenance.md), including
+  the current F3 phase-completion repair and historical archive boundary
 - [Scanner SDK](sdk.md), [plugin contracts](plugin.md), and
   [preserved scanner history](history/historical-scanner-salvage.md)
 - [Testing](TESTING.md) and

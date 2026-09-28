@@ -40,8 +40,10 @@ in this guide predate the command; the published alpha.2 archives include it.
 The historical alpha.1 archives predate PRs #109–#111. Alpha.2 includes those
 maintenance changes, but remains experimental, independently unaudited, and not
 production-ready. The walkthrough is credential-free and loopback-only. See the
-[maintenance record](audits/native-oast-corrective-maintenance.md) for the fixes
-and unresolved F3; no OAST setup is part of this guide.
+[maintenance record](audits/native-oast-corrective-maintenance.md) for those
+fixes and the later development-source F3 polling repair. Published alpha.2
+retains the unresolved F3 behavior it was built with; no OAST setup is part of
+this guide.
 
 ## Before either path
 

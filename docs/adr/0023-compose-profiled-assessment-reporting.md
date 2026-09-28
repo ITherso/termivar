@@ -71,6 +71,35 @@ security audit, external adoption, or a performance service-level agreement.
   sources supported by the `web-review` path. Raw credentials are not fields in
   profile, assessment, or rendered-report contracts.
 
+### S12 clarification: closed gate for a future `Confirmed` projection
+
+A future native capability may project `Confirmed` only when its own closed,
+typed contract establishes all of the following before item construction:
+
+- the exact capability, verification case, subject, and claimed proposition are
+  bound to the authorized action and application/context authority;
+- committed control and candidate evidence belong to that same case and
+  context;
+- a code-owned, mechanism-specific success oracle independently establishes the
+  precise proposition instead of trusting an action label or generic success;
+- freshness and replay defenses bind the contributing evidence to the current
+  execution;
+- capability-specific typed facts establish complete execution and accounting;
+  and
+- interpretation, exploitability/impact, and cleanup remain distinct typed
+  states rather than one inferred success value.
+
+Generic booleans, fixture labels, request success, or a callback alone cannot
+satisfy this gate. Completeness, impact, and cleanup cannot be inferred from a
+generic verifier outcome; the capability-specific committed facts must establish
+each state required by the exact claim. Current native production claim paths
+remain observation or differential review, and active review cases remain
+knowledge-only where applicable; none satisfies this production `Confirmed`
+gate. In particular, two correctly correlated SSRF OAST callbacks remain a
+`NeedsReview` observation of repeated outbound interaction. They do not establish
+SSRF exploitability, business impact, or successful cleanup beyond the separate
+facts actually recorded.
+
 ## Consequences
 
 - `decision-scan/v1` consumers are unaffected unless a caller explicitly opts

@@ -1045,7 +1045,7 @@ impl SsrfOastDecisionExecutor {
                 &mut prepared,
                 self.policy.polls_per_leg(),
                 self.policy.poll_interval_ms(),
-                true,
+                SsrfOastPollPhase::Candidate,
                 self.authority.cancellation(),
             )
             .await?;
@@ -1105,7 +1105,7 @@ impl SsrfOastDecisionExecutor {
                 &mut prepared,
                 polls,
                 self.policy.poll_interval_ms(),
-                false,
+                SsrfOastPollPhase::Replay,
                 self.authority.cancellation(),
             )
             .await?;
@@ -1342,11 +1342,26 @@ fn classify_target_response(
     None
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SsrfOastPollPhase {
+    Candidate,
+    Replay,
+}
+
+impl SsrfOastPollPhase {
+    const fn expected_event_observed(self, candidate_seen: bool, replay_seen: bool) -> bool {
+        match self {
+            Self::Candidate => candidate_seen,
+            Self::Replay => candidate_seen && replay_seen,
+        }
+    }
+}
+
 async fn poll_for_events(
     prepared: &mut PreparedSsrfOast,
     polls: u16,
     interval_ms: u64,
-    candidate_phase: bool,
+    phase: SsrfOastPollPhase,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), DecisionExecutorError> {
     for _ in 0..polls {
@@ -1364,13 +1379,14 @@ async fn poll_for_events(
                 return Ok(());
             },
         };
-        reduce_poll(prepared, &page, candidate_phase);
+        reduce_poll(prepared, &page, phase);
         if !polling_may_continue(&prepared.facts) {
             break;
         }
-        if prepared.facts.candidate_event.is_some()
-            && (!candidate_phase || prepared.facts.replay_event.is_some())
-        {
+        if phase.expected_event_observed(
+            prepared.facts.candidate_event.is_some(),
+            prepared.facts.replay_event.is_some(),
+        ) {
             break;
         }
     }
@@ -1380,7 +1396,7 @@ async fn poll_for_events(
 fn reduce_poll(
     prepared: &mut PreparedSsrfOast,
     page: &crate::native_oast_provider::NativeOastPollOutcome,
-    candidate_phase: bool,
+    phase: SsrfOastPollPhase,
 ) {
     for receipt in page.correlation_receipts() {
         let is_candidate = receipt.correlation_id() == &prepared.candidate_correlation;
@@ -1389,7 +1405,7 @@ fn reduce_poll(
             prepared.facts.terminal = Some(SsrfOastTerminalState::MalformedProviderResponse);
             continue;
         }
-        if candidate_phase && is_replay && receipt.accepted_events() > 0 {
+        if phase == SsrfOastPollPhase::Candidate && is_replay && receipt.accepted_events() > 0 {
             prepared.facts.terminal = Some(SsrfOastTerminalState::MalformedProviderResponse);
         }
         for event in receipt.event_receipts() {
@@ -1827,7 +1843,10 @@ fn positive_evidence_contract(knowledge: &KnowledgeBase, evidence_ids: &[Evidenc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     use termivar_oast::{
         serve_provider_on_listener, AdminToken, LoopbackBind, ProviderConfig, ProviderLimits,
@@ -1862,6 +1881,7 @@ mod tests {
     struct LoopbackFixture {
         target: url::Url,
         target_requests: Arc<AsyncMutex<Vec<String>>>,
+        callback_attempts: Arc<AtomicUsize>,
         target_task: JoinHandle<()>,
         provider_task: JoinHandle<()>,
         provider_origin: PublicOrigin,
@@ -1875,6 +1895,10 @@ mod tests {
     }
 
     async fn loopback_fixture() -> LoopbackFixture {
+        loopback_fixture_with_replay_delay(None).await
+    }
+
+    async fn loopback_fixture_with_replay_delay(replay_delay: Option<Duration>) -> LoopbackFixture {
         let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_address = provider_listener.local_addr().unwrap();
         let provider_origin = PublicOrigin::from_test_loopback(provider_address).unwrap();
@@ -1904,6 +1928,8 @@ mod tests {
         let target_address = target_listener.local_addr().unwrap();
         let target_requests = Arc::new(AsyncMutex::new(Vec::new()));
         let recorded = target_requests.clone();
+        let callback_attempts = Arc::new(AtomicUsize::new(0));
+        let callback_ordinal = callback_attempts.clone();
         let target_task = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = target_listener.accept().await else {
@@ -1940,11 +1966,23 @@ mod tests {
                                 .host_str()
                                 .is_some_and(|host| host.ends_with(".invalid"));
                             if !is_inert {
-                                let client = reqwest::Client::builder()
-                                    .redirect(reqwest::redirect::Policy::none())
-                                    .build()
-                                    .unwrap();
-                                let _ = client.get(callback).send().await;
+                                let ordinal = callback_ordinal.fetch_add(1, Ordering::SeqCst);
+                                if let (1, Some(delay)) = (ordinal, replay_delay) {
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(delay).await;
+                                        let client = reqwest::Client::builder()
+                                            .redirect(reqwest::redirect::Policy::none())
+                                            .build()
+                                            .unwrap();
+                                        let _ = client.get(callback).send().await;
+                                    });
+                                } else {
+                                    let client = reqwest::Client::builder()
+                                        .redirect(reqwest::redirect::Policy::none())
+                                        .build()
+                                        .unwrap();
+                                    let _ = client.get(callback).send().await;
+                                }
                             }
                         }
                     }
@@ -1960,6 +1998,7 @@ mod tests {
             ))
             .unwrap(),
             target_requests,
+            callback_attempts,
             target_task,
             provider_task,
             provider_origin,
@@ -2554,6 +2593,19 @@ mod tests {
     }
 
     #[test]
+    fn polling_phase_requires_its_expected_callback_set() {
+        assert!(!SsrfOastPollPhase::Candidate.expected_event_observed(false, false));
+        assert!(!SsrfOastPollPhase::Candidate.expected_event_observed(false, true));
+        assert!(SsrfOastPollPhase::Candidate.expected_event_observed(true, false));
+        assert!(SsrfOastPollPhase::Candidate.expected_event_observed(true, true));
+
+        assert!(!SsrfOastPollPhase::Replay.expected_event_observed(false, false));
+        assert!(!SsrfOastPollPhase::Replay.expected_event_observed(true, false));
+        assert!(!SsrfOastPollPhase::Replay.expected_event_observed(false, true));
+        assert!(SsrfOastPollPhase::Replay.expected_event_observed(true, true));
+    }
+
+    #[test]
     fn lifecycle_gate_requires_clean_preflight_and_stops_on_non_timeout_terminal() {
         let candidate: CallbackId = "AQEBAQEBAQEBAQEBAQEBAQ".parse().unwrap();
         let replay: CallbackId = "AgICAgICAgICAgICAgICAg".parse().unwrap();
@@ -2728,9 +2780,53 @@ mod tests {
                 .count(),
             3
         );
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 2);
         let debug = format!("{report:?}");
         assert!(!debug.contains(std::str::from_utf8(ADMIN_SECRET).unwrap()));
         assert!(!debug.contains("seed.example.invalid"));
+    }
+
+    #[tokio::test]
+    async fn polling_waits_for_the_expected_replay_event_after_an_empty_first_poll() {
+        let fixture = loopback_fixture_with_replay_delay(Some(Duration::from_millis(375))).await;
+        let policy = SsrfOastReviewPolicy::for_loopback(
+            fixture.target.clone(),
+            fixture.provider_origin.clone(),
+            3,
+            250,
+            5_000,
+        )
+        .unwrap();
+        let administrator = SsrfOastAdminToken::new(ADMIN_SECRET.to_vec()).unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.target.clone())
+            .with_ssrf_oast_review(policy, administrator)
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.ssrf_oast_review_audit().unwrap();
+        assert_eq!(
+            audit.outcome(),
+            SsrfOastRuntimeOutcome::RepeatedCallbacksObserved
+        );
+        assert!(audit.candidate_callback_observed());
+        assert!(audit.replay_callback_observed());
+        assert!(audit.cleanup_verified());
+        assert!(audit.item_projected());
+        assert_eq!(audit.provider_request_count(), 8);
+        assert_eq!(audit.target_request_count(), 3);
+        let mut matching_items = report
+            .assessment_items()
+            .iter()
+            .filter(|item| item.capability_id() == SSRF_OAST_REVIEW_CAPABILITY_ID);
+        let matching_item = matching_items.next().unwrap();
+        assert!(matching_items.next().is_none());
+        assert_eq!(
+            matching_item.disposition(),
+            AssessmentDisposition::NeedsReview
+        );
+        assert_eq!(fixture.target_requests.lock().await.len(), 4);
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

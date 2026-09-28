@@ -25,6 +25,15 @@ All notable changes to Termivar are recorded here. Releases use the categories f
   `--wordpress-review` before the review can run. Published alpha.2 archives
   remain unchanged and contain no WordPress producer or audit support.
 
+### Fixed
+
+- Corrected the non-default SSRF OAST review's polling-phase completion: the
+  candidate phase stops after its expected fresh event, while the replay phase
+  requires both distinct expected events or an existing bound/terminal state.
+  The three-target-request, seven-post-dispatch-poll and twelve-provider-operation
+  ceilings remain unchanged, as does the `NeedsReview` / `KnowledgeOnly` claim
+  ceiling. Published alpha.2 archives retain their historical F3 behavior.
+
 ## [0.10.0-alpha.2] - 2026-09-06
 
 > **PUBLISHED EXPERIMENTAL PRERELEASE:** alpha.2 was published from commit

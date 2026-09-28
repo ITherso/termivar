@@ -23,12 +23,16 @@ callbacks and both must yield fresh, correctly correlated HTTP events before
 status codes, provider noise, and business-impact inference are insufficient.
 See [SSRF OAST query review](internals/ssrf-oast-query-review.md).
 
-!!! warning "Unresolved verification boundary"
-    Corrective-maintenance finding F3 remains deferred, out of scope, and
-    unresolved. The current candidate/replay and polling semantics must not be
-    read as a stronger verification guarantee than the implementation provides.
-    See the [maintenance ledger](audits/native-oast-corrective-maintenance.md#finding-ledger)
-    before evaluating or describing this optional capability.
+!!! note "Corrected polling boundary, unchanged claim ceiling"
+    Corrective-maintenance finding F3 is corrected in current development
+    source: candidate polling may finish after its fresh event, while replay
+    polling finishes only after both distinct fresh events or an existing
+    bound/terminal state. The target plan remains exactly three requests and
+    provider work remains bounded by seven post-dispatch polls and twelve total
+    operations. This correction does not establish SSRF, exploitability, or
+    impact and cannot produce a `Confirmed` item. Published archives retain
+    their historical behavior. See the
+    [maintenance ledger](audits/native-oast-corrective-maintenance.md#finding-ledger).
 
 ## Optional OpenAPI surface review
 

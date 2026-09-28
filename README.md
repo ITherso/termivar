@@ -145,8 +145,11 @@ Termivar is not an unrestricted crawler, browser-based vulnerability verifier,
 hosted scanning service, or production exploit framework. A compiled optional
 feature is not runtime opt-in. The [feature lifecycle](FEATURES.md) and
 [runtime map](docs/internals/runtime-map.md) describe the actual boundaries,
-including the separately gated historical runner. F3 remains
-[deferred, out of scope, and unresolved](docs/audits/native-oast-corrective-maintenance.md#finding-ledger).
+including the separately gated historical runner. Current development source
+corrects the F3 candidate/replay polling-phase completion defect without raising
+the optional OAST review above `NeedsReview` / `KnowledgeOnly`; published
+archives retain their original behavior. See the
+[maintenance ledger](docs/audits/native-oast-corrective-maintenance.md#finding-ledger).
 
 ## Documentation
 

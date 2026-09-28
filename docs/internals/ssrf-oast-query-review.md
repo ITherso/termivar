@@ -59,6 +59,13 @@ allocations, preflight, and cleanup, provider HTTP requests can never exceed
 twelve. There is no background or post-finalization polling and no network work
 in `Drop`.
 
+Candidate polling ends when the candidate event is present. Replay polling ends
+only when both the candidate and replay events are present; an empty first
+replay poll therefore does not consume the phase as a success. Existing terminal
+states, cancellation, deadline, and shared poll/request ceilings can still stop
+either phase. This completion rule changes the polling window, not the positive
+claim contract below.
+
 ## Evidence and claim
 
 A positive observation requires both independently allocated callback IDs to

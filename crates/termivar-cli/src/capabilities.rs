@@ -715,7 +715,7 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "--ssrf-oast-policy FILE",
                 "one of --oast-admin-token-env, --oast-admin-token-file, or --oast-admin-token-stdin",
             ],
-            "KnowledgeOnly maximum; corrective-maintenance F3 remains deferred, out of scope, and unresolved.",
+            "Explicit non-bundled opt-in with exactly three anonymous bodyless target GETs, one active verification, at most seven post-dispatch polls, and at most twelve provider operations. Candidate polling may finish after the fresh candidate event; replay polling finishes only after both distinct fresh callback events or an existing bound/terminal state. Both events are required for one NeedsReview / KnowledgeOnly item. It never produces Confirmed, establishes SSRF or exploitability, or validates impact; published alpha.2 archives retain their historical F3 behavior.",
             "docs/audits/native-oast-corrective-maintenance.md",
         ),
         surface!(

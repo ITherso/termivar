@@ -482,11 +482,25 @@ fn contract_violations(sources: &ContractSources) -> Result<Vec<String>, Box<dyn
         27,
         domain.contains("match(candidate_exact,replay_exact)")
             && domain.contains("(true,true)=>{}")
+            && exact_private_unit_enum_variants(&sources.runtime, "SsrfOastPollPhase")?
+                == Some(string_set(&["Candidate", "Replay"]))
+            && runtime.matches("Self::Candidate=>candidate_seen,").count() == 1
+            && runtime
+                .matches("Self::Replay=>candidate_seen&&replay_seen,")
+                .count()
+                == 1
+            && runtime.contains("phase:SsrfOastPollPhase,")
+            && runtime.matches("SsrfOastPollPhase::Candidate,").count() == 1
+            && runtime.matches("SsrfOastPollPhase::Replay,").count() == 1
+            && runtime.contains(
+                "ifphase.expected_event_observed(prepared.facts.candidate_event.is_some(),prepared.facts.replay_event.is_some(),){break;}",
+            )
+            && !runtime.contains("candidate_phase")
             && domain
                 .matches(domain_suffix_for_repeated_callbacks())
                 .count()
                 == 1,
-        "positive classification no longer requires both exact callbacks",
+        "positive classification or phase-specific polling no longer requires the exact callback set",
     );
 
     result.require(
@@ -745,6 +759,38 @@ fn exact_private_struct_fields(
             .fields
             .iter()
             .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+            .collect(),
+    ))
+}
+
+fn exact_private_unit_enum_variants(
+    source: &str,
+    name: &str,
+) -> Result<Option<BTreeSet<String>>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let declarations = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Enum(record) if record.ident == name => Some(record),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [record] = declarations.as_slice() else {
+        return Ok(None);
+    };
+    if !matches!(record.vis, Visibility::Inherited)
+        || record.variants.iter().any(|variant| {
+            !matches!(variant.fields, Fields::Unit) || variant.discriminant.is_some()
+        })
+    {
+        return Ok(None);
+    }
+    Ok(Some(
+        record
+            .variants
+            .iter()
+            .map(|variant| variant.ident.to_string())
             .collect(),
     ))
 }
@@ -1152,6 +1198,38 @@ mod tests {
             "matches!(self, Self::RepeatedCallbacksObserved | Self::CandidateOnly)",
         );
         assert_gate_fails(&mutation, 28);
+    }
+
+    #[test]
+    fn polling_phase_truth_table_is_exact_and_mutations_fail_closed() {
+        let sources = current_sources();
+        assert_eq!(
+            exact_private_unit_enum_variants(&sources.runtime, "SsrfOastPollPhase").unwrap(),
+            Some(string_set(&["Candidate", "Replay"]))
+        );
+
+        for (from, to) in [
+            (
+                "Self::Candidate => candidate_seen,",
+                "Self::Candidate => candidate_seen && replay_seen,",
+            ),
+            (
+                "Self::Replay => candidate_seen && replay_seen,",
+                "Self::Replay => candidate_seen,",
+            ),
+        ] {
+            let mut mutation = sources.clone();
+            mutation.runtime = mutation.runtime.replace(from, to);
+            assert_ne!(mutation.runtime, sources.runtime);
+            assert_gate_fails(&mutation, 27);
+        }
+
+        let mut mutation = sources;
+        mutation.runtime = mutation.runtime.replace(
+            "enum SsrfOastPollPhase {",
+            "pub(crate) enum SsrfOastPollPhase {",
+        );
+        assert_gate_fails(&mutation, 27);
     }
 
     #[test]

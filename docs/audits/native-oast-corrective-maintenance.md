@@ -25,9 +25,19 @@ each disposition below distinguishes inspection from executed regression proof.
   (89.90%); patch coverage was 159/166 (95.78%). One test-only Clippy repair
   round was needed. Protected main advanced by exact-SHA fast-forward;
   the local and remote task branches were deleted.
-- PR C starts from that landed SHA on `agent/credential-intake-hardening`.
-  Credential-input repairs are implemented; final CI/landing evidence remains
-  pending.
+- PR C: [#111](https://github.com/ITherso/termivar/pull/111), tested and landed
+  by exact-SHA fast-forward as
+  `57e5ddad7732b0b2c3d5988898aa2e4af5015195`. Its landing receipt records all
+  14 protected contexts, all 28 applicable Actions contexts and all six
+  workflows successful; aggregate coverage was 64,796/72,054 (89.9270%) and
+  patch coverage was 217/220 (98.6364%). One architecture/test-only repair
+  round was used. The task branch was deleted without a tag or release.
+- The current S12 F3 continuation starts from
+  `dad09e03a2cf651699f53a1078a65b9838ec9244` on
+  `agent/claim-verifier-f3-maintenance-v1`. The development version is
+  `0.10.0-alpha.3`; published v0.10.0-alpha.2 remains unchanged and retains its
+  historical F3 behavior. Exact-head CI and landing for this continuation are
+  not established by the focused local evidence below.
 
 ## Finding ledger
 
@@ -35,12 +45,12 @@ each disposition below distinguishes inspection from executed regression proof.
 | --- | --- | --- | --- |
 | F1 — `termivar-oast/src/state.rs`, `register_bearer`, `poll_bearer`, `cleanup_bearer`, `SessionState` | Confirmed defect; repair in PR A | Expiration stops acceptance but abandoned sessions remain in the retained-capacity map indefinitely. Acceptance expiry and finite result retention must be separate. | A dropped-registration-response test failed against old behavior with explicitly advanced monotonic time. PR A adds a 120-second result window after acceptance expiry, checked deadline arithmetic and authenticated lazy reclamation over at most 256 retained entries. Results are not erased at the expiry instant while idle. |
 | F2 — `termivar-oast/src/server.rs`, `serve_listener`, `serve_connection`, `AppState::admit` | Confirmed defect; repair in PR A | Connection count is bounded, connection lifetime is not explicitly bounded; handler admission occurs after body extraction. | A single benign incomplete-header duplex test failed against old behavior under paused Tokio time. PR A places admission before body extraction and bounds header, request/body, I/O idle and total connection lifetimes. No load test or target application is used. |
-| F3 — `web_runtime/ssrf_oast_runtime.rs`, polling phase completion | Deferred / out of scope / unresolved | The maintainer explicitly excluded active SSRF replay/verification behavior from this continuation. | No phase-completion fix or success oracle is added. The polling region, receipt-order completeness check and public review-outcome enum remain byte-identical after newline normalization. This finding is not closed or rejected. |
+| F3 — `web_runtime/ssrf_oast_runtime.rs`, polling phase completion | Confirmed defect; narrow repair implemented in the current S12 continuation, exact-head delivery pending | The old completion expression inverted the phase condition: candidate polling could consume its full allowance after observing its event, while replay polling could stop with only the earlier candidate event. Candidate polling must finish after the fresh candidate event; replay polling must require both distinct fresh events, subject to the existing bound and terminal states. | A deterministic delayed-replay native-provider fixture ran one focused test against the old production condition and failed as `CandidateOnly` versus expected `RepeatedCallbacksObserved` (GNU Rust 1.88, 1.09 s). After replacing the Boolean phase with an explicit private phase contract, the truth-table and delayed-replay tests passed 2/2 (0.81 s); the positive delayed path records 8 provider operations, 3 review target requests, 4 total owned-fixture target requests including the bootstrap, and 2 callback attempts. The canonical MSVC attempt did not execute because `link.exe` was unavailable. Limits remain at most 7 post-dispatch polls, 12 provider operations, 3 target requests and one active verification. No public outcome/schema, report claim ceiling or impact state changes. |
 | F4 — `termivar-oast/src/client.rs::validate_response_head`, `native_oast_provider.rs::client_failure`, runtime audit boundary | Confirmed defect; repaired in PR B | Unexpected statuses and construction/transport failures can be mislabeled as authentication failures, and early failures lack typed audit detail. | Synthetic 401-vs-429 and local-credential-vs-remote-auth regressions failed before repair and passed afterward. Add non-exhaustive HTTP metadata without changing existing public client error variants; retain separate optional first-provider/cleanup diagnostics through the existing serializable library audit. No response prose, new CLI renderer or protocol/digest identity change. |
 | F5 — provider receipt/count assignments in `ssrf_oast_runtime.rs`; permit dispatch accounting | Confirmed defect; repaired and landed in PR B | A failure receipt can exist before budget admission. Receipt-vector length is not the charged HTTP-operation count. | All five audit count paths now read the permit counter. Synthetic tests distinguish recorded attempts, admitted requests, possibly-dispatched operations and body EOF. Failure receipts and successful-path ordering checks remain. Local adapter execution was blocked by Application Control; exact-head CI passed as recorded in the PR B landing receipt. |
-| F6 — both CLI/provider `open_regular_file` implementations | Conditional local-path risk confirmed by inspection; repair implemented in PR C, CI pending | Separate pathname inspection and open do not atomically reject a substituted link or establish object identity. | Both loaders now open with platform no-follow flags and validate the same handle before bytes. Final-component protection requires trusted parents and does not establish immutable contents or hard-link provenance. Baseline evidence is inspection only, not an executed red test; new deterministic tests compiled but local execution was blocked. No filesystem exploitation or privileged test result is claimed. |
-| F7 — CLI `read_environment`, `read_bounded_line_source` | Confirmed intake-buffer defect by inspection; repair implemented in PR C, CI pending | Some owned raw buffers can be dropped on oversize/read error before entering a zeroizing wrapper. | CLI input is guarded before fallible validation/read, with initialized storage for partial errors, a guarded overflow probe and suffix wiping before truncation. The guarantee ends at constructor handoff; downstream root/principal copies remain unchanged. Provider input already used `Zeroizing` and now also wipes the removed suffix. Deterministic tests compiled; local execution was blocked, not passed. |
-| F8 — `PROJECT_STATUS.md`, `docs/DISTRIBUTION.md`, affected provider documentation | Mixed: factual corrections in PR C; already-corrected statements preserved | PROJECT_STATUS omitted the current published prerelease and still described the ScanContext release prerequisite as unmet. An installer sentence also depended on an obsolete release condition. | GitHub release metadata and alpha.1 tagged source confirm the narrow corrections. README and distribution release-status descriptions from `61d08b3` are retained. PR A lifecycle/transport and PR B diagnostic/accounting documentation are preserved. The shared credential-input contract states final-component and intake-memory limits; PR C final verification remains pending. |
+| F6 — both CLI/provider `open_regular_file` implementations | Conditional local-path risk confirmed by inspection; repair tested and landed in PR C | Separate pathname inspection and open do not atomically reject a substituted link or establish object identity. | Both loaders open with platform no-follow flags and validate the same handle before bytes. Final-component protection requires trusted parents and does not establish immutable contents or hard-link provenance. Baseline evidence remains inspection, not an executed before-fix exploit. Final Linux/macOS CLI intake ran 34 tests and provider input 17; Windows ran 31 and 18 respectively, including required final-component link fixtures. |
+| F7 — CLI `read_environment`, `read_bounded_line_source` | Confirmed intake-buffer defect by inspection; repair tested and landed in PR C | Some owned raw buffers can be dropped on oversize/read error before entering a zeroizing wrapper. | CLI input is guarded before fallible validation/read, with initialized storage for partial errors, a guarded overflow probe and suffix wiping before truncation. The guarantee ends at constructor handoff; downstream root/principal copies remain unchanged. Provider input already used `Zeroizing` and now also wipes the removed suffix. The same three-OS input suites in PR C exercised these boundaries; they do not establish erasure of OS/allocator/HTTP-library copies. |
+| F8 — `PROJECT_STATUS.md`, `docs/DISTRIBUTION.md`, affected provider documentation | Mixed factual corrections tested and landed in PR C; already-corrected statements preserved | PROJECT_STATUS omitted the then-current published prerelease and still described the ScanContext release prerequisite as unmet. An installer sentence also depended on an obsolete release condition. | PR C preserved PR A lifecycle/transport and PR B diagnostic/accounting documentation while recording precise file/memory guarantees. It landed with the exact-head receipt above and no release/tag/version change. The subsequent v0.10.0-alpha.2 publication is separate historical release state, not retroactive PR C validation. |
 
 ## PR A contract
 
@@ -148,10 +158,11 @@ from the successful filesystem/secret/configuration scan. Local Application
 Control, missing MSVC linker and the existing CRLF-only architecture check
 limitation were not bypassed or reclassified as local successes.
 
-PR B is landed at `f0b2889c07fe765f8b2f7bdf785725edda209b67`. F3 remains
-Deferred / out of scope / unresolved.
+PR B landed at `f0b2889c07fe765f8b2f7bdf785725edda209b67`. At that
+historical delivery point, F3 remained Deferred / out of scope / unresolved;
+the current continuation above is the separate repair record.
 
-## PR C credential-input contract and pending validation
+## PR C credential-input contract and landed validation
 
 The [shared credential-input contract](../internals/credential-input.md)
 documents the implemented file-opening and owned-memory boundaries. Both
@@ -175,19 +186,19 @@ line-ending suffix is now wiped before truncation. Neither change claims
 erasure of OS environment storage, allocator history, HTTP-library buffers
 or every successful downstream copy.
 
-F6 baseline evidence is source inspection, not an executed before-fix
-failure. New deterministic input tests compiled with the ordinary local
+F6 baseline evidence is source inspection, not an executed before-fix failure.
+Before CI, new deterministic input tests compiled with the ordinary local
 toolchain, but Application Control blocked execution of the CLI and provider
-test binaries. No workaround was used and this is not a local passing result.
-The existing three-OS `Tests / Runtime Smoke` matrix now includes focused CLI
-and provider input tests; their exact-head CI results and PR C's final
-tested/landed SHA remain pending. These steps add no active F3 regression,
-target probe or scanner behavior.
+test binaries. No workaround was used and this was not a local passing result.
+The final three-OS `Tests / Runtime Smoke` matrix executed the focused CLI and
+provider input tests at PR C's exact landed SHA. Those steps added no active F3
+regression, target probe or scanner behavior.
 
 The root lockfile adds only three dependency edges (`libc` for each loader and
 `zeroize` for CLI intake), with no existing package-version change; nested
 lockfiles, release/tag/version state, coverage gates and historical identifiers
-remain unchanged. This section is not a final PR C validation or landing receipt.
+remain unchanged. The following bullets preserve the distinct local evidence
+recorded before the final PR C landing receipt.
 
 Additional local PR C evidence, before opening the Draft airlock:
 
@@ -209,5 +220,10 @@ Additional local PR C evidence, before opening the Draft airlock:
 - Development-line, scanner corpus (127 cases), both salvage and both catalog
   validators passed; all six semantic/version identities remain unchanged.
 
-F6/F7 execution on each supported OS, workspace execution, current-stable
-Clippy, coverage and advisory checks require the final-head CI receipt.
+The subsequent final-head CI receipt is
+[PR #111 comment 5551437744](https://github.com/ITherso/termivar/pull/111#issuecomment-5551437744).
+It records exact tested/landed SHA
+`57e5ddad7732b0b2c3d5988898aa2e4af5015195`, successful F6/F7 execution on
+Linux, Windows and macOS, workspace execution, current-stable Clippy, coverage,
+advisory policy and the applicable platform/compatibility checks. The earlier
+local restrictions remain restrictions rather than retroactive local passes.
