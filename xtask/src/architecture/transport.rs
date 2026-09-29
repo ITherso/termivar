@@ -2046,18 +2046,32 @@ fn inspect_web_assessment_composition(source: &str) -> Result<Vec<String>, syn::
     let mut visitor = AssessmentCompositionVisitor::default();
     visitor.visit_file(&syntax);
     let mut violations = visitor.violations.into_iter().collect::<Vec<_>>();
-    if visitor.authority_calls != 2
-        || visitor.tls_authority_calls != 1
-        || visitor.conditional_authority_calls != 1
-        || visitor.conditional_tls_authority_calls != 1
+    if !web_assessment_authority_partition_is_exact(&syntax) {
+        violations.push(
+            "origin assessment must retain the exact four-way TLS/owned-HTTPS cfg and authority-selection partition in WebAssessmentRuntimeBuilder::build"
+                .to_owned(),
+        );
+    }
+    if visitor.authority_calls != 4
+        || visitor.tls_authority_calls != 2
+        || visitor.owned_xml_https_authority_calls != 2
+        || visitor.tls_owned_xml_https_authority_calls != 1
+        || visitor.conditional_authority_calls != 3
+        || visitor.conditional_tls_authority_calls != 2
+        || visitor.conditional_owned_xml_https_authority_calls != 2
+        || visitor.conditional_tls_owned_xml_https_authority_calls != 1
         || visitor.unconditional_authority_calls != 1
     {
         violations.push(format!(
-            "origin assessment must retain the exact mutually exclusive TLS-selected and option-off SharedWebRuntimeAuthority construction in WebAssessmentRuntimeBuilder::build; observed ordinary={} tls={} conditional_ordinary={} conditional_tls={} unconditional_ordinary={}",
+            "origin assessment must retain the exact mutually exclusive feature-selected and option-off SharedWebRuntimeAuthority construction in WebAssessmentRuntimeBuilder::build; observed ordinary={} tls={} owned_xml_https={} tls_owned_xml_https={} conditional_ordinary={} conditional_tls={} conditional_owned_xml_https={} conditional_tls_owned_xml_https={} unconditional_ordinary={}",
             visitor.authority_calls,
             visitor.tls_authority_calls,
+            visitor.owned_xml_https_authority_calls,
+            visitor.tls_owned_xml_https_authority_calls,
             visitor.conditional_authority_calls,
             visitor.conditional_tls_authority_calls,
+            visitor.conditional_owned_xml_https_authority_calls,
+            visitor.conditional_tls_owned_xml_https_authority_calls,
             visitor.unconditional_authority_calls,
         ));
     }
@@ -2092,6 +2106,2021 @@ fn inspect_web_assessment_composition(source: &str) -> Result<Vec<String>, syn::
         ));
     }
     Ok(violations)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssessmentAuthorityConstructor {
+    Plain,
+    Tls,
+    OwnedXmlHttps,
+    TlsOwnedXmlHttps,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssessmentBuildProfile {
+    Production,
+    Fixture,
+}
+
+const ASSESSMENT_REVIEWED_IMPORTS: &[(&str, &[&str], Option<&str>)] = &[
+    (
+        "assessment_semantic_limits",
+        &["semantic", "assessment_semantic_limits"],
+        None,
+    ),
+    (
+        "canonicalize_root",
+        &["discovery", "canonicalize_root"],
+        None,
+    ),
+    ("EntityId", &["termivar_core", "EntityId"], None),
+    ("HttpEvidencePolicy", &["crate", "HttpEvidencePolicy"], None),
+    ("HttpProbe", &["crate", "HttpProbe"], None),
+    ("HttpProbeMethod", &["crate", "HttpProbeMethod"], None),
+    (
+        "build_root_api_visibility_runtime",
+        &[
+            "super",
+            "assessment_api_visibility",
+            "build_root_api_visibility_runtime",
+        ],
+        None,
+    ),
+    (
+        "AssessmentReviewObserverSet",
+        &["super", "assessment_review", "AssessmentReviewObserverSet"],
+        None,
+    ),
+    (
+        "CommittedAssessmentReviewLedger",
+        &[
+            "super",
+            "assessment_review",
+            "CommittedAssessmentReviewLedger",
+        ],
+        None,
+    ),
+    (
+        "NativeWebReviewSeeds",
+        &["super", "NativeWebReviewSeeds"],
+        None,
+    ),
+    (
+        "JwtTargetAcceptanceRuntimeConfig",
+        &[
+            "super",
+            "jwt_target_acceptance_runtime",
+            "JwtTargetAcceptanceRuntimeConfig",
+        ],
+        Some("jwt-target-acceptance-review"),
+    ),
+    (
+        "SuppliedSessionRuntimeConfig",
+        &[
+            "super",
+            "supplied_session_runtime",
+            "SuppliedSessionRuntimeConfig",
+        ],
+        Some("supplied-session-review"),
+    ),
+    (
+        "XmlExternalEntityRuntimeConfig",
+        &[
+            "super",
+            "xml_external_entity_runtime",
+            "XmlExternalEntityRuntimeConfig",
+        ],
+        Some("xml-external-entity-review"),
+    ),
+];
+
+fn item_declares_any_identifier(item: &syn::Item, forbidden: &[&str]) -> bool {
+    let identifier = match item {
+        syn::Item::Const(item) => Some(&item.ident),
+        syn::Item::Enum(item) => Some(&item.ident),
+        syn::Item::ExternCrate(item) => {
+            Some(item.rename.as_ref().map_or(&item.ident, |(_, ident)| ident))
+        },
+        syn::Item::Fn(item) => Some(&item.sig.ident),
+        syn::Item::Mod(item) => Some(&item.ident),
+        syn::Item::Static(item) => Some(&item.ident),
+        syn::Item::Struct(item) => Some(&item.ident),
+        syn::Item::Trait(item) => Some(&item.ident),
+        syn::Item::TraitAlias(item) => Some(&item.ident),
+        syn::Item::Type(item) => Some(&item.ident),
+        syn::Item::Union(item) => Some(&item.ident),
+        _ => None,
+    };
+    identifier.is_some_and(|identifier| {
+        let identifier = ident_name(identifier);
+        forbidden
+            .iter()
+            .any(|forbidden| normalize_identifier(&identifier) == *forbidden)
+    })
+}
+
+fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
+    let mut build_methods = Vec::new();
+    let mut shared_imports = Vec::new();
+    let mut profile_imports = Vec::new();
+    let mut glob_imports = 0_usize;
+    let mut item_macros = 0_usize;
+    let mut builder_impls = 0_usize;
+    let mut builder_impls_are_unconditional = true;
+    let mut reviewed_imports = ASSESSMENT_REVIEWED_IMPORTS
+        .iter()
+        .map(|(binding, _, _)| (*binding, Vec::<bool>::new()))
+        .collect::<BTreeMap<_, _>>();
+    let mut forbidden_prelude_imports = 0_usize;
+    let mut forbidden_prelude_items = 0_usize;
+    for item in &syntax.items {
+        if item_declares_any_identifier(item, &["Err", "Ok"])
+            || item_attributes(item)
+                .iter()
+                .any(|attribute| attribute.path().is_ident("macro_use"))
+        {
+            forbidden_prelude_items = forbidden_prelude_items.saturating_add(1);
+        }
+        match item {
+            syn::Item::Impl(implementation)
+                if type_is_exact_path(
+                    implementation.self_ty.as_ref(),
+                    &["WebAssessmentRuntimeBuilder"],
+                ) =>
+            {
+                let methods = implementation
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        syn::ImplItem::Fn(method) if method.sig.ident == "build" => Some(method),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !methods.is_empty() {
+                    builder_impls = builder_impls.saturating_add(1);
+                    builder_impls_are_unconditional &= implementation.trait_.is_none()
+                        && implementation.attrs.is_empty()
+                        && implementation.generics.params.is_empty()
+                        && implementation.generics.where_clause.is_none()
+                        && implementation.unsafety.is_none()
+                        && !implementation
+                            .items
+                            .iter()
+                            .any(|item| matches!(item, syn::ImplItem::Macro(_)));
+                    build_methods.extend(methods);
+                }
+            },
+            syn::Item::Use(import) => {
+                let mut paths = Vec::new();
+                collect_use_paths(&import.tree, Vec::new(), &mut paths);
+                for (segments, binding, glob) in paths {
+                    if glob {
+                        glob_imports = glob_imports.saturating_add(1);
+                        continue;
+                    }
+                    let normalized = segments
+                        .iter()
+                        .map(|segment| normalize_identifier(segment))
+                        .collect::<Vec<_>>();
+                    let local_binding = binding.as_deref().map(normalize_identifier);
+                    let shared_target = normalized == ["super", "SharedWebRuntimeAuthority"];
+                    let shared_reference =
+                        normalized.last().copied() == Some("SharedWebRuntimeAuthority");
+                    if shared_reference || local_binding == Some("SharedWebRuntimeAuthority") {
+                        shared_imports.push(
+                            matches!(import.vis, syn::Visibility::Inherited)
+                                && import.attrs.is_empty()
+                                && shared_target
+                                && local_binding == Some("SharedWebRuntimeAuthority"),
+                        );
+                    }
+                    let profile_target = normalized
+                        == [
+                            "crate",
+                            "http_evidence",
+                            "OwnedXmlHttpsTestTransportProfile",
+                        ];
+                    let profile_reference =
+                        normalized.last().copied() == Some("OwnedXmlHttpsTestTransportProfile");
+                    if profile_reference
+                        || local_binding == Some("OwnedXmlHttpsTestTransportProfile")
+                    {
+                        profile_imports.push(
+                            matches!(import.vis, syn::Visibility::Inherited)
+                                && attributes_are_exact_cfg_feature(
+                                    &import.attrs,
+                                    "xml-external-entity-owned-https-test-profile",
+                                )
+                                && profile_target
+                                && local_binding == Some("OwnedXmlHttpsTestTransportProfile"),
+                        );
+                    }
+                    for &(expected_binding, expected_path, feature) in ASSESSMENT_REVIEWED_IMPORTS {
+                        let target_reference = normalized.last().copied() == Some(expected_binding);
+                        if target_reference || local_binding == Some(expected_binding) {
+                            let attributes_are_exact = feature
+                                .map_or(import.attrs.is_empty(), |feature| {
+                                    attributes_are_exact_cfg_feature(&import.attrs, feature)
+                                });
+                            reviewed_imports
+                                .get_mut(expected_binding)
+                                .expect("reviewed import inventory is initialized")
+                                .push(
+                                    matches!(import.vis, syn::Visibility::Inherited)
+                                        && attributes_are_exact
+                                        && normalized.as_slice() == expected_path
+                                        && local_binding == Some(expected_binding),
+                                );
+                        }
+                    }
+                    if ["Err", "Ok", "format"].into_iter().any(|expected| {
+                        normalized.last().copied() == Some(expected)
+                            || local_binding == Some(expected)
+                    }) {
+                        forbidden_prelude_imports = forbidden_prelude_imports.saturating_add(1);
+                    }
+                }
+            },
+            syn::Item::Macro(_) => item_macros = item_macros.saturating_add(1),
+            _ => {},
+        }
+    }
+    let [method] = build_methods.as_slice() else {
+        return false;
+    };
+    if builder_impls != 1
+        || !builder_impls_are_unconditional
+        || shared_imports != [true]
+        || profile_imports != [true]
+        || glob_imports != 0
+        || item_macros != 0
+        || forbidden_prelude_imports != 0
+        || forbidden_prelude_items != 0
+    {
+        return false;
+    }
+    let production_imports_are_exact = reviewed_imports
+        .values()
+        .all(|imports| imports.as_slice() == [true]);
+    let fixture_imports_are_exact = reviewed_imports.values().all(Vec::is_empty);
+    if !method.attrs.is_empty()
+        || method.sig.inputs.len() != 1
+        || !method.sig.generics.params.is_empty()
+        || method.sig.generics.where_clause.is_some()
+        || method.sig.constness.is_some()
+        || method.sig.asyncness.is_some()
+        || method.sig.unsafety.is_some()
+        || method.sig.abi.is_some()
+        || method.sig.variadic.is_some()
+        || !matches!(method.sig.inputs.first(), Some(syn::FnArg::Receiver(receiver))
+            if receiver.attrs.is_empty()
+                && receiver.reference.is_none()
+                && receiver.mutability.is_none()
+                && receiver.colon_token.is_none())
+    {
+        return false;
+    }
+    let authority_locals = direct_locals_binding_normalized_identifier(&method.block, "authority");
+    let [both, tls, owned, plain] = authority_locals.as_slice() else {
+        return false;
+    };
+    let owned_profile_locals =
+        direct_locals_binding_normalized_identifier(&method.block, "owned_xml_https_test_profile");
+    let [owned_profile] = owned_profile_locals.as_slice() else {
+        return false;
+    };
+    let root_locals = direct_locals_binding_normalized_identifier(&method.block, "root");
+    let policy_locals = direct_locals_binding_normalized_identifier(&method.block, "policy");
+    let allowance_locals =
+        direct_locals_binding_normalized_identifier(&method.block, "optional_active_verifications");
+    let ([root], [policy], [allowance]) = (
+        root_locals.as_slice(),
+        policy_locals.as_slice(),
+        allowance_locals.as_slice(),
+    ) else {
+        return false;
+    };
+    let production_prelude = authority_root_binding_is_exact(root)
+        && authority_policy_binding_is_exact(policy)
+        && authority_allowance_binding_is_exact(allowance);
+    let fixture_prelude = fixture_authority_root_binding_is_exact(root)
+        && fixture_authority_policy_binding_is_exact(policy)
+        && fixture_authority_allowance_binding_is_exact(allowance);
+    let build_profile = match (
+        production_prelude && production_imports_are_exact,
+        fixture_prelude && fixture_imports_are_exact,
+    ) {
+        (true, false) => AssessmentBuildProfile::Production,
+        (false, true) => AssessmentBuildProfile::Fixture,
+        _ => return false,
+    };
+    [
+        "assessment_semantic_limits",
+        "canonicalize_root",
+        "build_root_api_visibility_runtime",
+        "Err",
+        "Ok",
+    ]
+    .into_iter()
+    .all(|binding| all_pattern_binding_count(&method.block, binding) == 0)
+        && ["root", "policy", "optional_active_verifications"]
+            .into_iter()
+            .all(|binding| all_local_binding_count(&method.block, binding) == 1)
+        && all_pattern_binding_count(&method.block, "authority") == 4
+        && authority_prelude_is_closed(method, build_profile)
+        && owned_profile_selection_is_exact(owned_profile)
+        && authority_binding_is_exact(both)
+        && local_has_exact_cfg(
+            both,
+            "all(feature=\"tls-observation\",feature=\"xml-external-entity-owned-https-test-profile\")",
+        )
+        && both.init.as_ref().is_some_and(|initializer| {
+            initializer.diverge.is_none()
+                && both_feature_authority_selection_is_exact(&initializer.expr)
+        })
+        && authority_binding_is_exact(tls)
+        && local_has_exact_cfg(
+            tls,
+            "all(feature=\"tls-observation\",not(feature=\"xml-external-entity-owned-https-test-profile\"))",
+        )
+        && tls.init.as_ref().is_some_and(|initializer| {
+            initializer.diverge.is_none()
+                && tls_authority_selection_is_exact(&initializer.expr)
+        })
+        && authority_binding_is_exact(owned)
+        && local_has_exact_cfg(
+            owned,
+            "all(not(feature=\"tls-observation\"),feature=\"xml-external-entity-owned-https-test-profile\")",
+        )
+        && owned.init.as_ref().is_some_and(|initializer| {
+            initializer.diverge.is_none()
+                && owned_authority_selection_is_exact(&initializer.expr)
+        })
+        && authority_binding_is_exact(plain)
+        && local_has_exact_cfg(
+            plain,
+            "all(not(feature=\"tls-observation\"),not(feature=\"xml-external-entity-owned-https-test-profile\"))",
+        )
+        && plain.init.as_ref().is_some_and(|initializer| {
+            initializer.diverge.is_none()
+                && authority_constructor_kind(&initializer.expr)
+                    == Some(AssessmentAuthorityConstructor::Plain)
+        })
+        && block_consumes_authority_as_exact_runtime_field(&method.block)
+}
+
+fn authority_prelude_is_closed(
+    method: &syn::ImplItemFn,
+    build_profile: AssessmentBuildProfile,
+) -> bool {
+    struct PreludeVisitor {
+        allowed_format_macros: usize,
+        forbidden_macro_invocations: usize,
+        critical_assignments: usize,
+        block_items: usize,
+        invalid_returns: usize,
+        typed_error_returns: BTreeMap<&'static str, usize>,
+        forbidden_control_flow: usize,
+        reviewed_tries: BTreeMap<&'static str, usize>,
+        invalid_tries: usize,
+    }
+
+    impl<'ast> Visit<'ast> for PreludeVisitor {
+        fn visit_macro(&mut self, expression: &'ast syn::Macro) {
+            let allowed_format = expression.path.leading_colon.is_none()
+                && expression.path.segments.len() == 1
+                && expression.path.is_ident("format")
+                && normalized_token_text(&expression.tokens) == "\"endpoint:{}\",root.url";
+            if allowed_format {
+                self.allowed_format_macros = self.allowed_format_macros.saturating_add(1);
+            } else {
+                self.forbidden_macro_invocations =
+                    self.forbidden_macro_invocations.saturating_add(1);
+            }
+            visit::visit_macro(self, expression);
+        }
+
+        fn visit_expr_assign(&mut self, expression: &'ast syn::ExprAssign) {
+            struct CriticalPathVisitor {
+                found: bool,
+            }
+            impl<'ast> Visit<'ast> for CriticalPathVisitor {
+                fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+                    if path.qself.is_none()
+                        && path.path.leading_colon.is_none()
+                        && path.path.segments.len() == 1
+                        && path.path.segments.first().is_some_and(|segment| {
+                            matches!(
+                                normalize_identifier(&ident_name(&segment.ident)),
+                                "root" | "policy" | "optional_active_verifications"
+                            )
+                        })
+                    {
+                        self.found = true;
+                    }
+                    visit::visit_expr_path(self, path);
+                }
+            }
+
+            let mut critical = CriticalPathVisitor { found: false };
+            critical.visit_expr(&expression.left);
+            if critical.found {
+                self.critical_assignments = self.critical_assignments.saturating_add(1);
+            }
+            visit::visit_expr_assign(self, expression);
+        }
+
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            self.block_items = self.block_items.saturating_add(1);
+            visit::visit_item(self, item);
+        }
+
+        fn visit_expr_return(&mut self, expression: &'ast syn::ExprReturn) {
+            if let Some(variant) = web_assessment_build_typed_error_return_variant(expression) {
+                let count = self.typed_error_returns.entry(variant).or_default();
+                *count = count.saturating_add(1);
+            } else {
+                self.invalid_returns = self.invalid_returns.saturating_add(1);
+            }
+            visit::visit_expr_return(self, expression);
+        }
+
+        fn visit_expr_loop(&mut self, expression: &'ast syn::ExprLoop) {
+            self.forbidden_control_flow = self.forbidden_control_flow.saturating_add(1);
+            visit::visit_expr_loop(self, expression);
+        }
+
+        fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
+            self.forbidden_control_flow = self.forbidden_control_flow.saturating_add(1);
+            visit::visit_expr_while(self, expression);
+        }
+
+        fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
+            self.forbidden_control_flow = self.forbidden_control_flow.saturating_add(1);
+            visit::visit_expr_for_loop(self, expression);
+        }
+
+        fn visit_expr_break(&mut self, expression: &'ast syn::ExprBreak) {
+            self.forbidden_control_flow = self.forbidden_control_flow.saturating_add(1);
+            visit::visit_expr_break(self, expression);
+        }
+
+        fn visit_expr_continue(&mut self, expression: &'ast syn::ExprContinue) {
+            self.forbidden_control_flow = self.forbidden_control_flow.saturating_add(1);
+            visit::visit_expr_continue(self, expression);
+        }
+
+        fn visit_expr_try(&mut self, expression: &'ast syn::ExprTry) {
+            if let Some(kind) = web_assessment_build_try_kind(expression) {
+                let count = self.reviewed_tries.entry(kind).or_default();
+                *count = count.saturating_add(1);
+            } else {
+                self.invalid_tries = self.invalid_tries.saturating_add(1);
+            }
+            visit::visit_expr_try(self, expression);
+        }
+    }
+
+    let mut visitor = PreludeVisitor {
+        allowed_format_macros: 0,
+        forbidden_macro_invocations: 0,
+        critical_assignments: 0,
+        block_items: 0,
+        invalid_returns: 0,
+        typed_error_returns: BTreeMap::new(),
+        forbidden_control_flow: 0,
+        reviewed_tries: BTreeMap::new(),
+        invalid_tries: 0,
+    };
+    visitor.visit_block(&method.block);
+    let production_error_returns = BTreeMap::from([
+        ("AuthorizationReviewConflict", 1_usize),
+        ("InsecureAuthorizationReviewTransport", 1),
+        ("InsecureJwtTargetAcceptanceTransport", 1),
+        ("InsecureSuppliedSessionTransport", 1),
+        ("JwtTargetAcceptanceApplicationMismatch", 1),
+        ("ReconCtProviderComposition", 1),
+        ("RestReviewRequiresOpenApiReview", 1),
+        ("RootAuthorizationContextRequiresOriginRoot", 1),
+        ("RootRetentionLimit", 1),
+        ("SecretExposureResponseSourceConflict", 1),
+        ("SuppliedSessionApplicationMismatch", 1),
+        ("WebSocketReviewApplicationMismatch", 1),
+        ("WebSocketSuppliedSessionRequiresInputs", 1),
+        ("WebSocketSuppliedSessionUnsupportedPolicy", 1),
+        ("WebSocketSuppliedSessionWordPressConflict", 1),
+        ("WordPressAssetFingerprintsRequireDiscovery", 1),
+        ("WordPressContextRootMismatch", 2),
+        ("WordPressDiscoveryRequiresReview", 1),
+        ("WordPressLayoutRequiresDiscovery", 1),
+        ("WordPressNonRootRequiresDiscovery", 1),
+        ("WordPressPageScopeRequiresDiscovery", 1),
+        ("WordPressReviewRequiresOriginRoot", 1),
+        ("WordPressSuppliedSessionRequiresInputs", 1),
+        ("WordPressSuppliedSessionUnsupportedPolicy", 1),
+        ("XmlExternalEntityApplicationMismatch", 1),
+        ("XmlExternalEntitySsrfOastConflict", 1),
+    ]);
+    let fixture_tries = BTreeMap::from([
+        ("authority_plain", 4_usize),
+        ("authority_tls", 2),
+        ("authority_owned_xml_https", 2),
+        ("authority_tls_owned_xml_https", 1),
+    ]);
+    let production_tries = BTreeMap::from([
+        ("authority_plain", 4_usize),
+        ("authority_tls", 2),
+        ("authority_owned_xml_https", 2),
+        ("authority_tls_owned_xml_https", 1),
+        ("semantic_limits", 1),
+        ("http_probe", 1),
+        ("canonical_root", 1),
+        ("default_http_policy", 1),
+        ("restricted_http_policy", 1),
+        ("xml_target_authorization", 1),
+        ("xml_runtime_transpose", 1),
+        ("supplied_session_transpose", 1),
+        ("jwt_target_acceptance_transpose", 1),
+        ("api_visibility_resource_scope", 1),
+        ("api_visibility_transpose", 1),
+        ("native_review_seeds", 1),
+        ("native_review_observer", 1),
+        ("native_review_ledger", 1),
+    ]);
+    let profile_is_exact = match build_profile {
+        AssessmentBuildProfile::Fixture => {
+            visitor.allowed_format_macros == 0
+                && visitor.reviewed_tries == fixture_tries
+                && visitor.typed_error_returns.is_empty()
+        },
+        AssessmentBuildProfile::Production => {
+            visitor.allowed_format_macros == 1
+                && visitor.reviewed_tries == production_tries
+                && visitor.typed_error_returns == production_error_returns
+        },
+    };
+    visitor.forbidden_macro_invocations == 0
+        && visitor.critical_assignments == 0
+        && visitor.block_items == 0
+        && visitor.invalid_returns == 0
+        && visitor.forbidden_control_flow == 0
+        && visitor.invalid_tries == 0
+        && profile_is_exact
+}
+
+fn web_assessment_build_typed_error_return_variant(
+    expression: &syn::ExprReturn,
+) -> Option<&'static str> {
+    let Some(returned) = expression.expr.as_deref() else {
+        return None;
+    };
+    let syn::Expr::Call(error_call) = returned else {
+        return None;
+    };
+    let syn::Expr::Path(result_constructor) = error_call.func.as_ref() else {
+        return None;
+    };
+    let Some(syn::Expr::Path(error)) = error_call.args.first() else {
+        return None;
+    };
+    let exact_shape = expression.attrs.is_empty()
+        && error_call.attrs.is_empty()
+        && error_call.args.len() == 1
+        && result_constructor.attrs.is_empty()
+        && result_constructor.qself.is_none()
+        && result_constructor.path.leading_colon.is_none()
+        && syn_path_is_exact(&result_constructor.path, &["Err"])
+        && error.attrs.is_empty()
+        && error.qself.is_none()
+        && error.path.leading_colon.is_none()
+        && error.path.segments.len() == 2
+        && error
+            .path
+            .segments
+            .iter()
+            .all(|segment| matches!(segment.arguments, syn::PathArguments::None))
+        && error.path.segments.first().is_some_and(|segment| {
+            normalize_identifier(&ident_name(&segment.ident)) == "WebAssessmentRuntimeError"
+        });
+    if !exact_shape {
+        return None;
+    }
+    let variant = error
+        .path
+        .segments
+        .last()
+        .map(|segment| ident_name(&segment.ident));
+    match variant.as_deref() {
+        Some("AuthorizationReviewConflict") => Some("AuthorizationReviewConflict"),
+        Some("InsecureAuthorizationReviewTransport") => {
+            Some("InsecureAuthorizationReviewTransport")
+        },
+        Some("InsecureJwtTargetAcceptanceTransport") => {
+            Some("InsecureJwtTargetAcceptanceTransport")
+        },
+        Some("InsecureSuppliedSessionTransport") => Some("InsecureSuppliedSessionTransport"),
+        Some("JwtTargetAcceptanceApplicationMismatch") => {
+            Some("JwtTargetAcceptanceApplicationMismatch")
+        },
+        Some("ReconCtProviderComposition") => Some("ReconCtProviderComposition"),
+        Some("RestReviewRequiresOpenApiReview") => Some("RestReviewRequiresOpenApiReview"),
+        Some("RootAuthorizationContextRequiresOriginRoot") => {
+            Some("RootAuthorizationContextRequiresOriginRoot")
+        },
+        Some("RootRetentionLimit") => Some("RootRetentionLimit"),
+        Some("SecretExposureResponseSourceConflict") => {
+            Some("SecretExposureResponseSourceConflict")
+        },
+        Some("SuppliedSessionApplicationMismatch") => Some("SuppliedSessionApplicationMismatch"),
+        Some("WebSocketReviewApplicationMismatch") => Some("WebSocketReviewApplicationMismatch"),
+        Some("WebSocketSuppliedSessionRequiresInputs") => {
+            Some("WebSocketSuppliedSessionRequiresInputs")
+        },
+        Some("WebSocketSuppliedSessionUnsupportedPolicy") => {
+            Some("WebSocketSuppliedSessionUnsupportedPolicy")
+        },
+        Some("WebSocketSuppliedSessionWordPressConflict") => {
+            Some("WebSocketSuppliedSessionWordPressConflict")
+        },
+        Some("WordPressAssetFingerprintsRequireDiscovery") => {
+            Some("WordPressAssetFingerprintsRequireDiscovery")
+        },
+        Some("WordPressContextRootMismatch") => Some("WordPressContextRootMismatch"),
+        Some("WordPressDiscoveryRequiresReview") => Some("WordPressDiscoveryRequiresReview"),
+        Some("WordPressLayoutRequiresDiscovery") => Some("WordPressLayoutRequiresDiscovery"),
+        Some("WordPressNonRootRequiresDiscovery") => Some("WordPressNonRootRequiresDiscovery"),
+        Some("WordPressPageScopeRequiresDiscovery") => Some("WordPressPageScopeRequiresDiscovery"),
+        Some("WordPressReviewRequiresOriginRoot") => Some("WordPressReviewRequiresOriginRoot"),
+        Some("WordPressSuppliedSessionRequiresInputs") => {
+            Some("WordPressSuppliedSessionRequiresInputs")
+        },
+        Some("WordPressSuppliedSessionUnsupportedPolicy") => {
+            Some("WordPressSuppliedSessionUnsupportedPolicy")
+        },
+        Some("XmlExternalEntityApplicationMismatch") => {
+            Some("XmlExternalEntityApplicationMismatch")
+        },
+        Some("XmlExternalEntitySsrfOastConflict") => Some("XmlExternalEntitySsrfOastConflict"),
+        _ => None,
+    }
+}
+
+fn web_assessment_build_try_kind(expression: &syn::ExprTry) -> Option<&'static str> {
+    if !expression.attrs.is_empty() {
+        return None;
+    }
+    match expression.expr.as_ref() {
+        syn::Expr::Call(call) => web_assessment_build_try_call_kind(call),
+        syn::Expr::MethodCall(call) => web_assessment_build_try_method_kind(call),
+        _ => None,
+    }
+}
+
+fn web_assessment_build_try_call_kind(call: &syn::ExprCall) -> Option<&'static str> {
+    if exact_call_path(call, &["assessment_semantic_limits"])
+        && call.args.len() == 1
+        && expression_is_self_field(&call.args[0], "limits")
+    {
+        return Some("semantic_limits");
+    }
+    if exact_call_path(call, &["HttpProbe", "new"])
+        && call.args.len() == 2
+        && expression_is_clone_of_self_field(&call.args[0], "target")
+        && expression_is_exact_path(&call.args[1], &["HttpProbeMethod", "Get"])
+    {
+        return Some("http_probe");
+    }
+    if exact_call_path(call, &["HttpEvidencePolicy", "for_origin"])
+        && call.args.len() == 1
+        && expression_is_clone_of_root_url(&call.args[0])
+    {
+        return Some("default_http_policy");
+    }
+    if exact_call_path(call, &["NativeWebReviewSeeds", "from_authorized_origin"])
+        && call.args.len() == 1
+        && expression_is_borrowed_root_url(&call.args[0])
+    {
+        return Some("native_review_seeds");
+    }
+    if !call.attrs.is_empty() {
+        return None;
+    }
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return None;
+    };
+    if !function.attrs.is_empty()
+        || function.qself.is_some()
+        || function.path.leading_colon.is_some()
+        || function.path.segments.len() != 2
+        || !function.path.segments.first().is_some_and(|segment| {
+            normalize_identifier(&ident_name(&segment.ident)) == "SharedWebRuntimeAuthority"
+                && matches!(segment.arguments, syn::PathArguments::None)
+        })
+    {
+        return None;
+    }
+    let constructor = function
+        .path
+        .segments
+        .last()
+        .map(|segment| ident_name(&segment.ident));
+    match constructor.as_deref() {
+        Some("new_exact_origin") if call.args.len() == 4 => Some("authority_plain"),
+        Some("new_exact_origin_with_tls_observation") if call.args.len() == 4 => {
+            Some("authority_tls")
+        },
+        Some("new_exact_origin_with_owned_xml_https_test_profile") if call.args.len() == 5 => {
+            Some("authority_owned_xml_https")
+        },
+        Some("new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile")
+            if call.args.len() == 5 =>
+        {
+            Some("authority_tls_owned_xml_https")
+        },
+        _ => None,
+    }
+}
+
+fn web_assessment_build_try_method_kind(call: &syn::ExprMethodCall) -> Option<&'static str> {
+    if !call.attrs.is_empty() || call.turbofish.is_some() {
+        return None;
+    }
+    match normalize_identifier(&ident_name(&call.method)) {
+        "ok_or" => web_assessment_canonical_root_try_is_exact(call).then_some("canonical_root"),
+        "restricted_for_web_assessment" => {
+            web_assessment_restricted_policy_try_is_exact(call).then_some("restricted_http_policy")
+        },
+        "transpose" => web_assessment_transpose_try_kind(call),
+        "map_err" => web_assessment_map_err_try_kind(call),
+        _ => None,
+    }
+}
+
+fn web_assessment_canonical_root_try_is_exact(call: &syn::ExprMethodCall) -> bool {
+    let syn::Expr::Call(canonicalize) = call.receiver.as_ref() else {
+        return false;
+    };
+    call.args.len() == 1
+        && call.args.first().is_some_and(|error| {
+            expression_is_exact_path(
+                error,
+                &["WebAssessmentRuntimeError", "InvalidCanonicalTarget"],
+            )
+        })
+        && exact_call_path(canonicalize, &["canonicalize_root"])
+        && canonicalize.args.len() == 2
+        && matches!(canonicalize.args.first(), Some(syn::Expr::Reference(target))
+            if target.attrs.is_empty()
+                && target.mutability.is_none()
+                && expression_is_self_field(&target.expr, "target"))
+        && canonicalize
+            .args
+            .iter()
+            .nth(1)
+            .is_some_and(|limits| expression_is_self_field(limits, "limits"))
+}
+
+fn web_assessment_restricted_policy_try_is_exact(call: &syn::ExprMethodCall) -> bool {
+    let syn::Expr::Match(selection) = call.receiver.as_ref() else {
+        return false;
+    };
+    let [some, none] = selection.arms.as_slice() else {
+        return false;
+    };
+    let none_body = expression_tail(&none.body).unwrap_or(&none.body);
+    let syn::Expr::Try(default_policy) = none_body else {
+        return false;
+    };
+    call.args.len() == 2
+        && selection.attrs.is_empty()
+        && expression_is_self_field(&selection.expr, "http_policy")
+        && some.attrs.is_empty()
+        && some.guard.is_none()
+        && option_pattern_is_exact(&some.pat, Some("policy"))
+        && expression_is_path_ident(expression_tail(&some.body).unwrap_or(&some.body), "policy")
+        && none.attrs.is_empty()
+        && none.guard.is_none()
+        && option_pattern_is_exact(&none.pat, None)
+        && web_assessment_build_try_kind(default_policy) == Some("default_http_policy")
+        && call
+            .args
+            .first()
+            .is_some_and(expression_is_borrowed_root_url)
+        && matches!(call.args.iter().nth(1), Some(syn::Expr::MethodCall(maximum))
+            if maximum.attrs.is_empty()
+                && maximum.method == "max_response_body_bytes"
+                && maximum.turbofish.is_none()
+                && maximum.args.is_empty()
+                && expression_is_self_field(&maximum.receiver, "limits"))
+}
+
+fn web_assessment_transpose_try_kind(call: &syn::ExprMethodCall) -> Option<&'static str> {
+    if !call.args.is_empty() {
+        return None;
+    }
+    let syn::Expr::MethodCall(map) = call.receiver.as_ref() else {
+        return None;
+    };
+    if !map.attrs.is_empty()
+        || map.method != "map"
+        || map.turbofish.is_some()
+        || map.args.len() != 1
+    {
+        return None;
+    }
+    [
+        ("xml_external_entity_review", "xml_runtime_transpose"),
+        ("supplied_session_review", "supplied_session_transpose"),
+        (
+            "jwt_target_acceptance_review",
+            "jwt_target_acceptance_transpose",
+        ),
+        ("root_authorization_context", "api_visibility_transpose"),
+    ]
+    .into_iter()
+    .find_map(|(field, kind)| {
+        (expression_is_self_field(&map.receiver, field)
+            && web_assessment_transpose_closure_is_exact(kind, map.args.first()))
+        .then_some(kind)
+    })
+}
+
+fn web_assessment_transpose_closure_is_exact(kind: &str, expression: Option<&syn::Expr>) -> bool {
+    let Some(syn::Expr::Closure(closure)) = expression else {
+        return false;
+    };
+    if !plain_closure_header_is_exact(closure) {
+        return false;
+    }
+    match kind {
+        "xml_runtime_transpose" => {
+            closure_tuple_input_is_exact(closure, &["policy", "administrator"])
+                && xml_runtime_transpose_body_is_exact(&closure.body)
+        },
+        "supplied_session_transpose" => {
+            closure_tuple_input_is_exact(closure, &["policy", "credential"])
+                && supplied_session_transpose_body_is_exact(&closure.body)
+        },
+        "jwt_target_acceptance_transpose" => {
+            closure_tuple_input_is_exact(closure, &["policy", "runtime_input"])
+                && jwt_target_acceptance_transpose_body_is_exact(&closure.body)
+        },
+        "api_visibility_transpose" => {
+            closure_ident_input_is_exact(closure, "context")
+                && api_visibility_transpose_body_is_exact(&closure.body)
+        },
+        _ => false,
+    }
+}
+
+fn plain_closure_header_is_exact(closure: &syn::ExprClosure) -> bool {
+    closure.attrs.is_empty()
+        && closure.lifetimes.is_none()
+        && closure.constness.is_none()
+        && closure.movability.is_none()
+        && closure.asyncness.is_none()
+        && closure.capture.is_none()
+        && closure.inputs.len() == 1
+        && matches!(&closure.output, syn::ReturnType::Default)
+}
+
+fn closure_tuple_input_is_exact(closure: &syn::ExprClosure, expected: &[&str]) -> bool {
+    matches!(closure.inputs.first(), Some(syn::Pat::Tuple(tuple))
+        if tuple.attrs.is_empty()
+            && tuple.elems.len() == expected.len()
+            && tuple.elems.iter().zip(expected).all(|(pattern, expected)|
+                pattern_is_plain_ident(pattern, expected)))
+}
+
+fn closure_ident_input_is_exact(closure: &syn::ExprClosure, expected: &str) -> bool {
+    closure
+        .inputs
+        .first()
+        .is_some_and(|pattern| pattern_is_plain_ident(pattern, expected))
+}
+
+fn pattern_is_plain_ident(pattern: &syn::Pat, expected: &str) -> bool {
+    matches!(pattern, syn::Pat::Ident(binding)
+        if binding.attrs.is_empty()
+            && binding.by_ref.is_none()
+            && binding.mutability.is_none()
+            && binding.subpat.is_none()
+            && normalize_identifier(&ident_name(&binding.ident)) == expected)
+}
+
+fn xml_runtime_transpose_body_is_exact(expression: &syn::Expr) -> bool {
+    let syn::Expr::Block(body) = expression else {
+        return false;
+    };
+    let [authorize, result] = body.block.stmts.as_slice() else {
+        return false;
+    };
+    let syn::Stmt::Expr(syn::Expr::Try(authorize), Some(_)) = authorize else {
+        return false;
+    };
+    let syn::Stmt::Expr(syn::Expr::Call(result), None) = result else {
+        return false;
+    };
+    let Some(syn::Expr::Call(config)) = result.args.first() else {
+        return false;
+    };
+    body.attrs.is_empty()
+        && body.label.is_none()
+        && web_assessment_build_try_kind(authorize) == Some("xml_target_authorization")
+        && result.attrs.is_empty()
+        && result.args.len() == 1
+        && matches!(result.func.as_ref(), syn::Expr::Path(ok)
+            if ok.attrs.is_empty()
+                && ok.qself.is_none()
+                && ok.path.leading_colon.is_none()
+                && ok.path.segments.len() == 1
+                && ok.path.segments.first().is_some_and(|segment|
+                    normalize_identifier(&ident_name(&segment.ident)) == "Ok"))
+        && exact_call_path(config, &["XmlExternalEntityRuntimeConfig", "new"])
+        && config.args.len() == 2
+        && expression_is_path_ident(&config.args[0], "policy")
+        && expression_is_path_ident(&config.args[1], "administrator")
+}
+
+fn supplied_session_transpose_body_is_exact(expression: &syn::Expr) -> bool {
+    let Some(syn::Expr::MethodCall(map_err)) = expression_tail(expression) else {
+        return false;
+    };
+    let syn::Expr::Call(config) = map_err.receiver.as_ref() else {
+        return false;
+    };
+    map_err.attrs.is_empty()
+        && map_err.method == "map_err"
+        && map_err.turbofish.is_none()
+        && map_err.args.len() == 1
+        && exact_unit_map_err_closure(map_err.args.first(), "SuppliedSessionComposition")
+        && exact_call_path(config, &["SuppliedSessionRuntimeConfig", "new"])
+        && config.args.len() == 3
+        && expression_is_path_ident(&config.args[0], "policy")
+        && expression_is_path_ident(&config.args[1], "credential")
+        && matches!(&config.args[2], syn::Expr::Reference(reference)
+            if reference.attrs.is_empty()
+                && reference.mutability.is_none()
+                && expression_is_path_ident(&reference.expr, "authority"))
+}
+
+fn jwt_target_acceptance_transpose_body_is_exact(expression: &syn::Expr) -> bool {
+    let Some(syn::Expr::MethodCall(map_err)) = expression_tail(expression) else {
+        return false;
+    };
+    let syn::Expr::Call(config) = map_err.receiver.as_ref() else {
+        return false;
+    };
+    map_err.attrs.is_empty()
+        && map_err.method == "map_err"
+        && map_err.turbofish.is_none()
+        && map_err.args.len() == 1
+        && exact_map_err_closure(map_err.args.first(), "JwtTargetAcceptanceComposition")
+        && exact_call_path(config, &["JwtTargetAcceptanceRuntimeConfig", "new"])
+        && config.args.len() == 2
+        && expression_is_path_ident(&config.args[0], "policy")
+        && expression_is_path_ident(&config.args[1], "runtime_input")
+}
+
+fn api_visibility_transpose_body_is_exact(expression: &syn::Expr) -> bool {
+    let syn::Expr::Block(body) = expression else {
+        return false;
+    };
+    let [resource_scope, runtime] = body.block.stmts.as_slice() else {
+        return false;
+    };
+    let syn::Stmt::Local(resource_scope) = resource_scope else {
+        return false;
+    };
+    let Some(syn::Expr::Try(resource_scope)) =
+        plain_local_initializer(resource_scope, "resource_scope")
+    else {
+        return false;
+    };
+    let syn::Stmt::Expr(syn::Expr::MethodCall(map_err), None) = runtime else {
+        return false;
+    };
+    let syn::Expr::Call(builder) = map_err.receiver.as_ref() else {
+        return false;
+    };
+    body.attrs.is_empty()
+        && body.label.is_none()
+        && web_assessment_build_try_kind(resource_scope) == Some("api_visibility_resource_scope")
+        && map_err.attrs.is_empty()
+        && map_err.method == "map_err"
+        && map_err.turbofish.is_none()
+        && map_err.args.len() == 1
+        && exact_map_err_closure(map_err.args.first(), "ApiVisibilityComposition")
+        && exact_call_path(builder, &["build_root_api_visibility_runtime"])
+        && builder.args.len() == 4
+        && expression_is_borrowed_root_url(&builder.args[0])
+        && expression_is_path_ident(&builder.args[1], "resource_scope")
+        && expression_is_clone_of_path_ident(&builder.args[2], "authority")
+        && expression_is_path_ident(&builder.args[3], "context")
+}
+
+fn exact_unit_map_err_closure(expression: Option<&syn::Expr>, variant: &str) -> bool {
+    let Some(syn::Expr::Closure(closure)) = expression else {
+        return false;
+    };
+    plain_closure_header_is_exact(closure)
+        && matches!(closure.inputs.first(), Some(syn::Pat::Tuple(tuple))
+            if tuple.attrs.is_empty() && tuple.elems.is_empty())
+        && expression_is_exact_path(&closure.body, &["WebAssessmentRuntimeError", variant])
+}
+
+fn expression_is_clone_of_path_ident(expression: &syn::Expr, expected: &str) -> bool {
+    matches!(expression, syn::Expr::MethodCall(clone)
+        if clone.attrs.is_empty()
+            && clone.method == "clone"
+            && clone.turbofish.is_none()
+            && clone.args.is_empty()
+            && expression_is_path_ident(&clone.receiver, expected))
+}
+
+fn expression_is_path_method_no_args(expression: &syn::Expr, receiver: &str, method: &str) -> bool {
+    matches!(expression, syn::Expr::MethodCall(call)
+        if call.attrs.is_empty()
+            && normalize_identifier(&ident_name(&call.method)) == method
+            && call.turbofish.is_none()
+            && call.args.is_empty()
+            && expression_is_path_ident(&call.receiver, receiver))
+}
+
+fn web_assessment_map_err_try_kind(call: &syn::ExprMethodCall) -> Option<&'static str> {
+    let error_variant = [
+        (
+            "XmlExternalEntityApplicationMismatch",
+            "xml_target_authorization",
+        ),
+        ("ApiVisibilityComposition", "api_visibility_resource_scope"),
+        ("NativeReviewComposition", "native_review"),
+    ]
+    .into_iter()
+    .find_map(|(variant, kind)| {
+        exact_map_err_closure(call.args.first(), variant).then_some(kind)
+    })?;
+    if call.args.len() != 1 {
+        return None;
+    }
+    match error_variant {
+        "xml_target_authorization" => {
+            let syn::Expr::MethodCall(authorize) = call.receiver.as_ref() else {
+                return None;
+            };
+            let Some(syn::Expr::MethodCall(endpoint)) = authorize.args.first() else {
+                return None;
+            };
+            (authorize.attrs.is_empty()
+                && authorize.method == "authorize_target"
+                && authorize.turbofish.is_none()
+                && authorize.args.len() == 1
+                && expression_is_path_ident(&authorize.receiver, "authority")
+                && endpoint.attrs.is_empty()
+                && endpoint.method == "endpoint"
+                && endpoint.turbofish.is_none()
+                && endpoint.args.is_empty()
+                && expression_is_path_ident(&endpoint.receiver, "policy"))
+            .then_some(error_variant)
+        },
+        "api_visibility_resource_scope" => {
+            matches!(call.receiver.as_ref(), syn::Expr::Call(resource_scope)
+                if exact_call_path(resource_scope, &["EntityId", "new"])
+                    && resource_scope.args.len() == 1
+                    && exact_endpoint_scope_argument(&resource_scope.args[0]))
+            .then_some(error_variant)
+        },
+        "native_review" => {
+            let syn::Expr::Call(constructor) = call.receiver.as_ref() else {
+                return None;
+            };
+            if constructor.args.len() == 6
+                && expression_is_clone_of_root_url(&constructor.args[0])
+                && expression_is_clone_of_path_ident(&constructor.args[1], "seeds")
+                && expression_is_path_method_no_args(
+                    &constructor.args[2],
+                    "redirect_query_parameter",
+                    "as_deref",
+                )
+                && expression_is_path_method_no_args(
+                    &constructor.args[3],
+                    "reflection_query_parameter",
+                    "as_deref",
+                )
+                && expression_is_path_method_no_args(
+                    &constructor.args[4],
+                    "sql_query_parameter",
+                    "as_deref",
+                )
+                && expression_is_path_method_no_args(
+                    &constructor.args[5],
+                    "ssti_query_parameter",
+                    "as_deref",
+                )
+                && (exact_call_path(
+                    constructor,
+                    &["AssessmentReviewObserverSet", "new_with_sql"],
+                ) || exact_call_path(
+                    constructor,
+                    &["CommittedAssessmentReviewLedger", "new_with_sql"],
+                ))
+            {
+                if exact_call_path(
+                    constructor,
+                    &["AssessmentReviewObserverSet", "new_with_sql"],
+                ) {
+                    Some("native_review_observer")
+                } else {
+                    Some("native_review_ledger")
+                }
+            } else {
+                None
+            }
+        },
+        _ => None,
+    }
+}
+
+fn exact_endpoint_scope_argument(expression: &syn::Expr) -> bool {
+    matches!(expression, syn::Expr::Macro(expression)
+        if expression.attrs.is_empty()
+            && expression.mac.path.leading_colon.is_none()
+            && syn_path_is_exact(&expression.mac.path, &["format"])
+            && normalized_token_text(&expression.mac.tokens) == "\"endpoint:{}\",root.url")
+}
+
+fn exact_map_err_closure(expression: Option<&syn::Expr>, variant: &str) -> bool {
+    let Some(syn::Expr::Closure(closure)) = expression else {
+        return false;
+    };
+    closure.attrs.is_empty()
+        && closure.lifetimes.is_none()
+        && closure.constness.is_none()
+        && closure.movability.is_none()
+        && closure.asyncness.is_none()
+        && closure.capture.is_none()
+        && closure.inputs.len() == 1
+        && matches!(closure.inputs.first(), Some(syn::Pat::Wild(wild)) if wild.attrs.is_empty())
+        && matches!(&closure.output, syn::ReturnType::Default)
+        && expression_is_exact_path(&closure.body, &["WebAssessmentRuntimeError", variant])
+}
+
+fn exact_call_path(call: &syn::ExprCall, expected: &[&str]) -> bool {
+    matches!(call.func.as_ref(), syn::Expr::Path(function)
+        if call.attrs.is_empty()
+            && function.attrs.is_empty()
+            && function.qself.is_none()
+            && function.path.leading_colon.is_none()
+            && syn_path_is_exact(&function.path, expected))
+}
+
+fn expression_is_exact_path(expression: &syn::Expr, expected: &[&str]) -> bool {
+    matches!(expression, syn::Expr::Path(path)
+        if path.attrs.is_empty()
+            && path.qself.is_none()
+            && path.path.leading_colon.is_none()
+            && syn_path_is_exact(&path.path, expected))
+}
+
+fn expression_is_clone_of_self_field(expression: &syn::Expr, field: &str) -> bool {
+    matches!(expression, syn::Expr::MethodCall(clone)
+        if clone.attrs.is_empty()
+            && clone.method == "clone"
+            && clone.turbofish.is_none()
+            && clone.args.is_empty()
+            && expression_is_self_field(&clone.receiver, field))
+}
+
+fn expression_is_clone_of_root_url(expression: &syn::Expr) -> bool {
+    matches!(expression, syn::Expr::MethodCall(clone)
+        if clone.attrs.is_empty()
+            && clone.method == "clone"
+            && clone.turbofish.is_none()
+            && clone.args.is_empty()
+            && matches!(clone.receiver.as_ref(), syn::Expr::Field(url)
+                if url.attrs.is_empty()
+                    && expression_is_path_ident(&url.base, "root")
+                    && matches!(&url.member, syn::Member::Named(member)
+                        if normalize_identifier(&ident_name(member)) == "url")))
+}
+
+fn all_pattern_binding_count(block: &syn::Block, expected: &str) -> usize {
+    struct BindingVisitor<'a> {
+        expected: &'a str,
+        count: usize,
+    }
+
+    impl<'ast> Visit<'ast> for BindingVisitor<'_> {
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            if normalize_identifier(&ident_name(&pattern.ident)) == self.expected {
+                self.count = self.count.saturating_add(1);
+            }
+            visit::visit_pat_ident(self, pattern);
+        }
+    }
+
+    let mut visitor = BindingVisitor { expected, count: 0 };
+    visitor.visit_block(block);
+    visitor.count
+}
+
+fn all_local_binding_count(block: &syn::Block, expected: &str) -> usize {
+    struct LocalVisitor<'a> {
+        expected: &'a str,
+        count: usize,
+    }
+
+    impl<'ast> Visit<'ast> for LocalVisitor<'_> {
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            if pattern_binds_normalized_identifier(&local.pat, self.expected) {
+                self.count = self.count.saturating_add(1);
+            }
+            visit::visit_local(self, local);
+        }
+    }
+
+    let mut visitor = LocalVisitor { expected, count: 0 };
+    visitor.visit_block(block);
+    visitor.count
+}
+
+fn direct_locals_binding_normalized_identifier<'ast>(
+    block: &'ast syn::Block,
+    expected: &str,
+) -> Vec<&'ast syn::Local> {
+    block
+        .stmts
+        .iter()
+        .filter_map(|statement| match statement {
+            syn::Stmt::Local(local)
+                if pattern_binds_normalized_identifier(&local.pat, expected) =>
+            {
+                Some(local)
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn plain_local_initializer<'ast>(
+    local: &'ast syn::Local,
+    expected: &str,
+) -> Option<&'ast syn::Expr> {
+    (local.attrs.is_empty() && authority_binding_is_named(local, expected))
+        .then_some(())
+        .and_then(|()| local.init.as_ref())
+        .filter(|initializer| initializer.diverge.is_none())
+        .map(|initializer| initializer.expr.as_ref())
+}
+
+fn authority_root_binding_is_exact(local: &syn::Local) -> bool {
+    let Some(syn::Expr::Try(attempt)) = plain_local_initializer(local, "root") else {
+        return false;
+    };
+    let syn::Expr::MethodCall(ok_or) = attempt.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Call(canonicalize) = ok_or.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Path(function) = canonicalize.func.as_ref() else {
+        return false;
+    };
+    attempt.attrs.is_empty()
+        && ok_or.attrs.is_empty()
+        && ok_or.method == "ok_or"
+        && ok_or.turbofish.is_none()
+        && ok_or.args.len() == 1
+        && matches!(ok_or.args.first(), Some(syn::Expr::Path(error))
+        if error.qself.is_none()
+            && syn_path_is_exact(
+                &error.path,
+                &["WebAssessmentRuntimeError", "InvalidCanonicalTarget"],
+            ))
+        && canonicalize.attrs.is_empty()
+        && function.qself.is_none()
+        && syn_path_is_exact(&function.path, &["canonicalize_root"])
+        && canonicalize.args.len() == 2
+        && matches!(canonicalize.args.first(), Some(syn::Expr::Reference(target))
+            if target.attrs.is_empty()
+                && target.mutability.is_none()
+                && expression_is_self_field(&target.expr, "target"))
+        && canonicalize
+            .args
+            .iter()
+            .nth(1)
+            .is_some_and(|limits| expression_is_self_field(limits, "limits"))
+}
+
+fn fixture_authority_root_binding_is_exact(local: &syn::Local) -> bool {
+    matches!(plain_local_initializer(local, "root"), Some(syn::Expr::Struct(root))
+        if root.attrs.is_empty()
+            && root.qself.is_none()
+            && syn_path_is_exact(&root.path, &["Root"])
+            && root.rest.is_none()
+            && matches!(root.fields.first(), Some(field)
+                if root.fields.len() == 1
+                    && field.attrs.is_empty()
+                    && matches!(&field.member, syn::Member::Named(member) if member == "url")
+                    && expression_is_path_ident(&field.expr, "Url")))
+}
+
+fn authority_policy_binding_is_exact(local: &syn::Local) -> bool {
+    let Some(syn::Expr::Try(attempt)) = plain_local_initializer(local, "policy") else {
+        return false;
+    };
+    let syn::Expr::MethodCall(restricted) = attempt.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Match(selection) = restricted.receiver.as_ref() else {
+        return false;
+    };
+    let [some, none] = selection.arms.as_slice() else {
+        return false;
+    };
+    let none_body = expression_tail(&none.body).unwrap_or(&none.body);
+    let syn::Expr::Try(default_policy) = none_body else {
+        return false;
+    };
+    let syn::Expr::Call(for_origin) = default_policy.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Path(for_origin_function) = for_origin.func.as_ref() else {
+        return false;
+    };
+    let default_origin_is_exact = matches!(for_origin.args.first(), Some(syn::Expr::MethodCall(clone))
+        if for_origin.args.len() == 1
+            && clone.attrs.is_empty()
+            && clone.method == "clone"
+            && clone.turbofish.is_none()
+            && clone.args.is_empty()
+            && matches!(clone.receiver.as_ref(), syn::Expr::Field(url)
+                if expression_is_path_ident(&url.base, "root")
+                    && matches!(&url.member, syn::Member::Named(member) if member == "url")));
+    let max_body_is_exact = matches!(restricted.args.iter().nth(1), Some(syn::Expr::MethodCall(maximum))
+        if maximum.attrs.is_empty()
+            && maximum.method == "max_response_body_bytes"
+            && maximum.turbofish.is_none()
+            && maximum.args.is_empty()
+            && expression_is_self_field(&maximum.receiver, "limits"));
+    attempt.attrs.is_empty()
+        && restricted.attrs.is_empty()
+        && restricted.method == "restricted_for_web_assessment"
+        && restricted.turbofish.is_none()
+        && restricted.args.len() == 2
+        && restricted
+            .args
+            .first()
+            .is_some_and(expression_is_borrowed_root_url)
+        && max_body_is_exact
+        && selection.attrs.is_empty()
+        && expression_is_self_field(&selection.expr, "http_policy")
+        && some.attrs.is_empty()
+        && some.guard.is_none()
+        && option_pattern_is_exact(&some.pat, Some("policy"))
+        && expression_is_path_ident(expression_tail(&some.body).unwrap_or(&some.body), "policy")
+        && none.attrs.is_empty()
+        && none.guard.is_none()
+        && option_pattern_is_exact(&none.pat, None)
+        && default_policy.attrs.is_empty()
+        && for_origin.attrs.is_empty()
+        && for_origin_function.qself.is_none()
+        && syn_path_is_exact(
+            &for_origin_function.path,
+            &["HttpEvidencePolicy", "for_origin"],
+        )
+        && default_origin_is_exact
+}
+
+fn fixture_authority_policy_binding_is_exact(local: &syn::Local) -> bool {
+    plain_local_initializer(local, "policy")
+        .is_some_and(|expression| expression_is_path_ident(expression, "Policy"))
+}
+
+#[derive(Clone, Copy)]
+enum AllowanceBooleanSource {
+    Direct,
+    IsSome,
+    PathIsSome,
+}
+
+#[derive(Clone, Copy)]
+enum AllowanceAmount {
+    Direct(&'static str),
+    From(&'static str),
+    TryFrom(&'static str, &'static str),
+}
+
+#[derive(Clone, Copy)]
+struct AllowanceSpec {
+    feature: &'static str,
+    field: &'static str,
+    boolean_source: AllowanceBooleanSource,
+    amount: AllowanceAmount,
+    message: &'static str,
+}
+
+fn authority_allowance_binding_is_exact(local: &syn::Local) -> bool {
+    const SPECS: &[AllowanceSpec] = &[
+        AllowanceSpec {
+            feature: "graphql-review",
+            field: "graphql_review",
+            boolean_source: AllowanceBooleanSource::Direct,
+            amount: AllowanceAmount::Direct("GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE"),
+            message: "compiled GraphQL allowance fits u16",
+        },
+        AllowanceSpec {
+            feature: "authorization-review",
+            field: "resource_authorization_review",
+            boolean_source: AllowanceBooleanSource::IsSome,
+            amount: AllowanceAmount::Direct("AUTHORIZATION_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE"),
+            message: "compiled authorization allowance fits u16",
+        },
+        AllowanceSpec {
+            feature: "jwt-target-acceptance-review",
+            field: "jwt_target_acceptance_review",
+            boolean_source: AllowanceBooleanSource::IsSome,
+            amount: AllowanceAmount::From("MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS"),
+            message: "compiled JWT target-acceptance allowance fits u16",
+        },
+        AllowanceSpec {
+            feature: "openapi-review",
+            field: "openapi_review",
+            boolean_source: AllowanceBooleanSource::Direct,
+            amount: AllowanceAmount::TryFrom(
+                "MAX_OPENAPI_REVIEW_ACTIVE_VERIFICATIONS",
+                "OpenAPI active-verification allowance fits u16",
+            ),
+            message: "compiled OpenAPI allowance fits u16",
+        },
+        AllowanceSpec {
+            feature: "rest-review",
+            field: "rest_review",
+            boolean_source: AllowanceBooleanSource::Direct,
+            amount: AllowanceAmount::TryFrom(
+                "MAX_REST_REVIEW_ACTIVE_VERIFICATIONS",
+                "REST active-verification allowance fits u16",
+            ),
+            message: "compiled REST allowance fits u16",
+        },
+        AllowanceSpec {
+            feature: "ssrf-oast-review",
+            field: "ssrf_oast_review",
+            boolean_source: AllowanceBooleanSource::PathIsSome,
+            amount: AllowanceAmount::TryFrom(
+                "MAX_SSRF_OAST_REVIEW_ACTIVE_VERIFICATIONS",
+                "SSRF OAST active-verification allowance fits u16",
+            ),
+            message: "compiled SSRF OAST allowance fits u16",
+        },
+        AllowanceSpec {
+            feature: "xml-external-entity-review",
+            field: "xml_external_entity_review",
+            boolean_source: AllowanceBooleanSource::IsSome,
+            amount: AllowanceAmount::TryFrom(
+                "XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS",
+                "controlled XML active-verification allowance fits u16",
+            ),
+            message: "compiled controlled XML allowance fits u16",
+        },
+    ];
+
+    let Some(syn::Expr::Block(expression)) =
+        plain_local_initializer(local, "optional_active_verifications")
+    else {
+        return false;
+    };
+    if !expression.attrs.is_empty()
+        || expression.label.is_some()
+        || expression.block.stmts.len() != SPECS.len() + 2
+        || !expression
+            .block
+            .stmts
+            .first()
+            .is_some_and(initial_zero_allowance_is_exact)
+        || !matches!(expression.block.stmts.last(), Some(syn::Stmt::Expr(tail, None))
+            if expression_is_path_ident(tail, "allowance"))
+    {
+        return false;
+    }
+    expression.block.stmts[1..=SPECS.len()]
+        .iter()
+        .zip(SPECS)
+        .all(|(statement, spec)| allowance_step_is_exact(statement, *spec))
+}
+
+fn fixture_authority_allowance_binding_is_exact(local: &syn::Local) -> bool {
+    matches!(plain_local_initializer(local, "optional_active_verifications"), Some(syn::Expr::Lit(literal))
+        if literal.attrs.is_empty()
+            && matches!(&literal.lit, syn::Lit::Int(value)
+                if value.base10_digits() == "0" && value.suffix() == "u16"))
+}
+
+fn initial_zero_allowance_is_exact(statement: &syn::Stmt) -> bool {
+    let syn::Stmt::Local(local) = statement else {
+        return false;
+    };
+    matches!(plain_local_initializer(local, "allowance"), Some(syn::Expr::Lit(literal))
+        if literal.attrs.is_empty()
+            && matches!(&literal.lit, syn::Lit::Int(value)
+                if value.base10_digits() == "0" && value.suffix() == "u16"))
+}
+
+fn allowance_step_is_exact(statement: &syn::Stmt, spec: AllowanceSpec) -> bool {
+    let syn::Stmt::Local(local) = statement else {
+        return false;
+    };
+    if !authority_binding_is_named(local, "allowance")
+        || !local_has_exact_cfg(local, &format!("feature=\"{}\"", spec.feature))
+    {
+        return false;
+    }
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    let syn::Expr::MethodCall(expect) = initializer.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(checked_add) = expect.receiver.as_ref() else {
+        return false;
+    };
+    initializer.diverge.is_none()
+        && expect.attrs.is_empty()
+        && expect.method == "expect"
+        && expect.turbofish.is_none()
+        && expect.args.len() == 1
+        && exact_string_argument(expect.args.first(), spec.message)
+        && checked_add.attrs.is_empty()
+        && checked_add.method == "checked_add"
+        && checked_add.turbofish.is_none()
+        && checked_add.args.len() == 1
+        && expression_is_path_ident(&checked_add.receiver, "allowance")
+        && checked_add.args.first().is_some_and(|argument| {
+            allowance_increment_is_exact(argument, spec.field, spec.boolean_source, spec.amount)
+        })
+}
+
+fn allowance_increment_is_exact(
+    expression: &syn::Expr,
+    field: &str,
+    boolean_source: AllowanceBooleanSource,
+    amount: AllowanceAmount,
+) -> bool {
+    let syn::Expr::Binary(product) = expression else {
+        return false;
+    };
+    matches!(product.op, syn::BinOp::Mul(_))
+        && u16_from_argument(&product.left)
+            .is_some_and(|condition| allowance_condition_is_exact(condition, field, boolean_source))
+        && allowance_amount_is_exact(&product.right, amount)
+}
+
+fn allowance_condition_is_exact(
+    expression: &syn::Expr,
+    field: &str,
+    source: AllowanceBooleanSource,
+) -> bool {
+    let syn::Expr::Binary(condition) = expression else {
+        return false;
+    };
+    let selected = match source {
+        AllowanceBooleanSource::Direct => expression_is_self_field(&condition.left, field),
+        AllowanceBooleanSource::IsSome => {
+            matches!(condition.left.as_ref(), syn::Expr::MethodCall(is_some)
+            if is_some.attrs.is_empty()
+                && is_some.method == "is_some"
+                && is_some.turbofish.is_none()
+                && is_some.args.is_empty()
+                && expression_is_self_field(&is_some.receiver, field))
+        },
+        AllowanceBooleanSource::PathIsSome => {
+            matches!(condition.left.as_ref(), syn::Expr::MethodCall(is_some)
+            if is_some.attrs.is_empty()
+                && is_some.method == "is_some"
+                && is_some.turbofish.is_none()
+                && is_some.args.is_empty()
+                && expression_is_path_ident(&is_some.receiver, field))
+        },
+    };
+    let syn::Expr::Binary(limit) = condition.right.as_ref() else {
+        return false;
+    };
+    selected
+        && matches!(condition.op, syn::BinOp::And(_))
+        && matches!(limit.op, syn::BinOp::Eq(_))
+        && matches!(limit.left.as_ref(), syn::Expr::MethodCall(maximum)
+            if maximum.attrs.is_empty()
+                && maximum.method == "max_active_verifications"
+                && maximum.turbofish.is_none()
+                && maximum.args.is_empty()
+                && expression_is_self_field(&maximum.receiver, "limits"))
+        && expression_is_path_ident(
+            &limit.right,
+            "DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS",
+        )
+}
+
+fn allowance_amount_is_exact(expression: &syn::Expr, amount: AllowanceAmount) -> bool {
+    match amount {
+        AllowanceAmount::Direct(expected) => expression_is_path_ident(expression, expected),
+        AllowanceAmount::From(expected) => u16_from_argument(expression)
+            .is_some_and(|argument| expression_is_path_ident(argument, expected)),
+        AllowanceAmount::TryFrom(expected, message) => {
+            let syn::Expr::MethodCall(expect) = expression else {
+                return false;
+            };
+            let syn::Expr::Call(conversion) = expect.receiver.as_ref() else {
+                return false;
+            };
+            let syn::Expr::Path(function) = conversion.func.as_ref() else {
+                return false;
+            };
+            expect.attrs.is_empty()
+                && expect.method == "expect"
+                && expect.turbofish.is_none()
+                && expect.args.len() == 1
+                && exact_string_argument(expect.args.first(), message)
+                && conversion.attrs.is_empty()
+                && function.qself.is_none()
+                && syn_path_is_exact(&function.path, &["u16", "try_from"])
+                && matches!(conversion.args.first(), Some(argument)
+                    if conversion.args.len() == 1
+                        && expression_is_path_ident(argument, expected))
+        },
+    }
+}
+
+fn u16_from_argument(expression: &syn::Expr) -> Option<&syn::Expr> {
+    let syn::Expr::Call(call) = expression else {
+        return None;
+    };
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return None;
+    };
+    (call.attrs.is_empty()
+        && function.qself.is_none()
+        && syn_path_is_exact(&function.path, &["u16", "from"])
+        && call.args.len() == 1)
+        .then(|| call.args.first())
+        .flatten()
+}
+
+fn exact_string_argument(expression: Option<&syn::Expr>, expected: &str) -> bool {
+    matches!(expression, Some(syn::Expr::Lit(literal))
+        if literal.attrs.is_empty()
+            && matches!(&literal.lit, syn::Lit::Str(value) if value.value() == expected))
+}
+
+fn owned_profile_selection_is_exact(local: &syn::Local) -> bool {
+    if !authority_binding_is_named(local, "owned_xml_https_test_profile")
+        || !local_has_exact_cfg(
+            local,
+            "feature=\"xml-external-entity-owned-https-test-profile\"",
+        )
+    {
+        return false;
+    }
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    let syn::Expr::MethodCall(and_then) = initializer.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(as_ref) = and_then.receiver.as_ref() else {
+        return false;
+    };
+    let Some(syn::Expr::Closure(closure)) = and_then.args.first() else {
+        return false;
+    };
+    initializer.diverge.is_none()
+        && and_then.attrs.is_empty()
+        && and_then.method == "and_then"
+        && and_then.turbofish.is_none()
+        && and_then.args.len() == 1
+        && as_ref.attrs.is_empty()
+        && as_ref.method == "as_ref"
+        && as_ref.turbofish.is_none()
+        && as_ref.args.is_empty()
+        && expression_is_self_field(&as_ref.receiver, "xml_external_entity_review")
+        && closure.attrs.is_empty()
+        && closure.inputs.len() == 1
+        && matches!(closure.inputs.first(), Some(syn::Pat::Tuple(tuple))
+            if tuple.elems.len() == 2
+                && matches!(tuple.elems.first(), Some(syn::Pat::Ident(binding))
+                    if binding.attrs.is_empty()
+                        && binding.by_ref.is_none()
+                        && binding.mutability.is_none()
+                        && normalize_identifier(&ident_name(&binding.ident)) == "policy"
+                        && binding.subpat.is_none())
+                && matches!(tuple.elems.iter().nth(1), Some(syn::Pat::Wild(wildcard))
+                    if wildcard.attrs.is_empty()))
+        && owned_profile_constructor_call_is_exact(&closure.body)
+}
+
+fn owned_profile_constructor_call_is_exact(expression: &syn::Expr) -> bool {
+    let syn::Expr::Call(call) = expression_tail(expression).unwrap_or(expression) else {
+        return false;
+    };
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return false;
+    };
+    call.attrs.is_empty()
+        && function.qself.is_none()
+        && syn_path_is_exact(
+            &function.path,
+            &[
+                "OwnedXmlHttpsTestTransportProfile",
+                "for_application_and_policy",
+            ],
+        )
+        && call.args.len() == 2
+        && expression_is_borrowed_root_url(&call.args[0])
+        && expression_is_path_ident(&call.args[1], "policy")
+}
+
+fn expression_is_borrowed_root_url(expression: &syn::Expr) -> bool {
+    let syn::Expr::Reference(reference) = expression else {
+        return false;
+    };
+    reference.attrs.is_empty()
+        && reference.mutability.is_none()
+        && matches!(reference.expr.as_ref(), syn::Expr::Field(field)
+            if expression_is_path_ident(&field.base, "root")
+                && matches!(&field.member, syn::Member::Named(member)
+                    if normalize_identifier(&ident_name(member)) == "url"))
+}
+
+fn block_consumes_authority_as_exact_runtime_field(block: &syn::Block) -> bool {
+    struct FieldVisitor {
+        runtimes: usize,
+        fields: usize,
+        exact: usize,
+    }
+
+    impl<'ast> Visit<'ast> for FieldVisitor {
+        fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+            let is_runtime = expression.qself.is_none()
+                && expression.path.leading_colon.is_none()
+                && expression.path.segments.len() == 1
+                && expression
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment.ident == "WebAssessmentRuntime");
+            if is_runtime {
+                self.runtimes = self.runtimes.saturating_add(1);
+                for field in &expression.fields {
+                    if matches!(&field.member, syn::Member::Named(member)
+                        if normalize_identifier(&ident_name(member)) == "authority")
+                    {
+                        self.fields = self.fields.saturating_add(1);
+                        if field.attrs.is_empty()
+                            && field.colon_token.is_none()
+                            && expression_is_path_ident(&field.expr, "authority")
+                        {
+                            self.exact = self.exact.saturating_add(1);
+                        }
+                    }
+                }
+            }
+            visit::visit_expr_struct(self, expression);
+        }
+    }
+
+    let mut visitor = FieldVisitor {
+        runtimes: 0,
+        fields: 0,
+        exact: 0,
+    };
+    visitor.visit_block(block);
+    visitor.runtimes == 1 && visitor.fields == 1 && visitor.exact == 1
+}
+
+fn pattern_binds_normalized_identifier(pattern: &syn::Pat, expected: &str) -> bool {
+    struct BindingVisitor<'a> {
+        expected: &'a str,
+        found: bool,
+    }
+
+    impl<'ast> Visit<'ast> for BindingVisitor<'_> {
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            if normalize_identifier(&ident_name(&pattern.ident)) == self.expected {
+                self.found = true;
+            }
+            visit::visit_pat_ident(self, pattern);
+        }
+    }
+
+    let mut visitor = BindingVisitor {
+        expected,
+        found: false,
+    };
+    visitor.visit_pat(pattern);
+    visitor.found
+}
+
+fn authority_binding_is_exact(local: &syn::Local) -> bool {
+    authority_binding_is_named(local, "authority")
+}
+
+fn authority_binding_is_named(local: &syn::Local, expected: &str) -> bool {
+    matches!(&local.pat, syn::Pat::Ident(pattern)
+        if normalize_identifier(&ident_name(&pattern.ident)) == expected
+            && pattern.attrs.is_empty()
+            && pattern.by_ref.is_none()
+            && pattern.mutability.is_none()
+            && pattern.subpat.is_none())
+}
+
+fn local_has_exact_cfg(local: &syn::Local, expected: &str) -> bool {
+    local.attrs.len() == 1
+        && local.attrs[0].path().is_ident("cfg")
+        && local.attrs[0]
+            .meta
+            .require_list()
+            .is_ok_and(|list| normalized_token_text(&list.tokens) == expected)
+}
+
+fn both_feature_authority_selection_is_exact(expression: &syn::Expr) -> bool {
+    let syn::Expr::Match(selection) = expression else {
+        return false;
+    };
+    let syn::Expr::Tuple(scrutinee) = selection.expr.as_ref() else {
+        return false;
+    };
+    if !selection.attrs.is_empty()
+        || scrutinee.elems.len() != 2
+        || !expression_is_self_field(&scrutinee.elems[0], "tls_observation")
+        || !expression_is_path_ident(&scrutinee.elems[1], "owned_xml_https_test_profile")
+        || selection.arms.len() != 4
+    {
+        return false;
+    }
+    let expected = [
+        (
+            (true, Some("profile")),
+            AssessmentAuthorityConstructor::TlsOwnedXmlHttps,
+        ),
+        (
+            (false, Some("profile")),
+            AssessmentAuthorityConstructor::OwnedXmlHttps,
+        ),
+        ((true, None), AssessmentAuthorityConstructor::Tls),
+        ((false, None), AssessmentAuthorityConstructor::Plain),
+    ];
+    selection.arms.iter().zip(expected).all(|(arm, expected)| {
+        arm.attrs.is_empty()
+            && arm.guard.is_none()
+            && boolean_option_tuple_pattern_is_exact(&arm.pat, expected.0 .0, expected.0 .1)
+            && authority_constructor_kind(&arm.body) == Some(expected.1)
+    })
+}
+
+fn tls_authority_selection_is_exact(expression: &syn::Expr) -> bool {
+    let syn::Expr::If(selection) = expression else {
+        return false;
+    };
+    selection.attrs.is_empty()
+        && expression_is_self_field(&selection.cond, "tls_observation")
+        && single_tail_expression(&selection.then_branch).and_then(authority_constructor_kind)
+            == Some(AssessmentAuthorityConstructor::Tls)
+        && selection
+            .else_branch
+            .as_ref()
+            .is_some_and(|(_, alternative)| {
+                expression_tail(alternative).and_then(authority_constructor_kind)
+                    == Some(AssessmentAuthorityConstructor::Plain)
+            })
+}
+
+fn owned_authority_selection_is_exact(expression: &syn::Expr) -> bool {
+    let syn::Expr::Match(selection) = expression else {
+        return false;
+    };
+    if !selection.attrs.is_empty()
+        || !expression_is_path_ident(&selection.expr, "owned_xml_https_test_profile")
+        || selection.arms.len() != 2
+    {
+        return false;
+    }
+    let [some, none] = selection.arms.as_slice() else {
+        return false;
+    };
+    some.attrs.is_empty()
+        && some.guard.is_none()
+        && option_pattern_is_exact(&some.pat, Some("profile"))
+        && authority_constructor_kind(&some.body)
+            == Some(AssessmentAuthorityConstructor::OwnedXmlHttps)
+        && none.attrs.is_empty()
+        && none.guard.is_none()
+        && option_pattern_is_exact(&none.pat, None)
+        && authority_constructor_kind(&none.body) == Some(AssessmentAuthorityConstructor::Plain)
+}
+
+fn boolean_option_tuple_pattern_is_exact(
+    pattern: &syn::Pat,
+    boolean: bool,
+    option_binding: Option<&str>,
+) -> bool {
+    let syn::Pat::Tuple(tuple) = pattern else {
+        return false;
+    };
+    tuple.elems.len() == 2
+        && boolean_pattern_is_exact(&tuple.elems[0], boolean)
+        && option_pattern_is_exact(&tuple.elems[1], option_binding)
+}
+
+fn boolean_pattern_is_exact(pattern: &syn::Pat, expected: bool) -> bool {
+    matches!(pattern, syn::Pat::Lit(literal)
+        if matches!(&literal.lit, syn::Lit::Bool(value) if value.value == expected))
+}
+
+fn option_pattern_is_exact(pattern: &syn::Pat, binding: Option<&str>) -> bool {
+    match (pattern, binding) {
+        (syn::Pat::Path(path), None) => {
+            path.qself.is_none() && syn_path_is_exact(&path.path, &["None"])
+        },
+        (syn::Pat::TupleStruct(tuple), Some(expected)) => {
+            tuple.qself.is_none()
+                && syn_path_is_exact(&tuple.path, &["Some"])
+                && tuple.elems.len() == 1
+                && matches!(tuple.elems.first(), Some(syn::Pat::Ident(binding))
+                    if binding.attrs.is_empty()
+                        && binding.by_ref.is_none()
+                        && binding.mutability.is_none()
+                        && normalize_identifier(&ident_name(&binding.ident)) == expected
+                        && binding.subpat.is_none())
+        },
+        _ => false,
+    }
+}
+
+fn expression_tail(expression: &syn::Expr) -> Option<&syn::Expr> {
+    match expression {
+        syn::Expr::Block(block) if block.attrs.is_empty() && block.label.is_none() => {
+            single_tail_expression(&block.block)
+        },
+        syn::Expr::Group(group) => expression_tail(&group.expr),
+        syn::Expr::Paren(parenthesized) => expression_tail(&parenthesized.expr),
+        _ => Some(expression),
+    }
+}
+
+fn authority_constructor_kind(expression: &syn::Expr) -> Option<AssessmentAuthorityConstructor> {
+    let expression = expression_tail(expression)?;
+    let syn::Expr::Try(attempt) = expression else {
+        return None;
+    };
+    let expression = expression_tail(&attempt.expr)?;
+    let syn::Expr::Call(call) = expression else {
+        return None;
+    };
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 2 {
+        return None;
+    }
+    let segments = path_segments(&path.path);
+    if normalize_identifier(&segments[0]) != "SharedWebRuntimeAuthority" {
+        return None;
+    }
+    let kind = match normalize_identifier(&segments[1]) {
+        "new_exact_origin" => AssessmentAuthorityConstructor::Plain,
+        "new_exact_origin_with_tls_observation" => AssessmentAuthorityConstructor::Tls,
+        "new_exact_origin_with_owned_xml_https_test_profile" => {
+            AssessmentAuthorityConstructor::OwnedXmlHttps
+        },
+        "new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile" => {
+            AssessmentAuthorityConstructor::TlsOwnedXmlHttps
+        },
+        _ => return None,
+    };
+    let expected_arguments = match kind {
+        AssessmentAuthorityConstructor::Plain | AssessmentAuthorityConstructor::Tls => 4,
+        AssessmentAuthorityConstructor::OwnedXmlHttps
+        | AssessmentAuthorityConstructor::TlsOwnedXmlHttps => 5,
+    };
+    (call.attrs.is_empty()
+        && call.args.len() == expected_arguments
+        && expression_is_borrowed_root_url(&call.args[0])
+        && expression_is_path_ident(&call.args[1], "policy")
+        && expression_is_exact_runtime_budget(&call.args[2])
+        && expression_is_self_field(&call.args[3], "cancellation")
+        && (expected_arguments == 4 || expression_is_path_ident(&call.args[4], "profile")))
+    .then_some(kind)
+}
+
+fn expression_is_exact_runtime_budget(expression: &syn::Expr) -> bool {
+    let syn::Expr::MethodCall(call) = expression else {
+        return false;
+    };
+    call.attrs.is_empty()
+        && call.method == "runtime_budget"
+        && call.turbofish.is_none()
+        && expression_is_self_field(&call.receiver, "limits")
+        && call.args.len() == 1
+        && expression_is_path_ident(&call.args[0], "optional_active_verifications")
 }
 
 fn inspect_assessment_api_visibility_composition(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -2548,8 +4577,12 @@ struct AssessmentCompositionVisitor {
     closure_depth: usize,
     authority_calls: usize,
     tls_authority_calls: usize,
+    owned_xml_https_authority_calls: usize,
+    tls_owned_xml_https_authority_calls: usize,
     conditional_authority_calls: usize,
     conditional_tls_authority_calls: usize,
+    conditional_owned_xml_https_authority_calls: usize,
+    conditional_tls_owned_xml_https_authority_calls: usize,
     unconditional_authority_calls: usize,
     shared_child_builds: usize,
     standalone_build_calls: usize,
@@ -2640,22 +4673,28 @@ impl<'ast> Visit<'ast> for AssessmentCompositionVisitor {
             let authority_member = segments.last().map(|value| normalize_identifier(value));
             if segments.len() >= 2
                 && matches!(
-                    authority_member,
-                    Some("new_exact_origin") | Some("new_exact_origin_with_tls_observation")
+                    authority_member.as_deref(),
+                    Some("new_exact_origin")
+                        | Some("new_exact_origin_with_tls_observation")
+                        | Some("new_exact_origin_with_owned_xml_https_test_profile")
+                        | Some(
+                            "new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile"
+                        )
                 )
                 && segments
                     .get(segments.len() - 2)
                     .is_some_and(|value| normalize_identifier(value) == "SharedWebRuntimeAuthority")
             {
+                let ordinary_selected = authority_member.as_deref() == Some("new_exact_origin");
                 let tls_selected =
-                    authority_member == Some("new_exact_origin_with_tls_observation");
-                if tls_selected {
-                    self.tls_authority_calls = self.tls_authority_calls.saturating_add(1);
-                    if self.control_depth == 1 {
-                        self.conditional_tls_authority_calls =
-                            self.conditional_tls_authority_calls.saturating_add(1);
-                    }
-                } else {
+                    authority_member.as_deref() == Some("new_exact_origin_with_tls_observation");
+                let owned_xml_https_selected = authority_member.as_deref()
+                    == Some("new_exact_origin_with_owned_xml_https_test_profile");
+                let tls_owned_xml_https_selected = authority_member.as_deref()
+                    == Some(
+                        "new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile",
+                    );
+                if ordinary_selected {
                     self.authority_calls = self.authority_calls.saturating_add(1);
                     if self.control_depth == 1 {
                         self.conditional_authority_calls =
@@ -2664,16 +4703,38 @@ impl<'ast> Visit<'ast> for AssessmentCompositionVisitor {
                         self.unconditional_authority_calls =
                             self.unconditional_authority_calls.saturating_add(1);
                     }
+                } else if tls_selected {
+                    self.tls_authority_calls = self.tls_authority_calls.saturating_add(1);
+                    if self.control_depth == 1 {
+                        self.conditional_tls_authority_calls =
+                            self.conditional_tls_authority_calls.saturating_add(1);
+                    }
+                } else if owned_xml_https_selected {
+                    self.owned_xml_https_authority_calls =
+                        self.owned_xml_https_authority_calls.saturating_add(1);
+                    if self.control_depth == 1 {
+                        self.conditional_owned_xml_https_authority_calls = self
+                            .conditional_owned_xml_https_authority_calls
+                            .saturating_add(1);
+                    }
+                } else if tls_owned_xml_https_selected {
+                    self.tls_owned_xml_https_authority_calls =
+                        self.tls_owned_xml_https_authority_calls.saturating_add(1);
+                    if self.control_depth == 1 {
+                        self.conditional_tls_owned_xml_https_authority_calls = self
+                            .conditional_tls_owned_xml_https_authority_calls
+                            .saturating_add(1);
+                    }
                 }
                 let (impl_name, function_name) = self.current_boundary();
                 if impl_name != "WebAssessmentRuntimeBuilder"
                     || function_name != "build"
                     || self.control_depth > 1
-                    || (tls_selected && self.control_depth != 1)
+                    || (!ordinary_selected && self.control_depth != 1)
                     || self.closure_depth != 0
                 {
                     self.violations.insert(format!(
-                        "SharedWebRuntimeAuthority construction must remain the exact direct TLS-selected/option-off branch in WebAssessmentRuntimeBuilder::build, not {impl_name}::{function_name}"
+                        "SharedWebRuntimeAuthority construction must remain the exact direct feature-selected/option-off branch in WebAssessmentRuntimeBuilder::build, not {impl_name}::{function_name}"
                     ));
                 }
             }
@@ -2776,11 +4837,14 @@ impl<'ast> Visit<'ast> for AssessmentCompositionVisitor {
     }
 
     fn visit_macro(&mut self, item: &'ast Macro) {
-        if token_stream_contains_identifier(item.tokens.clone(), "new_exact_origin")
-            || token_stream_contains_identifier(
-                item.tokens.clone(),
-                "new_exact_origin_with_tls_observation",
-            )
+        if [
+            "new_exact_origin",
+            "new_exact_origin_with_tls_observation",
+            "new_exact_origin_with_owned_xml_https_test_profile",
+            "new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile",
+        ]
+        .iter()
+        .any(|identifier| token_stream_contains_identifier(item.tokens.clone(), identifier))
             || token_stream_contains_identifier(item.tokens.clone(), "build_with_shared_authority")
         {
             self.violations.insert(
@@ -11909,7 +13973,28 @@ mod tests {
             impl SharedWebRuntimeAuthority {
                 fn new_exact_origin_inner() {
                     let accounting = r#AccountingSecond::new(budget());
-                    #[cfg(feature = "tls-observation")]
+                    #[cfg(all(
+                        feature = "tls-observation",
+                        feature = "xml-external-entity-owned-https-test-profile"
+                    ))]
+                    let _ = match selected_pair() {
+                        (true, true) => r#TransportSecond::new_metered_with_tls_observation_and_owned_xml_https_test_profile(
+                            policy(), accounting.clone(), collector(), profile()
+                        ),
+                        (true, false) => r#TransportSecond::new_metered_with_tls_observation(
+                            policy(), accounting.clone(), collector()
+                        ),
+                        (false, true) => r#TransportSecond::new_metered_with_owned_xml_https_test_profile(
+                            policy(), accounting.clone(), profile()
+                        ),
+                        (false, false) => r#TransportSecond::new_metered(
+                            policy(), accounting.clone()
+                        ),
+                    };
+                    #[cfg(all(
+                        feature = "tls-observation",
+                        not(feature = "xml-external-entity-owned-https-test-profile")
+                    ))]
                     let _ = if selected() {
                         r#TransportSecond::new_metered_with_tls_observation(
                             policy(), accounting.clone(), collector()
@@ -11917,11 +14002,43 @@ mod tests {
                     } else {
                         r#TransportSecond::new_metered(policy(), accounting.clone())
                     };
-                    #[cfg(not(feature = "tls-observation"))]
+                    #[cfg(all(
+                        not(feature = "tls-observation"),
+                        feature = "xml-external-entity-owned-https-test-profile"
+                    ))]
+                    let _ = if selected() {
+                        r#TransportSecond::new_metered_with_owned_xml_https_test_profile(
+                            policy(), accounting.clone(), profile()
+                        )
+                    } else {
+                        r#TransportSecond::new_metered(policy(), accounting.clone())
+                    };
+                    #[cfg(all(
+                        not(feature = "tls-observation"),
+                        not(feature = "xml-external-entity-owned-https-test-profile")
+                    ))]
                     let _ = r#TransportSecond::new_metered(policy(), accounting);
                 }
             }
         "#;
+        let chained_inventory = inspect_broker_constructor_source(chained).unwrap();
+        for (kind, expected) in [
+            (BrokerConstructorKind::RequestAccounting, 1),
+            (BrokerConstructorKind::MeteredHttp, 4),
+            (BrokerConstructorKind::MeteredTlsObservation, 2),
+            (BrokerConstructorKind::MeteredOwnedXmlHttps, 2),
+            (BrokerConstructorKind::MeteredTlsObservationOwnedXmlHttps, 1),
+        ] {
+            assert_eq!(
+                chained_inventory.direct_calls.get(&kind),
+                Some(&expected),
+                "chained raw alias count drifted for {}",
+                kind.label()
+            );
+        }
+        assert!(chained_inventory
+            .violations(SHARED_RUNTIME_AUTHORITY_SOURCE)
+            .is_empty());
         let sources = valid_constructor_sources(chained, &[]);
         assert!(validate_broker_constructor_inventory(&constructor_inventory(&sources)).is_empty());
 
@@ -13059,25 +15176,97 @@ mod tests {
         r#"
             struct SharedWebRuntimeAuthority;
             impl SharedWebRuntimeAuthority {
-                fn new_exact_origin() -> Self { Self }
-                fn new_exact_origin_with_tls_observation() -> Self { Self }
+                fn new_exact_origin<A, B, C, D>(_: &A, _: B, _: C, _: D) -> Result<Self, ()> { Ok(Self) }
+                fn new_exact_origin_with_tls_observation<A, B, C, D>(_: &A, _: B, _: C, _: D) -> Result<Self, ()> { Ok(Self) }
+                fn new_exact_origin_with_owned_xml_https_test_profile<A, B, C, D, E>(_: &A, _: B, _: C, _: D, _: E) -> Result<Self, ()> { Ok(Self) }
+                fn new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile<A, B, C, D, E>(_: &A, _: B, _: C, _: D, _: E) -> Result<Self, ()> { Ok(Self) }
             }
-            struct ChildBuilder;
-            impl ChildBuilder { fn build_with_shared_authority(&self, _: SharedWebRuntimeAuthority) {} }
-            struct WebAssessmentRuntimeBuilder;
-            impl WebAssessmentRuntimeBuilder {
-                fn build(&self) {
-                    #[cfg(feature = "tls-observation")]
-                    let _authority = if selected() {
-                        SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation()
-                    } else {
-                        SharedWebRuntimeAuthority::new_exact_origin()
-                    };
-                    #[cfg(not(feature = "tls-observation"))]
-                    let _authority = SharedWebRuntimeAuthority::new_exact_origin();
+            mod http_evidence {
+                #[derive(Clone, Copy)]
+                pub struct OwnedXmlHttpsTestTransportProfile;
+                impl OwnedXmlHttpsTestTransportProfile {
+                    pub fn for_application_and_policy<A, B>(_: &A, _: &B) -> Option<Self> { None }
                 }
             }
-            struct WebAssessmentRuntime;
+            use super::SharedWebRuntimeAuthority;
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;
+            struct Url;
+            struct Root { url: Url }
+            #[derive(Clone, Copy)]
+            struct Policy;
+            struct RuntimeBudget;
+            #[derive(Clone, Copy)]
+            struct Cancellation;
+            struct Limits;
+            impl Limits { fn runtime_budget(&self, _: u16) -> RuntimeBudget { RuntimeBudget } }
+            struct XmlExternalEntityReview;
+            impl XmlExternalEntityReview { fn as_ref(&self) -> Option<(&Policy, ())> { None } }
+            struct ChildBuilder;
+            impl ChildBuilder { fn build_with_shared_authority(&self, _: SharedWebRuntimeAuthority) {} }
+            struct SystemTime;
+            impl SystemTime { fn now() -> Self { Self } }
+            struct WebAssessmentRunReport {
+                #[cfg(feature = "reporting")]
+                run_started_at: SystemTime,
+            }
+            struct WebAssessmentRuntimeBuilder {
+                tls_observation: bool,
+                xml_external_entity_review: XmlExternalEntityReview,
+                limits: Limits,
+                cancellation: Cancellation,
+            }
+            struct WebAssessmentRuntime { authority: SharedWebRuntimeAuthority }
+            impl WebAssessmentRuntimeBuilder {
+                fn build(self) -> Result<WebAssessmentRuntime, ()> {
+                    let root = Root { url: Url };
+                    let policy = Policy;
+                    let optional_active_verifications = 0_u16;
+                    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+                    let owned_xml_https_test_profile = self
+                        .xml_external_entity_review
+                        .as_ref()
+                        .and_then(|(policy, _)| {
+                            OwnedXmlHttpsTestTransportProfile::for_application_and_policy(
+                                &root.url,
+                                policy,
+                            )
+                        });
+                    #[cfg(all(
+                        feature = "tls-observation",
+                        feature = "xml-external-entity-owned-https-test-profile"
+                    ))]
+                    let authority = match (self.tls_observation, owned_xml_https_test_profile) {
+                        (true, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,
+                        (false, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,
+                        (true, None) => SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?,
+                        (false, None) => SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?,
+                    };
+                    #[cfg(all(
+                        feature = "tls-observation",
+                        not(feature = "xml-external-entity-owned-https-test-profile")
+                    ))]
+                    let authority = if self.tls_observation {
+                        SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?
+                    } else {
+                        SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?
+                    };
+                    #[cfg(all(
+                        not(feature = "tls-observation"),
+                        feature = "xml-external-entity-owned-https-test-profile"
+                    ))]
+                    let authority = match owned_xml_https_test_profile {
+                        Some(profile) => SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,
+                        None => SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?,
+                    };
+                    #[cfg(all(
+                        not(feature = "tls-observation"),
+                        not(feature = "xml-external-entity-owned-https-test-profile")
+                    ))]
+                    let authority = SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?;
+                    Ok(WebAssessmentRuntime { authority })
+                }
+            }
             impl WebAssessmentRuntime {
                 async fn analyze(&self, builder: ChildBuilder, authority: SharedWebRuntimeAuthority) {
                     #[cfg(feature = "reporting")]
@@ -13142,39 +15331,473 @@ mod tests {
 
     #[test]
     fn assessment_composition_gate_requires_one_direct_global_authority_and_shared_children() {
-        assert!(
-            inspect_web_assessment_composition(valid_assessment_composition())
-                .unwrap()
-                .is_empty()
-        );
+        let source = valid_assessment_composition();
+        assert!(inspect_web_assessment_composition(source)
+            .unwrap()
+            .is_empty());
 
         for (mutation, needle) in [
             (
-                valid_assessment_composition().replace(
-                    "let _authority = SharedWebRuntimeAuthority::new_exact_origin();",
-                    "if enabled() { let _authority = SharedWebRuntimeAuthority::new_exact_origin(); }",
+                source.replacen(
+                    "impl WebAssessmentRuntimeBuilder {",
+                    "#[cfg(any())]\n            impl WebAssessmentRuntimeBuilder {",
+                    1,
                 ),
-                "exact mutually exclusive",
+                "exact four-way TLS/owned-HTTPS cfg",
             ),
             (
-                valid_assessment_composition().replace(
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "#[cfg(any())]\n                fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    if alternate_runtime_enabled() { return evil::build_runtime(self); }",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    if alternate_runtime_enabled() { return Err(WebAssessmentRuntimeError::RootRetentionLimit); }",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    evil::gate(&self)?;",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "Ok(WebAssessmentRuntime { authority })",
+                    "evil::gate(&self)?;\n                    Ok(WebAssessmentRuntime { authority })",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    if alternate_runtime_enabled() { loop {} }",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    while alternate_runtime_enabled() {}",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    for _ in alternate_runtime_items() {}",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    'alternate: { break 'alternate; }",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    continue;",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "use super::SharedWebRuntimeAuthority;",
+                    "use super::SharedWebRuntimeAuthority;\n            use super::SharedWebRuntimeAuthority as AuthorityAlias;",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "use super::SharedWebRuntimeAuthority;",
+                    "use super::SharedWebRuntimeAuthority;\n            use super as parent;\n            use parent::SharedWebRuntimeAuthority as AuthorityAlias;",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;",
+                    "use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;\n            #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n            use crate::http_evidence::OwnedXmlHttpsTestTransportProfile as ProfileAlias;",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "use super::SharedWebRuntimeAuthority;",
+                    "use super::SharedWebRuntimeAuthority as RealSharedWebRuntimeAuthority;",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;",
+                    "use crate::http_evidence::OwnedXmlHttpsTestTransportProfile as RealOwnedProfile;",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n            use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;",
+                    r#"mod profile_anchor {
+                #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+                use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;
+                #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+                pub(super) type RealOwnedProfile = OwnedXmlHttpsTestTransportProfile;
+            }
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            struct OwnedXmlHttpsTestTransportProfile;
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            impl OwnedXmlHttpsTestTransportProfile {
+                fn for_application_and_policy<A, B>(
+                    _: &A,
+                    _: &B,
+                ) -> Option<profile_anchor::RealOwnedProfile> {
+                    None
+                }
+            }"#,
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen("fn build(self)", "fn build(mut self)", 1),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
+                    "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    use super::SharedWebRuntimeAuthority as AuthorityOverride;",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "let authority = SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?;",
+                    "if enabled() { let authority = SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?; }",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replace(
                     "builder.build_with_shared_authority(authority);",
                     "builder.build();",
                 ),
                 "standalone .build()",
             ),
             (
-                valid_assessment_composition().replace(
-                    "#[cfg(not(feature = \"tls-observation\"))]\n                    let _authority = SharedWebRuntimeAuthority::new_exact_origin();",
+                source.replace(
+                    "#[cfg(all(\n                        not(feature = \"tls-observation\"),\n                        not(feature = \"xml-external-entity-owned-https-test-profile\")\n                    ))]\n                    let authority = SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?;",
                     "",
                 ),
-                "exact mutually exclusive",
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?",
+                    "SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?",
+                    "SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?",
+                    "wrap!(SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?)",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "feature = \"xml-external-entity-owned-https-test-profile\"\n                    ))]\n                    let authority = match (self.tls_observation, owned_xml_https_test_profile)",
+                    "not(feature = \"xml-external-entity-owned-https-test-profile\")\n                    ))]\n                    let authority = match (self.tls_observation, owned_xml_https_test_profile)",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "not(feature = \"xml-external-entity-owned-https-test-profile\")\n                    ))]\n                    let authority = if self.tls_observation",
+                    "feature = \"xml-external-entity-owned-https-test-profile\"\n                    ))]\n                    let authority = if self.tls_observation",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "not(feature = \"tls-observation\"),\n                        feature = \"xml-external-entity-owned-https-test-profile\"",
+                    "feature = \"tls-observation\",\n                        feature = \"xml-external-entity-owned-https-test-profile\"",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "not(feature = \"tls-observation\"),\n                        not(feature = \"xml-external-entity-owned-https-test-profile\")",
+                    "feature = \"tls-observation\",\n                        not(feature = \"xml-external-entity-owned-https-test-profile\")",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "match (self.tls_observation, owned_xml_https_test_profile)",
+                    "match (other, owned_xml_https_test_profile)",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "(true, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,\n                        (false, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,",
+                    "(true, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,\n                        (false, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "let authority = if self.tls_observation {\n                        SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?\n                    } else {\n                        SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?",
+                    "let authority = if self.tls_observation {\n                        SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?\n                    } else {\n                        SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "Some(profile) => SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,\n                        None => SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?,",
+                    "Some(profile) => SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?,\n                        None => SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation, profile)?,",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "(true, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile",
+                    "(true, Some(profile)) if enabled() => SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "let owned_xml_https_test_profile = self\n                        .xml_external_entity_review",
+                    "let owned_xml_https_test_profile = None::<OwnedXmlHttpsTestTransportProfile>;\n                    let _ignored = self\n                        .xml_external_entity_review",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "self.limits.runtime_budget(optional_active_verifications)",
+                    "RuntimeBudget",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    "let optional_active_verifications = 0_u16;\n                    #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    "macro_rules! reset_optional_allowance { () => { let optional_active_verifications = 0_u16; }; }\n                    reset_optional_allowance!();\n                    #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "let optional_active_verifications = 0_u16;",
+                    "let mut optional_active_verifications = 0_u16;",
+                    1,
+                )
+                .replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    "optional_active_verifications = 0_u16;\n                    #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    "let root = Root { url: Url };\n                    #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    "let policy = Policy;\n                    #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n                    let owned_xml_https_test_profile",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen("&root.url, policy,", "&other.url, policy,", 1),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen("self.cancellation, profile)?", "other_cancellation, profile)?", 1),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "self.cancellation, profile)?",
+                    "self.cancellation, other_profile)?",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "self.cancellation)?;\n                    Ok(WebAssessmentRuntime { authority })",
+                    "self.cancellation)?;\n                    let (authority,) = (authority,);\n                    Ok(WebAssessmentRuntime { authority })",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replace(
+                    "Ok(WebAssessmentRuntime { authority })",
+                    "let selected_authority = authority;\n                    Ok(WebAssessmentRuntime { authority: selected_authority })",
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
             ),
         ] {
+            assert_ne!(
+                mutation,
+                source,
+                "assessment composition mutation `{needle}` must alter source"
+            );
             let violations = inspect_web_assessment_composition(&mutation)
                 .unwrap()
                 .join("\n");
             assert!(violations.contains(needle), "{violations}");
+        }
+    }
+
+    #[test]
+    fn assessment_composition_gate_seals_production_try_shapes_and_import_bindings() {
+        let source =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/web_assessment.rs");
+        assert!(inspect_web_assessment_composition(source)
+            .unwrap()
+            .is_empty());
+
+        let fake_probe = source
+            .replacen(
+                "HttpEvidenceError, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase,",
+                "HttpEvidenceError, HttpEvidencePolicy, HttpProbeMethod, KnowledgeBase,",
+                1,
+            )
+            .replacen(
+                "mod xss_probe_catalog;",
+                "mod xss_probe_catalog;\n\nstruct HttpProbe;\nimpl HttpProbe { fn new(_: Url, _: HttpProbeMethod) -> Result<(), HttpEvidenceError> { Ok(()) } }",
+                1,
+            );
+        let aliased_probe = source
+            .replacen(
+                "HttpEvidenceError, HttpEvidencePolicy, HttpProbe, HttpProbeMethod, KnowledgeBase,",
+                "HttpEvidenceError, HttpEvidencePolicy, HttpProbeMethod, KnowledgeBase,",
+                1,
+            )
+            .replacen(
+                "mod xss_probe_catalog;",
+                "mod xss_probe_catalog;\n\nmod fake_probe {\n    pub(super) struct HttpProbe;\n    impl HttpProbe {\n        pub(super) fn new(\n            _: super::Url,\n            _: super::HttpProbeMethod,\n        ) -> Result<(), super::HttpEvidenceError> {\n            Ok(())\n        }\n    }\n}\nuse fake_probe::HttpProbe;",
+                1,
+            );
+        let observer_arguments_swapped = source.replacen(
+            "                redirect_query_parameter.as_deref(),\n                reflection_query_parameter.as_deref(),",
+            "                reflection_query_parameter.as_deref(),\n                redirect_query_parameter.as_deref(),",
+            1,
+        );
+        let ledger_arguments_swapped = source.replacen(
+            "let ledger = CommittedAssessmentReviewLedger::new_with_sql(\n                root.url.clone(),\n                seeds.clone(),\n                redirect_query_parameter.as_deref(),\n                reflection_query_parameter.as_deref(),",
+            "let ledger = CommittedAssessmentReviewLedger::new_with_sql(\n                root.url.clone(),\n                seeds.clone(),\n                reflection_query_parameter.as_deref(),\n                redirect_query_parameter.as_deref(),",
+            1,
+        );
+        for mutation in [
+            source.replacen(
+                "EntityId::new(format!(\"endpoint:{}\", root.url))",
+                "EntityId::new(root.url.to_string())",
+                1,
+            ),
+            observer_arguments_swapped,
+            ledger_arguments_swapped,
+            source.replacen(
+                "let policy = match self.http_policy {\n            Some(policy) => policy,",
+                "let policy = match self.http_policy {\n            Some(_policy) => HttpEvidencePolicy::for_origin(root.url.clone()).expect(\"valid origin\"),",
+                1,
+            ),
+            fake_probe,
+            aliased_probe,
+            source.replacen(
+                "use semantic::{assessment_semantic_limits, AssessmentSemanticEvidence};",
+                "use semantic::{assessment_semantic_limits as real_assessment_semantic_limits, AssessmentSemanticEvidence};",
+                1,
+            ),
+            source.replacen(
+                "let semantic_limits = assessment_semantic_limits(self.limits)?;",
+                "let assessment_semantic_limits = |limits| semantic::assessment_semantic_limits(limits);\n        let semantic_limits = assessment_semantic_limits(self.limits)?;",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, source, "production mutation must alter source");
+            let violations = inspect_web_assessment_composition(&mutation)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("exact four-way TLS/owned-HTTPS cfg"),
+                "{violations}"
+            );
         }
     }
 

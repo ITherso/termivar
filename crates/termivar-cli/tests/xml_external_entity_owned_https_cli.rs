@@ -9,7 +9,7 @@
 use std::{
     collections::BTreeSet,
     env, fs, io,
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     process::{Output, Stdio},
     sync::{
@@ -24,8 +24,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use termivar_oast::{
     serve_provider_on_listener_with_request_ledger, AdminToken, LoopbackBind, ProviderConfig,
-    ProviderLimits, ProviderState, ProviderTestRequestLedger, ProviderTestRequestSnapshot,
-    PublicOrigin,
+    ProviderError, ProviderLimits, ProviderState, ProviderTestRequestLedger,
+    ProviderTestRequestSnapshot, PublicOrigin, SessionRequest, HARD_MAX_EVENTS_PER_SESSION,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -443,7 +443,7 @@ async fn bind_distinct_frontends() -> (TcpListener, TcpListener, u16) {
             .await
             .expect("bind owned target TLS listener");
         let port = target.local_addr().unwrap().port();
-        if let Ok(provider) = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 2), port)).await {
+        if let Ok(provider) = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
             return (target, provider, port);
         }
     }
@@ -452,6 +452,11 @@ async fn bind_distinct_frontends() -> (TcpListener, TcpListener, u16) {
 
 async fn start_fixture(provider_certificate: ProviderCertificate) -> OwnedHttpsFixture {
     start_fixture_with_certificates(TargetCertificate::Correct, provider_certificate).await
+}
+
+fn fixture_provider_limits() -> ProviderLimits {
+    ProviderLimits::new(1, 3, HARD_MAX_EVENTS_PER_SESSION, 8, 3, 30_000, 16)
+        .expect("fixture provider limits")
 }
 
 async fn start_fixture_with_certificates(
@@ -464,8 +469,7 @@ async fn start_fixture_with_certificates(
         .expect("bind native-provider backend");
     let provider_backend = provider_backend_listener.local_addr().unwrap();
 
-    let provider_limits =
-        ProviderLimits::new(1, 3, 3, 8, 3, 30_000, 16).expect("fixture provider limits");
+    let provider_limits = fixture_provider_limits();
     let public_origin: PublicOrigin = PROVIDER_ORIGIN.parse().expect("fixed provider origin");
     let provider = ProviderState::new(
         ProviderConfig::new(
@@ -1346,6 +1350,33 @@ async fn verify_and_self_compare(scan: &CompletedScan, label: &str) {
         bundle_bytes(&scan.report_dir, &scan.private_sentinels),
         before_offline
     );
+}
+
+#[test]
+fn fixture_provider_limits_admit_the_runtime_registration_contract() {
+    fn state(limits: ProviderLimits) -> ProviderState {
+        ProviderState::new(
+            ProviderConfig::new(
+                LoopbackBind::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 1))).unwrap(),
+                PROVIDER_ORIGIN.parse().unwrap(),
+                limits,
+            ),
+            AdminToken::new(ADMIN_SECRET.to_vec()).unwrap(),
+        )
+        .unwrap()
+    }
+
+    let request = || SessionRequest::new(10_000, 3, HARD_MAX_EVENTS_PER_SESSION, 4);
+    let administrator = AdminToken::new(ADMIN_SECRET.to_vec()).unwrap();
+    assert!(state(fixture_provider_limits())
+        .register(&administrator, request())
+        .is_ok());
+
+    let stale_limits = ProviderLimits::new(1, 3, 3, 8, 3, 30_000, 16).unwrap();
+    assert!(matches!(
+        state(stale_limits).register(&administrator, request()),
+        Err(ProviderError::InvalidSessionRequest)
+    ));
 }
 
 #[test]

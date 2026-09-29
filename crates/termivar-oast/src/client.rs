@@ -9,7 +9,7 @@ use std::{collections::BTreeSet, fmt};
 
 #[cfg(feature = "owned-https-test-profile")]
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv6Addr, SocketAddr},
     num::NonZeroU16,
 };
 
@@ -40,7 +40,7 @@ const OWNED_HTTPS_TEST_PROVIDER_HOST: &str = "oast-provider.termivar.test";
 #[cfg(feature = "owned-https-test-profile")]
 const OWNED_HTTPS_TEST_PROVIDER_ORIGIN: &str = "https://oast-provider.termivar.test/";
 #[cfg(feature = "owned-https-test-profile")]
-const OWNED_HTTPS_TEST_PROVIDER_IPV4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+const OWNED_HTTPS_TEST_PROVIDER_IPV6: Ipv6Addr = Ipv6Addr::LOCALHOST;
 #[cfg(feature = "owned-https-test-profile")]
 const OWNED_HTTPS_TEST_ROOT_CERTIFICATE_DER_BASE64: &str = concat!(
     "MIIBjTCCATOgAwIBAgIJAJLYjoWViQgyMAoGCCqGSM49BAMCMCkxJzAlBgNVBAMT",
@@ -71,7 +71,7 @@ impl OwnedHttpsTestProfilePort {
     }
 
     fn resolved_address(self) -> SocketAddr {
-        SocketAddr::from((OWNED_HTTPS_TEST_PROVIDER_IPV4, self.0.get()))
+        SocketAddr::from((OWNED_HTTPS_TEST_PROVIDER_IPV6, self.0.get()))
     }
 }
 
@@ -440,7 +440,7 @@ impl NativeOastClient {
     /// Builds the fixed-route client for the repository-owned HTTPS profile.
     ///
     /// This constructor accepts only the one compiled provider origin. DNS is
-    /// resolved to the fixed secondary loopback address at `profile_port`, and
+    /// resolved to the fixed IPv6 loopback address at `profile_port`, and
     /// TLS remains verified against the one compiled public test root. System
     /// roots, ambient proxies, redirects, and retries are not used.
     #[cfg(feature = "owned-https-test-profile")]
@@ -1239,7 +1239,9 @@ mod tests {
         ProtocolClass, CALLBACK_SCHEMA, CLEANUP_SCHEMA, NATIVE_OAST_PROTOCOL_REVISION, POLL_SCHEMA,
         SESSION_SCHEMA,
     };
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    #[cfg(not(feature = "owned-https-test-profile"))]
+    use base64::Engine as _;
     use std::{
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -1261,6 +1263,7 @@ mod tests {
         use sha2::{Digest, Sha256};
 
         let port = OwnedHttpsTestProfilePort::new(NonZeroU16::new(44_443).unwrap());
+        assert_eq!(port.resolved_address(), "[::1]:44443".parse().unwrap());
         let exact: PublicOrigin = OWNED_HTTPS_TEST_PROVIDER_ORIGIN.parse().unwrap();
         let client = NativeOastClient::new_owned_https_test_profile(exact, port).unwrap();
         assert_eq!(client.origin.as_str(), OWNED_HTTPS_TEST_PROVIDER_ORIGIN);

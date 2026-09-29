@@ -14,7 +14,9 @@ use std::{
 use std::collections::VecDeque;
 
 use cargo_metadata::{DependencyKind, MetadataCommand, Package};
+use sha2::{Digest, Sha256};
 use syn::{
+    parse::Parser,
     visit::{self, Visit},
     Fields, FnArg, GenericArgument, ImplItem, Item, PathArguments, ReturnType, Type, UseTree,
     Visibility,
@@ -26,6 +28,7 @@ const SOURCE_ROOT: &str = "crates/termivar-oast/src";
 const SCANNER_MANIFEST: &str = "crates/termivar-scanner/Cargo.toml";
 const SCANNER_SOURCE_ROOT: &str = "crates/termivar-scanner/src";
 const SCANNER_ADAPTER: &str = "native_oast_provider.rs";
+const SCANNER_HTTP_EVIDENCE: &str = "http_evidence.rs";
 const SCANNER_REQUEST_BROKER: &str = "http_evidence/request_broker.rs";
 const SSRF_OAST_REVIEW_CONTRACT: &str = "ssrf_oast_review.rs";
 const SSRF_OAST_REVIEW_RUNTIME: &str = "web_runtime/ssrf_oast_runtime.rs";
@@ -752,6 +755,7 @@ fn client_transport_contract_violations(source: &str) -> Result<Vec<String>, syn
         ".resolve(OWNED_HTTPS_TEST_PROVIDER_HOST,profile_port.resolved_address(),)",
         "constOWNED_HTTPS_TEST_PROVIDER_HOST:&str=\"oast-provider.termivar.test\";",
         "constOWNED_HTTPS_TEST_PROVIDER_ORIGIN:&str=\"https://oast-provider.termivar.test/\";",
+        "constOWNED_HTTPS_TEST_PROVIDER_IPV6:Ipv6Addr=Ipv6Addr::LOCALHOST;",
         "public_origin.as_str()!=OWNED_HTTPS_TEST_PROVIDER_ORIGIN",
         "constREGISTER_PATH:&str=\"/v1/sessions\";",
         "format!(\"/v1/sessions/{}/callbacks\",session_id.as_str())",
@@ -780,6 +784,26 @@ fn client_transport_contract_violations(source: &str) -> Result<Vec<String>, syn
                 "{PACKAGE} fixed HTTPS client must not use `{forbidden}`"
             ));
         }
+    }
+    if !owned_https_client_constructor_is_exact(&syntax) {
+        violations.push(format!(
+            "{PACKAGE} owned HTTPS client constructor must retain its exact origin guard, parsed origin, reviewed root, fixed resolver, and final client fields"
+        ));
+    }
+    if !owned_https_client_identity_constants_are_exact(&syntax) {
+        violations.push(format!(
+            "{PACKAGE} owned HTTPS client must retain exactly one feature-gated reviewed host, origin, IPv6 loopback, and root-byte identity"
+        ));
+    }
+    if !owned_https_client_base64_import_is_exact(&syntax) {
+        violations.push(format!(
+            "{PACKAGE} owned HTTPS client must retain the exact feature-gated base64 STANDARD and Engine-as-underscore import"
+        ));
+    }
+    if !fixed_client_builder_is_exact(&syntax) {
+        violations.push(format!(
+            "{PACKAGE} fixed client builder must retain its exact private signature and hardened transport chain"
+        ));
     }
 
     let mut public_signatures = Vec::new();
@@ -828,6 +852,694 @@ fn client_transport_contract_violations(source: &str) -> Result<Vec<String>, syn
     Ok(violations)
 }
 
+fn owned_https_client_identity_constants_are_exact(syntax: &syn::File) -> bool {
+    const FEATURE: &str = "owned-https-test-profile";
+    let constants = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Const(constant)
+                if matches!(
+                    constant.ident.to_string().as_str(),
+                    "OWNED_HTTPS_TEST_PROVIDER_HOST"
+                        | "OWNED_HTTPS_TEST_PROVIDER_ORIGIN"
+                        | "OWNED_HTTPS_TEST_PROVIDER_IPV6"
+                        | "OWNED_HTTPS_TEST_ROOT_CERTIFICATE_DER_BASE64"
+                ) =>
+            {
+                Some((constant.ident.to_string(), constant))
+            },
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let exact_shape = |constant: &syn::ItemConst| {
+        matches!(constant.vis, Visibility::Inherited)
+            && constant.attrs.len() == 1
+            && has_only_exact_feature_cfg(&constant.attrs, FEATURE)
+    };
+    let string_literal = |name: &str, expected: &str| {
+        constants.get(name).is_some_and(|constant| {
+            exact_shape(constant)
+                && matches!(constant.ty.as_ref(), Type::Reference(reference)
+                    if reference.lifetime.is_none()
+                        && reference.mutability.is_none()
+                        && exact_type_path(&reference.elem, &["str"]))
+                && matches!(constant.expr.as_ref(), syn::Expr::Lit(value)
+                    if value.attrs.is_empty()
+                        && matches!(&value.lit, syn::Lit::Str(value)
+                            if value.value() == expected))
+        })
+    };
+    let address_is_exact =
+        constants
+            .get("OWNED_HTTPS_TEST_PROVIDER_IPV6")
+            .is_some_and(|constant| {
+                exact_shape(constant)
+                    && exact_type_path(&constant.ty, &["Ipv6Addr"])
+                    && matches!(constant.expr.as_ref(), syn::Expr::Path(address)
+                    if address.qself.is_none()
+                        && exact_syn_path(&address.path, &["Ipv6Addr", "LOCALHOST"]))
+            });
+    let root_is_exact = constants
+        .get("OWNED_HTTPS_TEST_ROOT_CERTIFICATE_DER_BASE64")
+        .is_some_and(|constant| {
+            exact_shape(constant)
+                && matches!(constant.ty.as_ref(), Type::Reference(reference)
+                    if reference.lifetime.is_none()
+                        && reference.mutability.is_none()
+                        && exact_type_path(&reference.elem, &["str"]))
+                && concat_literal_sha256_is_exact(
+                    &constant.expr,
+                    "e90f75c7eabb03020ee377f4b3e0ab19432ccf6ced79d7d006b34d91be5c3f53",
+                )
+        });
+    constants.len() == 4
+        && string_literal(
+            "OWNED_HTTPS_TEST_PROVIDER_HOST",
+            "oast-provider.termivar.test",
+        )
+        && string_literal(
+            "OWNED_HTTPS_TEST_PROVIDER_ORIGIN",
+            "https://oast-provider.termivar.test/",
+        )
+        && address_is_exact
+        && root_is_exact
+}
+
+fn owned_https_client_base64_import_is_exact(syntax: &syn::File) -> bool {
+    const FEATURE: &str = "owned-https-test-profile";
+    const EXPECTED_STANDARD: &str = "base64::engine::general_purpose::STANDARD";
+    const EXPECTED_ENGINE: &str = "base64::Engine as _";
+
+    let mut candidates = Vec::new();
+    for item in &syntax.items {
+        if matches!(item, Item::Macro(_)) {
+            return false;
+        }
+        let shadows_base64 = match item {
+            Item::Mod(item) => normalize_identifier(&item.ident.to_string()) == "base64",
+            Item::Type(item) => normalize_identifier(&item.ident.to_string()) == "base64",
+            Item::Struct(item) => normalize_identifier(&item.ident.to_string()) == "base64",
+            Item::Enum(item) => normalize_identifier(&item.ident.to_string()) == "base64",
+            Item::Union(item) => normalize_identifier(&item.ident.to_string()) == "base64",
+            Item::Trait(item) => normalize_identifier(&item.ident.to_string()) == "base64",
+            _ => false,
+        };
+        if shadows_base64 {
+            return false;
+        }
+        if matches!(item, Item::ExternCrate(external)
+            if normalize_identifier(&external.ident.to_string()) == "base64"
+                || external.rename.as_ref().is_some_and(|(_, binding)|
+                    normalize_identifier(&binding.to_string()) == "base64"))
+        {
+            return false;
+        }
+        let Item::Use(import) = item else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        flatten_use_tree(&import.tree, &mut Vec::new(), &mut paths);
+        let relevant = paths.iter().any(|path| {
+            let normalized = path.replace("r#", "");
+            let (target, binding) = normalized
+                .split_once(" as ")
+                .map_or((normalized.as_str(), None), |(target, binding)| {
+                    (target, Some(binding))
+                });
+            let terminal = target.rsplit("::").next();
+            target == "base64"
+                || target.starts_with("base64::")
+                || terminal == Some("STANDARD")
+                || terminal == Some("Engine")
+                || binding == Some("STANDARD")
+                || binding == Some("Engine")
+                || binding == Some("base64")
+                || target.ends_with("::*")
+        });
+        if relevant {
+            candidates.push((import, paths));
+        }
+    }
+
+    matches!(candidates.as_slice(), [(import, paths)]
+        if matches!(import.vis, Visibility::Inherited)
+            && import.leading_colon.is_none()
+            && import.attrs.len() == 1
+            && has_only_exact_feature_cfg(&import.attrs, FEATURE)
+            && paths.len() == 2
+            && paths.iter().any(|path| path.replace("r#", "") == EXPECTED_STANDARD)
+            && paths.iter().any(|path| path.replace("r#", "") == EXPECTED_ENGINE))
+}
+
+fn fixed_client_builder_is_exact(syntax: &syn::File) -> bool {
+    if !fixed_client_builder_imports_are_exact(syntax) {
+        return false;
+    }
+    let functions = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(function) if function.sig.ident == "fixed_client_builder" => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [function] = functions.as_slice() else {
+        return false;
+    };
+    if !matches!(function.vis, Visibility::Inherited)
+        || !function.attrs.is_empty()
+        || function.sig.constness.is_some()
+        || function.sig.asyncness.is_some()
+        || function.sig.unsafety.is_some()
+        || function.sig.abi.is_some()
+        || !function.sig.generics.params.is_empty()
+        || function.sig.generics.where_clause.is_some()
+        || function.sig.variadic.is_some()
+        || function.sig.inputs.len() != 1
+        || !exact_unattributed_shared_reference_argument(
+            function.sig.inputs.first(),
+            "origin",
+            &["Url"],
+        )
+        || !return_type_is_path(&function.sig.output, &["reqwest", "ClientBuilder"])
+    {
+        return false;
+    }
+
+    let [syn::Stmt::Expr(expression, None)] = function.block.stmts.as_slice() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(http1_only) = expression else {
+        return false;
+    };
+    let syn::Expr::MethodCall(referer) = http1_only.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(https_only) = referer.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(no_proxy) = https_only.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(retry) = no_proxy.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(redirect) = retry.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Call(builder) = redirect.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Path(builder_function) = builder.func.as_ref() else {
+        return false;
+    };
+    let Some(syn::Expr::Call(no_retry)) = retry.args.first() else {
+        return false;
+    };
+    let syn::Expr::Path(no_retry_function) = no_retry.func.as_ref() else {
+        return false;
+    };
+    let Some(syn::Expr::Call(no_redirect)) = redirect.args.first() else {
+        return false;
+    };
+    let syn::Expr::Path(no_redirect_function) = no_redirect.func.as_ref() else {
+        return false;
+    };
+    let Some(syn::Expr::Binary(https_condition)) = https_only.args.first() else {
+        return false;
+    };
+
+    http1_only.attrs.is_empty()
+        && http1_only.method == "http1_only"
+        && http1_only.turbofish.is_none()
+        && http1_only.args.is_empty()
+        && referer.attrs.is_empty()
+        && referer.method == "referer"
+        && referer.turbofish.is_none()
+        && matches!(referer.args.first(), Some(syn::Expr::Lit(literal))
+            if referer.args.len() == 1
+                && literal.attrs.is_empty()
+                && matches!(&literal.lit, syn::Lit::Bool(value) if !value.value))
+        && https_only.attrs.is_empty()
+        && https_only.method == "https_only"
+        && https_only.turbofish.is_none()
+        && https_only.args.len() == 1
+        && https_condition.attrs.is_empty()
+        && matches!(https_condition.op, syn::BinOp::Eq(_))
+        && exact_receiver_method_call(&https_condition.left, "origin", "scheme")
+        && matches!(https_condition.right.as_ref(), syn::Expr::Lit(literal)
+            if literal.attrs.is_empty()
+                && matches!(&literal.lit, syn::Lit::Str(value) if value.value() == "https"))
+        && no_proxy.attrs.is_empty()
+        && no_proxy.method == "no_proxy"
+        && no_proxy.turbofish.is_none()
+        && no_proxy.args.is_empty()
+        && retry.attrs.is_empty()
+        && retry.method == "retry"
+        && retry.turbofish.is_none()
+        && retry.args.len() == 1
+        && no_retry.attrs.is_empty()
+        && no_retry.args.is_empty()
+        && no_retry_function.attrs.is_empty()
+        && no_retry_function.qself.is_none()
+        && exact_syn_path(&no_retry_function.path, &["reqwest", "retry", "never"])
+        && redirect.attrs.is_empty()
+        && redirect.method == "redirect"
+        && redirect.turbofish.is_none()
+        && redirect.args.len() == 1
+        && no_redirect.attrs.is_empty()
+        && no_redirect.args.is_empty()
+        && no_redirect_function.attrs.is_empty()
+        && no_redirect_function.qself.is_none()
+        && exact_syn_path(&no_redirect_function.path, &["RedirectPolicy", "none"])
+        && builder.attrs.is_empty()
+        && builder.args.is_empty()
+        && builder_function.attrs.is_empty()
+        && builder_function.qself.is_none()
+        && exact_syn_path(&builder_function.path, &["Client", "builder"])
+}
+
+fn fixed_client_builder_imports_are_exact(syntax: &syn::File) -> bool {
+    const EXPECTED: [&str; 3] = [
+        "reqwest::redirect::Policy as RedirectPolicy",
+        "reqwest::Client",
+        "url::Url",
+    ];
+    let mut bindings = Vec::new();
+    for item in &syntax.items {
+        let shadows_crate_name = match item {
+            Item::Mod(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "reqwest" | "url"
+            ),
+            Item::Type(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "reqwest" | "url"
+            ),
+            Item::Struct(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "reqwest" | "url"
+            ),
+            Item::Enum(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "reqwest" | "url"
+            ),
+            Item::Union(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "reqwest" | "url"
+            ),
+            Item::Trait(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "reqwest" | "url"
+            ),
+            _ => false,
+        };
+        if shadows_crate_name
+            || matches!(item, Item::ExternCrate(external)
+                if matches!(normalize_identifier(&external.ident.to_string()), "reqwest" | "url")
+                    || external.rename.as_ref().is_some_and(|(_, binding)|
+                        matches!(normalize_identifier(&binding.to_string()), "reqwest" | "url")))
+        {
+            return false;
+        }
+        let Item::Use(import) = item else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        flatten_use_tree(&import.tree, &mut Vec::new(), &mut paths);
+        for path in paths {
+            let normalized = path.replace("r#", "");
+            let (target, alias) = normalized
+                .split_once(" as ")
+                .map_or((normalized.as_str(), None), |(target, alias)| {
+                    (target, Some(alias))
+                });
+            let binding = alias.or_else(|| target.rsplit("::").next());
+            if target.ends_with("::*")
+                || matches!(alias, Some("reqwest" | "url"))
+                || matches!(binding, Some("Client" | "RedirectPolicy" | "Url"))
+            {
+                bindings.push((import, normalized));
+            }
+        }
+    }
+    bindings.len() == EXPECTED.len()
+        && EXPECTED.iter().all(|expected| {
+            bindings.iter().any(|(import, path)| {
+                path.as_str() == *expected
+                    && matches!(import.vis, Visibility::Inherited)
+                    && import.attrs.is_empty()
+                    && import.leading_colon.is_none()
+            })
+        })
+}
+
+fn concat_literal_sha256_is_exact(expression: &syn::Expr, expected: &str) -> bool {
+    let syn::Expr::Macro(concatenation) = expression else {
+        return false;
+    };
+    if !concatenation.attrs.is_empty() || !exact_syn_path(&concatenation.mac.path, &["concat"]) {
+        return false;
+    }
+    let parser = syn::punctuated::Punctuated::<syn::LitStr, syn::Token![,]>::parse_terminated;
+    let Ok(parts) = parser.parse2(concatenation.mac.tokens.clone()) else {
+        return false;
+    };
+    let joined = parts.iter().map(syn::LitStr::value).collect::<String>();
+    format!("{:x}", Sha256::digest(joined.as_bytes())) == expected
+}
+
+fn owned_https_client_constructor_is_exact(syntax: &syn::File) -> bool {
+    let methods = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if implementation.trait_.is_none()
+                    && exact_type_path(&implementation.self_ty, &["NativeOastClient"]) =>
+            {
+                Some(implementation)
+            },
+            _ => None,
+        })
+        .flat_map(|implementation| implementation.items.iter())
+        .filter_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "new_owned_https_test_profile" => {
+                Some(method)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [method] = methods.as_slice() else {
+        return false;
+    };
+    if !matches!(method.vis, Visibility::Public(_))
+        || method.attrs.len() != 2
+        || !method.attrs[0].path().is_ident("cfg")
+        || !method.attrs[0].meta.require_list().is_ok_and(|list| {
+            compact_whitespace(&list.tokens.to_string()) == "feature=\"owned-https-test-profile\""
+        })
+        || !method.attrs[1].path().is_ident("doc")
+        || !method.attrs[1]
+            .meta
+            .require_list()
+            .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "hidden")
+        || !plain_method_signature_shape(method, false)
+        || method.sig.inputs.len() != 2
+        || !exact_typed_argument(
+            method.sig.inputs.first(),
+            "public_origin",
+            &["PublicOrigin"],
+        )
+        || !exact_typed_argument(
+            method.sig.inputs.iter().nth(1),
+            "profile_port",
+            &["OwnedHttpsTestProfilePort"],
+        )
+        || !return_type_is_result(&method.sig.output, &["Self"], &["NativeOastClientError"])
+    {
+        return false;
+    }
+
+    let [guard, origin, root_der, root_certificate, client, tail] = method.block.stmts.as_slice()
+    else {
+        return false;
+    };
+    owned_https_origin_guard_is_exact(guard)
+        && owned_https_origin_local_is_exact(origin)
+        && owned_https_root_der_local_is_exact(root_der)
+        && owned_https_root_certificate_local_is_exact(root_certificate)
+        && owned_https_client_local_is_exact(client)
+        && owned_https_client_tail_is_exact(tail)
+}
+
+fn return_type_is_result(output: &ReturnType, ok: &[&str], error: &[&str]) -> bool {
+    let ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    let Type::Path(path) = ty.as_ref() else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return false;
+    }
+    let Some(segment) = path.path.segments.first() else {
+        return false;
+    };
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    segment.ident == "Result"
+        && arguments.args.len() == 2
+        && matches!(arguments.args.first(), Some(GenericArgument::Type(ty))
+            if exact_type_path(ty, ok))
+        && matches!(arguments.args.iter().nth(1), Some(GenericArgument::Type(ty))
+            if exact_type_path(ty, error))
+}
+
+fn owned_https_origin_guard_is_exact(statement: &syn::Stmt) -> bool {
+    let syn::Stmt::Expr(syn::Expr::If(guard), None) = statement else {
+        return false;
+    };
+    let syn::Expr::Binary(condition) = guard.cond.as_ref() else {
+        return false;
+    };
+    let [syn::Stmt::Expr(syn::Expr::Return(returned), Some(_))] =
+        guard.then_branch.stmts.as_slice()
+    else {
+        return false;
+    };
+    guard.attrs.is_empty()
+        && guard.else_branch.is_none()
+        && condition.attrs.is_empty()
+        && matches!(condition.op, syn::BinOp::Ne(_))
+        && exact_receiver_method_call(&condition.left, "public_origin", "as_str")
+        && path_expression_name(&condition.right).as_deref()
+            == Some("OWNED_HTTPS_TEST_PROVIDER_ORIGIN")
+        && returned.attrs.is_empty()
+        && returned
+            .expr
+            .as_ref()
+            .is_some_and(|expression| exact_error_call(expression, "Err"))
+}
+
+fn exact_error_call(expression: &syn::Expr, wrapper: &str) -> bool {
+    let syn::Expr::Call(call) = expression else {
+        return false;
+    };
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return false;
+    };
+    call.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &[wrapper])
+        && matches!(call.args.first(), Some(syn::Expr::Call(error))
+            if call.args.len() == 1
+                && error.attrs.is_empty()
+                && error.args.is_empty()
+                && matches!(error.func.as_ref(), syn::Expr::Path(function)
+                    if function.qself.is_none()
+                        && exact_syn_path(&function.path, &["client_initialization_error"])))
+}
+
+fn exact_named_local_expression<'ast>(
+    statement: &'ast syn::Stmt,
+    name: &str,
+) -> Option<&'ast syn::Expr> {
+    let syn::Stmt::Local(local) = statement else {
+        return None;
+    };
+    let syn::Pat::Ident(binding) = &local.pat else {
+        return None;
+    };
+    if !local.attrs.is_empty()
+        || binding.attrs.len() != 0
+        || binding.by_ref.is_some()
+        || binding.mutability.is_some()
+        || binding.ident != name
+        || binding.subpat.is_some()
+    {
+        return None;
+    }
+    local
+        .init
+        .as_ref()
+        .filter(|initializer| initializer.diverge.is_none())
+        .map(|initializer| initializer.expr.as_ref())
+}
+
+fn exact_mapped_try_receiver(expression: &syn::Expr) -> Option<&syn::Expr> {
+    let syn::Expr::Try(attempt) = expression else {
+        return None;
+    };
+    let syn::Expr::MethodCall(map_err) = attempt.expr.as_ref() else {
+        return None;
+    };
+    let Some(syn::Expr::Closure(mapper)) = map_err.args.first() else {
+        return None;
+    };
+    let mapper_is_exact = mapper.attrs.is_empty()
+        && mapper.inputs.len() == 1
+        && matches!(mapper.inputs.first(), Some(syn::Pat::Wild(wildcard))
+            if wildcard.attrs.is_empty())
+        && matches!(mapper.body.as_ref(), syn::Expr::Call(error)
+            if error.attrs.is_empty()
+                && error.args.is_empty()
+                && matches!(error.func.as_ref(), syn::Expr::Path(function)
+                    if function.qself.is_none()
+                        && exact_syn_path(&function.path, &["client_initialization_error"])));
+    (attempt.attrs.is_empty()
+        && map_err.attrs.is_empty()
+        && map_err.method == "map_err"
+        && map_err.turbofish.is_none()
+        && map_err.args.len() == 1
+        && mapper_is_exact)
+        .then_some(map_err.receiver.as_ref())
+}
+
+fn owned_https_origin_local_is_exact(statement: &syn::Stmt) -> bool {
+    let Some(expression) = exact_named_local_expression(statement, "origin") else {
+        return false;
+    };
+    let Some(syn::Expr::Call(parse)) = exact_mapped_try_receiver(expression) else {
+        return false;
+    };
+    let syn::Expr::Path(function) = parse.func.as_ref() else {
+        return false;
+    };
+    parse.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["Url", "parse"])
+        && matches!(parse.args.first(), Some(argument)
+            if parse.args.len() == 1
+                && exact_receiver_method_call(argument, "public_origin", "as_str"))
+}
+
+fn owned_https_root_der_local_is_exact(statement: &syn::Stmt) -> bool {
+    let Some(expression) = exact_named_local_expression(statement, "root_der") else {
+        return false;
+    };
+    let Some(syn::Expr::MethodCall(decode)) = exact_mapped_try_receiver(expression) else {
+        return false;
+    };
+    decode.attrs.is_empty()
+        && decode.method == "decode"
+        && decode.turbofish.is_none()
+        && path_expression_name(&decode.receiver).as_deref() == Some("STANDARD")
+        && matches!(decode.args.first(), Some(argument)
+            if decode.args.len() == 1
+                && path_expression_name(argument).as_deref()
+                    == Some("OWNED_HTTPS_TEST_ROOT_CERTIFICATE_DER_BASE64"))
+}
+
+fn owned_https_root_certificate_local_is_exact(statement: &syn::Stmt) -> bool {
+    let Some(expression) = exact_named_local_expression(statement, "root_certificate") else {
+        return false;
+    };
+    let Some(syn::Expr::Call(from_der)) = exact_mapped_try_receiver(expression) else {
+        return false;
+    };
+    let syn::Expr::Path(function) = from_der.func.as_ref() else {
+        return false;
+    };
+    from_der.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["reqwest", "Certificate", "from_der"])
+        && matches!(from_der.args.first(), Some(syn::Expr::Reference(root))
+            if from_der.args.len() == 1
+                && root.attrs.is_empty()
+                && root.mutability.is_none()
+                && path_expression_name(&root.expr).as_deref() == Some("root_der"))
+}
+
+fn owned_https_client_local_is_exact(statement: &syn::Stmt) -> bool {
+    let Some(expression) = exact_named_local_expression(statement, "client") else {
+        return false;
+    };
+    let Some(syn::Expr::MethodCall(build)) = exact_mapped_try_receiver(expression) else {
+        return false;
+    };
+    let syn::Expr::MethodCall(resolve) = build.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(add_root) = resolve.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(disable_roots) = add_root.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Call(builder) = disable_roots.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Path(builder_function) = builder.func.as_ref() else {
+        return false;
+    };
+    build.attrs.is_empty()
+        && build.method == "build"
+        && build.turbofish.is_none()
+        && build.args.is_empty()
+        && resolve.attrs.is_empty()
+        && resolve.method == "resolve"
+        && resolve.turbofish.is_none()
+        && resolve.args.len() == 2
+        && path_expression_name(&resolve.args[0]).as_deref()
+            == Some("OWNED_HTTPS_TEST_PROVIDER_HOST")
+        && exact_receiver_method_call(&resolve.args[1], "profile_port", "resolved_address")
+        && add_root.attrs.is_empty()
+        && add_root.method == "add_root_certificate"
+        && add_root.turbofish.is_none()
+        && matches!(add_root.args.first(), Some(argument)
+            if add_root.args.len() == 1
+                && path_expression_name(argument).as_deref() == Some("root_certificate"))
+        && disable_roots.attrs.is_empty()
+        && disable_roots.method == "tls_built_in_root_certs"
+        && disable_roots.turbofish.is_none()
+        && matches!(disable_roots.args.first(), Some(syn::Expr::Lit(literal))
+            if disable_roots.args.len() == 1
+                && literal.attrs.is_empty()
+                && matches!(&literal.lit, syn::Lit::Bool(value) if !value.value))
+        && builder.attrs.is_empty()
+        && builder_function.qself.is_none()
+        && exact_syn_path(&builder_function.path, &["fixed_client_builder"])
+        && matches!(builder.args.first(), Some(syn::Expr::Reference(origin))
+            if builder.args.len() == 1
+                && origin.attrs.is_empty()
+                && origin.mutability.is_none()
+                && path_expression_name(&origin.expr).as_deref() == Some("origin"))
+}
+
+fn owned_https_client_tail_is_exact(statement: &syn::Stmt) -> bool {
+    let syn::Stmt::Expr(syn::Expr::Call(ok), None) = statement else {
+        return false;
+    };
+    let syn::Expr::Path(function) = ok.func.as_ref() else {
+        return false;
+    };
+    let Some(syn::Expr::Struct(client)) = ok.args.first() else {
+        return false;
+    };
+    ok.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["Ok"])
+        && ok.args.len() == 1
+        && client.attrs.is_empty()
+        && client.qself.is_none()
+        && exact_syn_path(&client.path, &["Self"])
+        && client.rest.is_none()
+        && client.fields.len() == 3
+        && client
+            .fields
+            .iter()
+            .zip(["public_origin", "origin", "client"])
+            .all(|(field, expected)| {
+                field.attrs.is_empty()
+                    && field.colon_token.is_none()
+                    && matches!(&field.member, syn::Member::Named(member) if member == expected)
+                    && path_expression_name(&field.expr).as_deref() == Some(expected)
+            })
+}
+
 fn owned_https_profile_port_surface_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     const FEATURE: &str = "owned-https-test-profile";
     const TYPE_NAME: &str = "OwnedHttpsTestProfilePort";
@@ -844,8 +1556,20 @@ fn owned_https_profile_port_surface_violations(source: &str) -> Result<Vec<Strin
         .collect::<Vec<_>>();
     let profile_shape_is_exact = profiles.first().is_some_and(|profile| {
         matches!(profile.vis, Visibility::Public(_))
-            && has_only_exact_feature_cfg(&profile.attrs, FEATURE)
-            && has_doc_hidden(&profile.attrs)
+            && profile.attrs.len() == 3
+            && profile.attrs[0].path().is_ident("cfg")
+            && profile.attrs[0].meta.require_list().is_ok_and(|list| {
+                compact_whitespace(&list.tokens.to_string()) == format!("feature=\"{FEATURE}\"")
+            })
+            && profile.attrs[1].path().is_ident("doc")
+            && profile.attrs[1]
+                .meta
+                .require_list()
+                .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "hidden")
+            && profile.attrs[2].path().is_ident("derive")
+            && profile.attrs[2].meta.require_list().is_ok_and(|list| {
+                compact_whitespace(&list.tokens.to_string()) == "Clone,Copy,PartialEq,Eq"
+            })
             && matches!(&profile.fields, Fields::Unnamed(fields)
             if fields.unnamed.len() == 1
                 && fields.unnamed.first().is_some_and(|field| {
@@ -899,6 +1623,7 @@ fn owned_https_profile_port_surface_violations(source: &str) -> Result<Vec<Strin
                     && method.sig.inputs.len() == 1
                     && exact_typed_argument(method.sig.inputs.first(), "port", &["NonZeroU16"])
                     && return_type_is_path(&method.sig.output, &["Self"])
+                    && owned_https_profile_port_new_body_is_exact(method)
             })
             && methods.get("resolved_address").is_some_and(|method| {
                 matches!(method.vis, Visibility::Inherited)
@@ -906,6 +1631,7 @@ fn owned_https_profile_port_surface_violations(source: &str) -> Result<Vec<Strin
                     && method.sig.inputs.len() == 1
                     && owned_receiver(method.sig.inputs.first())
                     && return_type_is_path(&method.sig.output, &["SocketAddr"])
+                    && owned_https_profile_resolved_address_body_is_exact(method)
             })
     });
     if inherent.len() != 1 || !methods_are_exact {
@@ -937,12 +1663,65 @@ fn owned_https_profile_port_surface_violations(source: &str) -> Result<Vec<Strin
     Ok(violations)
 }
 
+fn owned_https_profile_port_new_body_is_exact(method: &syn::ImplItemFn) -> bool {
+    let [syn::Stmt::Expr(syn::Expr::Call(call), None)] = method.block.stmts.as_slice() else {
+        return false;
+    };
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return false;
+    };
+    call.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["Self"])
+        && matches!(call.args.first(), Some(argument)
+            if call.args.len() == 1
+                && path_expression_name(argument).as_deref() == Some("port"))
+}
+
+fn owned_https_profile_resolved_address_body_is_exact(method: &syn::ImplItemFn) -> bool {
+    let [syn::Stmt::Expr(syn::Expr::Call(call), None)] = method.block.stmts.as_slice() else {
+        return false;
+    };
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return false;
+    };
+    let Some(syn::Expr::Tuple(tuple)) = call.args.first() else {
+        return false;
+    };
+    let (Some(address), Some(syn::Expr::MethodCall(get))) =
+        (tuple.elems.first(), tuple.elems.iter().nth(1))
+    else {
+        return false;
+    };
+    call.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["SocketAddr", "from"])
+        && call.args.len() == 1
+        && tuple.attrs.is_empty()
+        && tuple.elems.len() == 2
+        && path_expression_name(address).as_deref() == Some("OWNED_HTTPS_TEST_PROVIDER_IPV6")
+        && get.attrs.is_empty()
+        && get.method == "get"
+        && get.turbofish.is_none()
+        && get.args.is_empty()
+        && matches!(get.receiver.as_ref(), syn::Expr::Field(field)
+            if field.attrs.is_empty()
+                && path_expression_name(&field.base).as_deref() == Some("self")
+                && matches!(&field.member, syn::Member::Unnamed(index) if index.index == 0))
+}
+
 fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     const FEATURE: &str = "xml-external-entity-owned-https-test-profile";
     const TYPE_NAME: &str = "OwnedXmlHttpsTestTransportProfile";
 
     let syntax = syn::parse_file(source)?;
     let mut violations = Vec::new();
+    if !owned_xml_https_identity_constants_are_exact(&syntax) {
+        violations.push(
+            "termivar-scanner owned XML HTTPS transport profile must retain its exact target host, provider origin, and reviewed root bytes"
+                .to_owned(),
+        );
+    }
     let profiles = syntax
         .items
         .iter()
@@ -953,7 +1732,15 @@ fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String
         .collect::<Vec<_>>();
     let profile_shape_is_exact = profiles.first().is_some_and(|profile| {
         is_crate_visibility(&profile.vis)
-            && has_only_exact_feature_cfg(&profile.attrs, FEATURE)
+            && profile.attrs.len() == 2
+            && profile.attrs[0].path().is_ident("cfg")
+            && profile.attrs[0].meta.require_list().is_ok_and(|list| {
+                compact_whitespace(&list.tokens.to_string()) == format!("feature=\"{FEATURE}\"")
+            })
+            && profile.attrs[1].path().is_ident("derive")
+            && profile.attrs[1].meta.require_list().is_ok_and(|list| {
+                compact_whitespace(&list.tokens.to_string()) == "Debug,Clone,Copy,PartialEq,Eq"
+            })
             && matches!(&profile.fields, Fields::Named(fields)
             if fields.named.len() == 1
                 && fields.named.first().is_some_and(|field| {
@@ -1038,8 +1825,1036 @@ fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String
                 .to_owned(),
         );
     }
+    let method_bodies_are_exact = implementations.first().is_some_and(|implementation| {
+        let methods = implementation
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Fn(method) => Some((method.sig.ident.to_string(), method)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        methods
+            .get("for_application_and_policy")
+            .is_some_and(|method| owned_profile_selection_body_is_exact(method))
+            && methods
+                .get("port")
+                .is_some_and(|method| owned_profile_port_body_is_exact(method))
+            && methods
+                .get("target_address")
+                .is_some_and(|method| owned_profile_target_body_is_exact(method))
+            && owned_profile_construction_count(&syntax) == 1
+    });
+    if !method_bodies_are_exact {
+        violations.push(
+            "termivar-scanner owned XML HTTPS transport profile must retain its exact selection, port, fixed-loopback body, and sole construction site"
+                .to_owned(),
+        );
+    }
+    if !owned_profile_reference_surface_is_exact(&syntax) {
+        violations.push(
+            "termivar-scanner owned XML HTTPS transport profile must retain its exact production reference inventory without unsafe construction paths"
+                .to_owned(),
+        );
+    }
+    if !owned_profile_consumer_is_sealed(&syntax) {
+        violations.push(
+            "termivar-scanner owned XML HTTPS transport profile must remain immutable through the exact broker resolver and retained-profile consumer"
+                .to_owned(),
+        );
+    }
+    if !owned_profile_whole_file_access_is_exact(&syntax) {
+        violations.push(
+            "termivar-scanner owned XML HTTPS transport profile must retain its exact immutable whole-file broker access inventory"
+                .to_owned(),
+        );
+    }
+
+    struct AliasSurfaceVisitor {
+        aliases: usize,
+    }
+    impl<'ast> Visit<'ast> for AliasSurfaceVisitor {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            let exact_test_module = item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && item.attrs[0]
+                    .meta
+                    .require_list()
+                    .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "test");
+            if !exact_test_module {
+                visit::visit_item_mod(self, item);
+            }
+        }
+
+        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+            let mut paths = Vec::new();
+            flatten_use_tree(&item.tree, &mut Vec::new(), &mut paths);
+            if paths.iter().any(|path| {
+                let normalized = path.replace("r#", "");
+                let target = normalized
+                    .split_once(" as ")
+                    .map_or(normalized.as_str(), |(target, _)| target);
+                target.ends_with("::OwnedXmlHttpsTestTransportProfile")
+                    || target == "OwnedXmlHttpsTestTransportProfile"
+                    || target.ends_with("::*")
+            }) {
+                self.aliases = self.aliases.saturating_add(1);
+            }
+            visit::visit_item_use(self, item);
+        }
+
+        fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+            if type_mentions_owned_xml_profile(&item.ty) {
+                self.aliases = self.aliases.saturating_add(1);
+            }
+            visit::visit_item_type(self, item);
+        }
+
+        fn visit_impl_item_type(&mut self, item: &'ast syn::ImplItemType) {
+            if type_mentions_owned_xml_profile(&item.ty) {
+                self.aliases = self.aliases.saturating_add(1);
+            }
+            visit::visit_impl_item_type(self, item);
+        }
+
+        fn visit_trait_item_type(&mut self, item: &'ast syn::TraitItemType) {
+            if item
+                .default
+                .as_ref()
+                .is_some_and(|(_, ty)| type_mentions_owned_xml_profile(ty))
+            {
+                self.aliases = self.aliases.saturating_add(1);
+            }
+            visit::visit_trait_item_type(self, item);
+        }
+
+        fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+            self.aliases = self.aliases.saturating_add(1);
+            visit::visit_item_macro(self, item);
+        }
+    }
+    let mut alias_surface = AliasSurfaceVisitor { aliases: 0 };
+    alias_surface.visit_file(&syntax);
+    if alias_surface.aliases != 0 {
+        violations.push(
+            "termivar-scanner owned XML HTTPS transport profile definition must expose no alias, glob, or item-macro bridge"
+                .to_owned(),
+        );
+    }
 
     Ok(violations)
+}
+
+fn owned_xml_https_identity_constants_are_exact(syntax: &syn::File) -> bool {
+    let constants = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Const(constant)
+                if matches!(
+                    constant.ident.to_string().as_str(),
+                    "OWNED_XML_HTTPS_TARGET_HOST"
+                        | "OWNED_XML_HTTPS_PROVIDER_ORIGIN"
+                        | "OWNED_XML_HTTPS_ROOT_DER_BASE64"
+                ) =>
+            {
+                Some((constant.ident.to_string(), constant))
+            },
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let exact_shape = |constant: &syn::ItemConst| {
+        matches!(constant.vis, Visibility::Inherited)
+            && constant.attrs.len() == 1
+            && has_only_exact_feature_cfg(
+                &constant.attrs,
+                "xml-external-entity-owned-https-test-profile",
+            )
+            && matches!(constant.ty.as_ref(), Type::Reference(reference)
+                if reference.lifetime.is_none()
+                    && reference.mutability.is_none()
+                    && exact_type_path(&reference.elem, &["str"]))
+    };
+    let literal = |name: &str, expected: &str| {
+        constants.get(name).is_some_and(|constant| {
+            exact_shape(constant)
+                && matches!(constant.expr.as_ref(), syn::Expr::Lit(value)
+                    if value.attrs.is_empty()
+                        && matches!(&value.lit, syn::Lit::Str(value)
+                            if value.value() == expected))
+        })
+    };
+    let root_is_exact = constants
+        .get("OWNED_XML_HTTPS_ROOT_DER_BASE64")
+        .is_some_and(|constant| {
+            let syn::Expr::Macro(concatenation) = constant.expr.as_ref() else {
+                return false;
+            };
+            if !exact_shape(constant)
+                || !concatenation.attrs.is_empty()
+                || !exact_syn_path(&concatenation.mac.path, &["concat"])
+            {
+                return false;
+            }
+            let parser =
+                syn::punctuated::Punctuated::<syn::LitStr, syn::Token![,]>::parse_terminated;
+            let Ok(parts) = parser.parse2(concatenation.mac.tokens.clone()) else {
+                return false;
+            };
+            let joined = parts.iter().map(syn::LitStr::value).collect::<String>();
+            format!("{:x}", Sha256::digest(joined.as_bytes()))
+                == "e90f75c7eabb03020ee377f4b3e0ab19432ccf6ced79d7d006b34d91be5c3f53"
+        });
+    constants.len() == 3
+        && literal("OWNED_XML_HTTPS_TARGET_HOST", "xml-target.termivar.test")
+        && literal(
+            "OWNED_XML_HTTPS_PROVIDER_ORIGIN",
+            "https://oast-provider.termivar.test/",
+        )
+        && root_is_exact
+}
+
+fn owned_profile_selection_body_is_exact(method: &syn::ImplItemFn) -> bool {
+    let [syn::Stmt::Local(port), syn::Stmt::Expr(tail, None)] = method.block.stmts.as_slice()
+    else {
+        return false;
+    };
+    let port_binding_is_exact = port.attrs.is_empty()
+        && matches!(&port.pat, syn::Pat::Ident(binding)
+            if binding.attrs.is_empty()
+                && binding.by_ref.is_none()
+                && binding.mutability.is_none()
+                && binding.ident == "port"
+                && binding.subpat.is_none())
+        && port.init.as_ref().is_some_and(|initializer| {
+            if initializer.diverge.is_some() {
+                return false;
+            }
+            let syn::Expr::Try(outer) = initializer.expr.as_ref() else {
+                return false;
+            };
+            let syn::Expr::Call(call) = outer.expr.as_ref() else {
+                return false;
+            };
+            let syn::Expr::Path(function) = call.func.as_ref() else {
+                return false;
+            };
+            call.attrs.is_empty()
+                && function.qself.is_none()
+                && exact_syn_path(&function.path, &["NonZeroU16", "new"])
+                && matches!(call.args.first(), Some(syn::Expr::Try(inner))
+                    if call.args.len() == 1
+                        && inner.attrs.is_empty()
+                        && exact_receiver_method_call(&inner.expr, "application", "port"))
+        });
+    let tail = transparent_expression(tail);
+    let syn::Expr::MethodCall(then_some) = tail else {
+        return false;
+    };
+    let Some(candidate) = then_some.args.first() else {
+        return false;
+    };
+    let syn::Expr::Struct(candidate) = transparent_expression(candidate) else {
+        return false;
+    };
+    let candidate_is_exact = candidate.attrs.is_empty()
+        && candidate.qself.is_none()
+        && exact_syn_path(&candidate.path, &["Self"])
+        && candidate.rest.is_none()
+        && matches!(candidate.fields.first(), Some(field)
+            if candidate.fields.len() == 1
+                && field.attrs.is_empty()
+                && field.colon_token.is_none()
+                && matches!(&field.member, syn::Member::Named(member) if member == "port")
+                && path_expression_name(&field.expr).as_deref() == Some("port"));
+    let mut conditions = Vec::new();
+    flatten_boolean_and(transparent_expression(&then_some.receiver), &mut conditions);
+    port_binding_is_exact
+        && then_some.attrs.is_empty()
+        && then_some.method == "then_some"
+        && then_some.turbofish.is_none()
+        && then_some.args.len() == 1
+        && candidate_is_exact
+        && matches!(conditions.as_slice(), [scheme, host, application, provider]
+            if exact_method_string_equality(scheme, "application", "scheme", "https")
+                && exact_method_some_path_equality(
+                    host,
+                    "application",
+                    "host_str",
+                    "OWNED_XML_HTTPS_TARGET_HOST",
+                )
+                && exact_method_path_equality(
+                    application,
+                    "policy",
+                    "application",
+                    "application",
+                )
+                && exact_provider_origin_equality(provider))
+}
+
+fn transparent_expression(mut expression: &syn::Expr) -> &syn::Expr {
+    loop {
+        expression = match expression {
+            syn::Expr::Paren(parenthesized) => &parenthesized.expr,
+            syn::Expr::Group(group) => &group.expr,
+            _ => return expression,
+        };
+    }
+}
+
+fn flatten_boolean_and<'ast>(expression: &'ast syn::Expr, output: &mut Vec<&'ast syn::Expr>) {
+    let expression = transparent_expression(expression);
+    if let syn::Expr::Binary(binary) = expression {
+        if matches!(binary.op, syn::BinOp::And(_)) {
+            flatten_boolean_and(&binary.left, output);
+            flatten_boolean_and(&binary.right, output);
+            return;
+        }
+    }
+    output.push(expression);
+}
+
+fn exact_method_string_equality(
+    expression: &syn::Expr,
+    receiver: &str,
+    method: &str,
+    expected: &str,
+) -> bool {
+    matches!(transparent_expression(expression), syn::Expr::Binary(binary)
+        if matches!(binary.op, syn::BinOp::Eq(_))
+            && exact_receiver_method_call(&binary.left, receiver, method)
+            && matches!(transparent_expression(&binary.right), syn::Expr::Lit(literal)
+                if literal.attrs.is_empty()
+                    && matches!(&literal.lit, syn::Lit::Str(value) if value.value() == expected)))
+}
+
+fn exact_method_some_path_equality(
+    expression: &syn::Expr,
+    receiver: &str,
+    method: &str,
+    expected: &str,
+) -> bool {
+    let syn::Expr::Binary(binary) = transparent_expression(expression) else {
+        return false;
+    };
+    let syn::Expr::Call(some) = transparent_expression(&binary.right) else {
+        return false;
+    };
+    let syn::Expr::Path(function) = some.func.as_ref() else {
+        return false;
+    };
+    matches!(binary.op, syn::BinOp::Eq(_))
+        && exact_receiver_method_call(&binary.left, receiver, method)
+        && some.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["Some"])
+        && matches!(some.args.first(), Some(argument)
+            if some.args.len() == 1
+                && path_expression_name(transparent_expression(argument)).as_deref()
+                    == Some(expected))
+}
+
+fn exact_method_path_equality(
+    expression: &syn::Expr,
+    receiver: &str,
+    method: &str,
+    expected: &str,
+) -> bool {
+    matches!(transparent_expression(expression), syn::Expr::Binary(binary)
+        if matches!(binary.op, syn::BinOp::Eq(_))
+            && exact_receiver_method_call(&binary.left, receiver, method)
+            && path_expression_name(transparent_expression(&binary.right)).as_deref()
+                == Some(expected))
+}
+
+fn exact_provider_origin_equality(expression: &syn::Expr) -> bool {
+    let syn::Expr::Binary(binary) = transparent_expression(expression) else {
+        return false;
+    };
+    let syn::Expr::MethodCall(as_str) = transparent_expression(&binary.left) else {
+        return false;
+    };
+    matches!(binary.op, syn::BinOp::Eq(_))
+        && as_str.attrs.is_empty()
+        && as_str.method == "as_str"
+        && as_str.turbofish.is_none()
+        && as_str.args.is_empty()
+        && exact_receiver_method_call(&as_str.receiver, "policy", "provider_origin")
+        && path_expression_name(transparent_expression(&binary.right)).as_deref()
+            == Some("OWNED_XML_HTTPS_PROVIDER_ORIGIN")
+}
+
+fn owned_profile_port_body_is_exact(method: &syn::ImplItemFn) -> bool {
+    matches!(method.block.stmts.as_slice(), [syn::Stmt::Expr(syn::Expr::Field(field), None)]
+        if field.attrs.is_empty() && self_field_name_from_field(field).as_deref() == Some("port"))
+}
+
+fn owned_profile_target_body_is_exact(method: &syn::ImplItemFn) -> bool {
+    let [syn::Stmt::Expr(syn::Expr::Call(call), None)] = method.block.stmts.as_slice() else {
+        return false;
+    };
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return false;
+    };
+    let Some(syn::Expr::Tuple(tuple)) = call.args.first() else {
+        return false;
+    };
+    let (Some(syn::Expr::Array(address)), Some(syn::Expr::MethodCall(port))) =
+        (tuple.elems.first(), tuple.elems.iter().nth(1))
+    else {
+        return false;
+    };
+    call.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["SocketAddr", "from"])
+        && call.args.len() == 1
+        && tuple.attrs.is_empty()
+        && tuple.elems.len() == 2
+        && address.attrs.is_empty()
+        && address.elems.len() == 4
+        && address
+            .elems
+            .iter()
+            .zip([127, 0, 0, 1])
+            .all(|(element, expected)| exact_integer_literal(element, expected))
+        && port.attrs.is_empty()
+        && port.method == "get"
+        && port.turbofish.is_none()
+        && port.args.is_empty()
+        && self_field_name(&port.receiver).as_deref() == Some("port")
+}
+
+fn owned_profile_construction_count(syntax: &syn::File) -> usize {
+    struct ConstructionVisitor {
+        profile_impl_depth: usize,
+        constructions: usize,
+    }
+    impl<'ast> Visit<'ast> for ConstructionVisitor {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            let exact_test_module = item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && item.attrs[0]
+                    .meta
+                    .require_list()
+                    .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "test");
+            if !exact_test_module {
+                visit::visit_item_mod(self, item);
+            }
+        }
+
+        fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+            let profile = exact_type_path(
+                item.self_ty.as_ref(),
+                &["OwnedXmlHttpsTestTransportProfile"],
+            );
+            if profile {
+                self.profile_impl_depth = self.profile_impl_depth.saturating_add(1);
+            }
+            visit::visit_item_impl(self, item);
+            if profile {
+                self.profile_impl_depth = self.profile_impl_depth.saturating_sub(1);
+            }
+        }
+
+        fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+            if (self.profile_impl_depth != 0 && exact_syn_path(&expression.path, &["Self"]))
+                || exact_syn_path(&expression.path, &["OwnedXmlHttpsTestTransportProfile"])
+            {
+                self.constructions = self.constructions.saturating_add(1);
+            }
+            visit::visit_expr_struct(self, expression);
+        }
+    }
+
+    let mut visitor = ConstructionVisitor {
+        profile_impl_depth: 0,
+        constructions: 0,
+    };
+    visitor.visit_file(syntax);
+    visitor.constructions
+}
+
+fn owned_profile_reference_surface_is_exact(syntax: &syn::File) -> bool {
+    struct ReferenceVisitor {
+        profile_references: usize,
+        unsafe_surfaces: usize,
+    }
+
+    impl<'ast> Visit<'ast> for ReferenceVisitor {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            let exact_test_module = item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && item.attrs[0]
+                    .meta
+                    .require_list()
+                    .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "test");
+            if !exact_test_module {
+                visit::visit_item_mod(self, item);
+            }
+        }
+
+        fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+            if ty.qself.is_none()
+                && ty.path.segments.iter().any(|segment| {
+                    normalize_identifier(&segment.ident.to_string())
+                        == "OwnedXmlHttpsTestTransportProfile"
+                })
+            {
+                self.profile_references = self.profile_references.saturating_add(1);
+            }
+            visit::visit_type_path(self, ty);
+        }
+
+        fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+            if expression.qself.is_none()
+                && expression.path.segments.iter().any(|segment| {
+                    normalize_identifier(&segment.ident.to_string())
+                        == "OwnedXmlHttpsTestTransportProfile"
+                })
+            {
+                self.profile_references = self.profile_references.saturating_add(1);
+            }
+            visit::visit_expr_path(self, expression);
+        }
+
+        fn visit_signature(&mut self, signature: &'ast syn::Signature) {
+            if signature.unsafety.is_some() {
+                self.unsafe_surfaces = self.unsafe_surfaces.saturating_add(1);
+            }
+            visit::visit_signature(self, signature);
+        }
+
+        fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
+            self.unsafe_surfaces = self.unsafe_surfaces.saturating_add(1);
+            visit::visit_expr_unsafe(self, expression);
+        }
+    }
+
+    let mut visitor = ReferenceVisitor {
+        profile_references: 0,
+        unsafe_surfaces: 0,
+    };
+    visitor.visit_file(syntax);
+    visitor.profile_references == 5 && visitor.unsafe_surfaces == 0
+}
+
+fn owned_profile_consumer_is_sealed(syntax: &syn::File) -> bool {
+    let methods = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if implementation.trait_.is_none()
+                    && exact_type_path(&implementation.self_ty, &["HttpRequestBroker"]) =>
+            {
+                Some(implementation)
+            },
+            _ => None,
+        })
+        .flat_map(|implementation| implementation.items.iter())
+        .filter_map(|item| match item {
+            ImplItem::Fn(method)
+                if method.sig.ident == "configure_owned_xml_https_test_profile" =>
+            {
+                Some(method)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [method] = methods.as_slice() else {
+        return false;
+    };
+    if !matches!(method.vis, Visibility::Inherited)
+        || !has_only_exact_feature_cfg(
+            &method.attrs,
+            "xml-external-entity-owned-https-test-profile",
+        )
+        || !plain_method_signature_shape(method, false)
+        || method.sig.inputs.len() != 2
+        || !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(receiver))
+            if receiver.attrs.is_empty()
+                && receiver.reference.is_some()
+                && receiver.mutability.is_some()
+                && receiver.colon_token.is_none())
+        || !exact_typed_argument(
+            method.sig.inputs.iter().nth(1),
+            "profile",
+            &["OwnedXmlHttpsTestTransportProfile"],
+        )
+        || !return_type_is_result_unit_error(&method.sig.output, &["HttpEvidenceError"])
+    {
+        return false;
+    }
+
+    struct ConsumerVisitor {
+        profile_paths: usize,
+        target_address_calls: usize,
+        retained_profile_calls: usize,
+        mutable_profile_references: usize,
+        profile_assignments: usize,
+        protected_field_assignments: usize,
+        exact_protected_field_assignments: usize,
+        profile_local_bindings: usize,
+        macros: usize,
+    }
+    impl<'ast> Visit<'ast> for ConsumerVisitor {
+        fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+            if expression.qself.is_none() && expression.path.is_ident("profile") {
+                self.profile_paths = self.profile_paths.saturating_add(1);
+            }
+            visit::visit_expr_path(self, expression);
+        }
+
+        fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+            if expression.attrs.is_empty()
+                && expression.method == "target_address"
+                && expression.turbofish.is_none()
+                && expression.args.is_empty()
+                && path_expression_name(&expression.receiver).as_deref() == Some("profile")
+            {
+                self.target_address_calls = self.target_address_calls.saturating_add(1);
+            }
+            visit::visit_expr_method_call(self, expression);
+        }
+
+        fn visit_expr_call(&mut self, expression: &'ast syn::ExprCall) {
+            if expression.attrs.is_empty()
+                && matches!(expression.func.as_ref(), syn::Expr::Path(function)
+                    if function.qself.is_none() && exact_syn_path(&function.path, &["Some"]))
+                && matches!(expression.args.first(), Some(argument)
+                    if expression.args.len() == 1
+                        && path_expression_name(argument).as_deref() == Some("profile"))
+            {
+                self.retained_profile_calls = self.retained_profile_calls.saturating_add(1);
+            }
+            visit::visit_expr_call(self, expression);
+        }
+
+        fn visit_expr_reference(&mut self, expression: &'ast syn::ExprReference) {
+            if expression.mutability.is_some()
+                && expression_mentions_binding(&expression.expr, "profile")
+            {
+                self.mutable_profile_references = self.mutable_profile_references.saturating_add(1);
+            }
+            visit::visit_expr_reference(self, expression);
+        }
+
+        fn visit_expr_assign(&mut self, expression: &'ast syn::ExprAssign) {
+            if expression_mentions_binding(&expression.left, "profile") {
+                self.profile_assignments = self.profile_assignments.saturating_add(1);
+            }
+            if expression_is_owned_profile_field(&expression.left) {
+                self.protected_field_assignments =
+                    self.protected_field_assignments.saturating_add(1);
+                if owned_profile_retention_assignment_is_exact(expression) {
+                    self.exact_protected_field_assignments =
+                        self.exact_protected_field_assignments.saturating_add(1);
+                }
+            }
+            visit::visit_expr_assign(self, expression);
+        }
+
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            if pattern_mentions_binding(&local.pat, "profile") {
+                self.profile_local_bindings = self.profile_local_bindings.saturating_add(1);
+            }
+            visit::visit_local(self, local);
+        }
+
+        fn visit_macro(&mut self, expression: &'ast syn::Macro) {
+            self.macros = self.macros.saturating_add(1);
+            visit::visit_macro(self, expression);
+        }
+    }
+
+    let mut visitor = ConsumerVisitor {
+        profile_paths: 0,
+        target_address_calls: 0,
+        retained_profile_calls: 0,
+        mutable_profile_references: 0,
+        profile_assignments: 0,
+        protected_field_assignments: 0,
+        exact_protected_field_assignments: 0,
+        profile_local_bindings: 0,
+        macros: 0,
+    };
+    visitor.visit_block(&method.block);
+    visitor.profile_paths == 2
+        && visitor.target_address_calls == 1
+        && visitor.retained_profile_calls == 1
+        && visitor.mutable_profile_references == 0
+        && visitor.profile_assignments == 0
+        && visitor.protected_field_assignments == 1
+        && visitor.exact_protected_field_assignments == 1
+        && visitor.profile_local_bindings == 0
+        && visitor.macros == 0
+}
+
+fn expression_is_owned_profile_field(expression: &syn::Expr) -> bool {
+    matches!(expression, syn::Expr::Field(field)
+        if field.attrs.is_empty()
+            && matches!(&field.member, syn::Member::Named(member)
+                if normalize_identifier(&member.to_string())
+                    == "owned_xml_https_test_profile"))
+}
+
+fn owned_profile_retention_assignment_is_exact(expression: &syn::ExprAssign) -> bool {
+    let syn::Expr::Field(field) = expression.left.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Call(some) = expression.right.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Path(function) = some.func.as_ref() else {
+        return false;
+    };
+    expression.attrs.is_empty()
+        && field.attrs.is_empty()
+        && path_expression_name(&field.base).as_deref() == Some("self")
+        && matches!(&field.member, syn::Member::Named(member)
+            if normalize_identifier(&member.to_string())
+                == "owned_xml_https_test_profile")
+        && some.attrs.is_empty()
+        && function.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["Some"])
+        && matches!(some.args.first(), Some(argument)
+            if some.args.len() == 1
+                && path_expression_name(argument).as_deref() == Some("profile"))
+}
+
+fn owned_profile_whole_file_access_is_exact(syntax: &syn::File) -> bool {
+    struct SurfaceVisitor {
+        field_accesses: usize,
+        field_initializers: usize,
+        exact_field_initializers: usize,
+        field_patterns: usize,
+        field_assignments: usize,
+        exact_retention_assignments: usize,
+        profile_paths: usize,
+        profile_bindings: usize,
+        typed_profile_arguments: usize,
+        exact_typed_profile_arguments: usize,
+        configure_calls: usize,
+        target_address_calls: usize,
+        retained_profile_calls: usize,
+        self_profile_reads: usize,
+        broker_profile_reads: usize,
+        mutable_surface_references: usize,
+        surface_assignments: usize,
+        macro_surface_mentions: usize,
+    }
+
+    impl<'ast> Visit<'ast> for SurfaceVisitor {
+        fn visit_expr_field(&mut self, expression: &'ast syn::ExprField) {
+            if matches!(&expression.member, syn::Member::Named(member)
+                if normalize_identifier(&member.to_string())
+                    == "owned_xml_https_test_profile")
+            {
+                self.field_accesses = self.field_accesses.saturating_add(1);
+            }
+            visit::visit_expr_field(self, expression);
+        }
+
+        fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+            for field in &expression.fields {
+                if matches!(&field.member, syn::Member::Named(member)
+                    if normalize_identifier(&member.to_string())
+                        == "owned_xml_https_test_profile")
+                {
+                    self.field_initializers = self.field_initializers.saturating_add(1);
+                    if expression.attrs.is_empty()
+                        && expression.qself.is_none()
+                        && exact_syn_path(&expression.path, &["Self"])
+                        && expression.rest.is_none()
+                        && field.attrs.len() == 1
+                        && has_only_exact_feature_cfg(
+                            &field.attrs,
+                            "xml-external-entity-owned-https-test-profile",
+                        )
+                        && field.colon_token.is_some()
+                        && path_expression_name(&field.expr).as_deref() == Some("None")
+                    {
+                        self.exact_field_initializers =
+                            self.exact_field_initializers.saturating_add(1);
+                    }
+                }
+            }
+            visit::visit_expr_struct(self, expression);
+        }
+
+        fn visit_pat_struct(&mut self, pattern: &'ast syn::PatStruct) {
+            self.field_patterns = self.field_patterns.saturating_add(
+                pattern
+                    .fields
+                    .iter()
+                    .filter(|field| {
+                        matches!(&field.member, syn::Member::Named(member)
+                            if normalize_identifier(&member.to_string())
+                                == "owned_xml_https_test_profile")
+                    })
+                    .count(),
+            );
+            visit::visit_pat_struct(self, pattern);
+        }
+
+        fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+            if expression.qself.is_none()
+                && expression.path.leading_colon.is_none()
+                && expression.path.is_ident("profile")
+            {
+                self.profile_paths = self.profile_paths.saturating_add(1);
+            }
+            visit::visit_expr_path(self, expression);
+        }
+
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            if normalize_identifier(&pattern.ident.to_string()) == "profile" {
+                self.profile_bindings = self.profile_bindings.saturating_add(1);
+            }
+            visit::visit_pat_ident(self, pattern);
+        }
+
+        fn visit_fn_arg(&mut self, argument: &'ast syn::FnArg) {
+            if let syn::FnArg::Typed(argument) = argument {
+                if exact_type_path(&argument.ty, &["OwnedXmlHttpsTestTransportProfile"]) {
+                    self.typed_profile_arguments = self.typed_profile_arguments.saturating_add(1);
+                    if argument.attrs.is_empty()
+                        && exact_immutable_identifier_pattern(&argument.pat, "profile")
+                    {
+                        self.exact_typed_profile_arguments =
+                            self.exact_typed_profile_arguments.saturating_add(1);
+                    }
+                }
+            }
+            visit::visit_fn_arg(self, argument);
+        }
+
+        fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+            if expression.attrs.is_empty()
+                && expression.method == "configure_owned_xml_https_test_profile"
+                && expression.turbofish.is_none()
+                && path_expression_name(&expression.receiver).as_deref() == Some("broker")
+                && matches!(expression.args.first(), Some(argument)
+                    if expression.args.len() == 1
+                        && path_expression_name(argument).as_deref() == Some("profile"))
+            {
+                self.configure_calls = self.configure_calls.saturating_add(1);
+            }
+            if expression.attrs.is_empty()
+                && expression.method == "target_address"
+                && expression.turbofish.is_none()
+                && expression.args.is_empty()
+                && path_expression_name(&expression.receiver).as_deref() == Some("profile")
+            {
+                self.target_address_calls = self.target_address_calls.saturating_add(1);
+            }
+            visit::visit_expr_method_call(self, expression);
+        }
+
+        fn visit_expr_call(&mut self, expression: &'ast syn::ExprCall) {
+            if expression.attrs.is_empty()
+                && matches!(expression.func.as_ref(), syn::Expr::Path(function)
+                    if function.attrs.is_empty()
+                        && function.qself.is_none()
+                        && exact_syn_path(&function.path, &["Some"]))
+                && matches!(expression.args.first(), Some(argument)
+                    if expression.args.len() == 1
+                        && path_expression_name(argument).as_deref() == Some("profile"))
+            {
+                self.retained_profile_calls = self.retained_profile_calls.saturating_add(1);
+            }
+            visit::visit_expr_call(self, expression);
+        }
+
+        fn visit_expr_let(&mut self, expression: &'ast syn::ExprLet) {
+            if expression.attrs.is_empty()
+                && exact_some_profile_pattern(&expression.pat)
+                && matches!(expression.expr.as_ref(), syn::Expr::Field(field)
+                    if field.attrs.is_empty()
+                        && matches!(&field.member, syn::Member::Named(member)
+                            if normalize_identifier(&member.to_string())
+                                == "owned_xml_https_test_profile"))
+            {
+                let syn::Expr::Field(field) = expression.expr.as_ref() else {
+                    unreachable!();
+                };
+                match path_expression_name(&field.base).as_deref() {
+                    Some("self") => {
+                        self.self_profile_reads = self.self_profile_reads.saturating_add(1);
+                    },
+                    Some("broker") => {
+                        self.broker_profile_reads = self.broker_profile_reads.saturating_add(1);
+                    },
+                    _ => {},
+                }
+            }
+            visit::visit_expr_let(self, expression);
+        }
+
+        fn visit_expr_reference(&mut self, expression: &'ast syn::ExprReference) {
+            if expression.mutability.is_some()
+                && expression_mentions_owned_profile_surface(&expression.expr)
+            {
+                self.mutable_surface_references = self.mutable_surface_references.saturating_add(1);
+            }
+            visit::visit_expr_reference(self, expression);
+        }
+
+        fn visit_expr_assign(&mut self, expression: &'ast syn::ExprAssign) {
+            if expression_is_owned_profile_field(&expression.left) {
+                self.field_assignments = self.field_assignments.saturating_add(1);
+                if owned_profile_retention_assignment_is_exact(expression) {
+                    self.exact_retention_assignments =
+                        self.exact_retention_assignments.saturating_add(1);
+                }
+            }
+            if expression_mentions_binding(&expression.left, "profile") {
+                self.surface_assignments = self.surface_assignments.saturating_add(1);
+            }
+            visit::visit_expr_assign(self, expression);
+        }
+
+        fn visit_macro(&mut self, expression: &'ast syn::Macro) {
+            let tokens = expression.tokens.to_string().replace("r#", "");
+            if tokens.contains("owned_xml_https_test_profile")
+                || tokens
+                    .split(|character: char| !character.is_alphanumeric() && character != '_')
+                    .any(|token| token == "profile")
+            {
+                self.macro_surface_mentions = self.macro_surface_mentions.saturating_add(1);
+            }
+            visit::visit_macro(self, expression);
+        }
+    }
+
+    let mut visitor = SurfaceVisitor {
+        field_accesses: 0,
+        field_initializers: 0,
+        exact_field_initializers: 0,
+        field_patterns: 0,
+        field_assignments: 0,
+        exact_retention_assignments: 0,
+        profile_paths: 0,
+        profile_bindings: 0,
+        typed_profile_arguments: 0,
+        exact_typed_profile_arguments: 0,
+        configure_calls: 0,
+        target_address_calls: 0,
+        retained_profile_calls: 0,
+        self_profile_reads: 0,
+        broker_profile_reads: 0,
+        mutable_surface_references: 0,
+        surface_assignments: 0,
+        macro_surface_mentions: 0,
+    };
+    visitor.visit_file(syntax);
+    visitor.field_accesses == 3
+        && visitor.field_initializers == 1
+        && visitor.exact_field_initializers == 1
+        && visitor.field_patterns == 0
+        && visitor.field_assignments == 1
+        && visitor.exact_retention_assignments == 1
+        && visitor.profile_paths == 6
+        && visitor.profile_bindings == 5
+        && visitor.typed_profile_arguments == 3
+        && visitor.exact_typed_profile_arguments == 3
+        && visitor.configure_calls == 3
+        && visitor.target_address_calls == 2
+        && visitor.retained_profile_calls == 1
+        && visitor.self_profile_reads == 1
+        && visitor.broker_profile_reads == 1
+        && visitor.mutable_surface_references == 0
+        && visitor.surface_assignments == 0
+        && visitor.macro_surface_mentions == 0
+}
+
+fn exact_immutable_identifier_pattern(pattern: &syn::Pat, expected: &str) -> bool {
+    matches!(pattern, syn::Pat::Ident(binding)
+        if binding.attrs.is_empty()
+            && binding.by_ref.is_none()
+            && binding.mutability.is_none()
+            && normalize_identifier(&binding.ident.to_string()) == expected
+            && binding.subpat.is_none())
+}
+
+fn exact_some_profile_pattern(pattern: &syn::Pat) -> bool {
+    matches!(pattern, syn::Pat::TupleStruct(tuple)
+        if tuple.attrs.is_empty()
+            && tuple.qself.is_none()
+            && exact_syn_path(&tuple.path, &["Some"])
+            && matches!(tuple.elems.first(), Some(pattern)
+                if tuple.elems.len() == 1
+                    && exact_immutable_identifier_pattern(pattern, "profile")))
+}
+
+fn expression_mentions_owned_profile_surface(expression: &syn::Expr) -> bool {
+    struct SurfaceVisitor {
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for SurfaceVisitor {
+        fn visit_expr_field(&mut self, expression: &'ast syn::ExprField) {
+            if matches!(&expression.member, syn::Member::Named(member)
+                if normalize_identifier(&member.to_string())
+                    == "owned_xml_https_test_profile")
+            {
+                self.found = true;
+            }
+            visit::visit_expr_field(self, expression);
+        }
+
+        fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+            if expression.qself.is_none() && expression.path.is_ident("profile") {
+                self.found = true;
+            }
+            visit::visit_expr_path(self, expression);
+        }
+    }
+    let mut visitor = SurfaceVisitor { found: false };
+    visitor.visit_expr(expression);
+    visitor.found
+}
+
+fn expression_mentions_binding(expression: &syn::Expr, expected: &str) -> bool {
+    struct BindingVisitor<'a> {
+        expected: &'a str,
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for BindingVisitor<'_> {
+        fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+            if expression.qself.is_none() && expression.path.is_ident(self.expected) {
+                self.found = true;
+            }
+            visit::visit_expr_path(self, expression);
+        }
+    }
+    let mut visitor = BindingVisitor {
+        expected,
+        found: false,
+    };
+    visitor.visit_expr(expression);
+    visitor.found
+}
+
+fn pattern_mentions_binding(pattern: &syn::Pat, expected: &str) -> bool {
+    struct BindingVisitor<'a> {
+        expected: &'a str,
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for BindingVisitor<'_> {
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            if normalize_identifier(&pattern.ident.to_string()) == self.expected {
+                self.found = true;
+            }
+            visit::visit_pat_ident(self, pattern);
+        }
+    }
+    let mut visitor = BindingVisitor {
+        expected,
+        found: false,
+    };
+    visitor.visit_pat(pattern);
+    visitor.found
 }
 
 fn owned_xml_https_profile_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -1047,19 +2862,91 @@ fn owned_xml_https_profile_reexport_violations(source: &str) -> Result<Vec<Strin
     const EXPECTED_PATH: &str = "request_broker::OwnedXmlHttpsTestTransportProfile";
 
     let syntax = syn::parse_file(source)?;
-    let exports = syntax
+    let broker_modules = syntax
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Use(import) => {
-                let mut paths = Vec::new();
-                flatten_use_tree(&import.tree, &mut Vec::new(), &mut paths);
-                paths
-                    .iter()
-                    .any(|path| path == EXPECTED_PATH)
-                    .then_some((import, paths))
-            },
+            syn::Item::Mod(module) if module.ident == "request_broker" => Some(module),
             _ => None,
+        })
+        .collect::<Vec<_>>();
+    let broker_module_is_exact = matches!(broker_modules.as_slice(), [module]
+        if module.attrs.is_empty()
+            && matches!(module.vis, syn::Visibility::Inherited)
+            && module.content.is_none()
+            && module.semi.is_some());
+    struct UseCollector<'ast> {
+        imports: Vec<&'ast syn::ItemUse>,
+        item_macros: usize,
+        profile_type_aliases: usize,
+    }
+    impl<'ast> Visit<'ast> for UseCollector<'ast> {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            let exact_test_module = item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && item.attrs[0]
+                    .meta
+                    .require_list()
+                    .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "test");
+            if !exact_test_module {
+                visit::visit_item_mod(self, item);
+            }
+        }
+
+        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+            self.imports.push(item);
+            visit::visit_item_use(self, item);
+        }
+
+        fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+            self.item_macros = self.item_macros.saturating_add(1);
+            visit::visit_item_macro(self, item);
+        }
+
+        fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+            if type_mentions_owned_xml_profile(&item.ty) {
+                self.profile_type_aliases = self.profile_type_aliases.saturating_add(1);
+            }
+            visit::visit_item_type(self, item);
+        }
+
+        fn visit_impl_item_type(&mut self, item: &'ast syn::ImplItemType) {
+            if type_mentions_owned_xml_profile(&item.ty) {
+                self.profile_type_aliases = self.profile_type_aliases.saturating_add(1);
+            }
+            visit::visit_impl_item_type(self, item);
+        }
+
+        fn visit_trait_item_type(&mut self, item: &'ast syn::TraitItemType) {
+            if item
+                .default
+                .as_ref()
+                .is_some_and(|(_, ty)| type_mentions_owned_xml_profile(ty))
+            {
+                self.profile_type_aliases = self.profile_type_aliases.saturating_add(1);
+            }
+            visit::visit_trait_item_type(self, item);
+        }
+    }
+    let mut collector = UseCollector {
+        imports: Vec::new(),
+        item_macros: 0,
+        profile_type_aliases: 0,
+    };
+    collector.visit_file(&syntax);
+    let hidden_export_surface = !broker_module_is_exact
+        || collector.item_macros != 0
+        || collector.profile_type_aliases != 0;
+    let exports = collector
+        .imports
+        .into_iter()
+        .filter_map(|import| {
+            let mut paths = Vec::new();
+            flatten_use_tree(&import.tree, &mut Vec::new(), &mut paths);
+            paths
+                .iter()
+                .any(|path| owned_profile_use_path_targets_export(path, EXPECTED_PATH))
+                .then_some((import, paths))
         })
         .collect::<Vec<_>>();
     let exact = exports.first().is_some_and(|(import, paths)| {
@@ -1068,7 +2955,7 @@ fn owned_xml_https_profile_reexport_violations(source: &str) -> Result<Vec<Strin
             && paths.len() == 1
             && paths.first().is_some_and(|path| path == EXPECTED_PATH)
     });
-    Ok(if exports.len() == 1 && exact {
+    Ok(if exports.len() == 1 && exact && !hidden_export_surface {
         Vec::new()
     } else {
         vec![
@@ -1076,6 +2963,50 @@ fn owned_xml_https_profile_reexport_violations(source: &str) -> Result<Vec<Strin
                 .to_owned(),
         ]
     })
+}
+
+fn type_mentions_owned_xml_profile(ty: &syn::Type) -> bool {
+    struct ProfileTypeVisitor {
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for ProfileTypeVisitor {
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            if path.segments.last().is_some_and(|segment| {
+                normalize_identifier(&segment.ident.to_string())
+                    == "OwnedXmlHttpsTestTransportProfile"
+            }) {
+                self.found = true;
+            }
+            visit::visit_path(self, path);
+        }
+    }
+
+    let mut visitor = ProfileTypeVisitor { found: false };
+    visitor.visit_type(ty);
+    visitor.found
+}
+
+fn owned_profile_use_path_targets_export(path: &str, expected_path: &str) -> bool {
+    let normalized = path.replace("r#", "");
+    let (target, alias) = normalized
+        .split_once(" as ")
+        .map_or((normalized.as_str(), None), |(target, binding)| {
+            (target, Some(binding))
+        });
+    target == expected_path
+        || target.ends_with(&format!("::{expected_path}"))
+        || target
+            .rsplit("::")
+            .next()
+            .is_some_and(|segment| segment == "OwnedXmlHttpsTestTransportProfile")
+        || target.ends_with("::*")
+        || target == "request_broker::*"
+        || target.ends_with("::request_broker::*")
+        || (alias.is_some()
+            && (target == "request_broker"
+                || target.ends_with("::request_broker")
+                || target == "request_broker::self"
+                || target.ends_with("::request_broker::self")))
 }
 
 fn signature_accepts_arbitrary_authority(signature: &syn::Signature) -> bool {
@@ -1209,6 +3140,10 @@ fn scanner_adapter_contract_violations(
     violations.extend(owned_xml_https_profile_surface_violations(
         production_prefix(&request_broker),
     )?);
+    let http_evidence = fs::read_to_string(source_root.join(SCANNER_HTTP_EVIDENCE))?;
+    violations.extend(owned_xml_https_profile_reexport_violations(
+        production_prefix(&http_evidence),
+    )?);
 
     let mut scanner_sources = rust_sources_below(&source_root)?;
     scanner_sources.sort();
@@ -1220,6 +3155,9 @@ fn scanner_adapter_contract_violations(
         scanner_production_sources.push((relative, production));
     }
     violations.extend(scanner_provider_consumer_violations(
+        &scanner_production_sources,
+    ));
+    violations.extend(owned_xml_profile_global_reference_violations(
         &scanner_production_sources,
     ));
     let assessment_review = fs::read_to_string(source_root.join(ASSESSMENT_REVIEW_SOURCE))?;
@@ -1260,6 +3198,204 @@ fn scanner_adapter_contract_violations(
     violations.extend(shared_provider_mint_contract_violations(&authority)?);
 
     Ok(violations)
+}
+
+fn owned_xml_profile_global_reference_violations(sources: &[(String, String)]) -> Vec<String> {
+    const TYPE_NAME: &str = "OwnedXmlHttpsTestTransportProfile";
+    const EXPECTED: &[(&str, usize)] = &[
+        (SCANNER_HTTP_EVIDENCE, 1),
+        (SCANNER_REQUEST_BROKER, 6),
+        ("web_runtime/authority.rs", 4),
+        ("web_runtime/xml_external_entity_runtime.rs", 3),
+        ("web_runtime/web_assessment.rs", 2),
+    ];
+
+    let parsed = sources
+        .iter()
+        .map(|(path, source)| (path.as_str(), syn::parse_file(source)))
+        .collect::<Vec<_>>();
+    let actual = parsed
+        .iter()
+        .filter_map(|(path, syntax)| {
+            let count = syntax
+                .as_ref()
+                .ok()
+                .map_or(0, owned_profile_semantic_reference_count);
+            (count != 0).then_some((*path, count))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let expected = EXPECTED.iter().copied().collect::<BTreeMap<_, _>>();
+    let alias_surface_is_closed = parsed.iter().all(|(_, syntax)| {
+        syntax
+            .as_ref()
+            .is_ok_and(scanner_profile_alias_surface_is_closed)
+    });
+    if actual == expected && alias_surface_is_closed {
+        Vec::new()
+    } else {
+        vec![format!(
+            "termivar-scanner owned XML HTTPS transport profile must retain only its reviewed definition, canonical re-export, and three exact consumers; expected {expected:?}, observed {actual:?}"
+        )]
+    }
+}
+
+fn owned_profile_semantic_reference_count(syntax: &syn::File) -> usize {
+    const TYPE_NAME: &str = "OwnedXmlHttpsTestTransportProfile";
+    struct ReferenceVisitor {
+        count: usize,
+    }
+    impl ReferenceVisitor {
+        fn count_path(&mut self, path: &syn::Path) {
+            self.count = self.count.saturating_add(
+                path.segments
+                    .iter()
+                    .filter(|segment| normalize_identifier(&segment.ident.to_string()) == TYPE_NAME)
+                    .count(),
+            );
+        }
+    }
+    impl<'ast> Visit<'ast> for ReferenceVisitor {
+        fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+            if normalize_identifier(&item.ident.to_string()) == TYPE_NAME {
+                self.count = self.count.saturating_add(1);
+            }
+            visit::visit_item_struct(self, item);
+        }
+
+        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+            let mut paths = Vec::new();
+            flatten_use_tree(&item.tree, &mut Vec::new(), &mut paths);
+            self.count = self.count.saturating_add(
+                paths
+                    .iter()
+                    .map(|path| path.replace("r#", ""))
+                    .filter(|path| {
+                        path.split(|character: char| character == ':' || character.is_whitespace())
+                            .any(|segment| segment == TYPE_NAME)
+                    })
+                    .count(),
+            );
+        }
+
+        fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+            self.count_path(&ty.path);
+            visit::visit_type_path(self, ty);
+        }
+
+        fn visit_expr_path(&mut self, expression: &'ast syn::ExprPath) {
+            self.count_path(&expression.path);
+            visit::visit_expr_path(self, expression);
+        }
+    }
+
+    let mut visitor = ReferenceVisitor { count: 0 };
+    visitor.visit_file(syntax);
+    visitor.count
+}
+
+fn scanner_profile_alias_surface_is_closed(syntax: &syn::File) -> bool {
+    struct AliasVisitor {
+        closed: bool,
+    }
+
+    impl<'ast> Visit<'ast> for AliasVisitor {
+        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+            let mut paths = Vec::new();
+            flatten_use_tree(&item.tree, &mut Vec::new(), &mut paths);
+            for path in paths {
+                let normalized = path.replace("r#", "");
+                let (target, alias) = normalized
+                    .split_once(" as ")
+                    .map_or((normalized.as_str(), None), |(target, alias)| {
+                        (target, Some(alias))
+                    });
+                let module_alias = alias.is_some()
+                    && target.rsplit("::").next().is_some_and(|segment| {
+                        matches!(segment, "http_evidence" | "request_broker" | "self")
+                            && (target.contains("http_evidence")
+                                || target.contains("request_broker"))
+                    });
+                let protected_alias_binding = alias
+                    .is_some_and(|binding| matches!(binding, "http_evidence" | "request_broker"));
+                let protected_module_reexport = !matches!(item.vis, Visibility::Inherited)
+                    && target.rsplit("::").next().is_some_and(|segment| {
+                        matches!(segment, "http_evidence" | "request_broker" | "self")
+                            && (target.contains("http_evidence")
+                                || target.contains("request_broker"))
+                    });
+                let profile_alias = alias.is_some()
+                    && target
+                        .rsplit("::")
+                        .next()
+                        .is_some_and(|segment| segment == "OwnedXmlHttpsTestTransportProfile");
+                let glob = target == "*" || target.ends_with("::*");
+                let dangerous_glob = glob
+                    && (!matches!(item.vis, Visibility::Inherited)
+                        || target.contains("http_evidence")
+                        || target.contains("request_broker"));
+                if module_alias
+                    || protected_alias_binding
+                    || protected_module_reexport
+                    || profile_alias
+                    || dangerous_glob
+                {
+                    self.closed = false;
+                }
+            }
+            visit::visit_item_use(self, item);
+        }
+
+        fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+            if type_mentions_owned_xml_profile(&item.ty) {
+                self.closed = false;
+            }
+            visit::visit_item_type(self, item);
+        }
+
+        fn visit_impl_item_type(&mut self, item: &'ast syn::ImplItemType) {
+            if type_mentions_owned_xml_profile(&item.ty) {
+                self.closed = false;
+            }
+            visit::visit_impl_item_type(self, item);
+        }
+
+        fn visit_trait_item_type(&mut self, item: &'ast syn::TraitItemType) {
+            if item
+                .default
+                .as_ref()
+                .is_some_and(|(_, ty)| type_mentions_owned_xml_profile(ty))
+            {
+                self.closed = false;
+            }
+            visit::visit_trait_item_type(self, item);
+        }
+
+        fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+            let tokens = compact_whitespace(&item.mac.tokens.to_string()).replace("r#", "");
+            if tokens.contains("http_evidence")
+                || tokens.contains("request_broker")
+                || tokens.contains("OwnedXmlHttpsTestTransportProfile")
+            {
+                self.closed = false;
+            }
+            visit::visit_item_macro(self, item);
+        }
+
+        fn visit_macro(&mut self, expression: &'ast syn::Macro) {
+            let tokens = compact_whitespace(&expression.tokens.to_string()).replace("r#", "");
+            if tokens.contains("http_evidence")
+                || tokens.contains("request_broker")
+                || tokens.contains("OwnedXmlHttpsTestTransportProfile")
+            {
+                self.closed = false;
+            }
+            visit::visit_macro(self, expression);
+        }
+    }
+
+    let mut visitor = AliasVisitor { closed: true };
+    visitor.visit_file(syntax);
+    visitor.closed
 }
 
 fn scanner_provider_consumer_violations(sources: &[(String, String)]) -> Vec<String> {
@@ -1354,6 +3490,12 @@ fn adapter_forbidden_authority_violations(production: &str) -> Vec<String> {
 fn adapter_private_authority_shape_violations(production: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(production)?;
     let mut violations = Vec::new();
+    if !canonical_native_oast_client_import_is_exact(&syntax) {
+        violations.push(
+            "the sealed native OAST adapter must import NativeOastClient exactly and unaliased from termivar_oast"
+                .to_owned(),
+        );
+    }
     let compact = compact_whitespace(production);
     if compact.contains("allow(dead_code") {
         violations.push(
@@ -1362,7 +3504,11 @@ fn adapter_private_authority_shape_violations(production: &str) -> Result<Vec<St
         );
     }
     for (marker, expected) in [
-        ("NativeOastClient::new(", 1),
+        // The two normal constructors are mutually exclusive cfg alternatives:
+        // one arm when the owned profile is compiled and one fallback when it
+        // is absent. The owned constructor is a third, separately sealed edge.
+        ("NativeOastClient::new(", 2),
+        ("NativeOastClient::new_owned_https_test_profile(", 1),
         ("NativeOastProviderPermit::mint(", 1),
         ("implNativeOastClientBoundaryforNativeOastProviderPermit", 1),
     ] {
@@ -1443,6 +3589,40 @@ fn adapter_private_authority_shape_violations(production: &str) -> Result<Vec<St
                 trait_name.unwrap_or_default()
             ));
         }
+        if type_name == "NativeOastProviderAdapter"
+            && implementation
+                .items
+                .iter()
+                .any(|item| matches!(item, ImplItem::Macro(_)))
+        {
+            violations.push(
+                "NativeOastProviderAdapter must expose no macro-generated constructor surface"
+                    .to_owned(),
+            );
+        }
+    }
+
+    let trait_mint_methods = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation) if implementation.trait_.is_some() => Some(implementation),
+            _ => None,
+        })
+        .filter(|implementation| {
+            matches!(
+                type_path_tail(&implementation.self_ty).as_deref(),
+                Some("NativeOastProviderPermit" | "NativeOastProviderAdapter")
+            )
+        })
+        .flat_map(|implementation| implementation.items.iter())
+        .filter(|item| matches!(item, ImplItem::Fn(method) if method.sig.ident == "mint"))
+        .count();
+    if trait_mint_methods != 0 {
+        violations.push(
+            "native OAST permit and adapter mint authority must have no trait-provided alternate constructor"
+                .to_owned(),
+        );
     }
 
     let inherent_mint_methods = |type_name: &str| {
@@ -1487,7 +3667,500 @@ fn adapter_private_authority_shape_violations(production: &str) -> Result<Vec<St
                 .to_owned(),
         );
     }
+    if !matches!(adapter_mints.as_slice(), [method]
+        if adapter_client_constructor_partition_is_exact(method))
+    {
+        violations.push(
+            "NativeOastProviderAdapter::mint must retain the exact mutually exclusive production and owned-HTTPS client constructor partition"
+                .to_owned(),
+        );
+    }
     Ok(violations)
+}
+
+fn canonical_native_oast_client_import_is_exact(syntax: &syn::File) -> bool {
+    const TYPE_NAME: &str = "NativeOastClient";
+    const EXPECTED: &str = "termivar_oast::NativeOastClient";
+
+    let mut candidates = Vec::new();
+    for item in &syntax.items {
+        let syn::Item::Use(import) = item else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        flatten_use_tree(&import.tree, &mut Vec::new(), &mut paths);
+        for path in paths {
+            let normalized = path.replace("r#", "");
+            let (target, binding) = normalized
+                .split_once(" as ")
+                .map_or((normalized.as_str(), None), |(target, binding)| {
+                    (target, Some(binding))
+                });
+            let terminal = target.rsplit("::").next();
+            if terminal == Some(TYPE_NAME) || binding == Some(TYPE_NAME) || target.ends_with("::*")
+            {
+                candidates.push((import, normalized));
+            }
+        }
+    }
+    matches!(candidates.as_slice(), [(import, path)]
+        if matches!(import.vis, syn::Visibility::Inherited)
+            && import.attrs.is_empty()
+            && import.leading_colon.is_some()
+            && path == EXPECTED)
+}
+
+fn adapter_client_constructor_partition_is_exact(method: &syn::ImplItemFn) -> bool {
+    const FEATURE: &str = "xml-external-entity-owned-https-test-profile";
+    const PERMIT_ARGUMENTS: [&str; 7] = [
+        "origin",
+        "target_origin",
+        "limits",
+        "accounting",
+        "parent_budget",
+        "cancellation",
+        "parent_deadline",
+    ];
+
+    struct LocalVisitor<'ast> {
+        client_locals: Vec<&'ast syn::Local>,
+        permit_locals: Vec<&'ast syn::Local>,
+        client_bindings: usize,
+        permit_bindings: usize,
+        permit_argument_bindings: BTreeMap<String, usize>,
+        origin_bindings: usize,
+        transport_bindings: usize,
+        configuration_destructures: usize,
+        macro_invocations: usize,
+        block_items: usize,
+        returns: usize,
+    }
+
+    impl<'ast> Visit<'ast> for LocalVisitor<'ast> {
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            if pattern_binds_identifier(&local.pat, "client") {
+                self.client_locals.push(local);
+            }
+            if pattern_binds_identifier(&local.pat, "permit") {
+                self.permit_locals.push(local);
+            }
+            if native_oast_configuration_destructure_is_exact(local) {
+                self.configuration_destructures = self.configuration_destructures.saturating_add(1);
+            }
+            visit::visit_local(self, local);
+        }
+
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            let rendered = pattern.ident.to_string();
+            let identifier = normalize_identifier(&rendered);
+            if PERMIT_ARGUMENTS.contains(&identifier) {
+                *self
+                    .permit_argument_bindings
+                    .entry(identifier.to_owned())
+                    .or_default() += 1;
+            }
+            match identifier {
+                "client" => self.client_bindings = self.client_bindings.saturating_add(1),
+                "permit" => self.permit_bindings = self.permit_bindings.saturating_add(1),
+                "origin" => self.origin_bindings = self.origin_bindings.saturating_add(1),
+                "transport" => self.transport_bindings = self.transport_bindings.saturating_add(1),
+                _ => {},
+            }
+            visit::visit_pat_ident(self, pattern);
+        }
+
+        fn visit_macro(&mut self, expression: &'ast syn::Macro) {
+            self.macro_invocations = self.macro_invocations.saturating_add(1);
+            visit::visit_macro(self, expression);
+        }
+
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            self.block_items = self.block_items.saturating_add(1);
+            visit::visit_item(self, item);
+        }
+
+        fn visit_expr_return(&mut self, expression: &'ast syn::ExprReturn) {
+            self.returns = self.returns.saturating_add(1);
+            visit::visit_expr_return(self, expression);
+        }
+    }
+
+    let mut visitor = LocalVisitor {
+        client_locals: Vec::new(),
+        permit_locals: Vec::new(),
+        client_bindings: 0,
+        permit_bindings: 0,
+        permit_argument_bindings: BTreeMap::new(),
+        origin_bindings: 0,
+        transport_bindings: 0,
+        configuration_destructures: 0,
+        macro_invocations: 0,
+        block_items: 0,
+        returns: 0,
+    };
+    visitor.visit_signature(&method.sig);
+    visitor.visit_block(&method.block);
+    method.attrs.is_empty()
+        && adapter_configuration_parameter_is_exact(method)
+        && matches!(method.block.stmts.first(), Some(syn::Stmt::Local(local))
+            if native_oast_configuration_destructure_is_exact(local))
+        && visitor.client_bindings == 3
+        && visitor.permit_bindings == 1
+        && PERMIT_ARGUMENTS
+            .iter()
+            .all(|argument| visitor.permit_argument_bindings.get(*argument) == Some(&1))
+        && visitor.origin_bindings == 1
+        && visitor.transport_bindings == 1
+        && visitor.configuration_destructures == 1
+        && visitor.macro_invocations == 0
+        && visitor.block_items == 0
+        && visitor.returns == 0
+        && method.sig.generics.params.is_empty()
+        && method.sig.generics.where_clause.is_none()
+        && method.sig.constness.is_none()
+        && method.sig.asyncness.is_none()
+        && method.sig.unsafety.is_none()
+        && method.sig.abi.is_none()
+        && method.sig.variadic.is_none()
+        && matches!(visitor.permit_locals.as_slice(), [permit]
+        if permit_binding_is_exact(permit)
+            && block_consumes_binding_as_exact_shorthand_field(
+                &method.block,
+                "Self",
+                "permit",
+            ))
+        && matches!(visitor.client_locals.as_slice(), [enabled, disabled, checked]
+        if client_binding_is_exact(enabled)
+            && has_only_exact_feature_cfg(&enabled.attrs, FEATURE)
+            && enabled.init.as_ref().is_some_and(|initializer|
+                initializer.diverge.is_none()
+                    && owned_profile_client_match_is_exact(&initializer.expr))
+            && client_binding_is_exact(disabled)
+            && has_only_exact_not_feature_cfg(&disabled.attrs, FEATURE)
+            && disabled.init.as_ref().is_some_and(|initializer|
+                initializer.diverge.is_none()
+                    && native_oast_client_call_is_exact(&initializer.expr, "new", false))
+            && checked_client_binding_is_exact(checked)
+            && block_consumes_binding_as_exact_shorthand_field(
+                &method.block,
+                "Self",
+                "client",
+            ))
+}
+
+fn permit_binding_is_exact(local: &syn::Local) -> bool {
+    const ARGUMENTS: [&str; 7] = [
+        "origin",
+        "target_origin",
+        "limits",
+        "accounting",
+        "parent_budget",
+        "cancellation",
+        "parent_deadline",
+    ];
+
+    let syn::Pat::Ident(binding) = &local.pat else {
+        return false;
+    };
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    let syn::Expr::Try(attempt) = initializer.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Call(mint) = attempt.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Path(function) = mint.func.as_ref() else {
+        return false;
+    };
+
+    local.attrs.is_empty()
+        && binding.attrs.is_empty()
+        && binding.by_ref.is_none()
+        && binding.mutability.is_none()
+        && normalize_identifier(&binding.ident.to_string()) == "permit"
+        && binding.subpat.is_none()
+        && initializer.diverge.is_none()
+        && attempt.attrs.is_empty()
+        && mint.attrs.is_empty()
+        && function.attrs.is_empty()
+        && function.qself.is_none()
+        && exact_syn_path(&function.path, &["NativeOastProviderPermit", "mint"])
+        && mint.args.len() == ARGUMENTS.len()
+        && mint
+            .args
+            .iter()
+            .zip(ARGUMENTS)
+            .all(|(argument, expected)| path_expression_name(argument).as_deref() == Some(expected))
+}
+
+fn adapter_configuration_parameter_is_exact(method: &syn::ImplItemFn) -> bool {
+    let parameters = method
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            syn::FnArg::Typed(argument)
+                if matches!(argument.pat.as_ref(), syn::Pat::Ident(binding)
+                    if binding.attrs.is_empty()
+                        && binding.by_ref.is_none()
+                        && binding.mutability.is_none()
+                        && normalize_identifier(&binding.ident.to_string()) == "configuration"
+                        && binding.subpat.is_none()) =>
+            {
+                Some(argument)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    matches!(parameters.as_slice(), [parameter]
+        if parameter.attrs.is_empty()
+            && type_path_tail(&parameter.ty).as_deref()
+                == Some("NativeOastProviderConfiguration"))
+}
+
+fn native_oast_configuration_destructure_is_exact(local: &syn::Local) -> bool {
+    const FEATURE: &str = "xml-external-entity-owned-https-test-profile";
+    const FIELDS: [&str; 6] = [
+        "origin",
+        "assessment_id",
+        "epoch",
+        "administrator",
+        "limits",
+        "transport",
+    ];
+
+    if !local.attrs.is_empty() {
+        return false;
+    }
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    if initializer.diverge.is_some()
+        || path_expression_name(&initializer.expr).as_deref() != Some("configuration")
+    {
+        return false;
+    }
+    let syn::Pat::Struct(pattern) = &local.pat else {
+        return false;
+    };
+    if !pattern.attrs.is_empty()
+        || pattern.qself.is_some()
+        || !exact_syn_path(&pattern.path, &["NativeOastProviderConfiguration"])
+        || pattern.rest.is_some()
+        || pattern.fields.len() != FIELDS.len()
+    {
+        return false;
+    }
+
+    pattern.fields.iter().zip(FIELDS).all(|(field, expected)| {
+        let member_is_exact = matches!(&field.member, syn::Member::Named(member)
+                if normalize_identifier(&member.to_string()) == expected);
+        let binding_is_exact = matches!(field.pat.as_ref(), syn::Pat::Ident(binding)
+                if binding.attrs.is_empty()
+                    && binding.by_ref.is_none()
+                    && binding.mutability.is_none()
+                    && normalize_identifier(&binding.ident.to_string()) == expected
+                    && binding.subpat.is_none());
+        let attributes_are_exact = if expected == "transport" {
+            has_only_exact_feature_cfg(&field.attrs, FEATURE)
+        } else {
+            field.attrs.is_empty()
+        };
+        member_is_exact && field.colon_token.is_none() && binding_is_exact && attributes_are_exact
+    })
+}
+
+fn block_consumes_binding_as_exact_shorthand_field(
+    block: &syn::Block,
+    structure: &str,
+    binding: &str,
+) -> bool {
+    struct FieldVisitor<'a> {
+        structure: &'a str,
+        binding: &'a str,
+        structures: usize,
+        fields: usize,
+        exact: usize,
+    }
+
+    impl<'ast> Visit<'ast> for FieldVisitor<'_> {
+        fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+            if expression.qself.is_none() && exact_syn_path(&expression.path, &[self.structure]) {
+                self.structures = self.structures.saturating_add(1);
+                for field in &expression.fields {
+                    if matches!(&field.member, syn::Member::Named(member)
+                        if member == self.binding)
+                    {
+                        self.fields = self.fields.saturating_add(1);
+                        if field.attrs.is_empty()
+                            && field.colon_token.is_none()
+                            && path_expression_name(&field.expr).as_deref() == Some(self.binding)
+                        {
+                            self.exact = self.exact.saturating_add(1);
+                        }
+                    }
+                }
+            }
+            visit::visit_expr_struct(self, expression);
+        }
+    }
+
+    let mut visitor = FieldVisitor {
+        structure,
+        binding,
+        structures: 0,
+        fields: 0,
+        exact: 0,
+    };
+    visitor.visit_block(block);
+    visitor.structures == 1 && visitor.fields == 1 && visitor.exact == 1
+}
+
+fn pattern_binds_identifier(pattern: &syn::Pat, expected: &str) -> bool {
+    struct BindingVisitor<'a> {
+        expected: &'a str,
+        found: bool,
+    }
+
+    impl<'ast> Visit<'ast> for BindingVisitor<'_> {
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            if pattern.ident.to_string().trim_start_matches("r#") == self.expected {
+                self.found = true;
+            }
+            visit::visit_pat_ident(self, pattern);
+        }
+    }
+
+    let mut visitor = BindingVisitor {
+        expected,
+        found: false,
+    };
+    visitor.visit_pat(pattern);
+    visitor.found
+}
+
+fn client_binding_is_exact(local: &syn::Local) -> bool {
+    matches!(&local.pat, syn::Pat::Ident(pattern)
+        if pattern.attrs.is_empty()
+            && pattern.ident == "client"
+            && pattern.by_ref.is_none()
+            && pattern.mutability.is_none()
+            && pattern.subpat.is_none())
+}
+
+fn checked_client_binding_is_exact(local: &syn::Local) -> bool {
+    if !client_binding_is_exact(local) || !local.attrs.is_empty() {
+        return false;
+    }
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    let syn::Expr::Try(attempt) = initializer.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(map) = attempt.expr.as_ref() else {
+        return false;
+    };
+    initializer.diverge.is_none()
+        && map.attrs.is_empty()
+        && map.method == "map_err"
+        && map.turbofish.is_none()
+        && path_expression_name(&map.receiver).as_deref() == Some("client")
+        && matches!(map.args.first(), Some(syn::Expr::Closure(_)) if map.args.len() == 1)
+}
+
+fn owned_profile_client_match_is_exact(expression: &syn::Expr) -> bool {
+    let syn::Expr::Match(selection) = expression else {
+        return false;
+    };
+    if !selection.attrs.is_empty()
+        || path_expression_name(&selection.expr).as_deref() != Some("transport")
+        || selection.arms.len() != 2
+    {
+        return false;
+    }
+    let [production, owned] = selection.arms.as_slice() else {
+        return false;
+    };
+    let production_pattern_is_exact = matches!(&production.pat, syn::Pat::Path(path)
+    if path.qself.is_none()
+        && exact_syn_path(
+            &path.path,
+            &["NativeOastProviderTransport", "Production"],
+        ));
+    let owned_pattern_is_exact = matches!(&owned.pat, syn::Pat::TupleStruct(pattern)
+        if pattern.qself.is_none()
+            && exact_syn_path(
+                &pattern.path,
+                &["NativeOastProviderTransport", "OwnedHttpsTestProfile"],
+            )
+            && matches!(pattern.elems.first(), Some(syn::Pat::Ident(binding))
+                if pattern.elems.len() == 1
+                    && binding.attrs.is_empty()
+                    && binding.by_ref.is_none()
+                    && binding.mutability.is_none()
+                    && binding.ident == "profile_port"
+                    && binding.subpat.is_none()));
+    production.attrs.is_empty()
+        && production.guard.is_none()
+        && production_pattern_is_exact
+        && native_oast_client_call_is_exact(&production.body, "new", false)
+        && owned.attrs.is_empty()
+        && owned.guard.is_none()
+        && owned_pattern_is_exact
+        && sole_block_expression(&owned.body).is_some_and(|expression| {
+            native_oast_client_call_is_exact(expression, "new_owned_https_test_profile", true)
+        })
+}
+
+fn sole_block_expression(expression: &syn::Expr) -> Option<&syn::Expr> {
+    let syn::Expr::Block(block) = expression else {
+        return None;
+    };
+    if !block.attrs.is_empty() || block.label.is_some() {
+        return None;
+    }
+    let [syn::Stmt::Expr(expression, None)] = block.block.stmts.as_slice() else {
+        return None;
+    };
+    Some(expression)
+}
+
+fn native_oast_client_call_is_exact(
+    expression: &syn::Expr,
+    method: &str,
+    includes_profile_port: bool,
+) -> bool {
+    let syn::Expr::Call(call) = expression else {
+        return false;
+    };
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return false;
+    };
+    let expected = ["NativeOastClient", method];
+    if !call.attrs.is_empty()
+        || function.qself.is_some()
+        || !exact_syn_path(&function.path, &expected)
+        || call.args.len() != if includes_profile_port { 2 } else { 1 }
+        || !origin_clone_is_exact(&call.args[0])
+    {
+        return false;
+    }
+    !includes_profile_port
+        || call.args.get(1).is_some_and(|argument| {
+            path_expression_name(argument).as_deref() == Some("profile_port")
+        })
+}
+
+fn origin_clone_is_exact(expression: &syn::Expr) -> bool {
+    matches!(expression, syn::Expr::MethodCall(call)
+        if call.attrs.is_empty()
+            && call.method == "clone"
+            && call.turbofish.is_none()
+            && call.args.is_empty()
+            && path_expression_name(&call.receiver).as_deref() == Some("origin"))
 }
 
 fn sealed_mint_consumer_violations(
@@ -1895,7 +4568,12 @@ fn path_expression_name(expression: &syn::Expr) -> Option<String> {
     let syn::Expr::Path(path) = expression else {
         return None;
     };
-    (path.path.segments.len() == 1).then(|| path.path.segments[0].ident.to_string())
+    (path.attrs.is_empty()
+        && path.qself.is_none()
+        && path.path.leading_colon.is_none()
+        && path.path.segments.len() == 1
+        && matches!(path.path.segments[0].arguments, PathArguments::None))
+    .then(|| path.path.segments[0].ident.to_string())
 }
 
 fn expression_call_path(expression: &syn::ExprCall) -> Option<String> {
@@ -2028,8 +4706,12 @@ fn exact_receiver_method_call(expression: &syn::Expr, receiver: &str, method: &s
     let syn::Expr::MethodCall(call) = expression else {
         return false;
     };
-    matches!(call.receiver.as_ref(), syn::Expr::Path(path)
-        if path.qself.is_none() && path.path.is_ident(receiver))
+    call.attrs.is_empty()
+        && matches!(call.receiver.as_ref(), syn::Expr::Path(path)
+        if path.attrs.is_empty()
+            && path.qself.is_none()
+            && path.path.leading_colon.is_none()
+            && path.path.is_ident(receiver))
         && call.method == method
         && call.turbofish.is_none()
         && call.args.is_empty()
@@ -2111,6 +4793,25 @@ fn exact_shared_reference_argument(input: Option<&FnArg>, name: &str, ty: &[&str
     })
 }
 
+fn exact_unattributed_shared_reference_argument(
+    input: Option<&FnArg>,
+    name: &str,
+    ty: &[&str],
+) -> bool {
+    matches!(input, Some(FnArg::Typed(argument))
+        if argument.attrs.is_empty()
+            && matches!(argument.pat.as_ref(), syn::Pat::Ident(pattern)
+                if pattern.attrs.is_empty()
+                    && pattern.ident == name
+                    && pattern.by_ref.is_none()
+                    && pattern.mutability.is_none()
+                    && pattern.subpat.is_none())
+            && matches!(argument.ty.as_ref(), Type::Reference(reference)
+                if reference.lifetime.is_none()
+                    && reference.mutability.is_none()
+                    && exact_type_path(&reference.elem, ty)))
+}
+
 fn owned_receiver(input: Option<&FnArg>) -> bool {
     matches!(input, Some(FnArg::Receiver(receiver))
         if receiver.reference.is_none()
@@ -2126,6 +4827,10 @@ fn plain_impl_shape(implementation: &syn::ItemImpl) -> bool {
 }
 
 fn plain_method_shape(method: &syn::ImplItemFn, is_const: bool) -> bool {
+    plain_method_signature_shape(method, is_const) && has_no_conditional_cfg(&method.attrs)
+}
+
+fn plain_method_signature_shape(method: &syn::ImplItemFn, is_const: bool) -> bool {
     method.defaultness.is_none()
         && method.sig.constness.is_some() == is_const
         && method.sig.asyncness.is_none()
@@ -2134,7 +4839,6 @@ fn plain_method_shape(method: &syn::ImplItemFn, is_const: bool) -> bool {
         && method.sig.generics.params.is_empty()
         && method.sig.generics.where_clause.is_none()
         && method.sig.variadic.is_none()
-        && has_no_conditional_cfg(&method.attrs)
 }
 
 fn is_crate_visibility(visibility: &Visibility) -> bool {
@@ -2236,6 +4940,19 @@ fn has_only_exact_feature_cfg(attributes: &[syn::Attribute], feature: &str) -> b
             .iter()
             .any(|attribute| attribute.path().is_ident("cfg_attr"))
         && has_exact_feature_cfg(attributes, feature)
+}
+
+fn has_only_exact_not_feature_cfg(attributes: &[syn::Attribute], feature: &str) -> bool {
+    attributes.len() == 1
+        && attributes[0].path().is_ident("cfg")
+        && attributes[0].meta.require_list().is_ok_and(|list| {
+            list.tokens
+                .to_string()
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+                == format!("not(feature=\"{feature}\")")
+        })
 }
 
 fn has_no_conditional_cfg(attributes: &[syn::Attribute]) -> bool {
@@ -2948,23 +5665,31 @@ fn admission_precedes_body_dispatch(source: &str) -> bool {
     let Ok(syntax) = syn::parse_file(source) else {
         return false;
     };
-    let Some(function) = syntax.items.iter().find_map(|item| match item {
-        Item::Fn(function) if function.sig.ident == "bound_request" => Some(function),
-        _ => None,
-    }) else {
+    let Some(function) = exact_bound_request_function(&syntax) else {
         return false;
     };
-    // Require a single operation future whose first statement owns admission
-    // and whose tail dispatches the untouched body. This rejects early body
-    // reads, moved admission, or a permit dropped before handler extraction.
-    let [syn::Stmt::Local(operation), syn::Stmt::Expr(_, None)] = function.block.stmts.as_slice()
+    // Permit only the exact test-support request-ledger observation before the
+    // operation future. It records method/route/header classifications without
+    // touching the body. The future itself must still acquire its owned permit
+    // first and retain it through the awaited handler dispatch.
+    let [ledger, syn::Stmt::Local(operation), syn::Stmt::Expr(_, None)] =
+        function.block.stmts.as_slice()
     else {
         return false;
     };
+    if !is_exact_test_request_ledger_prelude(ledger) {
+        return false;
+    }
     let syn::Pat::Ident(binding) = &operation.pat else {
         return false;
     };
-    if binding.ident != "operation" {
+    if !operation.attrs.is_empty()
+        || !binding.attrs.is_empty()
+        || binding.by_ref.is_some()
+        || binding.mutability.is_some()
+        || binding.ident != "operation"
+        || binding.subpat.is_some()
+    {
         return false;
     }
     let Some(initializer) = &operation.init else {
@@ -2981,8 +5706,15 @@ fn admission_precedes_body_dispatch(source: &str) -> bool {
     let syn::Pat::TupleStruct(pattern) = &admission.pat else {
         return false;
     };
-    if !pattern.path.is_ident("Ok")
-        || !matches!(pattern.elems.first(), Some(syn::Pat::Ident(permit)) if permit.ident == "_permit")
+    if !admission.attrs.is_empty()
+        || !pattern.attrs.is_empty()
+        || !pattern.path.is_ident("Ok")
+        || !matches!(pattern.elems.first(), Some(syn::Pat::Ident(permit))
+            if permit.attrs.is_empty()
+                && permit.by_ref.is_none()
+                && permit.mutability.is_none()
+                && permit.ident == "_permit"
+                && permit.subpat.is_none())
         || pattern.elems.len() != 1
     {
         return false;
@@ -2997,13 +5729,334 @@ fn admission_precedes_body_dispatch(source: &str) -> bool {
         return false;
     };
     initializer.diverge.is_some()
+        && operation.attrs.is_empty()
+        && admit.attrs.is_empty()
         && admit.method == "admit"
+        && admit.turbofish.is_none()
         && path_expression_name(&admit.receiver).as_deref() == Some("state")
         && admit.args.is_empty()
+        && dispatch.attrs.is_empty()
+        && run.attrs.is_empty()
         && run.method == "run"
+        && run.turbofish.is_none()
         && path_expression_name(&run.receiver).as_deref() == Some("next")
         && run.args.len() == 1
         && run.args.first().and_then(path_expression_name).as_deref() == Some("request")
+}
+
+fn exact_bound_request_function(syntax: &syn::File) -> Option<&syn::ItemFn> {
+    if !bound_request_imports_are_exact(syntax) {
+        return None;
+    }
+    struct AlternateBindingVisitor {
+        functions: usize,
+        patterns: usize,
+        imports: usize,
+        item_macros: usize,
+        value_items: usize,
+    }
+    impl<'ast> Visit<'ast> for AlternateBindingVisitor {
+        fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
+            if normalize_identifier(&function.sig.ident.to_string()) == "bound_request" {
+                self.functions = self.functions.saturating_add(1);
+            }
+            visit::visit_item_fn(self, function);
+        }
+
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            if normalize_identifier(&pattern.ident.to_string()) == "bound_request" {
+                self.patterns = self.patterns.saturating_add(1);
+            }
+            visit::visit_pat_ident(self, pattern);
+        }
+
+        fn visit_item_use(&mut self, import: &'ast syn::ItemUse) {
+            let mut paths = Vec::new();
+            flatten_use_tree(&import.tree, &mut Vec::new(), &mut paths);
+            if paths.iter().any(|path| {
+                let normalized = path.replace("r#", "");
+                let (target, binding) = normalized
+                    .split_once(" as ")
+                    .map_or((normalized.as_str(), None), |(target, binding)| {
+                        (target, Some(binding))
+                    });
+                target.ends_with("::*")
+                    || target.rsplit("::").next() == Some("bound_request")
+                    || binding == Some("bound_request")
+            }) {
+                self.imports = self.imports.saturating_add(1);
+            }
+            visit::visit_item_use(self, import);
+        }
+
+        fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+            self.item_macros = self.item_macros.saturating_add(1);
+            visit::visit_item_macro(self, item);
+        }
+
+        fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+            if normalize_identifier(&item.ident.to_string()) == "bound_request" {
+                self.value_items = self.value_items.saturating_add(1);
+            }
+            visit::visit_item_const(self, item);
+        }
+
+        fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+            if normalize_identifier(&item.ident.to_string()) == "bound_request" {
+                self.value_items = self.value_items.saturating_add(1);
+            }
+            visit::visit_item_static(self, item);
+        }
+
+        fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+            if normalize_identifier(&item.ident.to_string()) == "bound_request" {
+                self.value_items = self.value_items.saturating_add(1);
+            }
+            visit::visit_item_struct(self, item);
+        }
+
+        fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+            if normalize_identifier(&item.ident.to_string()) == "bound_request"
+                || item.rename.as_ref().is_some_and(|(_, binding)| {
+                    normalize_identifier(&binding.to_string()) == "bound_request"
+                })
+            {
+                self.imports = self.imports.saturating_add(1);
+            }
+            visit::visit_item_extern_crate(self, item);
+        }
+    }
+
+    let mut visitor = AlternateBindingVisitor {
+        functions: 0,
+        patterns: 0,
+        imports: 0,
+        item_macros: 0,
+        value_items: 0,
+    };
+    visitor.visit_file(syntax);
+    if visitor.functions != 1
+        || visitor.patterns != 0
+        || visitor.imports != 0
+        || visitor.item_macros != 0
+        || visitor.value_items != 0
+    {
+        return None;
+    }
+
+    let function = syntax.items.iter().find_map(|item| match item {
+        Item::Fn(function)
+            if normalize_identifier(&function.sig.ident.to_string()) == "bound_request" =>
+        {
+            Some(function)
+        },
+        _ => None,
+    })?;
+    let mut inputs = function.sig.inputs.iter();
+    let state = inputs.next()?;
+    let request = inputs.next()?;
+    let next = inputs.next()?;
+    if !matches!(function.vis, Visibility::Inherited)
+        || !function.attrs.is_empty()
+        || function.sig.constness.is_some()
+        || function.sig.asyncness.is_none()
+        || function.sig.unsafety.is_some()
+        || function.sig.abi.is_some()
+        || !function.sig.generics.params.is_empty()
+        || function.sig.generics.where_clause.is_some()
+        || function.sig.variadic.is_some()
+        || inputs.next().is_some()
+        || !exact_bound_request_state_argument(state)
+        || !exact_unattributed_typed_argument(request, "request", &["Request"], &["Body"])
+        || !exact_unattributed_path_argument(next, "next", &["Next"])
+        || !return_type_is_path(&function.sig.output, &["Response"])
+    {
+        return None;
+    }
+    Some(function)
+}
+
+fn bound_request_imports_are_exact(syntax: &syn::File) -> bool {
+    const EXPECTED: [&str; 5] = [
+        "axum::body::Body",
+        "axum::extract::State",
+        "axum::middleware::Next",
+        "axum::response::Response",
+        "hyper::Request",
+    ];
+    let mut bindings = Vec::new();
+    for item in &syntax.items {
+        let shadows_crate_name = match item {
+            Item::Mod(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "axum" | "hyper"
+            ),
+            Item::Type(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "axum" | "hyper"
+            ),
+            Item::Struct(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "axum" | "hyper"
+            ),
+            Item::Enum(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "axum" | "hyper"
+            ),
+            Item::Union(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "axum" | "hyper"
+            ),
+            Item::Trait(item) => matches!(
+                normalize_identifier(&item.ident.to_string()),
+                "axum" | "hyper"
+            ),
+            _ => false,
+        };
+        if shadows_crate_name
+            || matches!(item, Item::ExternCrate(external)
+                if matches!(normalize_identifier(&external.ident.to_string()), "axum" | "hyper")
+                    || external.rename.as_ref().is_some_and(|(_, binding)|
+                        matches!(normalize_identifier(&binding.to_string()), "axum" | "hyper")))
+        {
+            return false;
+        }
+        let Item::Use(import) = item else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        flatten_use_tree(&import.tree, &mut Vec::new(), &mut paths);
+        for path in paths {
+            let normalized = path.replace("r#", "");
+            let (target, alias) = normalized
+                .split_once(" as ")
+                .map_or((normalized.as_str(), None), |(target, alias)| {
+                    (target, Some(alias))
+                });
+            let binding = alias.or_else(|| target.rsplit("::").next());
+            if target.ends_with("::*")
+                || matches!(alias, Some("axum" | "hyper"))
+                || matches!(
+                    binding,
+                    Some("Body" | "State" | "Next" | "Response" | "Request")
+                )
+            {
+                bindings.push((import, normalized));
+            }
+        }
+    }
+    bindings.len() == EXPECTED.len()
+        && EXPECTED.iter().all(|expected| {
+            bindings.iter().any(|(import, path)| {
+                path.as_str() == *expected
+                    && matches!(import.vis, Visibility::Inherited)
+                    && import.attrs.is_empty()
+                    && import.leading_colon.is_none()
+            })
+        })
+}
+
+fn exact_bound_request_state_argument(argument: &FnArg) -> bool {
+    let FnArg::Typed(argument) = argument else {
+        return false;
+    };
+    let syn::Pat::TupleStruct(pattern) = argument.pat.as_ref() else {
+        return false;
+    };
+    argument.attrs.is_empty()
+        && pattern.attrs.is_empty()
+        && pattern.qself.is_none()
+        && exact_syn_path(&pattern.path, &["State"])
+        && matches!(pattern.elems.first(), Some(binding)
+            if pattern.elems.len() == 1
+                && exact_immutable_identifier_pattern(binding, "state"))
+        && exact_single_wrapper_type(&argument.ty, &["State"], &["AppState"])
+}
+
+fn exact_unattributed_typed_argument(
+    argument: &FnArg,
+    name: &str,
+    wrapper: &[&str],
+    inner: &[&str],
+) -> bool {
+    matches!(argument, FnArg::Typed(argument)
+        if argument.attrs.is_empty()
+            && exact_immutable_identifier_pattern(&argument.pat, name)
+            && exact_single_wrapper_type(&argument.ty, wrapper, inner))
+}
+
+fn exact_unattributed_path_argument(argument: &FnArg, name: &str, ty: &[&str]) -> bool {
+    matches!(argument, FnArg::Typed(argument)
+        if argument.attrs.is_empty()
+            && exact_immutable_identifier_pattern(&argument.pat, name)
+            && exact_type_path(&argument.ty, ty))
+}
+
+fn is_exact_test_request_ledger_prelude(statement: &syn::Stmt) -> bool {
+    let syn::Stmt::Expr(syn::Expr::If(observation), None) = statement else {
+        return false;
+    };
+    if observation.attrs.len() != 1
+        || !has_only_exact_feature_cfg(&observation.attrs, "test-support")
+        || observation.else_branch.is_some()
+    {
+        return false;
+    }
+
+    let syn::Expr::Let(binding) = observation.cond.as_ref() else {
+        return false;
+    };
+    if !binding.attrs.is_empty() {
+        return false;
+    }
+    let syn::Pat::TupleStruct(pattern) = binding.pat.as_ref() else {
+        return false;
+    };
+    let Some(syn::Pat::Ident(ledger)) = pattern.elems.first() else {
+        return false;
+    };
+    if !pattern.path.is_ident("Some")
+        || pattern.elems.len() != 1
+        || !ledger.attrs.is_empty()
+        || ledger.by_ref.is_some()
+        || ledger.mutability.is_some()
+        || ledger.ident != "ledger"
+        || ledger.subpat.is_some()
+    {
+        return false;
+    }
+
+    let syn::Expr::Reference(state_reference) = binding.expr.as_ref() else {
+        return false;
+    };
+    let syn::Expr::Field(state_ledger) = state_reference.expr.as_ref() else {
+        return false;
+    };
+    if !state_reference.attrs.is_empty()
+        || state_reference.mutability.is_some()
+        || !state_ledger.attrs.is_empty()
+        || path_expression_name(&state_ledger.base).as_deref() != Some("state")
+        || !matches!(&state_ledger.member, syn::Member::Named(member) if member == "test_request_ledger")
+    {
+        return false;
+    }
+
+    let [syn::Stmt::Expr(syn::Expr::MethodCall(record), Some(_))] =
+        observation.then_branch.stmts.as_slice()
+    else {
+        return false;
+    };
+    let Some(syn::Expr::Reference(request_reference)) = record.args.first() else {
+        return false;
+    };
+    record.attrs.is_empty()
+        && record.method == "record"
+        && record.turbofish.is_none()
+        && path_expression_name(&record.receiver).as_deref() == Some("ledger")
+        && record.args.len() == 1
+        && request_reference.attrs.is_empty()
+        && request_reference.mutability.is_none()
+        && path_expression_name(&request_reference.expr).as_deref() == Some("request")
 }
 
 fn compact_whitespace(source: &str) -> String {
@@ -3016,10 +6069,52 @@ fn compact_whitespace(source: &str) -> String {
 fn production_prefix(source: &str) -> &str {
     let normalized_marker = "#[cfg(test)]\nmod tests";
     let windows_marker = "#[cfg(test)]\r\nmod tests";
-    source
-        .rfind(normalized_marker)
-        .or_else(|| source.rfind(windows_marker))
-        .map_or(source, |boundary| &source[..boundary])
+    let Ok(syntax) = syn::parse_file(source) else {
+        return source;
+    };
+    let exact_modules = syntax
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| match item {
+            Item::Mod(module) if exact_terminal_test_module(module) => Some(index),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !matches!(exact_modules.as_slice(), [index] if *index + 1 == syntax.items.len()) {
+        return source;
+    }
+    let boundaries = source
+        .match_indices(normalized_marker)
+        .map(|(index, _)| index)
+        .chain(source.match_indices(windows_marker).map(|(index, _)| index))
+        .collect::<Vec<_>>();
+    let [boundary] = boundaries.as_slice() else {
+        return source;
+    };
+    let Ok(suffix) = syn::parse_file(&source[*boundary..]) else {
+        return source;
+    };
+    if matches!(suffix.items.as_slice(), [Item::Mod(module)]
+        if exact_terminal_test_module(module))
+    {
+        &source[..*boundary]
+    } else {
+        source
+    }
+}
+
+fn exact_terminal_test_module(module: &syn::ItemMod) -> bool {
+    module.ident == "tests"
+        && matches!(module.vis, Visibility::Inherited)
+        && module.content.is_some()
+        && module.semi.is_none()
+        && module.attrs.len() == 1
+        && module.attrs[0].path().is_ident("cfg")
+        && module.attrs[0]
+            .meta
+            .require_list()
+            .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "test")
 }
 
 /// Removes only the exact scanner OAST test modules from a source file.
@@ -3028,22 +6123,33 @@ fn production_prefix(source: &str) -> &str {
 /// focused test module. Each removed slice must independently parse as one
 /// Rust module, so a malformed or broadened cfg guard fails closed.
 fn source_without_exact_oast_test_modules(source: &str) -> Result<String, syn::Error> {
-    const TEST_GUARDS: [&str; 2] = [
-        "#[cfg(all(test, feature = \"oast-correlation\"))]",
-        "#[cfg(all(test, feature = \"oast-native-provider\"))]",
+    const TEST_GUARDS: [(&str, &str); 2] = [
+        (
+            "#[cfg(all(test, feature = \"oast-correlation\"))]",
+            "all(test,feature=\"oast-correlation\")",
+        ),
+        (
+            "#[cfg(all(test, feature = \"oast-native-provider\"))]",
+            "all(test,feature=\"oast-native-provider\")",
+        ),
     ];
 
     let mut output = String::with_capacity(source.len());
     let mut cursor = 0;
+    let mut removed = [0_usize; TEST_GUARDS.len()];
     loop {
         let next = TEST_GUARDS
             .iter()
-            .filter_map(|guard| source[cursor..].find(guard).map(|offset| (offset, *guard)))
+            .enumerate()
+            .filter_map(|(index, (guard, _))| {
+                source[cursor..].find(guard).map(|offset| (offset, index))
+            })
             .min_by_key(|(offset, _)| *offset);
-        let Some((offset, guard)) = next else {
+        let Some((offset, guard_index)) = next else {
             output.push_str(&source[cursor..]);
-            return Ok(output);
+            break;
         };
+        let (guard, expected_cfg) = TEST_GUARDS[guard_index];
         let start = cursor + offset;
         output.push_str(&source[cursor..start]);
 
@@ -3071,9 +6177,19 @@ fn source_without_exact_oast_test_modules(source: &str) -> Result<String, syn::E
             }
             let candidate_end = module_start + relative + character.len_utf8();
             let candidate = &source[start..candidate_end];
-            if syn::parse_str::<syn::ItemMod>(candidate).is_ok() {
-                end = Some(candidate_end);
-                break;
+            if let Ok(module) = syn::parse_str::<syn::ItemMod>(candidate) {
+                let exact_guarded_module = matches!(module.vis, Visibility::Inherited)
+                    && module.content.is_some()
+                    && module.semi.is_none()
+                    && module.attrs.len() == 1
+                    && module.attrs[0].path().is_ident("cfg")
+                    && module.attrs[0].meta.require_list().is_ok_and(|list| {
+                        compact_whitespace(&list.tokens.to_string()) == expected_cfg
+                    });
+                if exact_guarded_module {
+                    end = Some(candidate_end);
+                    break;
+                }
             }
         }
         let Some(candidate_end) = end else {
@@ -3082,8 +6198,41 @@ fn source_without_exact_oast_test_modules(source: &str) -> Result<String, syn::E
                 "OAST test cfg guard did not contain one complete module",
             ));
         };
+        removed[guard_index] = removed[guard_index].saturating_add(1);
         cursor = candidate_end;
     }
+
+    let syntax = syn::parse_file(source)?;
+    let mut parsed = [0_usize; TEST_GUARDS.len()];
+    for item in &syntax.items {
+        let Item::Mod(module) = item else {
+            continue;
+        };
+        if !matches!(module.vis, Visibility::Inherited)
+            || module.content.is_none()
+            || module.semi.is_some()
+            || module.attrs.len() != 1
+            || !module.attrs[0].path().is_ident("cfg")
+        {
+            continue;
+        }
+        let Ok(list) = module.attrs[0].meta.require_list() else {
+            continue;
+        };
+        let cfg = compact_whitespace(&list.tokens.to_string());
+        for (index, (_, expected_cfg)) in TEST_GUARDS.iter().enumerate() {
+            if cfg == *expected_cfg {
+                parsed[index] = parsed[index].saturating_add(1);
+            }
+        }
+    }
+    if removed != parsed {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "raw OAST test cfg guard removals must match exact parsed top-level guarded modules",
+        ));
+    }
+    Ok(output)
 }
 
 fn state_shape_violations(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -3428,6 +6577,35 @@ mod tests {
     }
 
     #[test]
+    fn owned_xml_profile_reference_inventory_rejects_sibling_aliases() {
+        let marker = "OwnedXmlHttpsTestTransportProfile";
+        let occurrences = |count| {
+            (0..count)
+                .map(|index| format!("fn use_profile_{index}(_: {marker}) {{}}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut valid = vec![
+            (SCANNER_HTTP_EVIDENCE.to_owned(), occurrences(1)),
+            (SCANNER_REQUEST_BROKER.to_owned(), occurrences(6)),
+            ("web_runtime/authority.rs".to_owned(), occurrences(4)),
+            (
+                "web_runtime/xml_external_entity_runtime.rs".to_owned(),
+                occurrences(3),
+            ),
+            ("web_runtime/web_assessment.rs".to_owned(), occurrences(2)),
+        ];
+        assert!(owned_xml_profile_global_reference_violations(&valid).is_empty());
+
+        valid.push((
+            "http_evidence/passive_review.rs".to_owned(),
+            "pub(crate) type AlternateOwnedProfile = super::OwnedXmlHttpsTestTransportProfile;"
+                .to_owned(),
+        ));
+        assert!(!owned_xml_profile_global_reference_violations(&valid).is_empty());
+    }
+
+    #[test]
     fn provider_feature_contract_is_exact_and_non_default() {
         let valid = BTreeMap::from([
             (
@@ -3742,6 +6920,8 @@ mod tests {
 
     fn valid_server_source() -> &'static str {
         r#"
+            use axum::{body::Body, extract::State, middleware::Next, response::Response};
+            use hyper::Request;
             const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
             const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
             const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -3758,6 +6938,10 @@ mod tests {
                 request: Request<Body>,
                 next: Next,
             ) -> Response {
+                #[cfg(feature = "test-support")]
+                if let Some(ledger) = &state.test_request_ledger {
+                    ledger.record(&request);
+                }
                 let operation = async {
                     let Ok(_permit) = state.admit() else {
                         return closing_error(StatusCode::SERVICE_UNAVAILABLE);
@@ -3835,7 +7019,9 @@ mod tests {
                         identities.push(value.as_bytes().to_vec());
                     }
                 }
-                fn record(&self) {}
+                fn record(&self, request: &Request<Body>) {
+                    let _ = request;
+                }
             }
             #[cfg(feature = "test-support")]
             #[doc(hidden)]
@@ -4121,16 +7307,45 @@ mod tests {
         for mutation in [
             production.replacen("RedirectPolicy::none()", "RedirectPolicy::limited(1)", 1),
             production.replacen(".no_proxy()", ".proxy(proxy)", 1),
+            production.replacen(
+                ".https_only(origin.scheme() == \"https\")",
+                ".https_only(true)",
+                1,
+            ),
+            production.replacen(
+                "fn fixed_client_builder(origin: &Url) -> reqwest::ClientBuilder",
+                "fn fixed_client_builder(origin: &Url) -> reqwest::ClientBuilder { let _ = origin; reqwest::Client::builder() } fn discarded_fixed_client_builder(origin: &Url) -> reqwest::ClientBuilder",
+                1,
+            ),
+            format!("mod reqwest {{ pub use ::reqwest::*; }}\n{production}"),
+            production.replacen("Engine as _", "Engine as DecodeEngine", 1),
+            format!("mod base64 {{ pub use ::base64::*; }}\n{production}"),
+            production.replacen(
+                "#[cfg(feature = \"owned-https-test-profile\")]\nuse base64",
+                "#[cfg(any(feature = \"owned-https-test-profile\", test))]\nuse base64",
+                1,
+            ),
             production.replacen(".tls_built_in_root_certs(false)", "", 1),
             production.replacen(
                 "OWNED_HTTPS_TEST_PROVIDER_HOST,\n                profile_port.resolved_address()",
                 "other_host, profile_port.resolved_address()",
                 1,
             ),
+            production.replacen(
+                "const OWNED_HTTPS_TEST_PROVIDER_IPV6: Ipv6Addr = Ipv6Addr::LOCALHOST;",
+                "const OWNED_HTTPS_TEST_PROVIDER_IPV6: Ipv6Addr = Ipv6Addr::UNSPECIFIED;",
+                1,
+            ),
             production.replacen("/v1/sessions/{}/events", "/arbitrary/{}/events", 1),
+            production.replacen(
+                "return Err(client_initialization_error());",
+                "#[cfg(any())]\n            return Err(client_initialization_error());",
+                1,
+            ),
             format!("{production}\npub fn arbitrary(url: Url) {{ let _ = url; }}"),
             format!("{production}\nimpl Drop for NativeOastClient {{ fn drop(&mut self) {{}} }}"),
         ] {
+            assert_ne!(mutation, production, "native client mutation must alter source");
             assert!(
                 !client_transport_contract_violations(&mutation)
                     .unwrap()
@@ -4176,6 +7391,17 @@ mod tests {
                 "pub fn resolved_address(&self) -> SocketAddr",
                 1,
             ),
+            client.replacen(
+                "#[derive(Clone, Copy, PartialEq, Eq)]\npub struct OwnedHttpsTestProfilePort",
+                "#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize)]\npub struct OwnedHttpsTestProfilePort",
+                1,
+            ),
+            client.replacen("Self(port)", "Self(NonZeroU16::MIN)", 1),
+            client.replacen(
+                "SocketAddr::from((OWNED_HTTPS_TEST_PROVIDER_IPV6, self.0.get()))",
+                "SocketAddr::from(([8, 8, 8, 8], self.0.get()))",
+                1,
+            ),
         ] {
             assert_ne!(mutation, client, "client profile mutation must alter source");
             assert!(
@@ -4212,6 +7438,11 @@ mod tests {
                 1,
             ),
             broker.replacen(
+                "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub(crate) struct OwnedXmlHttpsTestTransportProfile",
+                "#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]\npub(crate) struct OwnedXmlHttpsTestTransportProfile",
+                1,
+            ),
+            broker.replacen(
                 "application: &url::Url,",
                 "application: &SocketAddr,",
                 1,
@@ -4225,6 +7456,70 @@ mod tests {
                 "fn target_address(self) -> SocketAddr",
                 "fn target_address(self, address: SocketAddr) -> SocketAddr",
                 1,
+            ),
+            broker.replacen(
+                "application.scheme() == \"https\"",
+                "application.scheme() == \"http\"",
+                1,
+            ),
+            broker.replacen(
+                "const OWNED_XML_HTTPS_TARGET_HOST: &str = \"xml-target.termivar.test\";",
+                "const OWNED_XML_HTTPS_TARGET_HOST: &str = \"other.termivar.test\";",
+                1,
+            ),
+            broker.replacen(
+                "const OWNED_XML_HTTPS_PROVIDER_ORIGIN: &str = \"https://oast-provider.termivar.test/\";",
+                "const OWNED_XML_HTTPS_PROVIDER_ORIGIN: &str = \"https://other.termivar.test/\";",
+                1,
+            ),
+            broker.replacen("MIIBjTCCATOg", "NIIBjTCCATOg", 1),
+            broker.replacen(
+                "SocketAddr::from(([127, 0, 0, 1], self.port.get()))",
+                "SocketAddr::from(([8, 8, 8, 8], self.port.get()))",
+                1,
+            ),
+            broker.replacen(
+                "profile: OwnedXmlHttpsTestTransportProfile,\n    ) -> Result<(), HttpEvidenceError> {",
+                "mut profile: OwnedXmlHttpsTestTransportProfile,\n    ) -> Result<(), HttpEvidenceError> {\n        profile.port = NonZeroU16::new(1).unwrap();",
+                1,
+            ),
+            broker.replacen(
+                "self.owned_xml_https_test_profile = Some(profile);",
+                "#[cfg(any())]\n        self.owned_xml_https_test_profile = Some(profile);",
+                1,
+            ),
+            broker.replacen(
+                "if let Some(profile) = self.owned_xml_https_test_profile {\n                broker.configure_owned_xml_https_test_profile(profile)?;",
+                "if let Some(mut profile) = self.owned_xml_https_test_profile {\n                profile.port = NonZeroU16::new(1).expect(\"fixed nonzero port\");\n                broker.configure_owned_xml_https_test_profile(profile)?;",
+                1,
+            ),
+            broker.replacen(
+                "let root_der = STANDARD",
+                "let HttpRequestBroker { owned_xml_https_test_profile: slot, .. } = self;\n        *slot = None;\n        let root_der = STANDARD",
+                1,
+            ),
+            broker.replacen(
+                "let root_der = STANDARD",
+                "passthrough!(profile.port = NonZeroU16::new(1).unwrap());\n        let root_der = STANDARD",
+                1,
+            ),
+            format!(
+                "{broker}\n#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\nfn extra_profile(port: NonZeroU16) -> OwnedXmlHttpsTestTransportProfile {{ OwnedXmlHttpsTestTransportProfile {{ port }} }}"
+            ),
+            format!(
+                "{broker}\n#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\npub(crate) use self::OwnedXmlHttpsTestTransportProfile as IndirectOwnedProfile;"
+            ),
+            format!(
+                "{broker}\n#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\npub(crate) type IndirectOwnedProfile = OwnedXmlHttpsTestTransportProfile;"
+            ),
+            format!(
+                "{broker}\ntype Identity<T> = T;\n#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\npub(crate) type IndirectOwnedProfile = Identity<OwnedXmlHttpsTestTransportProfile>;"
+            ),
+            format!(
+                "{broker}\ntrait ProfileCarrier {{ type Profile; }}\nstruct ProfileMarker;\n#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\nimpl ProfileCarrier for ProfileMarker {{ type Profile = OwnedXmlHttpsTestTransportProfile; }}"
+            ),
+            format!(
+                "{broker}\n#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\npub(crate) fn forge_profile(port: NonZeroU16) -> OwnedXmlHttpsTestTransportProfile {{ unsafe {{ std::mem::transmute(port) }} }}"
             ),
         ] {
             assert_ne!(mutation, broker, "scanner profile mutation must alter source");
@@ -4250,6 +7545,11 @@ mod tests {
                 1,
             ),
             http_evidence.replacen(
+                "mod request_broker;",
+                "pub(crate) mod request_broker;",
+                1,
+            ),
+            http_evidence.replacen(
                 "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\npub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile;",
                 "#[cfg(feature = \"xml-external-entity-review\")]\npub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile;",
                 1,
@@ -4257,6 +7557,49 @@ mod tests {
             http_evidence.replacen(
                 "OwnedXmlHttpsTestTransportProfile;",
                 "RenamedOwnedXmlHttpsTestTransportProfile;",
+                1,
+            ),
+            format!("{http_evidence}\npub(crate) use request_broker::*;"),
+            format!("{http_evidence}\npub(crate) use self::request_broker::*;"),
+            format!("{http_evidence}\npub(crate) use self::r#request_broker::*;"),
+            format!(
+                "{http_evidence}\npub(crate) use crate::http_evidence::request_broker::*;"
+            ),
+            format!(
+                "{http_evidence}\nuse request_broker as broker;\npub(crate) use broker::*;"
+            ),
+            format!(
+                "{http_evidence}\nuse self::request_broker as r#broker;\npub(crate) use r#broker::OwnedXmlHttpsTestTransportProfile;"
+            ),
+            format!(
+                "{http_evidence}\nmod aliases {{ pub(crate) use super::request_broker::*; }}\npub(crate) use aliases::*;"
+            ),
+            format!(
+                "{http_evidence}\npub(crate) mod aliases {{ pub(crate) use super::OwnedXmlHttpsTestTransportProfile as ExtraOwnedProfile; }}"
+            ),
+            format!(
+                "{http_evidence}\npub(crate) mod aliases {{ pub(crate) use super::*; }}"
+            ),
+            format!(
+                "{http_evidence}\npub(crate) use self::request_broker::OwnedXmlHttpsTestTransportProfile as OwnedProfile;"
+            ),
+            format!(
+                "{http_evidence}\nmacro_rules! export_owned_profile {{ () => {{ pub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile as ExtraOwnedProfile; }}; }}\nexport_owned_profile!();"
+            ),
+            format!(
+                "{http_evidence}\npub(crate) type ExtraOwnedProfile = request_broker::OwnedXmlHttpsTestTransportProfile;"
+            ),
+            format!(
+                "{http_evidence}\npub(crate) use self::request_broker::r#OwnedXmlHttpsTestTransportProfile as OwnedProfile;"
+            ),
+            http_evidence.replacen(
+                "pub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile;",
+                "pub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile as OwnedProfile;",
+                1,
+            ),
+            http_evidence.replacen(
+                "pub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile;",
+                "pub(crate) use request_broker::{OwnedXmlHttpsTestTransportProfile, *};",
                 1,
             ),
         ] {
@@ -4303,12 +7646,188 @@ mod tests {
 
         for (mutation, expected) in [
             (
+                format!(
+                    "{}\ntype NativeOastClient = RealNativeOastClient;",
+                    production.replacen(
+                        "NativeOastClient, NativeOastClientBoundary",
+                        "NativeOastClient as RealNativeOastClient, NativeOastClientBoundary",
+                        1,
+                    )
+                ),
+                "import NativeOastClient exactly and unaliased",
+            ),
+            (
                 format!("#![allow(dead_code)]\n{production}"),
                 "must not suppress dead-code policy",
             ),
             (
                 production.replacen("NativeOastClient::new(", "NativeOastClient::build(", 1),
                 "NativeOastClient::new(",
+            ),
+            (
+                production.replacen(
+                    "#[cfg(not(feature = \"xml-external-entity-owned-https-test-profile\"))]\n        let client = NativeOastClient::new(origin.clone());",
+                    "#[cfg(not(feature = \"xml-external-entity-owned-https-test-profile\"))]\n        let client = NativeOastClient::build(origin.clone());",
+                    1,
+                ),
+                "NativeOastClient::new(",
+            ),
+            (
+                production.replacen(
+                    "NativeOastClient::new_owned_https_test_profile(origin.clone(), profile_port)",
+                    "NativeOastClient::new(origin.clone())",
+                    1,
+                ),
+                "NativeOastClient::new_owned_https_test_profile(",
+            ),
+            (
+                production.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n        let client = match transport {",
+                    "#[cfg(any(feature = \"xml-external-entity-owned-https-test-profile\", feature = \"ssrf-oast-review\"))]\n        let client = match transport {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n        let client = match transport {",
+                    "macro_rules! disable_owned_transport { () => { let transport = { let _ = transport; NativeOastProviderTransport::Production }; }; }\n        disable_owned_transport!();\n        #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n        let client = match transport {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "#[cfg(not(feature = \"xml-external-entity-owned-https-test-profile\"))]\n        let client = NativeOastClient::new(origin.clone());",
+                    "#[cfg(all(not(feature = \"xml-external-entity-owned-https-test-profile\"), not(feature = \"websocket-review\")))]\n        let client = NativeOastClient::new(origin.clone());",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen("let client = match transport {", "let client = match other {", 1),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "NativeOastProviderTransport::Production => NativeOastClient::new(origin.clone()),",
+                    "NativeOastProviderTransport::Production if enabled() => NativeOastClient::new(origin.clone()),",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "NativeOastProviderTransport::Production => NativeOastClient::new(origin.clone()),",
+                    "NativeOastProviderTransport::Production => NativeOastClient::new(other.clone()),",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "NativeOastClient::new_owned_https_test_profile(origin.clone(), profile_port)",
+                    "NativeOastClient::new_owned_https_test_profile(origin.clone(), other_port)",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "let client = client.map_err(|error| {",
+                    "let client = helper();\n        let client = client.map_err(|error| {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "let client = client.map_err(|error| {",
+                    "let (client,) = (helper(),);\n        let client = client.map_err(|error| {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "let client = client.map_err(|error| {",
+                    "let (r#client,) = (helper(),);\n        let client = client.map_err(|error| {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "let client = client.map_err(|error| {",
+                    "let mut client = client.map_err(|error| {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n        let client = match transport {",
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n        let transport = { let _ = transport; NativeOastProviderTransport::Production };\n        #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n        let client = match transport {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n        let client = match transport {",
+                    "let origin = origin.clone();\n        #[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n        let client = match transport {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "        let NativeOastProviderConfiguration {",
+                    "        let configuration = rewrite(configuration);\n        let NativeOastProviderConfiguration {",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "        } = configuration;",
+                    "        } = other_configuration;",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production.replacen(
+                    "        Ok(Self {\n            client,",
+                    "        let permit = permit;\n        Ok(Self {\n            client,",
+                    1,
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                format!(
+                    "{}\nfn preserve_permit<T>(value: T) -> T {{ value }}",
+                    production.replacen(
+                        "        Ok(Self {\n            client,\n            permit,",
+                        "        Ok(Self {\n            client,\n            permit: preserve_permit(permit),",
+                        1,
+                    )
+                ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
+            ),
+            (
+                production
+                    .replacen(
+                        "let client = client.map_err(|error| {",
+                        "let constructor = NativeOastClient::new;\n        let selected_client = constructor(origin.clone()).map_err(|error| {\n            NativeOastProviderError::new(provider_client_failure_kind(\n                error.kind(),\n                error.http_failure(),\n            ))\n        })?;\n        let client = client.map_err(|error| {",
+                        1,
+                    )
+                    .replacen(
+                        "Ok(Self {\n            client,",
+                        "Ok(Self {\n            client: selected_client,",
+                        1,
+                    ),
+                "exact mutually exclusive production and owned-HTTPS client constructor partition",
             ),
             (
                 production.replacen(
@@ -4353,6 +7872,10 @@ mod tests {
                 "consuming the move-only authority token by value",
             ),
         ] {
+            assert_ne!(
+                mutation, production,
+                "adapter shape mutation `{expected}` must alter source"
+            );
             let violations = adapter_private_authority_shape_violations(&mutation).unwrap();
             assert!(
                 violations.iter().any(|violation| violation.contains(expected)),
@@ -4484,6 +8007,10 @@ mod tests {
                 "HeaderValue::from_static(\"close\")",
                 "HeaderValue::from_static(\"keep-alive\")",
             ),
+            (
+                "async fn bound_request(",
+                "#[cfg(any())]\nasync fn bound_request(",
+            ),
         ] {
             assert!(
                 source.contains(before),
@@ -4495,24 +8022,36 @@ mod tests {
                 "admission mutation unexpectedly passed: {before} -> {after}"
             );
         }
+
+        for mutation in [
+            format!("{source}\n#[cfg(any())]\nuse alternate::bound_request;"),
+            format!("{source}\n#[cfg(any())]\nalternate_bound_request!();"),
+            format!("mod axum {{ pub use ::axum::*; }}\n{source}"),
+        ] {
+            assert!(
+                !server_transport_contract_violations(&mutation).is_empty(),
+                "alternate bound_request binding unexpectedly passed"
+            );
+        }
     }
 
     #[test]
     fn admission_ast_guard_rejects_malformed_outer_operation_shapes() {
+        let ledger = "#[cfg(feature = \"test-support\")] if let Some(ledger) = &state.test_request_ledger { ledger.record(&request); }";
         for source in [
-            "fn bound_request(",
-            "fn unrelated() {}",
-            "fn bound_request() {}",
-            "fn bound_request() { consume_body(); let operation = async {}; finish(operation) }",
-            "fn bound_request() { let operation = async {}; finish(operation); }",
-            "fn bound_request() { let (operation,) = async {}; finish(operation) }",
-            "fn bound_request() { let other = async {}; finish(other) }",
-            "fn bound_request() { let operation; finish(operation) }",
-            "fn bound_request() { let operation = run(); finish(operation) }",
-            "fn bound_request() { let operation = async {}; finish(operation) }",
+            "fn bound_request(".to_owned(),
+            "fn unrelated() {}".to_owned(),
+            "fn bound_request() {}".to_owned(),
+            format!("fn bound_request() {{ {ledger} consume_body(); let operation = async {{}}; finish(operation) }}"),
+            format!("fn bound_request() {{ {ledger} let operation = async {{}}; finish(operation); }}"),
+            format!("fn bound_request() {{ {ledger} let (operation,) = async {{}}; finish(operation) }}"),
+            format!("fn bound_request() {{ {ledger} let other = async {{}}; finish(other) }}"),
+            format!("fn bound_request() {{ {ledger} let operation; finish(operation) }}"),
+            format!("fn bound_request() {{ {ledger} let operation = run(); finish(operation) }}"),
+            format!("fn bound_request() {{ {ledger} let operation = async {{}}; finish(operation) }}"),
         ] {
             assert!(
-                !admission_precedes_body_dispatch(source),
+                !admission_precedes_body_dispatch(&source),
                 "malformed outer admission shape unexpectedly passed: {source}"
             );
         }
@@ -4522,16 +8061,34 @@ mod tests {
     fn admission_ast_guard_requires_the_owned_permit_and_awaited_body_dispatch() {
         // These standalone parser fixtures deliberately do not reproduce the
         // production module. Each varies one semantic boundary of the guard.
+        let ledger = "#[cfg(feature = \"test-support\")] if let Some(ledger) = &state.test_request_ledger { ledger.record(&request); }";
         let admission = "let Ok(_permit) = state.admit() else { return rejected(); };";
         let dispatch = "next.run(request).await";
-        let source = |admission: &str, dispatch: &str| {
+        let source = |ledger: &str, admission: &str, dispatch: &str| {
             format!(
-                "async fn bound_request() {{ let operation = async {{ {admission} {dispatch} }}; finish(operation) }}"
+                "use axum::{{body::Body, extract::State, middleware::Next, response::Response}}; use hyper::Request; async fn bound_request(State(state): State<AppState>, request: Request<Body>, next: Next) -> Response {{ {ledger} let operation = async {{ {admission} {dispatch} }}; finish(operation) }}"
             )
         };
         assert!(admission_precedes_body_dispatch(&source(
-            admission, dispatch
+            ledger, admission, dispatch
         )));
+        for malformed in [
+            "",
+            "#[cfg(test)] if let Some(ledger) = &state.test_request_ledger { ledger.record(&request); }",
+            "#[cfg(any(test, feature = \"test-support\"))] if let Some(ledger) = &state.test_request_ledger { ledger.record(&request); }",
+            "#[cfg(feature = \"test-support\")] if let Some(other) = &state.test_request_ledger { other.record(&request); }",
+            "#[cfg(feature = \"test-support\")] if let Some(ledger) = &state.other { ledger.record(&request); }",
+            "#[cfg(feature = \"test-support\")] if let Some(ledger) = &state.test_request_ledger { other.record(&request); }",
+            "#[cfg(feature = \"test-support\")] if let Some(ledger) = &state.test_request_ledger { ledger.record(request); }",
+            "#[cfg(feature = \"test-support\")] if let Some(ledger) = &state.test_request_ledger { ledger.record(&other); }",
+            "#[cfg(feature = \"test-support\")] if let Some(ledger) = &state.test_request_ledger { ledger.record(&request); } else { consume_body(); }",
+            "#[cfg(feature = \"test-support\")] if let Some(ledger) = &state.test_request_ledger { consume_body(); ledger.record(&request); }",
+        ] {
+            assert!(
+                !admission_precedes_body_dispatch(&source(malformed, admission, dispatch)),
+                "malformed test request ledger prelude unexpectedly passed: {malformed}"
+            );
+        }
         for malformed in [
             "let _permit = state.admit();",
             "let Some(_permit) = state.admit() else { return rejected(); };",
@@ -4546,7 +8103,7 @@ mod tests {
             "let Ok(_permit) = state.admit(request) else { return rejected(); };",
         ] {
             assert!(
-                !admission_precedes_body_dispatch(&source(malformed, dispatch)),
+                !admission_precedes_body_dispatch(&source(ledger, malformed, dispatch)),
                 "malformed permit admission unexpectedly passed: {malformed}"
             );
         }
@@ -4562,7 +8119,7 @@ mod tests {
             "drop(_permit); next.run(request).await",
         ] {
             assert!(
-                !admission_precedes_body_dispatch(&source(admission, malformed)),
+                !admission_precedes_body_dispatch(&source(ledger, admission, malformed)),
                 "malformed body dispatch unexpectedly passed: {malformed}"
             );
         }
@@ -4670,6 +8227,17 @@ mod tests {
         let test_only =
             "fn serve() {}\n#[cfg(test)]\nmod tests { fn fixture() { tokio::spawn(async {}); } }";
         assert!(!production_prefix(test_only).contains("tokio::spawn"));
+
+        let commented_marker =
+            "fn serve() { tokio::spawn(async {}); }\n// #[cfg(test)]\nmod tests {}";
+        assert!(production_prefix(commented_marker).contains("tokio::spawn"));
+
+        let raw_marker =
+            "const MARKER: &str = r#\"#[cfg(test)]\nmod tests\"#;\nfn serve() { tokio::spawn(async {}); }";
+        assert!(production_prefix(raw_marker).contains("tokio::spawn"));
+
+        let decoy_and_real = "const MARKER: &str = r#\"#[cfg(test)]\nmod tests\"#;\nfn serve() {}\n#[cfg(test)]\nmod tests { fn fixture() { tokio::spawn(async {}); } }";
+        assert!(production_prefix(decoy_and_real).contains("tokio::spawn"));
     }
 
     #[test]
@@ -4720,6 +8288,17 @@ mod tests {
             assert!(
                 error.to_string().contains(expected),
                 "malformed OAST cfg guard `{expected}` was not rejected: {error}"
+            );
+        }
+
+        for source in [
+            format!("// {guard}\nmod fixtures {{ fn hidden() {{}} }}"),
+            format!("const MARKER: &str = r#\"{guard}\"#;\nmod fixtures {{}}"),
+            format!("// {guard}\nmod decoy {{}}\n{guard}\nmod fixtures {{ fn hidden() {{}} }}"),
+        ] {
+            assert!(
+                source_without_exact_oast_test_modules(&source).is_err(),
+                "comment or raw-string OAST guard marker unexpectedly removed: {source}"
             );
         }
     }

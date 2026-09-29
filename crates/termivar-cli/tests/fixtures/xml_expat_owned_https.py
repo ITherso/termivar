@@ -21,7 +21,7 @@ from xml.parsers import expat
 MAX_XML_BYTES = 96 * 1024
 MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024
 PROVIDER_HOST = "oast-provider.termivar.test"
-PROVIDER_ADDRESS = "127.0.0.2"
+PROVIDER_ADDRESS = "::1"
 RESULT_SCHEMA = "termivar-test.xml-expat-result/v1"
 ROOT_CERTIFICATE_DER_BASE64 = (
     "MIIBjTCCATOgAwIBAgIJAJLYjoWViQgyMAoGCCqGSM49BAMCMCkxJzAlBgNVBAMT"

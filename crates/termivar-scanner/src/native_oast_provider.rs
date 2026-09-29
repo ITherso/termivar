@@ -10,15 +10,15 @@ use std::{collections::BTreeMap, fmt, time::Duration};
 #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
 use std::num::NonZeroU16;
 
-use sha2::{Digest, Sha256};
 #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
-use termivar_oast::OwnedHttpsTestProfilePort;
-use termivar_oast::{
+use ::termivar_oast::OwnedHttpsTestProfilePort;
+use ::termivar_oast::{
     AdminToken, CallbackId, CallbackTarget, EventCursor, NativeOastBoundaryRejection,
     NativeOastClient, NativeOastClientBoundary, NativeOastClientError, NativeOastClientErrorKind,
     NativeOastClientOperation, NativeOastDispatchAccounting, NativeOastHttpFailure, PollResponse,
     PublicOrigin, SessionId, SessionRequest, SessionToken, POLL_SCHEMA,
 };
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 use url::{Host, Url};
 
