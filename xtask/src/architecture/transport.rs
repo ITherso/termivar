@@ -2399,19 +2399,41 @@ fn web_assessment_authority_partition_violation(syntax: &syn::File) -> Option<&'
     ) else {
         return Some("root, policy, or optional-verification prelude local inventory drifted");
     };
-    let production_prelude = authority_root_binding_is_exact(root)
-        && authority_policy_binding_is_exact(policy)
-        && authority_allowance_binding_is_exact(allowance);
-    let fixture_prelude = fixture_authority_root_binding_is_exact(root)
-        && fixture_authority_policy_binding_is_exact(policy)
-        && fixture_authority_allowance_binding_is_exact(allowance);
+    let production_root_is_exact = authority_root_binding_is_exact(root);
+    let production_policy_is_exact = authority_policy_binding_is_exact(policy);
+    let production_allowance_is_exact = authority_allowance_binding_is_exact(allowance);
+    let production_prelude =
+        production_root_is_exact && production_policy_is_exact && production_allowance_is_exact;
+    let fixture_root_is_exact = fixture_authority_root_binding_is_exact(root);
+    let fixture_policy_is_exact = fixture_authority_policy_binding_is_exact(policy);
+    let fixture_allowance_is_exact = fixture_authority_allowance_binding_is_exact(allowance);
+    let fixture_prelude =
+        fixture_root_is_exact && fixture_policy_is_exact && fixture_allowance_is_exact;
     let build_profile = match (
         production_prelude && production_imports_are_exact,
         fixture_prelude && fixture_imports_are_exact,
     ) {
         (true, false) => AssessmentBuildProfile::Production,
         (false, true) => AssessmentBuildProfile::Fixture,
-        _ => return Some("production/fixture prelude or import profile was not exact"),
+        _ if production_imports_are_exact && !production_root_is_exact => {
+            return Some("production root prelude binding was not exact");
+        },
+        _ if production_imports_are_exact && !production_policy_is_exact => {
+            return Some("production HTTP policy prelude binding was not exact");
+        },
+        _ if production_imports_are_exact && !production_allowance_is_exact => {
+            return Some("production optional-verification allowance binding was not exact");
+        },
+        _ if fixture_imports_are_exact && !fixture_root_is_exact => {
+            return Some("fixture root prelude binding was not exact");
+        },
+        _ if fixture_imports_are_exact && !fixture_policy_is_exact => {
+            return Some("fixture HTTP policy prelude binding was not exact");
+        },
+        _ if fixture_imports_are_exact && !fixture_allowance_is_exact => {
+            return Some("fixture optional-verification allowance binding was not exact");
+        },
+        _ => return Some("reviewed production/fixture import profile was not exact"),
     };
     if ![
         "assessment_semantic_limits",
@@ -15417,6 +15439,31 @@ mod tests {
         assert!(inspect_web_assessment_composition(source)
             .unwrap()
             .is_empty());
+
+        for (mutation, detail) in [
+            (
+                source.replacen("let root = Root { url: Url };", "let root = OtherRoot;", 1),
+                "fixture root prelude binding was not exact",
+            ),
+            (
+                source.replacen("let policy = Policy;", "let policy = OtherPolicy;", 1),
+                "fixture HTTP policy prelude binding was not exact",
+            ),
+            (
+                source.replacen(
+                    "let optional_active_verifications = 0_u16;",
+                    "let optional_active_verifications = 1_u16;",
+                    1,
+                ),
+                "fixture optional-verification allowance binding was not exact",
+            ),
+        ] {
+            assert_ne!(mutation, source);
+            let violations = inspect_web_assessment_composition(&mutation)
+                .unwrap()
+                .join("\n");
+            assert!(violations.contains(detail), "{violations}");
+        }
 
         for (mutation, needle) in [
             (
