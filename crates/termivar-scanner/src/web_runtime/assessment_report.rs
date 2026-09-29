@@ -2822,6 +2822,11 @@ fn validate_completed_assessment_truth_with_active_limit(
         let allowance = allowance.saturating_add(1);
         #[cfg(feature = "rest-review")]
         let allowance = allowance.saturating_add(1);
+        #[cfg(feature = "xml-external-entity-review")]
+        let allowance = allowance.saturating_add(
+            u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS)
+                .expect("controlled XML active-verification allowance fits u16"),
+        );
         allowance
     };
     let expected_active_limit = limits
@@ -3849,6 +3854,61 @@ mod tests {
             validate_completed_assessment_truth_with_active_limit(
                 root,
                 AssessmentRuntimeLimits::new(limits, expected - 1, allowance),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[test]
+    fn xml_external_entity_has_exact_one_active_control_allowance() {
+        let runtime =
+            WebAssessmentRuntime::builder(Url::parse("https://example.test/review").unwrap())
+                .build()
+                .unwrap();
+        let root = runtime.authorized_root();
+        let limits = WebAssessmentLimits::default();
+        let allowance = u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS).unwrap();
+        let expected = limits
+            .max_active_verifications()
+            .checked_add(allowance)
+            .unwrap();
+        let usage = AssessmentUsageTruth {
+            active_verifications: allowance,
+            ..usage_truth(root.url().as_str())
+        };
+        let profile = ScanProfileV1::web_review().unwrap();
+
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected, allowance),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected - 1, allowance),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected, allowance + 1),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,

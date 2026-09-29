@@ -8895,6 +8895,7 @@ fn inspect_assessment_report_truth_validators(syntax: &syn::File) -> Vec<String>
                         "runtime_active_verification_limit",
                         "max_active_verifications",
                         "saturating_add",
+                        "XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS",
                         "request_body_bytes",
                         "max_request_body_bytes",
                         "response_bytes",
@@ -17693,6 +17694,11 @@ mod tests {
             (
                 "usage.executed_subjects != usage.retained_subjects",
                 "false",
+                "completed assessment truth validator",
+            ),
+            (
+                "u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS)\n                .expect(\"controlled XML active-verification allowance fits u16\")",
+                "0_u16",
                 "completed assessment truth validator",
             ),
             (
