@@ -368,13 +368,11 @@ async fn execute_review(
                         .await
                 },
             };
-        let (stage, origin) = dispatch_shape(role);
+        let dispatch = dispatch_shape(role);
         let response = collect_target_with_runtime_bounds(
             &broker,
             authority,
-            XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
-            stage,
-            origin,
+            dispatch,
             DecisionExecutionLimits::new()
                 .with_max_response_body_bytes(MAX_XML_EXTERNAL_ENTITY_TARGET_RESPONSE_BYTES),
             &descriptor,
@@ -574,13 +572,10 @@ async fn wait_for_poll(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn collect_target_with_runtime_bounds(
     broker: &XmlExternalEntityRequestBroker,
     authority: &SharedWebRuntimeAuthority,
-    action_id: &str,
-    stage: DecisionExecutionStage,
-    origin: Option<DecisionActionOrigin>,
+    dispatch: XmlExternalEntityDispatchShape,
     limits: DecisionExecutionLimits,
     descriptor: &XmlExternalEntityRequestDescriptor,
     policy: &crate::xml_external_entity_review::XmlExternalEntityReviewPolicy,
@@ -594,7 +589,12 @@ async fn collect_target_with_runtime_bounds(
         return Err(RuntimeStopReason::BudgetExhausted);
     }
     let request = broker.collect_post(
-        action_id, stage, origin, limits, descriptor, policy, document,
+        dispatch.stage,
+        dispatch.origin,
+        limits,
+        descriptor,
+        policy,
+        document,
     );
     tokio::pin!(request);
     if let Some(deadline) = deadline {
@@ -628,15 +628,24 @@ fn stop_reason_for_provider_error(kind: NativeOastProviderErrorKind) -> RuntimeS
     }
 }
 
-fn dispatch_shape(
-    role: XmlExternalEntityDocumentRole,
-) -> (DecisionExecutionStage, Option<DecisionActionOrigin>) {
+#[derive(Clone, Copy)]
+struct XmlExternalEntityDispatchShape {
+    stage: DecisionExecutionStage,
+    origin: Option<DecisionActionOrigin>,
+}
+
+fn dispatch_shape(role: XmlExternalEntityDocumentRole) -> XmlExternalEntityDispatchShape {
     match role {
-        XmlExternalEntityDocumentRole::Control | XmlExternalEntityDocumentRole::Replay => (
-            DecisionExecutionStage::Passive,
-            Some(DecisionActionOrigin::Planned),
-        ),
-        XmlExternalEntityDocumentRole::Candidate => (DecisionExecutionStage::Active, None),
+        XmlExternalEntityDocumentRole::Control | XmlExternalEntityDocumentRole::Replay => {
+            XmlExternalEntityDispatchShape {
+                stage: DecisionExecutionStage::Passive,
+                origin: Some(DecisionActionOrigin::Planned),
+            }
+        },
+        XmlExternalEntityDocumentRole::Candidate => XmlExternalEntityDispatchShape {
+            stage: DecisionExecutionStage::Active,
+            origin: None,
+        },
     }
 }
 
@@ -672,9 +681,9 @@ fn target_accounting(
                 XmlExternalEntityDocumentRole::Candidate,
                 XmlExternalEntityDocumentRole::Replay,
             ][index];
-            let (stage, origin) = dispatch_shape(role);
-            receipt.stage() == stage
-                && receipt.origin() == origin
+            let dispatch = dispatch_shape(role);
+            receipt.stage() == dispatch.stage
+                && receipt.origin() == dispatch.origin
                 && receipt.request_body_bytes() == expected_body_lengths[index]
                 && receipt.outcome() == TransportDispatchOutcome::Completed
         });

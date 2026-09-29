@@ -1899,10 +1899,11 @@ impl XmlExternalEntityRequestBroker {
     /// boundary.
     ///
     /// The caller cannot supply raw XML bytes: only one document minted by the
-    /// validated fixed plan can cross this boundary.
+    /// validated fixed plan can cross this boundary. The dedicated broker also
+    /// owns the only permitted action identity instead of accepting one from
+    /// its caller.
     pub(crate) async fn collect_post(
         &self,
-        action_id: &str,
         stage: DecisionExecutionStage,
         origin: Option<DecisionActionOrigin>,
         limits: DecisionExecutionLimits,
@@ -1910,8 +1911,7 @@ impl XmlExternalEntityRequestBroker {
         policy: &XmlExternalEntityReviewPolicy,
         document: &XmlExternalEntityDocument,
     ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
-        if action_id != XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID
-            || self.application != *policy.application()
+        if self.application != *policy.application()
             || !policy.is_bound_to_application(&self.application)
             || self.policy_binding != xml_external_entity_policy_binding(policy)
             || !descriptor.validate_against(policy, document)
@@ -1935,7 +1935,7 @@ impl XmlExternalEntityRequestBroker {
         self.broker
             .collect_built_request(
                 &self.broker.client,
-                action_id,
+                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
                 stage,
                 origin,
                 limits,
@@ -2129,7 +2129,6 @@ mod tests {
         ] {
             let result = broker
                 .collect_post(
-                    XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
                     DecisionExecutionStage::Passive,
                     Some(DecisionActionOrigin::Planned),
                     DecisionExecutionLimits::new(),
@@ -2147,26 +2146,15 @@ mod tests {
         }
 
         let valid = XmlExternalEntityRequestDescriptor::from_document(&policy, document).unwrap();
-        for (action, stage, origin) in [
+        for (stage, origin) in [
             (
-                "different-action",
-                DecisionExecutionStage::Passive,
-                Some(DecisionActionOrigin::Planned),
-            ),
-            (
-                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
                 DecisionExecutionStage::Active,
                 Some(DecisionActionOrigin::Planned),
             ),
-            (
-                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
-                DecisionExecutionStage::Passive,
-                None,
-            ),
+            (DecisionExecutionStage::Passive, None),
         ] {
             let result = broker
                 .collect_post(
-                    action,
                     stage,
                     origin,
                     DecisionExecutionLimits::new(),
