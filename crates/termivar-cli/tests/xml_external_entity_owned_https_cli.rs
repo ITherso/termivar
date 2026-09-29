@@ -1881,6 +1881,8 @@ async fn owned_https_profile_runs_actual_cli_and_offline_bundle_commands() {
     bundle_bytes(&safe.report_dir, &safe.private_sentinels);
     let provider_after_safe = fixture.provider_requests();
     assert_eq!(provider_after_safe, expected_provider_requests(0));
+    let private_after_safe = fixture.private_callback_sentinels();
+    assert_eq!(private_after_safe.len(), 4);
 
     let enabled =
         run_actual_scan(temporary.path(), &fixture, ParserMode::External, "enabled").await;
@@ -1904,7 +1906,18 @@ async fn owned_https_profile_runs_actual_cli_and_offline_bundle_commands() {
     assert_eq!(enabled_items[0]["severity"], Value::Null);
     bundle_bytes(&enabled.report_dir, &enabled.private_sentinels);
     let provider_after_enabled = fixture.provider_requests();
-    assert_eq!(fixture.private_callback_sentinels().len(), 4);
+    let private_after_enabled = fixture.private_callback_sentinels();
+    assert_eq!(private_after_enabled.len(), 8);
+    assert!(private_after_safe
+        .iter()
+        .all(|sentinel| private_after_enabled.contains(sentinel)));
+    assert_eq!(
+        private_after_enabled
+            .iter()
+            .filter(|sentinel| !private_after_safe.contains(sentinel))
+            .count(),
+        4
+    );
     assert_eq!(
         provider_request_delta(provider_after_enabled, provider_after_safe),
         expected_provider_requests(2)
