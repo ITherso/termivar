@@ -288,6 +288,8 @@ enum BrokerConstructorKind {
     RequestAccounting,
     MeteredHttp,
     MeteredTlsObservation,
+    MeteredOwnedXmlHttps,
+    MeteredTlsObservationOwnedXmlHttps,
 }
 
 impl BrokerConstructorKind {
@@ -296,6 +298,12 @@ impl BrokerConstructorKind {
             Self::RequestAccounting => "RequestAccountingBroker::new",
             Self::MeteredHttp => "HttpRequestBroker::new_metered",
             Self::MeteredTlsObservation => "HttpRequestBroker::new_metered_with_tls_observation",
+            Self::MeteredOwnedXmlHttps => {
+                "HttpRequestBroker::new_metered_with_owned_xml_https_test_profile"
+            },
+            Self::MeteredTlsObservationOwnedXmlHttps => {
+                "HttpRequestBroker::new_metered_with_tls_observation_and_owned_xml_https_test_profile"
+            },
         }
     }
 }
@@ -322,11 +330,25 @@ const EXPECTED_BROKER_CONSTRUCTORS: &[ExpectedBrokerConstructor] = &[
         kind: BrokerConstructorKind::MeteredHttp,
         impl_target: "SharedWebRuntimeAuthority",
         function: "new_exact_origin_inner",
-        count: 2,
+        count: 4,
     },
     ExpectedBrokerConstructor {
         source: SHARED_RUNTIME_AUTHORITY_SOURCE,
         kind: BrokerConstructorKind::MeteredTlsObservation,
+        impl_target: "SharedWebRuntimeAuthority",
+        function: "new_exact_origin_inner",
+        count: 2,
+    },
+    ExpectedBrokerConstructor {
+        source: SHARED_RUNTIME_AUTHORITY_SOURCE,
+        kind: BrokerConstructorKind::MeteredOwnedXmlHttps,
+        impl_target: "SharedWebRuntimeAuthority",
+        function: "new_exact_origin_inner",
+        count: 2,
+    },
+    ExpectedBrokerConstructor {
+        source: SHARED_RUNTIME_AUTHORITY_SOURCE,
+        kind: BrokerConstructorKind::MeteredTlsObservationOwnedXmlHttps,
         impl_target: "SharedWebRuntimeAuthority",
         function: "new_exact_origin_inner",
         count: 1,
@@ -1767,17 +1789,21 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
                 .to_owned(),
         );
     }
-    if broker.matches("Client::builder()").count() != 7
-        || broker.matches(".redirect(RedirectPolicy::none())").count() != 7
-        || broker.matches(".retry(reqwest::retry::never())").count() != 7
-        || broker.matches(".tls_info(true)").count() != 7
+    if broker.matches("Client::builder()").count() != 8
+        || broker.matches(".redirect(RedirectPolicy::none())").count() != 8
+        || broker.matches(".retry(reqwest::retry::never())").count() != 8
+        || broker.matches(".tls_info(true)").count() != 8
+        || broker.matches(".tls_built_in_root_certs(false)").count() != 2
+        || broker.matches(".add_root_certificate(").count() != 3
+        || broker.matches(".resolve(").count() != 3
         || !broker.contains("#[cfg(all(test, feature = \"tls-observation\"))]")
         || !broker.contains("reqwest::Certificate::from_der(root_certificate_der)")
         || !broker.contains(".add_root_certificate(root_certificate)")
         || !broker.contains(".resolve(resolved_host, resolved_address)")
+        || !broker.contains(".resolve(OWNED_XML_HTTPS_TARGET_HOST, profile.target_address())")
     {
         violations.push(
-            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, selected authorization-review, per-leg JWT target-acceptance, selected XML external-entity review, and selected supplied-session redirect-disabled, retry-free clients plus the exact cfg(test) owned trusted-root TLS seam"
+            "the sole production request broker must configure exactly its ordinary, anonymous WordPress, selected authorization-review, per-leg JWT target-acceptance, selected XML external-entity review, selected supplied-session, and sealed owned-HTTPS XML profile redirect-disabled, retry-free clients plus the exact cfg(test) owned trusted-root TLS seam"
                 .to_owned(),
         );
     }
@@ -1786,7 +1812,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             .matches("let anonymous_no_proxy_client = Client::builder()")
             .count()
             != 1
-        || broker.matches(".no_proxy()").count() != 6
+        || broker.matches(".no_proxy()").count() != 7
         || broker.matches("&self.anonymous_no_proxy_client").count() != 1
         || !broker.contains(
             "self.anonymous_no_proxy_client\n            .request(Method::GET, target.clone())",
@@ -1838,6 +1864,28 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
                 .to_owned(),
         );
     }
+    let shared_isolation = broker
+        .split_once(
+            "    fn isolated_with_shared_authority(&self) -> Result<Self, HttpEvidenceError> {",
+        )
+        .and_then(|(_, tail)| tail.split_once("    pub(crate) fn policy(&self)"))
+        .map(|(body, _)| body);
+    if shared_isolation.is_none_or(|body| {
+        body.matches("Self::build(").count() != 1
+            || !body.contains("self.policy.clone()")
+            || !body.contains("self.accounting.clone()")
+            || !body.contains("self.tls_observation.clone()")
+            || !body.contains("if let Some(profile) = self.owned_xml_https_test_profile")
+            || body
+                .matches("broker.configure_owned_xml_https_test_profile(profile)?")
+                .count()
+                != 1
+    }) {
+        violations.push(
+            "the request broker must preserve its exact parent policy, accounting, TLS observer, and optional sealed owned-HTTPS profile when creating an isolated anonymous child"
+                .to_owned(),
+        );
+    }
     let xml_isolation = broker
         .split_once(
             "    #[cfg(feature = \"xml-external-entity-review\")]\n    pub(crate) fn isolated_xml_external_entity_review(",
@@ -1851,16 +1899,19 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
         .and_then(|(_, tail)| tail.split_once("\nfn finish_accounting("))
         .map(|(body, _)| body);
     if xml_isolation.is_none_or(|body| {
-        body.matches("Self::build(").count() != 1
+        body.matches("self.isolated_with_shared_authority()?").count() != 1
             || body.matches("Client::builder()").count() != 1
             || body.matches(".redirect(RedirectPolicy::none())").count() != 1
             || body.matches(".retry(reqwest::retry::never())").count() != 1
             || body.matches(".no_proxy()").count() != 1
             || !body.contains("if !policy.is_bound_to_application(application)")
             || !body.contains("self.validate_target(policy.endpoint())?")
-            || !body.contains("self.policy.clone()")
-            || !body.contains("self.accounting.clone()")
-            || !body.contains("self.tls_observation.clone()")
+            || !body.contains("if let Some(profile) = broker.owned_xml_https_test_profile")
+            || !body.contains(".tls_built_in_root_certs(false)")
+            || !body.contains(".add_root_certificate(root)")
+            || !body.contains(
+                ".resolve(OWNED_XML_HTTPS_TARGET_HOST, profile.target_address())",
+            )
             || !body.contains("broker.client = client.build().map_err(HttpEvidenceError::Client)?;")
             || !body.contains("application: application.clone()")
             || !body.contains("policy_binding: xml_external_entity_policy_binding(policy)")
@@ -8784,7 +8835,10 @@ impl BrokerConstructorAliases {
         let name = normalize_identifier(name);
         match kind {
             BrokerConstructorKind::RequestAccounting => self.request_accounting.contains(name),
-            BrokerConstructorKind::MeteredHttp | BrokerConstructorKind::MeteredTlsObservation => {
+            BrokerConstructorKind::MeteredHttp
+            | BrokerConstructorKind::MeteredTlsObservation
+            | BrokerConstructorKind::MeteredOwnedXmlHttps
+            | BrokerConstructorKind::MeteredTlsObservationOwnedXmlHttps => {
                 self.http_request.contains(name)
             },
         }
@@ -9397,6 +9451,8 @@ impl BrokerConstructorSourceInventory {
                     call.kind,
                     BrokerConstructorKind::MeteredHttp
                         | BrokerConstructorKind::MeteredTlsObservation
+                        | BrokerConstructorKind::MeteredOwnedXmlHttps
+                        | BrokerConstructorKind::MeteredTlsObservationOwnedXmlHttps
                 );
             (!exact_tls_selection).then(|| {
                 format!(
@@ -9461,6 +9517,12 @@ impl BrokerConstructorInventoryVisitor {
             "new_metered" => Some(BrokerConstructorKind::MeteredHttp),
             "new_metered_with_tls_observation" => {
                 Some(BrokerConstructorKind::MeteredTlsObservation)
+            },
+            "new_metered_with_owned_xml_https_test_profile" => {
+                Some(BrokerConstructorKind::MeteredOwnedXmlHttps)
+            },
+            "new_metered_with_tls_observation_and_owned_xml_https_test_profile" => {
+                Some(BrokerConstructorKind::MeteredTlsObservationOwnedXmlHttps)
             },
             _ => None,
         }
@@ -9592,6 +9654,8 @@ impl BrokerConstructorInventoryVisitor {
                 BrokerConstructorKind::RequestAccounting,
                 BrokerConstructorKind::MeteredHttp,
                 BrokerConstructorKind::MeteredTlsObservation,
+                BrokerConstructorKind::MeteredOwnedXmlHttps,
+                BrokerConstructorKind::MeteredTlsObservationOwnedXmlHttps,
             ] {
                 if self.aliases.name_has_kind(&ident_name(identifier), kind) {
                     let count = self.inventory.macro_references.entry(kind).or_default();
@@ -11275,7 +11339,26 @@ mod tests {
         impl SharedWebRuntimeAuthority {
             fn new_exact_origin_inner() {
                 let accounting = RequestAccountingBroker::new(budget());
-                #[cfg(feature = "tls-observation")]
+                #[cfg(all(
+                    feature = "tls-observation",
+                    feature = "xml-external-entity-owned-https-test-profile"
+                ))]
+                let _ = match selected_pair() {
+                    (true, true) => HttpRequestBroker::new_metered_with_tls_observation_and_owned_xml_https_test_profile(
+                        policy(), accounting.clone(), collector(), profile()
+                    ),
+                    (true, false) => HttpRequestBroker::new_metered_with_tls_observation(
+                        policy(), accounting.clone(), collector()
+                    ),
+                    (false, true) => HttpRequestBroker::new_metered_with_owned_xml_https_test_profile(
+                        policy(), accounting.clone(), profile()
+                    ),
+                    (false, false) => HttpRequestBroker::new_metered(policy(), accounting.clone()),
+                };
+                #[cfg(all(
+                    feature = "tls-observation",
+                    not(feature = "xml-external-entity-owned-https-test-profile")
+                ))]
                 let _ = if selected() {
                     HttpRequestBroker::new_metered_with_tls_observation(
                         policy(), accounting.clone(), collector()
@@ -11283,7 +11366,21 @@ mod tests {
                 } else {
                     HttpRequestBroker::new_metered(policy(), accounting.clone())
                 };
-                #[cfg(not(feature = "tls-observation"))]
+                #[cfg(all(
+                    not(feature = "tls-observation"),
+                    feature = "xml-external-entity-owned-https-test-profile"
+                ))]
+                let _ = if selected() {
+                    HttpRequestBroker::new_metered_with_owned_xml_https_test_profile(
+                        policy(), accounting.clone(), profile()
+                    )
+                } else {
+                    HttpRequestBroker::new_metered(policy(), accounting.clone())
+                };
+                #[cfg(all(
+                    not(feature = "tls-observation"),
+                    not(feature = "xml-external-entity-owned-https-test-profile")
+                ))]
                 let _ = HttpRequestBroker::new_metered(policy(), accounting);
             }
         }

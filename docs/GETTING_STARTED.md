@@ -137,10 +137,12 @@ Preview. It does not activate any of them: WordPress still requires explicit
 `secret-exposure-review`, `tls-observation`,
 `jwt-policy-review`, `jwt-target-acceptance-review`,
 `recon-ct-provider`, `recon-snapshot-import`, `ssrf-oast-review`,
-`websocket-review`, `xml-external-entity-review`, `legacy-scanner`, `api-adapter`,
-and `proxy-adapter`. The stock curated inventory is therefore exactly 22 known
+`websocket-review`, `xml-external-entity-owned-https-test-profile`,
+`xml-external-entity-review`, `legacy-scanner`, `api-adapter`, and
+`proxy-adapter`. The stock curated inventory is therefore exactly 23 known
 identities: eight compiled (the `release-bundle` marker plus seven members) and
-fourteen excluded.
+fifteen excluded. The owned-HTTPS test profile adds no CLI option and remains
+outside `default`, `release-bundle`, and published packages.
 Enabling the seven current member features individually can therefore produce
 the same member surface states while `release-bundle` remains `not_compiled`.
 

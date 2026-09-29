@@ -142,6 +142,13 @@ ssrf-oast-review = ["scanning", "oast-correlation", "oast-native-provider", "dep
 # aggregate and cannot enlarge the default or release product.
 xml-external-entity-review = ["scanning", "oast-correlation", "oast-native-provider", "dep:getrandom"]
 
+# Closed native-acceptance transport for the fixed owned HTTPS target/provider
+# identities. It is absent from every product aggregate and release bundle.
+xml-external-entity-owned-https-test-profile = [
+    "xml-external-entity-review",
+    "termivar-oast/owned-https-test-profile",
+]
+
 # Historical direct-I/O phases, ordered runner, and Scanner SDK.
 # This is intentionally absent from the default product.
 legacy-scanner = ["scanning", "termivar-core/legacy-contracts", "dep:chrono", "dep:dashmap", "dep:futures", "dep:uuid"]

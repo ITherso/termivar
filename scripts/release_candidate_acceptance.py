@@ -80,6 +80,7 @@ EXCLUDED_FEATURES = (
     "supplied-session-review",
     "tls-observation",
     "websocket-review",
+    "xml-external-entity-owned-https-test-profile",
     "xml-external-entity-review",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))

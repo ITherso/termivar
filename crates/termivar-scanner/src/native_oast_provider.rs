@@ -7,7 +7,12 @@
 
 use std::{collections::BTreeMap, fmt, time::Duration};
 
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+use std::num::NonZeroU16;
+
 use sha2::{Digest, Sha256};
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+use termivar_oast::OwnedHttpsTestProfilePort;
 use termivar_oast::{
     AdminToken, CallbackId, CallbackTarget, EventCursor, NativeOastBoundaryRejection,
     NativeOastClient, NativeOastClientBoundary, NativeOastClientError, NativeOastClientErrorKind,
@@ -102,6 +107,8 @@ pub(crate) const HARD_MAX_NATIVE_OAST_PROVIDER_WALL_TIME_MS: u64 = 120_000;
 const PROVIDER_ORIGIN_FINGERPRINT_DOMAIN: &[u8] =
     b"security.native-oast-provider.origin-fingerprint/v1\0";
 const PROVIDER_EVENT_KEY_DOMAIN: &[u8] = b"security.native-oast-provider.event-key/v1\0";
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+const OWNED_HTTPS_TEST_PROVIDER_ORIGIN: &str = "https://oast-provider.termivar.test/";
 
 /// Exact fixed native-provider operation classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +225,15 @@ pub(crate) struct NativeOastProviderConfiguration {
     epoch: OastAuthorityEpoch,
     administrator: AdminToken,
     limits: NativeOastProviderLimits,
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    transport: NativeOastProviderTransport,
+}
+
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+#[derive(Clone, Copy)]
+enum NativeOastProviderTransport {
+    Production,
+    OwnedHttpsTestProfile(OwnedHttpsTestProfilePort),
 }
 
 #[cfg_attr(
@@ -258,6 +274,45 @@ impl NativeOastProviderConfiguration {
             epoch,
             administrator,
             limits,
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            transport: NativeOastProviderTransport::Production,
+        })
+    }
+
+    /// Constructs the one repository-owned HTTPS provider profile.
+    ///
+    /// The public provider identity, loopback address, and trust root remain
+    /// fixed by `termivar-oast`; the caller supplies only a nonzero fixture
+    /// port. This cannot be used to add arbitrary roots or resolver entries.
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    pub(crate) fn for_owned_https_test_profile(
+        profile_port: NonZeroU16,
+        assessment_id: &str,
+        epoch: [u8; 32],
+        administrator: Vec<u8>,
+        limits: NativeOastProviderLimits,
+    ) -> Result<Self, NativeOastProviderError> {
+        let administrator = AdminToken::new(administrator).map_err(|_| {
+            NativeOastProviderError::new(NativeOastProviderErrorKind::ProviderRejected)
+        })?;
+        let origin = OWNED_HTTPS_TEST_PROVIDER_ORIGIN.parse().map_err(|_| {
+            NativeOastProviderError::new(NativeOastProviderErrorKind::InvalidProviderOrigin)
+        })?;
+        let assessment_id = OastAssessmentId::new(assessment_id).map_err(|_| {
+            NativeOastProviderError::new(NativeOastProviderErrorKind::CorrelationRejected)
+        })?;
+        let epoch = OastAuthorityEpoch::new(epoch).map_err(|_| {
+            NativeOastProviderError::new(NativeOastProviderErrorKind::CorrelationRejected)
+        })?;
+        Ok(Self {
+            origin,
+            assessment_id,
+            epoch,
+            administrator,
+            limits,
+            transport: NativeOastProviderTransport::OwnedHttpsTestProfile(
+                OwnedHttpsTestProfilePort::new(profile_port),
+            ),
         })
     }
 
@@ -284,6 +339,8 @@ impl NativeOastProviderConfiguration {
             epoch,
             administrator,
             limits,
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            transport: NativeOastProviderTransport::Production,
         })
     }
 }
@@ -1788,8 +1845,19 @@ impl NativeOastProviderAdapter {
             epoch,
             administrator,
             limits,
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            transport,
         } = configuration;
-        let client = NativeOastClient::new(origin.clone()).map_err(|error| {
+        #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+        let client = match transport {
+            NativeOastProviderTransport::Production => NativeOastClient::new(origin.clone()),
+            NativeOastProviderTransport::OwnedHttpsTestProfile(profile_port) => {
+                NativeOastClient::new_owned_https_test_profile(origin.clone(), profile_port)
+            },
+        };
+        #[cfg(not(feature = "xml-external-entity-owned-https-test-profile"))]
+        let client = NativeOastClient::new(origin.clone());
+        let client = client.map_err(|error| {
             NativeOastProviderError::new(provider_client_failure_kind(
                 error.kind(),
                 error.http_failure(),
@@ -2713,6 +2781,46 @@ mod tests {
         .unwrap();
         let adapter = authority.mint_native_oast_provider(configuration).unwrap();
         (adapter, accounting, task)
+    }
+
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    #[test]
+    fn owned_https_profile_configuration_is_fixed_and_mints_the_sealed_client() {
+        let port = NonZeroU16::new(44_443).unwrap();
+        let configuration = NativeOastProviderConfiguration::for_owned_https_test_profile(
+            port,
+            "assessment:native-oast-owned-https",
+            [73; 32],
+            ADMIN_SECRET.to_vec(),
+            adapter_limits(2, 2),
+        )
+        .unwrap();
+        assert_eq!(
+            configuration.origin.as_str(),
+            OWNED_HTTPS_TEST_PROVIDER_ORIGIN
+        );
+        assert!(matches!(
+            configuration.transport,
+            NativeOastProviderTransport::OwnedHttpsTestProfile(_)
+        ));
+        let rendered = format!("{configuration:?}");
+        assert!(!rendered.contains("44443"));
+        assert!(!rendered.contains("NATIVE-OAST-ADMIN-MUST-NOT-LEAK"));
+
+        let budget = RuntimeBudget::default();
+        let target = Url::parse("https://xml-target.termivar.test:44443/").unwrap();
+        let authority = SharedWebRuntimeAuthority::new_exact_origin(
+            &target,
+            HttpEvidencePolicy::for_origin(target.clone()).unwrap(),
+            budget,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        let adapter = authority.mint_native_oast_provider(configuration).unwrap();
+        assert_eq!(adapter.lifecycle(), NativeOastProviderLifecycle::Configured);
+        assert_eq!(adapter.accounting_snapshot().total_requests(), 0);
+        assert!(adapter.receipts().is_empty());
+        assert!(!format!("{adapter:?}").contains("44443"));
     }
 
     #[test]

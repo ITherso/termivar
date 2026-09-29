@@ -10,6 +10,8 @@ use std::sync::{Arc, OnceLock};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;
 use crate::{
     http_evidence::HttpRequestBroker, runtime_budget::RequestAccountingBroker, HttpEvidenceError,
     HttpEvidencePolicy, KnowledgeBase, RuntimeBudget,
@@ -115,6 +117,8 @@ impl SharedWebRuntimeAuthority {
             cancellation,
             #[cfg(feature = "tls-observation")]
             None,
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            None,
         )
     }
 
@@ -132,6 +136,52 @@ impl SharedWebRuntimeAuthority {
             budget,
             cancellation,
             Some(TlsObservationCollector::new(target.scheme())),
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            None,
+        )
+    }
+
+    /// Creates the exact-origin authority for the closed owned-HTTPS XML
+    /// acceptance profile. No caller-selected trust or resolver data enters.
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    pub(crate) fn new_exact_origin_with_owned_xml_https_test_profile(
+        target: &Url,
+        policy: HttpEvidencePolicy,
+        budget: RuntimeBudget,
+        cancellation: CancellationToken,
+        profile: OwnedXmlHttpsTestTransportProfile,
+    ) -> Result<Self, HttpEvidenceError> {
+        Self::new_exact_origin_inner(
+            target,
+            policy,
+            budget,
+            cancellation,
+            #[cfg(feature = "tls-observation")]
+            None,
+            Some(profile),
+        )
+    }
+
+    /// Combines the closed owned-HTTPS XML acceptance transport with passive
+    /// observation of the same normally verified TLS connection.
+    #[cfg(all(
+        feature = "xml-external-entity-owned-https-test-profile",
+        feature = "tls-observation"
+    ))]
+    pub(crate) fn new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile(
+        target: &Url,
+        policy: HttpEvidencePolicy,
+        budget: RuntimeBudget,
+        cancellation: CancellationToken,
+        profile: OwnedXmlHttpsTestTransportProfile,
+    ) -> Result<Self, HttpEvidenceError> {
+        Self::new_exact_origin_inner(
+            target,
+            policy,
+            budget,
+            cancellation,
+            Some(TlsObservationCollector::new(target.scheme())),
+            Some(profile),
         )
     }
 
@@ -186,10 +236,44 @@ impl SharedWebRuntimeAuthority {
         budget: RuntimeBudget,
         cancellation: CancellationToken,
         #[cfg(feature = "tls-observation")] tls_observation: Option<TlsObservationCollector>,
+        #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+        owned_xml_https_test_profile: Option<OwnedXmlHttpsTestTransportProfile>,
     ) -> Result<Self, HttpEvidenceError> {
         let policy = policy.restricted_to_exact_origin(target)?;
         let request_accounting = RequestAccountingBroker::new(budget);
-        #[cfg(feature = "tls-observation")]
+        #[cfg(all(
+            feature = "tls-observation",
+            feature = "xml-external-entity-owned-https-test-profile"
+        ))]
+        let requests = match (tls_observation.as_ref(), owned_xml_https_test_profile) {
+            (Some(collector), Some(profile)) => {
+                HttpRequestBroker::new_metered_with_tls_observation_and_owned_xml_https_test_profile(
+                    policy.clone(),
+                    request_accounting.clone(),
+                    collector.clone(),
+                    profile,
+                )?
+            },
+            (Some(collector), None) => HttpRequestBroker::new_metered_with_tls_observation(
+                policy.clone(),
+                request_accounting.clone(),
+                collector.clone(),
+            )?,
+            (None, Some(profile)) => {
+                HttpRequestBroker::new_metered_with_owned_xml_https_test_profile(
+                    policy.clone(),
+                    request_accounting.clone(),
+                    profile,
+                )?
+            },
+            (None, None) => {
+                HttpRequestBroker::new_metered(policy.clone(), request_accounting.clone())?
+            },
+        };
+        #[cfg(all(
+            feature = "tls-observation",
+            not(feature = "xml-external-entity-owned-https-test-profile")
+        ))]
         let requests = match tls_observation.as_ref() {
             Some(collector) => HttpRequestBroker::new_metered_with_tls_observation(
                 policy.clone(),
@@ -198,7 +282,22 @@ impl SharedWebRuntimeAuthority {
             )?,
             None => HttpRequestBroker::new_metered(policy.clone(), request_accounting.clone())?,
         };
-        #[cfg(not(feature = "tls-observation"))]
+        #[cfg(all(
+            not(feature = "tls-observation"),
+            feature = "xml-external-entity-owned-https-test-profile"
+        ))]
+        let requests = match owned_xml_https_test_profile {
+            Some(profile) => HttpRequestBroker::new_metered_with_owned_xml_https_test_profile(
+                policy.clone(),
+                request_accounting.clone(),
+                profile,
+            )?,
+            None => HttpRequestBroker::new_metered(policy.clone(), request_accounting.clone())?,
+        };
+        #[cfg(all(
+            not(feature = "tls-observation"),
+            not(feature = "xml-external-entity-owned-https-test-profile")
+        ))]
         let requests = HttpRequestBroker::new_metered(policy.clone(), request_accounting.clone())?;
 
         Ok(Self {

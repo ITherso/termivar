@@ -26,6 +26,7 @@ const SOURCE_ROOT: &str = "crates/termivar-oast/src";
 const SCANNER_MANIFEST: &str = "crates/termivar-scanner/Cargo.toml";
 const SCANNER_SOURCE_ROOT: &str = "crates/termivar-scanner/src";
 const SCANNER_ADAPTER: &str = "native_oast_provider.rs";
+const SCANNER_REQUEST_BROKER: &str = "http_evidence/request_broker.rs";
 const SSRF_OAST_REVIEW_CONTRACT: &str = "ssrf_oast_review.rs";
 const SSRF_OAST_REVIEW_RUNTIME: &str = "web_runtime/ssrf_oast_runtime.rs";
 const XML_EXTERNAL_ENTITY_REVIEW_CONTRACT: &str = "xml_external_entity_review.rs";
@@ -175,6 +176,12 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         true,
         REQUIRED_REVIEWED_TLS_PACKAGES,
     )?);
+    violations.extend(feature_crypto_dependency_violations(
+        workspace_root,
+        "owned-https-test-profile",
+        true,
+        REQUIRED_REVIEWED_TLS_PACKAGES,
+    )?);
     violations.extend(source_contract_violations(workspace_root)?);
     violations.extend(scanner_adapter_contract_violations(workspace_root)?);
     violations.extend(release_isolation_violations(workspace_root)?);
@@ -287,6 +294,10 @@ fn feature_contract_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<
         ),
         ("default".to_owned(), BTreeSet::new()),
         (
+            "owned-https-test-profile".to_owned(),
+            BTreeSet::from(["client"]),
+        ),
+        (
             "server".to_owned(),
             BTreeSet::from([
                 "dep:axum",
@@ -315,7 +326,7 @@ fn feature_contract_violations(features: &BTreeMap<String, Vec<String>>) -> Vec<
         Vec::new()
     } else {
         vec![format!(
-            "{PACKAGE} features must remain the exact non-default provider-server boundary"
+            "{PACKAGE} features must remain the exact non-default client/server/test-support/owned-HTTPS boundary"
         )]
     }
 }
@@ -345,11 +356,11 @@ fn dependency_edge_violations(packages: &[&Package]) -> Vec<String> {
     if consumers
         .iter()
         .map(|package| package.name.as_str())
-        .collect::<Vec<_>>()
-        != ["termivar-scanner"]
+        .collect::<BTreeSet<_>>()
+        != BTreeSet::from(["termivar-cli", "termivar-scanner"])
     {
         violations.push(format!(
-            "{PACKAGE} must have exactly one workspace consumer, termivar-scanner; found {:?}",
+            "{PACKAGE} must have exactly the scanner runtime consumer and CLI test-only consumer; found {:?}",
             consumers
                 .iter()
                 .map(|package| package.name.as_str())
@@ -408,7 +419,71 @@ fn dependency_edge_violations(packages: &[&Package]) -> Vec<String> {
             ));
         }
     }
+    if let Some(cli) = consumers
+        .iter()
+        .copied()
+        .find(|package| package.name == "termivar-cli")
+    {
+        let development_edges = cli
+            .dependencies
+            .iter()
+            .filter(|dependency| {
+                dependency.name == PACKAGE && dependency.kind == DependencyKind::Development
+            })
+            .collect::<Vec<_>>();
+        let development_is_exact = matches!(development_edges.as_slice(), [dependency]
+            if !dependency.optional
+                && !dependency.uses_default_features
+                && dependency.features.iter().map(String::as_str).collect::<BTreeSet<_>>()
+                    == BTreeSet::from(["client", "owned-https-test-profile", "test-support"]));
+        if !development_is_exact {
+            violations.push(
+                "termivar-cli must isolate the owned HTTPS actual-CLI fixture to one default-disabled client+test-support+owned-https-test-profile dev-dependency"
+                    .to_owned(),
+            );
+        }
+        if cli.dependencies.iter().any(|dependency| {
+            dependency.name == PACKAGE && dependency.kind != DependencyKind::Development
+        }) {
+            violations.push(format!(
+                "termivar-cli must not add a production, build, or unknown dependency edge to {PACKAGE}"
+            ));
+        }
+    }
+    if let Some(cli) = packages
+        .iter()
+        .copied()
+        .find(|package| package.name == "termivar-cli")
+    {
+        violations.extend(cli_owned_https_tls_dependency_violations(&cli.dependencies));
+    }
     violations
+}
+
+fn cli_owned_https_tls_dependency_violations(
+    dependencies: &[cargo_metadata::Dependency],
+) -> Vec<String> {
+    let edges = dependencies
+        .iter()
+        .filter(|dependency| dependency.name == "tokio-rustls")
+        .collect::<Vec<_>>();
+    let exact = matches!(edges.as_slice(), [dependency]
+        if dependency.kind == DependencyKind::Development
+            && !dependency.optional
+            && !dependency.uses_default_features
+            && dependency.rename.is_none()
+            && dependency.path.is_none()
+            && dependency.target.is_none()
+            && dependency.features.iter().map(String::as_str).collect::<BTreeSet<_>>()
+                == BTreeSet::from(["ring", "tls12"]));
+    if exact {
+        Vec::new()
+    } else {
+        vec![
+            "termivar-cli owned HTTPS fixture must use exactly one unrenamed, unconditional, non-optional, default-disabled tokio-rustls development edge with only ring and tls12"
+                .to_owned(),
+        ]
+    }
 }
 
 fn feature_crypto_dependency_violations(
@@ -635,6 +710,9 @@ fn source_contract_violations(workspace_root: &Path) -> Result<Vec<String>, Box<
     violations.extend(client_transport_contract_violations(production_prefix(
         &client_source,
     ))?);
+    violations.extend(owned_https_profile_port_surface_violations(
+        production_prefix(&client_source),
+    )?);
     let server_source = fs::read_to_string(source_root.join("server.rs"))?;
     violations.extend(server_surface_violations(
         production_prefix(&server_source),
@@ -669,6 +747,12 @@ fn client_transport_contract_violations(source: &str) -> Result<Vec<String>, syn
         ".no_proxy()",
         ".referer(false)",
         ".http1_only()",
+        ".tls_built_in_root_certs(false)",
+        ".add_root_certificate(root_certificate)",
+        ".resolve(OWNED_HTTPS_TEST_PROVIDER_HOST,profile_port.resolved_address(),)",
+        "constOWNED_HTTPS_TEST_PROVIDER_HOST:&str=\"oast-provider.termivar.test\";",
+        "constOWNED_HTTPS_TEST_PROVIDER_ORIGIN:&str=\"https://oast-provider.termivar.test/\";",
+        "public_origin.as_str()!=OWNED_HTTPS_TEST_PROVIDER_ORIGIN",
         "constREGISTER_PATH:&str=\"/v1/sessions\";",
         "format!(\"/v1/sessions/{}/callbacks\",session_id.as_str())",
         "format!(\"/v1/sessions/{}/events\",session_id.as_str())",
@@ -744,6 +828,220 @@ fn client_transport_contract_violations(source: &str) -> Result<Vec<String>, syn
     Ok(violations)
 }
 
+fn owned_https_profile_port_surface_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    const FEATURE: &str = "owned-https-test-profile";
+    const TYPE_NAME: &str = "OwnedHttpsTestProfilePort";
+
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let profiles = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(profile) if profile.ident == TYPE_NAME => Some(profile),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let profile_shape_is_exact = profiles.first().is_some_and(|profile| {
+        matches!(profile.vis, Visibility::Public(_))
+            && has_only_exact_feature_cfg(&profile.attrs, FEATURE)
+            && has_doc_hidden(&profile.attrs)
+            && matches!(&profile.fields, Fields::Unnamed(fields)
+            if fields.unnamed.len() == 1
+                && fields.unnamed.first().is_some_and(|field| {
+                    matches!(field.vis, Visibility::Inherited)
+                        && has_no_conditional_cfg(&field.attrs)
+                        && exact_type_path(&field.ty, &["NonZeroU16"])
+                }))
+    });
+    if profiles.len() != 1 || !profile_shape_is_exact {
+        violations.push(format!(
+            "{PACKAGE} owned HTTPS profile port must remain one public doc-hidden, feature-gated tuple around exactly one private NonZeroU16"
+        ));
+    }
+
+    let implementations = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if exact_type_path(&implementation.self_ty, &[TYPE_NAME]) =>
+            {
+                Some(implementation)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let inherent = implementations
+        .iter()
+        .copied()
+        .filter(|implementation| implementation.trait_.is_none())
+        .collect::<Vec<_>>();
+    let methods_are_exact = inherent.first().is_some_and(|implementation| {
+        if !has_only_exact_feature_cfg(&implementation.attrs, FEATURE)
+            || !plain_impl_shape(implementation)
+            || implementation.items.len() != 2
+        {
+            return false;
+        }
+        let methods = implementation
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Fn(method) => Some((method.sig.ident.to_string(), method)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        methods.len() == 2
+            && methods.get("new").is_some_and(|method| {
+                matches!(method.vis, Visibility::Public(_))
+                    && plain_method_shape(method, true)
+                    && method.sig.inputs.len() == 1
+                    && exact_typed_argument(method.sig.inputs.first(), "port", &["NonZeroU16"])
+                    && return_type_is_path(&method.sig.output, &["Self"])
+            })
+            && methods.get("resolved_address").is_some_and(|method| {
+                matches!(method.vis, Visibility::Inherited)
+                    && plain_method_shape(method, false)
+                    && method.sig.inputs.len() == 1
+                    && owned_receiver(method.sig.inputs.first())
+                    && return_type_is_path(&method.sig.output, &["SocketAddr"])
+            })
+    });
+    if inherent.len() != 1 || !methods_are_exact {
+        violations.push(format!(
+            "{PACKAGE} owned HTTPS profile port must retain only exact `new(NonZeroU16) -> Self` and private `resolved_address(self) -> SocketAddr` methods"
+        ));
+    }
+
+    let debug_impls = implementations
+        .iter()
+        .copied()
+        .filter(|implementation| {
+            implementation
+                .trait_
+                .as_ref()
+                .is_some_and(|(_, path, _)| exact_syn_path(path, &["fmt", "Debug"]))
+        })
+        .collect::<Vec<_>>();
+    if implementations.len() != 2
+        || debug_impls.len() != 1
+        || !has_only_exact_feature_cfg(&debug_impls[0].attrs, FEATURE)
+        || !plain_impl_shape(debug_impls[0])
+    {
+        violations.push(format!(
+            "{PACKAGE} owned HTTPS profile port must retain only its exact feature-gated inherent and redacted Debug implementations"
+        ));
+    }
+
+    Ok(violations)
+}
+
+fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    const FEATURE: &str = "xml-external-entity-owned-https-test-profile";
+    const TYPE_NAME: &str = "OwnedXmlHttpsTestTransportProfile";
+
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let profiles = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(profile) if profile.ident == TYPE_NAME => Some(profile),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let profile_shape_is_exact = profiles.first().is_some_and(|profile| {
+        is_crate_visibility(&profile.vis)
+            && has_only_exact_feature_cfg(&profile.attrs, FEATURE)
+            && matches!(&profile.fields, Fields::Named(fields)
+            if fields.named.len() == 1
+                && fields.named.first().is_some_and(|field| {
+                    field.ident.as_ref().is_some_and(|identifier| identifier == "port")
+                        && matches!(field.vis, Visibility::Inherited)
+                        && has_no_conditional_cfg(&field.attrs)
+                        && exact_type_path(&field.ty, &["NonZeroU16"])
+                }))
+    });
+    if profiles.len() != 1 || !profile_shape_is_exact {
+        violations.push(
+            "termivar-scanner owned XML HTTPS transport profile must remain one crate-private, feature-gated record containing exactly one private NonZeroU16 port"
+                .to_owned(),
+        );
+    }
+
+    let implementations = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if exact_type_path(&implementation.self_ty, &[TYPE_NAME]) =>
+            {
+                Some(implementation)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let methods_are_exact = implementations.first().is_some_and(|implementation| {
+        if implementation.trait_.is_some()
+            || !has_only_exact_feature_cfg(&implementation.attrs, FEATURE)
+            || !plain_impl_shape(implementation)
+            || implementation.items.len() != 3
+        {
+            return false;
+        }
+        let methods = implementation
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Fn(method) => Some((method.sig.ident.to_string(), method)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        methods.len() == 3
+            && methods
+                .get("for_application_and_policy")
+                .is_some_and(|method| {
+                    is_crate_visibility(&method.vis)
+                        && plain_method_shape(method, false)
+                        && method.sig.inputs.len() == 2
+                        && exact_shared_reference_argument(
+                            method.sig.inputs.first(),
+                            "application",
+                            &["url", "Url"],
+                        )
+                        && exact_shared_reference_argument(
+                            method.sig.inputs.iter().nth(1),
+                            "policy",
+                            &["XmlExternalEntityReviewPolicy"],
+                        )
+                        && return_type_is_single_wrapper(&method.sig.output, &["Option"], &["Self"])
+                })
+            && methods.get("port").is_some_and(|method| {
+                is_crate_visibility(&method.vis)
+                    && plain_method_shape(method, true)
+                    && method.sig.inputs.len() == 1
+                    && owned_receiver(method.sig.inputs.first())
+                    && return_type_is_path(&method.sig.output, &["NonZeroU16"])
+            })
+            && methods.get("target_address").is_some_and(|method| {
+                matches!(method.vis, Visibility::Inherited)
+                    && plain_method_shape(method, false)
+                    && method.sig.inputs.len() == 1
+                    && owned_receiver(method.sig.inputs.first())
+                    && return_type_is_path(&method.sig.output, &["SocketAddr"])
+            })
+    });
+    if implementations.len() != 1 || !methods_are_exact {
+        violations.push(
+            "termivar-scanner owned XML HTTPS transport profile must retain only its exact selection, sealed-port, and fixed-target-address method signatures"
+                .to_owned(),
+        );
+    }
+
+    Ok(violations)
+}
+
 fn signature_accepts_arbitrary_authority(signature: &syn::Signature) -> bool {
     signature.inputs.iter().any(|input| {
         let syn::FnArg::Typed(argument) = input else {
@@ -801,11 +1099,40 @@ fn scanner_adapter_contract_violations(
                 .to_owned(),
         );
     }
+    let owned_https_profile_members = features
+        .and_then(|table| table.get("xml-external-entity-owned-https-test-profile"))
+        .and_then(toml::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<BTreeSet<_>>()
+        });
+    if owned_https_profile_members
+        != Some(BTreeSet::from([
+            "termivar-oast/owned-https-test-profile",
+            "xml-external-entity-review",
+        ]))
+    {
+        violations.push(
+            "termivar-scanner owned HTTPS profile must contain exactly XML review and the sealed provider test profile"
+                .to_owned(),
+        );
+    }
     if let Some(features) = features {
         for aggregate in ["default", "full", "enterprise", "minimal", "research"] {
             if feature_reaches(features, aggregate, "oast-native-provider") {
                 violations.push(format!(
                     "termivar-scanner feature `{aggregate}` must not enable oast-native-provider"
+                ));
+            }
+            if feature_reaches(
+                features,
+                aggregate,
+                "xml-external-entity-owned-https-test-profile",
+            ) {
+                violations.push(format!(
+                    "termivar-scanner feature `{aggregate}` must not enable the owned HTTPS test profile"
                 ));
             }
         }
@@ -842,6 +1169,10 @@ fn scanner_adapter_contract_violations(
     }
     violations.extend(adapter_forbidden_authority_violations(&production));
     violations.extend(adapter_private_authority_shape_violations(&production)?);
+    let request_broker = fs::read_to_string(source_root.join(SCANNER_REQUEST_BROKER))?;
+    violations.extend(owned_xml_https_profile_surface_violations(
+        production_prefix(&request_broker),
+    )?);
 
     let mut scanner_sources = rust_sources_below(&source_root)?;
     scanner_sources.sort();
@@ -875,12 +1206,18 @@ fn scanner_adapter_contract_violations(
 
     let cli_manifest = fs::read_to_string(workspace_root.join(CLI_MANIFEST))?;
     let cli_source = fs::read_to_string(workspace_root.join("crates/termivar-cli/src/main.rs"))?;
-    for forbidden in ["oast-native-provider", "termivar-oast", "oast-provider"] {
+    for forbidden in ["oast-native-provider", "oast-provider"] {
         if cli_manifest.contains(forbidden) || production_prefix(&cli_source).contains(forbidden) {
             violations.push(format!(
                 "the native OAST provider adapter must expose no CLI dependency, feature, or flag containing `{forbidden}`"
             ));
         }
+    }
+    if production_prefix(&cli_source).contains("termivar-oast") {
+        violations.push(
+            "the native OAST provider adapter must expose no production CLI source reference to termivar-oast"
+                .to_owned(),
+        );
     }
 
     let authority = fs::read_to_string(workspace_root.join(SHARED_AUTHORITY_SOURCE))?;
@@ -1578,6 +1915,254 @@ fn exact_nested_type(ty: &Type, names: &[&str]) -> bool {
     types.next().is_none() && arguments.args.len() == 1 && exact_nested_type(inner, remaining)
 }
 
+fn exact_syn_path(path: &syn::Path, names: &[&str]) -> bool {
+    path.leading_colon.is_none()
+        && path.segments.len() == names.len()
+        && path.segments.iter().zip(names).all(|(segment, expected)| {
+            segment.ident == *expected && matches!(segment.arguments, PathArguments::None)
+        })
+}
+
+fn exact_type_path(ty: &Type, names: &[&str]) -> bool {
+    matches!(ty, Type::Path(path) if path.qself.is_none() && exact_syn_path(&path.path, names))
+}
+
+fn exact_single_wrapper_type(ty: &Type, wrapper: &[&str], inner: &[&str]) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    if path.qself.is_some()
+        || path.path.leading_colon.is_some()
+        || path.path.segments.len() != wrapper.len()
+    {
+        return false;
+    }
+    for (index, (segment, expected)) in path.path.segments.iter().zip(wrapper).enumerate() {
+        if segment.ident != *expected {
+            return false;
+        }
+        if index + 1 != wrapper.len() && !matches!(segment.arguments, PathArguments::None) {
+            return false;
+        }
+    }
+    let Some(last) = path.path.segments.last() else {
+        return false;
+    };
+    let PathArguments::AngleBracketed(arguments) = &last.arguments else {
+        return false;
+    };
+    matches!(arguments.args.first(), Some(GenericArgument::Type(ty)) if exact_type_path(ty, inner))
+        && arguments.args.len() == 1
+}
+
+fn exact_single_type_argument<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.leading_colon.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = path.path.segments.first()?;
+    if segment.ident != wrapper {
+        return None;
+    }
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    if arguments.args.len() != 1 {
+        return None;
+    }
+    match arguments.args.first()? {
+        GenericArgument::Type(inner) => Some(inner),
+        _ => None,
+    }
+}
+
+fn exact_vec_vec_u8(ty: &Type) -> bool {
+    exact_single_type_argument(ty, "Vec")
+        .and_then(|inner| exact_single_type_argument(inner, "Vec"))
+        .is_some_and(|inner| exact_type_path(inner, &["u8"]))
+}
+
+fn exact_private_identity_oracle_storage(ty: &Type) -> bool {
+    exact_single_type_argument(ty, "StdMutex").is_some_and(exact_vec_vec_u8)
+}
+
+fn exact_receiver_method_call(expression: &syn::Expr, receiver: &str, method: &str) -> bool {
+    let syn::Expr::MethodCall(call) = expression else {
+        return false;
+    };
+    matches!(call.receiver.as_ref(), syn::Expr::Path(path)
+        if path.qself.is_none() && path.path.is_ident(receiver))
+        && call.method == method
+        && call.turbofish.is_none()
+        && call.args.is_empty()
+}
+
+fn exact_integer_literal(expression: &syn::Expr, expected: usize) -> bool {
+    matches!(expression, syn::Expr::Lit(literal)
+        if literal.attrs.is_empty()
+            && matches!(&literal.lit, syn::Lit::Int(value)
+                if value.base10_parse::<usize>().is_ok_and(|actual| actual == expected)))
+}
+
+#[derive(Default)]
+struct PrivateIdentityOracleBoundVisitor {
+    count_bounds: usize,
+    byte_bounds: usize,
+}
+
+impl<'ast> Visit<'ast> for PrivateIdentityOracleBoundVisitor {
+    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
+        if matches!(&expression.op, syn::BinOp::Lt(_))
+            && exact_receiver_method_call(&expression.left, "identities", "len")
+            && exact_integer_literal(&expression.right, 4)
+        {
+            self.count_bounds += 1;
+        }
+        if matches!(&expression.op, syn::BinOp::Le(_))
+            && exact_receiver_method_call(&expression.left, "value", "len")
+            && exact_integer_literal(&expression.right, 64)
+        {
+            self.byte_bounds += 1;
+        }
+        visit::visit_expr_binary(self, expression);
+    }
+}
+
+fn private_identity_oracle_method_is_exact(method: &syn::ImplItemFn) -> bool {
+    if !matches!(method.vis, Visibility::Inherited)
+        || !plain_method_shape(method, false)
+        || method.sig.inputs.len() != 2
+        || !matches!(method.sig.inputs.first(), Some(FnArg::Receiver(receiver))
+            if receiver.reference.is_some()
+                && receiver.mutability.is_none()
+                && receiver.colon_token.is_none())
+        || !exact_shared_reference_argument(method.sig.inputs.iter().nth(1), "value", &["str"])
+        || !matches!(&method.sig.output, ReturnType::Default)
+    {
+        return false;
+    }
+    let mut visitor = PrivateIdentityOracleBoundVisitor::default();
+    visitor.visit_block(&method.block);
+    visitor.count_bounds == 1 && visitor.byte_bounds == 1
+}
+
+fn exact_argument_type<'a>(input: Option<&'a FnArg>, name: &str) -> Option<&'a Type> {
+    let FnArg::Typed(argument) = input? else {
+        return None;
+    };
+    let syn::Pat::Ident(pattern) = argument.pat.as_ref() else {
+        return None;
+    };
+    (pattern.ident == name
+        && pattern.by_ref.is_none()
+        && pattern.mutability.is_none()
+        && pattern.subpat.is_none())
+    .then_some(argument.ty.as_ref())
+}
+
+fn exact_typed_argument(input: Option<&FnArg>, name: &str, ty: &[&str]) -> bool {
+    exact_argument_type(input, name).is_some_and(|actual| exact_type_path(actual, ty))
+}
+
+fn exact_shared_reference_argument(input: Option<&FnArg>, name: &str, ty: &[&str]) -> bool {
+    exact_argument_type(input, name).is_some_and(|actual| {
+        matches!(actual, Type::Reference(reference)
+            if reference.lifetime.is_none()
+                && reference.mutability.is_none()
+                && exact_type_path(&reference.elem, ty))
+    })
+}
+
+fn owned_receiver(input: Option<&FnArg>) -> bool {
+    matches!(input, Some(FnArg::Receiver(receiver))
+        if receiver.reference.is_none()
+            && receiver.mutability.is_none()
+            && receiver.colon_token.is_none())
+}
+
+fn plain_impl_shape(implementation: &syn::ItemImpl) -> bool {
+    implementation.defaultness.is_none()
+        && implementation.unsafety.is_none()
+        && implementation.generics.params.is_empty()
+        && implementation.generics.where_clause.is_none()
+}
+
+fn plain_method_shape(method: &syn::ImplItemFn, is_const: bool) -> bool {
+    method.defaultness.is_none()
+        && method.sig.constness.is_some() == is_const
+        && method.sig.asyncness.is_none()
+        && method.sig.unsafety.is_none()
+        && method.sig.abi.is_none()
+        && method.sig.generics.params.is_empty()
+        && method.sig.generics.where_clause.is_none()
+        && method.sig.variadic.is_none()
+        && has_no_conditional_cfg(&method.attrs)
+}
+
+fn is_crate_visibility(visibility: &Visibility) -> bool {
+    matches!(visibility, Visibility::Restricted(restricted)
+        if restricted.in_token.is_none() && restricted.path.is_ident("crate"))
+}
+
+fn return_type_is_path(output: &ReturnType, expected: &[&str]) -> bool {
+    matches!(output, ReturnType::Type(_, ty) if exact_type_path(ty, expected))
+}
+
+fn return_type_is_single_wrapper(output: &ReturnType, wrapper: &[&str], inner: &[&str]) -> bool {
+    matches!(output, ReturnType::Type(_, ty) if exact_single_wrapper_type(ty, wrapper, inner))
+}
+
+fn return_type_is_result_unit_error(output: &ReturnType, error: &[&str]) -> bool {
+    let ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    let Type::Path(path) = ty.as_ref() else {
+        return false;
+    };
+    let Some(result) = path.path.segments.first() else {
+        return false;
+    };
+    if path.qself.is_some()
+        || path.path.leading_colon.is_some()
+        || path.path.segments.len() != 1
+        || result.ident != "Result"
+    {
+        return false;
+    }
+    let PathArguments::AngleBracketed(arguments) = &result.arguments else {
+        return false;
+    };
+    let mut arguments = arguments.args.iter();
+    matches!(arguments.next(), Some(GenericArgument::Type(Type::Tuple(tuple))) if tuple.elems.is_empty())
+        && matches!(arguments.next(), Some(GenericArgument::Type(ty)) if exact_type_path(ty, error))
+        && arguments.next().is_none()
+}
+
+fn request_ledger_fixture_signature_is_exact(signature: &syn::Signature) -> bool {
+    signature.constness.is_none()
+        && signature.asyncness.is_some()
+        && signature.unsafety.is_none()
+        && signature.abi.is_none()
+        && signature.generics.params.is_empty()
+        && signature.generics.where_clause.is_none()
+        && signature.variadic.is_none()
+        && signature.inputs.len() == 3
+        && exact_typed_argument(signature.inputs.first(), "listener", &["TcpListener"])
+        && exact_typed_argument(
+            signature.inputs.iter().nth(1),
+            "provider",
+            &["ProviderState"],
+        )
+        && exact_typed_argument(
+            signature.inputs.iter().nth(2),
+            "ledger",
+            &["ProviderTestRequestLedger"],
+        )
+        && return_type_is_result_unit_error(&signature.output, &["ProviderServerError"])
+}
+
 fn derives_any(attributes: &[syn::Attribute], names: &[&str]) -> bool {
     attributes.iter().any(|attribute| {
         attribute.path().is_ident("derive")
@@ -1603,6 +2188,24 @@ fn has_exact_feature_cfg(attributes: &[syn::Attribute], feature: &str) -> bool {
                     == expected
             })
     })
+}
+
+fn has_only_exact_feature_cfg(attributes: &[syn::Attribute], feature: &str) -> bool {
+    attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("cfg"))
+        .count()
+        == 1
+        && !attributes
+            .iter()
+            .any(|attribute| attribute.path().is_ident("cfg_attr"))
+        && has_exact_feature_cfg(attributes, feature)
+}
+
+fn has_no_conditional_cfg(attributes: &[syn::Attribute]) -> bool {
+    !attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr"))
 }
 
 fn feature_reaches(
@@ -1686,6 +2289,7 @@ fn server_surface_violations(
     for fixture_name in [
         "serve_provider_on_listener",
         "serve_provider_on_listener_with_poll_barrier",
+        "serve_provider_on_listener_with_request_ledger",
     ] {
         let fixtures = server
             .items
@@ -1705,6 +2309,30 @@ fn server_surface_violations(
             ));
         }
     }
+    let request_ledger_fixtures = server
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(function)
+                if function.sig.ident == "serve_provider_on_listener_with_request_ledger" =>
+            {
+                Some(function)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if request_ledger_fixtures.len() != 1
+        || !request_ledger_fixtures.first().is_some_and(|function| {
+            matches!(function.vis, Visibility::Public(_))
+                && has_only_exact_feature_cfg(&function.attrs, "test-support")
+                && has_doc_hidden(&function.attrs)
+                && request_ledger_fixture_signature_is_exact(&function.sig)
+        })
+    {
+        violations.push(format!(
+            "{PACKAGE} request-ledger fixture must retain its exact async listener, provider, ledger, and ProviderServerError signature"
+        ));
+    }
     let fixture_barriers = server
         .items
         .iter()
@@ -1721,6 +2349,250 @@ fn server_surface_violations(
     {
         violations.push(format!(
             "{PACKAGE} fixture poll barrier must be exactly public, doc-hidden, and gated only by `test-support`"
+        ));
+    }
+    for fixture_type in ["ProviderTestRequestLedger", "ProviderTestRequestSnapshot"] {
+        let types = server
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Struct(item) if item.ident == fixture_type => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if types.len() != 1
+            || !matches!(types[0].vis, Visibility::Public(_))
+            || cfg_feature_names(&types[0].attrs) != BTreeSet::from(["test-support".to_owned()])
+            || !has_doc_hidden(&types[0].attrs)
+        {
+            violations.push(format!(
+                "{PACKAGE} fixture type `{fixture_type}` must be exactly public, doc-hidden, and gated only by `test-support`"
+            ));
+        }
+    }
+    let request_ledgers = server
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(item) if item.ident == "ProviderTestRequestLedger" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let ledger_state_fields = request_ledgers
+        .first()
+        .map(|record| record.fields.iter().collect::<Vec<_>>())
+        .unwrap_or_default();
+    if ledger_state_fields.len() != 1
+        || ledger_state_fields[0]
+            .ident
+            .as_ref()
+            .is_none_or(|name| name != "state")
+        || !matches!(ledger_state_fields[0].vis, Visibility::Inherited)
+        || !exact_nested_type(
+            &ledger_state_fields[0].ty,
+            &["Arc", "ProviderTestRequestLedgerState"],
+        )
+    {
+        violations.push(format!(
+            "{PACKAGE} fixture request ledger must retain exactly one private typed state handle"
+        ));
+    }
+    let request_ledger_states = server
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(item) if item.ident == "ProviderTestRequestLedgerState" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let request_ledger_state_fields = request_ledger_states
+        .first()
+        .map(|record| {
+            record
+                .fields
+                .iter()
+                .filter_map(|field| {
+                    field.ident.as_ref().map(|identifier| {
+                        (
+                            identifier.to_string(),
+                            matches!(field.vis, Visibility::Inherited),
+                            type_path_tail(&field.ty),
+                        )
+                    })
+                })
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let mut expected_request_ledger_state_fields = [
+        "allocate", "callback", "cleanup", "other", "poll", "register",
+    ]
+    .into_iter()
+    .map(|name| (name.to_owned(), true, Some("AtomicUsize".to_owned())))
+    .collect::<BTreeSet<_>>();
+    expected_request_ledger_state_fields.insert((
+        "private_identity_sentinels".to_owned(),
+        true,
+        Some("StdMutex".to_owned()),
+    ));
+    let private_identity_storage_is_exact = request_ledger_states
+        .first()
+        .and_then(|record| {
+            record.fields.iter().find(|field| {
+                field
+                    .ident
+                    .as_ref()
+                    .is_some_and(|name| name == "private_identity_sentinels")
+            })
+        })
+        .is_some_and(|field| exact_private_identity_oracle_storage(&field.ty));
+    if request_ledger_states.len() != 1
+        || !matches!(request_ledger_states[0].vis, Visibility::Inherited)
+        || cfg_feature_names(&request_ledger_states[0].attrs)
+            != BTreeSet::from(["test-support".to_owned()])
+        || request_ledger_state_fields != expected_request_ledger_state_fields
+        || !private_identity_storage_is_exact
+    {
+        violations.push(format!(
+            "{PACKAGE} fixture request-ledger state must retain exactly six private raw-free atomic counters plus one bounded private identity oracle"
+        ));
+    }
+    let request_snapshots = server
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(item) if item.ident == "ProviderTestRequestSnapshot" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let snapshot_fields = request_snapshots
+        .first()
+        .map(|record| {
+            record
+                .fields
+                .iter()
+                .filter_map(|field| {
+                    field.ident.as_ref().map(|identifier| {
+                        (
+                            identifier.to_string(),
+                            matches!(field.vis, Visibility::Public(_)),
+                            type_path_tail(&field.ty),
+                        )
+                    })
+                })
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let expected_snapshot_fields = [
+        "allocate", "callback", "cleanup", "other", "poll", "register",
+    ]
+    .into_iter()
+    .map(|name| (name.to_owned(), true, Some("usize".to_owned())))
+    .collect::<BTreeSet<_>>();
+    if snapshot_fields != expected_snapshot_fields {
+        violations.push(format!(
+            "{PACKAGE} fixture request snapshot must expose exactly six public raw-free usize counters"
+        ));
+    }
+    let fixture_ledger_impls = server
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if implementation.trait_.is_none()
+                    && type_path_tail(&implementation.self_ty).as_deref()
+                        == Some("ProviderTestRequestLedger") =>
+            {
+                Some(implementation)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let public_ledger_methods = fixture_ledger_impls
+        .first()
+        .map(|implementation| {
+            implementation
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ImplItem::Fn(method) if matches!(method.vis, Visibility::Public(_)) => {
+                        Some(method.sig.ident.to_string())
+                    },
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let ledger_method_signatures_are_exact =
+        fixture_ledger_impls.first().is_some_and(|implementation| {
+            let methods = implementation
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ImplItem::Fn(method) if matches!(method.vis, Visibility::Public(_)) => {
+                        Some((method.sig.ident.to_string(), method))
+                    },
+                    _ => None,
+                })
+                .collect::<BTreeMap<_, _>>();
+            let is_plain = |method: &syn::ImplItemFn| {
+                method.sig.constness.is_none()
+                    && method.sig.asyncness.is_none()
+                    && method.sig.unsafety.is_none()
+                    && method.sig.abi.is_none()
+                    && method.sig.generics.params.is_empty()
+                    && method.sig.generics.where_clause.is_none()
+                    && method.sig.variadic.is_none()
+            };
+            let private_identity_recorders = implementation
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ImplItem::Fn(method) if method.sig.ident == "record_private_identity" => {
+                        Some(method)
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            methods.get("new").is_some_and(|method| {
+                is_plain(method)
+                    && method.sig.inputs.is_empty()
+                    && return_type_ends_with(&method.sig.output, "Self")
+            }) && methods.get("snapshot").is_some_and(|method| {
+                is_plain(method)
+                    && method.sig.inputs.len() == 1
+                    && matches!(method.sig.inputs.first(), Some(FnArg::Receiver(receiver))
+                    if receiver.reference.is_some()
+                        && receiver.mutability.is_none()
+                        && receiver.colon_token.is_none())
+                    && return_type_ends_with(&method.sig.output, "ProviderTestRequestSnapshot")
+            }) && methods
+                .get("private_identity_sentinels")
+                .is_some_and(|method| {
+                    is_plain(method)
+                        && method.sig.inputs.len() == 1
+                        && matches!(method.sig.inputs.first(), Some(FnArg::Receiver(receiver))
+                    if receiver.reference.is_some()
+                        && receiver.mutability.is_none()
+                        && receiver.colon_token.is_none())
+                        && matches!(&method.sig.output, ReturnType::Type(_, output)
+                        if exact_vec_vec_u8(output))
+                })
+                && matches!(private_identity_recorders.as_slice(), [method]
+                if private_identity_oracle_method_is_exact(method))
+        });
+    if fixture_ledger_impls.len() != 1
+        || cfg_feature_names(&fixture_ledger_impls[0].attrs)
+            != BTreeSet::from(["test-support".to_owned()])
+        || public_ledger_methods
+            != BTreeSet::from([
+                "new".to_owned(),
+                "private_identity_sentinels".to_owned(),
+                "snapshot".to_owned(),
+            ])
+        || !ledger_method_signatures_are_exact
+    {
+        violations.push(format!(
+            "{PACKAGE} fixture request ledger must expose only the exact test-support construction, raw-free snapshot, and bounded private-identity oracle methods"
         ));
     }
     let fixture_barrier_impls = server
@@ -1777,6 +2649,7 @@ fn server_surface_violations(
                 "serve_provider"
                     | "serve_provider_on_listener"
                     | "serve_provider_on_listener_with_poll_barrier"
+                    | "serve_provider_on_listener_with_request_ledger"
             )
         {
             violations.push(format!(
@@ -1848,7 +2721,22 @@ fn server_surface_violations(
                 true,
             ),
             (
+                "server::serve_provider_on_listener_with_request_ledger".to_owned(),
+                BTreeSet::from(["test-support".to_owned()]),
+                true,
+            ),
+            (
                 "server::ProviderTestPollBarrier".to_owned(),
+                BTreeSet::from(["test-support".to_owned()]),
+                true,
+            ),
+            (
+                "server::ProviderTestRequestLedger".to_owned(),
+                BTreeSet::from(["test-support".to_owned()]),
+                true,
+            ),
+            (
+                "server::ProviderTestRequestSnapshot".to_owned(),
                 BTreeSet::from(["test-support".to_owned()]),
                 true,
             ),
@@ -2297,12 +3185,45 @@ fn release_isolation_violations(workspace_root: &Path) -> io::Result<Vec<String>
 
 fn release_isolation_source_violations(cli_manifest: &str, release_workflow: &str) -> Vec<String> {
     let mut violations = Vec::new();
-    if cli_manifest.contains(PACKAGE) || cli_manifest.contains("termivar-oast-provider") {
-        violations.push(format!(
-            "termivar-cli and release-bundle must not depend on or expose {PACKAGE}"
-        ));
+    match toml::from_str::<toml::Value>(cli_manifest) {
+        Ok(manifest) => {
+            let has_runtime_dependency = manifest
+                .get("dependencies")
+                .and_then(toml::Value::as_table)
+                .is_some_and(|dependencies| dependencies.contains_key(PACKAGE));
+            let release_members = manifest
+                .get("features")
+                .and_then(|features| features.get("release-bundle"))
+                .and_then(toml::Value::as_array);
+            let release_exposes_profile = release_members.is_some_and(|members| {
+                members
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|member| {
+                        matches!(
+                            member,
+                            "xml-external-entity-owned-https-test-profile" | "termivar-oast"
+                        )
+                    })
+            });
+            if has_runtime_dependency
+                || release_exposes_profile
+                || cli_manifest.contains("termivar-oast-provider")
+            {
+                violations.push(format!(
+                    "termivar-cli production dependencies and release-bundle must not depend on or expose {PACKAGE} or its owned HTTPS test profile"
+                ));
+            }
+        },
+        Err(_) => violations.push(
+            "termivar-cli manifest must remain valid TOML for release-isolation inspection"
+                .to_owned(),
+        ),
     }
-    if release_workflow.contains(PACKAGE) || release_workflow.contains("termivar-oast-provider") {
+    if release_workflow.contains(PACKAGE)
+        || release_workflow.contains("termivar-oast-provider")
+        || release_workflow.contains("xml-external-entity-owned-https-test-profile")
+    {
         violations.push(
             "release workflow must not build, package, attest, or publish the native OAST provider"
                 .to_owned(),
@@ -2484,6 +3405,10 @@ mod tests {
             ),
             ("default".to_owned(), Vec::new()),
             (
+                "owned-https-test-profile".to_owned(),
+                vec!["client".to_owned()],
+            ),
+            (
                 "server".to_owned(),
                 vec![
                     "dep:axum".to_owned(),
@@ -2514,6 +3439,44 @@ mod tests {
             .unwrap()
             .push("dep:termivar-scanner".to_owned());
         assert!(!feature_contract_violations(&widened).is_empty());
+
+        let mut widened = BTreeMap::from([
+            (
+                "client".to_owned(),
+                vec![
+                    "dep:reqwest".to_owned(),
+                    "dep:serde_json".to_owned(),
+                    "dep:tokio".to_owned(),
+                    "dep:tokio-util".to_owned(),
+                ],
+            ),
+            ("default".to_owned(), Vec::new()),
+            (
+                "owned-https-test-profile".to_owned(),
+                vec!["client".to_owned(), "server".to_owned()],
+            ),
+            (
+                "server".to_owned(),
+                vec![
+                    "dep:axum".to_owned(),
+                    "dep:clap".to_owned(),
+                    "dep:futures".to_owned(),
+                    "dep:hyper".to_owned(),
+                    "dep:hyper-util".to_owned(),
+                    "dep:libc".to_owned(),
+                    "dep:serde_json".to_owned(),
+                    "dep:tokio".to_owned(),
+                    "dep:tower".to_owned(),
+                ],
+            ),
+            ("test-support".to_owned(), vec!["server".to_owned()]),
+        ]);
+        assert!(!feature_contract_violations(&widened).is_empty());
+        widened
+            .get_mut("owned-https-test-profile")
+            .unwrap()
+            .retain(|member| member != "server");
+        assert!(feature_contract_violations(&widened).is_empty());
     }
 
     #[test]
@@ -2534,6 +3497,60 @@ mod tests {
         }
         assert!(dependency_platform_is_allowed("reqwest", None, true));
         assert!(dependency_platform_is_allowed("zeroize", None, false));
+    }
+
+    fn valid_cli_owned_https_tls_dependency() -> cargo_metadata::Dependency {
+        let mut dependency: cargo_metadata::Dependency = toml::from_str(
+            r#"
+                name = "tokio-rustls"
+                req = "^0.26.4"
+                kind = "normal"
+                optional = false
+                uses_default_features = false
+                features = ["ring", "tls12"]
+            "#,
+        )
+        .unwrap();
+        dependency.kind = DependencyKind::Development;
+        dependency
+    }
+
+    #[test]
+    fn cli_owned_https_tls_development_edge_is_exact() {
+        let exact = valid_cli_owned_https_tls_dependency();
+        assert!(cli_owned_https_tls_dependency_violations(&[exact.clone()]).is_empty());
+
+        for mutation in [
+            "kind",
+            "optional",
+            "defaults",
+            "feature-added",
+            "feature-removed",
+            "rename",
+            "target",
+            "duplicate",
+            "missing",
+        ] {
+            let mut dependencies = vec![exact.clone()];
+            match mutation {
+                "kind" => dependencies[0].kind = DependencyKind::Normal,
+                "optional" => dependencies[0].optional = true,
+                "defaults" => dependencies[0].uses_default_features = true,
+                "feature-added" => dependencies[0].features.push("logging".to_owned()),
+                "feature-removed" => dependencies[0]
+                    .features
+                    .retain(|feature| feature != "tls12"),
+                "rename" => dependencies[0].rename = Some("fixture_tls".to_owned()),
+                "target" => dependencies[0].target = Some("cfg(unix)".parse().unwrap()),
+                "duplicate" => dependencies.push(exact.clone()),
+                "missing" => dependencies.clear(),
+                _ => unreachable!(),
+            }
+            assert!(
+                !cli_owned_https_tls_dependency_violations(&dependencies).is_empty(),
+                "tokio-rustls `{mutation}` mutation unexpectedly passed"
+            );
+        }
     }
 
     fn dependency_graph(
@@ -2746,6 +3763,54 @@ mod tests {
                 let _ = barrier;
                 serve_listener(listener, provider).await
             }
+            #[cfg(feature = "test-support")]
+            struct ProviderTestRequestLedgerState {
+                register: AtomicUsize,
+                allocate: AtomicUsize,
+                poll: AtomicUsize,
+                cleanup: AtomicUsize,
+                callback: AtomicUsize,
+                other: AtomicUsize,
+                private_identity_sentinels: StdMutex<Vec<Vec<u8>>>,
+            }
+            #[cfg(feature = "test-support")]
+            #[doc(hidden)]
+            pub struct ProviderTestRequestLedger {
+                state: Arc<ProviderTestRequestLedgerState>,
+            }
+            #[cfg(feature = "test-support")]
+            #[doc(hidden)]
+            pub struct ProviderTestRequestSnapshot {
+                pub register: usize,
+                pub allocate: usize,
+                pub poll: usize,
+                pub cleanup: usize,
+                pub callback: usize,
+                pub other: usize,
+            }
+            #[cfg(feature = "test-support")]
+            impl ProviderTestRequestLedger {
+                pub fn new() -> Self { todo!() }
+                pub fn snapshot(&self) -> ProviderTestRequestSnapshot { todo!() }
+                pub fn private_identity_sentinels(&self) -> Vec<Vec<u8>> { todo!() }
+                fn record_private_identity(&self, value: &str) {
+                    let mut identities = self.state.private_identity_sentinels.lock().unwrap();
+                    if identities.len() < 4 && value.len() <= 64 {
+                        identities.push(value.as_bytes().to_vec());
+                    }
+                }
+                fn record(&self) {}
+            }
+            #[cfg(feature = "test-support")]
+            #[doc(hidden)]
+            pub async fn serve_provider_on_listener_with_request_ledger(
+                listener: TcpListener,
+                provider: ProviderState,
+                ledger: ProviderTestRequestLedger,
+            ) -> Result<(), ProviderServerError> {
+                let _ = ledger;
+                serve_listener(listener, provider).await
+            }
             async fn serve_listener(listener: TcpListener, provider: ProviderState) -> Result<(), Error> {
                 let connection_limit = usize::from(provider.max_concurrent_requests());
                 let router = provider_router(provider);
@@ -2849,7 +3914,10 @@ mod tests {
             pub use server::{
                 serve_provider_on_listener,
                 serve_provider_on_listener_with_poll_barrier,
+                serve_provider_on_listener_with_request_ledger,
                 ProviderTestPollBarrier,
+                ProviderTestRequestLedger,
+                ProviderTestRequestSnapshot,
             };
             #[cfg(feature = "server")]
             pub use server::{serve_provider, ProviderServerError};
@@ -2916,6 +3984,86 @@ mod tests {
                     1,
                 ),
             ),
+            (
+                valid_server_source().replacen(
+                    "serve_provider_on_listener_with_request_ledger",
+                    "serve_provider_on_listener_with_unbounded_ledger",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "ledger: ProviderTestRequestLedger,",
+                    "ledger: String,",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "state: Arc<ProviderTestRequestLedgerState>",
+                    "state: Arc<String>",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "other: AtomicUsize,",
+                    "other: AtomicUsize, raw_session_id: String,",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "private_identity_sentinels: StdMutex<Vec<Vec<u8>>>,",
+                    "private_identity_sentinels: StdMutex<Vec<String>>,",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen("pub callback: usize,", "pub callback: String,", 1),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "pub fn snapshot(&self)",
+                    "pub fn expose_raw(&self)",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "pub fn snapshot(&self) -> ProviderTestRequestSnapshot",
+                    "pub fn snapshot(&mut self, raw: &str) -> String",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(
+                    "pub fn private_identity_sentinels(&self) -> Vec<Vec<u8>>",
+                    "pub fn private_identity_sentinels(&self) -> Vec<String>",
+                    1,
+                ),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen(" && value.len() <= 64", "", 1),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().replacen("identities.len() < 4", "identities.len() < 5", 1),
+                valid_library_source().to_owned(),
+            ),
+            (
+                valid_server_source().to_owned(),
+                valid_library_source().replacen("ProviderTestRequestSnapshot,", "", 1),
+            ),
         ] {
             assert!(!server_surface_violations(&server, &library)
                 .unwrap()
@@ -2937,6 +4085,12 @@ mod tests {
         for mutation in [
             production.replacen("RedirectPolicy::none()", "RedirectPolicy::limited(1)", 1),
             production.replacen(".no_proxy()", ".proxy(proxy)", 1),
+            production.replacen(".tls_built_in_root_certs(false)", "", 1),
+            production.replacen(
+                "OWNED_HTTPS_TEST_PROVIDER_HOST,\n                profile_port.resolved_address()",
+                "other_host, profile_port.resolved_address()",
+                1,
+            ),
             production.replacen("/v1/sessions/{}/events", "/arbitrary/{}/events", 1),
             format!("{production}\npub fn arbitrary(url: Url) {{ let _ = url; }}"),
             format!("{production}\nimpl Drop for NativeOastClient {{ fn drop(&mut self) {{}} }}"),
@@ -2946,6 +4100,103 @@ mod tests {
                     .unwrap()
                     .is_empty(),
                 "native client transport mutation unexpectedly passed"
+            );
+        }
+    }
+
+    #[test]
+    fn owned_https_profile_types_are_exactly_sealed() {
+        let client_source = include_str!("../../../crates/termivar-oast/src/client.rs");
+        let client = production_prefix(client_source);
+        assert!(
+            owned_https_profile_port_surface_violations(client)
+                .unwrap()
+                .is_empty(),
+            "repository owned HTTPS port profile drifted from its sealed surface"
+        );
+        for mutation in [
+            client.replacen(
+                "pub struct OwnedHttpsTestProfilePort(NonZeroU16);",
+                "pub struct OwnedHttpsTestProfilePort(u16);",
+                1,
+            ),
+            client.replacen(
+                "pub struct OwnedHttpsTestProfilePort(NonZeroU16);",
+                "pub(crate) struct OwnedHttpsTestProfilePort(NonZeroU16);",
+                1,
+            ),
+            client.replacen(
+                "#[cfg(feature = \"owned-https-test-profile\")]\n#[doc(hidden)]\n#[derive(Clone, Copy, PartialEq, Eq)]\npub struct OwnedHttpsTestProfilePort",
+                "#[cfg(feature = \"client\")]\n#[doc(hidden)]\n#[derive(Clone, Copy, PartialEq, Eq)]\npub struct OwnedHttpsTestProfilePort",
+                1,
+            ),
+            client.replacen(
+                "pub const fn new(port: NonZeroU16) -> Self",
+                "pub fn new(port: u16) -> Self",
+                1,
+            ),
+            client.replacen(
+                "fn resolved_address(self) -> SocketAddr",
+                "pub fn resolved_address(&self) -> SocketAddr",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, client, "client profile mutation must alter source");
+            assert!(
+                !owned_https_profile_port_surface_violations(&mutation)
+                    .unwrap()
+                    .is_empty(),
+                "owned HTTPS port profile mutation unexpectedly passed"
+            );
+        }
+
+        let broker_source =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
+        let broker = production_prefix(broker_source);
+        assert!(
+            owned_xml_https_profile_surface_violations(broker)
+                .unwrap()
+                .is_empty(),
+            "repository owned XML HTTPS transport profile drifted from its sealed surface"
+        );
+        for mutation in [
+            broker.replacen(
+                "pub(crate) struct OwnedXmlHttpsTestTransportProfile",
+                "pub struct OwnedXmlHttpsTestTransportProfile",
+                1,
+            ),
+            broker.replacen(
+                "    port: NonZeroU16,\n}",
+                "    port: NonZeroU16,\n    resolver: SocketAddr,\n}",
+                1,
+            ),
+            broker.replacen(
+                "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub(crate) struct OwnedXmlHttpsTestTransportProfile",
+                "#[cfg(feature = \"xml-external-entity-review\")]\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub(crate) struct OwnedXmlHttpsTestTransportProfile",
+                1,
+            ),
+            broker.replacen(
+                "application: &url::Url,",
+                "application: &SocketAddr,",
+                1,
+            ),
+            broker.replacen(
+                "pub(crate) const fn port(self) -> NonZeroU16",
+                "pub(crate) fn port(&self) -> NonZeroU16",
+                1,
+            ),
+            broker.replacen(
+                "fn target_address(self) -> SocketAddr",
+                "fn target_address(self, address: SocketAddr) -> SocketAddr",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, broker, "scanner profile mutation must alter source");
+            assert!(
+                !owned_xml_https_profile_surface_violations(&mutation)
+                    .unwrap()
+                    .is_empty(),
+                "owned XML HTTPS transport profile mutation unexpectedly passed"
             );
         }
     }
@@ -3321,8 +4572,14 @@ mod tests {
         let workflow = EXACT_RELEASE_BUILD;
         assert!(release_isolation_source_violations(cli, workflow).is_empty());
 
-        let widened_cli = format!("{cli}\n{PACKAGE} = {{ path = \"../termivar-oast\" }}");
+        let widened_cli =
+            format!("{cli}\n[dependencies]\n{PACKAGE} = {{ path = \"../termivar-oast\" }}");
         assert!(!release_isolation_source_violations(&widened_cli, workflow).is_empty());
+        let profile_in_bundle = cli.replace(
+            "release-bundle=[\"rest-review\"]",
+            "release-bundle=[\"rest-review\",\"xml-external-entity-owned-https-test-profile\"]",
+        );
+        assert!(!release_isolation_source_violations(&profile_in_bundle, workflow).is_empty());
         let widened_workflow =
             format!("{workflow}\ncargo build -p termivar-oast --bin termivar-oast-provider");
         assert!(!release_isolation_source_violations(cli, &widened_workflow).is_empty());

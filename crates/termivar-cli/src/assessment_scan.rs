@@ -2603,6 +2603,10 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         WebAssessmentIncompleteReason::OpenApiReviewIncomplete => "openapi_review_incomplete",
         #[cfg(feature = "rest-review")]
         WebAssessmentIncompleteReason::RestReviewIncomplete => "rest_review_incomplete",
+        #[cfg(feature = "xml-external-entity-review")]
+        WebAssessmentIncompleteReason::XmlExternalEntityReviewIncomplete => {
+            "xml_external_entity_review_incomplete"
+        },
         #[cfg(feature = "wordpress-review")]
         WebAssessmentIncompleteReason::WordPressReviewIncomplete => "wordpress_review_incomplete",
         #[cfg(feature = "authorization-review")]
@@ -3918,6 +3922,13 @@ lifetime_ms = 5000
         assert_eq!(
             incomplete_reason_code(&WebAssessmentIncompleteReason::RestReviewIncomplete),
             "rest_review_incomplete"
+        );
+        #[cfg(feature = "xml-external-entity-review")]
+        assert_eq!(
+            incomplete_reason_code(
+                &WebAssessmentIncompleteReason::XmlExternalEntityReviewIncomplete
+            ),
+            "xml_external_entity_review_incomplete"
         );
         #[cfg(feature = "wordpress-review")]
         assert_eq!(

@@ -17,6 +17,9 @@ mod client;
 #[cfg(feature = "server")]
 mod server;
 
+#[cfg(all(feature = "client", feature = "owned-https-test-profile"))]
+#[doc(hidden)]
+pub use client::OwnedHttpsTestProfilePort;
 #[cfg(feature = "client")]
 pub use client::{
     NativeOastBoundaryRejection, NativeOastClient, NativeOastClientBoundary,
@@ -46,7 +49,8 @@ pub use server::{serve_provider, ProviderServerError};
 #[doc(hidden)]
 pub use server::{
     serve_provider_on_listener, serve_provider_on_listener_with_poll_barrier,
-    ProviderTestPollBarrier,
+    serve_provider_on_listener_with_request_ledger, ProviderTestPollBarrier,
+    ProviderTestRequestLedger, ProviderTestRequestSnapshot,
 };
 
 /// Closed failures for native-provider configuration and state transitions.

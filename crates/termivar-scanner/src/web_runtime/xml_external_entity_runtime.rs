@@ -23,6 +23,8 @@ use super::{
     },
     SharedWebRuntimeAuthority,
 };
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;
 use crate::{
     http_evidence::{
         CollectedHttpResponse, HttpRequestBrokerError, XmlExternalEntityRequestBroker,
@@ -202,6 +204,8 @@ async fn execute_review(
         administrator.into_bytes(),
         limits,
         policy.execution_mode(),
+        #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+        OwnedXmlHttpsTestTransportProfile::for_application_and_policy(application, &policy),
     );
     let mut provider = match configuration
         .and_then(|configuration| authority.mint_native_oast_provider(configuration))
@@ -1026,11 +1030,23 @@ fn provider_configuration(
     administrator: Vec<u8>,
     limits: NativeOastProviderLimits,
     execution_mode: XmlExternalEntityExecutionMode,
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    owned_https_test_profile: Option<OwnedXmlHttpsTestTransportProfile>,
 ) -> Result<NativeOastProviderConfiguration, crate::native_oast_provider::NativeOastProviderError> {
     #[cfg(test)]
     if execution_mode == XmlExternalEntityExecutionMode::OwnedNumericLoopbackTest {
         return NativeOastProviderConfiguration::for_loopback(
             origin.clone(),
+            assessment_id,
+            epoch,
+            administrator,
+            limits,
+        );
+    }
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    if let Some(profile) = owned_https_test_profile {
+        return NativeOastProviderConfiguration::for_owned_https_test_profile(
+            profile.port(),
             assessment_id,
             epoch,
             administrator,

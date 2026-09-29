@@ -7,6 +7,14 @@
 
 use std::{collections::BTreeSet, fmt};
 
+#[cfg(feature = "owned-https-test-profile")]
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    num::NonZeroU16,
+};
+
+#[cfg(feature = "owned-https-test-profile")]
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::{
     header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
     redirect::Policy as RedirectPolicy,
@@ -26,6 +34,53 @@ use crate::{
 
 const JSON_MEDIA_TYPE: &str = "application/json";
 const REGISTER_PATH: &str = "/v1/sessions";
+
+#[cfg(feature = "owned-https-test-profile")]
+const OWNED_HTTPS_TEST_PROVIDER_HOST: &str = "oast-provider.termivar.test";
+#[cfg(feature = "owned-https-test-profile")]
+const OWNED_HTTPS_TEST_PROVIDER_ORIGIN: &str = "https://oast-provider.termivar.test/";
+#[cfg(feature = "owned-https-test-profile")]
+const OWNED_HTTPS_TEST_PROVIDER_IPV4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+#[cfg(feature = "owned-https-test-profile")]
+const OWNED_HTTPS_TEST_ROOT_CERTIFICATE_DER_BASE64: &str = concat!(
+    "MIIBjTCCATOgAwIBAgIJAJLYjoWViQgyMAoGCCqGSM49BAMCMCkxJzAlBgNVBAMT",
+    "HlRlcm1pdmFyIE93bmVkIEhUVFBTIFRlc3QgUm9vdDAgFw0yNjA4MzAwMDAwMDBa",
+    "GA8yMDk5MTIzMTIzNTk1OVowKTEnMCUGA1UEAxMeVGVybWl2YXIgT3duZWQgSFRU",
+    "UFMgVGVzdCBSb290MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEIQz45V50Pyx",
+    "2eBYt1RA6bImh/m+1+tFfrE3o4dEwLpyfTYF314TD9K/HFknQlmO2//jzCYCXAW",
+    "JJkBnmP5qRqNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwHQYD",
+    "VR0OBBYEFBd0YfXO+Bxp1hr5F4pYDhecrqA3MAoGCCqGSM49BAMCA0gAMEUCIEYh",
+    "m8rw77JIp6N6ZYDJT6Vvh37VamQZZJpzCuSNKLwzAiEAzsZJR6xAfZPCEjF1SSi9",
+    "QZHP7IZerxPUSmqzKFPCGsM="
+);
+
+/// Sealed resolver port for the repository-owned HTTPS acceptance profile.
+///
+/// The provider host, loopback address, and trust root are fixed inside this
+/// crate. This value cannot authorize a different host, address, or root.
+#[cfg(feature = "owned-https-test-profile")]
+#[doc(hidden)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct OwnedHttpsTestProfilePort(NonZeroU16);
+
+#[cfg(feature = "owned-https-test-profile")]
+impl OwnedHttpsTestProfilePort {
+    /// Binds the fixed owned-provider identity to one nonzero fixture port.
+    pub const fn new(port: NonZeroU16) -> Self {
+        Self(port)
+    }
+
+    fn resolved_address(self) -> SocketAddr {
+        SocketAddr::from((OWNED_HTTPS_TEST_PROVIDER_IPV4, self.0.get()))
+    }
+}
+
+#[cfg(feature = "owned-https-test-profile")]
+impl fmt::Debug for OwnedHttpsTestProfilePort {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OwnedHttpsTestProfilePort(<sealed>)")
+    }
+}
 
 #[derive(Clone, Copy)]
 struct DispatchContract {
@@ -372,20 +427,47 @@ impl NativeOastClient {
                 NativeOastDispatchAccounting::default(),
             )
         })?;
-        let client = Client::builder()
-            .redirect(RedirectPolicy::none())
-            .retry(reqwest::retry::never())
-            .no_proxy()
-            .https_only(origin.scheme() == "https")
-            .referer(false)
-            .http1_only()
+        let client = fixed_client_builder(&origin)
             .build()
-            .map_err(|_| {
-                NativeOastClientError::new(
-                    NativeOastClientErrorKind::ClientInitialization,
-                    NativeOastDispatchAccounting::default(),
-                )
-            })?;
+            .map_err(|_| client_initialization_error())?;
+        Ok(Self {
+            public_origin,
+            origin,
+            client,
+        })
+    }
+
+    /// Builds the fixed-route client for the repository-owned HTTPS profile.
+    ///
+    /// This constructor accepts only the one compiled provider origin. DNS is
+    /// resolved to the fixed secondary loopback address at `profile_port`, and
+    /// TLS remains verified against the one compiled public test root. System
+    /// roots, ambient proxies, redirects, and retries are not used.
+    #[cfg(feature = "owned-https-test-profile")]
+    #[doc(hidden)]
+    pub fn new_owned_https_test_profile(
+        public_origin: PublicOrigin,
+        profile_port: OwnedHttpsTestProfilePort,
+    ) -> Result<Self, NativeOastClientError> {
+        if public_origin.as_str() != OWNED_HTTPS_TEST_PROVIDER_ORIGIN {
+            return Err(client_initialization_error());
+        }
+        let origin =
+            Url::parse(public_origin.as_str()).map_err(|_| client_initialization_error())?;
+        let root_der = STANDARD
+            .decode(OWNED_HTTPS_TEST_ROOT_CERTIFICATE_DER_BASE64)
+            .map_err(|_| client_initialization_error())?;
+        let root_certificate =
+            reqwest::Certificate::from_der(&root_der).map_err(|_| client_initialization_error())?;
+        let client = fixed_client_builder(&origin)
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(root_certificate)
+            .resolve(
+                OWNED_HTTPS_TEST_PROVIDER_HOST,
+                profile_port.resolved_address(),
+            )
+            .build()
+            .map_err(|_| client_initialization_error())?;
         Ok(Self {
             public_origin,
             origin,
@@ -713,6 +795,23 @@ impl fmt::Debug for NativeOastClient {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("NativeOastClient(<configured>)")
     }
+}
+
+fn fixed_client_builder(origin: &Url) -> reqwest::ClientBuilder {
+    Client::builder()
+        .redirect(RedirectPolicy::none())
+        .retry(reqwest::retry::never())
+        .no_proxy()
+        .https_only(origin.scheme() == "https")
+        .referer(false)
+        .http1_only()
+}
+
+fn client_initialization_error() -> NativeOastClientError {
+    NativeOastClientError::new(
+        NativeOastClientErrorKind::ClientInitialization,
+        NativeOastDispatchAccounting::default(),
+    )
 }
 
 fn bearer_header(credential: &[u8]) -> Result<HeaderValue, NativeOastClientErrorKind> {
@@ -1155,6 +1254,44 @@ mod tests {
     };
 
     const ADMIN_SECRET: &[u8] = b"CLIENT-ADMIN-MUST-NOT-LEAK-63A917F0";
+
+    #[cfg(feature = "owned-https-test-profile")]
+    #[test]
+    fn owned_https_profile_is_fixed_verified_and_raw_free() {
+        use sha2::{Digest, Sha256};
+
+        let port = OwnedHttpsTestProfilePort::new(NonZeroU16::new(44_443).unwrap());
+        let exact: PublicOrigin = OWNED_HTTPS_TEST_PROVIDER_ORIGIN.parse().unwrap();
+        let client = NativeOastClient::new_owned_https_test_profile(exact, port).unwrap();
+        assert_eq!(client.origin.as_str(), OWNED_HTTPS_TEST_PROVIDER_ORIGIN);
+        assert_eq!(format!("{port:?}"), "OwnedHttpsTestProfilePort(<sealed>)");
+        assert!(!format!("{client:?}").contains(OWNED_HTTPS_TEST_PROVIDER_HOST));
+        assert!(!format!("{client:?} {port:?}").contains("44443"));
+
+        let root = STANDARD
+            .decode(OWNED_HTTPS_TEST_ROOT_CERTIFICATE_DER_BASE64)
+            .unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&root)),
+            "8a838ab89d539252df6bafc16eb489aebb42cbd350b941f3d708fecc7041d409"
+        );
+
+        for other in [
+            "https://other.termivar.test/",
+            "https://nested.oast-provider.termivar.test/",
+        ] {
+            let error =
+                NativeOastClient::new_owned_https_test_profile(other.parse().unwrap(), port)
+                    .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                NativeOastClientErrorKind::ClientInitialization
+            );
+            let rendered = format!("{error:?} {error}");
+            assert!(!rendered.contains(other));
+            assert!(!rendered.contains("44443"));
+        }
+    }
 
     struct DecodeTerminalAction {
         cancellation: Option<CancellationToken>,

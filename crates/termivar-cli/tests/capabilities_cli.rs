@@ -32,6 +32,7 @@ const FEATURE_NAMES: &[&str] = &[
     "tls-observation",
     "websocket-review",
     "wordpress-review",
+    "xml-external-entity-owned-https-test-profile",
     "xml-external-entity-review",
 ];
 
@@ -170,6 +171,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
         (
+            "xml-external-entity-owned-https-test-profile",
+            cfg!(feature = "xml-external-entity-owned-https-test-profile"),
+        ),
+        (
             "xml-external-entity-review",
             cfg!(feature = "xml-external-entity-review"),
         ),
@@ -236,6 +241,13 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         surface_state(&document, "option.xml-external-entity-review"),
         states["xml-external-entity-review"]
     );
+    assert!(document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .all(
+            |surface| surface["compile_feature"] != "xml-external-entity-owned-https-test-profile"
+        ));
     let authorization = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -1018,6 +1030,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "jwt-policy-review",
         "jwt-target-acceptance-review",
         "websocket-review",
+        "xml-external-entity-owned-https-test-profile",
         "xml-external-entity-review",
     ];
     match case.as_str() {
@@ -1040,7 +1053,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                14
+                15
             );
         },
         "rest-only" => {
@@ -1113,6 +1126,16 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "xml-external-entity-review" || !compiled(feature) }));
+        },
+        "xml-external-entity-owned-https-profile" => {
+            assert!(compiled("xml-external-entity-owned-https-test-profile"));
+            assert!(compiled("xml-external-entity-review"));
+            assert!(FEATURE_NAMES.iter().all(|feature| {
+                matches!(
+                    *feature,
+                    "xml-external-entity-owned-https-test-profile" | "xml-external-entity-review"
+                ) || !compiled(feature)
+            }));
         },
         "websocket-session" => {
             assert!(compiled("websocket-review"));

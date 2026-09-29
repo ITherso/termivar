@@ -4,6 +4,11 @@ use reqwest::{
     Client,
 };
 
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+use std::{net::SocketAddr, num::NonZeroU16};
+
 #[cfg(any(
     feature = "jwt-target-acceptance-review",
     feature = "wordpress-review",
@@ -114,6 +119,56 @@ const JWT_TARGET_ACCEPTANCE_POLICY_BINDING_DOMAIN: &[u8] =
 #[cfg(feature = "xml-external-entity-review")]
 const XML_EXTERNAL_ENTITY_POLICY_BINDING_DOMAIN: &[u8] =
     b"termivar.xml-external-entity-request-policy/v1\0";
+
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+const OWNED_XML_HTTPS_TARGET_HOST: &str = "xml-target.termivar.test";
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+const OWNED_XML_HTTPS_PROVIDER_ORIGIN: &str = "https://oast-provider.termivar.test/";
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+const OWNED_XML_HTTPS_ROOT_DER_BASE64: &str = concat!(
+    "MIIBjTCCATOgAwIBAgIJAJLYjoWViQgyMAoGCCqGSM49BAMCMCkxJzAlBgNVBAMT",
+    "HlRlcm1pdmFyIE93bmVkIEhUVFBTIFRlc3QgUm9vdDAgFw0yNjA4MzAwMDAwMDBa",
+    "GA8yMDk5MTIzMTIzNTk1OVowKTEnMCUGA1UEAxMeVGVybWl2YXIgT3duZWQgSFRU",
+    "UFMgVGVzdCBSb290MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEIQz45V50Pyx",
+    "2eBYt1RA6bImh/m+1+tFfrE3o4dEwLpyfTYF314TD9K/HFknQlmO2//jzCYCXAWJ",
+    "JkBnmP5qRqNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwHQYD",
+    "VR0OBBYEFBd0YfXO+Bxp1hr5F4pYDhecrqA3MAoGCCqGSM49BAMCA0gAMEUCIEYh",
+    "m8rw77JIp6N6ZYDJT6Vvh37VamQZZJpzCuSNKLwzAiEAzsZJR6xAfZPCEjF1SSi9",
+    "QZHP7IZerxPUSmqzKFPCGsM=",
+);
+
+/// Closed native-acceptance transport for one fixed owned HTTPS fixture.
+///
+/// The compile gate and exact identities are the entire selection surface.
+/// Callers cannot supply a root, resolver, host, or address.
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OwnedXmlHttpsTestTransportProfile {
+    port: NonZeroU16,
+}
+
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+impl OwnedXmlHttpsTestTransportProfile {
+    pub(crate) fn for_application_and_policy(
+        application: &url::Url,
+        policy: &XmlExternalEntityReviewPolicy,
+    ) -> Option<Self> {
+        let port = NonZeroU16::new(application.port()?)?;
+        (application.scheme() == "https"
+            && application.host_str() == Some(OWNED_XML_HTTPS_TARGET_HOST)
+            && policy.application() == application
+            && policy.provider_origin().as_str() == OWNED_XML_HTTPS_PROVIDER_ORIGIN)
+            .then_some(Self { port })
+    }
+
+    pub(crate) const fn port(self) -> NonZeroU16 {
+        self.port
+    }
+
+    fn target_address(self) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], self.port.get()))
+    }
+}
 
 /// Broker-owned proof for one exact controlled XML target leg.
 ///
@@ -977,6 +1032,8 @@ pub(crate) struct HttpRequestBroker {
     accounting: Option<RequestAccountingBroker>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<TlsObservationCollector>,
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    owned_xml_https_test_profile: Option<OwnedXmlHttpsTestTransportProfile>,
 }
 
 impl HttpRequestBroker {
@@ -991,6 +1048,41 @@ impl HttpRequestBroker {
             #[cfg(feature = "tls-observation")]
             None,
         )
+    }
+
+    /// Creates the exact same metered broker with the closed owned-HTTPS
+    /// acceptance transport selected for its fixed target identity.
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    pub(crate) fn new_metered_with_owned_xml_https_test_profile(
+        policy: HttpEvidencePolicy,
+        accounting: RequestAccountingBroker,
+        profile: OwnedXmlHttpsTestTransportProfile,
+    ) -> Result<Self, HttpEvidenceError> {
+        let mut broker = Self::build(
+            policy,
+            Some(accounting),
+            #[cfg(feature = "tls-observation")]
+            None,
+        )?;
+        broker.configure_owned_xml_https_test_profile(profile)?;
+        Ok(broker)
+    }
+
+    /// Combines passive TLS observation with the closed owned-HTTPS
+    /// acceptance transport without weakening normal certificate validation.
+    #[cfg(all(
+        feature = "xml-external-entity-owned-https-test-profile",
+        feature = "tls-observation"
+    ))]
+    pub(crate) fn new_metered_with_tls_observation_and_owned_xml_https_test_profile(
+        policy: HttpEvidencePolicy,
+        accounting: RequestAccountingBroker,
+        collector: TlsObservationCollector,
+        profile: OwnedXmlHttpsTestTransportProfile,
+    ) -> Result<Self, HttpEvidenceError> {
+        let mut broker = Self::build(policy, Some(accounting), Some(collector))?;
+        broker.configure_owned_xml_https_test_profile(profile)?;
+        Ok(broker)
     }
 
     /// Creates a metered broker that passively observes existing TLS responses.
@@ -1086,7 +1178,59 @@ impl HttpRequestBroker {
             accounting,
             #[cfg(feature = "tls-observation")]
             tls_observation,
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            owned_xml_https_test_profile: None,
         })
+    }
+
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    fn configure_owned_xml_https_test_profile(
+        &mut self,
+        profile: OwnedXmlHttpsTestTransportProfile,
+    ) -> Result<(), HttpEvidenceError> {
+        let root_der = STANDARD
+            .decode(OWNED_XML_HTTPS_ROOT_DER_BASE64)
+            .expect("reviewed owned HTTPS root DER remains valid base64");
+        let root = reqwest::Certificate::from_der(&root_der).map_err(HttpEvidenceError::Client)?;
+        let client = Client::builder()
+            .redirect(RedirectPolicy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy()
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(root)
+            .resolve(OWNED_XML_HTTPS_TARGET_HOST, profile.target_address());
+        #[cfg(feature = "tls-observation")]
+        let client = if self.tls_observation.is_some() {
+            client.tls_info(true)
+        } else {
+            client
+        };
+        let client = client.build().map_err(HttpEvidenceError::Client)?;
+        self.client = client.clone();
+        #[cfg(feature = "wordpress-review")]
+        {
+            self.anonymous_no_proxy_client = client;
+        }
+        self.owned_xml_https_test_profile = Some(profile);
+        Ok(())
+    }
+
+    fn isolated_with_shared_authority(&self) -> Result<Self, HttpEvidenceError> {
+        let broker = Self::build(
+            self.policy.clone(),
+            self.accounting.clone(),
+            #[cfg(feature = "tls-observation")]
+            self.tls_observation.clone(),
+        )?;
+        #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+        let broker = {
+            let mut broker = broker;
+            if let Some(profile) = self.owned_xml_https_test_profile {
+                broker.configure_owned_xml_https_test_profile(profile)?;
+            }
+            broker
+        };
+        Ok(broker)
     }
 
     pub(crate) fn policy(&self) -> &HttpEvidencePolicy {
@@ -1100,12 +1244,7 @@ impl HttpRequestBroker {
     /// state must not bleed between observations. Credential-bearing callers
     /// must use their narrower no-proxy constructor below.
     pub(crate) fn isolated(&self) -> Result<Self, HttpEvidenceError> {
-        Self::build(
-            self.policy.clone(),
-            self.accounting.clone(),
-            #[cfg(feature = "tls-observation")]
-            self.tls_observation.clone(),
-        )
+        self.isolated_with_shared_authority()
     }
 
     /// Creates one fresh, ambient-proxy-free pool for a single authorization
@@ -1181,16 +1320,25 @@ impl HttpRequestBroker {
             return Err(HttpEvidenceError::InvalidXmlExternalEntityRequest);
         }
         self.validate_target(policy.endpoint())?;
-        let mut broker = Self::build(
-            self.policy.clone(),
-            self.accounting.clone(),
-            #[cfg(feature = "tls-observation")]
-            self.tls_observation.clone(),
-        )?;
+        let mut broker = self.isolated_with_shared_authority()?;
         let client = Client::builder()
             .redirect(RedirectPolicy::none())
             .retry(reqwest::retry::never())
             .no_proxy();
+        #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+        let client = if let Some(profile) = broker.owned_xml_https_test_profile {
+            let root_der = STANDARD
+                .decode(OWNED_XML_HTTPS_ROOT_DER_BASE64)
+                .expect("reviewed owned HTTPS root DER remains valid base64");
+            let root =
+                reqwest::Certificate::from_der(&root_der).map_err(HttpEvidenceError::Client)?;
+            client
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(root)
+                .resolve(OWNED_XML_HTTPS_TARGET_HOST, profile.target_address())
+        } else {
+            client
+        };
         #[cfg(feature = "tls-observation")]
         let client = if broker.tls_observation.is_some() {
             client.tls_info(true)
@@ -2052,6 +2200,88 @@ mod tests {
 
         assert_eq!(metered_request_body_bytes(&bodyless).unwrap(), 0);
         assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
+    }
+
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    fn owned_https_profile_policy(
+        application: &url::Url,
+        provider_origin: &str,
+    ) -> XmlExternalEntityReviewPolicy {
+        let endpoint = application.join("xml-parser").unwrap();
+        let source = format!(
+            "schema = \"security.xml-external-entity-review-policy/v1\"\n\
+endpoint = \"{endpoint}\"\n\
+provider_origin = \"{provider_origin}\"\n\
+method = \"POST\"\n\
+media_type = \"application/xml; charset=utf-8\"\n\
+acknowledge_xml_post = true\n\
+acknowledge_external_interaction = true\n\
+acknowledge_disposable_test_endpoint = true\n\
+polls_per_leg = 1\n\
+poll_interval_ms = 250\n\
+lifetime_ms = 10000\n"
+        );
+        XmlExternalEntityReviewPolicy::parse_toml(application, source.as_bytes()).unwrap()
+    }
+
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    #[test]
+    fn owned_https_profile_requires_the_exact_compiled_target_and_provider_identities() {
+        let exact_application =
+            url::Url::parse("https://xml-target.termivar.test:44443/application/").unwrap();
+        let exact_policy =
+            owned_https_profile_policy(&exact_application, OWNED_XML_HTTPS_PROVIDER_ORIGIN);
+        let selected = OwnedXmlHttpsTestTransportProfile::for_application_and_policy(
+            &exact_application,
+            &exact_policy,
+        )
+        .unwrap();
+        assert_eq!(selected.port().get(), 44_443);
+        assert_eq!(
+            selected.target_address(),
+            SocketAddr::from(([127, 0, 0, 1], 44_443))
+        );
+
+        let substituted_application =
+            url::Url::parse("https://other.termivar.test:44443/application/").unwrap();
+        assert!(
+            OwnedXmlHttpsTestTransportProfile::for_application_and_policy(
+                &substituted_application,
+                &exact_policy,
+            )
+            .is_none()
+        );
+        let substituted_policy =
+            owned_https_profile_policy(&substituted_application, OWNED_XML_HTTPS_PROVIDER_ORIGIN);
+        assert!(
+            OwnedXmlHttpsTestTransportProfile::for_application_and_policy(
+                &substituted_application,
+                &substituted_policy,
+            )
+            .is_none()
+        );
+
+        let wrong_provider =
+            owned_https_profile_policy(&exact_application, "https://other-oast.termivar.test/");
+        assert!(
+            OwnedXmlHttpsTestTransportProfile::for_application_and_policy(
+                &exact_application,
+                &wrong_provider,
+            )
+            .is_none()
+        );
+
+        let no_fixture_port =
+            url::Url::parse("https://xml-target.termivar.test/application/").unwrap();
+        let no_fixture_port_policy =
+            owned_https_profile_policy(&no_fixture_port, OWNED_XML_HTTPS_PROVIDER_ORIGIN);
+        assert!(
+            OwnedXmlHttpsTestTransportProfile::for_application_and_policy(
+                &no_fixture_port,
+                &no_fixture_port_policy,
+            )
+            .is_none()
+        );
     }
 
     #[cfg(feature = "xml-external-entity-review")]

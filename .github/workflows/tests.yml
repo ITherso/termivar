@@ -174,6 +174,7 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
           cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
           cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-review
+          cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile
           cargo test --locked -p termivar-cli --no-default-features --features authorization-review
           cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review
           cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review
@@ -202,6 +203,7 @@ jobs:
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-snapshot-import-only cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only cargo test --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=xml-external-entity-only cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=xml-external-entity-owned-https-profile cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-session cargo test --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
@@ -209,7 +211,7 @@ jobs:
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review xml-external-entity-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -289,7 +291,7 @@ jobs:
   platform-runtime-smoke:
     name: Runtime Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 65
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:
@@ -374,6 +376,8 @@ jobs:
         run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test xml_external_entity_review_cli -- --nocapture
       - name: Exercise bounded XML external-entity runtime through an owned loopback fixture
         run: cargo test --release --locked -p termivar-scanner --no-default-features --features xml-external-entity-review --lib xml_external_entity_runtime_tests -- --nocapture
+      - name: Exercise XML external-entity review through the owned HTTPS profile
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile --test xml_external_entity_owned_https_cli owned_https_profile_runs_actual_cli_and_offline_bundle_commands -- --ignored --exact --nocapture
       - name: Exercise opt-in XML external-entity capability contract
         env:
           TERMIVAR_CAPABILITIES_MATRIX_CASE: xml-external-entity-only

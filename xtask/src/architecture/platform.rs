@@ -45,6 +45,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "tls-observation",
     "websocket-review",
     "wordpress-review",
+    "xml-external-entity-owned-https-test-profile",
     "xml-external-entity-review",
     "platform-models",
     "plugins",
@@ -82,6 +83,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "tls-observation",
     "websocket-review",
     "wordpress-review",
+    "xml-external-entity-owned-https-test-profile",
     "xml-external-entity-review",
     "platform-models",
     "plugins",
@@ -235,6 +237,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "tls-observation",
     "websocket-review",
     "wordpress-review",
+    "xml-external-entity-owned-https-test-profile",
     "xml-external-entity-review",
 ];
 const REQUIRED_API_DEPENDENCIES: &[&str] = &["axum"];
@@ -1426,6 +1429,13 @@ fn cli_feature_violations(
             &["termivar-scanner/xml-external-entity-review"][..],
         ),
         (
+            "xml-external-entity-owned-https-test-profile",
+            &[
+                "xml-external-entity-review",
+                "termivar-scanner/xml-external-entity-owned-https-test-profile",
+            ][..],
+        ),
+        (
             "supplied-session-review",
             &["termivar-scanner/supplied-session-review"][..],
         ),
@@ -1924,6 +1934,28 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "oast-correlation",
                 "scanning",
                 "core",
+                "dep:getrandom",
+                "dep:termivar-oast",
+                "dep:zeroize",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "xml-external-entity-owned-https-test-profile",
+            &[
+                "xml-external-entity-owned-https-test-profile",
+                "xml-external-entity-review",
+                "oast-native-provider",
+                "oast-correlation",
+                "scanning",
+                "core",
+                "termivar-oast/owned-https-test-profile",
                 "dep:getrandom",
                 "dep:termivar-oast",
                 "dep:zeroize",
@@ -14037,6 +14069,13 @@ mod tests {
                 "dep:getrandom".to_owned(),
             ],
         );
+        features.insert(
+            "xml-external-entity-owned-https-test-profile".to_owned(),
+            vec![
+                "xml-external-entity-review".to_owned(),
+                "termivar-oast/owned-https-test-profile".to_owned(),
+            ],
+        );
         features.insert("compliance".to_owned(), Vec::new());
         features.insert("threat-intel".to_owned(), Vec::new());
         features.insert(
@@ -14265,6 +14304,66 @@ mod tests {
             .get_mut("release-bundle")
             .unwrap()
             .push("xml-external-entity-review".to_owned());
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("`release-bundle` members")));
+    }
+
+    #[test]
+    fn xml_external_entity_owned_https_profile_is_closed_and_non_product() {
+        let features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features
+                .get("xml-external-entity-owned-https-test-profile")
+                .unwrap(),
+            &[
+                "xml-external-entity-review".to_owned(),
+                "termivar-oast/owned-https-test-profile".to_owned(),
+            ]
+        );
+        let closure =
+            raw_feature_closure(&features, "xml-external-entity-owned-https-test-profile");
+        assert!(closure.contains("xml-external-entity-review"));
+        assert!(closure.contains("termivar-oast/owned-https-test-profile"));
+        for aggregate in ["default", "full", "enterprise", "research"] {
+            assert!(!raw_feature_closure(&features, aggregate)
+                .contains("xml-external-entity-owned-https-test-profile"));
+            assert!(!raw_feature_closure(&features, aggregate)
+                .contains("termivar-oast/owned-https-test-profile"));
+        }
+
+        let mut missing_base = valid_feature_map();
+        missing_base
+            .get_mut("xml-external-entity-owned-https-test-profile")
+            .unwrap()
+            .retain(|member| member != "xml-external-entity-review");
+        assert!(feature_violations(&missing_base).iter().any(|violation| {
+            violation.contains("`xml-external-entity-owned-https-test-profile` raw feature closure")
+        }));
+
+        let mut widened = valid_feature_map();
+        widened
+            .get_mut("default")
+            .unwrap()
+            .push("xml-external-entity-owned-https-test-profile".to_owned());
+        assert!(!feature_violations(&widened).is_empty());
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert_eq!(
+            cli_features
+                .get("xml-external-entity-owned-https-test-profile")
+                .unwrap(),
+            &[
+                "xml-external-entity-review".to_owned(),
+                "termivar-scanner/xml-external-entity-owned-https-test-profile".to_owned(),
+            ]
+        );
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("xml-external-entity-owned-https-test-profile".to_owned());
         assert!(cli_feature_violations(&cli_features, &dependencies)
             .iter()
             .any(|violation| violation.contains("`release-bundle` members")));
@@ -20643,6 +20742,13 @@ mod tests {
             (
                 "xml-external-entity-review".to_owned(),
                 vec!["termivar-scanner/xml-external-entity-review".to_owned()],
+            ),
+            (
+                "xml-external-entity-owned-https-test-profile".to_owned(),
+                vec![
+                    "xml-external-entity-review".to_owned(),
+                    "termivar-scanner/xml-external-entity-owned-https-test-profile".to_owned(),
+                ],
             ),
             (
                 "wordpress-review".to_owned(),

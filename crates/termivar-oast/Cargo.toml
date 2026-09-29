@@ -47,6 +47,10 @@ client = [
     "dep:tokio",
     "dep:tokio-util",
 ]
+# Closed owned-fixture transport used only by the S13 native CLI acceptance.
+# It keeps ordinary certificate verification and exposes no caller-selected
+# root, resolver, host, or address.
+owned-https-test-profile = ["client"]
 server = [
     "dep:libc",
     "dep:axum",

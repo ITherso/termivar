@@ -137,6 +137,8 @@ use super::{
     },
     scan_profile::ScanProfileV1,
 };
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+use crate::http_evidence::OwnedXmlHttpsTestTransportProfile;
 #[cfg(feature = "jwt-target-acceptance-review")]
 use crate::jwt_target_acceptance::{
     JwtTargetAcceptanceAudit, JwtTargetAcceptancePolicy, MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS,
@@ -2848,7 +2850,49 @@ impl WebAssessmentRuntimeBuilder {
             .max_active_verifications()
             .checked_add(optional_active_verifications)
             .expect("compiled optional active-verification allowances fit u16");
-        #[cfg(feature = "tls-observation")]
+        #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+        let owned_xml_https_test_profile =
+            self.xml_external_entity_review
+                .as_ref()
+                .and_then(|(policy, _)| {
+                    OwnedXmlHttpsTestTransportProfile::for_application_and_policy(&root.url, policy)
+                });
+        #[cfg(all(
+            feature = "tls-observation",
+            feature = "xml-external-entity-owned-https-test-profile"
+        ))]
+        let authority = match (self.tls_observation, owned_xml_https_test_profile) {
+            (true, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile(
+                &root.url,
+                policy,
+                self.limits.runtime_budget(optional_active_verifications),
+                self.cancellation,
+                profile,
+            )?,
+            (false, Some(profile)) => SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(
+                &root.url,
+                policy,
+                self.limits.runtime_budget(optional_active_verifications),
+                self.cancellation,
+                profile,
+            )?,
+            (true, None) => SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation(
+                &root.url,
+                policy,
+                self.limits.runtime_budget(optional_active_verifications),
+                self.cancellation,
+            )?,
+            (false, None) => SharedWebRuntimeAuthority::new_exact_origin(
+                &root.url,
+                policy,
+                self.limits.runtime_budget(optional_active_verifications),
+                self.cancellation,
+            )?,
+        };
+        #[cfg(all(
+            feature = "tls-observation",
+            not(feature = "xml-external-entity-owned-https-test-profile")
+        ))]
         let authority = if self.tls_observation {
             SharedWebRuntimeAuthority::new_exact_origin_with_tls_observation(
                 &root.url,
@@ -2864,7 +2908,31 @@ impl WebAssessmentRuntimeBuilder {
                 self.cancellation,
             )?
         };
-        #[cfg(not(feature = "tls-observation"))]
+        #[cfg(all(
+            not(feature = "tls-observation"),
+            feature = "xml-external-entity-owned-https-test-profile"
+        ))]
+        let authority = match owned_xml_https_test_profile {
+            Some(profile) => {
+                SharedWebRuntimeAuthority::new_exact_origin_with_owned_xml_https_test_profile(
+                    &root.url,
+                    policy,
+                    self.limits.runtime_budget(optional_active_verifications),
+                    self.cancellation,
+                    profile,
+                )?
+            },
+            None => SharedWebRuntimeAuthority::new_exact_origin(
+                &root.url,
+                policy,
+                self.limits.runtime_budget(optional_active_verifications),
+                self.cancellation,
+            )?,
+        };
+        #[cfg(all(
+            not(feature = "tls-observation"),
+            not(feature = "xml-external-entity-owned-https-test-profile")
+        ))]
         let authority = SharedWebRuntimeAuthority::new_exact_origin(
             &root.url,
             policy,

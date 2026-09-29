@@ -42,6 +42,23 @@ provider administrator credential and callback session.
 
 The option is available only in a binary compiled with
 `xml-external-entity-review`; it is not part of the stock `release-bundle`.
+The closed `xml-external-entity-owned-https-test-profile` feature is a separate
+native-acceptance build profile, not a product option. It includes the ordinary
+XML review feature but adds no CLI flag, arbitrary resolver, trust-root input,
+or destination authority. It activates only for the repository's exact owned
+target/provider hostname-and-port tuple, resolves those two identities to their
+fixed numeric-loopback fixture addresses, and trusts only the fixed public test
+CA while retaining ordinary certificate-chain and hostname verification. The
+profile remains outside `default`, `release-bundle`, and published packages;
+normal builds cannot select it at runtime.
+
+Repository acceptance drives the actual CLI against a pinned CPython 3.12
+standard-library Expat fixture. The safe control leaves external-general-entity
+resolution disabled; the enabled case uses Expat's external-entity handler and
+child parser to retrieve only the fixed HTTPS callback resource. This is an
+independent owned-fixture oracle, not the product parser, a target parser
+identity claim, or permission to resolve caller-selected entities.
+
 The following placeholders must name an operator-owned disposable HTTPS target,
 a separately owned HTTPS provider, and a local token file. They are not public
 test destinations:

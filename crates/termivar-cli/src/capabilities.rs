@@ -282,6 +282,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
         ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
         (
+            "xml-external-entity-owned-https-test-profile",
+            cfg!(feature = "xml-external-entity-owned-https-test-profile"),
+        ),
+        (
             "xml-external-entity-review",
             cfg!(feature = "xml-external-entity-review"),
         ),

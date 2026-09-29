@@ -65,6 +65,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "supplied-session-review",
     "tls-observation",
     "websocket-review",
+    "xml-external-entity-owned-https-test-profile",
     "xml-external-entity-review",
 )
 EXPECTED_FEATURE_STATES = {
@@ -89,6 +90,7 @@ EXPECTED_FEATURE_STATES = {
     "tls-observation": "not_compiled",
     "websocket-review": "not_compiled",
     "wordpress-review": "compiled",
+    "xml-external-entity-owned-https-test-profile": "not_compiled",
     "xml-external-entity-review": "not_compiled",
 }
 EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES = (
@@ -2960,9 +2962,22 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 22)
+        self.assertEqual(len(rows), 23)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 14)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 15)
+        self.assertEqual(
+            next(row for row in rows
+                 if row["name"] == "xml-external-entity-owned-https-test-profile"),
+            {
+                "name": "xml-external-entity-owned-https-test-profile",
+                "build_state": "not_compiled",
+            },
+        )
+        self.assertFalse(any(
+            surface.get("compile_feature")
+            == "xml-external-entity-owned-https-test-profile"
+            for surface in document["surfaces"]
+        ))
         self.assertNotIn(EXPECTED_CONTROL_REFERENCE_MAPPING_OPTION,
                          fake_help(["scan", "--help"]).decode("utf-8"))
         result = self.validate(document)
@@ -4641,7 +4656,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         next(row for row in counts_only["cli_package_features"]
              if row["name"] == "control-reference-mapping")["name"] = (
                  "unclassified-control-mapping")
-        self.assertEqual(len(counts_only["cli_package_features"]), 22)
+        self.assertEqual(len(counts_only["cli_package_features"]), 23)
         self.assertEqual(
             sum(row["build_state"] == "compiled"
                 for row in counts_only["cli_package_features"]),
@@ -4650,7 +4665,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assertEqual(
             sum(row["build_state"] == "not_compiled"
                 for row in counts_only["cli_package_features"]),
-            14,
+            15,
         )
         self.assert_rejected(counts_only, "feature names changed")
 
@@ -4667,6 +4682,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("recon-ct-provider", "compiled"),
             ("recon-snapshot-import", "compiled"),
             ("websocket-review", "compiled"),
+            ("xml-external-entity-owned-https-test-profile", "compiled"),
             ("xml-external-entity-review", "compiled"),
         ]
         for name, state in cases:
@@ -4763,6 +4779,17 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             (REPOSITORY / "crates/termivar-cli/Cargo.toml").read_text(encoding="utf-8"))
         features = manifest["features"]
         self.assertEqual(cargo_feature_contract_violations(features), [])
+        self.assertEqual(
+            features["xml-external-entity-owned-https-test-profile"],
+            [
+                "xml-external-entity-review",
+                "termivar-scanner/xml-external-entity-owned-https-test-profile",
+            ],
+        )
+        self.assertNotIn(
+            "xml-external-entity-owned-https-test-profile",
+            features["release-bundle"],
+        )
 
         simulated = copy.deepcopy(features)
         simulated["future-unclassified-review"] = []

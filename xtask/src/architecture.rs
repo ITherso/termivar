@@ -495,6 +495,7 @@ fn allowed_workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
                 "termivar-api",
                 "termivar-artifact",
                 "termivar-core",
+                "termivar-oast",
                 "termivar-proxy",
                 "termivar-scanner",
             ][..],
@@ -1937,7 +1938,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_allowlist_pins_one_native_oast_scanner_adapter_edge() {
+    fn workspace_allowlist_pins_native_oast_scanner_and_cli_test_adapter_edges() {
         let graph = allowed_workspace_graph();
 
         assert_eq!(graph.get("termivar-oast"), Some(&BTreeSet::new()));
@@ -1948,9 +1949,9 @@ mod tests {
                 "termivar-oast".to_owned(),
             ]))
         );
+        assert!(graph["termivar-cli"].contains("termivar-oast"));
         for product in [
             "termivar-core",
-            "termivar-cli",
             "termivar-api",
             "termivar-proxy",
             "termivar-artifact",
