@@ -1422,6 +1422,10 @@ fn cli_feature_violations(
             &["termivar-scanner/ssrf-oast-review"][..],
         ),
         (
+            "xml-external-entity-review",
+            &["termivar-scanner/xml-external-entity-review"][..],
+        ),
+        (
             "supplied-session-review",
             &["termivar-scanner/supplied-session-review"][..],
         ),
@@ -1896,6 +1900,26 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
             "ssrf-oast-review",
             &[
                 "ssrf-oast-review",
+                "oast-native-provider",
+                "oast-correlation",
+                "scanning",
+                "core",
+                "dep:getrandom",
+                "dep:termivar-oast",
+                "dep:zeroize",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "xml-external-entity-review",
+            &[
+                "xml-external-entity-review",
                 "oast-native-provider",
                 "oast-correlation",
                 "scanning",
@@ -14004,6 +14028,15 @@ mod tests {
                 "dep:getrandom".to_owned(),
             ],
         );
+        features.insert(
+            "xml-external-entity-review".to_owned(),
+            vec![
+                "scanning".to_owned(),
+                "oast-correlation".to_owned(),
+                "oast-native-provider".to_owned(),
+                "dep:getrandom".to_owned(),
+            ],
+        );
         features.insert("compliance".to_owned(), Vec::new());
         features.insert("threat-intel".to_owned(), Vec::new());
         features.insert(
@@ -14176,6 +14209,65 @@ mod tests {
             .unwrap()
             .push("ssrf-oast-review".to_owned());
         assert!(!feature_violations(&widened).is_empty());
+    }
+
+    #[test]
+    fn xml_external_entity_review_is_exact_non_default_and_absent_from_aggregates() {
+        let features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("xml-external-entity-review").unwrap(),
+            &[
+                "scanning".to_owned(),
+                "oast-correlation".to_owned(),
+                "oast-native-provider".to_owned(),
+                "dep:getrandom".to_owned(),
+            ]
+        );
+        for aggregate in ["default", "full", "enterprise", "research"] {
+            assert!(
+                !raw_feature_closure(&features, aggregate).contains("xml-external-entity-review")
+            );
+        }
+
+        let mut widened = valid_feature_map();
+        widened
+            .get_mut("default")
+            .unwrap()
+            .push("xml-external-entity-review".to_owned());
+        assert!(!feature_violations(&widened).is_empty());
+        for aggregate in ["full", "enterprise", "research"] {
+            let mut widened = valid_feature_map();
+            widened
+                .get_mut(aggregate)
+                .unwrap()
+                .push("xml-external-entity-review".to_owned());
+            assert!(!feature_violations(&widened).is_empty());
+        }
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        cli_features
+            .get_mut("xml-external-entity-review")
+            .unwrap()
+            .push("termivar-scanner/ssrf-oast-review".to_owned());
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("`xml-external-entity-review` members")));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(!cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .any(|member| member == "xml-external-entity-review"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("xml-external-entity-review".to_owned());
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("`release-bundle` members")));
     }
 
     #[test]
@@ -17313,6 +17405,18 @@ mod tests {
                 TLS_OBSERVATION_REVOCATION_STATUS, TLS_OBSERVATION_SOURCE_SCOPE,
                 TLS_OBSERVATION_VALIDATION_SCOPE,
             };
+            #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+            use crate::xml_external_entity_review::{
+                XmlExternalEntityMaximumDisposition, XmlExternalEntityOperationStatus,
+                XmlExternalEntityReviewAudit, XmlExternalEntityReviewOutcome,
+                MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES,
+                MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS,
+                MAX_XML_EXTERNAL_ENTITY_TARGET_RESPONSE_BYTES,
+                XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS,
+                XML_EXTERNAL_ENTITY_REVIEW_CONTROL_MODEL,
+                XML_EXTERNAL_ENTITY_REVIEW_MEDIA_TYPE,
+                XML_EXTERNAL_ENTITY_REVIEW_METHOD, XML_EXTERNAL_ENTITY_TARGET_REQUESTS,
+            };
             #[cfg(all(feature = "scanning", feature = "jwt-policy-review"))]
             use crate::jwt_policy_review::{
                 JwtClockAssurance, JwtExternalOperationStatus, JwtLocalSignatureStatus,
@@ -17524,6 +17628,16 @@ mod tests {
         );
         assert_ne!(widened_tls_observation_import, imports);
         let violations = reporting_source_import_violations(&widened_tls_observation_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_xml_external_entity_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"xml-external-entity-review\"))]",
+            "#[cfg(feature = \"scanning\")]",
+        );
+        assert_ne!(widened_xml_external_entity_import, imports);
+        let violations = reporting_source_import_violations(&widened_xml_external_entity_import)
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
@@ -20527,6 +20641,10 @@ mod tests {
                 vec!["termivar-scanner/ssrf-oast-review".to_owned()],
             ),
             (
+                "xml-external-entity-review".to_owned(),
+                vec!["termivar-scanner/xml-external-entity-review".to_owned()],
+            ),
+            (
                 "wordpress-review".to_owned(),
                 vec!["termivar-scanner/wordpress-review".to_owned()],
             ),
@@ -21485,6 +21603,7 @@ mod tests {
             #[cfg(feature = "supplied-session-review")] pub mod supplied_session_review;
             #[cfg(feature = "websocket-review")] pub mod websocket_review;
             #[cfg(feature = "wordpress-review")] pub mod wordpress_review;
+            #[cfg(feature = "xml-external-entity-review")] pub mod xml_external_entity_review;
             mod wordpress_version;
             #[cfg(feature = "platform-models")] pub mod persistence;
             #[cfg(feature = "plugins")] pub mod plugin;
@@ -21546,6 +21665,15 @@ mod tests {
                 .unwrap();
         assert!(websocket_violations.iter().any(|violation| {
             violation.contains("module `websocket_review`") && violation.contains("exact cfg")
+        }));
+
+        let xml_external_entity_violations = module_gate_violations(
+            r#"#[cfg(feature = "scanning")] pub mod xml_external_entity_review;"#,
+        )
+        .unwrap();
+        assert!(xml_external_entity_violations.iter().any(|violation| {
+            violation.contains("module `xml_external_entity_review`")
+                && violation.contains("exact cfg")
         }));
     }
 

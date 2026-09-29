@@ -1865,7 +1865,8 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             || !body.contains("application: application.clone()")
             || !body.contains("policy_binding: xml_external_entity_policy_binding(policy)")
     }) || xml_dispatch.is_none_or(|body| {
-        !body.contains("action_id != XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID")
+        body.contains("action_id:")
+            || body.matches("XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID").count() != 1
             || !body.contains("self.application != *policy.application()")
             || !body.contains("!policy.is_bound_to_application(&self.application)")
             || !body.contains("self.policy_binding != xml_external_entity_policy_binding(policy)")
@@ -1890,7 +1891,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
         || !broker.contains("policy.provider_origin().as_str().as_bytes()")
     {
         violations.push(
-            "the broker's XML external-entity review seam must mint one application-bound ambient-proxy-free pool under the parent's exact policy, accounting, and TLS authority, bind each bounded fixed document and policy, and dispatch only its sealed anonymous POST descriptor with exact role/stage semantics"
+            "the broker's XML external-entity review seam must mint one application-bound ambient-proxy-free pool under the parent's exact policy, accounting, and TLS authority, bind each bounded fixed document and policy, and dispatch only its owned action identity plus sealed anonymous POST descriptor with exact role/stage semantics"
                 .to_owned(),
         );
     }
@@ -3198,7 +3199,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, XML external-entity, and WordPress redacted audit fields, plus the JWT target-acceptance redacted audit field, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields, plus the XML external-entity and JWT target-acceptance redacted audit fields, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -5847,7 +5848,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, XML external-entity, and WordPress audits, plus JWT target-acceptance and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus XML external-entity, JWT target-acceptance, and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
         ));
     }
 
@@ -9891,6 +9892,7 @@ impl OwnershipVisitor<'_> {
         if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
             || self.source == TLS_OBSERVATION_RUNTIME_SOURCE
             || self.source == WEBSOCKET_RUNTIME_SOURCE
+            || self.source == XML_EXTERNAL_ENTITY_RUNTIME_SOURCE
             || self.source == WORDPRESS_RUNTIME_SOURCE
             || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
             || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
@@ -10050,6 +10052,7 @@ impl OwnershipVisitor<'_> {
                 if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
                     || self.source == TLS_OBSERVATION_RUNTIME_SOURCE
                     || self.source == WEBSOCKET_RUNTIME_SOURCE
+                    || self.source == XML_EXTERNAL_ENTITY_RUNTIME_SOURCE
                     || self.source == WORDPRESS_RUNTIME_SOURCE
                     || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
                     || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
@@ -15691,6 +15694,14 @@ mod tests {
                     "false",
                 ),
                 "sealed anonymous POST descriptor",
+            ),
+            (
+                http.clone(),
+                broker.replace(
+                    "                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,\n                stage,",
+                    "                \"forged.xml.action\",\n                stage,",
+                ),
+                "owned action identity",
             ),
             (
                 http.clone(),

@@ -3942,8 +3942,8 @@ mod tests {
                 "XmlExternalEntityReviewInput must remain underived",
             ),
             (
-                "MAX_XML_EXTERNAL_ENTITY_REVIEW_POLICY_BYTES,",
-                "usize::MAX,",
+                "read_bounded_regular_file(\n            self.policy_file,\n            MAX_XML_EXTERNAL_ENTITY_REVIEW_POLICY_BYTES,\n        )",
+                "read_bounded_regular_file(\n            self.policy_file,\n            usize::MAX,\n        )",
                 "bounded policy/key parsing",
             ),
             (
@@ -4319,12 +4319,12 @@ mod tests {
             (
                 "        let prepared_ssrf_oast_review = ssrf_oast_review_input\n            .map(|input| input.prepare(&target))\n            .transpose()?;",
                 "        let prepared_ssrf_oast_review = ssrf_oast_review_input;",
-                "validate local JWT policy/public-key/target-policy, supplied-session, and OAST non-secret inputs",
+                "each mutually exclusive OAST review's non-secret input",
             ),
             (
                 "                    .map(|input| input.prepare(&target))",
                 "                    .map(auth_input::JwtPolicyReviewInput::prepare)",
-                "validate local JWT policy/public-key/target-policy, supplied-session, and OAST non-secret inputs",
+                "each mutually exclusive OAST review's non-secret input",
             ),
             (
                 "auth_input::JwtPolicyReviewInput::select(",
@@ -4334,7 +4334,7 @@ mod tests {
             (
                 ".map(auth_input::PreparedJwtPolicyReviewInput::load)",
                 ".map(auth_input::PreparedJwtPolicyReviewInput::load_unchecked)",
-                "validate local JWT policy/public-key/target-policy, supplied-session, and OAST non-secret inputs",
+                "each mutually exclusive OAST review's non-secret input",
             ),
             (
                 "        let loaded_jwt_policy_review = prepared_jwt_policy_review\n            .map(auth_input::PreparedJwtPolicyReviewInput::load)\n            .transpose()\n            .inspect_err(|_| {\n                abort_report_bundle_after_failure(&mut report_bundle);\n            })?;",
