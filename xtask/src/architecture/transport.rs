@@ -10068,8 +10068,8 @@ impl OwnershipVisitor<'_> {
                     && tokens
                         .get(index - 3)
                         .is_some_and(|token| matches!(token, TokenTree::Ident(parent) if normalize_identifier(&ident_name(parent)) == "NativeOastProviderErrorKind"))
-                    && tokens.get(index - 2).is_some_and(|token| is_colon(token))
-                    && tokens.get(index - 1).is_some_and(|token| is_colon(token));
+                    && tokens.get(index - 2).is_some_and(is_colon)
+                    && tokens.get(index - 1).is_some_and(is_colon);
                 if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
                     || self.source == TLS_OBSERVATION_RUNTIME_SOURCE
                     || self.source == WEBSOCKET_RUNTIME_SOURCE
