@@ -1549,6 +1549,131 @@ lifetime_ms = 10000\n"
         format!("http://127.0.0.1:39091/c/{SESSION}/{callback}")
     }
 
+    #[test]
+    fn wire_vocabulary_and_derived_callback_counts_are_total() {
+        let policy = production_policy();
+        assert_eq!(
+            format!("{}", policy.policy_id()),
+            policy.policy_id().to_wire()
+        );
+        assert_eq!(
+            policy.policy_revision(),
+            XML_EXTERNAL_ENTITY_REVIEW_ALGORITHM
+        );
+        assert_eq!(policy.method().as_str(), XML_EXTERNAL_ENTITY_REVIEW_METHOD);
+        assert_eq!(
+            policy.media_type().as_str(),
+            XML_EXTERNAL_ENTITY_REVIEW_MEDIA_TYPE
+        );
+        assert_eq!(
+            XmlExternalEntityExecutionMode::Production.as_str(),
+            "production"
+        );
+        assert_eq!(
+            XmlExternalEntityExecutionMode::OwnedNumericLoopbackTest.as_str(),
+            "owned_numeric_loopback_test"
+        );
+
+        let outcomes = [
+            (XmlExternalEntityReviewOutcome::NotEligible, "not_eligible"),
+            (
+                XmlExternalEntityReviewOutcome::ControlIncomplete,
+                "control_incomplete",
+            ),
+            (
+                XmlExternalEntityReviewOutcome::PreflightContaminated,
+                "preflight_contaminated",
+            ),
+            (
+                XmlExternalEntityReviewOutcome::ControlCallbackObserved,
+                "control_callback_observed",
+            ),
+            (XmlExternalEntityReviewOutcome::NoCallback, "no_callback"),
+            (
+                XmlExternalEntityReviewOutcome::CandidateOnly,
+                "candidate_only",
+            ),
+            (XmlExternalEntityReviewOutcome::ReplayOnly, "replay_only"),
+            (
+                XmlExternalEntityReviewOutcome::CorrelationMismatch,
+                "correlation_mismatch",
+            ),
+            (
+                XmlExternalEntityReviewOutcome::CleanupIncomplete,
+                "cleanup_incomplete",
+            ),
+            (XmlExternalEntityReviewOutcome::Cancelled, "cancelled"),
+            (
+                XmlExternalEntityReviewOutcome::BudgetExhausted,
+                "budget_exhausted",
+            ),
+            (XmlExternalEntityReviewOutcome::Incomplete, "incomplete"),
+            (
+                XmlExternalEntityReviewOutcome::RepeatedExternalEntityResolutionObserved,
+                "repeated_external_entity_resolution_observed",
+            ),
+        ];
+        for (outcome, expected) in outcomes {
+            assert_eq!(outcome.as_str(), expected);
+        }
+        assert_eq!(
+            XmlExternalEntityMaximumDisposition::NeedsReview.as_str(),
+            "needs_review"
+        );
+        assert_eq!(
+            XmlExternalEntityOperationStatus::NotPerformed.as_str(),
+            "not_performed"
+        );
+
+        let positive =
+            XmlExternalEntityReviewAudit::from_runtime(&policy, positive_facts()).unwrap();
+        assert_eq!(
+            positive.policy_revision(),
+            XML_EXTERNAL_ENTITY_REVIEW_ALGORITHM
+        );
+        assert_eq!(
+            positive.execution_mode(),
+            XmlExternalEntityExecutionMode::Production
+        );
+        assert_eq!(positive.distinct_event_count(), 2);
+        assert!(positive.provider_complete());
+
+        let mut candidate_only = positive_facts();
+        candidate_only.outcome = XmlExternalEntityReviewOutcome::CandidateOnly;
+        candidate_only.replay_callback_observed = false;
+        candidate_only.event_identities_distinct = false;
+        candidate_only.item_projected = false;
+        let candidate_only =
+            XmlExternalEntityReviewAudit::from_runtime(&policy, candidate_only).unwrap();
+        assert_eq!(candidate_only.distinct_event_count(), 1);
+
+        let empty = XmlExternalEntityReviewAudit::from_runtime(
+            &policy,
+            XmlExternalEntityAuditFacts {
+                outcome: XmlExternalEntityReviewOutcome::NotEligible,
+                target_request_count: 0,
+                provider_request_count: 0,
+                active_verification_count: 0,
+                target_request_body_bytes: 0,
+                target_response_bytes: 0,
+                target_complete: false,
+                preflight_clean: false,
+                control_callback_observed: false,
+                candidate_callback_observed: false,
+                replay_callback_observed: false,
+                callback_targets_distinct: false,
+                event_identities_distinct: false,
+                cleanup_verified: false,
+                target_accounting_complete: false,
+                provider_accounting_complete: false,
+                item_projected: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(empty.distinct_event_count(), 0);
+        assert!(!empty.provider_complete());
+    }
+
     fn positive_facts() -> XmlExternalEntityAuditFacts {
         XmlExternalEntityAuditFacts {
             outcome: XmlExternalEntityReviewOutcome::RepeatedExternalEntityResolutionObserved,
