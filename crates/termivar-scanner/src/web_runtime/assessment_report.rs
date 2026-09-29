@@ -3777,9 +3777,17 @@ mod tests {
                 .unwrap();
         let root = runtime.authorized_root();
         let limits = WebAssessmentLimits::default();
-        let expected = limits.max_active_verifications().checked_add(6).unwrap();
+        let compiled_allowance = 6_u16;
+        #[cfg(feature = "xml-external-entity-review")]
+        let compiled_allowance = compiled_allowance
+            .checked_add(u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS).unwrap())
+            .unwrap();
+        let expected = limits
+            .max_active_verifications()
+            .checked_add(compiled_allowance)
+            .unwrap();
         let usage = AssessmentUsageTruth {
-            active_verifications: 6,
+            active_verifications: compiled_allowance,
             ..usage_truth(root.url().as_str())
         };
         let profile = ScanProfileV1::web_review().unwrap();
@@ -3787,7 +3795,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected, 6),
+                AssessmentRuntimeLimits::new(limits, expected, compiled_allowance),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -3798,7 +3806,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected - 1, 6),
+                AssessmentRuntimeLimits::new(limits, expected - 1, compiled_allowance),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
@@ -3809,7 +3817,7 @@ mod tests {
         assert_eq!(
             validate_completed_assessment_truth_with_active_limit(
                 root,
-                AssessmentRuntimeLimits::new(limits, expected + 1, 7),
+                AssessmentRuntimeLimits::new(limits, expected + 1, compiled_allowance + 1),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,
