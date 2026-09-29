@@ -373,6 +373,105 @@ fn safe_failure_diagnostic(stdout: &[u8]) -> String {
     )
 }
 
+fn safe_fixture_failure_diagnostic(fixture: &OwnedHttpsFixture) -> String {
+    let requests = fixture.target_requests.lock().unwrap();
+    let target_request_count = requests.len();
+    let get_requests = requests
+        .iter()
+        .filter(|request| request.method == "GET")
+        .count();
+    let post_requests = requests
+        .iter()
+        .filter(|request| request.method == "POST")
+        .count();
+    let other_requests = requests.len().saturating_sub(get_requests + post_requests);
+    let exact_hosts = requests
+        .iter()
+        .filter(|request| request.host == HostClass::Exact)
+        .count();
+    let exact_xml_content_types = requests
+        .iter()
+        .filter(|request| request.content_type == ContentTypeClass::ExactXml)
+        .count();
+    let envelope_counts = [
+        XmlEnvelopeRole::Control,
+        XmlEnvelopeRole::Candidate,
+        XmlEnvelopeRole::Replay,
+        XmlEnvelopeRole::Invalid,
+    ]
+    .map(|role| {
+        requests
+            .iter()
+            .filter(|request| request.envelope_role == role)
+            .count()
+    });
+    let sensitive_header_or_body_observations = requests
+        .iter()
+        .filter(|request| {
+            request.administrator_secret_present
+                || request.authorization_header_present
+                || request.cookie_header_present
+        })
+        .count();
+    drop(requests);
+
+    let provider = fixture.provider_requests();
+    let fixture_errors = fixture.fixture_errors.lock().unwrap();
+    let error_count = fixture_errors.len();
+    let error_classes = fixture_errors
+        .iter()
+        .take(16)
+        .map(|error| match *error {
+            "provider_backend_failed" => "provider_backend_failed",
+            "provider_tls_accept_failed" => "provider_tls_accept_failed",
+            "provider_tls_unexpected_accept" => "provider_tls_unexpected_accept",
+            "provider_tls_handshake_failed" => "provider_tls_handshake_failed",
+            "provider_tls_proxy_failed" => "provider_tls_proxy_failed",
+            "target_tls_accept_failed" => "target_tls_accept_failed",
+            "target_tls_unexpected_accept" => "target_tls_unexpected_accept",
+            "target_tls_handshake_failed" => "target_tls_handshake_failed",
+            "target_connection_failed" => "target_connection_failed",
+            "fixture_connections_not_quiescent" => "fixture_connections_not_quiescent",
+            _ => "other",
+        })
+        .collect::<Vec<_>>();
+    let omitted_errors = error_count.saturating_sub(error_classes.len());
+
+    format!(
+        "fixture=bounded_counts, target_requests={}, target_get={get_requests}, target_post={post_requests}, target_other={other_requests}, exact_hosts={exact_hosts}, exact_xml_content_types={exact_xml_content_types}, envelope_control={}, envelope_candidate={}, envelope_replay={}, envelope_invalid={}, parser_resolutions={}, target_connections={}/{}, target_tls_rejections={}, provider_connections={}/{}, provider_tls_rejections={}, provider_requests={}/{}/{}/{}/{}/{}, sensitive_header_or_body_observations={sensitive_header_or_body_observations}, fixture_error_count={error_count}, fixture_error_classes={error_classes:?}, omitted_fixture_errors={omitted_errors}",
+        target_request_count,
+        envelope_counts[0],
+        envelope_counts[1],
+        envelope_counts[2],
+        envelope_counts[3],
+        fixture.parser_resolutions.load(Ordering::SeqCst),
+        fixture.target_connections_finished.load(Ordering::SeqCst),
+        fixture.target_connections.load(Ordering::SeqCst),
+        fixture.target_tls_rejections.load(Ordering::SeqCst),
+        fixture.provider_connections_finished.load(Ordering::SeqCst),
+        fixture.provider_connections.load(Ordering::SeqCst),
+        fixture.provider_tls_rejections.load(Ordering::SeqCst),
+        provider.register,
+        provider.allocate,
+        provider.poll,
+        provider.cleanup,
+        provider.callback,
+        provider.other,
+    )
+}
+
+fn assert_scan_success(output: &Output, operation: &str, fixture: &OwnedHttpsFixture) {
+    assert!(
+        output.status.success(),
+        "{operation} failed: status={:?}, stdout_bytes={}, stderr_bytes={}, {}, {}",
+        output.status.code(),
+        output.stdout.len(),
+        output.stderr.len(),
+        safe_failure_diagnostic(&output.stdout),
+        safe_fixture_failure_diagnostic(fixture),
+    );
+}
+
 async fn run_termivar(mut command: Command, operation: &str) -> Output {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
@@ -1269,7 +1368,7 @@ async fn run_actual_scan(
     let scan = run_termivar(command, label).await;
     let policy_cleanup = fs::remove_file(&policy_path);
     let secret_cleanup = fs::remove_file(&secret_path);
-    assert_success(&scan, label);
+    assert_scan_success(&scan, label, fixture);
     assert!(scan.stdout.is_empty());
     assert_output_has_no_private_sentinels(&scan, label);
     let mut private_sentinels = fixture.private_callback_sentinels();
@@ -1502,6 +1601,49 @@ fn failed_process_diagnostic_is_bounded_and_does_not_reflect_values() {
         "diagnostic=unrecognized_json"
     );
     assert_eq!(safe_failure_diagnostic(b"not json"), "diagnostic=not_json");
+}
+
+#[test]
+fn failed_fixture_diagnostic_is_bounded_and_does_not_reflect_values() {
+    let private = PrivateFixtureSentinel(b"PRIVATE-CALLBACK-MUST-NOT-BE-REFLECTED".to_vec());
+    let fixture = OwnedHttpsFixture {
+        target_url: "https://PRIVATE-TARGET-MUST-NOT-BE-REFLECTED/".to_owned(),
+        target_requests: Arc::new(Mutex::new(vec![TargetRequestFact {
+            method: "PRIVATE-METHOD-MUST-NOT-BE-REFLECTED".to_owned(),
+            path: "/PRIVATE-PATH-MUST-NOT-BE-REFLECTED".to_owned(),
+            body_len: 99,
+            parser_mode: ParserMode::Safe,
+            parser_external_entity_count: 0,
+            content_type: ContentTypeClass::OtherOrDuplicate,
+            host: HostClass::OtherOrDuplicate,
+            envelope_role: XmlEnvelopeRole::Invalid,
+            private_callback_sentinels: vec![private],
+            administrator_secret_present: true,
+            authorization_header_present: true,
+            cookie_header_present: true,
+        }])),
+        parser_mode: Arc::new(AtomicU8::new(ParserMode::Safe as u8)),
+        parser_resolutions: Arc::new(AtomicUsize::new(7)),
+        target_connections: Arc::new(AtomicUsize::new(2)),
+        target_connections_finished: Arc::new(AtomicUsize::new(1)),
+        target_tls_rejections: Arc::new(AtomicUsize::new(3)),
+        provider_connections: Arc::new(AtomicUsize::new(5)),
+        provider_connections_finished: Arc::new(AtomicUsize::new(4)),
+        provider_tls_rejections: Arc::new(AtomicUsize::new(6)),
+        provider_request_ledger: ProviderTestRequestLedger::new(),
+        fixture_errors: Arc::new(Mutex::new(vec![
+            "target_connection_failed",
+            "PRIVATE-ERROR-MUST-NOT-BE-REFLECTED",
+        ])),
+        tasks: Vec::new(),
+    };
+
+    let summary = safe_fixture_failure_diagnostic(&fixture);
+    assert_eq!(
+        summary,
+        "fixture=bounded_counts, target_requests=1, target_get=0, target_post=0, target_other=1, exact_hosts=0, exact_xml_content_types=0, envelope_control=0, envelope_candidate=0, envelope_replay=0, envelope_invalid=1, parser_resolutions=7, target_connections=1/2, target_tls_rejections=3, provider_connections=4/5, provider_tls_rejections=6, provider_requests=0/0/0/0/0/0, sensitive_header_or_body_observations=1, fixture_error_count=2, fixture_error_classes=[\"target_connection_failed\", \"other\"], omitted_fixture_errors=0"
+    );
+    assert!(!summary.contains("PRIVATE"));
 }
 
 #[test]
