@@ -1238,14 +1238,19 @@ fn owned_https_client_constructor_is_exact(syntax: &syn::File) -> bool {
     let [method] = methods.as_slice() else {
         return false;
     };
+    let structural_attributes = non_doc_text_attributes(&method.attrs);
     if !matches!(method.vis, Visibility::Public(_))
-        || method.attrs.len() != 2
-        || !method.attrs[0].path().is_ident("cfg")
-        || !method.attrs[0].meta.require_list().is_ok_and(|list| {
-            compact_whitespace(&list.tokens.to_string()) == "feature=\"owned-https-test-profile\""
-        })
-        || !method.attrs[1].path().is_ident("doc")
-        || !method.attrs[1]
+        || structural_attributes.len() != 2
+        || !structural_attributes[0].path().is_ident("cfg")
+        || !structural_attributes[0]
+            .meta
+            .require_list()
+            .is_ok_and(|list| {
+                compact_whitespace(&list.tokens.to_string())
+                    == "feature=\"owned-https-test-profile\""
+            })
+        || !structural_attributes[1].path().is_ident("doc")
+        || !structural_attributes[1]
             .meta
             .require_list()
             .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "hidden")
@@ -1358,7 +1363,7 @@ fn exact_named_local_expression<'ast>(
         return None;
     };
     if !local.attrs.is_empty()
-        || binding.attrs.len() != 0
+        || !binding.attrs.is_empty()
         || binding.by_ref.is_some()
         || binding.mutability.is_some()
         || binding.ident != name
@@ -1559,21 +1564,28 @@ fn owned_https_profile_port_surface_violations(source: &str) -> Result<Vec<Strin
         })
         .collect::<Vec<_>>();
     let profile_shape_is_exact = profiles.first().is_some_and(|profile| {
+        let structural_attributes = non_doc_text_attributes(&profile.attrs);
         matches!(profile.vis, Visibility::Public(_))
-            && profile.attrs.len() == 3
-            && profile.attrs[0].path().is_ident("cfg")
-            && profile.attrs[0].meta.require_list().is_ok_and(|list| {
-                compact_whitespace(&list.tokens.to_string()) == format!("feature=\"{FEATURE}\"")
-            })
-            && profile.attrs[1].path().is_ident("doc")
-            && profile.attrs[1]
+            && structural_attributes.len() == 3
+            && structural_attributes[0].path().is_ident("cfg")
+            && structural_attributes[0]
+                .meta
+                .require_list()
+                .is_ok_and(|list| {
+                    compact_whitespace(&list.tokens.to_string()) == format!("feature=\"{FEATURE}\"")
+                })
+            && structural_attributes[1].path().is_ident("doc")
+            && structural_attributes[1]
                 .meta
                 .require_list()
                 .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "hidden")
-            && profile.attrs[2].path().is_ident("derive")
-            && profile.attrs[2].meta.require_list().is_ok_and(|list| {
-                compact_whitespace(&list.tokens.to_string()) == "Clone,Copy,PartialEq,Eq"
-            })
+            && structural_attributes[2].path().is_ident("derive")
+            && structural_attributes[2]
+                .meta
+                .require_list()
+                .is_ok_and(|list| {
+                    compact_whitespace(&list.tokens.to_string()) == "Clone,Copy,PartialEq,Eq"
+                })
             && matches!(&profile.fields, Fields::Unnamed(fields)
             if fields.unnamed.len() == 1
                 && fields.unnamed.first().is_some_and(|field| {
@@ -1735,16 +1747,23 @@ fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String
         })
         .collect::<Vec<_>>();
     let profile_shape_is_exact = profiles.first().is_some_and(|profile| {
+        let structural_attributes = non_doc_text_attributes(&profile.attrs);
         is_crate_visibility(&profile.vis)
-            && profile.attrs.len() == 2
-            && profile.attrs[0].path().is_ident("cfg")
-            && profile.attrs[0].meta.require_list().is_ok_and(|list| {
-                compact_whitespace(&list.tokens.to_string()) == format!("feature=\"{FEATURE}\"")
-            })
-            && profile.attrs[1].path().is_ident("derive")
-            && profile.attrs[1].meta.require_list().is_ok_and(|list| {
-                compact_whitespace(&list.tokens.to_string()) == "Debug,Clone,Copy,PartialEq,Eq"
-            })
+            && structural_attributes.len() == 2
+            && structural_attributes[0].path().is_ident("cfg")
+            && structural_attributes[0]
+                .meta
+                .require_list()
+                .is_ok_and(|list| {
+                    compact_whitespace(&list.tokens.to_string()) == format!("feature=\"{FEATURE}\"")
+                })
+            && structural_attributes[1].path().is_ident("derive")
+            && structural_attributes[1]
+                .meta
+                .require_list()
+                .is_ok_and(|list| {
+                    compact_whitespace(&list.tokens.to_string()) == "Debug,Clone,Copy,PartialEq,Eq"
+                })
             && matches!(&profile.fields, Fields::Named(fields)
             if fields.named.len() == 1
                 && fields.named.first().is_some_and(|field| {
@@ -3205,7 +3224,6 @@ fn scanner_adapter_contract_violations(
 }
 
 fn owned_xml_profile_global_reference_violations(sources: &[(String, String)]) -> Vec<String> {
-    const TYPE_NAME: &str = "OwnedXmlHttpsTestTransportProfile";
     const EXPECTED: &[(&str, usize)] = &[
         (SCANNER_HTTP_EVIDENCE, 1),
         (SCANNER_REQUEST_BROKER, 6),
@@ -3238,7 +3256,7 @@ fn owned_xml_profile_global_reference_violations(sources: &[(String, String)]) -
         Vec::new()
     } else {
         vec![format!(
-            "termivar-scanner owned XML HTTPS transport profile must retain only its reviewed definition, canonical re-export, and three exact consumers; expected {expected:?}, observed {actual:?}"
+            "termivar-scanner owned XML HTTPS transport profile must retain only its reviewed definition, canonical re-export, and three exact consumers; expected {expected:?}, observed {actual:?}, alias surface closed: {alias_surface_is_closed}"
         )]
     }
 }
@@ -3303,6 +3321,18 @@ fn scanner_profile_alias_surface_is_closed(syntax: &syn::File) -> bool {
     }
 
     impl<'ast> Visit<'ast> for AliasVisitor {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            let exact_test_module = item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && item.attrs[0]
+                    .meta
+                    .require_list()
+                    .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == "test");
+            if !exact_test_module {
+                visit::visit_item_mod(self, item);
+            }
+        }
+
         fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
             let mut paths = Vec::new();
             flatten_use_tree(&item.tree, &mut Vec::new(), &mut paths);
@@ -5550,6 +5580,18 @@ fn has_doc_hidden(attributes: &[syn::Attribute]) -> bool {
     })
 }
 
+fn non_doc_text_attributes(attributes: &[syn::Attribute]) -> Vec<&syn::Attribute> {
+    attributes
+        .iter()
+        .filter(|attribute| {
+            !matches!(&attribute.meta, syn::Meta::NameValue(value)
+                if attribute.path().is_ident("doc")
+                    && matches!(&value.value, syn::Expr::Lit(literal)
+                        if matches!(&literal.lit, syn::Lit::Str(_))))
+        })
+        .collect()
+}
+
 fn flatten_use_tree(tree: &UseTree, prefix: &mut Vec<String>, output: &mut Vec<String>) {
     match tree {
         UseTree::Path(path) => {
@@ -6601,6 +6643,20 @@ mod tests {
         ];
         assert!(owned_xml_profile_global_reference_violations(&valid).is_empty());
 
+        let mut test_only_assertion = valid.clone();
+        test_only_assertion[0].1.push_str(
+            "\n#[cfg(test)]\nmod tests {\n    fn profile_name_remains_reviewed() {\n        assert!(!stringify!(OwnedXmlHttpsTestTransportProfile).is_empty());\n    }\n}",
+        );
+        assert!(owned_xml_profile_global_reference_violations(&test_only_assertion).is_empty());
+
+        let mut production_macro_reference = valid.clone();
+        production_macro_reference[0]
+            .1
+            .push_str("\nconst _: &str = stringify!(OwnedXmlHttpsTestTransportProfile);");
+        assert!(
+            !owned_xml_profile_global_reference_violations(&production_macro_reference).is_empty()
+        );
+
         valid.push((
             "http_evidence/passive_review.rs".to_owned(),
             "pub(crate) type AlternateOwnedProfile = super::OwnedXmlHttpsTestTransportProfile;"
@@ -6736,7 +6792,7 @@ mod tests {
     #[test]
     fn cli_owned_https_tls_development_edge_is_exact() {
         let exact = valid_cli_owned_https_tls_dependency();
-        assert!(cli_owned_https_tls_dependency_violations(&[exact.clone()]).is_empty());
+        assert!(cli_owned_https_tls_dependency_violations(std::slice::from_ref(&exact)).is_empty());
 
         for mutation in [
             "kind",
@@ -7329,6 +7385,11 @@ mod tests {
                 "#[cfg(any(feature = \"owned-https-test-profile\", test))]\nuse base64",
                 1,
             ),
+            production.replacen(
+                "    pub fn new_owned_https_test_profile(",
+                "    #[allow(dead_code)]\n    pub fn new_owned_https_test_profile(",
+                1,
+            ),
             production.replacen(".tls_built_in_root_certs(false)", "", 1),
             production.replacen(
                 "OWNED_HTTPS_TEST_PROVIDER_HOST,\n                profile_port.resolved_address()",
@@ -7400,6 +7461,11 @@ mod tests {
                 "#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize)]\npub struct OwnedHttpsTestProfilePort",
                 1,
             ),
+            client.replacen(
+                "pub struct OwnedHttpsTestProfilePort",
+                "#[repr(transparent)]\npub struct OwnedHttpsTestProfilePort",
+                1,
+            ),
             client.replacen("Self(port)", "Self(NonZeroU16::MIN)", 1),
             client.replacen(
                 "SocketAddr::from((OWNED_HTTPS_TEST_PROVIDER_IPV6, self.0.get()))",
@@ -7444,6 +7510,11 @@ mod tests {
             broker.replacen(
                 "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub(crate) struct OwnedXmlHttpsTestTransportProfile",
                 "#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]\npub(crate) struct OwnedXmlHttpsTestTransportProfile",
+                1,
+            ),
+            broker.replacen(
+                "pub(crate) struct OwnedXmlHttpsTestTransportProfile",
+                "#[repr(C)]\npub(crate) struct OwnedXmlHttpsTestTransportProfile",
                 1,
             ),
             broker.replacen(

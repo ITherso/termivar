@@ -2593,6 +2593,19 @@ fn authority_prelude_is_closed(
         invalid_tries: 0,
     };
     visitor.visit_block(&method.block);
+    // The four authority constructor families are already pinned below by
+    // their exact cfg locals, selector shapes, arguments, and final runtime
+    // consumption. Do not duplicate that inventory in the whole-build `?`
+    // audit: syn legitimately presents those calls through different arm and
+    // block wrappers, while the authority-specific checks normalize them.
+    for authority_try in [
+        "authority_plain",
+        "authority_tls",
+        "authority_owned_xml_https",
+        "authority_tls_owned_xml_https",
+    ] {
+        visitor.reviewed_tries.remove(authority_try);
+    }
     let production_error_returns = BTreeMap::from([
         ("AuthorizationReviewConflict", 1_usize),
         ("InsecureAuthorizationReviewTransport", 1),
@@ -2621,17 +2634,8 @@ fn authority_prelude_is_closed(
         ("XmlExternalEntityApplicationMismatch", 1),
         ("XmlExternalEntitySsrfOastConflict", 1),
     ]);
-    let fixture_tries = BTreeMap::from([
-        ("authority_plain", 4_usize),
-        ("authority_tls", 2),
-        ("authority_owned_xml_https", 2),
-        ("authority_tls_owned_xml_https", 1),
-    ]);
+    let fixture_tries = BTreeMap::new();
     let production_tries = BTreeMap::from([
-        ("authority_plain", 4_usize),
-        ("authority_tls", 2),
-        ("authority_owned_xml_https", 2),
-        ("authority_tls_owned_xml_https", 1),
         ("semantic_limits", 1),
         ("http_probe", 1),
         ("canonical_root", 1),
@@ -2671,9 +2675,7 @@ fn authority_prelude_is_closed(
 fn web_assessment_build_typed_error_return_variant(
     expression: &syn::ExprReturn,
 ) -> Option<&'static str> {
-    let Some(returned) = expression.expr.as_deref() else {
-        return None;
-    };
+    let returned = expression.expr.as_deref()?;
     let syn::Expr::Call(error_call) = returned else {
         return None;
     };
@@ -3368,7 +3370,7 @@ fn plain_local_initializer<'ast>(
 ) -> Option<&'ast syn::Expr> {
     (local.attrs.is_empty() && authority_binding_is_named(local, expected))
         .then_some(())
-        .and_then(|()| local.init.as_ref())
+        .and(local.init.as_ref())
         .filter(|initializer| initializer.diverge.is_none())
         .map(|initializer| initializer.expr.as_ref())
 }
@@ -4673,7 +4675,7 @@ impl<'ast> Visit<'ast> for AssessmentCompositionVisitor {
             let authority_member = segments.last().map(|value| normalize_identifier(value));
             if segments.len() >= 2
                 && matches!(
-                    authority_member.as_deref(),
+                    authority_member,
                     Some("new_exact_origin")
                         | Some("new_exact_origin_with_tls_observation")
                         | Some("new_exact_origin_with_owned_xml_https_test_profile")
@@ -4685,12 +4687,12 @@ impl<'ast> Visit<'ast> for AssessmentCompositionVisitor {
                     .get(segments.len() - 2)
                     .is_some_and(|value| normalize_identifier(value) == "SharedWebRuntimeAuthority")
             {
-                let ordinary_selected = authority_member.as_deref() == Some("new_exact_origin");
+                let ordinary_selected = authority_member == Some("new_exact_origin");
                 let tls_selected =
-                    authority_member.as_deref() == Some("new_exact_origin_with_tls_observation");
-                let owned_xml_https_selected = authority_member.as_deref()
-                    == Some("new_exact_origin_with_owned_xml_https_test_profile");
-                let tls_owned_xml_https_selected = authority_member.as_deref()
+                    authority_member == Some("new_exact_origin_with_tls_observation");
+                let owned_xml_https_selected =
+                    authority_member == Some("new_exact_origin_with_owned_xml_https_test_profile");
+                let tls_owned_xml_https_selected = authority_member
                     == Some(
                         "new_exact_origin_with_tls_observation_and_owned_xml_https_test_profile",
                     );
@@ -15703,6 +15705,13 @@ mod tests {
                     1,
                 ),
                 "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replace(
+                    "Ok(WebAssessmentRuntime { authority })",
+                    "let _extra_authority = SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?;\n                    Ok(WebAssessmentRuntime { authority })",
+                ),
+                "exact mutually exclusive",
             ),
             (
                 source.replace(
