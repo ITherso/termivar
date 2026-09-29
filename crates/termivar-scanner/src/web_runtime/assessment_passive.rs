@@ -1101,6 +1101,8 @@ pub(crate) struct AssessmentReviewProjectionSources<'a> {
     pub(crate) ssrf_oast: Option<&'a CommittedSsrfOastReview>,
     #[cfg(feature = "xml-external-entity-review")]
     pub(crate) xml_external_entity: Option<&'a CommittedXmlExternalEntityReview>,
+    #[cfg(feature = "xml-external-entity-review")]
+    pub(crate) xml_external_entity_selected: bool,
     #[cfg(feature = "wordpress-review")]
     pub(crate) wordpress: Option<&'a CommittedWordPressReview>,
     #[cfg(feature = "secret-exposure-review")]
@@ -1135,6 +1137,8 @@ pub(crate) fn project_passive_assessment_items(
             ssrf_oast: None,
             #[cfg(feature = "xml-external-entity-review")]
             xml_external_entity: None,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_selected: false,
             #[cfg(feature = "wordpress-review")]
             wordpress: None,
             #[cfg(feature = "secret-exposure-review")]
@@ -1182,7 +1186,7 @@ pub(crate) fn project_assessment_items(
     let project_selected_application = project_selected_application || reviews.websocket_selected;
     #[cfg(feature = "xml-external-entity-review")]
     let project_selected_application =
-        project_selected_application || reviews.xml_external_entity.is_some();
+        project_selected_application || reviews.xml_external_entity_selected;
     // Anonymous, WordPress-only, and XML-review projections retain
     // `authorized-root@1`.
     // Supplied-session projections additionally bind the root item identity to
@@ -1318,6 +1322,8 @@ fn project_passive_assessment_items_for_root(
             ssrf_oast: None,
             #[cfg(feature = "xml-external-entity-review")]
             xml_external_entity: None,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_selected: false,
             #[cfg(feature = "wordpress-review")]
             wordpress: None,
             #[cfg(feature = "secret-exposure-review")]
@@ -3293,6 +3299,61 @@ mod passive_item_tests {
                 assert!(!format!("{incomplete:?}").contains(secret));
             }
         }
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[test]
+    fn selected_xml_review_preserves_subdirectory_application_identity_without_a_positive_item() {
+        let runtime = WebAssessmentRuntime::builder(
+            url::Url::parse("https://fixture.test/application/").expect("application URL"),
+        )
+        .build()
+        .expect("assessment runtime");
+        let authorized_root = runtime.authorized_root().clone();
+        let root = EntityId::new(format!("endpoint:{}", authorized_root.url())).unwrap();
+        let ledger = CommittedAssessmentPassiveLedger {
+            observations: vec![safe_observation(root.as_str())],
+            receipt_evidence: BTreeMap::new(),
+        };
+
+        let projection = project_assessment_items(
+            &ledger,
+            AssessmentReviewProjectionSources {
+                native: &[],
+                api_visibility: None,
+                #[cfg(feature = "supplied-session-review")]
+                supplied_session: None,
+                #[cfg(feature = "graphql-review")]
+                graphql: None,
+                #[cfg(feature = "authorization-review")]
+                authorization: None,
+                #[cfg(feature = "openapi-review")]
+                openapi: None,
+                #[cfg(feature = "rest-review")]
+                rest: None,
+                #[cfg(feature = "ssrf-oast-review")]
+                ssrf_oast: None,
+                xml_external_entity: None,
+                xml_external_entity_selected: true,
+                #[cfg(feature = "wordpress-review")]
+                wordpress: None,
+                #[cfg(feature = "secret-exposure-review")]
+                secret_exposure: None,
+                #[cfg(feature = "websocket-review")]
+                websocket_selected: false,
+            },
+            &KnowledgeBase::new(),
+            &authorized_root,
+            std::slice::from_ref(&authorized_root),
+        )
+        .expect("selected XML review projects the selected application identity");
+        let (set, incomplete) = projection.into_parts();
+        let (subjects, items) = set.into_parts();
+
+        assert!(!incomplete.is_incomplete());
+        assert_eq!(subjects.len(), 1);
+        assert_eq!(subjects[0].reference().ordinal(), 0);
+        assert!(items.is_empty());
     }
 
     #[cfg(feature = "supplied-session-review")]

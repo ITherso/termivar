@@ -5197,6 +5197,8 @@ impl WebAssessmentRuntime {
                 ssrf_oast: self.committed_ssrf_oast_review.as_ref(),
                 #[cfg(feature = "xml-external-entity-review")]
                 xml_external_entity: self.committed_xml_external_entity_review.as_ref(),
+                #[cfg(feature = "xml-external-entity-review")]
+                xml_external_entity_selected: self.xml_external_entity_review_audit.is_some(),
                 #[cfg(feature = "wordpress-review")]
                 wordpress: self.committed_wordpress_review.as_ref(),
                 #[cfg(feature = "secret-exposure-review")]

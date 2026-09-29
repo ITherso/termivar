@@ -354,6 +354,9 @@ fn safe_failure_diagnostic(stdout: &[u8]) -> String {
                     Some("xml_external_entity_review_incomplete") => {
                         "xml_external_entity_review_incomplete"
                     },
+                    Some("assessment_subject_identity_unavailable") => {
+                        "assessment_subject_identity_unavailable"
+                    },
                     Some("wall_time_limit") => "wall_time_limit",
                     Some("total_request_limit") => "total_request_limit",
                     Some("response_bytes_limit") => "response_bytes_limit",
@@ -1571,6 +1574,7 @@ fn failed_process_diagnostic_is_bounded_and_does_not_reflect_values() {
         "incomplete_reasons": [
             "started_runtime_failure",
             "xml_external_entity_review_incomplete",
+            "assessment_subject_identity_unavailable",
             "PRIVATE-REASON-MUST-NOT-BE-REFLECTED",
             false,
         ],
@@ -1580,7 +1584,7 @@ fn failed_process_diagnostic_is_bounded_and_does_not_reflect_values() {
     let summary = safe_failure_diagnostic(&diagnostic);
     assert_eq!(
         summary,
-        "diagnostic=web_assessment_v2, disposition=failed, reason_count=4, reason_classes=[\"started_runtime_failure\", \"xml_external_entity_review_incomplete\", \"other\", \"wrong_type\"], omitted_reasons=0"
+        "diagnostic=web_assessment_v2, disposition=failed, reason_count=5, reason_classes=[\"started_runtime_failure\", \"xml_external_entity_review_incomplete\", \"assessment_subject_identity_unavailable\", \"other\", \"wrong_type\"], omitted_reasons=0"
     );
     assert!(!summary.contains("PRIVATE"));
 

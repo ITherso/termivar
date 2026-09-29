@@ -2003,6 +2003,7 @@ mod xml_external_entity_runtime_tests {
 
     #[derive(Clone, Copy)]
     enum ResolutionBehavior {
+        NoCallback,
         ReferencedCandidateAndReplay,
         DeclaredControl,
         CandidateOnly,
@@ -2356,6 +2357,54 @@ mod xml_external_entity_runtime_tests {
         let debug = format!("{report:?}");
         assert!(!debug.contains(std::str::from_utf8(ADMIN_SECRET).unwrap()));
         assert!(!debug.contains("<!ENTITY"));
+    }
+
+    #[tokio::test]
+    async fn complete_negative_xml_review_preserves_subdirectory_application_subject() {
+        let fixture = xml_loopback_fixture(ResolutionBehavior::NoCallback).await;
+        assert_eq!(fixture.application.path(), "/application/");
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .with_xml_external_entity_review(policy(&fixture), administrator())
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
+        let audit = report.xml_external_entity_review_audit().unwrap();
+        assert_eq!(audit.outcome(), XmlExternalEntityReviewOutcome::NoCallback);
+        assert_eq!(audit.target_request_count(), 3);
+        assert_eq!(audit.provider_request_count(), 9);
+        assert_eq!(audit.active_verification_count(), 1);
+        assert!(audit.target_complete());
+        assert!(audit.preflight_clean());
+        assert!(!audit.control_callback_observed());
+        assert!(!audit.candidate_callback_observed());
+        assert!(!audit.replay_callback_observed());
+        assert!(audit.callback_targets_distinct());
+        assert!(!audit.event_identities_distinct());
+        assert!(audit.cleanup_verified());
+        assert!(audit.target_accounting_complete());
+        assert!(audit.provider_accounting_complete());
+        assert!(!audit.item_projected());
+        assert_eq!(
+            report
+                .assessment_items()
+                .iter()
+                .filter(|item| item.capability_id() == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+                .count(),
+            0
+        );
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            fixture
+                .target_requests
+                .lock()
+                .await
+                .iter()
+                .filter(|request| request.starts_with("POST /application/xml "))
+                .count(),
+            3
+        );
     }
 
     #[tokio::test]

@@ -1153,6 +1153,10 @@ fn web_assessment_contract_violations(
             "projection_from_committed_bootstrap",
             "post-commit evidence replay",
         ),
+        (
+            "xml_external_entity_selected: self.xml_external_entity_review_audit.is_some()",
+            "audit-backed XML review selection projection",
+        ),
     ] {
         if !assessment.contains(required) {
             violations.push(format!(
@@ -1350,6 +1354,14 @@ fn inspect_assessment_passive_markers(
             "session-authorized non-root application identity projection",
         ),
         (
+            "#[cfg(feature = \"xml-external-entity-review\")]\n    pub(crate) xml_external_entity_selected: bool",
+            "feature-gated XML review selection projection source",
+        ),
+        (
+            "project_selected_application || reviews.xml_external_entity_selected",
+            "selected XML review non-root application identity projection",
+        ),
+        (
             "StableAssessmentSubjectId::new(selected_application_stable_subject_identity(",
             "shared selected-application stable identity projection",
         ),
@@ -1375,6 +1387,14 @@ fn inspect_assessment_passive_markers(
     if committed_projection.contains("let mut prospective = self.clone()") {
         violations.push(
             "committed passive ledger must validate before mutation without cloning the full ledger"
+                .to_owned(),
+        );
+    }
+    if committed_projection
+        .contains("project_selected_application || reviews.xml_external_entity.is_some()")
+    {
+        violations.push(
+            "XML review selection must derive from the completed audit, not positive committed item presence"
                 .to_owned(),
         );
     }
@@ -13503,6 +13523,33 @@ fn relative_source_name(workspace_root: &Path, path: &Path) -> Result<String, Bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xml_application_selection_cannot_fall_back_to_positive_item_presence() {
+        let header_projection =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/passive_review.rs");
+        let committed_projection =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/assessment_passive.rs");
+        let http_evidence = include_str!("../../../crates/termivar-scanner/src/http_evidence.rs");
+        assert!(inspect_assessment_passive_markers(
+            header_projection,
+            committed_projection,
+            http_evidence,
+        )
+        .is_empty());
+
+        let mutation = committed_projection.replacen(
+            "project_selected_application || reviews.xml_external_entity_selected",
+            "project_selected_application || reviews.xml_external_entity.is_some()",
+            1,
+        );
+        assert_ne!(mutation, committed_projection);
+        let violations =
+            inspect_assessment_passive_markers(header_projection, &mutation, http_evidence);
+        assert!(violations.iter().any(|violation| violation.contains(
+            "XML review selection must derive from the completed audit, not positive committed item presence"
+        )));
+    }
 
     const VALID_SHARED_AUTHORITY: &str = r#"
         use crate::http_evidence::HttpRequestBroker;
