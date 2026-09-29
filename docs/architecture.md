@@ -152,15 +152,19 @@ callback, and wall-time ceilings. The adapter performs no work in `Drop`, and
 provider identifiers and secrets remain outside evidence and reporting. See
 [native OAST provider authority](internals/native-oast-provider-authority.md).
 
-This dependency edge supplies auxiliary callback correlation only. The
-separately gated SSRF OAST review is its sole product caller: the existing
-`WebAssessmentRuntime` may narrow one explicitly acknowledged policy to one
-query occurrence, one `.invalid` control, and two independent callback
-mutations. It reuses the parent target broker/budget and one narrowing provider
-authority, produces one final composed report, and requires both callbacks for
-at most `NeedsReview` / `KnowledgeOnly`. Legacy phases, plugins, Lua, exploit
-orchestration, unrelated API review families, and `release-bundle` cannot reach
-this path. See [SSRF OAST query review](internals/ssrf-oast-query-review.md).
+This dependency edge supplies auxiliary callback correlation only. Its closed
+product callers are the separately gated SSRF OAST query review and controlled
+XML external-entity review. Each reuses the parent target broker/budget and one
+narrowing provider authority, produces one final composed report, and requires
+two independently bound callbacks for at most `NeedsReview` /
+`KnowledgeOnly`. The SSRF review binds one exact query occurrence to an inert
+`.invalid` control plus callback candidate/replay. The XML review binds one
+operator-owned disposable endpoint to runtime-generated control/candidate/replay
+POST bodies; it does not accept arbitrary XML or prove XXE, file access,
+exfiltration, or impact. Legacy phases, plugins, Lua, exploit orchestration,
+unrelated API review families, and `release-bundle` cannot reach either path.
+See [SSRF OAST query review](internals/ssrf-oast-query-review.md) and
+[Controlled XML external-entity review](internals/xml-external-entity-review.md).
 
 `termivar-artifact` is a separate artifact-observation domain. Its library accepts
 caller-supplied bytes or bounded readers and owns no filesystem path, network,

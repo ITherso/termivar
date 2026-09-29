@@ -327,7 +327,8 @@ fn wordpress_review_target_conflict(
     feature = "wordpress-review",
     feature = "supplied-session-review",
     feature = "jwt-target-acceptance-review",
-    feature = "websocket-review"
+    feature = "websocket-review",
+    feature = "xml-external-entity-review"
 ))]
 fn is_wordpress_application_target(target: &Url) -> bool {
     matches!(target.scheme(), "http" | "https")
@@ -340,13 +341,18 @@ fn is_wordpress_application_target(target: &Url) -> bool {
         && target.fragment().is_none()
 }
 
-#[cfg(feature = "ssrf-oast-review")]
-fn scan_ssrf_oast_review_flags_conflict(
+#[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
+fn scan_oast_review_flags_conflict(
     profile: Option<CliScanProfile>,
     ssrf_oast_review_enabled: bool,
+    xml_external_entity_review_enabled: bool,
 ) -> Option<&'static str> {
-    if ssrf_oast_review_enabled && profile != Some(CliScanProfile::WebReview) {
+    if ssrf_oast_review_enabled && xml_external_entity_review_enabled {
+        Some("SSRF OAST query review and XML external-entity review cannot be combined")
+    } else if ssrf_oast_review_enabled && profile != Some(CliScanProfile::WebReview) {
         Some("SSRF OAST query review requires `--profile web-review`")
+    } else if xml_external_entity_review_enabled && profile != Some(CliScanProfile::WebReview) {
+        Some("XML external-entity review requires `--profile web-review`")
     } else {
         None
     }
@@ -772,7 +778,7 @@ struct ScanArgs {
         arg(conflicts_with = "session_auth_stdin")
     )]
     #[cfg_attr(
-        feature = "ssrf-oast-review",
+        any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"),
         arg(conflicts_with = "oast_admin_token_stdin")
     )]
     jwt_token_stdin: bool,
@@ -931,6 +937,10 @@ struct ScanArgs {
     /// only with `--profile web-review`.
     #[cfg(feature = "ssrf-oast-review")]
     #[arg(long, requires_all = ["profile", "ssrf_oast_policy"])]
+    #[cfg_attr(
+        feature = "xml-external-entity-review",
+        arg(conflicts_with = "xml_external_entity_review")
+    )]
     ssrf_oast_review: bool,
     /// Read one strict bounded `security.ssrf-oast-review-policy/v1` policy.
     /// A policy is inert unless the explicit review flag is also present.
@@ -938,34 +948,56 @@ struct ScanArgs {
     #[arg(
         long,
         value_name = "FILE",
+        group = "oast_review_policy",
         requires_all = ["profile", "ssrf_oast_review"]
     )]
     ssrf_oast_policy: Option<PathBuf>,
+    /// Explicitly enable the bounded XML external-entity review. This option
+    /// is compiled only with `xml-external-entity-review`, requires one strict
+    /// policy, and is valid only with `--profile web-review`.
+    #[cfg(feature = "xml-external-entity-review")]
+    #[arg(
+        long,
+        requires_all = ["profile", "xml_external_entity_policy"]
+    )]
+    #[cfg_attr(feature = "ssrf-oast-review", arg(conflicts_with = "ssrf_oast_review"))]
+    xml_external_entity_review: bool,
+    /// Read one strict bounded
+    /// `security.xml-external-entity-review-policy/v1` policy. The policy is
+    /// inert unless the explicit XML review flag is also present.
+    #[cfg(feature = "xml-external-entity-review")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        group = "oast_review_policy",
+        requires_all = ["profile", "xml_external_entity_review"]
+    )]
+    xml_external_entity_policy: Option<PathBuf>,
     /// Read the self-hosted OAST provider administrator token from an
     /// environment variable. Its name and value are redacted.
-    #[cfg(feature = "ssrf-oast-review")]
+    #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
     #[arg(
         long,
         value_name = "ENV_VAR",
-        requires = "ssrf_oast_policy",
+        requires = "oast_review_policy",
         conflicts_with_all = ["oast_admin_token_file", "oast_admin_token_stdin"]
     )]
     oast_admin_token_env: Option<OsString>,
     /// Read the self-hosted OAST provider administrator token from a bounded
     /// regular file. Its path and value are redacted.
-    #[cfg(feature = "ssrf-oast-review")]
+    #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
     #[arg(
         long,
         value_name = "FILE",
-        requires = "ssrf_oast_policy",
+        requires = "oast_review_policy",
         conflicts_with_all = ["oast_admin_token_env", "oast_admin_token_stdin"]
     )]
     oast_admin_token_file: Option<PathBuf>,
     /// Read the self-hosted OAST provider administrator token once from stdin.
-    #[cfg(feature = "ssrf-oast-review")]
+    #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
     #[arg(
         long,
-        requires = "ssrf_oast_policy",
+        requires = "oast_review_policy",
         conflicts_with_all = ["oast_admin_token_env", "oast_admin_token_file", "auth_stdin"]
     )]
     #[cfg_attr(
@@ -1043,7 +1075,7 @@ struct ScanArgs {
         arg(conflicts_with_all = ["authz_primary_stdin", "authz_peer_stdin"])
     )]
     #[cfg_attr(
-        feature = "ssrf-oast-review",
+        any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"),
         arg(conflicts_with = "oast_admin_token_stdin")
     )]
     session_auth_stdin: bool,
@@ -1128,7 +1160,7 @@ struct ScanArgs {
         conflicts_with_all = ["auth_env", "auth_file"]
     )]
     #[cfg_attr(
-        feature = "ssrf-oast-review",
+        any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"),
         arg(conflicts_with = "oast_admin_token_stdin")
     )]
     auth_stdin: bool,
@@ -1171,7 +1203,7 @@ struct ScanArgs {
         conflicts_with_all = ["authz_primary_env", "authz_primary_file", "authz_peer_stdin"]
     )]
     #[cfg_attr(
-        feature = "ssrf-oast-review",
+        any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"),
         arg(conflicts_with = "oast_admin_token_stdin")
     )]
     authz_primary_stdin: bool,
@@ -1203,7 +1235,7 @@ struct ScanArgs {
         conflicts_with_all = ["authz_peer_env", "authz_peer_file", "authz_primary_stdin"]
     )]
     #[cfg_attr(
-        feature = "ssrf-oast-review",
+        any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"),
         arg(conflicts_with = "oast_admin_token_stdin")
     )]
     authz_peer_stdin: bool,
@@ -1216,7 +1248,8 @@ struct ScanTarget {
         feature = "wordpress-review",
         feature = "supplied-session-review",
         feature = "jwt-target-acceptance-review",
-        feature = "websocket-review"
+        feature = "websocket-review",
+        feature = "xml-external-entity-review"
     ))]
     raw: String,
 }
@@ -1231,7 +1264,8 @@ impl std::str::FromStr for ScanTarget {
                 feature = "wordpress-review",
                 feature = "supplied-session-review",
                 feature = "jwt-target-acceptance-review",
-                feature = "websocket-review"
+                feature = "websocket-review",
+                feature = "xml-external-entity-review"
             ))]
             raw: raw.to_owned(),
         })
@@ -1252,7 +1286,8 @@ impl ScanTarget {
         feature = "wordpress-review",
         feature = "supplied-session-review",
         feature = "jwt-target-acceptance-review",
-        feature = "websocket-review"
+        feature = "websocket-review",
+        feature = "xml-external-entity-review"
     ))]
     fn selected_application_is_unambiguous(&self) -> bool {
         if !is_wordpress_application_target(&self.url) || self.url.as_str() != self.raw {
@@ -1283,7 +1318,8 @@ impl ScanTarget {
     feature = "wordpress-review",
     feature = "supplied-session-review",
     feature = "jwt-target-acceptance-review",
-    feature = "websocket-review"
+    feature = "websocket-review",
+    feature = "xml-external-entity-review"
 ))]
 fn raw_http_directory_path(value: &str) -> Option<&str> {
     if value.is_empty()
@@ -1444,11 +1480,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         ssrf_oast_review,
         #[cfg(feature = "ssrf-oast-review")]
         ssrf_oast_policy,
-        #[cfg(feature = "ssrf-oast-review")]
+        #[cfg(feature = "xml-external-entity-review")]
+        xml_external_entity_review,
+        #[cfg(feature = "xml-external-entity-review")]
+        xml_external_entity_policy,
+        #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
         oast_admin_token_env,
-        #[cfg(feature = "ssrf-oast-review")]
+        #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
         oast_admin_token_file,
-        #[cfg(feature = "ssrf-oast-review")]
+        #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
         oast_admin_token_stdin,
         #[cfg(feature = "supplied-session-review")]
         session_policy,
@@ -1491,6 +1531,16 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     let openapi_review = false;
     #[cfg(not(feature = "rest-review"))]
     let rest_review = false;
+    #[cfg(all(
+        not(feature = "ssrf-oast-review"),
+        feature = "xml-external-entity-review"
+    ))]
+    let ssrf_oast_review = false;
+    #[cfg(all(
+        feature = "ssrf-oast-review",
+        not(feature = "xml-external-entity-review")
+    ))]
+    let xml_external_entity_review = false;
     #[cfg(feature = "secret-exposure-review")]
     #[allow(unused_mut)]
     let secret_exposure_unprotected_response_source_selected = {
@@ -1626,8 +1676,10 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .error(clap::error::ErrorKind::ArgumentConflict, message)
             .exit();
     }
-    #[cfg(feature = "ssrf-oast-review")]
-    if let Some(message) = scan_ssrf_oast_review_flags_conflict(profile, ssrf_oast_review) {
+    #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
+    if let Some(message) =
+        scan_oast_review_flags_conflict(profile, ssrf_oast_review, xml_external_entity_review)
+    {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -1747,6 +1799,14 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         )
         .into());
     }
+    #[cfg(feature = "xml-external-entity-review")]
+    if xml_external_entity_review && !target.selected_application_is_unambiguous() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "XML external-entity application target must use an unambiguous raw trailing-slash path",
+        )
+        .into());
+    }
     let target = target.into_url();
     #[cfg(feature = "jwt-target-acceptance-review")]
     if jwt_target_acceptance_policy.is_some()
@@ -1859,7 +1919,10 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         session_cookie_file,
         session_login_file,
     )?;
-    #[cfg(feature = "ssrf-oast-review")]
+    #[cfg(all(
+        feature = "ssrf-oast-review",
+        not(feature = "xml-external-entity-review")
+    ))]
     let ssrf_oast_review_input = auth_input::SsrfOastReviewInput::select(
         ssrf_oast_review,
         ssrf_oast_policy,
@@ -1869,6 +1932,46 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             oast_admin_token_stdin,
         ),
     )?;
+    #[cfg(all(
+        feature = "xml-external-entity-review",
+        not(feature = "ssrf-oast-review")
+    ))]
+    let xml_external_entity_review_input = auth_input::XmlExternalEntityReviewInput::select(
+        xml_external_entity_review,
+        xml_external_entity_policy,
+        auth_input::AuthorizationSourceOptions::new(
+            oast_admin_token_env,
+            oast_admin_token_file,
+            oast_admin_token_stdin,
+        ),
+    )?;
+    #[cfg(all(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
+    let (ssrf_oast_review_input, xml_external_entity_review_input) = {
+        let administrator = auth_input::AuthorizationSourceOptions::new(
+            oast_admin_token_env,
+            oast_admin_token_file,
+            oast_admin_token_stdin,
+        );
+        if xml_external_entity_review {
+            (
+                None,
+                auth_input::XmlExternalEntityReviewInput::select(
+                    true,
+                    xml_external_entity_policy,
+                    administrator,
+                )?,
+            )
+        } else {
+            (
+                auth_input::SsrfOastReviewInput::select(
+                    ssrf_oast_review,
+                    ssrf_oast_policy,
+                    administrator,
+                )?,
+                None,
+            )
+        }
+    };
     #[cfg(feature = "wordpress-review")]
     let wordpress_review_input = wordpress_input::WordPressReviewInput::select(
         wordpress_review,
@@ -2028,6 +2131,10 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         let prepared_ssrf_oast_review = ssrf_oast_review_input
             .map(|input| input.prepare(&target))
             .transpose()?;
+        #[cfg(feature = "xml-external-entity-review")]
+        let prepared_xml_external_entity_review = xml_external_entity_review_input
+            .map(|input| input.prepare(&target))
+            .transpose()?;
         preflight_report_output(report_output.as_deref())?;
         let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;
         // All flag, profile, target, and obvious report-output checks above
@@ -2055,6 +2162,13 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         #[cfg(feature = "ssrf-oast-review")]
         let ssrf_oast_review = prepared_ssrf_oast_review
             .map(auth_input::PreparedSsrfOastReviewInput::load)
+            .transpose()
+            .inspect_err(|_| {
+                abort_report_bundle_after_failure(&mut report_bundle);
+            })?;
+        #[cfg(feature = "xml-external-entity-review")]
+        let xml_external_entity_review = prepared_xml_external_entity_review
+            .map(auth_input::PreparedXmlExternalEntityReviewInput::load)
             .transpose()
             .inspect_err(|_| {
                 abort_report_bundle_after_failure(&mut report_bundle);
@@ -2119,6 +2233,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 supplied_session_review,
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast_review,
+                #[cfg(feature = "xml-external-entity-review")]
+                xml_external_entity_review,
                 #[cfg(feature = "wordpress-review")]
                 wordpress_review,
                 #[cfg(feature = "wordpress-review")]
@@ -2671,6 +2787,14 @@ mod tests {
         {
             assert!(!args.ssrf_oast_review);
             assert_eq!(args.ssrf_oast_policy, None);
+        }
+        #[cfg(feature = "xml-external-entity-review")]
+        {
+            assert!(!args.xml_external_entity_review);
+            assert_eq!(args.xml_external_entity_policy, None);
+        }
+        #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
+        {
             assert_eq!(args.oast_admin_token_env, None);
             assert_eq!(args.oast_admin_token_file, None);
             assert!(!args.oast_admin_token_stdin);
@@ -2756,6 +2880,14 @@ mod tests {
         {
             assert!(!args.ssrf_oast_review);
             assert_eq!(args.ssrf_oast_policy, None);
+        }
+        #[cfg(feature = "xml-external-entity-review")]
+        {
+            assert!(!args.xml_external_entity_review);
+            assert_eq!(args.xml_external_entity_policy, None);
+        }
+        #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
+        {
             assert_eq!(args.oast_admin_token_env, None);
             assert_eq!(args.oast_admin_token_file, None);
             assert!(!args.oast_admin_token_stdin);
@@ -4863,7 +4995,7 @@ mod tests {
         assert!(baseline.ssrf_oast_policy.is_some());
         assert!(baseline.oast_admin_token_env.is_some());
         assert_eq!(
-            scan_ssrf_oast_review_flags_conflict(Some(CliScanProfile::Baseline), true),
+            scan_oast_review_flags_conflict(Some(CliScanProfile::Baseline), true, false),
             Some("SSRF OAST query review requires `--profile web-review`")
         );
 
@@ -4891,7 +5023,7 @@ mod tests {
             "OpenAPI must not be silently enabled"
         );
         assert_eq!(
-            scan_ssrf_oast_review_flags_conflict(review.profile, true),
+            scan_oast_review_flags_conflict(review.profile, true, false),
             None
         );
 
@@ -4976,9 +5108,229 @@ mod tests {
         .is_err());
     }
 
-    #[cfg(not(feature = "ssrf-oast-review"))]
+    #[cfg(feature = "xml-external-entity-review")]
     #[test]
-    fn default_cli_does_not_expose_ssrf_oast_review_inputs() {
+    fn xml_external_entity_review_exposes_only_explicit_web_review_secret_sources() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        for flag in [
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
+            "--oast-admin-token-env",
+            "--oast-admin-token-file",
+            "--oast-admin-token-stdin",
+        ] {
+            assert!(help.contains(flag), "missing feature-gated flag {flag}");
+        }
+        assert!(!help.contains("--oast-admin-token <"));
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--xml-external-entity-review",
+            "https://example.test/",
+        ])
+        .is_err());
+        let requires_explicit_enable = match Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--xml-external-entity-policy",
+            "PRIVATE-XML-POLICY-PATH",
+            "--oast-admin-token-env",
+            "PRIVATE_XML_OAST_ADMIN_ENV",
+            "https://example.test/",
+        ]) {
+            Ok(_) => panic!("policy and token sources must not silently enable XML review"),
+            Err(error) => error.to_string(),
+        };
+        assert!(!requires_explicit_enable.contains("PRIVATE-XML-POLICY-PATH"));
+        assert!(!requires_explicit_enable.contains("PRIVATE_XML_OAST_ADMIN_ENV"));
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
+            "private-xml-policy.toml",
+            "--oast-admin-token-env",
+            "PRIVATE_XML_OAST_ADMIN_ENV",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
+            "private-xml-policy.toml",
+            "--oast-admin-token-env",
+            "PRIVATE_XML_OAST_ADMIN_ENV",
+            "https://example.test/",
+        ])
+        .expect("the semantic profile guard runs before runtime dispatch");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(baseline.profile, Some(CliScanProfile::Baseline));
+        assert!(baseline.xml_external_entity_review);
+        assert!(baseline.xml_external_entity_policy.is_some());
+        assert!(baseline.oast_admin_token_env.is_some());
+        assert_eq!(
+            scan_oast_review_flags_conflict(Some(CliScanProfile::Baseline), false, true),
+            Some("XML external-entity review requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
+            "private-xml-policy.toml",
+            "--oast-admin-token-file",
+            "private-admin-token",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(review.profile, Some(CliScanProfile::WebReview));
+        assert!(review.xml_external_entity_review);
+        assert!(review.xml_external_entity_policy.is_some());
+        assert!(review.oast_admin_token_file.is_some());
+        assert_eq!(
+            scan_oast_review_flags_conflict(review.profile, false, true),
+            None
+        );
+
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--oast-admin-token-env",
+            "PRIVATE_XML_OAST_ADMIN_ENV",
+            "https://example.test/",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
+            "private-xml-policy.toml",
+            "--oast-admin-token",
+            "RAW-OAST-TOKEN-MUST-NOT-EXIST",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[test]
+    fn xml_external_entity_review_rejects_conflicting_sources_and_shared_stdin() {
+        let conflict = match Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
+            "private-xml-policy.toml",
+            "--oast-admin-token-env",
+            "PRIVATE_XML_OAST_ADMIN_ENV",
+            "--oast-admin-token-file",
+            "private-admin-token",
+            "https://example.test/",
+        ]) {
+            Ok(_) => panic!("conflicting OAST administrator sources must fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(!conflict.contains("PRIVATE_XML_OAST_ADMIN_ENV"));
+        assert!(!conflict.contains("private-admin-token"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--auth-stdin",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
+            "private-xml-policy.toml",
+            "--oast-admin-token-stdin",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[test]
+    fn xml_external_entity_review_requires_exact_raw_application_spelling() {
+        let canonical: ScanTarget = "https://app.example.test/application/".parse().unwrap();
+        assert!(canonical.selected_application_is_unambiguous());
+
+        for ambiguous in [
+            "https://app.example.test/application/./",
+            "https://app.example.test/application/safe/../",
+            "https://app.example.test/application/safe/%2e%2e/",
+            "https://app.example.test/application/%2f/",
+            r"https://app.example.test/application\fixtures/",
+            "HTTPS://APP.EXAMPLE.TEST:443/application/",
+        ] {
+            let target: ScanTarget = ambiguous
+                .parse()
+                .unwrap_or_else(|error| panic!("test URL must parse ({ambiguous}): {error}"));
+            assert!(
+                !target.selected_application_is_unambiguous(),
+                "normalized authority spelling was admitted: {ambiguous}"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
+    #[test]
+    fn oast_reviews_are_mutually_exclusive_before_input_acquisition() {
+        assert_eq!(
+            scan_oast_review_flags_conflict(Some(CliScanProfile::WebReview), true, true),
+            Some("SSRF OAST query review and XML external-entity review cannot be combined")
+        );
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--ssrf-oast-review",
+            "--ssrf-oast-policy",
+            "private-ssrf-policy.toml",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
+            "private-xml-policy.toml",
+            "--oast-admin-token-env",
+            "PRIVATE_OAST_ADMIN_ENV",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(all(
+        not(feature = "ssrf-oast-review"),
+        not(feature = "xml-external-entity-review")
+    ))]
+    #[test]
+    fn default_cli_does_not_expose_oast_review_inputs() {
         use clap::CommandFactory as _;
 
         let mut command = Cli::command();
@@ -4990,6 +5342,8 @@ mod tests {
         for flag in [
             "--ssrf-oast-review",
             "--ssrf-oast-policy",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy",
             "--oast-admin-token-env",
             "--oast-admin-token-file",
             "--oast-admin-token-stdin",

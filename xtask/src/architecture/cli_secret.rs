@@ -25,6 +25,8 @@ const CLI_MAIN_SOURCE: &str = "crates/termivar-cli/src/main.rs";
 const SCANNER_CONTEXT_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs";
 const PAYLOAD_STRATEGY_SOURCE: &str = "crates/termivar-scanner/src/payload_strategy.rs";
+const XML_EXTERNAL_ENTITY_POLICY_SOURCE: &str =
+    "crates/termivar-scanner/src/xml_external_entity_review.rs";
 
 const AUTH_SOURCE_VARIANTS: &[(&str, Option<&str>)] = &[
     ("Environment", Some("OsString")),
@@ -126,6 +128,8 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "ssrf_oast_policy",
     "ssrf_oast_review",
     "target",
+    "xml_external_entity_policy",
+    "xml_external_entity_review",
 ];
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
@@ -134,10 +138,15 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let cli_main = fs::read_to_string(workspace_root.join(CLI_MAIN_SOURCE))?;
     let scanner_context = fs::read_to_string(workspace_root.join(SCANNER_CONTEXT_SOURCE))?;
     let payload_strategy = fs::read_to_string(workspace_root.join(PAYLOAD_STRATEGY_SOURCE))?;
+    let xml_external_entity_policy =
+        fs::read_to_string(workspace_root.join(XML_EXTERNAL_ENTITY_POLICY_SOURCE))?;
 
     let mut violations = inspect_auth_input_contract(&auth_input)?;
     violations.extend(inspect_recon_input_contract(&recon_input)?);
     violations.extend(inspect_cli_auth_surface(&cli_main)?);
+    violations.extend(inspect_xml_external_entity_policy_input_contract(
+        &xml_external_entity_policy,
+    )?);
     violations.extend(inspect_scanner_context_validation(
         &scanner_context,
         &payload_strategy,
@@ -170,6 +179,9 @@ fn protected_type_cross_source_violations(
                 "SuppliedSessionInputError",
                 "SsrfOastReviewInput",
                 "PreparedSsrfOastReviewInput",
+                "XmlExternalEntityReviewInput",
+                "PreparedXmlExternalEntityReviewInput",
+                "XmlExternalEntityReviewInputError",
             ][..],
         ),
         (
@@ -810,6 +822,16 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
             &["load"][..],
             "formatter.debug_struct(\"PreparedSsrfOastReviewInput\").field(\"policy\",&\"<validated>\").field(\"administrator\",&\"<redacted>\").finish()",
         ),
+        (
+            "XmlExternalEntityReviewInput",
+            &["prepare", "select"][..],
+            "formatter.debug_struct(\"XmlExternalEntityReviewInput\").field(\"policy_file\",&\"<redacted>\").field(\"administrator\",&\"<redacted>\").finish()",
+        ),
+        (
+            "PreparedXmlExternalEntityReviewInput",
+            &["load"][..],
+            "formatter.debug_struct(\"PreparedXmlExternalEntityReviewInput\").field(\"policy\",&\"<validated>\").field(\"administrator\",&\"<redacted>\").finish()",
+        ),
     ] {
         let item = syntax.items.iter().find_map(|item| match item {
             Item::Struct(item) if item.ident == type_name => Some(item),
@@ -859,6 +881,8 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         "pub(crate)structPreparedJwtPolicyReviewInput{policy:JwtLocalPolicy,public_key:Es256LocalPublicKey,token:AuthorizationInputSource,#[cfg(feature=\"jwt-target-acceptance-review\")]target_acceptance_policy:Option<JwtTargetAcceptancePolicy>,}",
         "pub(crate)structLoadedJwtPolicyReviewInput{local_audit:JwtPolicyReviewAudit,target_acceptance:Option<LoadedJwtTargetAcceptanceInput>,}",
         "pub(crate)structLoadedJwtTargetAcceptanceInput{policy:JwtTargetAcceptancePolicy,runtime_input:JwtTargetAcceptanceRuntimeInput,}",
+        "pub(crate)structXmlExternalEntityReviewInput{policy_file:PathBuf,administrator:AuthorizationInputSource,}",
+        "pub(crate)structPreparedXmlExternalEntityReviewInput{policy:XmlExternalEntityReviewPolicy,administrator:AuthorizationInputSource,}",
         "structJwtTargetAcceptancePolicyDocument{schema:String,policy_reference:String,policy_revision:String,application:String,resource:String,resource_reference:String,success_json_field:String,}",
         "enumSuppliedSessionSecretSource{Authorization(AuthorizationInputSource),Cookies(PathBuf),FormLogin(PathBuf),}",
         "Self::FormLogin(_)=>SuppliedSessionCredentialAcquisition::BoundedFormLogin",
@@ -893,6 +917,11 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         "letboth_stdin=primary.stdin&&peer.stdin;",
         "ifboth_stdin{returnErr(AuthorizationReviewInputError::AmbiguousStdin);}",
         "read_bounded_regular_file(self.policy_file,HARD_MAX_AUTHORIZATION_REVIEW_POLICY_BYTES)",
+        "read_bounded_regular_file(self.policy_file,MAX_XML_EXTERNAL_ENTITY_REVIEW_POLICY_BYTES,)",
+        "validate_local_file_path(&policy_file).map_err(XmlExternalEntityReviewInputError::PolicySource)?;",
+        "ifletAuthorizationInputSource::File(path)=&administrator{validate_local_file_path(path).map_err(XmlExternalEntityReviewInputError::AdministratorSource)?;}",
+        "XmlExternalEntityReviewPolicy::parse_toml(target,policy_source.as_bytes())",
+        "XmlExternalEntityAdminToken::new(bytes.into_owned())",
         "AuthorizationReviewPolicy::parse_toml(target,policy_source.as_slice())",
         "self.primary.read_bytes()",
         "self.peer.read_bytes()",
@@ -946,6 +975,25 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     if !module_is_private {
         violations.push(
             "CLI auth_input module must remain a private, non-redirected source module".to_owned(),
+        );
+    }
+
+    let exact_application_feature_gate = "#[cfg(any(feature=\"wordpress-review\",feature=\"supplied-session-review\",feature=\"jwt-target-acceptance-review\",feature=\"websocket-review\",feature=\"xml-external-entity-review\"))]";
+    let scan_target_shape =
+        format!("structScanTarget{{url:Url,{exact_application_feature_gate}raw:String,}}");
+    let scan_target_construction = format!(
+        "Ok(Self{{url:Url::parse(raw)?,{exact_application_feature_gate}raw:raw.to_owned(),}})"
+    );
+    let raw_application_check = format!(
+        "{exact_application_feature_gate}fnselected_application_is_unambiguous(&self)->bool{{if!is_wordpress_application_target(&self.url)||self.url.as_str()!=self.raw{{returnfalse;}}"
+    );
+    if compact.matches(&scan_target_shape).count() != 1
+        || compact.matches(&scan_target_construction).count() != 1
+        || compact.matches(&raw_application_check).count() != 1
+    {
+        violations.push(
+            "CLI selected-application authority must preserve the exact raw target spelling under every context-bearing feature and compare it before normalized URL use"
+                .to_owned(),
         );
     }
 
@@ -1054,6 +1102,8 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("wordpress_core_version_file", "Option", Some("PathBuf")),
         ("ssrf_oast_policy", "Option", Some("PathBuf")),
         ("ssrf_oast_review", "bool", None),
+        ("xml_external_entity_policy", "Option", Some("PathBuf")),
+        ("xml_external_entity_review", "bool", None),
         ("authorization_review_policy", "Option", Some("PathBuf")),
         ("session_policy", "Option", Some("PathBuf")),
         ("session_auth_env", "Option", Some("OsString")),
@@ -1241,7 +1291,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 &[
                     "feature=\"authorization-review\",arg(conflicts_with_all=[\"authz_primary_stdin\",\"authz_peer_stdin\"])",
                     "feature=\"supplied-session-review\",arg(conflicts_with=\"session_auth_stdin\")",
-                    "feature=\"ssrf-oast-review\",arg(conflicts_with=\"oast_admin_token_stdin\")",
+                    "any(feature=\"ssrf-oast-review\",feature=\"xml-external-entity-review\"),arg(conflicts_with=\"oast_admin_token_stdin\")",
                 ][..]
             } else {
                 &[][..]
@@ -1295,7 +1345,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             "long,requires=\"session_policy\",conflicts_with_all=[\"session_auth_env\",\"session_auth_file\",\"session_cookie_file\",\"session_login_file\",\"auth_stdin\"]",
             &[
                 "feature=\"authorization-review\",arg(conflicts_with_all=[\"authz_primary_stdin\",\"authz_peer_stdin\"])",
-                "feature=\"ssrf-oast-review\",arg(conflicts_with=\"oast_admin_token_stdin\")",
+                "any(feature=\"ssrf-oast-review\",feature=\"xml-external-entity-review\"),arg(conflicts_with=\"oast_admin_token_stdin\")",
             ][..],
         ),
         (
@@ -1599,31 +1649,69 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
-    for (name, expected_type, expected_arg) in [
+    for (name, expected_type, expected_arg, expected_cfg_attrs) in [
         (
             "ssrf_oast_review",
             ("bool", None),
             "long,requires_all=[\"profile\",\"ssrf_oast_policy\"]",
+            &["feature=\"xml-external-entity-review\",arg(conflicts_with=\"xml_external_entity_review\")"][..],
         ),
         (
             "ssrf_oast_policy",
             ("Option", Some("PathBuf")),
-            "long,value_name=\"FILE\",requires_all=[\"profile\",\"ssrf_oast_review\"]",
+            "long,value_name=\"FILE\",group=\"oast_review_policy\",requires_all=[\"profile\",\"ssrf_oast_review\"]",
+            &[][..],
         ),
+        (
+            "xml_external_entity_review",
+            ("bool", None),
+            "long,requires_all=[\"profile\",\"xml_external_entity_policy\"]",
+            &["feature=\"ssrf-oast-review\",arg(conflicts_with=\"ssrf_oast_review\")"][..],
+        ),
+        (
+            "xml_external_entity_policy",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",group=\"oast_review_policy\",requires_all=[\"profile\",\"xml_external_entity_review\"]",
+            &[][..],
+        ),
+    ] {
+        let expected_feature = if name.starts_with("xml_external_entity") {
+            "xml-external-entity-review"
+        } else {
+            "ssrf-oast-review"
+        };
+        let exact = fields.get(name).is_some_and(|field| {
+            let type_matches = match expected_type {
+                (outer, Some(inner)) => is_one_argument_type(&field.ty, outer, inner),
+                (plain, None) => is_plain_type(&field.ty, plain),
+            };
+            type_matches
+                && exact_cfg_feature_attribute(&field.attrs, expected_feature)
+                && exact_arg_attribute(&field.attrs, expected_arg)
+                && exact_cfg_attr_attributes(&field.attrs, expected_cfg_attrs)
+        });
+        if !exact {
+            violations.push(format!(
+                "CLI `{name}` must retain its exact feature gate, explicit OAST review enablement/policy pairing, mutual exclusion, and shared-policy grouping"
+            ));
+        }
+    }
+
+    for (name, expected_type, expected_arg) in [
         (
             "oast_admin_token_env",
             ("Option", Some("OsString")),
-            "long,value_name=\"ENV_VAR\",requires=\"ssrf_oast_policy\",conflicts_with_all=[\"oast_admin_token_file\",\"oast_admin_token_stdin\"]",
+            "long,value_name=\"ENV_VAR\",requires=\"oast_review_policy\",conflicts_with_all=[\"oast_admin_token_file\",\"oast_admin_token_stdin\"]",
         ),
         (
             "oast_admin_token_file",
             ("Option", Some("PathBuf")),
-            "long,value_name=\"FILE\",requires=\"ssrf_oast_policy\",conflicts_with_all=[\"oast_admin_token_env\",\"oast_admin_token_stdin\"]",
+            "long,value_name=\"FILE\",requires=\"oast_review_policy\",conflicts_with_all=[\"oast_admin_token_env\",\"oast_admin_token_stdin\"]",
         ),
         (
             "oast_admin_token_stdin",
             ("bool", None),
-            "long,requires=\"ssrf_oast_policy\",conflicts_with_all=[\"oast_admin_token_env\",\"oast_admin_token_file\",\"auth_stdin\"]",
+            "long,requires=\"oast_review_policy\",conflicts_with_all=[\"oast_admin_token_env\",\"oast_admin_token_file\",\"auth_stdin\"]",
         ),
     ] {
         let exact = fields.get(name).is_some_and(|field| {
@@ -1632,12 +1720,15 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 (plain, None) => is_plain_type(&field.ty, plain),
             };
             type_matches
-                && exact_cfg_feature_attribute(&field.attrs, "ssrf-oast-review")
+                && exact_cfg_attribute(
+                    &field.attrs,
+                    "any(feature=\"ssrf-oast-review\",feature=\"xml-external-entity-review\")",
+                )
                 && exact_arg_attribute(&field.attrs, expected_arg)
         });
         if !exact {
             violations.push(format!(
-                "CLI `{name}` must retain its exact feature-gated SSRF OAST type, explicit enablement, and out-of-band source conflicts"
+                "CLI `{name}` must retain its exact shared OAST feature gate, policy-group requirement, and out-of-band source conflicts"
             ));
         }
     }
@@ -1660,6 +1751,20 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     {
         violations.push(
             "CLI local JWT semantic preflight must bind the exact union of the five local inputs plus optional target-acceptance policy to the web-review-only guard before acquisition"
+                .to_owned(),
+        );
+    }
+    let oast_profile_guard = "fnscan_oast_review_flags_conflict(profile:Option<CliScanProfile>,ssrf_oast_review_enabled:bool,xml_external_entity_review_enabled:bool,)->Option<&'staticstr>{ifssrf_oast_review_enabled&&xml_external_entity_review_enabled{Some(\"SSRFOASTqueryreviewandXMLexternal-entityreviewcannotbecombined\")}elseifssrf_oast_review_enabled&&profile!=Some(CliScanProfile::WebReview){Some(\"SSRFOASTqueryreviewrequires`--profileweb-review`\")}elseifxml_external_entity_review_enabled&&profile!=Some(CliScanProfile::WebReview){Some(\"XMLexternal-entityreviewrequires`--profileweb-review`\")}else{None}}";
+    if compact.matches(oast_profile_guard).count() != 1
+        || compact
+            .matches(
+                "scan_oast_review_flags_conflict(profile,ssrf_oast_review,xml_external_entity_review)",
+            )
+            .count()
+            != 1
+    {
+        violations.push(
+            "CLI must fail closed before acquisition when both OAST reviews are selected or either review is selected outside web-review"
                 .to_owned(),
         );
     }
@@ -1690,18 +1795,27 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
-    if !compact.contains("auth_input::SsrfOastReviewInput::select(ssrf_oast_review,ssrf_oast_policy,auth_input::AuthorizationSourceOptions::new(oast_admin_token_env,oast_admin_token_file,oast_admin_token_stdin,),)?")
+    let ssrf_only_oast_selection = "letssrf_oast_review_input=auth_input::SsrfOastReviewInput::select(ssrf_oast_review,ssrf_oast_policy,auth_input::AuthorizationSourceOptions::new(oast_admin_token_env,oast_admin_token_file,oast_admin_token_stdin,),)?;";
+    let xml_only_oast_selection = "letxml_external_entity_review_input=auth_input::XmlExternalEntityReviewInput::select(xml_external_entity_review,xml_external_entity_policy,auth_input::AuthorizationSourceOptions::new(oast_admin_token_env,oast_admin_token_file,oast_admin_token_stdin,),)?;";
+    let combined_oast_selection = "let(ssrf_oast_review_input,xml_external_entity_review_input)={letadministrator=auth_input::AuthorizationSourceOptions::new(oast_admin_token_env,oast_admin_token_file,oast_admin_token_stdin,);ifxml_external_entity_review{(None,auth_input::XmlExternalEntityReviewInput::select(true,xml_external_entity_policy,administrator,)?,)}else{(auth_input::SsrfOastReviewInput::select(ssrf_oast_review,ssrf_oast_policy,administrator,)?,None,)}};";
+    if compact.matches(ssrf_only_oast_selection).count() != 1
+        || compact.matches(xml_only_oast_selection).count() != 1
+        || compact.matches(combined_oast_selection).count() != 1
         || compact
             .matches("auth_input::SsrfOastReviewInput::select(")
             .count()
-            != 1
+            != 2
+        || compact
+            .matches("auth_input::XmlExternalEntityReviewInput::select(")
+            .count()
+            != 2
         || compact
             .matches("auth_input::AuthorizationSourceOptions::new(oast_admin_token_")
             .count()
-            != 1
+            != 3
     {
         violations.push(
-            "CLI must require explicit SSRF OAST enablement, one policy, and exactly one out-of-band administrator source without reading them"
+            "CLI must preserve the exact feature-specific and combined-build OAST selection branches, share one move-only administrator source in the combined build, and never read it during selection"
             .to_owned(),
         );
     }
@@ -1746,11 +1860,13 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         || !compact.contains(".map(auth_input::PreparedJwtPolicyReviewInput::load)")
         || !compact.contains("letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?")
         || !compact.contains("letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?")
+        || !compact.contains("letprepared_xml_external_entity_review=xml_external_entity_review_input.map(|input|input.prepare(&target)).transpose()?")
         || !compact.contains(".map(auth_input::PreparedSuppliedSessionInput::load)")
         || !compact.contains(".map(auth_input::PreparedSsrfOastReviewInput::load)")
+        || !compact.contains(".map(auth_input::PreparedXmlExternalEntityReviewInput::load)")
     {
         violations.push(
-            "CLI must validate local JWT policy/public-key/target-policy, supplied-session, and OAST non-secret inputs before opening any compatible credential source"
+            "CLI must validate local JWT policy/public-key/target-policy, supplied-session, and each mutually exclusive OAST review's non-secret input before opening any compatible credential source"
                 .to_owned(),
         );
     }
@@ -1803,6 +1919,17 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
+    let xml_target_preflight_order = [
+        "ifxml_external_entity_review&&!target.selected_application_is_unambiguous(){",
+        "\"XMLexternal-entityapplicationtargetmustuseanunambiguousrawtrailing-slashpath\"",
+        "lettarget=target.into_url();",
+    ];
+    if !unique_markers_are_ordered(&compact, &xml_target_preflight_order) {
+        violations.push(
+            "CLI XML external-entity review must reject normalized or ambiguous raw application spellings before consuming ScanTarget into a URL"
+                .to_owned(),
+        );
+    }
 
     let Some(run) = find_function(&syntax, "run_deterministic_scan") else {
         violations.push("CLI deterministic scan boundary is missing".to_owned());
@@ -1819,7 +1946,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
-        "scan_ssrf_oast_review_flags_conflict",
+        "scan_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
         "scan_websocket_supplied_session_flags_conflict",
@@ -1830,6 +1957,9 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_authorization_flags_conflict",
         "is_exact_origin_root",
         "authorization_context_transport_is_allowed",
+        "select",
+        "select",
+        "select",
         "select",
         "select",
         "select",
@@ -1847,6 +1977,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "prepare",
         "scan_websocket_supplied_session_policy_conflict",
         "scan_wordpress_supplied_session_policy_conflict",
+        "prepare",
         "prepare",
         "preflight_report_output",
         "reserve_report_bundle",
@@ -1990,7 +2121,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "load")
             .count()
-            != 9
+            != 10
         || ordered
             .iter()
             .filter(|name| name.as_str() == "preflight_recon_ct_provider_composition")
@@ -2000,12 +2131,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "prepare")
             .count()
-            != 4
+            != 5
         || ordered
             .iter()
             .filter(|name| name.as_str() == "select")
             .count()
-            != 6
+            != 9
     {
         violations.push(format!(
             "CLI authorization, local JWT, and WordPress inputs must be selected without I/O and loaded exactly once each after flag, progress, transport, profile, and defense validation and before warning/network execution; report destinations must still be preflighted before secret loading; observed {ordered:?}"
@@ -2022,17 +2153,68 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_websocket_supplied_session_policy_conflict(websocket_supplied_session,prepared.policy_version(),prepared.resource_count(),)",
         "scan_wordpress_supplied_session_policy_conflict(wordpress_supplied_session,prepared.policy_version(),)",
         "letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?;",
+        "letprepared_xml_external_entity_review=xml_external_entity_review_input.map(|input|input.prepare(&target)).transpose()?;",
         "preflight_report_output(report_output.as_deref())?;",
         "letmutreport_bundle=report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
         "letroot_authorization_context=authorization_source.map(auth_input::AuthorizationInputSource::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letresource_authorization_review=resource_authorization_input.map(|input|input.load(&target)).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letsupplied_session_review=prepared_supplied_session_review.map(auth_input::PreparedSuppliedSessionInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letssrf_oast_review=prepared_ssrf_oast_review.map(auth_input::PreparedSsrfOastReviewInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
+        "letxml_external_entity_review=prepared_xml_external_entity_review.map(auth_input::PreparedXmlExternalEntityReviewInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letloaded_jwt_policy_review=prepared_jwt_policy_review.map(auth_input::PreparedJwtPolicyReviewInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
     ];
     if !unique_markers_are_ordered(&compact, &typed_boundary_order) {
         violations.push(
             "CLI typed input operations must preserve the exact non-secret preparation, report preflight/reservation, secret-load, and failure-cleanup order"
+                .to_owned(),
+        );
+    }
+
+    Ok(violations)
+}
+
+fn inspect_xml_external_entity_policy_input_contract(
+    source: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let compact = compact_source(source);
+    let mut violations = Vec::new();
+
+    let exact_parser = find_function(&syntax, "parse_exact_policy_endpoint");
+    if exact_parser.is_none_or(|function| !matches!(function.vis, Visibility::Inherited))
+        || compact
+            .matches("fnparse_exact_policy_endpoint(value:&str)->Result<Url,()>")
+            .count()
+            != 1
+        || compact.matches("parse_exact_policy_endpoint(").count() != 2
+    {
+        violations.push(
+            "XML external-entity endpoint authority must retain one private exact-spelling parser used exactly once by policy construction"
+                .to_owned(),
+        );
+    }
+
+    let raw_rejections = "ifvalue.is_empty()||value.len()>MAX_XML_EXTERNAL_ENTITY_URL_BYTES||value.trim()!=value||!value.is_ascii()||value.bytes().any(|byte|byte.is_ascii_control())||value.contains('%')||value.contains('\\\\'){returnErr(());}";
+    let parse_and_equality = "letparsed=Url::parse(value).map_err(|_|())?;ifparsed.as_str()!=value{returnErr(());}Ok(parsed)";
+    if compact.matches(raw_rejections).count() != 1
+        || compact.matches(parse_and_equality).count() != 1
+    {
+        violations.push(
+            "XML external-entity endpoint authority must reject empty, oversized, trimmed, non-ASCII, control, percent-encoded, and backslash spellings before parsing and require byte-exact URL serialization"
+                .to_owned(),
+        );
+    }
+
+    let policy_order = [
+        "validate_production_url(assessment_target)",
+        "letendpoint=parse_exact_policy_endpoint(&wire.endpoint).map_err(|_|XmlExternalEntityReviewPolicyError::InvalidEndpoint)?;",
+        "validate_production_url(&endpoint)",
+        "if!same_origin(assessment_target,&endpoint)",
+        "if!application_contains(assessment_target,&endpoint)",
+    ];
+    if !unique_markers_are_ordered(&compact, &policy_order) {
+        violations.push(
+            "XML external-entity policy must bind the exact raw endpoint before production URL, origin, and selected-application checks"
                 .to_owned(),
         );
     }
@@ -2407,6 +2589,10 @@ fn exact_command_attribute(attributes: &[Attribute], expected: &str) -> bool {
 }
 
 fn exact_cfg_feature_attribute(attributes: &[Attribute], feature: &str) -> bool {
+    exact_cfg_attribute(attributes, &format!("feature=\"{feature}\""))
+}
+
+fn exact_cfg_attribute(attributes: &[Attribute], expected: &str) -> bool {
     let predicates = attributes
         .iter()
         .filter_map(|attribute| match &attribute.meta {
@@ -2414,7 +2600,7 @@ fn exact_cfg_feature_attribute(attributes: &[Attribute], feature: &str) -> bool 
             _ => None,
         })
         .collect::<Vec<_>>();
-    predicates == [format!("feature=\"{feature}\"")]
+    predicates == [expected]
 }
 
 fn exact_cfg_attr_attributes(attributes: &[Attribute], expected: &[&str]) -> bool {
@@ -2621,7 +2807,8 @@ fn bounded_reader_is_exact(items: &[(String, String)]) -> bool {
             feature = "authorization-review",
             feature = "jwt-policy-review",
             feature = "ssrf-oast-review",
-            feature = "supplied-session-review"
+            feature = "supplied-session-review",
+            feature = "xml-external-entity-review"
         ))]
         fn read_bounded_regular_file(path: PathBuf, max_bytes: usize,)
             -> Result<CredentialBytes, AuthorizationInputError> {
@@ -3151,7 +3338,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
         "scan_wordpress_review_flags_conflict",
-        "scan_ssrf_oast_review_flags_conflict",
+        "scan_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
         "scan_report_flags_conflict",
         "scan_websocket_supplied_session_flags_conflict",
@@ -3261,6 +3448,8 @@ mod tests {
     );
     const PAYLOAD_STRATEGY: &str =
         include_str!("../../../crates/termivar-scanner/src/payload_strategy.rs");
+    const XML_EXTERNAL_ENTITY_POLICY: &str =
+        include_str!("../../../crates/termivar-scanner/src/xml_external_entity_review.rs");
 
     fn assert_mutation_fails(
         original: &str,
@@ -3286,6 +3475,11 @@ mod tests {
         let violations = inspect_recon_input_contract(RECON_INPUT).unwrap();
         assert!(violations.is_empty(), "{violations:#?}");
         assert!(inspect_cli_auth_surface(CLI_MAIN).unwrap().is_empty());
+        assert!(
+            inspect_xml_external_entity_policy_input_contract(XML_EXTERNAL_ENTITY_POLICY)
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             inspect_scanner_context_validation(SCANNER_CONTEXT, PAYLOAD_STRATEGY)
                 .unwrap()
@@ -3729,6 +3923,127 @@ mod tests {
                 from,
                 to,
                 |source| inspect_cli_auth_surface(source).unwrap(),
+                needle,
+            );
+        }
+    }
+
+    #[test]
+    fn xml_external_entity_input_and_cli_authority_are_mutation_locked() {
+        for (from, to, needle) in [
+            (
+                "pub(crate) struct XmlExternalEntityReviewInput {",
+                "#[derive(Clone)]\npub(crate) struct XmlExternalEntityReviewInput {",
+                "XmlExternalEntityReviewInput must remain underived",
+            ),
+            (
+                ".debug_struct(\"XmlExternalEntityReviewInput\")\n            .field(\"policy_file\", &\"<redacted>\")",
+                ".debug_struct(\"XmlExternalEntityReviewInput\")\n            .field(\"policy_file\", &self.policy_file)",
+                "XmlExternalEntityReviewInput must remain underived",
+            ),
+            (
+                "MAX_XML_EXTERNAL_ENTITY_REVIEW_POLICY_BYTES,",
+                "usize::MAX,",
+                "bounded policy/key parsing",
+            ),
+            (
+                "XmlExternalEntityReviewPolicy::parse_toml(target, policy_source.as_bytes())",
+                "XmlExternalEntityReviewPolicy::parse_unchecked(target, policy_source.as_bytes())",
+                "bounded policy/key parsing",
+            ),
+            (
+                "XmlExternalEntityAdminToken::new(bytes.into_owned())",
+                "XmlExternalEntityAdminToken::from_unchecked(bytes.into_owned())",
+                "bounded policy/key parsing",
+            ),
+            (
+                "validate_local_file_path(&policy_file)\n            .map_err(XmlExternalEntityReviewInputError::PolicySource)?;",
+                "let _ = &policy_file;",
+                "bounded policy/key parsing",
+            ),
+            (
+                "if let AuthorizationInputSource::File(path) = &administrator {\n            validate_local_file_path(path)\n                .map_err(XmlExternalEntityReviewInputError::AdministratorSource)?;\n        }",
+                "let _ = &administrator;",
+                "bounded policy/key parsing",
+            ),
+        ] {
+            assert_mutation_fails(
+                AUTH_INPUT,
+                from,
+                to,
+                |source| inspect_auth_input_contract(source).unwrap(),
+                needle,
+            );
+        }
+
+        for (from, to, needle) in [
+            (
+                "        feature = \"websocket-review\",\n        feature = \"xml-external-entity-review\"\n    ))]\n    raw: String,",
+                "        feature = \"websocket-review\"\n    ))]\n    raw: String,",
+                "exact raw target spelling",
+            ),
+            (
+                "    #[cfg(feature = \"xml-external-entity-review\")]\n    #[arg(\n        long,\n        requires_all = [\"profile\", \"xml_external_entity_policy\"]\n    )]\n    #[cfg_attr(feature = \"ssrf-oast-review\", arg(conflicts_with = \"ssrf_oast_review\"))]\n    xml_external_entity_review: bool,",
+                "    #[arg(long)]\n    xml_external_entity_review: bool,",
+                "xml_external_entity_review",
+            ),
+            (
+                "scan_oast_review_flags_conflict(profile, ssrf_oast_review, xml_external_entity_review)",
+                "scan_oast_review_flags_conflict(profile, ssrf_oast_review, false)",
+                "fail closed before acquisition",
+            ),
+            (
+                "if xml_external_entity_review && !target.selected_application_is_unambiguous()",
+                "if false",
+                "reject normalized or ambiguous raw application spellings",
+            ),
+            (
+                "auth_input::XmlExternalEntityReviewInput::select(",
+                "auth_input::XmlExternalEntityReviewInput::select_unchecked(",
+                "feature-specific and combined-build OAST selection branches",
+            ),
+            (
+                ".map(|input| input.prepare(&target))\n            .transpose()?;\n        preflight_report_output(report_output.as_deref())?;",
+                ".map(|input| input.prepare_unchecked(&target))\n            .transpose()?;\n        preflight_report_output(report_output.as_deref())?;",
+                "non-secret input",
+            ),
+            (
+                ".map(auth_input::PreparedXmlExternalEntityReviewInput::load)",
+                ".map(auth_input::PreparedXmlExternalEntityReviewInput::load_unchecked)",
+                "non-secret input",
+            ),
+        ] {
+            assert_mutation_fails(
+                CLI_MAIN,
+                from,
+                to,
+                |source| inspect_cli_auth_surface(source).unwrap(),
+                needle,
+            );
+        }
+
+        for (from, to, needle) in [
+            (
+                "let endpoint = parse_exact_policy_endpoint(&wire.endpoint)",
+                "let endpoint = Url::parse(&wire.endpoint)",
+                "exact-spelling parser used exactly once",
+            ),
+            (
+                "|| value.contains('%')",
+                "|| false",
+                "reject empty, oversized, trimmed, non-ASCII, control, percent-encoded, and backslash spellings",
+            ),
+            (
+                "if parsed.as_str() != value",
+                "if false",
+                "require byte-exact URL serialization",
+            ),
+        ] {
+            assert_mutation_fails(
+                XML_EXTERNAL_ENTITY_POLICY,
+                from,
+                to,
+                |source| inspect_xml_external_entity_policy_input_contract(source).unwrap(),
                 needle,
             );
         }

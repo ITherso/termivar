@@ -89,6 +89,8 @@ mod wordpress_discovery;
 mod wordpress_fingerprint_runtime;
 #[cfg(feature = "wordpress-review")]
 mod wordpress_runtime;
+#[cfg(feature = "xml-external-entity-review")]
+mod xml_external_entity_runtime;
 
 pub use api_visibility::{
     ApiVisibilityContextProbe, ApiVisibilityDifferentialAudit,
@@ -154,6 +156,13 @@ pub use assessment_report::{
 #[cfg(feature = "supplied-session-review")]
 pub use crate::supplied_session_review::{
     MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES,
+};
+#[cfg(feature = "xml-external-entity-review")]
+pub use crate::xml_external_entity_review::{
+    XmlExternalEntityExecutionMode, XmlExternalEntityReviewAudit, XmlExternalEntityReviewOutcome,
+    XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS, XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
+    XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA, XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID,
+    XML_EXTERNAL_ENTITY_TARGET_REQUESTS,
 };
 #[cfg(feature = "openapi-review")]
 pub use openapi_runtime::{

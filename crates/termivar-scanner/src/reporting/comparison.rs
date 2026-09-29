@@ -38,6 +38,9 @@ pub(super) const WEBSOCKET_SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
 /// Additive, display-only local JWT policy comparison section.
 pub(super) const JWT_POLICY_REVIEW_COMPARISON_SCHEMA: &str =
     "termivar-jwt-policy-review-comparison/v1";
+/// Additive, display-only controlled XML external-entity review comparison.
+pub(super) const XML_EXTERNAL_ENTITY_REVIEW_COMPARISON_SCHEMA: &str =
+    "termivar-xml-external-entity-review-comparison/v1";
 /// Additive, display-only control-reference mapping comparison section.
 pub(super) const CONTROL_REFERENCE_MAPPING_COMPARISON_SCHEMA: &str =
     "termivar-control-reference-mapping-comparison/v1";
@@ -219,6 +222,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) jwt_policy_review_comparison: Option<JwtPolicyReviewComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) xml_external_entity_review_comparison: Option<XmlExternalEntityReviewComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) control_reference_mapping_comparison: Option<ControlReferenceMappingComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) recon_snapshot_import_comparison: Option<ReconSnapshotImportComparison>,
@@ -294,6 +299,18 @@ pub(super) struct JwtPolicyReviewComparison {
     pub(super) interpretation_limits: [&'static str; 6],
     #[serde(skip)]
     pub(super) target_selected: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct XmlExternalEntityReviewComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) outcome: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 6],
 }
 
 #[derive(Debug, Serialize)]
@@ -488,6 +505,13 @@ pub(super) struct ImportedJwtPolicyReviewAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedXmlExternalEntityReviewAudit {
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+    pub(super) outcome: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedControlReferenceMappingAudit {
     pub(super) methodology: Value,
     pub(super) coverage: Value,
@@ -596,6 +620,7 @@ struct ImportedDocument {
     tls_observation: Option<ImportedTlsObservationAudit>,
     websocket_review: Option<ImportedWebSocketReviewAudit>,
     jwt_policy_review: Option<ImportedJwtPolicyReviewAudit>,
+    xml_external_entity_review: Option<ImportedXmlExternalEntityReviewAudit>,
     control_reference_mapping: Option<ImportedControlReferenceMappingAudit>,
     recon_snapshot_import: Option<ImportedReconSnapshotAudit>,
     recon_certspotter: Option<ImportedReconCertSpotterAudit>,
@@ -636,6 +661,10 @@ fn compare_documents(
         before.jwt_policy_review.as_ref(),
         after.jwt_policy_review.as_ref(),
     );
+    let xml_external_entity_review_comparison = compare_xml_external_entity_review(
+        before.xml_external_entity_review.as_ref(),
+        after.xml_external_entity_review.as_ref(),
+    );
     let control_reference_mapping_comparison = compare_control_reference_mapping(
         before.control_reference_mapping.as_ref(),
         after.control_reference_mapping.as_ref(),
@@ -670,6 +699,7 @@ fn compare_documents(
         tls_observation_comparison,
         websocket_review_comparison,
         jwt_policy_review_comparison,
+        xml_external_entity_review_comparison,
         control_reference_mapping_comparison,
         recon_snapshot_import_comparison,
         recon_certspotter_comparison,
@@ -1118,6 +1148,68 @@ fn compare_jwt_policy_review(
             ]
         },
         target_selected,
+    })
+}
+
+fn compare_xml_external_entity_review(
+    before: Option<&ImportedXmlExternalEntityReviewAudit>,
+    after: Option<&ImportedXmlExternalEntityReviewAudit>,
+) -> Option<XmlExternalEntityReviewComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    let facet_status = |before: Option<&Value>, after: Option<&Value>| {
+        if status == "compared" {
+            paired_status(before, after)
+        } else {
+            "not_comparable"
+        }
+    };
+    Some(XmlExternalEntityReviewComparison {
+        schema: XML_EXTERNAL_ENTITY_REVIEW_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            facet_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "The v1 policy identity is a composite binding over private scope and schedule inputs. Policy identity, execution mode, exact method, media type, control model, algorithm, or claim-limit changes are reported as methodology changes; they do not establish a target security change.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            facet_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "Counts, bytes, completeness, callback coverage, distinct-event accounting, cleanup verification, and item projection describe bounded review coverage; reduced or missing coverage is not remediation or parser hardening.",
+        ),
+        outcome: facet(
+            before.map(|audit| &audit.outcome),
+            after.map(|audit| &audit.outcome),
+            facet_status(
+                before.map(|audit| &audit.outcome),
+                after.map(|audit| &audit.outcome),
+            ),
+            "The terminal review outcome is separate from methodology and coverage. A changed outcome does not identify a parser, confirm XXE, establish file access, data exfiltration, internal reachability, impact, or remediation.",
+        ),
+        interpretation_limits: [
+            "The comparison retains no endpoint URL or path, provider origin, callback URL or identifier, XML body, system literal, token, header, cookie, response body, or raw error.",
+            "The pseudonymous policy digest binds private policy inputs but does not authenticate a source, target, parser, provider, or cross-run deployment identity.",
+            "A positive outcome means only two distinct correlated external-entity callback events followed the candidate and replay dispatches under a clean no-control-callback model.",
+            "File read, data exfiltration, internal-network access, parser identity, semantic response effect, and impact validation were not performed or established.",
+            "A one-sided or incomplete audit is not evidence that behavior appeared, disappeared, was blocked, or was remediated.",
+            "Equal saved values do not establish equivalent deployment, authorization, provider health, review coverage, or target security.",
+        ],
     })
 }
 
@@ -1761,6 +1853,12 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
     if let Some(jwt_policy_review) = &document.jwt_policy_review_comparison {
         write_jwt_policy_review_comparison_markdown(&mut output, jwt_policy_review)?;
     }
+    if let Some(xml_external_entity_review) = &document.xml_external_entity_review_comparison {
+        write_xml_external_entity_review_comparison_markdown(
+            &mut output,
+            xml_external_entity_review,
+        )?;
+    }
     if let Some(control_reference_mapping) = &document.control_reference_mapping_comparison {
         write_control_reference_mapping_comparison_markdown(
             &mut output,
@@ -2107,6 +2205,50 @@ fn write_jwt_policy_review_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### JWT policy review interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_xml_external_entity_review_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &XmlExternalEntityReviewComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Controlled XML external-entity review differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str(
+        "\n\nThis section compares validated, value-free projections of one bounded callback-control review. It retains no endpoint, provider, callback, XML, token, path, response-body, or raw-error values. It does not confirm XXE, identify a parser, establish file access, data exfiltration, internal reachability, impact, or remediation.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+        ("Outcome", &comparison.outcome),
+    ] {
+        output.push_fmt(format_args!("### XML review {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### XML external-entity review interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

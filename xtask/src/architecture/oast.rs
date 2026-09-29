@@ -22,12 +22,16 @@ const MODULE_NAME: &str = "oast";
 const NATIVE_PROVIDER_ADAPTER: &str = "native_oast_provider.rs";
 const SSRF_OAST_REVIEW_CONTRACT: &str = "ssrf_oast_review.rs";
 const SSRF_OAST_REVIEW_RUNTIME: &str = "web_runtime/ssrf_oast_runtime.rs";
+const XML_EXTERNAL_ENTITY_REVIEW_RUNTIME: &str = "web_runtime/xml_external_entity_runtime.rs";
 const SSRF_OAST_REVIEW_TESTS: &str = "web_runtime/assessment_review_tests.rs";
+const WEB_RUNTIME_TESTS: &str = "web_runtime_tests.rs";
 const ASSESSMENT_REVIEW_SOURCE: &str = "web_runtime/assessment_review.rs";
+const WEB_RUNTIME_SOURCE: &str = "web_runtime.rs";
 const EXACT_SCANNER_CONSUMERS: &[&str] = &[
     NATIVE_PROVIDER_ADAPTER,
     SSRF_OAST_REVIEW_CONTRACT,
     SSRF_OAST_REVIEW_RUNTIME,
+    XML_EXTERNAL_ENTITY_REVIEW_RUNTIME,
 ];
 const FEATURE_PREDICATE: &str = "feature=\"oast-correlation\"";
 const SECRET_TYPE: &str = "OastCorrelationToken";
@@ -340,7 +344,10 @@ pub(super) fn repository_consumer_violations(
         if relative == "oast.rs" {
             continue;
         }
-        if relative == SSRF_OAST_REVIEW_TESTS {
+        if matches!(
+            relative.as_str(),
+            SSRF_OAST_REVIEW_TESTS | WEB_RUNTIME_TESTS
+        ) {
             continue;
         }
         let source = fs::read_to_string(&path)?;
@@ -360,6 +367,18 @@ pub(super) fn repository_consumer_violations(
     {
         violations.push(format!(
             "the test-only OAST consumer must remain behind the exact cfg(test) module declaration in {ASSESSMENT_REVIEW_SOURCE}"
+        ));
+    }
+    let web_runtime = fs::read_to_string(source_root.join(WEB_RUNTIME_SOURCE))?;
+    let exact_test_module = "#[cfg(test)]\n#[path = \"web_runtime_tests.rs\"]\nmod tests;";
+    if web_runtime
+        .replace("\r\n", "\n")
+        .matches(exact_test_module)
+        .count()
+        != 1
+    {
+        violations.push(format!(
+            "the test-only OAST consumer must remain behind the exact cfg(test) module declaration in {WEB_RUNTIME_SOURCE}"
         ));
     }
     Ok(violations)
@@ -397,7 +416,7 @@ fn consumer_source_violations(
     }
     if visitor.references_oast && !EXACT_SCANNER_CONSUMERS.contains(&relative_path) {
         Ok(vec![format!(
-            "termivar-scanner production source `{relative_path}` must not consume crate::oast or Oast* types; only the sealed native provider adapter, bounded SSRF OAST review contract, and its exact child runtime may use the correlation boundary"
+            "termivar-scanner production source `{relative_path}` must not consume crate::oast or Oast* types; only the sealed native provider adapter, bounded SSRF OAST review contract/runtime, and exact controlled XML child runtime may use the correlation boundary"
         )])
     } else if !visitor.references_oast && EXACT_SCANNER_CONSUMERS.contains(&relative_path) {
         Ok(vec![format!(
@@ -2073,6 +2092,13 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+        assert!(consumer_source_violations(
+            XML_EXTERNAL_ENTITY_REVIEW_RUNTIME,
+            "use crate::oast::{OastCorrelationId, OastEventDisposition}; fn reduce(_: OastCorrelationId, _: OastEventDisposition) {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
         assert!(!consumer_source_violations(
             NATIVE_PROVIDER_ADAPTER,
             "fn bypasses_correlation() {}",
@@ -2090,6 +2116,20 @@ mod tests {
         assert!(!consumer_source_violations(
             SSRF_OAST_REVIEW_RUNTIME,
             "fn bypasses_correlation() {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(!consumer_source_violations(
+            XML_EXTERNAL_ENTITY_REVIEW_RUNTIME,
+            "fn bypasses_correlation() {}",
+            false,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(!consumer_source_violations(
+            "web_runtime/xml_external_entity_helper.rs",
+            "use crate::oast::OastCorrelationId; fn widen(_: OastCorrelationId) {}",
             false,
         )
         .unwrap()

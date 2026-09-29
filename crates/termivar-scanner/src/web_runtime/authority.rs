@@ -382,10 +382,13 @@ impl SharedWebRuntimeAuthority {
     /// deadline already owned by this assessment.
     #[cfg(feature = "oast-native-provider")]
     #[cfg_attr(
-        all(not(test), not(feature = "ssrf-oast-review")),
+        all(
+            not(test),
+            not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
+        ),
         expect(
             dead_code,
-            reason = "sealed PR B authority is consumed only by the separately gated ssrf-oast-review capability"
+            reason = "sealed native OAST authority is consumed only by separately gated review capabilities"
         )
     )]
     pub(crate) fn mint_native_oast_provider(

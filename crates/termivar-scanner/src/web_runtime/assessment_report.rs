@@ -34,6 +34,14 @@ use crate::jwt_target_acceptance::{
     JWT_TARGET_ACCEPTANCE_POLICY_ID, MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS,
     MAX_JWT_TARGET_ACCEPTANCE_REQUESTS,
 };
+#[cfg(feature = "xml-external-entity-review")]
+use crate::xml_external_entity_review::{
+    XmlExternalEntityReviewAudit, XmlExternalEntityReviewOutcome,
+    MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS, XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS,
+    XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID, XML_EXTERNAL_ENTITY_REVIEW_ALGORITHM,
+    XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA, XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID,
+    XML_EXTERNAL_ENTITY_TARGET_REQUESTS,
+};
 
 #[cfg(feature = "secret-exposure-review")]
 use super::assessment_item::AssessmentBasis;
@@ -277,6 +285,8 @@ pub struct AssessmentRunReport {
     rest_review: Option<WebAssessmentRestAudit>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+    #[cfg(feature = "xml-external-entity-review")]
+    xml_external_entity_review: Option<XmlExternalEntityReviewAudit>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WebAssessmentWordPressAudit>,
     #[cfg(feature = "secret-exposure-review")]
@@ -309,6 +319,8 @@ struct AssessmentReviewAudits {
     rest_review: Option<WebAssessmentRestAudit>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+    #[cfg(feature = "xml-external-entity-review")]
+    xml_external_entity_review: Option<XmlExternalEntityReviewAudit>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WebAssessmentWordPressAudit>,
     #[cfg(feature = "secret-exposure-review")]
@@ -341,6 +353,9 @@ impl AssessmentRunReport {
         #[cfg(feature = "openapi-review")] openapi_review: Option<WebAssessmentOpenApiAudit>,
         #[cfg(feature = "rest-review")] rest_review: Option<WebAssessmentRestAudit>,
         #[cfg(feature = "ssrf-oast-review")] ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
+        #[cfg(feature = "xml-external-entity-review")] xml_external_entity_review: Option<
+            XmlExternalEntityReviewAudit,
+        >,
         #[cfg(feature = "wordpress-review")] wordpress_review: Option<WebAssessmentWordPressAudit>,
         #[cfg(feature = "secret-exposure-review")] secret_exposure_review: Option<
             WebAssessmentSecretExposureAudit,
@@ -372,6 +387,8 @@ impl AssessmentRunReport {
                 rest_review,
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast_review,
+                #[cfg(feature = "xml-external-entity-review")]
+                xml_external_entity_review,
                 #[cfg(feature = "wordpress-review")]
                 wordpress_review,
                 #[cfg(feature = "secret-exposure-review")]
@@ -414,6 +431,8 @@ impl AssessmentRunReport {
             rest_review,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
@@ -473,6 +492,14 @@ impl AssessmentRunReport {
         validate_rest_audit(rest_review.as_ref(), &items)?;
         #[cfg(feature = "ssrf-oast-review")]
         validate_ssrf_oast_audit(ssrf_oast_review.as_ref(), &items)?;
+        #[cfg(feature = "xml-external-entity-review")]
+        validate_xml_external_entity_audit(
+            xml_external_entity_review.as_ref(),
+            &items,
+            truth.expected_accounting.requests().consumed(),
+            truth.expected_accounting.request_body_bytes().consumed(),
+            truth.expected_accounting.response_body_bytes().consumed(),
+        )?;
         #[cfg(feature = "wordpress-review")]
         validate_wordpress_audit(wordpress_review.as_ref(), &items)?;
         #[cfg(feature = "secret-exposure-review")]
@@ -514,6 +541,8 @@ impl AssessmentRunReport {
             rest_review,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
@@ -569,7 +598,11 @@ impl AssessmentRunReport {
     /// Resolves one runtime-owned evidence identity to the opaque reference
     /// minted by the same consumed projection authority. This mapping remains
     /// private to report composition and is never serialized as runtime state.
-    #[cfg(any(feature = "wordpress-review", feature = "secret-exposure-review"))]
+    #[cfg(any(
+        feature = "wordpress-review",
+        feature = "secret-exposure-review",
+        feature = "xml-external-entity-review"
+    ))]
     pub(crate) fn evidence_reference_for(
         &self,
         evidence_id: &EvidenceId,
@@ -607,6 +640,12 @@ impl AssessmentRunReport {
     #[cfg(feature = "ssrf-oast-review")]
     pub const fn ssrf_oast_review_audit(&self) -> Option<&WebAssessmentSsrfOastAudit> {
         self.ssrf_oast_review.as_ref()
+    }
+
+    /// Returns the optional value-free controlled XML interaction audit.
+    #[cfg(feature = "xml-external-entity-review")]
+    pub const fn xml_external_entity_review_audit(&self) -> Option<&XmlExternalEntityReviewAudit> {
+        self.xml_external_entity_review.as_ref()
     }
 
     /// Returns the optional redaction-safe, transport-free WordPress audit.
@@ -1238,6 +1277,71 @@ fn validate_ssrf_oast_audit(
     Ok(())
 }
 
+#[cfg(feature = "xml-external-entity-review")]
+fn validate_xml_external_entity_audit(
+    audit: Option<&XmlExternalEntityReviewAudit>,
+    items: &[AssessmentItem],
+    assessment_request_count: Option<u64>,
+    assessment_request_body_bytes: Option<u64>,
+    assessment_response_bytes: Option<u64>,
+) -> Result<(), AssessmentRunReportError> {
+    let projected = items
+        .iter()
+        .filter(|item| item.capability_id() == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+        .count();
+    if projected > 1 {
+        return Err(AssessmentRunReportError::XmlExternalEntityAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return if projected == 0 {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::XmlExternalEntityAuditMismatch)
+        };
+    };
+
+    let target_requests = usize::from(audit.target_request_count());
+    let provider_requests = usize::from(audit.provider_request_count());
+    let active_verifications = usize::from(audit.active_verification_count());
+    let positive =
+        audit.outcome() == XmlExternalEntityReviewOutcome::RepeatedExternalEntityResolutionObserved;
+    let request_total = target_requests.checked_add(provider_requests);
+    let parent_counts_cover_child = request_total.is_some_and(|count| {
+        assessment_request_count
+            .is_some_and(|parent| u64::try_from(count).is_ok_and(|count| count <= parent))
+    }) && assessment_request_body_bytes
+        .is_some_and(|parent| audit.target_request_body_bytes() <= parent)
+        && assessment_response_bytes.is_some_and(|parent| audit.target_response_bytes() <= parent);
+    let positive_shape = target_requests == XML_EXTERNAL_ENTITY_TARGET_REQUESTS
+        && active_verifications == XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS
+        && audit.target_complete()
+        && audit.preflight_clean()
+        && !audit.control_callback_observed()
+        && audit.candidate_callback_observed()
+        && audit.replay_callback_observed()
+        && audit.callback_targets_distinct()
+        && audit.event_identities_distinct()
+        && audit.cleanup_verified()
+        && audit.target_accounting_complete()
+        && audit.provider_accounting_complete();
+    let valid = audit.schema() == XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA
+        && audit.algorithm() == XML_EXTERNAL_ENTITY_REVIEW_ALGORITHM
+        && audit.action_id() == XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID
+        && audit.capability_id() == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID
+        && target_requests <= XML_EXTERNAL_ENTITY_TARGET_REQUESTS
+        && provider_requests <= MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS
+        && active_verifications <= XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS
+        && parent_counts_cover_child
+        && audit.item_projected() == (projected == 1)
+        && positive == audit.item_projected()
+        && (!positive || positive_shape);
+    if valid {
+        Ok(())
+    } else {
+        Err(AssessmentRunReportError::XmlExternalEntityAuditMismatch)
+    }
+}
+
 #[cfg(feature = "openapi-review")]
 fn validate_openapi_audit(
     audit: Option<&WebAssessmentOpenApiAudit>,
@@ -1375,6 +1479,11 @@ impl fmt::Debug for AssessmentRunReport {
         debug.field(
             "ssrf_oast_review_audit_present",
             &self.ssrf_oast_review.is_some(),
+        );
+        #[cfg(feature = "xml-external-entity-review")]
+        debug.field(
+            "xml_external_entity_review_audit_present",
+            &self.xml_external_entity_review.is_some(),
         );
         #[cfg(feature = "wordpress-review")]
         debug.field(
@@ -2468,6 +2577,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "ssrf-oast-review")]
     #[error("SSRF OAST review audit does not match projected item truth")]
     SsrfOastAuditMismatch,
+    /// The optional controlled XML review audit disagreed with projected item truth.
+    #[cfg(feature = "xml-external-entity-review")]
+    #[error("controlled XML review audit does not match projected item truth")]
+    XmlExternalEntityAuditMismatch,
     /// The optional WordPress audit disagreed with projected item truth.
     #[cfg(feature = "wordpress-review")]
     #[error("WordPress review audit does not match projected item truth")]

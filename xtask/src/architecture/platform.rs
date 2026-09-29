@@ -45,6 +45,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "tls-observation",
     "websocket-review",
     "wordpress-review",
+    "xml-external-entity-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -81,6 +82,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "tls-observation",
     "websocket-review",
     "wordpress-review",
+    "xml-external-entity-review",
     "platform-models",
     "plugins",
     "reporting",
@@ -233,6 +235,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "tls-observation",
     "websocket-review",
     "wordpress-review",
+    "xml-external-entity-review",
 ];
 const REQUIRED_API_DEPENDENCIES: &[&str] = &["axum"];
 const REQUIRED_PROXY_DEPENDENCIES: &[&str] = &["tokio"];
@@ -300,6 +303,10 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
         "feature=\"supplied-session-review\"",
     ),
     ("wordpress_review", "feature=\"wordpress-review\""),
+    (
+        "xml_external_entity_review",
+        "feature=\"xml-external-entity-review\"",
+    ),
     ("persistence", "feature=\"platform-models\""),
     ("plugin", "feature=\"plugins\""),
     ("post_exploitation", "feature=\"platform-models\""),
@@ -5250,7 +5257,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 13
+        || report_call.args.len() != 14
     {
         return false;
     }
@@ -5284,6 +5291,13 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "ssrf_oast_review", "ssrf-oast-review")
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(
+                argument,
+                "xml_external_entity_review",
+                "xml-external-entity-review",
+            )
         })
         && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "wordpress_review", "wordpress-review")
@@ -5565,6 +5579,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "websocket_review",
                 "Option<AssessmentWebSocketReviewAuditDocument>",
             ),
+            (
+                "xml_external_entity_review",
+                "Option<AssessmentXmlExternalEntityReviewAuditDocument>",
+            ),
             ("openapi_review", "Option<AssessmentOpenApiAuditDocument>"),
             ("rest_review", "Option<AssessmentRestAuditDocument>"),
             (
@@ -5604,6 +5622,60 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentWordPressAssetFingerprintAuditDocument>",
             ),
             ("items", "Vec<AssessmentItemDocument<'a>>"),
+        ],
+    ),
+    (
+        "AssessmentXmlExternalEntityReviewAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("algorithm", "&'static str"),
+            ("policy", "AssessmentXmlExternalEntityPolicyDocument"),
+            ("outcome", "&'static str"),
+            ("target", "AssessmentXmlExternalEntityTargetDocument"),
+            ("provider", "AssessmentXmlExternalEntityProviderDocument"),
+            ("item_projected", "bool"),
+            ("semantic_effect", "&'static str"),
+            ("impact_validation", "&'static str"),
+            ("claim_limits", "Vec<&'static str>"),
+        ],
+    ),
+    (
+        "AssessmentXmlExternalEntityPolicyDocument",
+        &[],
+        &[
+            ("id", "String"),
+            ("method", "&'static str"),
+            ("media_type", "&'static str"),
+            ("control_model", "&'static str"),
+            ("execution_mode", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentXmlExternalEntityTargetDocument",
+        &[],
+        &[
+            ("request_count", "u8"),
+            ("request_body_bytes", "u64"),
+            ("response_bytes", "u64"),
+            ("complete", "bool"),
+            ("accounting_complete", "bool"),
+        ],
+    ),
+    (
+        "AssessmentXmlExternalEntityProviderDocument",
+        &[],
+        &[
+            ("request_count", "u8"),
+            ("active_verification_count", "u8"),
+            ("preflight_clean", "bool"),
+            ("control_callback_observed", "bool"),
+            ("candidate_callback_observed", "bool"),
+            ("replay_callback_observed", "bool"),
+            ("callback_targets_distinct", "bool"),
+            ("event_identities_distinct", "bool"),
+            ("cleanup_verified", "bool"),
+            ("complete", "bool"),
         ],
     ),
     (
@@ -7370,6 +7442,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "recon-snapshot-import" => "feature=\"recon-snapshot-import\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
+        "xml-external-entity-review" => "feature=\"xml-external-entity-review\"",
         _ => return false,
     };
     attributes.len() == 2
@@ -7416,6 +7489,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentWebSocketReviewLimitsDocument"
                 | "AssessmentWebSocketReviewCoverageDocument"
                 | "AssessmentWebSocketReviewMessageDocument"
+                | "AssessmentXmlExternalEntityReviewAuditDocument"
+                | "AssessmentXmlExternalEntityPolicyDocument"
+                | "AssessmentXmlExternalEntityTargetDocument"
+                | "AssessmentXmlExternalEntityProviderDocument"
                 | "AssessmentOpenApiAuditDocument"
                 | "AssessmentRestAuditDocument"
                 | "AssessmentSecretExposureAuditDocument"
@@ -7561,6 +7638,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 "AssessmentWebSocketSuppliedSessionContextDocument"
                 | "AssessmentWebSocketSuppliedSessionHealthDocument" => {
                     "all(feature=\"scanning\",feature=\"websocket-review\",feature=\"supplied-session-review\")"
+                },
+                "AssessmentXmlExternalEntityReviewAuditDocument"
+                | "AssessmentXmlExternalEntityPolicyDocument"
+                | "AssessmentXmlExternalEntityTargetDocument"
+                | "AssessmentXmlExternalEntityProviderDocument" => {
+                    "all(feature=\"scanning\",feature=\"xml-external-entity-review\")"
                 },
                 "AssessmentOpenApiAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"openapi-review\")"
@@ -7728,6 +7811,13 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         )
                     } else if name == "AssessmentDocument" && field_name == "websocket_review" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "websocket-review")
+                    } else if name == "AssessmentDocument"
+                        && field_name == "xml_external_entity_review"
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "xml-external-entity-review",
+                        )
                     } else if name == "AssessmentWebSocketReviewAuditDocument"
                         && field_name == "supplied_session_context"
                     {
@@ -10459,8 +10549,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 599_933;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xa316_3591_abd0_6c22_ff5d_4b3c_31ae_54f1;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 624_577;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xf685_d0dc_84a3_ec60_640c_49cf_19e5_0ef7;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -10606,6 +10696,18 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::recon_snapshot::ReconSnapshot",
     "crate::recon_snapshot::ReconnaissanceRecordValue",
     "crate::rest_review::RestDocumentedResponseClass",
+    "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES",
+    "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS",
+    "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_TARGET_RESPONSE_BYTES",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_CONTROL_MODEL",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_MEDIA_TYPE",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_METHOD",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_TARGET_REQUESTS",
+    "crate::xml_external_entity_review::XmlExternalEntityMaximumDisposition",
+    "crate::xml_external_entity_review::XmlExternalEntityOperationStatus",
+    "crate::xml_external_entity_review::XmlExternalEntityReviewAudit",
+    "crate::xml_external_entity_review::XmlExternalEntityReviewOutcome",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_COOKIES",
     "crate::supplied_session_review::MAX_SUPPLIED_SESSION_TOTAL_RESPONSE_BYTES",
     "crate::supplied_session_review::SuppliedSessionCredentialAcquisition",
@@ -10769,6 +10871,34 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "AssessmentWebSocketReviewAuditDocument::from_audit",
+    "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
+    "XmlExternalEntityMaximumDisposition::NeedsReview",
+    "XmlExternalEntityOperationStatus::NotPerformed",
+    "XmlExternalEntityReviewOutcome::BudgetExhausted",
+    "XmlExternalEntityReviewOutcome::Cancelled",
+    "XmlExternalEntityReviewOutcome::CandidateOnly",
+    "XmlExternalEntityReviewOutcome::CleanupIncomplete",
+    "XmlExternalEntityReviewOutcome::ControlCallbackObserved",
+    "XmlExternalEntityReviewOutcome::ControlIncomplete",
+    "XmlExternalEntityReviewOutcome::CorrelationMismatch",
+    "XmlExternalEntityReviewOutcome::Incomplete",
+    "XmlExternalEntityReviewOutcome::NoCallback",
+    "XmlExternalEntityReviewOutcome::NotEligible",
+    "XmlExternalEntityReviewOutcome::PreflightContaminated",
+    "XmlExternalEntityReviewOutcome::RepeatedExternalEntityResolutionObserved",
+    "XmlExternalEntityReviewOutcome::ReplayOnly",
+    "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES",
+    "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS",
+    "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_TARGET_RESPONSE_BYTES",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_CONTROL_MODEL",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_MEDIA_TYPE",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_METHOD",
+    "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_TARGET_REQUESTS",
+    "crate::xml_external_entity_review::XmlExternalEntityMaximumDisposition",
+    "crate::xml_external_entity_review::XmlExternalEntityOperationStatus",
+    "crate::xml_external_entity_review::XmlExternalEntityReviewAudit",
+    "crate::xml_external_entity_review::XmlExternalEntityReviewOutcome",
     "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_AUDIT_SCHEMA",
     "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_ID",
     "crate::control_reference_mapping::CONTROL_REFERENCE_MAPPING_CATALOGUE_REVISION",
@@ -11491,6 +11621,12 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
+    "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
+    "assessment_reference_ordinal",
+    "valid_xml_external_entity_policy_id",
+    "xml_external_entity_evidence_linkage_is_exact",
+    "xml_external_entity_operation_token",
+    "xml_external_entity_outcome_token",
     "health_is_valid",
     "health_matches",
     "valid_recon_report_sha256",
@@ -11744,6 +11880,24 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "algorithm",
+    "callback_targets_distinct",
+    "candidate_callback_observed",
+    "cleanup_verified",
+    "control_callback_observed",
+    "control_model",
+    "event_identities_distinct",
+    "maximum_disposition",
+    "media_type",
+    "preflight_clean",
+    "provider_accounting_complete",
+    "replay_callback_observed",
+    "semantic_effect",
+    "target_accounting_complete",
+    "target_complete",
+    "target_request_body_bytes",
+    "target_response_bytes",
+    "xml_external_entity_review_audit",
     "address",
     "has_supplied_session_context",
     "qualification",
@@ -12595,6 +12749,24 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::RestRuntimeOutcome"
                 )
             });
+        let xml_external_entity_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES"
+                        | "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS"
+                        | "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_TARGET_RESPONSE_BYTES"
+                        | "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS"
+                        | "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_CONTROL_MODEL"
+                        | "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_MEDIA_TYPE"
+                        | "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_REVIEW_METHOD"
+                        | "crate::xml_external_entity_review::XML_EXTERNAL_ENTITY_TARGET_REQUESTS"
+                        | "crate::xml_external_entity_review::XmlExternalEntityMaximumDisposition"
+                        | "crate::xml_external_entity_review::XmlExternalEntityOperationStatus"
+                        | "crate::xml_external_entity_review::XmlExternalEntityReviewAudit"
+                        | "crate::xml_external_entity_review::XmlExternalEntityReviewOutcome"
+                )
+            });
         let secret_exposure_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -12832,6 +13004,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"rest-review\")")
+        } else if xml_external_entity_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"xml-external-entity-review\")")
         } else if secret_exposure_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -12877,7 +13054,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, and WordPress audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, XML external-entity, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -12959,6 +13136,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"supplied-session-review\"")
                     | Some("not(feature=\"supplied-session-review\")")
                     | Some("feature=\"wordpress-review\"")
+                    | Some("feature=\"xml-external-entity-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
                     | Some("all(feature=\"scanning\",feature=\"websocket-review\")")
                     | Some("all(feature=\"scanning\",feature=\"control-reference-mapping\")")
@@ -12973,11 +13151,12 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"websocket-review\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"xml-external-entity-review\")")
                     | Some("all(feature=\"scanning\",any(feature=\"wordpress-review\",feature=\"control-reference-mapping\"))")
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, and WordPress audit feature gates"
+                "reporting production source may contain only the exact scanning, supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, XML external-entity, and WordPress audit feature gates"
                     .to_owned(),
             );
         }
@@ -13265,6 +13444,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
             || key.starts_with("crate::rest_review::")
             || key.starts_with("crate::supplied_session_review::")
             || key.starts_with("crate::websocket_review::")
+            || key.starts_with("crate::xml_external_entity_review::")
             || key.starts_with("crate::wordpress_review::")
             || key.starts_with("crate::wordpress_version::"));
     if (root == "crate" || root == "super" || (root == "self" && segments.len() > 1))
@@ -16431,6 +16611,8 @@ mod tests {
                         self.rest_review,
                         #[cfg(feature = "ssrf-oast-review")]
                         self.ssrf_oast_review,
+                        #[cfg(feature = "xml-external-entity-review")]
+                        self.xml_external_entity_review,
                         #[cfg(feature = "wordpress-review")]
                         self.wordpress_review,
                         #[cfg(feature = "secret-exposure-review")]
@@ -16456,7 +16638,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"websocket-review\")]\n                        self.websocket_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"websocket-review\")]\n                        self.websocket_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"xml-external-entity-review\")]\n                        self.xml_external_entity_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -16502,6 +16684,10 @@ mod tests {
             typed_assessment_bridge.replace("self.rest_review,", "forged_rest_review,"),
             typed_assessment_bridge
                 .replace("self.ssrf_oast_review,", "forged_ssrf_oast_review,"),
+            typed_assessment_bridge.replace(
+                "self.xml_external_entity_review,",
+                "forged_xml_external_entity_review,",
+            ),
             typed_assessment_bridge.replace("self.wordpress_review,", "forged_wordpress_review,"),
             typed_assessment_bridge.replace(
                 "self.secret_exposure_review,",
@@ -17813,6 +17999,9 @@ mod tests {
                 #[cfg(feature = "websocket-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 websocket_review: Option<AssessmentWebSocketReviewAuditDocument>,
+                #[cfg(feature = "xml-external-entity-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                xml_external_entity_review: Option<AssessmentXmlExternalEntityReviewAuditDocument>,
                 #[cfg(feature = "openapi-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 openapi_review: Option<AssessmentOpenApiAuditDocument>,
@@ -19219,6 +19408,52 @@ mod tests {
                 replay_stable: bool,
                 item_projected: bool,
             }
+            #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+            #[derive(Serialize)]
+            struct AssessmentXmlExternalEntityReviewAuditDocument {
+                schema: &'static str,
+                algorithm: &'static str,
+                policy: AssessmentXmlExternalEntityPolicyDocument,
+                outcome: &'static str,
+                target: AssessmentXmlExternalEntityTargetDocument,
+                provider: AssessmentXmlExternalEntityProviderDocument,
+                item_projected: bool,
+                semantic_effect: &'static str,
+                impact_validation: &'static str,
+                claim_limits: Vec<&'static str>,
+            }
+            #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+            #[derive(Serialize)]
+            struct AssessmentXmlExternalEntityPolicyDocument {
+                id: String,
+                method: &'static str,
+                media_type: &'static str,
+                control_model: &'static str,
+                execution_mode: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+            #[derive(Serialize)]
+            struct AssessmentXmlExternalEntityTargetDocument {
+                request_count: u8,
+                request_body_bytes: u64,
+                response_bytes: u64,
+                complete: bool,
+                accounting_complete: bool,
+            }
+            #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+            #[derive(Serialize)]
+            struct AssessmentXmlExternalEntityProviderDocument {
+                request_count: u8,
+                active_verification_count: u8,
+                preflight_clean: bool,
+                control_callback_observed: bool,
+                candidate_callback_observed: bool,
+                replay_callback_observed: bool,
+                callback_targets_distinct: bool,
+                event_identities_distinct: bool,
+                cleanup_verified: bool,
+                complete: bool,
+            }
             #[cfg(all(feature = "scanning", feature = "openapi-review"))]
             #[derive(Serialize)]
             struct AssessmentOpenApiAuditDocument {
@@ -19985,6 +20220,74 @@ mod tests {
         assert!(
             violations.contains("AssessmentJwtTargetAcceptanceAuditDocument")
                 && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+    }
+
+    #[test]
+    fn xml_external_entity_reporting_shape_and_gate_mutations_are_rejected() {
+        let source = valid_reporting_document_contract_fixture();
+        assert!(reporting_document_contract_violations(source)
+            .unwrap()
+            .is_empty());
+
+        let missing_audit = source.replacen(
+            "                #[cfg(feature = \"xml-external-entity-review\")]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                xml_external_entity_review: Option<AssessmentXmlExternalEntityReviewAuditDocument>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_audit, source);
+        let violations = reporting_document_contract_violations(&missing_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let widened_gate = source.replacen(
+            "#[cfg(all(feature = \"scanning\", feature = \"xml-external-entity-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentXmlExternalEntityReviewAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentXmlExternalEntityReviewAuditDocument",
+            1,
+        );
+        assert_ne!(widened_gate, source);
+        let violations = reporting_document_contract_violations(&widened_gate)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentXmlExternalEntityReviewAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
+        let unbounded_target_bytes = source.replacen(
+            "            struct AssessmentXmlExternalEntityTargetDocument {\n                request_count: u8,\n                request_body_bytes: u64,\n                response_bytes: u64,",
+            "            struct AssessmentXmlExternalEntityTargetDocument {\n                request_count: u8,\n                request_body_bytes: u64,\n                response_bytes: usize,",
+            1,
+        );
+        assert_ne!(unbounded_target_bytes, source);
+        let violations = reporting_document_contract_violations(&unbounded_target_bytes)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentXmlExternalEntityTargetDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let malformed_provider_fact = source.replacen(
+            "                candidate_callback_observed: bool,\n                replay_callback_observed: bool,",
+            "                candidate_callback_observed: String,\n                replay_callback_observed: bool,",
+            1,
+        );
+        assert_ne!(malformed_provider_fact, source);
+        let violations = reporting_document_contract_violations(&malformed_provider_fact)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentXmlExternalEntityProviderDocument")
+                && violations.contains("fields must remain exactly"),
             "{violations}"
         );
     }

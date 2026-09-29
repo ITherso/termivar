@@ -281,6 +281,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
         ("tls-observation", cfg!(feature = "tls-observation")),
         ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
+        (
+            "xml-external-entity-review",
+            cfg!(feature = "xml-external-entity-review"),
+        ),
     ]
     .into_iter()
     .map(|(name, compiled)| BuildFeatureDescriptor {
@@ -719,6 +723,24 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/audits/native-oast-corrective-maintenance.md",
         ),
         surface!(
+            "option.xml-external-entity-review",
+            "XML external-entity review",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("xml-external-entity-review"),
+            cfg!(feature = "xml-external-entity-review"),
+            Maturity::Preview,
+            ImplementationStatus::Implemented,
+            &[
+                "--profile web-review",
+                "--xml-external-entity-review",
+                "--xml-external-entity-policy FILE",
+                "one of --oast-admin-token-env, --oast-admin-token-file, or --oast-admin-token-stdin",
+            ],
+            "Development-only non-bundled opt-in for one policy-declared exact-origin, application-contained disposable XML endpoint. V1 sends at most three anonymous POST requests with the exact media type application/xml; charset=utf-8 and a fixed inert XML 1.0 external-general-entity envelope: one unreferenced control, one candidate, and one replay, each with a distinct provider callback. A completed positive path uses all three target legs. It performs no endpoint discovery, arbitrary XML intake, local-file URI use, credential forwarding, redirect, retry, ambient proxy use, or response-content oracle. A clean preflight, no control callback, two independently correlated post-dispatch candidate/replay callbacks, complete cleanup, and reconciled accounting can produce at most one NeedsReview / KnowledgeOnly item. A callback alone never produces Confirmed and does not establish XXE, parser identity, arbitrary SSRF, local file read, data exfiltration, internal-network access, exploitability, or impact. The feature conflicts with simultaneous SSRF OAST review and remains outside default, release-bundle, and published alpha.2 archives.",
+            "docs/internals/xml-external-entity-review.md",
+        ),
+        surface!(
             "option.supplied-session-review",
             "Supplied-session authenticated assessment",
             SurfaceGroup::Optional,
@@ -950,7 +972,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 32);
+        assert_eq!(document.surfaces.len(), 33);
 
         let keys = document
             .surfaces
@@ -990,6 +1012,7 @@ mod tests {
                 "option.jwt-policy-review",
                 "option.jwt-target-acceptance-review",
                 "option.ssrf-oast-review",
+                "option.xml-external-entity-review",
                 "option.supplied-session-review",
                 "option.wordpress-review",
                 "option.wordpress-discovery",
@@ -1087,6 +1110,10 @@ mod tests {
                 "jwt-target-acceptance-policy",
             ),
             ("option.ssrf-oast-review", "ssrf-oast-review"),
+            (
+                "option.xml-external-entity-review",
+                "xml-external-entity-review",
+            ),
             ("option.supplied-session-review", "session-policy"),
             ("option.wordpress-review", "wordpress-review"),
             ("option.wordpress-discovery", "wordpress-discovery"),
@@ -1243,6 +1270,12 @@ mod tests {
             (
                 "option.ssrf-oast-review",
                 Some("ssrf-oast-review"),
+                "preview",
+                "implemented",
+            ),
+            (
+                "option.xml-external-entity-review",
+                Some("xml-external-entity-review"),
                 "preview",
                 "implemented",
             ),
@@ -1689,6 +1722,39 @@ mod tests {
             assert!(
                 jwt_target.limitation.contains(required),
                 "missing JWT target-acceptance limitation `{required}`"
+            );
+        }
+        let xml_external_entity = find("option.xml-external-entity-review");
+        assert_eq!(
+            xml_external_entity.prerequisites,
+            [
+                "--profile web-review",
+                "--xml-external-entity-review",
+                "--xml-external-entity-policy FILE",
+                "one of --oast-admin-token-env, --oast-admin-token-file, or --oast-admin-token-stdin",
+            ]
+        );
+        assert_eq!(
+            xml_external_entity.documentation,
+            "docs/internals/xml-external-entity-review.md"
+        );
+        for required in [
+            "one policy-declared exact-origin, application-contained disposable XML endpoint",
+            "at most three anonymous POST requests",
+            "completed positive path uses all three target legs",
+            "application/xml; charset=utf-8",
+            "fixed inert XML 1.0 external-general-entity envelope",
+            "one unreferenced control, one candidate, and one replay",
+            "no control callback",
+            "NeedsReview / KnowledgeOnly",
+            "callback alone never produces Confirmed",
+            "local file read, data exfiltration, internal-network access, exploitability, or impact",
+            "conflicts with simultaneous SSRF OAST review",
+            "outside default, release-bundle, and published alpha.2 archives",
+        ] {
+            assert!(
+                xml_external_entity.limitation.contains(required),
+                "missing XML external-entity limitation `{required}`"
             );
         }
         let session = find("option.supplied-session-review");

@@ -17,7 +17,11 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-#[cfg(any(feature = "jwt-policy-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "jwt-policy-review",
+    feature = "supplied-session-review",
+    feature = "xml-external-entity-review"
+))]
 use std::path::Path;
 
 #[cfg(feature = "jwt-policy-review")]
@@ -51,6 +55,11 @@ use termivar_scanner::supplied_session_review::{
     SuppliedSessionFormCredential, SuppliedSessionPolicy, SuppliedSessionRuntimeInput,
     HARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES, HARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES,
     HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES,
+};
+#[cfg(feature = "xml-external-entity-review")]
+use termivar_scanner::xml_external_entity_review::{
+    XmlExternalEntityAdminToken, XmlExternalEntityReviewPolicy,
+    MAX_XML_EXTERNAL_ENTITY_REVIEW_POLICY_BYTES,
 };
 use termivar_scanner::{
     web_runtime::WebAssessmentRootAuthorizationContext, DEFAULT_MAX_PAYLOAD_ARTIFACT_BYTES,
@@ -490,7 +499,11 @@ impl JwtPolicyReviewInput {
 /// mapped drive, a local path backed by a network filesystem, or a parent that
 /// changes after selection; the existing trusted-parent assumption still
 /// applies to every accepted path.
-#[cfg(any(feature = "jwt-policy-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "jwt-policy-review",
+    feature = "supplied-session-review",
+    feature = "xml-external-entity-review"
+))]
 fn validate_local_file_path(path: &Path) -> Result<(), AuthorizationInputError> {
     #[cfg(windows)]
     if windows_path_is_remote_or_special(path) {
@@ -504,7 +517,11 @@ fn validate_local_file_path(path: &Path) -> Result<(), AuthorizationInputError> 
 }
 
 #[cfg(all(
-    any(feature = "jwt-policy-review", feature = "supplied-session-review"),
+    any(
+        feature = "jwt-policy-review",
+        feature = "supplied-session-review",
+        feature = "xml-external-entity-review"
+    ),
     windows
 ))]
 fn windows_path_is_remote_or_special(path: &Path) -> bool {
@@ -540,7 +557,11 @@ fn windows_path_is_remote_or_special(path: &Path) -> bool {
 }
 
 #[cfg(all(
-    any(feature = "jwt-policy-review", feature = "supplied-session-review"),
+    any(
+        feature = "jwt-policy-review",
+        feature = "supplied-session-review",
+        feature = "xml-external-entity-review"
+    ),
     windows
 ))]
 fn windows_path_component_is_special(component: &std::ffi::OsStr) -> bool {
@@ -981,7 +1002,8 @@ impl std::error::Error for SuppliedSessionInputError {}
     feature = "authorization-review",
     feature = "jwt-policy-review",
     feature = "ssrf-oast-review",
-    feature = "supplied-session-review"
+    feature = "supplied-session-review",
+    feature = "xml-external-entity-review"
 ))]
 pub(crate) struct AuthorizationSourceOptions {
     environment: Option<OsString>,
@@ -993,7 +1015,8 @@ pub(crate) struct AuthorizationSourceOptions {
     feature = "authorization-review",
     feature = "jwt-policy-review",
     feature = "ssrf-oast-review",
-    feature = "supplied-session-review"
+    feature = "supplied-session-review",
+    feature = "xml-external-entity-review"
 ))]
 impl AuthorizationSourceOptions {
     pub(crate) const fn new(
@@ -1013,7 +1036,8 @@ impl AuthorizationSourceOptions {
     feature = "authorization-review",
     feature = "jwt-policy-review",
     feature = "ssrf-oast-review",
-    feature = "supplied-session-review"
+    feature = "supplied-session-review",
+    feature = "xml-external-entity-review"
 ))]
 impl fmt::Debug for AuthorizationSourceOptions {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1176,6 +1200,174 @@ impl fmt::Display for SsrfOastReviewInputError {
 
 #[cfg(feature = "ssrf-oast-review")]
 impl std::error::Error for SsrfOastReviewInputError {}
+
+/// Complete source selection for one explicit XML external-entity review.
+///
+/// The policy path, administrator source, and secret material are excluded
+/// from `Debug`. Selection itself performs no I/O.
+#[cfg(feature = "xml-external-entity-review")]
+pub(crate) struct XmlExternalEntityReviewInput {
+    policy_file: PathBuf,
+    administrator: AuthorizationInputSource,
+}
+
+/// Validated non-secret XML review policy paired with an unread administrator
+/// token source. This preserves policy-before-secret acquisition ordering.
+#[cfg(feature = "xml-external-entity-review")]
+pub(crate) struct PreparedXmlExternalEntityReviewInput {
+    policy: XmlExternalEntityReviewPolicy,
+    administrator: AuthorizationInputSource,
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+impl fmt::Debug for XmlExternalEntityReviewInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("XmlExternalEntityReviewInput")
+            .field("policy_file", &"<redacted>")
+            .field("administrator", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+impl fmt::Debug for PreparedXmlExternalEntityReviewInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedXmlExternalEntityReviewInput")
+            .field("policy", &"<validated>")
+            .field("administrator", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+impl XmlExternalEntityReviewInput {
+    /// Requires one policy and exactly one administrator-token source without
+    /// reading either source.
+    pub(crate) fn select(
+        enabled: bool,
+        policy_file: Option<PathBuf>,
+        administrator: AuthorizationSourceOptions,
+    ) -> Result<Option<Self>, XmlExternalEntityReviewInputError> {
+        let any_input = policy_file.is_some()
+            || administrator.environment.is_some()
+            || administrator.file.is_some()
+            || administrator.stdin;
+        if !enabled {
+            return if any_input {
+                Err(XmlExternalEntityReviewInputError::ExplicitEnableRequired)
+            } else {
+                Ok(None)
+            };
+        }
+        let policy_file = policy_file.ok_or(XmlExternalEntityReviewInputError::MissingPolicy)?;
+        let administrator = AuthorizationInputSource::select(
+            administrator.environment,
+            administrator.file,
+            administrator.stdin,
+        )
+        .map_err(|_| XmlExternalEntityReviewInputError::ConflictingAdministratorSources)?
+        .ok_or(XmlExternalEntityReviewInputError::MissingAdministratorSource)?;
+        validate_local_file_path(&policy_file)
+            .map_err(XmlExternalEntityReviewInputError::PolicySource)?;
+        if let AuthorizationInputSource::File(path) = &administrator {
+            validate_local_file_path(path)
+                .map_err(XmlExternalEntityReviewInputError::AdministratorSource)?;
+        }
+        Ok(Some(Self {
+            policy_file,
+            administrator,
+        }))
+    }
+
+    /// Reads and validates only the bounded UTF-8 policy. The administrator
+    /// source remains unread until every local preflight and output reservation
+    /// has succeeded.
+    pub(crate) fn prepare(
+        self,
+        target: &url::Url,
+    ) -> Result<PreparedXmlExternalEntityReviewInput, XmlExternalEntityReviewInputError> {
+        let policy_source = read_bounded_regular_file(
+            self.policy_file,
+            MAX_XML_EXTERNAL_ENTITY_REVIEW_POLICY_BYTES,
+        )
+        .map_err(XmlExternalEntityReviewInputError::PolicySource)?;
+        let policy_source = std::str::from_utf8(policy_source.as_slice())
+            .map_err(|_| XmlExternalEntityReviewInputError::InvalidPolicyEncoding)?;
+        let policy = XmlExternalEntityReviewPolicy::parse_toml(target, policy_source.as_bytes())
+            .map_err(|_| XmlExternalEntityReviewInputError::InvalidPolicy)?;
+        Ok(PreparedXmlExternalEntityReviewInput {
+            policy,
+            administrator: self.administrator,
+        })
+    }
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+impl PreparedXmlExternalEntityReviewInput {
+    /// Reads the administrator token exactly once after non-secret preflight.
+    pub(crate) fn load(
+        self,
+    ) -> Result<
+        (XmlExternalEntityReviewPolicy, XmlExternalEntityAdminToken),
+        XmlExternalEntityReviewInputError,
+    > {
+        let administrator = self
+            .administrator
+            .read_bytes()
+            .map_err(XmlExternalEntityReviewInputError::AdministratorSource)
+            .and_then(|bytes| {
+                XmlExternalEntityAdminToken::new(bytes.into_owned())
+                    .map_err(|_| XmlExternalEntityReviewInputError::InvalidAdministratorValue)
+            })?;
+        Ok((self.policy, administrator))
+    }
+}
+
+/// Static, value-free failures for the XML external-entity CLI boundary.
+#[cfg(feature = "xml-external-entity-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum XmlExternalEntityReviewInputError {
+    ExplicitEnableRequired,
+    MissingPolicy,
+    MissingAdministratorSource,
+    ConflictingAdministratorSources,
+    PolicySource(AuthorizationInputError),
+    InvalidPolicyEncoding,
+    InvalidPolicy,
+    AdministratorSource(AuthorizationInputError),
+    InvalidAdministratorValue,
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+impl fmt::Display for XmlExternalEntityReviewInputError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ExplicitEnableRequired => {
+                "XML external-entity review inputs require explicit `--xml-external-entity-review`"
+            },
+            Self::MissingPolicy => "XML external-entity review requires one policy file",
+            Self::MissingAdministratorSource | Self::ConflictingAdministratorSources => {
+                "XML external-entity review requires exactly one administrator-token source"
+            },
+            Self::PolicySource(_) => {
+                "XML external-entity review policy must be a bounded regular UTF-8 file"
+            },
+            Self::InvalidPolicyEncoding => {
+                "XML external-entity review policy must contain valid UTF-8"
+            },
+            Self::InvalidPolicy => "XML external-entity review policy is invalid",
+            Self::AdministratorSource(_) => {
+                "XML external-entity administrator-token source could not be loaded"
+            },
+            Self::InvalidAdministratorValue => "XML external-entity administrator token is invalid",
+        })
+    }
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+impl std::error::Error for XmlExternalEntityReviewInputError {}
 
 #[cfg(feature = "authorization-review")]
 impl fmt::Debug for AuthorizationReviewInput {
@@ -1472,7 +1664,8 @@ fn validate_opened_regular_file(file: File) -> Result<File, AuthorizationInputEr
     feature = "authorization-review",
     feature = "jwt-policy-review",
     feature = "ssrf-oast-review",
-    feature = "supplied-session-review"
+    feature = "supplied-session-review",
+    feature = "xml-external-entity-review"
 ))]
 fn read_bounded_regular_file(
     path: PathBuf,
@@ -3278,6 +3471,350 @@ lifetime_ms = 5000
                 .load()
                 .unwrap_err(),
             SsrfOastReviewInputError::AdministratorSource(
+                AuthorizationInputError::SourceNotRegularFile
+            )
+        );
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    fn valid_xml_external_entity_policy() -> &'static str {
+        r#"schema = "security.xml-external-entity-review-policy/v1"
+endpoint = "https://target.example.test/xml-fixture"
+provider_origin = "https://oast.example.test/"
+method = "POST"
+media_type = "application/xml; charset=utf-8"
+acknowledge_xml_post = true
+acknowledge_external_interaction = true
+acknowledge_disposable_test_endpoint = true
+polls_per_leg = 1
+poll_interval_ms = 250
+lifetime_ms = 5000
+"#
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[test]
+    fn xml_external_entity_selection_requires_one_policy_and_one_admin_source() {
+        assert!(XmlExternalEntityReviewInput::select(
+            false,
+            None,
+            AuthorizationSourceOptions::new(None, None, false),
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            XmlExternalEntityReviewInput::select(
+                false,
+                Some(PathBuf::from("PRIVATE-XML-POLICY-PATH")),
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-XML-OAST-ENV-NAME")),
+                    None,
+                    false,
+                ),
+            )
+            .unwrap_err(),
+            XmlExternalEntityReviewInputError::ExplicitEnableRequired
+        );
+        assert_eq!(
+            XmlExternalEntityReviewInput::select(
+                true,
+                Some(PathBuf::from("PRIVATE-XML-POLICY-PATH")),
+                AuthorizationSourceOptions::new(None, None, false),
+            )
+            .unwrap_err(),
+            XmlExternalEntityReviewInputError::MissingAdministratorSource
+        );
+        assert_eq!(
+            XmlExternalEntityReviewInput::select(
+                true,
+                None,
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-XML-OAST-ENV-NAME")),
+                    None,
+                    false,
+                ),
+            )
+            .unwrap_err(),
+            XmlExternalEntityReviewInputError::MissingPolicy
+        );
+        assert_eq!(
+            XmlExternalEntityReviewInput::select(
+                true,
+                Some(PathBuf::from("PRIVATE-XML-POLICY-PATH")),
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-XML-OAST-ENV-NAME")),
+                    Some(PathBuf::from("PRIVATE-XML-OAST-TOKEN-PATH")),
+                    false,
+                ),
+            )
+            .unwrap_err(),
+            XmlExternalEntityReviewInputError::ConflictingAdministratorSources
+        );
+
+        let input = XmlExternalEntityReviewInput::select(
+            true,
+            Some(PathBuf::from("PRIVATE-XML-POLICY-PATH")),
+            AuthorizationSourceOptions::new(
+                Some(OsString::from("PRIVATE-XML-OAST-ENV-NAME")),
+                None,
+                false,
+            ),
+        )
+        .unwrap()
+        .unwrap();
+        let debug = format!("{input:?}");
+        for private in [
+            "PRIVATE-XML-POLICY-PATH",
+            "PRIVATE-XML-OAST-ENV-NAME",
+            "PRIVATE-XML-OAST-TOKEN-PATH",
+        ] {
+            assert!(!debug.contains(private));
+        }
+        let messages = [
+            XmlExternalEntityReviewInputError::ExplicitEnableRequired,
+            XmlExternalEntityReviewInputError::MissingPolicy,
+            XmlExternalEntityReviewInputError::MissingAdministratorSource,
+            XmlExternalEntityReviewInputError::ConflictingAdministratorSources,
+            XmlExternalEntityReviewInputError::PolicySource(
+                AuthorizationInputError::SourceUnavailable,
+            ),
+            XmlExternalEntityReviewInputError::InvalidPolicyEncoding,
+            XmlExternalEntityReviewInputError::InvalidPolicy,
+            XmlExternalEntityReviewInputError::AdministratorSource(
+                AuthorizationInputError::SourceUnavailable,
+            ),
+            XmlExternalEntityReviewInputError::InvalidAdministratorValue,
+        ]
+        .map(|error| error.to_string());
+        assert!(messages
+            .iter()
+            .all(|message| !message.contains("PRIVATE") && !message.contains("secret bytes")));
+    }
+
+    #[cfg(all(feature = "xml-external-entity-review", windows))]
+    #[test]
+    fn xml_external_entity_file_inputs_reject_remote_and_special_spellings_before_open() {
+        let local_policy = PathBuf::from(r"C:\termivar\xml-policy.toml");
+        let local_administrator = PathBuf::from(r"C:\termivar\xml-administrator.secret");
+
+        for rejected in [
+            r"\\server\share\PRIVATE-xml-policy.toml",
+            r"\\?\UNC\server\share\PRIVATE-xml-policy.toml",
+            r"\\.\pipe\PRIVATE-termivar-xml-policy",
+            r"\\?\GLOBALROOT\Device\NamedPipe\PRIVATE-termivar-xml-policy",
+            r"\??\C:\termivar\PRIVATE-xml-policy.toml",
+            r"\Device\HarddiskVolume1\termivar\PRIVATE-xml-policy.toml",
+            r"\GLOBAL??\termivar\PRIVATE-xml-policy.toml",
+            r"\pipe\PRIVATE-termivar-xml-policy",
+            r"C:\termivar\NUL",
+            r"C:\termivar\PRIVATE-xml-policy.toml:stream",
+        ] {
+            let rejected = PathBuf::from(rejected);
+            let policy_error = XmlExternalEntityReviewInput::select(
+                true,
+                Some(rejected.clone()),
+                AuthorizationSourceOptions::new(None, Some(local_administrator.clone()), false),
+            )
+            .unwrap_err();
+            assert_eq!(
+                policy_error,
+                XmlExternalEntityReviewInputError::PolicySource(
+                    AuthorizationInputError::SourceUnavailable
+                )
+            );
+
+            let administrator_error = XmlExternalEntityReviewInput::select(
+                true,
+                Some(local_policy.clone()),
+                AuthorizationSourceOptions::new(None, Some(rejected), false),
+            )
+            .unwrap_err();
+            assert_eq!(
+                administrator_error,
+                XmlExternalEntityReviewInputError::AdministratorSource(
+                    AuthorizationInputError::SourceUnavailable
+                )
+            );
+
+            let rendered = format!("{policy_error:?} {administrator_error:?}");
+            assert!(!rendered.contains("PRIVATE"));
+        }
+
+        for accepted in [
+            r"C:\termivar\xml-policy.toml",
+            r"C:termivar\relative-xml-policy.toml",
+            r"\\?\C:\termivar\xml-policy.toml",
+            r"relative\xml-policy.toml",
+        ] {
+            assert_eq!(validate_local_file_path(Path::new(accepted)), Ok(()));
+        }
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[test]
+    fn xml_external_entity_input_loads_policy_then_move_only_admin_token() {
+        const ADMIN_SECRET: &str = "XML-OAST-ADMIN-TOKEN-MUST-NOT-LEAK-0123456789ABCDEF";
+
+        let directory = tempfile::tempdir().unwrap();
+        let policy_path = directory.path().join("PRIVATE-xml-policy.toml");
+        let administrator_path = directory.path().join("PRIVATE-xml-administrator.txt");
+        std::fs::write(&policy_path, valid_xml_external_entity_policy()).unwrap();
+        std::fs::write(&administrator_path, format!("{ADMIN_SECRET}\r\n")).unwrap();
+        let input = XmlExternalEntityReviewInput::select(
+            true,
+            Some(policy_path),
+            AuthorizationSourceOptions::new(None, Some(administrator_path), false),
+        )
+        .unwrap()
+        .unwrap();
+        let prepared = input
+            .prepare(&url::Url::parse("https://target.example.test/").unwrap())
+            .unwrap();
+        let prepared_debug = format!("{prepared:?}");
+        let (policy, administrator) = prepared.load().unwrap();
+        let rendered = format!("{prepared_debug} {policy:?} {administrator:?}");
+        assert!(!rendered.contains(ADMIN_SECRET));
+        assert!(!rendered.contains("PRIVATE-xml-policy.toml"));
+        assert!(!rendered.contains("PRIVATE-xml-administrator.txt"));
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[test]
+    fn xml_external_entity_policy_is_strict_utf8_bounded_and_secret_free() {
+        let directory = tempfile::tempdir().unwrap();
+        let administrator_path = directory.path().join("administrator.txt");
+        std::fs::write(
+            &administrator_path,
+            b"XML-OAST-ADMIN-TOKEN-MUST-NOT-LEAK-0123456789ABCDEF",
+        )
+        .unwrap();
+        let prepare_error = |policy_path: PathBuf| {
+            XmlExternalEntityReviewInput::select(
+                true,
+                Some(policy_path),
+                AuthorizationSourceOptions::new(None, Some(administrator_path.clone()), false),
+            )
+            .unwrap()
+            .unwrap()
+            .prepare(&url::Url::parse("https://target.example.test/").unwrap())
+            .unwrap_err()
+        };
+
+        assert_eq!(
+            prepare_error(directory.path().to_path_buf()),
+            XmlExternalEntityReviewInputError::PolicySource(
+                AuthorizationInputError::SourceNotRegularFile
+            )
+        );
+        let invalid_utf8 = directory.path().join("invalid-utf8.toml");
+        std::fs::write(&invalid_utf8, [0xff, 0xfe]).unwrap();
+        assert_eq!(
+            prepare_error(invalid_utf8),
+            XmlExternalEntityReviewInputError::InvalidPolicyEncoding
+        );
+        let oversized = directory.path().join("oversized.toml");
+        std::fs::write(
+            &oversized,
+            vec![b'x'; MAX_XML_EXTERNAL_ENTITY_REVIEW_POLICY_BYTES + 1],
+        )
+        .unwrap();
+        assert_eq!(
+            prepare_error(oversized),
+            XmlExternalEntityReviewInputError::PolicySource(AuthorizationInputError::ValueTooLarge)
+        );
+        let secret_field = directory.path().join("secret-field.toml");
+        std::fs::write(
+            &secret_field,
+            format!(
+                "{}admin_token = \"XML-OAST-ADMIN-TOKEN-MUST-NOT-LEAK\"\n",
+                valid_xml_external_entity_policy()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            prepare_error(secret_field),
+            XmlExternalEntityReviewInputError::InvalidPolicy
+        );
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[test]
+    fn xml_external_entity_prepare_validates_policy_before_opening_admin_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let valid_policy = directory.path().join("valid-policy.toml");
+        let invalid_policy = directory.path().join("invalid-policy.toml");
+        let missing_administrator = directory
+            .path()
+            .join("PRIVATE-MISSING-XML-OAST-ADMINISTRATOR");
+        std::fs::write(&valid_policy, valid_xml_external_entity_policy()).unwrap();
+        std::fs::write(&invalid_policy, [0xff, 0xfe]).unwrap();
+        let target = url::Url::parse("https://target.example.test/").unwrap();
+        let select = |policy| {
+            XmlExternalEntityReviewInput::select(
+                true,
+                Some(policy),
+                AuthorizationSourceOptions::new(None, Some(missing_administrator.clone()), false),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        assert_eq!(
+            select(invalid_policy).prepare(&target).unwrap_err(),
+            XmlExternalEntityReviewInputError::InvalidPolicyEncoding
+        );
+        let prepared = select(valid_policy).prepare(&target).unwrap();
+        let debug = format!("{prepared:?}");
+        assert!(!debug.contains("PRIVATE-MISSING-XML-OAST-ADMINISTRATOR"));
+        assert_eq!(
+            prepared.load().unwrap_err(),
+            XmlExternalEntityReviewInputError::AdministratorSource(
+                AuthorizationInputError::SourceUnavailable
+            )
+        );
+    }
+
+    #[cfg(all(feature = "xml-external-entity-review", unix))]
+    #[test]
+    fn xml_external_entity_policy_and_admin_sources_reject_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let policy_target = directory.path().join("xml-policy-target.toml");
+        let policy_link = directory.path().join("xml-policy-link.toml");
+        let administrator_target = directory.path().join("xml-administrator-target.txt");
+        let administrator_link = directory.path().join("xml-administrator-link.txt");
+        std::fs::write(&policy_target, valid_xml_external_entity_policy()).unwrap();
+        std::fs::write(
+            &administrator_target,
+            b"XML-OAST-ADMIN-TOKEN-MUST-NOT-LEAK-0123456789ABCDEF",
+        )
+        .unwrap();
+        symlink(&policy_target, &policy_link).unwrap();
+        symlink(&administrator_target, &administrator_link).unwrap();
+
+        let load = |policy: PathBuf, administrator: PathBuf| {
+            XmlExternalEntityReviewInput::select(
+                true,
+                Some(policy),
+                AuthorizationSourceOptions::new(None, Some(administrator), false),
+            )
+            .unwrap()
+            .unwrap()
+            .prepare(&url::Url::parse("https://target.example.test/").unwrap())
+        };
+        assert_eq!(
+            load(policy_link, administrator_target).unwrap_err(),
+            XmlExternalEntityReviewInputError::PolicySource(
+                AuthorizationInputError::SourceNotRegularFile
+            )
+        );
+        assert_eq!(
+            load(policy_target, administrator_link)
+                .unwrap()
+                .load()
+                .unwrap_err(),
+            XmlExternalEntityReviewInputError::AdministratorSource(
                 AuthorizationInputError::SourceNotRegularFile
             )
         );

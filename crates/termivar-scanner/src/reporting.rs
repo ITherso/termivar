@@ -76,6 +76,15 @@ use crate::web_runtime::{
     TLS_OBSERVATION_POLICY_ID, TLS_OBSERVATION_REVOCATION_STATUS, TLS_OBSERVATION_SOURCE_SCOPE,
     TLS_OBSERVATION_VALIDATION_SCOPE,
 };
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+use crate::xml_external_entity_review::{
+    XmlExternalEntityMaximumDisposition, XmlExternalEntityOperationStatus,
+    XmlExternalEntityReviewAudit, XmlExternalEntityReviewOutcome,
+    MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES, MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS,
+    MAX_XML_EXTERNAL_ENTITY_TARGET_RESPONSE_BYTES, XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS,
+    XML_EXTERNAL_ENTITY_REVIEW_CONTROL_MODEL, XML_EXTERNAL_ENTITY_REVIEW_MEDIA_TYPE,
+    XML_EXTERNAL_ENTITY_REVIEW_METHOD, XML_EXTERNAL_ENTITY_TARGET_REQUESTS,
+};
 #[cfg(all(feature = "scanning", feature = "authorization-review"))]
 use crate::{
     authorization_review::{
@@ -166,6 +175,15 @@ pub const REPORT_DOCUMENT_SCHEMA: &str = "venom-rendered-run/v1";
 /// Stable schema name for the additive, redacted assessment document.
 #[cfg(feature = "scanning")]
 pub const ASSESSMENT_REPORT_DOCUMENT_SCHEMA: &str = "venom-rendered-assessment/v1";
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA: &str =
+    "security.xml-external-entity-review-audit/v1";
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_ALGORITHM: &str =
+    "security.xml-external-entity-resolution-review/v1";
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID: &str =
+    "xml.external-entity.repeated-outbound-interaction@1";
 /// Maximum UTF-8 bytes returned by one render operation.
 pub const MAX_RENDERED_REPORT_BYTES: usize = 16 * 1_024 * 1_024;
 #[cfg(all(feature = "scanning", feature = "recon-snapshot-import"))]
@@ -1142,6 +1160,59 @@ fn render_assessment_csv(
                 &summary,
                 "websocket-review",
                 "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
+    #[cfg(feature = "xml-external-entity-review")]
+    if let Some(audit) = &document.xml_external_entity_review {
+        let evidence_count = document
+            .items
+            .iter()
+            .find(|item| item.capability_id == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+            .map_or(0, |item| item.evidence_count)
+            .to_string();
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "xml_external_entity_review_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                audit.outcome,
+                "",
+                "",
+                "",
+                XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID,
+                "",
+                "",
+                if audit.item_projected {
+                    "needs_review"
+                } else {
+                    ""
+                },
+                if audit.item_projected {
+                    "differential"
+                } else {
+                    ""
+                },
+                "",
+                "",
+                "",
+                &evidence_count,
+                &summary,
+                "xml-external-entity-review",
+                if audit.item_projected { "CWE-611" } else { "" },
                 "",
                 "",
                 "",
@@ -2155,6 +2226,27 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             output.push_str("</code></li>")?;
         }
         output.push_str("</ol><h3>Interpretation limits</h3><ul>")?;
+        for limit in &audit.claim_limits {
+            output.push_str("<li><code>")?;
+            write_html_text(&mut output, limit)?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul></section>")?;
+    }
+    #[cfg(feature = "xml-external-entity-review")]
+    if let Some(audit) = &document.xml_external_entity_review {
+        output.push_str(
+            "<section><h2>Controlled XML external-entity review audit</h2>\
+<p class=\"wp-note\">This audit records a bounded callback-control review without retaining endpoint URLs or paths, provider origins, callback values, XML bodies, system literals, tokens, response bodies, or raw errors. Repeated candidate and replay interactions remain review-level evidence: they do not confirm XXE, identify a parser, prove file read, data exfiltration, internal-network access, semantic effect, or impact.</p><dl class=\"meta\">",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Claim limits</h3><ul>")?;
         for limit in &audit.claim_limits {
             output.push_str("<li><code>")?;
             write_html_text(&mut output, limit)?;
@@ -4646,6 +4738,23 @@ fn render_assessment_markdown(
             output.push_char('\n')?;
         }
     }
+    #[cfg(feature = "xml-external-entity-review")]
+    if let Some(audit) = &document.xml_external_entity_review {
+        output.push_str(
+            "\n### Controlled XML external-entity review audit\n\nThis audit records a bounded callback-control review without retaining endpoint URLs or paths, provider origins, callback values, XML bodies, system literals, tokens, response bodies, or raw errors. Repeated candidate and replay interactions remain review-level evidence: they do not confirm XXE, identify a parser, prove file read, data exfiltration, internal-network access, semantic effect, or impact.\n\n",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Claim limits\n\n")?;
+        for limit in &audit.claim_limits {
+            output.push_str("- ")?;
+            write_markdown_code_span(&mut output, limit)?;
+            output.push_char('\n')?;
+        }
+    }
     #[cfg(feature = "openapi-review")]
     if let Some(audit) = &document.openapi_review {
         output.push_str("\n### OpenAPI review audit\n\n")?;
@@ -5004,6 +5113,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "websocket-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     websocket_review: Option<AssessmentWebSocketReviewAuditDocument>,
+    #[cfg(feature = "xml-external-entity-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    xml_external_entity_review: Option<AssessmentXmlExternalEntityReviewAuditDocument>,
     #[cfg(feature = "openapi-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     openapi_review: Option<AssessmentOpenApiAuditDocument>,
@@ -5153,6 +5265,11 @@ impl<'a> AssessmentDocument<'a> {
                 .websocket_review_audit()
                 .map(AssessmentWebSocketReviewAuditDocument::from_audit)
                 .transpose()?,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review: report
+                .xml_external_entity_review_audit()
+                .map(AssessmentXmlExternalEntityReviewAuditDocument::from_audit)
+                .transpose()?,
             #[cfg(feature = "openapi-review")]
             openapi_review: report
                 .openapi_review_audit()
@@ -5264,6 +5381,16 @@ impl<'a> AssessmentDocument<'a> {
             .items
             .iter()
             .any(|item| item.capability_id == WEBSOCKET_REVIEW_CAPABILITY_ID)
+        {
+            return Err(ReportError::Serialization);
+        }
+        #[cfg(feature = "xml-external-entity-review")]
+        if let Some(audit) = &self.xml_external_entity_review {
+            audit.validate(&self.items)?;
+        } else if self
+            .items
+            .iter()
+            .any(|item| item.capability_id == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
         {
             return Err(ReportError::Serialization);
         }
@@ -10301,6 +10428,507 @@ const WEBSOCKET_SUPPLIED_SESSION_CLAIM_LIMITS: [&str; 9] = [
     "source_authenticity_not_established",
     "continuous_authentication_not_established",
 ];
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_CLAIM_LIMITS: [&str; 7] = [
+    "not_confirmed_xxe",
+    "file_read_not_performed",
+    "data_exfiltration_not_performed",
+    "internal_network_access_not_performed",
+    "parser_identity_not_established",
+    "impact_validation_not_performed",
+    "source_authentication_not_established",
+];
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_TITLE: &str =
+    "Repeated correlated outbound interactions after XML inputs";
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_CATEGORY: &str = "XML external resource resolution";
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_SUMMARY: &str = "Two independently allocated callback targets received distinct correlated HTTP interactions after fixed candidate and replay XML documents; parser identity, semantic effect, exploitability, and impact remain unestablished.";
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_REMEDIATION_ID: &str =
+    "web.remediation.xml-external-entity-policy@1";
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_REMEDIATION_SUMMARY: &str = "Disable unneeded external entity resolution and independently review the exact server-side XML parser policy before treating this observation as a vulnerability.";
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_CONTROL_EVIDENCE_COUNT: usize = 3;
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const XML_EXTERNAL_ENTITY_REVIEW_CANDIDATE_EVIDENCE_COUNT: usize = 5;
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const MAX_XML_EXTERNAL_ENTITY_COMPLETE_TARGET_RESPONSE_BYTES: u64 =
+    XML_EXTERNAL_ENTITY_TARGET_REQUESTS as u64 * MAX_XML_EXTERNAL_ENTITY_TARGET_RESPONSE_BYTES;
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+#[derive(Serialize)]
+struct AssessmentXmlExternalEntityReviewAuditDocument {
+    schema: &'static str,
+    algorithm: &'static str,
+    policy: AssessmentXmlExternalEntityPolicyDocument,
+    outcome: &'static str,
+    target: AssessmentXmlExternalEntityTargetDocument,
+    provider: AssessmentXmlExternalEntityProviderDocument,
+    item_projected: bool,
+    semantic_effect: &'static str,
+    impact_validation: &'static str,
+    claim_limits: Vec<&'static str>,
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+#[derive(Serialize)]
+struct AssessmentXmlExternalEntityPolicyDocument {
+    id: String,
+    method: &'static str,
+    media_type: &'static str,
+    control_model: &'static str,
+    execution_mode: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+#[derive(Serialize)]
+struct AssessmentXmlExternalEntityTargetDocument {
+    request_count: u8,
+    request_body_bytes: u64,
+    response_bytes: u64,
+    complete: bool,
+    accounting_complete: bool,
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+#[derive(Serialize)]
+struct AssessmentXmlExternalEntityProviderDocument {
+    request_count: u8,
+    active_verification_count: u8,
+    preflight_clean: bool,
+    control_callback_observed: bool,
+    candidate_callback_observed: bool,
+    replay_callback_observed: bool,
+    callback_targets_distinct: bool,
+    event_identities_distinct: bool,
+    cleanup_verified: bool,
+    complete: bool,
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+impl AssessmentXmlExternalEntityReviewAuditDocument {
+    fn from_audit(audit: &XmlExternalEntityReviewAudit) -> Result<Self, ReportError> {
+        let document = Self {
+            schema: audit.schema(),
+            algorithm: audit.algorithm(),
+            policy: AssessmentXmlExternalEntityPolicyDocument {
+                id: audit.policy_id().to_owned(),
+                method: "post",
+                media_type: audit.media_type(),
+                control_model: audit.control_model(),
+                execution_mode: audit.execution_mode().as_str(),
+            },
+            outcome: xml_external_entity_outcome_token(audit.outcome()),
+            target: AssessmentXmlExternalEntityTargetDocument {
+                request_count: audit.target_request_count(),
+                request_body_bytes: audit.target_request_body_bytes(),
+                response_bytes: audit.target_response_bytes(),
+                complete: audit.target_complete(),
+                accounting_complete: audit.target_accounting_complete(),
+            },
+            provider: AssessmentXmlExternalEntityProviderDocument {
+                request_count: audit.provider_request_count(),
+                active_verification_count: audit.active_verification_count(),
+                preflight_clean: audit.preflight_clean(),
+                control_callback_observed: audit.control_callback_observed(),
+                candidate_callback_observed: audit.candidate_callback_observed(),
+                replay_callback_observed: audit.replay_callback_observed(),
+                callback_targets_distinct: audit.callback_targets_distinct(),
+                event_identities_distinct: audit.event_identities_distinct(),
+                cleanup_verified: audit.cleanup_verified(),
+                complete: audit.provider_accounting_complete(),
+            },
+            item_projected: audit.item_projected(),
+            semantic_effect: xml_external_entity_operation_token(audit.semantic_effect()),
+            impact_validation: xml_external_entity_operation_token(audit.impact_validation()),
+            claim_limits: {
+                let limits = audit.claim_limits();
+                if limits.maximum_disposition() != XmlExternalEntityMaximumDisposition::NeedsReview
+                    || limits.semantic_effect() != XmlExternalEntityOperationStatus::NotPerformed
+                    || limits.impact_validation() != XmlExternalEntityOperationStatus::NotPerformed
+                    || audit.method() != XML_EXTERNAL_ENTITY_REVIEW_METHOD
+                {
+                    return Err(ReportError::Serialization);
+                }
+                XML_EXTERNAL_ENTITY_REVIEW_CLAIM_LIMITS.to_vec()
+            },
+        };
+        document.validate_wire()?;
+        Ok(document)
+    }
+
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        self.validate_wire()?;
+        let matching_items = items
+            .iter()
+            .filter(|item| item.capability_id == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+            .collect::<Vec<_>>();
+        if matching_items.len() > 1
+            || self.item_projected != (matching_items.len() == 1)
+            || matching_items.first().is_some_and(|item| {
+                item.subject_reference != "subject-0000"
+                    || item.presentation_target != "assessment_subject"
+                    || item.title != XML_EXTERNAL_ENTITY_REVIEW_TITLE
+                    || item.disposition != "needs_review"
+                    || item.claim_basis != "differential"
+                    || item.severity.is_some()
+                    || item.confidence_ppm != 900_000
+                    || item.redacted_summary != XML_EXTERNAL_ENTITY_REVIEW_SUMMARY
+                    || item.category != XML_EXTERNAL_ENTITY_REVIEW_CATEGORY
+                    || item.cwe != Some("CWE-611")
+                    || item.remediation.id != XML_EXTERNAL_ENTITY_REVIEW_REMEDIATION_ID
+                    || item.remediation.summary != XML_EXTERNAL_ENTITY_REVIEW_REMEDIATION_SUMMARY
+                    || !xml_external_entity_evidence_linkage_is_exact(item)
+            })
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn validate_wire(&self) -> Result<(), ReportError> {
+        const OUTCOMES: [&str; 13] = [
+            "not_eligible",
+            "control_incomplete",
+            "preflight_contaminated",
+            "control_callback_observed",
+            "no_callback",
+            "candidate_only",
+            "replay_only",
+            "correlation_mismatch",
+            "cleanup_incomplete",
+            "cancelled",
+            "budget_exhausted",
+            "incomplete",
+            "repeated_external_entity_resolution_observed",
+        ];
+        let positive = self.outcome == "repeated_external_entity_resolution_observed";
+        let no_callbacks = !self.provider.control_callback_observed
+            && !self.provider.candidate_callback_observed
+            && !self.provider.replay_callback_observed;
+        let provider_empty_consistent = self.provider.request_count != 0
+            || (self.provider.active_verification_count == 0
+                && !self.provider.preflight_clean
+                && !self.provider.control_callback_observed
+                && !self.provider.candidate_callback_observed
+                && !self.provider.replay_callback_observed
+                && !self.provider.callback_targets_distinct
+                && !self.provider.event_identities_distinct
+                && !self.provider.cleanup_verified
+                && !self.provider.complete);
+        let callback_facts_consistent = no_callbacks || self.provider.callback_targets_distinct;
+        let event_facts_consistent = !self.provider.event_identities_distinct
+            || (self.provider.callback_targets_distinct
+                && self.provider.candidate_callback_observed
+                && self.provider.replay_callback_observed);
+        let provider_completion_consistent = !self.provider.complete
+            || (usize::from(self.provider.request_count) >= 9
+                && self.provider.preflight_clean
+                && self.provider.callback_targets_distinct);
+        let target_started_consistent = self.target.request_count == 0
+            || (self.provider.request_count > 0
+                && self.provider.preflight_clean
+                && self.provider.callback_targets_distinct);
+        let complete_lifecycle = usize::from(self.target.request_count)
+            == XML_EXTERNAL_ENTITY_TARGET_REQUESTS
+            && self.target.request_body_bytes > 0
+            && self.provider.request_count > 0
+            && self.target.complete
+            && self.target.accounting_complete
+            && usize::from(self.provider.active_verification_count)
+                == XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS
+            && self.provider.preflight_clean
+            && !self.provider.control_callback_observed
+            && self.provider.callback_targets_distinct
+            && self.provider.cleanup_verified
+            && self.provider.complete;
+        let complete_positive = complete_lifecycle
+            && self.provider.candidate_callback_observed
+            && self.provider.replay_callback_observed
+            && self.provider.event_identities_distinct;
+        let empty_lifecycle = self.target.request_count == 0
+            && self.provider.request_count == 0
+            && no_callbacks
+            && !self.target.complete
+            && !self.provider.preflight_clean
+            && !self.provider.callback_targets_distinct
+            && !self.provider.event_identities_distinct
+            && !self.provider.cleanup_verified
+            && !self.target.accounting_complete
+            && !self.provider.complete;
+        let stopped_lifecycle = !complete_lifecycle
+            && !self.provider.control_callback_observed
+            && (!self.target.accounting_complete || !self.provider.complete);
+        let outcome_facts_match = match self.outcome {
+            "not_eligible" => empty_lifecycle,
+            "control_incomplete" => {
+                self.target.request_count == 0
+                    && !self.target.complete
+                    && !self.provider.preflight_clean
+                    && no_callbacks
+                    && !self.target.accounting_complete
+                    && !self.provider.complete
+            },
+            "preflight_contaminated" => {
+                self.target.request_count == 0
+                    && self.provider.request_count > 0
+                    && !self.provider.preflight_clean
+                    && !no_callbacks
+                    && self.provider.callback_targets_distinct
+                    && !self.target.complete
+                    && !self.target.accounting_complete
+                    && !self.provider.complete
+            },
+            "control_callback_observed" => {
+                self.provider.preflight_clean
+                    && self.provider.control_callback_observed
+                    && self.target.request_count > 0
+                    && !self.target.complete
+                    && !self.target.accounting_complete
+                    && !self.provider.complete
+            },
+            "no_callback" => complete_lifecycle && no_callbacks,
+            "candidate_only" => {
+                complete_lifecycle
+                    && self.provider.candidate_callback_observed
+                    && !self.provider.replay_callback_observed
+                    && !self.provider.event_identities_distinct
+            },
+            "replay_only" => {
+                complete_lifecycle
+                    && !self.provider.candidate_callback_observed
+                    && self.provider.replay_callback_observed
+                    && !self.provider.event_identities_distinct
+            },
+            "correlation_mismatch" => {
+                self.provider.preflight_clean
+                    && !self.provider.control_callback_observed
+                    && (self.provider.candidate_callback_observed
+                        || self.provider.replay_callback_observed)
+                    && !self.provider.event_identities_distinct
+            },
+            "cleanup_incomplete" => {
+                self.provider.preflight_clean
+                    && !self.provider.control_callback_observed
+                    && !self.provider.cleanup_verified
+            },
+            "cancelled" | "budget_exhausted" | "incomplete" => stopped_lifecycle,
+            "repeated_external_entity_resolution_observed" => complete_positive,
+            _ => false,
+        };
+        if self.schema != XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA
+            || self.algorithm != XML_EXTERNAL_ENTITY_REVIEW_ALGORITHM
+            || !valid_xml_external_entity_policy_id(&self.policy.id)
+            || self.policy.method != "post"
+            || self.policy.media_type != XML_EXTERNAL_ENTITY_REVIEW_MEDIA_TYPE
+            || self.policy.control_model != XML_EXTERNAL_ENTITY_REVIEW_CONTROL_MODEL
+            || !matches!(
+                self.policy.execution_mode,
+                "production" | "owned_numeric_loopback_test"
+            )
+            || !OUTCOMES.contains(&self.outcome)
+            || usize::from(self.target.request_count) > XML_EXTERNAL_ENTITY_TARGET_REQUESTS
+            || self.target.request_body_bytes
+                > u64::try_from(XML_EXTERNAL_ENTITY_TARGET_REQUESTS)
+                    .map_err(|_| ReportError::Serialization)?
+                    .checked_mul(
+                        u64::try_from(MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES)
+                            .map_err(|_| ReportError::Serialization)?,
+                    )
+                    .ok_or(ReportError::Serialization)?
+            || self.target.response_bytes > 256 * 1_024 * 1_024
+            || (self.target.complete
+                && self.target.response_bytes
+                    > MAX_XML_EXTERNAL_ENTITY_COMPLETE_TARGET_RESPONSE_BYTES)
+            || (self.target.request_count == 0) != (self.target.request_body_bytes == 0)
+            || (self.target.complete
+                && usize::from(self.target.request_count) != XML_EXTERNAL_ENTITY_TARGET_REQUESTS)
+            || (self.target.accounting_complete && !self.target.complete)
+            || usize::from(self.provider.request_count) > MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS
+            || usize::from(self.provider.active_verification_count)
+                > XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS
+            || self.provider.active_verification_count != u8::from(self.target.request_count >= 2)
+            || !callback_facts_consistent
+            || !event_facts_consistent
+            || !provider_empty_consistent
+            || !provider_completion_consistent
+            || !target_started_consistent
+            || !outcome_facts_match
+            || self.item_projected != positive
+            || self.semantic_effect != "not_performed"
+            || self.impact_validation != "not_performed"
+            || self.claim_limits.as_slice() != XML_EXTERNAL_ENTITY_REVIEW_CLAIM_LIMITS
+            || positive != complete_positive
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        render_serializable_json(self, MAX_RENDERED_REPORT_BYTES)
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Schema", self.schema.to_owned()),
+            ("Algorithm", self.algorithm.to_owned()),
+            ("Outcome", self.outcome.to_owned()),
+            ("Pseudonymous policy digest", self.policy.id.clone()),
+            ("Method", self.policy.method.to_owned()),
+            ("Media type", self.policy.media_type.to_owned()),
+            ("Control model", self.policy.control_model.to_owned()),
+            ("Execution mode", self.policy.execution_mode.to_owned()),
+            (
+                "Target request count",
+                self.target.request_count.to_string(),
+            ),
+            (
+                "Target request body bytes",
+                self.target.request_body_bytes.to_string(),
+            ),
+            (
+                "Target response bytes",
+                self.target.response_bytes.to_string(),
+            ),
+            ("Target complete", self.target.complete.to_string()),
+            (
+                "Target accounting complete",
+                self.target.accounting_complete.to_string(),
+            ),
+            (
+                "Provider request count",
+                self.provider.request_count.to_string(),
+            ),
+            (
+                "Active verification count",
+                self.provider.active_verification_count.to_string(),
+            ),
+            ("Preflight clean", self.provider.preflight_clean.to_string()),
+            (
+                "Control callback observed",
+                self.provider.control_callback_observed.to_string(),
+            ),
+            (
+                "Candidate callback observed",
+                self.provider.candidate_callback_observed.to_string(),
+            ),
+            (
+                "Replay callback observed",
+                self.provider.replay_callback_observed.to_string(),
+            ),
+            (
+                "Callback targets distinct",
+                self.provider.callback_targets_distinct.to_string(),
+            ),
+            (
+                "Event identities distinct",
+                self.provider.event_identities_distinct.to_string(),
+            ),
+            (
+                "Cleanup verified",
+                self.provider.cleanup_verified.to_string(),
+            ),
+            (
+                "Provider accounting complete",
+                self.provider.complete.to_string(),
+            ),
+            ("Item projected", self.item_projected.to_string()),
+            ("Semantic effect", self.semantic_effect.to_owned()),
+            ("Impact validation", self.impact_validation.to_owned()),
+            ("Claim limits", self.claim_limits.join(",")),
+        ]
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+fn valid_xml_external_entity_policy_id(value: &str) -> bool {
+    value
+        .strip_prefix("xml-external-entity-policy-sha256:")
+        .is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        })
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+fn xml_external_entity_evidence_linkage_is_exact(item: &AssessmentItemDocument<'_>) -> bool {
+    if !item.evidence_references.is_empty()
+        || item.control_evidence_references.len()
+            != XML_EXTERNAL_ENTITY_REVIEW_CONTROL_EVIDENCE_COUNT
+        || item.candidate_evidence_references.len()
+            != XML_EXTERNAL_ENTITY_REVIEW_CANDIDATE_EVIDENCE_COUNT
+        || item.evidence_count
+            != u64::try_from(
+                XML_EXTERNAL_ENTITY_REVIEW_CONTROL_EVIDENCE_COUNT
+                    + XML_EXTERNAL_ENTITY_REVIEW_CANDIDATE_EVIDENCE_COUNT,
+            )
+            .unwrap_or(u64::MAX)
+    {
+        return false;
+    }
+    let ordinals = item
+        .control_evidence_references
+        .iter()
+        .chain(&item.candidate_evidence_references)
+        .map(|reference| assessment_reference_ordinal(reference, "evidence"))
+        .collect::<Option<Vec<_>>>();
+    ordinals.is_some_and(|ordinals| {
+        ordinals
+            .windows(2)
+            .all(|pair| pair[0].checked_add(1) == Some(pair[1]))
+    })
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+fn assessment_reference_ordinal(value: &str, kind: &str) -> Option<u64> {
+    let suffix = value
+        .strip_prefix(kind)
+        .and_then(|value| value.strip_prefix('-'))?;
+    ((4..=10).contains(&suffix.len())
+        && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        && (suffix.len() == 4 || !suffix.starts_with('0')))
+    .then(|| suffix.parse().ok())
+    .flatten()
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const fn xml_external_entity_outcome_token(
+    outcome: XmlExternalEntityReviewOutcome,
+) -> &'static str {
+    match outcome {
+        XmlExternalEntityReviewOutcome::NotEligible => "not_eligible",
+        XmlExternalEntityReviewOutcome::ControlIncomplete => "control_incomplete",
+        XmlExternalEntityReviewOutcome::PreflightContaminated => "preflight_contaminated",
+        XmlExternalEntityReviewOutcome::ControlCallbackObserved => "control_callback_observed",
+        XmlExternalEntityReviewOutcome::NoCallback => "no_callback",
+        XmlExternalEntityReviewOutcome::CandidateOnly => "candidate_only",
+        XmlExternalEntityReviewOutcome::ReplayOnly => "replay_only",
+        XmlExternalEntityReviewOutcome::CorrelationMismatch => "correlation_mismatch",
+        XmlExternalEntityReviewOutcome::CleanupIncomplete => "cleanup_incomplete",
+        XmlExternalEntityReviewOutcome::Cancelled => "cancelled",
+        XmlExternalEntityReviewOutcome::BudgetExhausted => "budget_exhausted",
+        XmlExternalEntityReviewOutcome::Incomplete => "incomplete",
+        XmlExternalEntityReviewOutcome::RepeatedExternalEntityResolutionObserved => {
+            "repeated_external_entity_resolution_observed"
+        },
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+const fn xml_external_entity_operation_token(
+    status: XmlExternalEntityOperationStatus,
+) -> &'static str {
+    match status {
+        XmlExternalEntityOperationStatus::NotPerformed => "not_performed",
+    }
+}
 
 #[cfg(all(feature = "scanning", feature = "websocket-review"))]
 #[derive(Serialize)]
@@ -17292,6 +17920,8 @@ mod tests {
             authorization_review: None,
             #[cfg(feature = "websocket-review")]
             websocket_review: None,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review: None,
             #[cfg(feature = "openapi-review")]
             openapi_review: None,
             #[cfg(feature = "rest-review")]
@@ -17426,6 +18056,105 @@ mod tests {
             ],
             claim_limits: WEBSOCKET_REVIEW_CLAIM_LIMITS.to_vec(),
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+    fn xml_external_entity_review_document() -> AssessmentXmlExternalEntityReviewAuditDocument {
+        AssessmentXmlExternalEntityReviewAuditDocument {
+            schema: XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA,
+            algorithm: XML_EXTERNAL_ENTITY_REVIEW_ALGORITHM,
+            policy: AssessmentXmlExternalEntityPolicyDocument {
+                id: format!("xml-external-entity-policy-sha256:{}", "a".repeat(64)),
+                method: "post",
+                media_type: "application/xml; charset=utf-8",
+                control_model: XML_EXTERNAL_ENTITY_REVIEW_CONTROL_MODEL,
+                execution_mode: "owned_numeric_loopback_test",
+            },
+            outcome: "repeated_external_entity_resolution_observed",
+            target: AssessmentXmlExternalEntityTargetDocument {
+                request_count: 3,
+                request_body_bytes: 768,
+                response_bytes: 96,
+                complete: true,
+                accounting_complete: true,
+            },
+            provider: AssessmentXmlExternalEntityProviderDocument {
+                request_count: 12,
+                active_verification_count: 1,
+                preflight_clean: true,
+                control_callback_observed: false,
+                candidate_callback_observed: true,
+                replay_callback_observed: true,
+                callback_targets_distinct: true,
+                event_identities_distinct: true,
+                cleanup_verified: true,
+                complete: true,
+            },
+            item_projected: true,
+            semantic_effect: "not_performed",
+            impact_validation: "not_performed",
+            claim_limits: XML_EXTERNAL_ENTITY_REVIEW_CLAIM_LIMITS.to_vec(),
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+    fn xml_external_entity_item_document() -> AssessmentItemDocument<'static> {
+        AssessmentItemDocument {
+            schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
+            capability_id: XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID,
+            subject_reference: "subject-0000".to_owned(),
+            presentation_target: "assessment_subject",
+            title: XML_EXTERNAL_ENTITY_REVIEW_TITLE,
+            disposition: "needs_review",
+            claim_basis: "differential",
+            severity: None,
+            confidence_ppm: 900_000,
+            fingerprint: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            evidence_count: 8,
+            redacted_summary: XML_EXTERNAL_ENTITY_REVIEW_SUMMARY,
+            category: XML_EXTERNAL_ENTITY_REVIEW_CATEGORY,
+            cwe: Some("CWE-611"),
+            remediation: AssessmentRemediationDocument {
+                id: XML_EXTERNAL_ENTITY_REVIEW_REMEDIATION_ID,
+                summary: XML_EXTERNAL_ENTITY_REVIEW_REMEDIATION_SUMMARY,
+            },
+            evidence_references: Vec::new(),
+            control_evidence_references: vec![
+                "evidence-0000".to_owned(),
+                "evidence-0001".to_owned(),
+                "evidence-0002".to_owned(),
+            ],
+            candidate_evidence_references: vec![
+                "evidence-0003".to_owned(),
+                "evidence-0004".to_owned(),
+                "evidence-0005".to_owned(),
+                "evidence-0006".to_owned(),
+                "evidence-0007".to_owned(),
+            ],
+            case_reference: None,
+            outcome_reference: None,
+            verification_stage: None,
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+    fn xml_external_entity_assessment_document() -> AssessmentDocument<'static> {
+        let mut document = observation_assessment_document(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        );
+        document.subject_count = 2;
+        document.items[0] = xml_external_entity_item_document();
+        document.xml_external_entity_review = Some(xml_external_entity_review_document());
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+    fn assert_xml_external_entity_item_mutation_rejected(
+        mutate: impl FnOnce(&mut AssessmentItemDocument<'static>),
+    ) {
+        let mut document = xml_external_entity_assessment_document();
+        mutate(&mut document.items[0]);
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
     }
 
     #[cfg(all(
@@ -21131,6 +21860,180 @@ mod tests {
             .coverage
             .accounted_transport_response_bytes = 14;
         assert_eq!(document.validate(), Err(ReportError::Serialization));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+    #[test]
+    fn xml_external_entity_review_writer_is_value_free_strict_and_rendered_everywhere() {
+        let mut document = xml_external_entity_assessment_document();
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        comparison::import_assessment_summary(json.as_bytes()).unwrap();
+        let audit = &parsed["xml_external_entity_review"];
+        assert_eq!(audit["schema"], XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA);
+        assert_eq!(audit["policy"]["method"], "post");
+        assert_eq!(audit["target"]["request_count"], 3);
+        assert_eq!(audit["provider"]["event_identities_distinct"], true);
+        assert_eq!(audit["semantic_effect"], "not_performed");
+        assert_eq!(audit["impact_validation"], "not_performed");
+        assert_eq!(audit["claim_limits"].as_array().unwrap().len(), 7);
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        assert!(csv.contains("xml_external_entity_review_audit"));
+        assert!(csv.contains(XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA));
+        let audit_row = csv
+            .lines()
+            .find(|line| line.contains("xml_external_entity_review_audit"))
+            .unwrap();
+        let audit_cells = parse_csv_line(audit_row);
+        assert_eq!(audit_cells.len(), ASSESSMENT_CSV_HEADERS.len());
+        assert_eq!(audit_cells[18], "8");
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        for rendered in [&json, &csv, &html, &markdown] {
+            assert!(rendered.contains("xml-external-entity-policy-sha256:"));
+            assert!(rendered.contains("not_confirmed_xxe"));
+            for forbidden in [
+                "https://provider.invalid",
+                "/private/xml-endpoint",
+                "<!DOCTYPE",
+                "SYSTEM",
+                "file:///",
+                "callback-token-sentinel",
+                "raw-provider-error",
+            ] {
+                assert!(!rendered.contains(forbidden));
+            }
+        }
+
+        document
+            .xml_external_entity_review
+            .as_mut()
+            .unwrap()
+            .provider
+            .control_callback_observed = true;
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+    #[test]
+    fn xml_external_entity_review_empty_negative_audit_is_allowed_but_positive_item_requires_it() {
+        let mut document = observation_assessment_document("ordinary-observation");
+        document.items.clear();
+        document.item_count = 0;
+        let mut audit = xml_external_entity_review_document();
+        audit.outcome = "not_eligible";
+        audit.target.request_count = 0;
+        audit.target.request_body_bytes = 0;
+        audit.target.response_bytes = 0;
+        audit.target.complete = false;
+        audit.target.accounting_complete = false;
+        audit.provider.request_count = 0;
+        audit.provider.active_verification_count = 0;
+        audit.provider.preflight_clean = false;
+        audit.provider.candidate_callback_observed = false;
+        audit.provider.replay_callback_observed = false;
+        audit.provider.callback_targets_distinct = false;
+        audit.provider.event_identities_distinct = false;
+        audit.provider.cleanup_verified = false;
+        audit.provider.complete = false;
+        audit.item_projected = false;
+        document.xml_external_entity_review = Some(audit);
+        assert!(document.validate().is_ok());
+
+        document.items.push(xml_external_entity_item_document());
+        document.item_count = 1;
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
+        document.xml_external_entity_review = None;
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+    #[test]
+    fn xml_external_entity_review_writer_rejects_substituted_item_contract() {
+        assert!(xml_external_entity_assessment_document().validate().is_ok());
+
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.subject_reference = "subject-0001".to_owned();
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.presentation_target = "request";
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.title = "Substituted XML observation";
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.category = "substituted category";
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.remediation.id = "web.remediation.substituted@1";
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.remediation.summary = "Substituted remediation.";
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.confidence_ppm = 899_999;
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.evidence_count = 1;
+            item.evidence_references = vec!["evidence-0000".to_owned()];
+            item.control_evidence_references.clear();
+            item.candidate_evidence_references.clear();
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.evidence_count = 7;
+            item.control_evidence_references.pop();
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.control_evidence_references.swap(0, 1);
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.candidate_evidence_references[4] = "evidence-0008".to_owned();
+        });
+        assert_xml_external_entity_item_mutation_rejected(|item| {
+            item.candidate_evidence_references[0] = "evidence-0002".to_owned();
+        });
+    }
+
+    #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
+    #[test]
+    fn xml_external_entity_review_writer_rejects_impossible_negative_lifecycle_facts() {
+        let mut audit = xml_external_entity_review_document();
+        audit.outcome = "candidate_only";
+        audit.provider.replay_callback_observed = false;
+        audit.provider.event_identities_distinct = false;
+        audit.item_projected = false;
+        assert!(audit.validate_wire().is_ok());
+
+        audit.provider.active_verification_count = 0;
+        assert_eq!(audit.validate_wire(), Err(ReportError::Serialization));
+        audit.provider.active_verification_count = 1;
+
+        audit.target.complete = false;
+        assert_eq!(audit.validate_wire(), Err(ReportError::Serialization));
+        audit.target.complete = true;
+
+        audit.provider.callback_targets_distinct = false;
+        assert_eq!(audit.validate_wire(), Err(ReportError::Serialization));
+
+        let mut oversized_response = xml_external_entity_review_document();
+        oversized_response.target.response_bytes =
+            MAX_XML_EXTERNAL_ENTITY_COMPLETE_TARGET_RESPONSE_BYTES + 1;
+        assert_eq!(
+            oversized_response.validate_wire(),
+            Err(ReportError::Serialization)
+        );
+
+        let mut stopped_with_complete_accounting = xml_external_entity_review_document();
+        stopped_with_complete_accounting.outcome = "incomplete";
+        stopped_with_complete_accounting.provider.cleanup_verified = false;
+        stopped_with_complete_accounting.item_projected = false;
+        assert_eq!(
+            stopped_with_complete_accounting.validate_wire(),
+            Err(ReportError::Serialization)
+        );
     }
 
     #[cfg(all(

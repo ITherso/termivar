@@ -42,6 +42,10 @@ required-features = ["recon-ct-provider"]
 name = "websocket_review_cli"
 required-features = ["websocket-review"]
 
+[[test]]
+name = "xml_external_entity_review_cli"
+required-features = ["xml-external-entity-review"]
+
 [features]
 default = []
 legacy-scanner = ["dep:reqwest", "termivar-scanner/legacy-scanner"]
@@ -66,6 +70,7 @@ recon-ct-provider = ["termivar-scanner/recon-ct-provider"]
 websocket-review = ["termivar-scanner/websocket-review"]
 supplied-session-review = ["termivar-scanner/supplied-session-review"]
 ssrf-oast-review = ["termivar-scanner/ssrf-oast-review"]
+xml-external-entity-review = ["termivar-scanner/xml-external-entity-review"]
 wordpress-review = ["termivar-scanner/wordpress-review"]
 release-bundle = [
     "artifact-adapter",

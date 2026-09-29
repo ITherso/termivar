@@ -103,6 +103,11 @@ use super::wordpress_runtime::{
     WordPressDiscoveryStop, WordPressPageCandidate, WordPressReviewBinding,
     WordPressSignalCollector,
 };
+#[cfg(feature = "xml-external-entity-review")]
+use super::xml_external_entity_runtime::{
+    CommittedXmlExternalEntityReview, XmlExternalEntityRuntimeConfig,
+    XmlExternalEntityRuntimeResult,
+};
 use super::{
     assessment_api_visibility::{
         build_root_api_visibility_runtime, CommittedAssessmentApiVisibility,
@@ -156,6 +161,11 @@ use crate::supplied_session_review::{SuppliedSessionPolicy, SuppliedSessionRunti
 use crate::websocket_review::WebSocketReviewPolicy;
 #[cfg(feature = "wordpress-review")]
 use crate::wordpress_review::WordPressReviewInputs;
+#[cfg(feature = "xml-external-entity-review")]
+use crate::xml_external_entity_review::{
+    XmlExternalEntityAdminToken, XmlExternalEntityReviewAudit, XmlExternalEntityReviewOutcome,
+    XmlExternalEntityReviewPolicy, XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS,
+};
 use crate::{
     http_evidence::{
         CompleteHttpResponseObservation, CompleteHttpResponseObserver,
@@ -1080,6 +1090,10 @@ pub enum WebAssessmentIncompleteReason {
     /// bounded correlated target and provider lifecycle.
     #[cfg(feature = "ssrf-oast-review")]
     SsrfOastReviewIncomplete,
+    /// The explicitly enabled controlled XML child did not complete its fixed
+    /// target/provider lifecycle and reconciled cleanup/accounting contract.
+    #[cfg(feature = "xml-external-entity-review")]
+    XmlExternalEntityReviewIncomplete,
     /// The explicitly enabled transport-free WordPress interpretation could
     /// not retain or evaluate its bounded input completely.
     #[cfg(feature = "wordpress-review")]
@@ -1421,6 +1435,8 @@ pub struct WebAssessmentRunReport {
     websocket_review: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
     jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
+    #[cfg(feature = "xml-external-entity-review")]
+    xml_external_entity_review: Option<XmlExternalEntityReviewAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
@@ -1471,6 +1487,11 @@ impl fmt::Debug for WebAssessmentRunReport {
         );
         #[cfg(feature = "jwt-target-acceptance-review")]
         debug.field("jwt_target_acceptance", &self.jwt_target_acceptance);
+        #[cfg(feature = "xml-external-entity-review")]
+        debug.field(
+            "xml_external_entity_review",
+            &self.xml_external_entity_review,
+        );
         #[cfg(feature = "openapi-review")]
         debug.field("openapi_review", &self.openapi_review);
         #[cfg(feature = "rest-review")]
@@ -1559,6 +1580,11 @@ impl WebAssessmentRunReport {
     #[cfg(feature = "jwt-target-acceptance-review")]
     pub const fn jwt_target_acceptance_audit(&self) -> Option<&JwtTargetAcceptanceAudit> {
         self.jwt_target_acceptance.as_ref()
+    }
+    /// Returns the value-free controlled XML prefix preserved before failure.
+    #[cfg(feature = "xml-external-entity-review")]
+    pub const fn xml_external_entity_review_audit(&self) -> Option<&XmlExternalEntityReviewAudit> {
+        self.xml_external_entity_review.as_ref()
     }
     #[cfg(feature = "openapi-review")]
     pub const fn openapi_review_audit(&self) -> Option<&WebAssessmentOpenApiAudit> {
@@ -1660,6 +1686,8 @@ impl WebAssessmentRunReport {
             self.rest_review,
             #[cfg(feature = "ssrf-oast-review")]
             self.ssrf_oast_review,
+            #[cfg(feature = "xml-external-entity-review")]
+            self.xml_external_entity_review,
             #[cfg(feature = "wordpress-review")]
             self.wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
@@ -1685,6 +1713,8 @@ pub struct WebAssessmentFailureReceipt {
     websocket_review: Option<WebAssessmentWebSocketReviewAudit>,
     #[cfg(feature = "jwt-target-acceptance-review")]
     jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
+    #[cfg(feature = "xml-external-entity-review")]
+    xml_external_entity_review: Option<XmlExternalEntityReviewAudit>,
     current_subject: WebAssessmentSubjectReport,
     incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
     inventory_consistent: bool,
@@ -1712,6 +1742,11 @@ impl fmt::Debug for WebAssessmentFailureReceipt {
         );
         #[cfg(feature = "jwt-target-acceptance-review")]
         debug.field("jwt_target_acceptance", &self.jwt_target_acceptance);
+        #[cfg(feature = "xml-external-entity-review")]
+        debug.field(
+            "xml_external_entity_review",
+            &self.xml_external_entity_review,
+        );
         debug
             .field("current_subject", &self.current_subject)
             .field("incomplete_reasons", &self.incomplete_reasons)
@@ -1763,6 +1798,11 @@ impl WebAssessmentFailureReceipt {
     #[cfg(feature = "jwt-target-acceptance-review")]
     pub const fn jwt_target_acceptance_audit(&self) -> Option<&JwtTargetAcceptanceAudit> {
         self.jwt_target_acceptance.as_ref()
+    }
+    /// Returns the value-free controlled XML prefix preserved before a later failure.
+    #[cfg(feature = "xml-external-entity-review")]
+    pub const fn xml_external_entity_review_audit(&self) -> Option<&XmlExternalEntityReviewAudit> {
+        self.xml_external_entity_review.as_ref()
     }
     pub fn current_subject(&self) -> &WebAssessmentSubject {
         &self.current_subject.subject
@@ -1862,6 +1902,19 @@ pub enum WebAssessmentRuntimeError {
     #[cfg(feature = "jwt-target-acceptance-review")]
     #[error("JWT target-acceptance review failed after assessment start")]
     JwtTargetAcceptanceExecution {
+        receipt: Box<WebAssessmentFailureReceipt>,
+    },
+    #[cfg(feature = "xml-external-entity-review")]
+    #[error("controlled XML review policy does not match the selected assessment application")]
+    XmlExternalEntityApplicationMismatch,
+    #[cfg(all(feature = "xml-external-entity-review", feature = "ssrf-oast-review"))]
+    #[error(
+        "controlled XML review and SSRF/OAST review cannot share one native provider lifecycle"
+    )]
+    XmlExternalEntitySsrfOastConflict,
+    #[cfg(feature = "xml-external-entity-review")]
+    #[error("controlled XML review failed after assessment start")]
+    XmlExternalEntityExecution {
         receipt: Box<WebAssessmentFailureReceipt>,
     },
     #[cfg(feature = "supplied-session-review")]
@@ -2004,6 +2057,18 @@ impl fmt::Debug for WebAssessmentRuntimeError {
                 .debug_struct("WebAssessmentRuntimeError::JwtTargetAcceptanceExecution")
                 .field("receipt", receipt)
                 .finish(),
+            #[cfg(feature = "xml-external-entity-review")]
+            Self::XmlExternalEntityApplicationMismatch => formatter
+                .write_str("WebAssessmentRuntimeError::XmlExternalEntityApplicationMismatch"),
+            #[cfg(all(feature = "xml-external-entity-review", feature = "ssrf-oast-review"))]
+            Self::XmlExternalEntitySsrfOastConflict => {
+                formatter.write_str("WebAssessmentRuntimeError::XmlExternalEntitySsrfOastConflict")
+            },
+            #[cfg(feature = "xml-external-entity-review")]
+            Self::XmlExternalEntityExecution { receipt } => formatter
+                .debug_struct("WebAssessmentRuntimeError::XmlExternalEntityExecution")
+                .field("receipt", receipt)
+                .finish(),
             #[cfg(feature = "supplied-session-review")]
             Self::SuppliedSessionApplicationMismatch => {
                 formatter.write_str("WebAssessmentRuntimeError::SuppliedSessionApplicationMismatch")
@@ -2114,6 +2179,8 @@ impl WebAssessmentRuntimeError {
             | Self::ProjectionInvariant { receipt } => Some(receipt),
             #[cfg(feature = "jwt-target-acceptance-review")]
             Self::JwtTargetAcceptanceExecution { receipt } => Some(receipt),
+            #[cfg(feature = "xml-external-entity-review")]
+            Self::XmlExternalEntityExecution { receipt } => Some(receipt),
             _ => None,
         }
     }
@@ -2142,6 +2209,9 @@ pub struct WebAssessmentRuntimeBuilder {
     rest_review: bool,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
+    #[cfg(feature = "xml-external-entity-review")]
+    xml_external_entity_review:
+        Option<(XmlExternalEntityReviewPolicy, XmlExternalEntityAdminToken)>,
     #[cfg(feature = "supplied-session-review")]
     supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionRuntimeInput)>,
     #[cfg(feature = "wordpress-review")]
@@ -2188,6 +2258,8 @@ impl WebAssessmentRuntimeBuilder {
             rest_review: false,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review: None,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review: None,
             #[cfg(feature = "supplied-session-review")]
             supplied_session_review: None,
             #[cfg(feature = "wordpress-review")]
@@ -2297,6 +2369,20 @@ impl WebAssessmentRuntimeBuilder {
         administrator: SsrfOastAdminToken,
     ) -> Self {
         self.ssrf_oast_review = Some((policy, administrator));
+        self
+    }
+    /// Enables one controlled XML external-entity interaction review.
+    ///
+    /// The move-only administrator credential and strict policy are consumed
+    /// by this assessment. The child can dispatch only the fixed three-body
+    /// plan through the parent exact-origin broker and one-shot native provider.
+    #[cfg(feature = "xml-external-entity-review")]
+    pub fn with_xml_external_entity_review(
+        mut self,
+        policy: XmlExternalEntityReviewPolicy,
+        administrator: XmlExternalEntityAdminToken,
+    ) -> Self {
+        self.xml_external_entity_review = Some((policy, administrator));
         self
     }
     /// Enables one bounded, explicitly supplied credential session child.
@@ -2443,6 +2529,10 @@ impl WebAssessmentRuntimeBuilder {
         if self.secret_exposure_response_source_conflict() {
             return Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict);
         }
+        #[cfg(all(feature = "xml-external-entity-review", feature = "ssrf-oast-review"))]
+        if self.xml_external_entity_review.is_some() && self.ssrf_oast_review.is_some() {
+            return Err(WebAssessmentRuntimeError::XmlExternalEntitySsrfOastConflict);
+        }
         #[cfg(feature = "ssrf-oast-review")]
         let ssrf_oast_review = self.ssrf_oast_review.map(|(policy, administrator)| {
             let selection = select_observed_query_candidate(
@@ -2583,6 +2673,14 @@ impl WebAssessmentRuntimeBuilder {
             .is_some_and(|policy| !policy.is_bound_to_application(&root.url))
         {
             return Err(WebAssessmentRuntimeError::WebSocketReviewApplicationMismatch);
+        }
+        #[cfg(feature = "xml-external-entity-review")]
+        if self
+            .xml_external_entity_review
+            .as_ref()
+            .is_some_and(|(policy, _)| !policy.is_bound_to_application(&root.url))
+        {
+            return Err(WebAssessmentRuntimeError::XmlExternalEntityApplicationMismatch);
         }
         #[cfg(feature = "supplied-session-review")]
         if self.supplied_session_review.is_some() && !authenticated_transport_is_allowed(&root.url)
@@ -2732,6 +2830,17 @@ impl WebAssessmentRuntimeBuilder {
                         .expect("SSRF OAST active-verification allowance fits u16"),
                 )
                 .expect("compiled SSRF OAST allowance fits u16");
+            #[cfg(feature = "xml-external-entity-review")]
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        self.xml_external_entity_review.is_some()
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS)
+                        .expect("controlled XML active-verification allowance fits u16"),
+                )
+                .expect("compiled controlled XML allowance fits u16");
             allowance
         };
         let runtime_active_verification_limit = self
@@ -2762,6 +2871,19 @@ impl WebAssessmentRuntimeBuilder {
             self.limits.runtime_budget(optional_active_verifications),
             self.cancellation,
         )?;
+        #[cfg(feature = "xml-external-entity-review")]
+        let xml_external_entity_review = self
+            .xml_external_entity_review
+            .map(|(policy, administrator)| {
+                authority
+                    .authorize_target(policy.endpoint())
+                    .map_err(|_| WebAssessmentRuntimeError::XmlExternalEntityApplicationMismatch)?;
+                Ok::<_, WebAssessmentRuntimeError>(XmlExternalEntityRuntimeConfig::new(
+                    policy,
+                    administrator,
+                ))
+            })
+            .transpose()?;
         #[cfg(feature = "supplied-session-review")]
         let supplied_session_review = self
             .supplied_session_review
@@ -2897,6 +3019,8 @@ impl WebAssessmentRuntimeBuilder {
             rest_review: self.rest_review,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review,
             #[cfg(feature = "supplied-session-review")]
             supplied_session_review,
             #[cfg(feature = "wordpress-review")]
@@ -2942,6 +3066,10 @@ impl WebAssessmentRuntimeBuilder {
             committed_ssrf_oast_review: None,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast_review_audit: None,
+            #[cfg(feature = "xml-external-entity-review")]
+            committed_xml_external_entity_review: None,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review_audit: None,
             #[cfg(feature = "supplied-session-review")]
             supplied_session_audit: None,
             #[cfg(feature = "websocket-review")]
@@ -2989,6 +3117,8 @@ pub struct WebAssessmentRuntime {
     rest_review: bool,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<SsrfOastReviewConfig>,
+    #[cfg(feature = "xml-external-entity-review")]
+    xml_external_entity_review: Option<XmlExternalEntityRuntimeConfig>,
     #[cfg(feature = "supplied-session-review")]
     supplied_session_review: Option<SuppliedSessionRuntimeConfig>,
     #[cfg(feature = "wordpress-review")]
@@ -3032,6 +3162,10 @@ pub struct WebAssessmentRuntime {
     committed_ssrf_oast_review: Option<CommittedSsrfOastReview>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review_audit: Option<WebAssessmentSsrfOastAudit>,
+    #[cfg(feature = "xml-external-entity-review")]
+    committed_xml_external_entity_review: Option<CommittedXmlExternalEntityReview>,
+    #[cfg(feature = "xml-external-entity-review")]
+    xml_external_entity_review_audit: Option<XmlExternalEntityReviewAudit>,
     #[cfg(feature = "supplied-session-review")]
     supplied_session_audit: Option<WebAssessmentSuppliedSessionAudit>,
     #[cfg(feature = "websocket-review")]
@@ -3302,6 +3436,51 @@ impl WebAssessmentRuntime {
                 Err(failure) => {
                     self.jwt_target_acceptance_audit = failure.into_partial_audit();
                     return Err(WebAssessmentRuntimeError::JwtTargetAcceptanceExecution {
+                        receipt: Box::new(self.failure_receipt(
+                            &known_subjects,
+                            subject_reports,
+                            forms,
+                            WebAssessmentSubjectReport::failed(
+                                self.root.clone(),
+                                StandardWebDecisionAssessmentFailureParts::default(),
+                                false,
+                            ),
+                            failed_reasons(&reasons),
+                            started_at,
+                        )),
+                    });
+                },
+            }
+        }
+
+        // The selected XML review is one closed three-document child of this
+        // assessment. It uses the same parent target/provider accounting but
+        // keeps callback authority, XML bytes, and the administrator token out
+        // of ordinary discovery and evidence projection.
+        #[cfg(feature = "xml-external-entity-review")]
+        if let Some(review) = self.xml_external_entity_review.take() {
+            let subject = EntityId::new(format!("endpoint:{}", self.root.url()))
+                .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+            let selected_application = self.root.url().clone();
+            match review
+                .execute(&self.authority, subject, &selected_application)
+                .await
+            {
+                Ok(XmlExternalEntityRuntimeResult::Complete { audit, committed }) => {
+                    self.xml_external_entity_review_audit = Some(audit);
+                    self.committed_xml_external_entity_review = committed;
+                },
+                Ok(XmlExternalEntityRuntimeResult::Stopped { audit }) => {
+                    let outcome = audit.outcome();
+                    self.xml_external_entity_review_audit = Some(audit);
+                    if outcome == XmlExternalEntityReviewOutcome::Cancelled {
+                        reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+                    }
+                    reasons
+                        .insert(WebAssessmentIncompleteReason::XmlExternalEntityReviewIncomplete);
+                },
+                Err(_) => {
+                    return Err(WebAssessmentRuntimeError::XmlExternalEntityExecution {
                         receipt: Box::new(self.failure_receipt(
                             &known_subjects,
                             subject_reports,
@@ -4948,6 +5127,8 @@ impl WebAssessmentRuntime {
                 rest: self.committed_rest_review.as_ref(),
                 #[cfg(feature = "ssrf-oast-review")]
                 ssrf_oast: self.committed_ssrf_oast_review.as_ref(),
+                #[cfg(feature = "xml-external-entity-review")]
+                xml_external_entity: self.committed_xml_external_entity_review.as_ref(),
                 #[cfg(feature = "wordpress-review")]
                 wordpress: self.committed_wordpress_review.as_ref(),
                 #[cfg(feature = "secret-exposure-review")]
@@ -5058,6 +5239,8 @@ impl WebAssessmentRuntime {
             websocket_review: self.websocket_review_audit.clone(),
             #[cfg(feature = "jwt-target-acceptance-review")]
             jwt_target_acceptance: self.jwt_target_acceptance_audit.clone(),
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review: self.xml_external_entity_review_audit.clone(),
             #[cfg(feature = "authorization-review")]
             authorization_review: self.authorization_review_audit.clone(),
             #[cfg(feature = "openapi-review")]
@@ -5459,6 +5642,8 @@ impl WebAssessmentRuntime {
             websocket_review: self.websocket_review_audit.clone(),
             #[cfg(feature = "jwt-target-acceptance-review")]
             jwt_target_acceptance: self.jwt_target_acceptance_audit.clone(),
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity_review: self.xml_external_entity_review_audit.clone(),
             current_subject,
             incomplete_reasons,
             inventory_consistent,

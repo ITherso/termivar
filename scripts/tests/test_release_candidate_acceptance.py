@@ -65,6 +65,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "supplied-session-review",
     "tls-observation",
     "websocket-review",
+    "xml-external-entity-review",
 )
 EXPECTED_FEATURE_STATES = {
     "api-adapter": "not_compiled",
@@ -88,6 +89,7 @@ EXPECTED_FEATURE_STATES = {
     "tls-observation": "not_compiled",
     "websocket-review": "not_compiled",
     "wordpress-review": "compiled",
+    "xml-external-entity-review": "not_compiled",
 }
 EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES = (
     "--profile web-review",
@@ -215,6 +217,37 @@ EXPECTED_WEBSOCKET_REVIEW_LIMITATION = (
     "impact. The feature requires explicit --profile web-review and "
     "--websocket-review-policy FILE, remains development-only, and is outside default, "
     "release-bundle, published alpha.2 archives, and the initial curated package."
+)
+EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--xml-external-entity-review",
+    "--xml-external-entity-policy FILE",
+    "one of --oast-admin-token-env, --oast-admin-token-file, or --oast-admin-token-stdin",
+)
+EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_OPTIONS = (
+    "--xml-external-entity-review",
+    "--xml-external-entity-policy",
+)
+EXPECTED_SHARED_OAST_ADMIN_TOKEN_OPTIONS = (
+    "--oast-admin-token-env",
+    "--oast-admin-token-file",
+    "--oast-admin-token-stdin",
+)
+EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_LIMITATION = (
+    "Development-only non-bundled opt-in for one policy-declared exact-origin, "
+    "application-contained disposable XML endpoint. V1 sends at most three anonymous POST "
+    "requests with the exact media type application/xml; charset=utf-8 and a fixed inert XML "
+    "1.0 external-general-entity envelope: one unreferenced control, one candidate, and one "
+    "replay, each with a distinct provider callback. A completed positive path uses all three "
+    "target legs. It performs no endpoint discovery, arbitrary XML intake, local-file URI use, "
+    "credential forwarding, redirect, retry, ambient proxy use, or response-content oracle. A "
+    "clean preflight, no control callback, two independently correlated post-dispatch "
+    "candidate/replay callbacks, complete cleanup, and reconciled accounting can produce at "
+    "most one NeedsReview / KnowledgeOnly item. A callback alone never produces Confirmed and "
+    "does not establish XXE, parser identity, arbitrary SSRF, local file read, data "
+    "exfiltration, internal-network access, exploitability, or impact. The feature conflicts "
+    "with simultaneous SSRF OAST review and remains outside default, release-bundle, and "
+    "published alpha.2 archives."
 )
 EXPECTED_SECRET_EXPOSURE_PREREQUISITES = (
     "--profile web-review",
@@ -1254,6 +1287,21 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "prerequisites": list(EXPECTED_WEBSOCKET_REVIEW_PREREQUISITES),
             "limitation": EXPECTED_WEBSOCKET_REVIEW_LIMITATION,
             "documentation": "docs/internals/websocket-review.md",
+        },
+        {
+            "key": "option.xml-external-entity-review",
+            "label": "XML external-entity review",
+            "compile_feature": "xml-external-entity-review",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "alias": None,
+            "prerequisites": list(
+                EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_PREREQUISITES),
+            "limitation": EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_LIMITATION,
+            "documentation": "docs/internals/xml-external-entity-review.md",
         },
         {
             "key": "option.secret-exposure-review",
@@ -2912,9 +2960,9 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 21)
+        self.assertEqual(len(rows), 22)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 13)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 14)
         self.assertNotIn(EXPECTED_CONTROL_REFERENCE_MAPPING_OPTION,
                          fake_help(["scan", "--help"]).decode("utf-8"))
         result = self.validate(document)
@@ -2984,6 +3032,16 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "maximum_application_bytes_each_direction": 64 * 1024,
             "maximum_wall_time_seconds": 10,
             "session_inheritance": "explicit_flag_health_qualified_v1_only",
+        })
+        self.assertEqual(result["xml_external_entity_review_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "maximum_target_requests": 3,
+            "maximum_disposition": "NeedsReview",
+            "claim_authority": "KnowledgeOnly",
+            "confirmed_finding": "not_produced",
         })
         self.assertEqual(result["jwt_policy_review_preview"], {
             "build_state": "not_compiled",
@@ -3634,6 +3692,157 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         document = capabilities()
         text = capabilities_text(document).replace(
             f"    limit: {EXPECTED_WEBSOCKET_REVIEW_LIMITATION}\n".encode(), b"")
+        self.assert_rejected(document, "limitation is absent", text)
+
+    def test_xml_external_entity_surface_matches_producer_and_fails_closed(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.xml-external-entity-review",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = '\n            "docs/internals/xml-external-entity-review.md",'
+        self.assertEqual(block.count(documentation), 1)
+        limitation_line = block.split(documentation, 1)[0].splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_LIMITATION)
+
+        valid = capabilities()
+        surface = next(row for row in valid["surfaces"]
+                       if row["key"] == "option.xml-external-entity-review")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_PREREQUISITES)
+        self.assertEqual(surface["limitation"],
+                         EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_LIMITATION)
+        self.validate(valid)
+
+        for field, wrong in (
+            ("label", "XML parser scanner"),
+            ("compile_feature", "ssrf-oast-review"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "xxe"),
+            ("documentation", "docs/xml.md"),
+        ):
+            with self.subTest(field=field):
+                document = capabilities()
+                next(row for row in document["surfaces"]
+                     if row["key"] == "option.xml-external-entity-review")[field] = wrong
+                self.assert_rejected(
+                    document, "XML external-entity review surface metadata")
+
+        for wrong in (
+            None,
+            True,
+            2,
+            {},
+            [True],
+            [
+                "--profile web-review",
+                "--xml-external-entity-review",
+                "--xml-external-entity-policy FILE",
+            ],
+            [
+                "--profile web-review",
+                "--xml-external-entity-review",
+                "--xml-external-entity-policy FILE",
+                "one of --oast-admin-token-env, --oast-admin-token-file, or "
+                "--oast-admin-token-stdin",
+                "--xml-external-entity-review",
+            ],
+        ):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                next(row for row in document["surfaces"]
+                     if row["key"] == "option.xml-external-entity-review")[
+                         "prerequisites"] = wrong
+                self.assert_rejected(
+                    document, "XML external-entity review opt-in contract")
+
+        for old, new in (
+            (
+                "one policy-declared exact-origin, application-contained disposable XML endpoint",
+                "any discovered XML endpoint",
+            ),
+            ("at most three anonymous POST requests", "at most thirty authenticated requests"),
+            (
+                "exact media type application/xml; charset=utf-8",
+                "any XML-like media type",
+            ),
+            (
+                "fixed inert XML 1.0 external-general-entity envelope",
+                "caller-provided XML payload",
+            ),
+            (
+                "one unreferenced control, one candidate, and one replay",
+                "one candidate without controls",
+            ),
+            (
+                "performs no endpoint discovery, arbitrary XML intake, local-file URI use, "
+                "credential forwarding, redirect, retry, ambient proxy use, or "
+                "response-content oracle",
+                "permits endpoint discovery and arbitrary XML",
+            ),
+            (
+                "clean preflight, no control callback, two independently correlated "
+                "post-dispatch candidate/replay callbacks, complete cleanup, and reconciled "
+                "accounting",
+                "one callback without controls or cleanup",
+            ),
+            (
+                "at most one NeedsReview / KnowledgeOnly item",
+                "one Confirmed item",
+            ),
+            ("callback alone never produces Confirmed", "callback alone produces Confirmed"),
+            (
+                "does not establish XXE, parser identity, arbitrary SSRF, local file read, "
+                "data exfiltration, internal-network access, exploitability, or impact",
+                "establishes XXE and impact",
+            ),
+            (
+                "conflicts with simultaneous SSRF OAST review",
+                "may share one simultaneous SSRF OAST session",
+            ),
+            (
+                "outside default, release-bundle, and published alpha.2 archives",
+                "included in release-bundle",
+            ),
+        ):
+            with self.subTest(old=old):
+                document = capabilities()
+                row = next(row for row in document["surfaces"]
+                           if row["key"] == "option.xml-external-entity-review")
+                self.assertEqual(row["limitation"].count(old), 1)
+                row["limitation"] = row["limitation"].replace(old, new)
+                self.assert_rejected(
+                    document, "XML external-entity review limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            row for row in missing["surfaces"]
+            if row["key"] != "option.xml-external-entity-review"
+        ]
+        self.assert_rejected(
+            missing, "XML external-entity review surface identity")
+
+        duplicate = capabilities()
+        duplicate["surfaces"].append(copy.deepcopy(next(
+            row for row in duplicate["surfaces"]
+            if row["key"] == "option.xml-external-entity-review")))
+        self.assert_rejected(duplicate, "invalid or duplicated")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"XML external-entity review", b"Other review")
+        self.assert_rejected(document, "text and JSON views disagree", text)
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            f"    limit: {EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_LIMITATION}\n".encode(), b"")
         self.assert_rejected(document, "limitation is absent", text)
 
     def test_pinned_secret_exposure_surface_matches_the_named_producer_literals(self):
@@ -4432,7 +4641,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         next(row for row in counts_only["cli_package_features"]
              if row["name"] == "control-reference-mapping")["name"] = (
                  "unclassified-control-mapping")
-        self.assertEqual(len(counts_only["cli_package_features"]), 21)
+        self.assertEqual(len(counts_only["cli_package_features"]), 22)
         self.assertEqual(
             sum(row["build_state"] == "compiled"
                 for row in counts_only["cli_package_features"]),
@@ -4441,7 +4650,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assertEqual(
             sum(row["build_state"] == "not_compiled"
                 for row in counts_only["cli_package_features"]),
-            13,
+            14,
         )
         self.assert_rejected(counts_only, "feature names changed")
 
@@ -4458,6 +4667,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("recon-ct-provider", "compiled"),
             ("recon-snapshot-import", "compiled"),
             ("websocket-review", "compiled"),
+            ("xml-external-entity-review", "compiled"),
         ]
         for name, state in cases:
             with self.subTest(name=name, state=state):
@@ -5695,6 +5905,32 @@ class CandidateOrchestrationTests(unittest.TestCase):
             "unexpectedly exposes non-bundled WebSocket review",
             result["failure"],
         )
+
+    def test_packaged_help_must_not_expose_non_bundled_xml_options(self):
+        for index, option in enumerate(EXPECTED_XML_EXTERNAL_ENTITY_REVIEW_OPTIONS):
+            with self.subTest(option=option):
+                result, _ = self.execute(
+                    exposed_session_option=option,
+                    path_suffix=f"-xml-help-{index}",
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(
+                    f"unexpectedly exposes non-bundled XML option {option}",
+                    result["failure"],
+                )
+
+    def test_packaged_help_must_not_expose_non_bundled_oast_admin_token_options(self):
+        for index, option in enumerate(EXPECTED_SHARED_OAST_ADMIN_TOKEN_OPTIONS):
+            with self.subTest(option=option):
+                result, _ = self.execute(
+                    exposed_session_option=option,
+                    path_suffix=f"-oast-admin-token-help-{index}",
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(
+                    f"unexpectedly exposes non-bundled OAST admin-token option {option}",
+                    result["failure"],
+                )
 
     def test_packaged_help_must_not_expose_non_bundled_jwt_policy_options(self):
         for index, option in enumerate(EXPECTED_JWT_POLICY_REVIEW_OPTIONS):

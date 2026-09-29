@@ -1972,3 +1972,626 @@ async fn surface_b_runs_a_local_knowledge_action_end_to_end_with_zero_transport(
         .iter()
         .any(|evidence| evidence.predicate().dotted() == "test.local.count"));
 }
+
+#[cfg(feature = "xml-external-entity-review")]
+mod xml_external_entity_runtime_tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use termivar_oast::{
+        serve_provider_on_listener, AdminToken, LoopbackBind, ProviderConfig, ProviderLimits,
+        ProviderState, PublicOrigin, HARD_MAX_EVENTS_PER_SESSION,
+        HARD_MAX_POLL_EVENTS_PER_RESPONSE,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::Mutex as AsyncMutex,
+        task::JoinHandle,
+    };
+
+    use super::*;
+    use crate::xml_external_entity_review::{
+        XmlExternalEntityAdminToken, XmlExternalEntityOperationStatus,
+        XmlExternalEntityReviewOutcome, XmlExternalEntityReviewPolicy,
+        MIN_XML_EXTERNAL_ENTITY_ADMIN_TOKEN_BYTES, XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID,
+    };
+
+    const ADMIN_SECRET: &[u8] = b"XML-EXTERNAL-ENTITY-OWNED-FIXTURE-ADMIN-4F21";
+
+    #[derive(Clone, Copy)]
+    enum ResolutionBehavior {
+        ReferencedCandidateAndReplay,
+        DeclaredControl,
+        CandidateOnly,
+        CandidateAndReplayDuringControl,
+        StallTarget,
+    }
+
+    struct XmlLoopbackFixture {
+        application: Url,
+        endpoint: Url,
+        provider_origin: PublicOrigin,
+        target_requests: Arc<AsyncMutex<Vec<String>>>,
+        callback_attempts: Arc<AtomicUsize>,
+        target_task: JoinHandle<()>,
+        provider_task: JoinHandle<()>,
+        provider_proxy_task: JoinHandle<()>,
+    }
+
+    impl Drop for XmlLoopbackFixture {
+        fn drop(&mut self) {
+            self.target_task.abort();
+            self.provider_task.abort();
+            self.provider_proxy_task.abort();
+        }
+    }
+
+    async fn xml_loopback_fixture(behavior: ResolutionBehavior) -> XmlLoopbackFixture {
+        let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_address = provider_listener.local_addr().unwrap();
+        let provider_proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_proxy_address = provider_proxy_listener.local_addr().unwrap();
+        let provider_origin = PublicOrigin::from_test_loopback(provider_proxy_address).unwrap();
+        let provider = ProviderState::new(
+            ProviderConfig::new(
+                LoopbackBind::new(provider_address).unwrap(),
+                provider_origin.clone(),
+                ProviderLimits::new(
+                    1,
+                    3,
+                    HARD_MAX_EVENTS_PER_SESSION,
+                    12,
+                    HARD_MAX_POLL_EVENTS_PER_RESPONSE,
+                    20_000,
+                    16,
+                )
+                .unwrap(),
+            ),
+            AdminToken::new(ADMIN_SECRET.to_vec()).unwrap(),
+        )
+        .unwrap();
+        let provider_task = tokio::spawn(async move {
+            let _ = serve_provider_on_listener(provider_listener, provider).await;
+        });
+        let allocated_callback_targets = Arc::new(AsyncMutex::new(Vec::<Url>::new()));
+        let observed_allocations = allocated_callback_targets.clone();
+        let provider_proxy_task = tokio::spawn(async move {
+            loop {
+                let Ok((client, _)) = provider_proxy_listener.accept().await else {
+                    break;
+                };
+                let observed_allocations = observed_allocations.clone();
+                tokio::spawn(async move {
+                    proxy_provider_connection(client, provider_address, observed_allocations).await;
+                });
+            }
+        });
+
+        let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_address = target_listener.local_addr().unwrap();
+        let target_requests = Arc::new(AsyncMutex::new(Vec::new()));
+        let recorded = target_requests.clone();
+        let callback_attempts = Arc::new(AtomicUsize::new(0));
+        let callbacks = callback_attempts.clone();
+        let allocated_targets = allocated_callback_targets.clone();
+        let target_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = target_listener.accept().await else {
+                    break;
+                };
+                let Some(request) = read_request(&mut stream).await else {
+                    continue;
+                };
+                let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&request[..header_end]);
+                let request_line = head.lines().next().unwrap_or_default();
+                let method = request_line.split_whitespace().next().unwrap_or_default();
+                let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+                let body = String::from_utf8_lossy(&request[header_end + 4..]);
+                let role = extract_attribute(&body, "role");
+                let content_type = head.lines().find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-type")
+                            .then(|| value.trim().to_owned())
+                    })
+                });
+                recorded.lock().await.push(format!(
+                    "{method} {path} role={} content-type={}",
+                    role.as_deref().unwrap_or("none"),
+                    content_type.as_deref().unwrap_or("none")
+                ));
+
+                let references_entity = body.contains("&termivar_external;");
+                let callback_urls = match behavior {
+                    ResolutionBehavior::ReferencedCandidateAndReplay if references_entity => {
+                        extract_system_identifier(&body)
+                            .and_then(|callback| Url::parse(&callback).ok())
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    },
+                    ResolutionBehavior::DeclaredControl => extract_system_identifier(&body)
+                        .and_then(|callback| Url::parse(&callback).ok())
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                    ResolutionBehavior::CandidateOnly if role.as_deref() == Some("candidate") => {
+                        extract_system_identifier(&body)
+                            .and_then(|callback| Url::parse(&callback).ok())
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    },
+                    ResolutionBehavior::CandidateAndReplayDuringControl
+                        if role.as_deref() == Some("control") =>
+                    {
+                        allocated_targets
+                            .lock()
+                            .await
+                            .iter()
+                            .skip(1)
+                            .take(2)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    },
+                    _ => Vec::new(),
+                };
+                if method == "POST" {
+                    for callback in callback_urls {
+                        callbacks.fetch_add(1, Ordering::SeqCst);
+                        let client = reqwest::Client::builder()
+                            .redirect(reqwest::redirect::Policy::none())
+                            .build()
+                            .unwrap();
+                        let _ = client.get(callback).send().await;
+                    }
+                    if matches!(behavior, ResolutionBehavior::StallTarget) {
+                        std::future::pending::<()>().await;
+                    }
+                }
+
+                let (content_type, response_body): (&str, &[u8]) = if method == "POST" {
+                    ("application/json", br#"{"ok":true}"#)
+                } else {
+                    (
+                        "text/html; charset=utf-8",
+                        b"<html><body>owned XML fixture</body></html>",
+                    )
+                };
+                let response_head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response_body.len()
+                );
+                let _ = stream.write_all(response_head.as_bytes()).await;
+                let _ = stream.write_all(response_body).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        XmlLoopbackFixture {
+            application: Url::parse(&format!("http://{target_address}/application/")).unwrap(),
+            endpoint: Url::parse(&format!("http://{target_address}/application/xml")).unwrap(),
+            provider_origin,
+            target_requests,
+            callback_attempts,
+            target_task,
+            provider_task,
+            provider_proxy_task,
+        }
+    }
+
+    async fn proxy_provider_connection(
+        mut client: tokio::net::TcpStream,
+        provider_address: std::net::SocketAddr,
+        allocated_callback_targets: Arc<AsyncMutex<Vec<Url>>>,
+    ) {
+        let Some(request) = read_request(&mut client).await else {
+            return;
+        };
+        let request_path = String::from_utf8_lossy(&request)
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or_default()
+            .to_owned();
+        let Ok(mut provider) = tokio::net::TcpStream::connect(provider_address).await else {
+            return;
+        };
+        if provider.write_all(&request).await.is_err() {
+            return;
+        }
+        let Some(response) = read_request(&mut provider).await else {
+            return;
+        };
+        if request_path.ends_with("/callbacks") {
+            if let Some(header_end) = response.windows(4).position(|part| part == b"\r\n\r\n") {
+                if let Ok(document) =
+                    serde_json::from_slice::<serde_json::Value>(&response[header_end + 4..])
+                {
+                    if let Some(callback) = document
+                        .get("callback_target")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|callback| Url::parse(callback).ok())
+                    {
+                        allocated_callback_targets.lock().await.push(callback);
+                    }
+                }
+            }
+        }
+        let _ = client.write_all(&response).await;
+        let _ = client.shutdown().await;
+    }
+
+    async fn read_request(stream: &mut tokio::net::TcpStream) -> Option<Vec<u8>> {
+        const MAX_REQUEST_BYTES: usize = 16 * 1024;
+        let mut request = Vec::new();
+        let mut expected = None;
+        loop {
+            let mut chunk = [0_u8; 1024];
+            let read = stream.read(&mut chunk).await.ok()?;
+            if read == 0 {
+                return (!request.is_empty()).then_some(request);
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if request.len() > MAX_REQUEST_BYTES {
+                return None;
+            }
+            if expected.is_none() {
+                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = head.lines().find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                    });
+                    expected = Some(header_end + 4 + content_length.unwrap_or(0));
+                }
+            }
+            if expected.is_some_and(|expected| request.len() >= expected) {
+                request.truncate(expected.unwrap());
+                return Some(request);
+            }
+        }
+    }
+
+    fn extract_attribute(body: &str, name: &str) -> Option<String> {
+        let marker = format!("{name}=\"");
+        let start = body.find(&marker)? + marker.len();
+        let end = body[start..].find('"')? + start;
+        Some(body[start..end].to_owned())
+    }
+
+    fn extract_system_identifier(body: &str) -> Option<String> {
+        let marker = " SYSTEM \"";
+        let start = body.find(marker)? + marker.len();
+        let end = body[start..].find('"')? + start;
+        Some(body[start..end].replace("&amp;", "&"))
+    }
+
+    fn policy(fixture: &XmlLoopbackFixture) -> XmlExternalEntityReviewPolicy {
+        XmlExternalEntityReviewPolicy::for_owned_loopback(
+            fixture.application.clone(),
+            fixture.endpoint.clone(),
+            fixture.provider_origin.clone(),
+            1,
+            250,
+            5_000,
+        )
+        .unwrap()
+    }
+
+    fn administrator() -> XmlExternalEntityAdminToken {
+        assert!(ADMIN_SECRET.len() >= MIN_XML_EXTERNAL_ENTITY_ADMIN_TOKEN_BYTES);
+        XmlExternalEntityAdminToken::new(ADMIN_SECRET.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn normal_runtime_observes_distinct_candidate_and_replay_callbacks_without_claiming_impact(
+    ) {
+        let fixture = xml_loopback_fixture(ResolutionBehavior::ReferencedCandidateAndReplay).await;
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .with_xml_external_entity_review(policy(&fixture), administrator())
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.xml_external_entity_review_audit().unwrap();
+        assert_eq!(
+            audit.outcome(),
+            XmlExternalEntityReviewOutcome::RepeatedExternalEntityResolutionObserved
+        );
+        assert_eq!(audit.target_request_count(), 3);
+        assert_eq!(audit.provider_request_count(), 9);
+        assert_eq!(audit.active_verification_count(), 1);
+        assert!(audit.target_request_body_bytes() > 0);
+        assert!(audit.target_response_bytes() > 0);
+        assert!(audit.target_complete());
+        assert!(audit.preflight_clean());
+        assert!(!audit.control_callback_observed());
+        assert!(audit.candidate_callback_observed());
+        assert!(audit.replay_callback_observed());
+        assert!(audit.callback_targets_distinct());
+        assert!(audit.event_identities_distinct());
+        assert_eq!(audit.distinct_event_count(), 2);
+        assert!(audit.cleanup_verified());
+        assert!(audit.target_accounting_complete());
+        assert!(audit.provider_accounting_complete());
+        assert!(audit.item_projected());
+        assert_eq!(
+            audit.semantic_effect(),
+            XmlExternalEntityOperationStatus::NotPerformed
+        );
+        assert_eq!(
+            audit.impact_validation(),
+            XmlExternalEntityOperationStatus::NotPerformed
+        );
+
+        let items = report
+            .assessment_items()
+            .iter()
+            .filter(|item| item.capability_id() == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+            .collect::<Vec<_>>();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].disposition(), AssessmentDisposition::NeedsReview);
+        assert_eq!(report.usage().active_verifications(), 1);
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 2);
+
+        let requests = fixture.target_requests.lock().await.clone();
+        let xml_requests = requests
+            .iter()
+            .filter(|request| request.starts_with("POST /application/xml "))
+            .collect::<Vec<_>>();
+        assert_eq!(xml_requests.len(), 3);
+        assert!(xml_requests[0].contains("role=control"));
+        assert!(xml_requests[1].contains("role=candidate"));
+        assert!(xml_requests[2].contains("role=replay"));
+        assert!(xml_requests
+            .iter()
+            .all(|request| request.contains("content-type=application/xml; charset=utf-8")));
+        let debug = format!("{report:?}");
+        assert!(!debug.contains(std::str::from_utf8(ADMIN_SECRET).unwrap()));
+        assert!(!debug.contains("<!ENTITY"));
+    }
+
+    #[tokio::test]
+    async fn unreferenced_control_callback_stops_before_candidate_and_projects_no_item() {
+        let fixture = xml_loopback_fixture(ResolutionBehavior::DeclaredControl).await;
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .with_xml_external_entity_review(policy(&fixture), administrator())
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.xml_external_entity_review_audit().unwrap();
+        assert_eq!(
+            audit.outcome(),
+            XmlExternalEntityReviewOutcome::ControlCallbackObserved
+        );
+        assert_eq!(audit.target_request_count(), 1);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert!(audit.preflight_clean());
+        assert!(audit.control_callback_observed());
+        assert!(!audit.candidate_callback_observed());
+        assert!(!audit.replay_callback_observed());
+        assert!(!audit.item_projected());
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            report
+                .assessment_items()
+                .iter()
+                .filter(|item| item.capability_id() == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+                .count(),
+            0
+        );
+        let requests = fixture.target_requests.lock().await.clone();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("POST /application/xml "))
+                .count(),
+            1
+        );
+        assert!(requests
+            .iter()
+            .any(|request| request.contains("role=control")));
+    }
+
+    #[tokio::test]
+    async fn candidate_and_replay_callbacks_during_control_are_phase_contamination() {
+        let fixture =
+            xml_loopback_fixture(ResolutionBehavior::CandidateAndReplayDuringControl).await;
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .with_xml_external_entity_review(policy(&fixture), administrator())
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.xml_external_entity_review_audit().unwrap();
+        assert_eq!(
+            audit.outcome(),
+            XmlExternalEntityReviewOutcome::CorrelationMismatch
+        );
+        assert_eq!(audit.target_request_count(), 1);
+        assert_eq!(audit.provider_request_count(), 7);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert!(audit.preflight_clean());
+        assert!(!audit.control_callback_observed());
+        assert!(audit.candidate_callback_observed());
+        assert!(audit.replay_callback_observed());
+        assert!(!audit.event_identities_distinct());
+        assert!(audit.cleanup_verified());
+        assert!(!audit.target_complete());
+        assert!(!audit.target_accounting_complete());
+        assert!(!audit.provider_accounting_complete());
+        assert!(!audit.item_projected());
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            report
+                .assessment_items()
+                .iter()
+                .filter(|item| item.capability_id() == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+                .count(),
+            0
+        );
+        let requests = fixture.target_requests.lock().await.clone();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("POST /application/xml "))
+                .count(),
+            1
+        );
+        assert!(requests
+            .iter()
+            .any(|request| request.contains("role=control")));
+    }
+
+    #[tokio::test]
+    async fn candidate_without_replay_remains_review_data_without_a_projected_item() {
+        let fixture = xml_loopback_fixture(ResolutionBehavior::CandidateOnly).await;
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .with_xml_external_entity_review(policy(&fixture), administrator())
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.xml_external_entity_review_audit().unwrap();
+        assert_eq!(
+            audit.outcome(),
+            XmlExternalEntityReviewOutcome::CandidateOnly
+        );
+        assert_eq!(audit.target_request_count(), 3);
+        assert_eq!(audit.provider_request_count(), 9);
+        assert!(audit.target_complete());
+        assert!(audit.target_accounting_complete());
+        assert!(audit.provider_accounting_complete());
+        assert!(!audit.control_callback_observed());
+        assert!(audit.candidate_callback_observed());
+        assert!(!audit.replay_callback_observed());
+        assert!(!audit.event_identities_distinct());
+        assert_eq!(audit.distinct_event_count(), 1);
+        assert!(!audit.item_projected());
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            report
+                .assessment_items()
+                .iter()
+                .filter(|item| item.capability_id() == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn host_cancellation_interrupts_an_in_flight_xml_target_and_preserves_cleanup_audit() {
+        let fixture = xml_loopback_fixture(ResolutionBehavior::StallTarget).await;
+        let cancellation = CancellationToken::new();
+        let observed_requests = fixture.target_requests.clone();
+        let cancel_from_host = cancellation.clone();
+        let canceller = tokio::spawn(async move {
+            loop {
+                if observed_requests
+                    .lock()
+                    .await
+                    .iter()
+                    .any(|request| request.starts_with("POST /application/xml "))
+                {
+                    cancel_from_host.cancel();
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        let limits = WebAssessmentLimits::default()
+            .with_max_wall_time(Duration::from_secs(5))
+            .unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .limits(limits)
+            .cancellation_token(cancellation)
+            .with_xml_external_entity_review(policy(&fixture), administrator())
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        canceller.await.unwrap();
+        let audit = report.xml_external_entity_review_audit().unwrap();
+        assert_eq!(audit.outcome(), XmlExternalEntityReviewOutcome::Cancelled);
+        assert_eq!(audit.target_request_count(), 1);
+        assert!(!audit.target_complete());
+        assert!(!audit.target_accounting_complete());
+        assert!(!audit.cleanup_verified());
+        assert!(!audit.provider_accounting_complete());
+        assert!(!audit.item_projected());
+        assert!(matches!(
+            report.completion(),
+            WebAssessmentCompletion::Incomplete { reasons }
+                if reasons.contains(&WebAssessmentIncompleteReason::HostCancellation)
+                    && reasons.contains(
+                        &WebAssessmentIncompleteReason::XmlExternalEntityReviewIncomplete
+                    )
+        ));
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn denied_xml_active_budget_is_reported_as_budget_exhausted() {
+        let fixture = xml_loopback_fixture(ResolutionBehavior::ReferencedCandidateAndReplay).await;
+        let limits = WebAssessmentLimits::default()
+            .with_max_active_verifications(0)
+            .unwrap();
+        let mut runtime = WebAssessmentRuntime::builder(fixture.application.clone())
+            .limits(limits)
+            .with_xml_external_entity_review(policy(&fixture), administrator())
+            .build()
+            .unwrap();
+
+        let report = runtime.analyze().await.unwrap();
+        let audit = report.xml_external_entity_review_audit().unwrap();
+        assert_eq!(
+            audit.outcome(),
+            XmlExternalEntityReviewOutcome::BudgetExhausted
+        );
+        assert_eq!(audit.target_request_count(), 1);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert!(!audit.target_complete());
+        assert!(!audit.target_accounting_complete());
+        assert!(audit.cleanup_verified());
+        assert!(!audit.provider_accounting_complete());
+        assert!(!audit.item_projected());
+        assert_eq!(report.usage().active_verifications(), 0);
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_a_same_origin_policy_bound_to_a_sibling_application() {
+        let fixture = xml_loopback_fixture(ResolutionBehavior::ReferencedCandidateAndReplay).await;
+        let mut sibling_application = fixture.application.clone();
+        sibling_application.set_path("/sibling/");
+        let mut sibling_endpoint = fixture.endpoint.clone();
+        sibling_endpoint.set_path("/sibling/xml");
+        let mismatched = XmlExternalEntityReviewPolicy::for_owned_loopback(
+            sibling_application,
+            sibling_endpoint,
+            fixture.provider_origin.clone(),
+            1,
+            250,
+            5_000,
+        )
+        .unwrap();
+
+        let result = WebAssessmentRuntime::builder(fixture.application.clone())
+            .with_xml_external_entity_review(mismatched, administrator())
+            .build();
+        assert!(matches!(
+            result,
+            Err(WebAssessmentRuntimeError::XmlExternalEntityApplicationMismatch)
+        ));
+        assert!(fixture.target_requests.lock().await.is_empty());
+        assert_eq!(fixture.callback_attempts.load(Ordering::SeqCst), 0);
+    }
+}

@@ -173,6 +173,7 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
           cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
+          cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-review
           cargo test --locked -p termivar-cli --no-default-features --features authorization-review
           cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review
           cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review
@@ -200,6 +201,7 @@ jobs:
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-ct-provider-only cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-snapshot-import-only cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only cargo test --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=xml-external-entity-only cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-session cargo test --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=all-features cargo test --locked -p termivar-cli --all-features --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=bundle-members-individual cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter,normalization-resilience,graphql-review,openapi-review,rest-review,authorization-review,wordpress-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
@@ -207,7 +209,7 @@ jobs:
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review xml-external-entity-review supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -368,6 +370,14 @@ jobs:
         run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,supplied-session-review,ssrf-oast-review --test supplied_session_cli oast_policy_precedes_every_compatible_secret_and_output_acquisition -- --exact --nocapture
       - name: Exercise delayed native OAST replay polling
         run: cargo test --locked -p termivar-scanner --no-default-features --features ssrf-oast-review --lib web_runtime::ssrf_oast_runtime::tests::polling_waits_for_the_expected_replay_event_after_an_empty_first_poll -- --exact --nocapture
+      - name: Exercise opt-in XML external-entity CLI preflight contracts
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test xml_external_entity_review_cli -- --nocapture
+      - name: Exercise bounded XML external-entity runtime through an owned loopback fixture
+        run: cargo test --release --locked -p termivar-scanner --no-default-features --features xml-external-entity-review --lib xml_external_entity_runtime_tests -- --nocapture
+      - name: Exercise opt-in XML external-entity capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: xml-external-entity-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Test first-use fixture and checked-in sample contracts
         run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
       - name: Test release archive verification contracts

@@ -430,16 +430,19 @@ adapter by itself still adds no CLI flag, `WebAssessmentRuntime` action, target
 request, assessment evidence, report item, release-bundle edge, or SSRF
 conclusion.
 
-The separately gated [SSRF OAST query review](ssrf-oast-query-review.md) is the
-only product caller that joins this narrowing provider authority to target-side
-authority. One strict policy may select one structurally eligible query
-occurrence. One `.invalid` control and two independent callback mutations use
-at most three anonymous bodyless target GETs, at most one logical active
-verification, and at most twelve fixed provider requests. A completed positive
-path uses all three target legs and the single active verification. Both fresh
-callback identities must be observed after their respective dispatches;
-one-sided or noisy interaction never creates an item. The maximum conclusion is
-`NeedsReview` / `KnowledgeOnly`, never confirmed SSRF or inferred impact.
+The closed product callers that join this narrowing provider authority to
+target-side authority are the separately gated
+[SSRF OAST query review](ssrf-oast-query-review.md) and
+[controlled XML external-entity review](xml-external-entity-review.md). The SSRF
+review binds one structurally eligible query occurrence to one `.invalid`
+control and two independent callback mutations. The XML review binds one
+operator-owned disposable application endpoint to runtime-generated inert
+control, candidate and replay POST documents. Each uses at most three target
+requests, one logical active verification and at most twelve fixed provider operations;
+both fresh callback identities must be observed after their respective
+dispatches. One-sided or noisy interaction never creates an item. The maximum
+conclusion is `NeedsReview` / `KnowledgeOnly`, never confirmed SSRF/XXE, file
+access, exfiltration or inferred impact.
 
 The [OpenAPI contract catalog](openapi-contract-catalog.md) is a
 transport-neutral foundation rather than a product runtime. It accepts only
@@ -916,6 +919,7 @@ The following matrix separates build availability from actual execution:
 | WordPress evidence review and metadata discovery | scanner and CLI opt-in (`wordpress-review`), compiled by the current untagged alpha.3 `release-bundle`, plus optional bounded local context/catalogue; the session consumer additionally requires `supplied-session-review`, policy V1/V2 and `--wordpress-supplied-session` | review-only interprets complete exact-root HTML and supplied declarations with zero added requests; explicit `--wordpress-discovery` may issue at most twelve anonymous, bodyless, same-origin metadata GET attempts through the same broker/budget; optional observed page scope reuses up to three eligible committed anonymous secondary-page responses without fetching pages; the V1/V2 session consumer may nominate public metadata only from health-qualified committed resource HTML and never forwards credentials or selects authenticated-page fingerprints; V3 is rejected before secret acquisition | no | Preview, development-only; absent from the default build and published alpha.2 archives; zero active verifications, at most one root-surface item plus one distinct metadata-source response-outcome item; advisory decisions are audit-only and no exploit/impact validation occurs |
 | Native OAST provider authority | explicit library host plus non-default `oast-native-provider` | fixed register/allocate/poll/cleanup requests to one host-authorized self-hosted HTTPS provider, charged to a narrowing parent-budget reservation | no | Preview; no CLI, target action/request, report/finding, release-bundle entry, or SSRF conclusion |
 | SSRF OAST query review | scanner and CLI opt-in (`ssrf-oast-review`) plus explicit policy and out-of-band provider administrator token | one exact query occurrence may receive a `.invalid` control and two independent HTTPS callback mutations through the existing target broker and narrowing provider authority | no | Preview; exactly three target GETs, at most twelve provider requests, one active verification, and one `NeedsReview` / `KnowledgeOnly` item only after both callbacks; no confirmed SSRF or impact |
+| Controlled XML external-entity review | scanner and CLI opt-in (`xml-external-entity-review`) plus one strict endpoint/provider policy, all three acknowledgements and one out-of-band provider administrator token | one exact application-contained disposable endpoint receives a generated inert control, candidate and replay as anonymous `application/xml` POSTs; distinct provider callbacks are correlated through the same parent-owned target/provider authorities | no | Preview, development-only; at most three target POSTs, at most twelve provider operations and one active verification; a complete repeated differential can produce only `NeedsReview` / `KnowledgeOnly`, never confirmed XXE, parser identity, file read, internal access, exfiltration or impact; mutually exclusive with SSRF OAST review and outside `release-bundle` |
 | Resource authorization review | scanner and CLI opt-in (`authorization-review`) plus explicit policy and two out-of-band credentials | one exact-origin JSON resource receives primary/peer candidate and independent replay legs through fresh ambient-proxy-free pools governed by the assessment's shared broker authority/accounting | no | Preview; max one resource, four requests/one active verification, one `NeedsReview` / `KnowledgeOnly` item at most |
 | Supplied-session authenticated assessment | scanner and CLI opt-in (`supplied-session-review`) plus explicit V1 authorization-header, V2 supplied-cookie, or V3 bounded-form-login policy and one matching out-of-band credential source | one context-isolated no-proxy child performs structured health checkpoints and bounded same-application collection for one operator-declared principal; V1/V2 use bodyless GETs, while V3 performs one anonymous exact-login-page GET and at most one explicit no-retry form POST before the independent startup-health oracle; V2 applies declared cookie scope only inside the operator application, V3 admits only policy-declared host-only session cookies, and later selected/unusable updates stop without automatic renewal | no | Preview, development-only; maximum nine session requests, V3 maximum three resources, no browser import/form discovery/credential guessing/OAuth/MFA bypass, V3 excluded from the current WordPress session consumer, no vulnerability item, and excluded from `release-bundle` |
 | `oast` correlation foundation | scanner library opt-in (`oast-correlation`) | host-owned, transport-free registration and caller-driven poll state only; no provider transport dependency or runtime caller | no | Preview library contract; host-minted move-only tokens, exact case binding, bounded DNS/HTTP event receipts, replay suppression, and no target probe or vulnerability claim |
@@ -940,16 +944,16 @@ The normal CLI dependency additionally enables `reporting` for the explicit
 completed `web-review` path; this does not alter no-profile execution or its
 wire contract.
 The stock untagged alpha.3 `release-bundle` capability inventory now reports
-21 known feature identities: the marker plus seven compiled members and thirteen
+22 known feature identities: the marker plus seven compiled members and fourteen
 excluded features. The eight compiled identities remain `release-bundle`,
 `artifact-adapter`, `normalization-resilience`, `graphql-review`,
 `openapi-review`, `rest-review`, `authorization-review`, and
-`wordpress-review`. The thirteen excluded identities are `api-adapter`,
+`wordpress-review`. The fourteen excluded identities are `api-adapter`,
 `control-reference-mapping`, `jwt-policy-review`,
 `jwt-target-acceptance-review`, `legacy-scanner`,
 `proxy-adapter`, `recon-ct-provider`, `recon-snapshot-import`, `secret-exposure-review`,
-`ssrf-oast-review`, `supplied-session-review`, `tls-observation`, and
-`websocket-review`.
+`ssrf-oast-review`, `supplied-session-review`, `tls-observation`,
+`websocket-review`, and `xml-external-entity-review`.
 `default` remains empty;
 this inventory is build truth, not runtime activation or publication status.
 `LuaEngineConfig` is a small shared support type reachable through either

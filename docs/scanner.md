@@ -1,5 +1,26 @@
 # Scanner
 
+## Optional controlled XML external-entity review
+
+The non-default `xml-external-entity-review` feature adds one explicitly
+authorized child to the existing `WebAssessmentRuntime`. It requires
+`--profile web-review`, `--xml-external-entity-review`, one strict local policy,
+all three stateful-work acknowledgements, and exactly one provider
+administrator-token source through environment, file, or stdin. The policy
+binds one exact application-contained disposable HTTPS endpoint and one distinct
+self-hosted HTTPS provider; it does not discover endpoints or accept caller XML.
+
+The runtime generates one inert control plus candidate and replay XML documents,
+uses at most three anonymous POSTs and one logical active verification, and
+charges provider registration/allocation/polling/cleanup to the same parent
+authority. Only two distinct fresh post-dispatch callback events with a quiet
+control, complete cleanup, and reconciled accounting can produce a
+`NeedsReview` / `KnowledgeOnly` item. This does not establish confirmed XXE,
+parser identity, file read, internal access, data exfiltration, exploitability,
+or impact. The feature is mutually exclusive with `ssrf-oast-review` and remains
+outside `release-bundle`. See
+[Controlled XML external-entity review](internals/xml-external-entity-review.md).
+
 ## Optional SSRF OAST query review
 
 The non-default `ssrf-oast-review` feature adds one explicitly enabled child
@@ -507,6 +528,7 @@ multi-node contract. See [Distributed coordination](distributed.md).
 | `authorization-review` | Non-default, explicit `web-review` four-view comparison of one operator-selected exact-origin JSON resource; maximum `NeedsReview` / `KnowledgeOnly` | Preview |
 | `supplied-session-review` | Non-default, explicit `web-review` collection for one operator-declared principal using strict V1 authorization-header, V2 supplied-cookie, or V3 bounded-form-login policy. V3 performs one anonymous exact-login-page GET and at most one explicit no-retry/no-redirect form POST, requires one exact hidden CSRF input, admits only declared host-only session cookies, and uses the independent startup JSON health predicate as the sole success oracle. All modes keep bounded checkpoints and fail-closed later cookie-update handling; there is no form discovery, credential guessing, automatic renewal, OAuth, MFA bypass or vulnerability claim | Preview |
 | `secret-exposure-review` | Non-default, explicit passive review of complete committed anonymous ordinary response bodies using a fixed bounded high-specificity detector catalogue; value-free `Informational` / `KnowledgeOnly` observations only, no provider validation or extra request | Preview |
+| `xml-external-entity-review` | Non-default, explicit controlled XML POST review for one disposable application-contained endpoint and separately authorized provider; maximum three target POSTs, one active verification and `NeedsReview` / `KnowledgeOnly`, with no confirmed XXE, parser identity, file read, exfiltration or impact claim | Preview |
 | `legacy-scanner` | Historical ordered runner, context, phases, and Scanner SDK; separate bounded discovery and active-verification slices within an otherwise unmetered run | Legacy |
 | `platform-models` | Unwired API/auth/dashboard/persistence/post-exploitation/realtime library models | Experimental |
 | `reporting` | Bounded generic `RunReport` renderer; with `scanning`, also the central typed assessment renderer used by completed CLI `web-review` runs. No renderer-owned I/O, persistence, or verdict generation | Preview |

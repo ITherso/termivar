@@ -99,7 +99,8 @@ impl CollectedHttpResponse {
         feature = "openapi-review",
         feature = "supplied-session-review",
         feature = "ssrf-oast-review",
-        feature = "wordpress-review"
+        feature = "wordpress-review",
+        feature = "xml-external-entity-review"
     ))]
     pub(crate) fn final_url(&self) -> &Url {
         &self.final_url
@@ -125,7 +126,8 @@ impl CollectedHttpResponse {
         feature = "openapi-review",
         feature = "supplied-session-review",
         feature = "ssrf-oast-review",
-        feature = "wordpress-review"
+        feature = "wordpress-review",
+        feature = "xml-external-entity-review"
     ))]
     pub(crate) fn body_complete(&self) -> bool {
         self.body_complete && !self.body_truncated

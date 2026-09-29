@@ -68,6 +68,10 @@ use termivar_scanner::web_runtime::{
 use termivar_scanner::websocket_review::WebSocketReviewPolicy;
 #[cfg(feature = "wordpress-review")]
 use termivar_scanner::wordpress_review::WordPressReviewInputs;
+#[cfg(feature = "xml-external-entity-review")]
+use termivar_scanner::xml_external_entity_review::{
+    XmlExternalEntityAdminToken, XmlExternalEntityReviewPolicy,
+};
 #[cfg(feature = "jwt-target-acceptance-review")]
 use termivar_scanner::{
     jwt_policy_review::JwtTargetAcceptanceRuntimeInput,
@@ -1266,6 +1270,9 @@ pub(crate) struct ProfileScanRuntimeOptions {
         Option<(SuppliedSessionPolicy, SuppliedSessionRuntimeInput)>,
     #[cfg(feature = "ssrf-oast-review")]
     pub(crate) ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
+    #[cfg(feature = "xml-external-entity-review")]
+    pub(crate) xml_external_entity_review:
+        Option<(XmlExternalEntityReviewPolicy, XmlExternalEntityAdminToken)>,
     #[cfg(feature = "wordpress-review")]
     pub(crate) wordpress_review: Option<WordPressReviewInputs>,
     #[cfg(feature = "wordpress-review")]
@@ -1319,6 +1326,8 @@ pub(crate) async fn run_profile_scan(
         supplied_session_review,
         #[cfg(feature = "ssrf-oast-review")]
         ssrf_oast_review,
+        #[cfg(feature = "xml-external-entity-review")]
+        xml_external_entity_review,
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
         #[cfg(feature = "wordpress-review")]
@@ -1464,6 +1473,14 @@ pub(crate) async fn run_profile_scan(
                 )
                 .into());
             }
+            #[cfg(feature = "xml-external-entity-review")]
+            if xml_external_entity_review.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "XML external-entity review requires the web-review profile",
+                )
+                .into());
+            }
             #[cfg(feature = "wordpress-review")]
             if wordpress_review.is_some() {
                 return Err(std::io::Error::new(
@@ -1543,6 +1560,8 @@ pub(crate) async fn run_profile_scan(
                     supplied_session_review,
                     #[cfg(feature = "ssrf-oast-review")]
                     ssrf_oast_review,
+                    #[cfg(feature = "xml-external-entity-review")]
+                    xml_external_entity_review,
                     #[cfg(feature = "wordpress-review")]
                     wordpress_review,
                     #[cfg(feature = "wordpress-review")]
@@ -1625,6 +1644,9 @@ struct WebReviewRunOptions {
     supplied_session_review: Option<(SuppliedSessionPolicy, SuppliedSessionRuntimeInput)>,
     #[cfg(feature = "ssrf-oast-review")]
     ssrf_oast_review: Option<(SsrfOastReviewPolicy, SsrfOastAdminToken)>,
+    #[cfg(feature = "xml-external-entity-review")]
+    xml_external_entity_review:
+        Option<(XmlExternalEntityReviewPolicy, XmlExternalEntityAdminToken)>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WordPressReviewInputs>,
     #[cfg(feature = "wordpress-review")]
@@ -1673,6 +1695,8 @@ async fn run_web_review(
         supplied_session_review,
         #[cfg(feature = "ssrf-oast-review")]
         ssrf_oast_review,
+        #[cfg(feature = "xml-external-entity-review")]
+        xml_external_entity_review,
         #[cfg(feature = "wordpress-review")]
         wordpress_review,
         #[cfg(feature = "wordpress-review")]
@@ -1778,6 +1802,10 @@ async fn run_web_review(
     #[cfg(feature = "ssrf-oast-review")]
     if let Some((policy, administrator)) = ssrf_oast_review {
         builder = builder.with_ssrf_oast_review(policy, administrator);
+    }
+    #[cfg(feature = "xml-external-entity-review")]
+    if let Some((policy, administrator)) = xml_external_entity_review {
+        builder = builder.with_xml_external_entity_review(policy, administrator);
     }
     #[cfg(feature = "recon-ct-provider")]
     if let Some(policy) = recon_ct_provider {
@@ -3547,6 +3575,48 @@ lifetime_ms = 5000
         assert_eq!(
             error.to_string(),
             "SSRF OAST query review requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[tokio::test]
+    async fn baseline_rejects_xml_external_entity_review_before_transport() {
+        let target = Url::parse("https://example.test/").unwrap();
+        let policy = XmlExternalEntityReviewPolicy::parse_toml(
+            &target,
+            br#"schema = "security.xml-external-entity-review-policy/v1"
+endpoint = "https://example.test/xml-fixture"
+provider_origin = "https://oast.example.test/"
+method = "POST"
+media_type = "application/xml; charset=utf-8"
+acknowledge_xml_post = true
+acknowledge_external_interaction = true
+acknowledge_disposable_test_endpoint = true
+polls_per_leg = 1
+poll_interval_ms = 250
+lifetime_ms = 5000
+"#,
+        )
+        .unwrap();
+        let administrator =
+            XmlExternalEntityAdminToken::new(b"XML-OAST-CLI-PREFLIGHT-TOKEN-32X".to_vec()).unwrap();
+        let error = run_profile_scan(
+            target,
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                xml_external_entity_review: Some((policy, administrator)),
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("XML external-entity review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "XML external-entity review requires the web-review profile"
         );
     }
 

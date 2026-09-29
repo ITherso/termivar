@@ -39,7 +39,7 @@ pub(crate) const NATIVE_OAST_PROVIDER_ACTION_ID: &str = "web.auxiliary.native-oa
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
@@ -48,7 +48,7 @@ pub(crate) const HARD_MAX_NATIVE_OAST_REGISTRATIONS: u16 = 1;
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
@@ -57,7 +57,7 @@ pub(crate) const HARD_MAX_NATIVE_OAST_CALLBACKS: u16 = 8;
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
@@ -66,7 +66,7 @@ pub(crate) const HARD_MAX_NATIVE_OAST_PROVIDER_REQUESTS: u16 = 64;
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
@@ -75,7 +75,7 @@ pub(crate) const HARD_MAX_NATIVE_OAST_POLLS: u16 = 32;
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
@@ -84,7 +84,7 @@ pub(crate) const HARD_MAX_NATIVE_OAST_PROVIDER_REQUEST_BYTES: u64 = 64 * 1_024;
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
@@ -93,7 +93,7 @@ pub(crate) const HARD_MAX_NATIVE_OAST_PROVIDER_RESPONSE_BYTES: u64 = 2 * 1_024 *
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(dead_code, reason = "consumed by the sealed PR B limits constructor")
 )]
@@ -224,7 +224,7 @@ pub(crate) struct NativeOastProviderConfiguration {
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(
         dead_code,
@@ -1024,7 +1024,7 @@ struct NativeOastProviderCallback {
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(
         dead_code,
@@ -1115,7 +1115,7 @@ impl NativeOastPollOutcome {
     all(
         not(test),
         feature = "oast-native-provider",
-        not(feature = "ssrf-oast-review")
+        not(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))
     ),
     expect(
         dead_code,

@@ -45,6 +45,10 @@ use super::secret_exposure::{project_secret_exposure_items, CommittedSecretExpos
 use super::ssrf_oast_runtime::{project_ssrf_oast_item, CommittedSsrfOastReview};
 #[cfg(feature = "wordpress-review")]
 use super::wordpress_runtime::{project_wordpress_item, CommittedWordPressReview};
+#[cfg(feature = "xml-external-entity-review")]
+use super::xml_external_entity_runtime::{
+    project_xml_external_entity_item, CommittedXmlExternalEntityReview,
+};
 use super::{
     assessment_api_visibility::{project_api_visibility_item, CommittedAssessmentApiVisibility},
     assessment_item::{
@@ -1095,6 +1099,8 @@ pub(crate) struct AssessmentReviewProjectionSources<'a> {
     pub(crate) rest: Option<&'a CommittedRestReview>,
     #[cfg(feature = "ssrf-oast-review")]
     pub(crate) ssrf_oast: Option<&'a CommittedSsrfOastReview>,
+    #[cfg(feature = "xml-external-entity-review")]
+    pub(crate) xml_external_entity: Option<&'a CommittedXmlExternalEntityReview>,
     #[cfg(feature = "wordpress-review")]
     pub(crate) wordpress: Option<&'a CommittedWordPressReview>,
     #[cfg(feature = "secret-exposure-review")]
@@ -1127,6 +1133,8 @@ pub(crate) fn project_passive_assessment_items(
             rest: None,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast: None,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity: None,
             #[cfg(feature = "wordpress-review")]
             wordpress: None,
             #[cfg(feature = "secret-exposure-review")]
@@ -1172,7 +1180,11 @@ pub(crate) fn project_assessment_items(
         project_selected_application || reviews.secret_exposure.is_some();
     #[cfg(feature = "websocket-review")]
     let project_selected_application = project_selected_application || reviews.websocket_selected;
-    // Anonymous and WordPress-only projections retain `authorized-root@1`.
+    #[cfg(feature = "xml-external-entity-review")]
+    let project_selected_application =
+        project_selected_application || reviews.xml_external_entity.is_some();
+    // Anonymous, WordPress-only, and XML-review projections retain
+    // `authorized-root@1`.
     // Supplied-session projections additionally bind the root item identity to
     // the already-redacted application reference so two declared applications
     // on one origin cannot be paired as the same product subject.
@@ -1304,6 +1316,8 @@ fn project_passive_assessment_items_for_root(
             rest: None,
             #[cfg(feature = "ssrf-oast-review")]
             ssrf_oast: None,
+            #[cfg(feature = "xml-external-entity-review")]
+            xml_external_entity: None,
             #[cfg(feature = "wordpress-review")]
             wordpress: None,
             #[cfg(feature = "secret-exposure-review")]
@@ -1422,6 +1436,10 @@ fn project_assessment_items_for_subjects(
     #[cfg(feature = "ssrf-oast-review")]
     if let Some(ssrf_oast) = reviews.ssrf_oast {
         project_ssrf_oast_item(&mut context, knowledge, ssrf_oast)?;
+    }
+    #[cfg(feature = "xml-external-entity-review")]
+    if let Some(xml_external_entity) = reviews.xml_external_entity {
+        project_xml_external_entity_item(&mut context, knowledge, xml_external_entity)?;
     }
     #[cfg(feature = "wordpress-review")]
     if let Some(wordpress) = reviews.wordpress {

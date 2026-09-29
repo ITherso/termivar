@@ -81,6 +81,10 @@ pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 pub(crate) use request_broker::{
     JwtTargetAcceptanceRequestDescriptor, JwtTargetAcceptanceRequestError,
 };
+#[cfg(feature = "xml-external-entity-review")]
+pub(crate) use request_broker::{
+    XmlExternalEntityRequestBroker, XmlExternalEntityRequestDescriptor,
+};
 #[cfg(feature = "authorization-review")]
 pub(crate) use response::AuthorizationResponseDefense;
 pub(crate) use response::CollectedHttpResponse;
@@ -212,6 +216,12 @@ pub enum HttpEvidenceError {
     #[error("WordPress asset request violated its closed admission contract")]
     InvalidWordPressAssetRequest,
 
+    /// A controlled XML request did not match its immutable policy, exact
+    /// endpoint, fixed role, or canonical body binding.
+    #[cfg(feature = "xml-external-entity-review")]
+    #[error("controlled XML request violated its closed admission contract")]
+    InvalidXmlExternalEntityRequest,
+
     /// A request header could alter destination or message framing.
     #[error("HTTP request header {name} is forbidden by evidence policy")]
     ForbiddenRequestHeader { name: String },
@@ -285,6 +295,10 @@ pub(crate) fn execution_failure_kind(error: &HttpEvidenceError) -> DecisionExecu
         #[cfg(feature = "wordpress-review")]
         HttpEvidenceError::InvalidWordPressMetadataRequest
         | HttpEvidenceError::InvalidWordPressAssetRequest => {
+            DecisionExecutionFailureKind::BlockedByPolicy
+        },
+        #[cfg(feature = "xml-external-entity-review")]
+        HttpEvidenceError::InvalidXmlExternalEntityRequest => {
             DecisionExecutionFailureKind::BlockedByPolicy
         },
         HttpEvidenceError::EmbeddedCredentials

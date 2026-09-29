@@ -760,6 +760,7 @@ impl ComparisonVisitor<'_> {
                     "super::super::ImportedSuppliedSessionAudit",
                     "super::super::ImportedTlsObservationAudit",
                     "super::super::ImportedWebSocketReviewAudit",
+                    "super::super::ImportedXmlExternalEntityReviewAudit",
                     "super::super::SuppliedSessionResourceBinding",
                     "super::super::ImportedWordPressAssetFingerprintAudit",
                     "super::super::WordPressAdvisoryKey",
@@ -785,6 +786,7 @@ impl ComparisonVisitor<'_> {
                     "super::WordPressEntityChanges",
                     "super::WordPressFacetComparison",
                     "super::WordPressReviewComparison",
+                    "super::XmlExternalEntityReviewComparison",
                     "super::super::write_html_text",
                     "super::super::RenderBuffer",
                     "super::super::ReportError",
@@ -1246,6 +1248,51 @@ mod tests {
             (
                 "reporting/comparison/html.rs",
                 "use super::ImportedJwtPolicyReviewAudit;",
+            ),
+        ] {
+            let violations = source_violations(relative, addition).unwrap();
+            assert!(
+                !violations.is_empty(),
+                "accepted `{addition}` in {relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn xml_external_entity_review_uses_only_exact_inert_comparison_projections() {
+        for (relative, addition) in [
+            (
+                "reporting/comparison/import/audits.rs",
+                "use super::super::ImportedXmlExternalEntityReviewAudit;",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::XmlExternalEntityReviewComparison;",
+            ),
+        ] {
+            let violations = source_violations(relative, addition).unwrap();
+            assert!(
+                violations.is_empty(),
+                "rejected `{addition}` in {relative}: {violations:?}"
+            );
+        }
+
+        for (relative, addition) in [
+            (
+                "reporting/comparison/import/audits.rs",
+                "use super::super::ImportedXmlExternalEntityReviewAuditAuthority;",
+            ),
+            (
+                "reporting/comparison/import/audits.rs",
+                "use crate::xml_external_entity_review::XmlExternalEntityReviewPolicy;",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::XmlExternalEntityReviewAudit;",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::ImportedXmlExternalEntityReviewAudit;",
             ),
         ] {
             let violations = source_violations(relative, addition).unwrap();

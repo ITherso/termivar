@@ -93,6 +93,8 @@ pub mod websocket_review;
 #[cfg(feature = "wordpress-review")]
 pub mod wordpress_review;
 mod wordpress_version;
+#[cfg(feature = "xml-external-entity-review")]
+pub mod xml_external_entity_review;
 
 pub use semantic::{
     AuthArtifactKind, EntityExtractor, LimitsError, SemanticEntity, SemanticEntityType,

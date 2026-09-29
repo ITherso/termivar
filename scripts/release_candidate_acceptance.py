@@ -80,6 +80,7 @@ EXCLUDED_FEATURES = (
     "supplied-session-review",
     "tls-observation",
     "websocket-review",
+    "xml-external-entity-review",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
 AUTHORIZATION_REVIEW_PREREQUISITES = (
@@ -208,6 +209,37 @@ WEBSOCKET_REVIEW_LIMITATION = (
     "impact. The feature requires explicit --profile web-review and "
     "--websocket-review-policy FILE, remains development-only, and is outside default, "
     "release-bundle, published alpha.2 archives, and the initial curated package."
+)
+XML_EXTERNAL_ENTITY_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--xml-external-entity-review",
+    "--xml-external-entity-policy FILE",
+    "one of --oast-admin-token-env, --oast-admin-token-file, or --oast-admin-token-stdin",
+)
+XML_EXTERNAL_ENTITY_REVIEW_OPTIONS = (
+    "--xml-external-entity-review",
+    "--xml-external-entity-policy",
+)
+SHARED_OAST_ADMIN_TOKEN_OPTIONS = (
+    "--oast-admin-token-env",
+    "--oast-admin-token-file",
+    "--oast-admin-token-stdin",
+)
+XML_EXTERNAL_ENTITY_REVIEW_LIMITATION = (
+    "Development-only non-bundled opt-in for one policy-declared exact-origin, "
+    "application-contained disposable XML endpoint. V1 sends at most three anonymous POST "
+    "requests with the exact media type application/xml; charset=utf-8 and a fixed inert XML "
+    "1.0 external-general-entity envelope: one unreferenced control, one candidate, and one "
+    "replay, each with a distinct provider callback. A completed positive path uses all three "
+    "target legs. It performs no endpoint discovery, arbitrary XML intake, local-file URI use, "
+    "credential forwarding, redirect, retry, ambient proxy use, or response-content oracle. A "
+    "clean preflight, no control callback, two independently correlated post-dispatch "
+    "candidate/replay callbacks, complete cleanup, and reconciled accounting can produce at "
+    "most one NeedsReview / KnowledgeOnly item. A callback alone never produces Confirmed and "
+    "does not establish XXE, parser identity, arbitrary SSRF, local file read, data "
+    "exfiltration, internal-network access, exploitability, or impact. The feature conflicts "
+    "with simultaneous SSRF OAST review and remains outside default, release-bundle, and "
+    "published alpha.2 archives."
 )
 SECRET_EXPOSURE_OPTION = "--secret-exposure-review"
 SECRET_EXPOSURE_PREREQUISITES = (
@@ -983,6 +1015,12 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require(re.search(rf"(?m)^\s*{re.escape(WEBSOCKET_REVIEW_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled WebSocket review")
+    for option in XML_EXTERNAL_ENTITY_REVIEW_OPTIONS:
+        require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
+                f"scan help unexpectedly exposes non-bundled XML option {option}")
+    for option in SHARED_OAST_ADMIN_TOKEN_OPTIONS:
+        require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
+                f"scan help unexpectedly exposes non-bundled OAST admin-token option {option}")
     for option in SUPPLIED_SESSION_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
                 f"scan help unexpectedly exposes non-bundled option {option}")
@@ -1166,6 +1204,41 @@ def _validate_websocket_review_surface(
     require(f"    limit: {WEBSOCKET_REVIEW_LIMITATION}" in text_value,
             "WebSocket-review limitation is absent from text output")
     return websocket
+
+
+def _validate_xml_external_entity_review_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    xml_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.xml-external-entity-review"
+    ]
+    require(len(xml_surfaces) == 1,
+            "packaged XML external-entity review surface identity changed")
+    xml_review = xml_surfaces[0]
+    require(xml_review.get("label") == "XML external-entity review"
+            and xml_review.get("compile_feature") == "xml-external-entity-review"
+            and xml_review.get("build_state") == expected_state
+            and xml_review.get("maturity") == "preview"
+            and xml_review.get("implementation_status") == "implemented"
+            and xml_review.get("group") == "optional"
+            and xml_review.get("kind") == "scan_option"
+            and xml_review.get("alias") is None
+            and xml_review.get("documentation")
+            == "docs/internals/xml-external-entity-review.md",
+            "packaged XML external-entity review surface metadata changed")
+    prerequisites = xml_review.get("prerequisites")
+    require(isinstance(prerequisites, list)
+            and all(isinstance(value, str) for value in prerequisites)
+            and tuple(prerequisites) == XML_EXTERNAL_ENTITY_REVIEW_PREREQUISITES,
+            "packaged XML external-entity review opt-in contract changed")
+    require(xml_review.get("limitation") == XML_EXTERNAL_ENTITY_REVIEW_LIMITATION,
+            "packaged XML external-entity review limitation changed")
+    require(f"[{expected_state}] {xml_review['label']}" in text_value,
+            "XML external-entity review capability text and JSON views disagree")
+    require(f"    limit: {XML_EXTERNAL_ENTITY_REVIEW_LIMITATION}" in text_value,
+            "XML external-entity review limitation is absent from text output")
+    return xml_review
 
 
 def _validate_recon_certspotter_surface(
@@ -1365,6 +1438,7 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
     _validate_recon_certspotter_surface(surfaces, text_value, "not_compiled")
     _validate_recon_snapshot_surface(surfaces, text_value, "not_compiled")
     _validate_websocket_review_surface(surfaces, text_value, "not_compiled")
+    _validate_xml_external_entity_review_surface(surfaces, text_value, "not_compiled")
     _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
     _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
     _validate_jwt_policy_review_surface(surfaces, text_value, "not_compiled")
@@ -1515,6 +1589,16 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "maximum_application_bytes_each_direction": 64 * 1024,
             "maximum_wall_time_seconds": 10,
             "session_inheritance": "explicit_flag_health_qualified_v1_only",
+        },
+        "xml_external_entity_review_preview": {
+            "build_state": "not_compiled",
+            "maturity": "preview",
+            "implementation_status": "implemented",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "maximum_target_requests": 3,
+            "maximum_disposition": "NeedsReview",
+            "claim_authority": "KnowledgeOnly",
+            "confirmed_finding": "not_produced",
         },
         "jwt_policy_review_preview": {
             "build_state": "not_compiled",

@@ -68,6 +68,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "tls_observation",
             "websocket_review",
             "jwt_policy_review",
+            "xml_external_entity_review",
             "control_reference_mapping",
             "recon_snapshot_import",
             "recon_certspotter",
@@ -106,6 +107,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     let mut tls_observation = None;
     let mut websocket_review = None;
     let mut jwt_policy_review = None;
+    let mut xml_external_entity_review = None;
     let mut control_reference_mapping = None;
     let mut recon_snapshot_import = None;
     let mut recon_certspotter = None;
@@ -120,6 +122,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "tls_observation",
         "websocket_review",
         "jwt_policy_review",
+        "xml_external_entity_review",
         "control_reference_mapping",
         "recon_snapshot_import",
         "recon_certspotter",
@@ -139,6 +142,9 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
                 websocket_review = Some(audits::validate_websocket_review(value)?);
             } else if name == "jwt_policy_review" {
                 jwt_policy_review = Some(audits::validate_jwt_policy_review(value)?);
+            } else if name == "xml_external_entity_review" {
+                xml_external_entity_review =
+                    Some(audits::validate_xml_external_entity_review(value, &items)?);
             } else if name == "control_reference_mapping" {
                 control_reference_mapping =
                     Some(audits::validate_control_reference_mapping(value, &items)?);
@@ -226,6 +232,12 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             .any(|item| audits::is_secret_exposure_capability(&item.capability_id))
             || secret_exposure.is_some(),
     )?;
+    check(
+        !items
+            .values()
+            .any(|item| item.capability_id == audits::XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY)
+            || xml_external_entity_review.is_some(),
+    )?;
     Ok(ImportedDocument {
         metadata: SourceMetadata {
             sha256: format!("{:x}", Sha256::digest(bytes)),
@@ -245,6 +257,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         tls_observation,
         websocket_review,
         jwt_policy_review,
+        xml_external_entity_review,
         control_reference_mapping,
         recon_snapshot_import,
         recon_certspotter,
@@ -415,6 +428,9 @@ fn item(value: &Value, subject_count: u64) -> Result<(String, ImportedItem), Com
     check(valid_linkage)?;
     let remediation = object(required(fields, "remediation")?)?;
     keys(remediation, &["id", "summary"], &[])?;
+    if capability_id == audits::XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY {
+        validate_xml_external_entity_item(fields, subject, &evidence, remediation)?;
+    }
     Ok((
         fingerprint.to_owned(),
         ImportedItem {
@@ -442,6 +458,57 @@ fn item(value: &Value, subject_count: u64) -> Result<(String, ImportedItem), Com
             observation_evidence_references,
         },
     ))
+}
+
+fn validate_xml_external_entity_item(
+    fields: &Map<String, Value>,
+    subject: u32,
+    evidence: &EvidenceMetadata,
+    remediation: &Map<String, Value>,
+) -> Result<(), ComparisonError> {
+    check(subject == 0)?;
+    check(
+        string(fields, "title")? == audits::XML_EXTERNAL_ENTITY_REVIEW_TITLE
+            && string(fields, "disposition")? == "needs_review"
+            && string(fields, "claim_basis")? == "differential"
+            && optional_token(
+                fields,
+                "severity",
+                &["info", "low", "medium", "high", "critical"],
+            )?
+            .is_none()
+            && number(fields, "confidence_ppm", 1_000_000)? == 900_000
+            && string(fields, "redacted_summary")? == audits::XML_EXTERNAL_ENTITY_REVIEW_SUMMARY
+            && string(fields, "category")? == audits::XML_EXTERNAL_ENTITY_REVIEW_CATEGORY
+            && optional_text(fields, "cwe", MAX_IDENTIFIER_BYTES)? == Some("CWE-611")
+            && string(remediation, "id")? == audits::XML_EXTERNAL_ENTITY_REVIEW_REMEDIATION_ID
+            && string(remediation, "summary")?
+                == audits::XML_EXTERNAL_ENTITY_REVIEW_REMEDIATION_SUMMARY
+            && evidence.evidence_count
+                == (audits::XML_EXTERNAL_ENTITY_REVIEW_CONTROL_EVIDENCE_COUNT
+                    + audits::XML_EXTERNAL_ENTITY_REVIEW_CANDIDATE_EVIDENCE_COUNT)
+                    as u64
+            && evidence.evidence_reference_count == 0
+            && evidence.control_reference_count
+                == audits::XML_EXTERNAL_ENTITY_REVIEW_CONTROL_EVIDENCE_COUNT
+            && evidence.candidate_reference_count
+                == audits::XML_EXTERNAL_ENTITY_REVIEW_CANDIDATE_EVIDENCE_COUNT,
+    )?;
+
+    let direct = array(fields, "evidence_references")?;
+    let control = array(fields, "control_evidence_references")?;
+    let candidate = array(fields, "candidate_evidence_references")?;
+    check(direct.is_empty())?;
+    let mut ordinals = Vec::with_capacity(control.len() + candidate.len());
+    for value in control.iter().chain(candidate) {
+        let value = value.as_str().ok_or(ComparisonError::InvalidDocument)?;
+        ordinals.push(reference(value, "evidence")?);
+    }
+    check(
+        ordinals
+            .windows(2)
+            .all(|pair| pair[0].checked_add(1) == Some(pair[1])),
+    )
 }
 
 fn evidence(fields: &Map<String, Value>) -> Result<EvidenceMetadata, ComparisonError> {

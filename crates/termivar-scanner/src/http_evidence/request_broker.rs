@@ -4,7 +4,11 @@ use reqwest::{
     Client,
 };
 
-#[cfg(any(feature = "jwt-target-acceptance-review", feature = "wordpress-review"))]
+#[cfg(any(
+    feature = "jwt-target-acceptance-review",
+    feature = "wordpress-review",
+    feature = "xml-external-entity-review"
+))]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "wordpress-review")]
 use termivar_core::{EntityId, EvidenceId, EvidenceKind, EvidenceValue};
@@ -16,7 +20,8 @@ use reqwest::header::ACCEPT_ENCODING;
     feature = "graphql-review",
     feature = "authorization-review",
     feature = "jwt-target-acceptance-review",
-    feature = "supplied-session-review"
+    feature = "supplied-session-review",
+    feature = "xml-external-entity-review"
 ))]
 use reqwest::header::ACCEPT;
 #[cfg(any(
@@ -24,7 +29,8 @@ use reqwest::header::ACCEPT;
     feature = "authorization-review",
     feature = "jwt-target-acceptance-review",
     feature = "supplied-session-review",
-    feature = "wordpress-review"
+    feature = "wordpress-review",
+    feature = "xml-external-entity-review"
 ))]
 use reqwest::Method;
 
@@ -34,7 +40,11 @@ use reqwest::Method;
     feature = "supplied-session-review"
 ))]
 use reqwest::header::AUTHORIZATION;
-#[cfg(any(feature = "graphql-review", feature = "supplied-session-review"))]
+#[cfg(any(
+    feature = "graphql-review",
+    feature = "supplied-session-review",
+    feature = "xml-external-entity-review"
+))]
 use reqwest::header::CONTENT_TYPE;
 #[cfg(feature = "supplied-session-review")]
 use reqwest::header::COOKIE;
@@ -45,6 +55,12 @@ use crate::graphql_review::MAX_GRAPHQL_REQUEST_JSON_BYTES;
 use crate::wordpress_review::{
     valid_slug, valid_wordpress_asset_fingerprint_path, WordPressComponentIdentity,
     WordPressComponentKind,
+};
+#[cfg(feature = "xml-external-entity-review")]
+use crate::xml_external_entity_review::{
+    XmlExternalEntityDocument, XmlExternalEntityDocumentRole, XmlExternalEntityHttpMethod,
+    XmlExternalEntityMediaType, XmlExternalEntityReviewPolicy,
+    MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES, XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
 };
 #[cfg(feature = "jwt-target-acceptance-review")]
 use crate::{
@@ -94,6 +110,133 @@ const JWT_TARGET_ACCEPTANCE_RESPONSE_ACCEPT: &str = "application/json";
 #[cfg(feature = "jwt-target-acceptance-review")]
 const JWT_TARGET_ACCEPTANCE_POLICY_BINDING_DOMAIN: &[u8] =
     b"termivar.jwt-target-acceptance-request-policy/v1\0";
+
+#[cfg(feature = "xml-external-entity-review")]
+const XML_EXTERNAL_ENTITY_POLICY_BINDING_DOMAIN: &[u8] =
+    b"termivar.xml-external-entity-request-policy/v1\0";
+
+/// Broker-owned proof for one exact controlled XML target leg.
+///
+/// The descriptor binds the immutable operator policy, exact endpoint, fixed
+/// document role, body length, and complete body digest before transport. It
+/// carries no general method/header/body authority and is revalidated at the
+/// final broker boundary immediately before dispatch.
+#[cfg(feature = "xml-external-entity-review")]
+pub(crate) struct XmlExternalEntityRequestDescriptor {
+    policy_id: String,
+    application: url::Url,
+    target: url::Url,
+    policy_binding: [u8; 32],
+    role: XmlExternalEntityDocumentRole,
+    body_len: u64,
+    body_digest: [u8; 32],
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+impl XmlExternalEntityRequestDescriptor {
+    pub(crate) fn from_document(
+        policy: &XmlExternalEntityReviewPolicy,
+        document: &XmlExternalEntityDocument,
+    ) -> Result<Self, HttpEvidenceError> {
+        let body = document.as_bytes();
+        if document.policy_id() != policy.policy_id()
+            || body.len() > MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES
+        {
+            return Err(HttpEvidenceError::InvalidXmlExternalEntityRequest);
+        }
+        Ok(Self {
+            policy_id: policy.policy_id().to_wire(),
+            application: policy.application().clone(),
+            target: policy.endpoint().clone(),
+            policy_binding: xml_external_entity_policy_binding(policy),
+            role: document.role(),
+            body_len: u64::try_from(body.len()).unwrap_or(u64::MAX),
+            body_digest: Sha256::digest(body).into(),
+        })
+    }
+
+    pub(crate) const fn role(&self) -> XmlExternalEntityDocumentRole {
+        self.role
+    }
+
+    pub(crate) const fn target(&self) -> &url::Url {
+        &self.target
+    }
+
+    pub(crate) fn validate_against(
+        &self,
+        policy: &XmlExternalEntityReviewPolicy,
+        document: &XmlExternalEntityDocument,
+    ) -> bool {
+        let body = document.as_bytes();
+        self.policy_id == policy.policy_id().to_wire()
+            && self.application == *policy.application()
+            && self.target == *policy.endpoint()
+            && self.policy_binding == xml_external_entity_policy_binding(policy)
+            && self.role == document.role()
+            && document.policy_id() == policy.policy_id()
+            && body.len() <= MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES
+            && self.body_len == u64::try_from(body.len()).unwrap_or(u64::MAX)
+            && self.body_digest == <[u8; 32]>::from(Sha256::digest(body))
+    }
+}
+
+/// One application-bound anonymous transport for the fixed XML plan.
+///
+/// Unlike the general exact-origin broker, this child retains the selected
+/// application URL and policy binding that authorized construction. Both are
+/// rechecked with the sealed document immediately before each dispatch.
+#[cfg(feature = "xml-external-entity-review")]
+pub(crate) struct XmlExternalEntityRequestBroker {
+    broker: HttpRequestBroker,
+    application: url::Url,
+    policy_binding: [u8; 32],
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+fn xml_external_entity_policy_binding(policy: &XmlExternalEntityReviewPolicy) -> [u8; 32] {
+    fn update_field(digest: &mut Sha256, value: &[u8]) {
+        digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+        digest.update(value);
+    }
+
+    let mut digest = Sha256::new();
+    digest.update(XML_EXTERNAL_ENTITY_POLICY_BINDING_DOMAIN);
+    let policy_id = policy.policy_id().as_bytes();
+    let polls_per_leg = policy.polls_per_leg().to_be_bytes();
+    let poll_interval_ms = policy.poll_interval_ms().to_be_bytes();
+    let lifetime_ms = policy.lifetime_ms().to_be_bytes();
+    for value in [
+        policy_id.as_slice(),
+        policy.endpoint().as_str().as_bytes(),
+        policy.provider_origin().as_str().as_bytes(),
+        b"POST".as_slice(),
+        b"application/xml; charset=utf-8".as_slice(),
+        polls_per_leg.as_slice(),
+        poll_interval_ms.as_slice(),
+        lifetime_ms.as_slice(),
+    ] {
+        update_field(&mut digest, value);
+    }
+    digest.finalize().into()
+}
+
+#[cfg(feature = "xml-external-entity-review")]
+const fn xml_external_entity_role_matches_dispatch(
+    role: XmlExternalEntityDocumentRole,
+    stage: DecisionExecutionStage,
+    origin: Option<DecisionActionOrigin>,
+) -> bool {
+    match role {
+        XmlExternalEntityDocumentRole::Control | XmlExternalEntityDocumentRole::Replay => {
+            matches!(stage, DecisionExecutionStage::Passive)
+                && matches!(origin, Some(DecisionActionOrigin::Planned))
+        },
+        XmlExternalEntityDocumentRole::Candidate => {
+            matches!(stage, DecisionExecutionStage::Active) && origin.is_none()
+        },
+    }
+}
 
 /// Broker-owned proof for one exact JWT target-acceptance leg.
 ///
@@ -1021,6 +1164,47 @@ impl HttpRequestBroker {
         Ok(broker)
     }
 
+    /// Creates one fresh anonymous pool for the controlled XML review.
+    ///
+    /// The pool has no ambient proxy, cookie store, redirects, retries,
+    /// credentials, or caller-selected default headers. Each review reuses
+    /// this one pool only for its three exact target legs while retaining the
+    /// assessment's parent accounting, cancellation, deadline, and origin
+    /// policy.
+    #[cfg(feature = "xml-external-entity-review")]
+    pub(crate) fn isolated_xml_external_entity_review(
+        &self,
+        application: &url::Url,
+        policy: &XmlExternalEntityReviewPolicy,
+    ) -> Result<XmlExternalEntityRequestBroker, HttpEvidenceError> {
+        if !policy.is_bound_to_application(application) {
+            return Err(HttpEvidenceError::InvalidXmlExternalEntityRequest);
+        }
+        self.validate_target(policy.endpoint())?;
+        let mut broker = Self::build(
+            self.policy.clone(),
+            self.accounting.clone(),
+            #[cfg(feature = "tls-observation")]
+            self.tls_observation.clone(),
+        )?;
+        let client = Client::builder()
+            .redirect(RedirectPolicy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy();
+        #[cfg(feature = "tls-observation")]
+        let client = if broker.tls_observation.is_some() {
+            client.tls_info(true)
+        } else {
+            client
+        };
+        broker.client = client.build().map_err(HttpEvidenceError::Client)?;
+        Ok(XmlExternalEntityRequestBroker {
+            broker,
+            application: application.clone(),
+            policy_binding: xml_external_entity_policy_binding(policy),
+        })
+    }
+
     /// Creates the credentialed child pool only when the supplied-session
     /// runtime is explicitly selected. Feature-enabled anonymous assessments
     /// therefore keep their existing client construction unchanged.
@@ -1708,6 +1892,59 @@ impl HttpRequestBroker {
     }
 }
 
+#[cfg(feature = "xml-external-entity-review")]
+impl XmlExternalEntityRequestBroker {
+    /// Dispatches one fixed anonymous controlled-XML leg after replaying the
+    /// application, policy, document, and role binding at the last transport
+    /// boundary.
+    ///
+    /// The caller cannot supply raw XML bytes: only one document minted by the
+    /// validated fixed plan can cross this boundary.
+    pub(crate) async fn collect_post(
+        &self,
+        action_id: &str,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        descriptor: &XmlExternalEntityRequestDescriptor,
+        policy: &XmlExternalEntityReviewPolicy,
+        document: &XmlExternalEntityDocument,
+    ) -> Result<CollectedHttpResponse, HttpRequestBrokerError> {
+        if action_id != XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID
+            || self.application != *policy.application()
+            || !policy.is_bound_to_application(&self.application)
+            || self.policy_binding != xml_external_entity_policy_binding(policy)
+            || !descriptor.validate_against(policy, document)
+            || policy.method() != XmlExternalEntityHttpMethod::Post
+            || policy.media_type() != XmlExternalEntityMediaType::ApplicationXmlUtf8
+            || !xml_external_entity_role_matches_dispatch(descriptor.role(), stage, origin)
+        {
+            return Err(HttpEvidenceError::InvalidXmlExternalEntityRequest.into());
+        }
+        let target = descriptor.target();
+        self.broker.validate_target(target)?;
+        let request = self
+            .broker
+            .client
+            .request(Method::POST, target.clone())
+            .header(CONTENT_TYPE, "application/xml; charset=utf-8")
+            .header(ACCEPT, "application/xml")
+            .body(document.as_bytes().to_vec())
+            .build()
+            .map_err(HttpEvidenceError::Request)?;
+        self.broker
+            .collect_built_request(
+                &self.broker.client,
+                action_id,
+                stage,
+                origin,
+                limits,
+                request,
+            )
+            .await
+    }
+}
+
 fn finish_accounting(
     lease: &mut Option<RequestAccountingLease>,
     outcome: TransportDispatchOutcome,
@@ -1738,6 +1975,9 @@ fn observe_response_bytes(lease: Option<&mut RequestAccountingLease>, observed: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "xml-external-entity-review")]
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[cfg(feature = "supplied-session-review")]
     use crate::supplied_session_review::{SuppliedSessionPolicy, SUPPLIED_SESSION_POLICY_SCHEMA};
@@ -1812,6 +2052,139 @@ mod tests {
 
         assert_eq!(metered_request_body_bytes(&bodyless).unwrap(), 0);
         assert_eq!(metered_request_body_bytes(&buffered).unwrap(), 9);
+    }
+
+    #[cfg(feature = "xml-external-entity-review")]
+    #[tokio::test]
+    async fn controlled_xml_broker_rejects_substitutions_before_accounting() {
+        const SESSION: &str = "AQEBAQEBAQEBAQEBAQEBAQ";
+        const CONTROL: &str = "AgICAgICAgICAgICAgICAg";
+        const CANDIDATE: &str = "AwMDAwMDAwMDAwMDAwMDAw";
+        const REPLAY: &str = "BAQEBAQEBAQEBAQEBAQEBA";
+
+        let application = url::Url::parse("http://127.0.0.1:39090/application/").unwrap();
+        let endpoint = application.join("fixtures/xml").unwrap();
+        let provider_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 39091);
+        let provider = termivar_oast::PublicOrigin::from_test_loopback(provider_address).unwrap();
+        let policy = XmlExternalEntityReviewPolicy::for_owned_loopback(
+            application.clone(),
+            endpoint,
+            provider,
+            2,
+            500,
+            10_000,
+        )
+        .unwrap();
+        let callback = |id: &str| format!("http://127.0.0.1:39091/c/{SESSION}/{id}");
+        let plan = crate::xml_external_entity_review::XmlExternalEntityDocumentPlan::from_callback_strings_for_test(
+            &policy,
+            &callback(CONTROL),
+            &callback(CANDIDATE),
+            &callback(REPLAY),
+        )
+        .unwrap();
+        let document = plan.document(XmlExternalEntityDocumentRole::Control);
+        let accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+        let root = HttpRequestBroker::new_metered(
+            HttpEvidencePolicy::for_origin(application.clone()).unwrap(),
+            accounting.clone(),
+        )
+        .unwrap();
+
+        let sibling = application.join("../sibling/").unwrap();
+        assert!(matches!(
+            root.isolated_xml_external_entity_review(&sibling, &policy),
+            Err(HttpEvidenceError::InvalidXmlExternalEntityRequest)
+        ));
+        let broker = root
+            .isolated_xml_external_entity_review(&application, &policy)
+            .unwrap();
+
+        let mut forged_target =
+            XmlExternalEntityRequestDescriptor::from_document(&policy, document).unwrap();
+        forged_target.target = application.join("fixtures/other").unwrap();
+        let mut forged_application =
+            XmlExternalEntityRequestDescriptor::from_document(&policy, document).unwrap();
+        forged_application.application = sibling;
+        let mut forged_role =
+            XmlExternalEntityRequestDescriptor::from_document(&policy, document).unwrap();
+        forged_role.role = XmlExternalEntityDocumentRole::Candidate;
+        let mut forged_length =
+            XmlExternalEntityRequestDescriptor::from_document(&policy, document).unwrap();
+        forged_length.body_len = forged_length.body_len.saturating_add(1);
+        let mut forged_digest =
+            XmlExternalEntityRequestDescriptor::from_document(&policy, document).unwrap();
+        forged_digest.body_digest[0] ^= 1;
+        let mut forged_policy =
+            XmlExternalEntityRequestDescriptor::from_document(&policy, document).unwrap();
+        forged_policy.policy_binding[0] ^= 1;
+
+        for descriptor in [
+            forged_target,
+            forged_application,
+            forged_role,
+            forged_length,
+            forged_digest,
+            forged_policy,
+        ] {
+            let result = broker
+                .collect_post(
+                    XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
+                    DecisionExecutionStage::Passive,
+                    Some(DecisionActionOrigin::Planned),
+                    DecisionExecutionLimits::new(),
+                    &descriptor,
+                    &policy,
+                    document,
+                )
+                .await;
+            assert!(matches!(
+                result,
+                Err(HttpRequestBrokerError::Http(
+                    HttpEvidenceError::InvalidXmlExternalEntityRequest
+                ))
+            ));
+        }
+
+        let valid = XmlExternalEntityRequestDescriptor::from_document(&policy, document).unwrap();
+        for (action, stage, origin) in [
+            (
+                "different-action",
+                DecisionExecutionStage::Passive,
+                Some(DecisionActionOrigin::Planned),
+            ),
+            (
+                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
+                DecisionExecutionStage::Active,
+                Some(DecisionActionOrigin::Planned),
+            ),
+            (
+                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,
+                DecisionExecutionStage::Passive,
+                None,
+            ),
+        ] {
+            let result = broker
+                .collect_post(
+                    action,
+                    stage,
+                    origin,
+                    DecisionExecutionLimits::new(),
+                    &valid,
+                    &policy,
+                    document,
+                )
+                .await;
+            assert!(matches!(
+                result,
+                Err(HttpRequestBrokerError::Http(
+                    HttpEvidenceError::InvalidXmlExternalEntityRequest
+                ))
+            ));
+        }
+        assert_eq!(accounting.snapshot().total_requests(), 0);
+        assert_eq!(accounting.snapshot().request_body_bytes(), 0);
+        assert!(accounting.dispatch_audit().is_empty());
     }
 
     #[cfg(feature = "jwt-target-acceptance-review")]

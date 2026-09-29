@@ -28,13 +28,20 @@ const SCANNER_SOURCE_ROOT: &str = "crates/termivar-scanner/src";
 const SCANNER_ADAPTER: &str = "native_oast_provider.rs";
 const SSRF_OAST_REVIEW_CONTRACT: &str = "ssrf_oast_review.rs";
 const SSRF_OAST_REVIEW_RUNTIME: &str = "web_runtime/ssrf_oast_runtime.rs";
+const XML_EXTERNAL_ENTITY_REVIEW_CONTRACT: &str = "xml_external_entity_review.rs";
+const XML_EXTERNAL_ENTITY_REVIEW_RUNTIME: &str = "web_runtime/xml_external_entity_runtime.rs";
 const SSRF_OAST_REVIEW_TESTS: &str = "web_runtime/assessment_review_tests.rs";
+const WEB_RUNTIME_TESTS: &str = "web_runtime_tests.rs";
 const ASSESSMENT_REVIEW_SOURCE: &str = "web_runtime/assessment_review.rs";
+const WEB_RUNTIME_SOURCE: &str = "web_runtime.rs";
 const EXACT_SCANNER_PROVIDER_CONSUMERS: &[&str] = &[
     SCANNER_ADAPTER,
     SSRF_OAST_REVIEW_CONTRACT,
     SSRF_OAST_REVIEW_RUNTIME,
+    XML_EXTERNAL_ENTITY_REVIEW_RUNTIME,
+    XML_EXTERNAL_ENTITY_REVIEW_CONTRACT,
 ];
+const EXACT_TEST_ONLY_PROVIDER_CONSUMERS: &[&str] = &[SSRF_OAST_REVIEW_TESTS, WEB_RUNTIME_TESTS];
 const SHARED_AUTHORITY_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/authority.rs";
 const CLI_MANIFEST: &str = "crates/termivar-cli/Cargo.toml";
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
@@ -850,6 +857,8 @@ fn scanner_adapter_contract_violations(
     ));
     let assessment_review = fs::read_to_string(source_root.join(ASSESSMENT_REVIEW_SOURCE))?;
     violations.extend(assessment_review_test_module_violations(&assessment_review));
+    let web_runtime = fs::read_to_string(source_root.join(WEB_RUNTIME_SOURCE))?;
+    violations.extend(web_runtime_test_module_violations(&web_runtime));
     violations.extend(sealed_mint_consumer_violations(
         &scanner_production_sources,
     )?);
@@ -883,7 +892,10 @@ fn scanner_adapter_contract_violations(
 fn scanner_provider_consumer_violations(sources: &[(String, String)]) -> Vec<String> {
     let provider_consumers = sources
         .iter()
-        .filter(|(path, source)| path != SSRF_OAST_REVIEW_TESTS && source.contains("termivar_oast"))
+        .filter(|(path, source)| {
+            !EXACT_TEST_ONLY_PROVIDER_CONSUMERS.contains(&path.as_str())
+                && source.contains("termivar_oast")
+        })
         .map(|(path, _)| path.clone())
         .collect::<Vec<_>>();
     let expected = EXACT_SCANNER_PROVIDER_CONSUMERS
@@ -893,7 +905,7 @@ fn scanner_provider_consumer_violations(sources: &[(String, String)]) -> Vec<Str
     (provider_consumers != expected)
         .then(|| {
             format!(
-                "termivar-scanner must confine production termivar_oast use to the sealed adapter, bounded SSRF contract, and exact child runtime; expected {expected:?}, found {provider_consumers:?}"
+                "termivar-scanner must confine production termivar_oast use to the sealed adapter and exact bounded SSRF/XML domain and runtime consumers; expected {expected:?}, found {provider_consumers:?}"
             )
         })
         .into_iter()
@@ -909,6 +921,21 @@ fn assessment_review_test_module_violations(source: &str) -> Vec<String> {
         .then(|| {
             format!(
                 "the test-only termivar_oast consumer must remain behind the exact cfg(test) module declaration in {ASSESSMENT_REVIEW_SOURCE}"
+            )
+        })
+        .into_iter()
+        .collect()
+}
+
+fn web_runtime_test_module_violations(source: &str) -> Vec<String> {
+    let exact_test_module = "#[cfg(test)]#[path=\"web_runtime_tests.rs\"]modtests;";
+    (compact_whitespace(source)
+        .matches(exact_test_module)
+        .count()
+        != 1)
+        .then(|| {
+            format!(
+                "the test-only termivar_oast consumer must remain behind the exact cfg(test) module declaration in {WEB_RUNTIME_SOURCE}"
             )
         })
         .into_iter()
@@ -2389,7 +2416,19 @@ mod tests {
                 "use termivar_oast::CallbackId;".to_owned(),
             ),
             (
+                XML_EXTERNAL_ENTITY_REVIEW_RUNTIME.to_owned(),
+                "use termivar_oast::PublicOrigin;".to_owned(),
+            ),
+            (
+                XML_EXTERNAL_ENTITY_REVIEW_CONTRACT.to_owned(),
+                "use termivar_oast::CallbackTarget;".to_owned(),
+            ),
+            (
                 SSRF_OAST_REVIEW_TESTS.to_owned(),
+                "use termivar_oast::{CallbackId, EventId};".to_owned(),
+            ),
+            (
+                WEB_RUNTIME_TESTS.to_owned(),
                 "use termivar_oast::{CallbackId, EventId};".to_owned(),
             ),
         ];
@@ -2419,6 +2458,14 @@ mod tests {
         assert!(assessment_review_test_module_violations(exact_test_module).is_empty());
         assert!(!assessment_review_test_module_violations(
             "#[path = \"assessment_review_tests.rs\"]\nmod tests;"
+        )
+        .is_empty());
+
+        let exact_runtime_test_module =
+            "#[cfg(test)]\n#[path = \"web_runtime_tests.rs\"]\nmod tests;";
+        assert!(web_runtime_test_module_violations(exact_runtime_test_module).is_empty());
+        assert!(!web_runtime_test_module_violations(
+            "#[path = \"web_runtime_tests.rs\"]\nmod tests;"
         )
         .is_empty());
     }

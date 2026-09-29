@@ -32,6 +32,7 @@ const FEATURE_NAMES: &[&str] = &[
     "tls-observation",
     "websocket-review",
     "wordpress-review",
+    "xml-external-entity-review",
 ];
 
 fn manifest_release_bundle_members() -> Vec<&'static str> {
@@ -168,6 +169,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         ("tls-observation", cfg!(feature = "tls-observation")),
         ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
+        (
+            "xml-external-entity-review",
+            cfg!(feature = "xml-external-entity-review"),
+        ),
     ] {
         assert_eq!(
             states[feature],
@@ -226,6 +231,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
     assert_eq!(
         surface_state(&document, "option.websocket-review"),
         states["websocket-review"]
+    );
+    assert_eq!(
+        surface_state(&document, "option.xml-external-entity-review"),
+        states["xml-external-entity-review"]
     );
     let authorization = document["surfaces"]
         .as_array()
@@ -482,6 +491,47 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         assert!(
             jwt_target_limit.contains(required),
             "missing JWT target-acceptance limitation `{required}`"
+        );
+    }
+    let xml_external_entity = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.xml-external-entity-review")
+        .expect("XML external-entity surface");
+    assert_eq!(
+        xml_external_entity["documentation"],
+        "docs/internals/xml-external-entity-review.md"
+    );
+    assert_eq!(
+        xml_external_entity["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--xml-external-entity-review",
+            "--xml-external-entity-policy FILE",
+            "one of --oast-admin-token-env, --oast-admin-token-file, or --oast-admin-token-stdin"
+        ])
+    );
+    let xml_limit = xml_external_entity["limitation"]
+        .as_str()
+        .expect("XML external-entity limitation");
+    for required in [
+        "one policy-declared exact-origin, application-contained disposable XML endpoint",
+        "at most three anonymous POST requests",
+        "completed positive path uses all three target legs",
+        "application/xml; charset=utf-8",
+        "fixed inert XML 1.0 external-general-entity envelope",
+        "one unreferenced control, one candidate, and one replay",
+        "no control callback",
+        "NeedsReview / KnowledgeOnly",
+        "callback alone never produces Confirmed",
+        "local file read, data exfiltration, internal-network access, exploitability, or impact",
+        "conflicts with simultaneous SSRF OAST review",
+        "outside default, release-bundle, and published alpha.2 archives",
+    ] {
+        assert!(
+            xml_limit.contains(required),
+            "missing XML external-entity limitation `{required}`"
         );
     }
     let tls = document["surfaces"]
@@ -806,6 +856,10 @@ fn compiled_inventory_matches_the_actual_binary_help() {
             "--jwt-target-acceptance-policy",
         ),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
+        (
+            "option.xml-external-entity-review",
+            "--xml-external-entity-review",
+        ),
         ("option.supplied-session-review", "--session-policy"),
         ("option.wordpress-review", "--wordpress-review"),
         ("option.wordpress-discovery", "--wordpress-discovery"),
@@ -964,6 +1018,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "jwt-policy-review",
         "jwt-target-acceptance-review",
         "websocket-review",
+        "xml-external-entity-review",
     ];
     match case.as_str() {
         "default" | "no-default" => {
@@ -985,7 +1040,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                13
+                14
             );
         },
         "rest-only" => {
@@ -1052,6 +1107,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "websocket-review" || !compiled(feature) }));
+        },
+        "xml-external-entity-only" => {
+            assert!(compiled("xml-external-entity-review"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "xml-external-entity-review" || !compiled(feature) }));
         },
         "websocket-session" => {
             assert!(compiled("websocket-review"));

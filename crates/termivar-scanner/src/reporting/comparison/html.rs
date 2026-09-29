@@ -7,6 +7,7 @@ use super::{
     ReconSnapshotImportComparison, SecretExposureComparison, SourceMetadata,
     SuppliedSessionComparison, TlsObservationComparison, WebSocketReviewComparison,
     WordPressEntityChanges, WordPressFacetComparison, WordPressReviewComparison,
+    XmlExternalEntityReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -48,6 +49,9 @@ pub(super) fn render(
     }
     if let Some(comparison) = &document.jwt_policy_review_comparison {
         jwt_policy_review(&mut output, comparison)?;
+    }
+    if let Some(comparison) = &document.xml_external_entity_review_comparison {
+        xml_external_entity_review(&mut output, comparison)?;
     }
     if let Some(comparison) = &document.control_reference_mapping_comparison {
         control_reference_mapping(&mut output, comparison)?;
@@ -328,6 +332,49 @@ fn jwt_policy_review(
         wordpress_facet(output, label, facet)?;
     }
     output.push_str("<details><summary>JWT policy review interpretation limits</summary><ul>")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn xml_external_entity_review(
+    output: &mut RenderBuffer,
+    comparison: &XmlExternalEntityReviewComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"xml-external-entity-review-differences\"><h2 id=\"xml-external-entity-review-differences\">Controlled XML external-entity review differences</h2><p class=\"muted\">Validated, value-free audit projections compare one bounded callback-control review without retaining endpoint, provider, callback, XML, token, path, response-body, or raw-error values. This display does not confirm XXE, identify a parser, establish file access, data exfiltration, internal reachability, impact, or remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Coverage", comparison.coverage.status.as_str()),
+        ("Outcome", comparison.outcome.status.as_str()),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div><p><strong>Comparison schema:</strong> <span class=\"hash\">")?;
+    write_html_text(output, comparison.schema)?;
+    output.push_str("</span></p>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str("</span>. Audit presence changes are not parser rejection, vulnerability absence, or remediation.</p>")?;
+    }
+    for (label, facet) in [
+        ("XML review methodology", &comparison.methodology),
+        ("XML review coverage", &comparison.coverage),
+        ("XML review outcome", &comparison.outcome),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str(
+        "<details><summary>XML external-entity review interpretation limits</summary><ul>",
+    )?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;
         write_html_text(output, limit)?;

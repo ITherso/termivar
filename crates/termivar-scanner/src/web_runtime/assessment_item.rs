@@ -741,7 +741,7 @@ impl AssessmentProjectionContext {
         Ok(reference)
     }
 
-    #[cfg(feature = "ssrf-oast-review")]
+    #[cfg(any(feature = "ssrf-oast-review", feature = "xml-external-entity-review"))]
     pub(super) fn has_subject(&self, subject: &EntityId) -> bool {
         self.subjects.contains_key(subject)
     }

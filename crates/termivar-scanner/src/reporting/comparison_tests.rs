@@ -648,6 +648,95 @@ fn report_with_jwt_policy_review(audit: Value) -> Value {
     document
 }
 
+fn xml_external_entity_review_audit(positive: bool) -> Value {
+    json!({
+        "schema":"security.xml-external-entity-review-audit/v1",
+        "algorithm":"security.xml-external-entity-resolution-review/v1",
+        "policy":{
+            "id":format!("xml-external-entity-policy-sha256:{}", "a".repeat(64)),
+            "method":"post",
+            "media_type":"application/xml; charset=utf-8",
+            "control_model":"external_general_entity_declared_not_referenced",
+            "execution_mode":"owned_numeric_loopback_test"
+        },
+        "outcome":if positive {
+            "repeated_external_entity_resolution_observed"
+        } else {
+            "not_eligible"
+        },
+        "target":{
+            "request_count":if positive { 3 } else { 0 },
+            "request_body_bytes":if positive { 768 } else { 0 },
+            "response_bytes":if positive { 96 } else { 0 },
+            "complete":positive,
+            "accounting_complete":positive
+        },
+        "provider":{
+            "request_count":if positive { 12 } else { 0 },
+            "active_verification_count":if positive { 1 } else { 0 },
+            "preflight_clean":positive,
+            "control_callback_observed":false,
+            "candidate_callback_observed":positive,
+            "replay_callback_observed":positive,
+            "callback_targets_distinct":positive,
+            "event_identities_distinct":positive,
+            "cleanup_verified":positive,
+            "complete":positive
+        },
+        "item_projected":positive,
+        "semantic_effect":"not_performed",
+        "impact_validation":"not_performed",
+        "claim_limits":[
+            "not_confirmed_xxe",
+            "file_read_not_performed",
+            "data_exfiltration_not_performed",
+            "internal_network_access_not_performed",
+            "parser_identity_not_established",
+            "impact_validation_not_performed",
+            "source_authentication_not_established"
+        ]
+    })
+}
+
+fn xml_external_entity_review_item() -> Value {
+    let mut item = item(611);
+    item["capability_id"] = json!("xml.external-entity.repeated-outbound-interaction@1");
+    item["title"] = json!("Repeated correlated outbound interactions after XML inputs");
+    item["disposition"] = json!("needs_review");
+    item["claim_basis"] = json!("differential");
+    item["severity"] = Value::Null;
+    item["confidence_ppm"] = json!(900_000);
+    item["evidence_count"] = json!(8);
+    item["redacted_summary"] = json!("Two independently allocated callback targets received distinct correlated HTTP interactions after fixed candidate and replay XML documents; parser identity, semantic effect, exploitability, and impact remain unestablished.");
+    item["category"] = json!("XML external resource resolution");
+    item["cwe"] = json!("CWE-611");
+    item["remediation"] = json!({
+        "id":"web.remediation.xml-external-entity-policy@1",
+        "summary":"Disable unneeded external entity resolution and independently review the exact server-side XML parser policy before treating this observation as a vulnerability."
+    });
+    item["evidence_references"] = json!([]);
+    item["control_evidence_references"] =
+        json!(["evidence-0000", "evidence-0001", "evidence-0002"]);
+    item["candidate_evidence_references"] = json!([
+        "evidence-0003",
+        "evidence-0004",
+        "evidence-0005",
+        "evidence-0006",
+        "evidence-0007"
+    ]);
+    item
+}
+
+fn report_with_xml_external_entity_review(positive: bool) -> Value {
+    let mut document = report(if positive {
+        vec![xml_external_entity_review_item()]
+    } else {
+        Vec::new()
+    });
+    document["xml_external_entity_review"] = xml_external_entity_review_audit(positive);
+    document
+}
+
 fn websocket_review_audit() -> Value {
     json!({
         "schema": "security.websocket-review-audit/v1",
@@ -894,6 +983,303 @@ fn reject(value: &Value) {
 
 fn group(result: &Value, name: &str) -> Vec<Value> {
     result[name].as_array().unwrap().clone()
+}
+
+#[test]
+fn xml_external_entity_saved_audit_is_feature_independent_and_compared_by_facets() {
+    let positive = report_with_xml_external_entity_review(true);
+    let equal = compare(&positive, &positive);
+    assert_eq!(
+        equal["xml_external_entity_review_comparison"]["schema"],
+        "termivar-xml-external-entity-review-comparison/v1"
+    );
+    assert_eq!(
+        equal["xml_external_entity_review_comparison"]["status"],
+        "compared"
+    );
+    for facet in ["methodology", "coverage", "outcome"] {
+        assert_eq!(
+            equal["xml_external_entity_review_comparison"][facet]["status"],
+            "unchanged"
+        );
+    }
+    assert_eq!(group(&equal, "unchanged").len(), 1);
+    for name in ["only_in_before", "only_in_after", "changed"] {
+        assert!(group(&equal, name).is_empty());
+    }
+
+    let negative = report_with_xml_external_entity_review(false);
+    let changed = compare(&positive, &negative);
+    assert_eq!(
+        changed["xml_external_entity_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        changed["xml_external_entity_review_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        changed["xml_external_entity_review_comparison"]["outcome"]["status"],
+        "changed"
+    );
+    assert_eq!(group(&changed, "only_in_before").len(), 1);
+    assert!(group(&changed, "only_in_after").is_empty());
+
+    let mut rebound = positive.clone();
+    rebound["xml_external_entity_review"]["policy"]["id"] = json!(format!(
+        "xml-external-entity-policy-sha256:{}",
+        "b".repeat(64)
+    ));
+    let rebound_comparison = compare(&positive, &rebound);
+    assert_eq!(
+        rebound_comparison["xml_external_entity_review_comparison"]["methodology"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        rebound_comparison["xml_external_entity_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        rebound_comparison["xml_external_entity_review_comparison"]["methodology"]
+            ["changed_fields"],
+        json!(["policy"])
+    );
+    assert_eq!(
+        rebound_comparison["xml_external_entity_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+
+    let summary = import_assessment_summary(&bytes(&negative)).unwrap();
+    assert_eq!(summary.item_count(), 0);
+    for format in [
+        ComparisonFormat::Json,
+        ComparisonFormat::Markdown,
+        ComparisonFormat::Html,
+    ] {
+        let rendered = compare_reports(&bytes(&positive), &bytes(&negative), format).unwrap();
+        assert!(rendered.contains("xml-external-entity-review-comparison/v1"));
+        assert!(!rendered.contains("https://"));
+        assert!(!rendered.contains("<!DOCTYPE"));
+    }
+}
+
+#[test]
+fn xml_external_entity_saved_audit_rejects_unknown_raw_and_inconsistent_values() {
+    let valid = report_with_xml_external_entity_review(true);
+    let mutate = |path: &[&str], replacement: Value| {
+        let mut document = valid.clone();
+        let mut selected = &mut document;
+        for key in &path[..path.len() - 1] {
+            selected = &mut selected[*key];
+        }
+        selected[path[path.len() - 1]] = replacement;
+        reject(&document);
+    };
+    for (path, replacement) in [
+        (
+            &["xml_external_entity_review", "schema"][..],
+            json!("security.xml-external-entity-review-audit/v2"),
+        ),
+        (
+            &["xml_external_entity_review", "algorithm"][..],
+            json!("security.xml-external-entity-resolution-review/v2"),
+        ),
+        (
+            &["xml_external_entity_review", "policy", "id"][..],
+            json!("https://target.invalid/private"),
+        ),
+        (
+            &["xml_external_entity_review", "policy", "method"][..],
+            json!("put"),
+        ),
+        (
+            &["xml_external_entity_review", "policy", "media_type"][..],
+            json!("text/xml"),
+        ),
+        (
+            &["xml_external_entity_review", "target", "endpoint_reference"][..],
+            json!("/admin/xml"),
+        ),
+        (
+            &["xml_external_entity_review", "target", "request_count"][..],
+            json!(4),
+        ),
+        (
+            &["xml_external_entity_review", "target", "request_count"][..],
+            json!(true),
+        ),
+        (
+            &["xml_external_entity_review", "provider", "request_count"][..],
+            json!(15),
+        ),
+        (
+            &[
+                "xml_external_entity_review",
+                "provider",
+                "control_callback_observed",
+            ][..],
+            json!(true),
+        ),
+        (
+            &[
+                "xml_external_entity_review",
+                "provider",
+                "active_verification_count",
+            ][..],
+            json!(2),
+        ),
+        (
+            &[
+                "xml_external_entity_review",
+                "provider",
+                "event_identities_distinct",
+            ][..],
+            json!(false),
+        ),
+        (
+            &["xml_external_entity_review", "provider", "cleanup_verified"][..],
+            json!(false),
+        ),
+        (
+            &["xml_external_entity_review", "semantic_effect"][..],
+            json!("changed"),
+        ),
+        (
+            &["xml_external_entity_review", "impact_validation"][..],
+            json!("performed"),
+        ),
+    ] {
+        mutate(path, replacement);
+    }
+
+    let mut reordered_limits = valid.clone();
+    reordered_limits["xml_external_entity_review"]["claim_limits"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    reject(&reordered_limits);
+
+    let mut raw_field = valid.clone();
+    raw_field["xml_external_entity_review"]["xml_body"] =
+        json!("<!DOCTYPE x [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><x>&e;</x>");
+    reject(&raw_field);
+
+    let mut missing_audit = valid.clone();
+    missing_audit
+        .as_object_mut()
+        .unwrap()
+        .remove("xml_external_entity_review");
+    reject(&missing_audit);
+
+    let mut missing_item = valid.clone();
+    missing_item["items"] = json!([]);
+    missing_item["item_count"] = json!(0);
+    reject(&missing_item);
+
+    for (key, replacement) in [
+        ("subject_reference", json!("subject-0001")),
+        ("title", json!("Substituted XML observation")),
+        ("category", json!("substituted category")),
+        ("confidence_ppm", json!(899_999)),
+        ("evidence_count", json!(true)),
+    ] {
+        let mut document = valid.clone();
+        document["items"][0][key] = replacement;
+        reject(&document);
+    }
+
+    let mut substituted_summary = valid.clone();
+    substituted_summary["items"][0]["redacted_summary"] = json!("A substituted interpretation.");
+    reject(&substituted_summary);
+
+    let mut substituted_remediation = valid.clone();
+    substituted_remediation["items"][0]["remediation"]["id"] =
+        json!("web.remediation.substituted@1");
+    reject(&substituted_remediation);
+
+    let mut substituted_remediation_summary = valid.clone();
+    substituted_remediation_summary["items"][0]["remediation"]["summary"] =
+        json!("Substituted remediation.");
+    reject(&substituted_remediation_summary);
+
+    let mut atomic_differential = valid.clone();
+    atomic_differential["items"][0]["evidence_count"] = json!(1);
+    atomic_differential["items"][0]["evidence_references"] = json!(["evidence-0000"]);
+    atomic_differential["items"][0]["control_evidence_references"] = json!([]);
+    atomic_differential["items"][0]["candidate_evidence_references"] = json!([]);
+    reject(&atomic_differential);
+
+    let mut wrong_cardinality = valid.clone();
+    wrong_cardinality["items"][0]["evidence_count"] = json!(7);
+    wrong_cardinality["items"][0]["control_evidence_references"] =
+        json!(["evidence-0000", "evidence-0001"]);
+    reject(&wrong_cardinality);
+
+    let mut reordered_linkage = valid.clone();
+    reordered_linkage["items"][0]["control_evidence_references"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    reject(&reordered_linkage);
+
+    let mut gapped_linkage = valid.clone();
+    gapped_linkage["items"][0]["candidate_evidence_references"][4] = json!("evidence-0008");
+    reject(&gapped_linkage);
+
+    let mut duplicated_linkage = valid.clone();
+    duplicated_linkage["items"][0]["candidate_evidence_references"][0] = json!("evidence-0002");
+    reject(&duplicated_linkage);
+
+    let mut negative_with_item = report_with_xml_external_entity_review(false);
+    negative_with_item["items"] = json!([xml_external_entity_review_item()]);
+    negative_with_item["item_count"] = json!(1);
+    reject(&negative_with_item);
+
+    let mut empty_with_callback = report_with_xml_external_entity_review(false);
+    empty_with_callback["xml_external_entity_review"]["provider"]["candidate_callback_observed"] =
+        json!(true);
+    reject(&empty_with_callback);
+
+    let mut started_without_binding = report_with_xml_external_entity_review(false);
+    started_without_binding["xml_external_entity_review"]["outcome"] = json!("incomplete");
+    started_without_binding["xml_external_entity_review"]["target"]["request_count"] = json!(1);
+    started_without_binding["xml_external_entity_review"]["target"]["request_body_bytes"] =
+        json!(128);
+    started_without_binding["xml_external_entity_review"]["provider"]["request_count"] = json!(5);
+    reject(&started_without_binding);
+
+    let mut impossible_accounting = report_with_xml_external_entity_review(false);
+    impossible_accounting["xml_external_entity_review"]["outcome"] = json!("incomplete");
+    impossible_accounting["xml_external_entity_review"]["target"]["accounting_complete"] =
+        json!(true);
+    reject(&impossible_accounting);
+
+    let mut oversized_complete_response = valid.clone();
+    oversized_complete_response["xml_external_entity_review"]["target"]["response_bytes"] =
+        json!(49_153);
+    reject(&oversized_complete_response);
+
+    let mut stopped_with_complete_accounting = valid.clone();
+    stopped_with_complete_accounting["xml_external_entity_review"]["outcome"] = json!("incomplete");
+    stopped_with_complete_accounting["xml_external_entity_review"]["provider"]
+        ["cleanup_verified"] = json!(false);
+    stopped_with_complete_accounting["xml_external_entity_review"]["item_projected"] = json!(false);
+    stopped_with_complete_accounting["items"] = json!([]);
+    stopped_with_complete_accounting["item_count"] = json!(0);
+    reject(&stopped_with_complete_accounting);
+}
+
+#[test]
+fn xml_external_entity_item_contract_does_not_change_other_differential_items() {
+    let mut generic = item(612);
+    generic["disposition"] = json!("needs_review");
+    generic["claim_basis"] = json!("differential");
+    let document = report(vec![generic]);
+    let comparison = compare(&document, &document);
+    assert_eq!(group(&comparison, "unchanged").len(), 1);
+    for name in ["only_in_before", "only_in_after", "changed"] {
+        assert!(group(&comparison, name).is_empty());
+    }
 }
 
 fn synthetic_wordfence_notice_id(

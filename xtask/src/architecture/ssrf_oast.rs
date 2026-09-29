@@ -24,6 +24,9 @@ const SCANNER_SOURCE_ROOT: &str = "crates/termivar-scanner/src";
 const DOMAIN_SOURCE: &str = "crates/termivar-scanner/src/ssrf_oast_review.rs";
 const RUNTIME_ROOT_SOURCE: &str = "crates/termivar-scanner/src/web_runtime.rs";
 const RUNTIME_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/ssrf_oast_runtime.rs";
+const XML_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/xml_external_entity_runtime.rs";
+const WEB_ASSESSMENT_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/web_assessment.rs";
 const AUTHORITY_SOURCE: &str = "crates/termivar-scanner/src/web_runtime/authority.rs";
 const ACTION_SOURCE: &str = "crates/termivar-scanner/src/web_actions/native_review.rs";
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
@@ -87,7 +90,7 @@ const GATES: &[(u8, &str)] = &[
     (9, "one WebAssessmentRuntime"),
     (10, "one target broker"),
     (11, "one parent budget"),
-    (12, "one narrowing provider authority"),
+    (12, "two exclusive narrowing provider authorities"),
     (13, "maximum one resource"),
     (14, "maximum one query parameter"),
     (15, "exactly three target requests"),
@@ -127,6 +130,8 @@ struct ContractSources {
     domain: String,
     runtime_root: String,
     runtime: String,
+    xml_runtime: String,
+    web_assessment: String,
     authority: String,
     action: String,
     release_workflow: String,
@@ -159,6 +164,8 @@ impl ContractSources {
             domain: read(workspace_root, DOMAIN_SOURCE)?,
             runtime_root: read(workspace_root, RUNTIME_ROOT_SOURCE)?,
             runtime: read(workspace_root, RUNTIME_SOURCE)?,
+            xml_runtime: read(workspace_root, XML_RUNTIME_SOURCE)?,
+            web_assessment: read(workspace_root, WEB_ASSESSMENT_SOURCE)?,
             authority: read(workspace_root, AUTHORITY_SOURCE)?,
             action: read(workspace_root, ACTION_SOURCE)?,
             release_workflow: read(workspace_root, RELEASE_WORKFLOW)?,
@@ -179,6 +186,8 @@ fn contract_violations(sources: &ContractSources) -> Result<Vec<String>, Box<dyn
     let cli_features = manifest_features(&sources.cli_manifest)?;
     let domain = compact_whitespace(production_prefix(&sources.domain));
     let runtime = compact_whitespace(production_prefix(&sources.runtime));
+    let xml_runtime = compact_whitespace(production_prefix(&sources.xml_runtime));
+    let web_assessment = compact_whitespace(production_prefix(&sources.web_assessment));
     let runtime_root = compact_whitespace(production_prefix(&sources.runtime_root));
     let authority = compact_whitespace(production_prefix(&sources.authority));
     let action = compact_whitespace(production_prefix(&sources.action));
@@ -216,11 +225,27 @@ fn contract_violations(sources: &ContractSources) -> Result<Vec<String>, Box<dyn
 
     result.require(
         3,
-        cli_main.contains("fnscan_ssrf_oast_review_flags_conflict(")
+        cli_main.contains("fnscan_oast_review_flags_conflict(")
+            && cli_main.contains(
+                "ssrf_oast_review_enabled:bool,xml_external_entity_review_enabled:bool,",
+            )
+            && cli_main
+                .contains("ssrf_oast_review_enabled&&xml_external_entity_review_enabled")
+            && cli_main.contains(
+                "SSRFOASTqueryreviewandXMLexternal-entityreviewcannotbecombined",
+            )
             && cli_main
                 .contains("ssrf_oast_review_enabled&&profile!=Some(CliScanProfile::WebReview)")
-            && cli_main.contains("SSRFOASTqueryreviewrequires`--profileweb-review`"),
-        "CLI preflight no longer requires an explicit web-review profile",
+            && cli_main.contains("SSRFOASTqueryreviewrequires`--profileweb-review`")
+            && cli_main.contains(
+                "xml_external_entity_review_enabled&&profile!=Some(CliScanProfile::WebReview)",
+            )
+            && cli_main.contains("XMLexternal-entityreviewrequires`--profileweb-review`")
+            && cli_main
+                .matches("scan_oast_review_flags_conflict(profile,ssrf_oast_review,xml_external_entity_review)")
+                .count()
+                == 1,
+        "shared CLI preflight no longer rejects combined reviews or requires explicit web-review",
     );
 
     result.require(
@@ -229,7 +254,17 @@ fn contract_violations(sources: &ContractSources) -> Result<Vec<String>, Box<dyn
             && cli_main.contains("ssrf_oast_policy:Option<PathBuf>")
             && cli_main.contains("requires_all=[\"profile\",\"ssrf_oast_policy\"]")
             && cli_main.contains("requires_all=[\"profile\",\"ssrf_oast_review\"]")
-            && cli_main.contains("requires=\"ssrf_oast_policy\"")
+            && cli_main.matches("group=\"oast_review_policy\"").count() == 2
+            && cli_main.matches("requires=\"oast_review_policy\"").count() == 3
+            && cli_main.contains(
+                "conflicts_with_all=[\"oast_admin_token_file\",\"oast_admin_token_stdin\"]",
+            )
+            && cli_main.contains(
+                "conflicts_with_all=[\"oast_admin_token_env\",\"oast_admin_token_stdin\"]",
+            )
+            && cli_main.contains(
+                "conflicts_with_all=[\"oast_admin_token_env\",\"oast_admin_token_file\",\"auth_stdin\"]",
+            )
             && cli_auth.contains(
                 "letpolicy_file=policy_file.ok_or(SsrfOastReviewInputError::MissingPolicy)?",
             )
@@ -323,17 +358,27 @@ fn contract_violations(sources: &ContractSources) -> Result<Vec<String>, Box<dyn
         .scanner_sources
         .iter()
         .filter_map(|(path, source)| {
-            source
-                .contains(".mint_native_oast_provider(")
-                .then_some(path.as_str())
+            let count = source.matches(".mint_native_oast_provider(").count();
+            (count != 0).then(|| (path.clone(), count))
         })
-        .collect::<Vec<_>>();
+        .collect::<BTreeMap<_, _>>();
+    let expected_mint_callers = BTreeMap::from([
+        ("web_runtime/ssrf_oast_runtime.rs".to_owned(), 1_usize),
+        (
+            "web_runtime/xml_external_entity_runtime.rs".to_owned(),
+            1_usize,
+        ),
+    ]);
     result.require(
         12,
-        mint_callers == ["web_runtime/ssrf_oast_runtime.rs"]
+        mint_callers == expected_mint_callers
             && runtime.matches(".mint_native_oast_provider(").count() == 1
-            && authority.contains("NativeOastProviderAdapter::mint("),
-        "native-provider authority is not minted exactly once by the SSRF child through shared authority",
+            && xml_runtime.matches(".mint_native_oast_provider(").count() == 1
+            && authority.contains("NativeOastProviderAdapter::mint(")
+            && web_assessment.contains(
+                "ifself.xml_external_entity_review.is_some()&&self.ssrf_oast_review.is_some(){returnErr(WebAssessmentRuntimeError::XmlExternalEntitySsrfOastConflict);}",
+            ),
+        "native-provider authority is not minted exactly once by each mutually exclusive SSRF/XML child through shared authority",
     );
 
     result.require(
@@ -1131,6 +1176,23 @@ mod tests {
         );
         assert_gate_fails(&mutation, 3);
 
+        let mut mutation = sources.clone();
+        mutation.cli_main = mutation.cli_main.replace(
+            "ssrf_oast_review_enabled && xml_external_entity_review_enabled",
+            "false",
+        );
+        assert_ne!(mutation.cli_main, sources.cli_main);
+        assert_gate_fails(&mutation, 3);
+
+        let mut mutation = sources.clone();
+        mutation.cli_main = mutation.cli_main.replacen(
+            "group = \"oast_review_policy\"",
+            "group = \"ssrf_oast_policy\"",
+            1,
+        );
+        assert_ne!(mutation.cli_main, sources.cli_main);
+        assert_gate_fails(&mutation, 4);
+
         let mut mutation = sources;
         mutation.cli_auth_input = mutation.cli_auth_input.replace(
             ".ok_or(SsrfOastReviewInputError::MissingPolicy)?",
@@ -1195,11 +1257,48 @@ mod tests {
         );
         assert_gate_fails(&mutation, 11);
 
-        let mut mutation = sources;
+        let mut mutation = sources.clone();
         mutation.scanner_sources.push((
             "plugin.rs".to_owned(),
             "fn escape(authority: Authority, config: Config) { let _ = authority.mint_native_oast_provider(config); }".to_owned(),
         ));
+        assert_gate_fails(&mutation, 12);
+
+        let mut mutation = sources.clone();
+        for (path, source) in &mut mutation.scanner_sources {
+            if path == "web_runtime/xml_external_entity_runtime.rs" {
+                *source = source.replace(
+                    ".mint_native_oast_provider(",
+                    ".bypass_native_oast_provider(",
+                );
+            }
+        }
+        mutation.xml_runtime = mutation.xml_runtime.replace(
+            ".mint_native_oast_provider(",
+            ".bypass_native_oast_provider(",
+        );
+        assert_gate_fails(&mutation, 12);
+
+        let mut mutation = sources.clone();
+        for (path, source) in &mut mutation.scanner_sources {
+            if path == "web_runtime/xml_external_entity_runtime.rs" {
+                *source = append_production(
+                    source,
+                    "fn second_mint(authority: Authority, config: Config) { let _ = authority.mint_native_oast_provider(config); }",
+                );
+            }
+        }
+        mutation.xml_runtime = append_production(
+            &mutation.xml_runtime,
+            "fn second_mint(authority: Authority, config: Config) { let _ = authority.mint_native_oast_provider(config); }",
+        );
+        assert_gate_fails(&mutation, 12);
+
+        let mut mutation = sources;
+        mutation.web_assessment = mutation.web_assessment.replace(
+            "self.xml_external_entity_review.is_some() && self.ssrf_oast_review.is_some()",
+            "self.xml_external_entity_review.is_some() || self.ssrf_oast_review.is_some()",
+        );
         assert_gate_fails(&mutation, 12);
     }
 
