@@ -21,7 +21,7 @@ use crate::{
     KnowledgeBase, VerificationCase,
 };
 
-fn request_broker(root: &Url) -> HttpRequestBroker {
+fn broker_for_test(root: &Url) -> HttpRequestBroker {
     let policy = HttpEvidencePolicy::new([root.clone()], Duration::from_secs(2), 4 * 1024).unwrap();
     HttpRequestBroker::new_unmetered(policy).unwrap()
 }
@@ -198,9 +198,12 @@ fn construction_is_deterministic_and_seeds_are_reserved_non_secret_values() {
 fn debug_output_redacts_root_and_both_seed_values() {
     let root = Url::parse("https://example.test/opaque-root-marker").unwrap();
     let seeds = NativeWebReviewSeeds::from_authorized_origin(&root).unwrap();
-    let profile =
-        profile_without_observer(request_broker(&root), root.clone(), Some("next".to_owned()))
-            .unwrap();
+    let profile = profile_without_observer(
+        broker_for_test(&root),
+        root.clone(),
+        Some("next".to_owned()),
+    )
+    .unwrap();
 
     let debug = format!("{profile:?}");
     assert!(!debug.contains(root.as_str()));
@@ -222,7 +225,7 @@ fn debug_output_redacts_root_and_both_seed_values() {
 #[test]
 fn query_state_and_invalid_query_names_fail_closed() {
     let root = Url::parse("https://example.test/review").unwrap();
-    let requests = request_broker(&root);
+    let requests = broker_for_test(&root);
     let with_query = Url::parse("https://example.test/review?existing=value").unwrap();
     assert!(matches!(
         NativeWebReviewExecutorProfile::new_without_observer_for_test(
@@ -294,7 +297,7 @@ fn seeds_cannot_be_rebound_across_authorized_origins() {
 
     assert!(matches!(
         NativeWebReviewExecutorProfile::new_without_observer_for_test(
-            request_broker(&root),
+            broker_for_test(&root),
             root,
             other_seeds,
             Some("next".to_owned()),
@@ -306,7 +309,7 @@ fn seeds_cannot_be_rebound_across_authorized_origins() {
 #[test]
 fn absent_query_parameter_omits_redirect_executor_and_both_routes() {
     let root = Url::parse("https://example.test/review").unwrap();
-    let profile = profile_without_observer(request_broker(&root), root, None).unwrap();
+    let profile = profile_without_observer(broker_for_test(&root), root, None).unwrap();
     let mut registry = DecisionExecutorRegistry::new();
     let report = profile.install(&mut registry).unwrap();
 
@@ -338,7 +341,7 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
         (false, None, None, None, Some("item")),
     ] {
         let profile = NativeWebReviewExecutorProfile::build(
-            request_broker(&root),
+            broker_for_test(&root),
             root.clone(),
             NativeWebReviewSeeds::from_authorized_origin(&root).unwrap(),
             None,
@@ -412,7 +415,7 @@ fn xss_only_subject_uses_one_exact_decision_executor_and_completeness_action() {
             .unwrap(),
         );
         let profile = NativeWebReviewExecutorProfile::new_structural_only(
-            request_broker(&root),
+            broker_for_test(&root),
             root.clone(),
             seeds,
             observer,
@@ -471,7 +474,7 @@ async fn enabled_native_action_without_executor_route_still_fails_closed() {
 #[test]
 fn installation_is_atomic_idempotent_and_preserves_exact_strategy_support() {
     let root = Url::parse("https://example.test/review").unwrap();
-    let requests = request_broker(&root);
+    let requests = broker_for_test(&root);
     let profile =
         profile_without_observer(requests.clone(), root.clone(), Some("return_to".to_owned()))
             .unwrap();
@@ -525,9 +528,12 @@ fn installation_is_atomic_idempotent_and_preserves_exact_strategy_support() {
 async fn passive_and_active_routes_share_each_exact_executor_and_materialize_pairs() {
     let (root, captured) = serve_capturing(6).await;
     let seeds = NativeWebReviewSeeds::from_authorized_origin(&root).unwrap();
-    let profile =
-        profile_without_observer(request_broker(&root), root.clone(), Some("next".to_owned()))
-            .unwrap();
+    let profile = profile_without_observer(
+        broker_for_test(&root),
+        root.clone(),
+        Some("next".to_owned()),
+    )
+    .unwrap();
     let mut registry = DecisionExecutorRegistry::new();
     profile.install(&mut registry).unwrap();
     let adapter = DecisionRunnerAdapter::new(registry);

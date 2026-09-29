@@ -2046,11 +2046,10 @@ fn inspect_web_assessment_composition(source: &str) -> Result<Vec<String>, syn::
     let mut visitor = AssessmentCompositionVisitor::default();
     visitor.visit_file(&syntax);
     let mut violations = visitor.violations.into_iter().collect::<Vec<_>>();
-    if !web_assessment_authority_partition_is_exact(&syntax) {
-        violations.push(
-            "origin assessment must retain the exact four-way TLS/owned-HTTPS cfg and authority-selection partition in WebAssessmentRuntimeBuilder::build"
-                .to_owned(),
-        );
+    if let Some(detail) = web_assessment_authority_partition_violation(&syntax) {
+        violations.push(format!(
+            "origin assessment must retain the exact four-way TLS/owned-HTTPS cfg and authority-selection partition in WebAssessmentRuntimeBuilder::build; {detail}"
+        ));
     }
     if visitor.authority_calls != 4
         || visitor.tls_authority_calls != 2
@@ -2219,7 +2218,7 @@ fn item_declares_any_identifier(item: &syn::Item, forbidden: &[&str]) -> bool {
     })
 }
 
-fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
+fn web_assessment_authority_partition_violation(syntax: &syn::File) -> Option<&'static str> {
     let mut build_methods = Vec::new();
     let mut shared_imports = Vec::new();
     let mut profile_imports = Vec::new();
@@ -2346,7 +2345,7 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
         }
     }
     let [method] = build_methods.as_slice() else {
-        return false;
+        return Some("expected exactly one WebAssessmentRuntimeBuilder::build method");
     };
     if builder_impls != 1
         || !builder_impls_are_unconditional
@@ -2357,7 +2356,7 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
         || forbidden_prelude_imports != 0
         || forbidden_prelude_items != 0
     {
-        return false;
+        return Some("builder implementation or reviewed import inventory drifted");
     }
     let production_imports_are_exact = reviewed_imports
         .values()
@@ -2378,16 +2377,16 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
                 && receiver.mutability.is_none()
                 && receiver.colon_token.is_none())
     {
-        return false;
+        return Some("build method signature drifted");
     }
     let authority_locals = direct_locals_binding_normalized_identifier(&method.block, "authority");
     let [both, tls, owned, plain] = authority_locals.as_slice() else {
-        return false;
+        return Some("expected exactly four direct authority locals");
     };
     let owned_profile_locals =
         direct_locals_binding_normalized_identifier(&method.block, "owned_xml_https_test_profile");
     let [owned_profile] = owned_profile_locals.as_slice() else {
-        return false;
+        return Some("expected exactly one direct owned HTTPS profile local");
     };
     let root_locals = direct_locals_binding_normalized_identifier(&method.block, "root");
     let policy_locals = direct_locals_binding_normalized_identifier(&method.block, "policy");
@@ -2398,7 +2397,7 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
         policy_locals.as_slice(),
         allowance_locals.as_slice(),
     ) else {
-        return false;
+        return Some("root, policy, or optional-verification prelude local inventory drifted");
     };
     let production_prelude = authority_root_binding_is_exact(root)
         && authority_policy_binding_is_exact(policy)
@@ -2412,9 +2411,9 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
     ) {
         (true, false) => AssessmentBuildProfile::Production,
         (false, true) => AssessmentBuildProfile::Fixture,
-        _ => return false,
+        _ => return Some("production/fixture prelude or import profile was not exact"),
     };
-    [
+    if ![
         "assessment_semantic_limits",
         "canonicalize_root",
         "build_root_api_visibility_runtime",
@@ -2423,13 +2422,22 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
     ]
     .into_iter()
     .all(|binding| all_pattern_binding_count(&method.block, binding) == 0)
-        && ["root", "policy", "optional_active_verifications"]
+        || !["root", "policy", "optional_active_verifications"]
             .into_iter()
             .all(|binding| all_local_binding_count(&method.block, binding) == 1)
-        && all_pattern_binding_count(&method.block, "authority") == 4
-        && authority_prelude_is_closed(method, build_profile)
-        && owned_profile_selection_is_exact(owned_profile)
-        && authority_binding_is_exact(both)
+        || all_pattern_binding_count(&method.block, "authority") != 4
+    {
+        return Some("protected build binding inventory drifted");
+    }
+    if !authority_prelude_is_closed(method, build_profile) {
+        return Some(
+            "build prelude contains an unreviewed try, return, macro, item, or control-flow escape",
+        );
+    }
+    if !owned_profile_selection_is_exact(owned_profile) {
+        return Some("owned HTTPS profile selection drifted");
+    }
+    if !(authority_binding_is_exact(both)
         && local_has_exact_cfg(
             both,
             "all(feature=\"tls-observation\",feature=\"xml-external-entity-owned-https-test-profile\")",
@@ -2437,8 +2445,11 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
         && both.init.as_ref().is_some_and(|initializer| {
             initializer.diverge.is_none()
                 && both_feature_authority_selection_is_exact(&initializer.expr)
-        })
-        && authority_binding_is_exact(tls)
+        }))
+    {
+        return Some("combined TLS/owned-HTTPS authority branch drifted");
+    }
+    if !(authority_binding_is_exact(tls)
         && local_has_exact_cfg(
             tls,
             "all(feature=\"tls-observation\",not(feature=\"xml-external-entity-owned-https-test-profile\"))",
@@ -2446,8 +2457,11 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
         && tls.init.as_ref().is_some_and(|initializer| {
             initializer.diverge.is_none()
                 && tls_authority_selection_is_exact(&initializer.expr)
-        })
-        && authority_binding_is_exact(owned)
+        }))
+    {
+        return Some("TLS-only authority branch drifted");
+    }
+    if !(authority_binding_is_exact(owned)
         && local_has_exact_cfg(
             owned,
             "all(not(feature=\"tls-observation\"),feature=\"xml-external-entity-owned-https-test-profile\")",
@@ -2455,8 +2469,11 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
         && owned.init.as_ref().is_some_and(|initializer| {
             initializer.diverge.is_none()
                 && owned_authority_selection_is_exact(&initializer.expr)
-        })
-        && authority_binding_is_exact(plain)
+        }))
+    {
+        return Some("owned-HTTPS-only authority branch drifted");
+    }
+    if !(authority_binding_is_exact(plain)
         && local_has_exact_cfg(
             plain,
             "all(not(feature=\"tls-observation\"),not(feature=\"xml-external-entity-owned-https-test-profile\"))",
@@ -2465,8 +2482,14 @@ fn web_assessment_authority_partition_is_exact(syntax: &syn::File) -> bool {
             initializer.diverge.is_none()
                 && authority_constructor_kind(&initializer.expr)
                     == Some(AssessmentAuthorityConstructor::Plain)
-        })
-        && block_consumes_authority_as_exact_runtime_field(&method.block)
+        }))
+    {
+        return Some("plain authority branch drifted");
+    }
+    if !block_consumes_authority_as_exact_runtime_field(&method.block) {
+        return Some("selected authority is not consumed as the exact runtime field");
+    }
+    None
 }
 
 fn authority_prelude_is_closed(
@@ -2486,6 +2509,19 @@ fn authority_prelude_is_closed(
     }
 
     impl<'ast> Visit<'ast> for PreludeVisitor {
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            // The four reviewed authority locals are validated independently by
+            // their exact cfg, selector, constructor arguments, and final
+            // runtime consumption. Skip only those complete local subtrees so
+            // their nested `?` expressions do not enter the whole-build try
+            // inventory. A malformed branch or any extra constructor remains
+            // visible to this visitor.
+            if reviewed_authority_local_is_exact(local) {
+                return;
+            }
+            visit::visit_local(self, local);
+        }
+
         fn visit_macro(&mut self, expression: &'ast syn::Macro) {
             let allowed_format = expression.path.leading_colon.is_none()
                 && expression.path.segments.len() == 1
@@ -2593,19 +2629,6 @@ fn authority_prelude_is_closed(
         invalid_tries: 0,
     };
     visitor.visit_block(&method.block);
-    // The four authority constructor families are already pinned below by
-    // their exact cfg locals, selector shapes, arguments, and final runtime
-    // consumption. Do not duplicate that inventory in the whole-build `?`
-    // audit: syn legitimately presents those calls through different arm and
-    // block wrappers, while the authority-specific checks normalize them.
-    for authority_try in [
-        "authority_plain",
-        "authority_tls",
-        "authority_owned_xml_https",
-        "authority_tls_owned_xml_https",
-    ] {
-        visitor.reviewed_tries.remove(authority_try);
-    }
     let production_error_returns = BTreeMap::from([
         ("AuthorizationReviewConflict", 1_usize),
         ("InsecureAuthorizationReviewTransport", 1),
@@ -2670,6 +2693,35 @@ fn authority_prelude_is_closed(
         && visitor.forbidden_control_flow == 0
         && visitor.invalid_tries == 0
         && profile_is_exact
+}
+
+fn reviewed_authority_local_is_exact(local: &syn::Local) -> bool {
+    if !authority_binding_is_exact(local) {
+        return false;
+    }
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    if initializer.diverge.is_some() {
+        return false;
+    }
+    (local_has_exact_cfg(
+        local,
+        "all(feature=\"tls-observation\",feature=\"xml-external-entity-owned-https-test-profile\")",
+    ) && both_feature_authority_selection_is_exact(&initializer.expr))
+        || (local_has_exact_cfg(
+            local,
+            "all(feature=\"tls-observation\",not(feature=\"xml-external-entity-owned-https-test-profile\"))",
+        ) && tls_authority_selection_is_exact(&initializer.expr))
+        || (local_has_exact_cfg(
+            local,
+            "all(not(feature=\"tls-observation\"),feature=\"xml-external-entity-owned-https-test-profile\")",
+        ) && owned_authority_selection_is_exact(&initializer.expr))
+        || (local_has_exact_cfg(
+            local,
+            "all(not(feature=\"tls-observation\"),not(feature=\"xml-external-entity-owned-https-test-profile\"))",
+        ) && authority_constructor_kind(&initializer.expr)
+            == Some(AssessmentAuthorityConstructor::Plain))
 }
 
 fn web_assessment_build_typed_error_return_variant(
@@ -4069,18 +4121,31 @@ fn expression_tail(expression: &syn::Expr) -> Option<&syn::Expr> {
 }
 
 fn authority_constructor_kind(expression: &syn::Expr) -> Option<AssessmentAuthorityConstructor> {
-    let expression = expression_tail(expression)?;
+    let expression = exact_authority_expression_tail(expression)?;
     let syn::Expr::Try(attempt) = expression else {
         return None;
     };
-    let expression = expression_tail(&attempt.expr)?;
+    if !attempt.attrs.is_empty() {
+        return None;
+    }
+    let expression = exact_authority_expression_tail(&attempt.expr)?;
     let syn::Expr::Call(call) = expression else {
         return None;
     };
     let syn::Expr::Path(path) = call.func.as_ref() else {
         return None;
     };
-    if path.qself.is_some() || path.path.segments.len() != 2 {
+    if !call.attrs.is_empty()
+        || !path.attrs.is_empty()
+        || path.qself.is_some()
+        || path.path.leading_colon.is_some()
+        || path.path.segments.len() != 2
+        || path
+            .path
+            .segments
+            .iter()
+            .any(|segment| !matches!(segment.arguments, syn::PathArguments::None))
+    {
         return None;
     }
     let segments = path_segments(&path.path);
@@ -4103,14 +4168,29 @@ fn authority_constructor_kind(expression: &syn::Expr) -> Option<AssessmentAuthor
         AssessmentAuthorityConstructor::OwnedXmlHttps
         | AssessmentAuthorityConstructor::TlsOwnedXmlHttps => 5,
     };
-    (call.attrs.is_empty()
-        && call.args.len() == expected_arguments
+    (call.args.len() == expected_arguments
         && expression_is_borrowed_root_url(&call.args[0])
         && expression_is_path_ident(&call.args[1], "policy")
         && expression_is_exact_runtime_budget(&call.args[2])
         && expression_is_self_field(&call.args[3], "cancellation")
         && (expected_arguments == 4 || expression_is_path_ident(&call.args[4], "profile")))
     .then_some(kind)
+}
+
+fn exact_authority_expression_tail(expression: &syn::Expr) -> Option<&syn::Expr> {
+    match expression {
+        syn::Expr::Block(block) if block.attrs.is_empty() && block.label.is_none() => {
+            exact_authority_expression_tail(single_tail_expression(&block.block)?)
+        },
+        syn::Expr::Group(group) if group.attrs.is_empty() => {
+            exact_authority_expression_tail(&group.expr)
+        },
+        syn::Expr::Paren(parenthesized) if parenthesized.attrs.is_empty() => {
+            exact_authority_expression_tail(&parenthesized.expr)
+        },
+        syn::Expr::Block(_) | syn::Expr::Group(_) | syn::Expr::Paren(_) => None,
+        _ => Some(expression),
+    }
 }
 
 fn expression_is_exact_runtime_budget(expression: &syn::Expr) -> bool {
@@ -15357,6 +15437,30 @@ mod tests {
             ),
             (
                 source.replacen(
+                    "SharedWebRuntimeAuthority::new_exact_origin(&root.url",
+                    "::SharedWebRuntimeAuthority::new_exact_origin(&root.url",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "SharedWebRuntimeAuthority::new_exact_origin(&root.url",
+                    "#[allow(unused)] SharedWebRuntimeAuthority::new_exact_origin(&root.url",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
+                    "SharedWebRuntimeAuthority::new_exact_origin(&root.url",
+                    "SharedWebRuntimeAuthority::new_exact_origin::<_, _, _, _>(&root.url",
+                    1,
+                ),
+                "exact four-way TLS/owned-HTTPS cfg",
+            ),
+            (
+                source.replacen(
                     "fn build(self) -> Result<WebAssessmentRuntime, ()> {",
                     "fn build(self) -> Result<WebAssessmentRuntime, ()> {\n                    if alternate_runtime_enabled() { return evil::build_runtime(self); }",
                     1,
@@ -15709,13 +15813,6 @@ mod tests {
             (
                 source.replace(
                     "Ok(WebAssessmentRuntime { authority })",
-                    "let _extra_authority = SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?;\n                    Ok(WebAssessmentRuntime { authority })",
-                ),
-                "exact mutually exclusive",
-            ),
-            (
-                source.replace(
-                    "Ok(WebAssessmentRuntime { authority })",
                     "let selected_authority = authority;\n                    Ok(WebAssessmentRuntime { authority: selected_authority })",
                 ),
                 "exact four-way TLS/owned-HTTPS cfg",
@@ -15729,6 +15826,20 @@ mod tests {
             let violations = inspect_web_assessment_composition(&mutation)
                 .unwrap()
                 .join("\n");
+            assert!(violations.contains(needle), "{violations}");
+        }
+
+        let extra_constructor = source.replace(
+            "Ok(WebAssessmentRuntime { authority })",
+            "let _extra_authority = SharedWebRuntimeAuthority::new_exact_origin(&root.url, policy, self.limits.runtime_budget(optional_active_verifications), self.cancellation)?;\n                    Ok(WebAssessmentRuntime { authority })",
+        );
+        let violations = inspect_web_assessment_composition(&extra_constructor)
+            .unwrap()
+            .join("\n");
+        for needle in [
+            "build prelude contains an unreviewed try",
+            "exact mutually exclusive",
+        ] {
             assert!(violations.contains(needle), "{violations}");
         }
     }

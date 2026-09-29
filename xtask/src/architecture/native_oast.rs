@@ -3247,16 +3247,21 @@ fn owned_xml_profile_global_reference_violations(sources: &[(String, String)]) -
         })
         .collect::<BTreeMap<_, _>>();
     let expected = EXPECTED.iter().copied().collect::<BTreeMap<_, _>>();
-    let alias_surface_is_closed = parsed.iter().all(|(_, syntax)| {
-        syntax
-            .as_ref()
-            .is_ok_and(scanner_profile_alias_surface_is_closed)
-    });
-    if actual == expected && alias_surface_is_closed {
+    let alias_surface_violations = parsed
+        .iter()
+        .flat_map(|(path, syntax)| match syntax {
+            Ok(syntax) => scanner_profile_alias_surface_violations(syntax)
+                .into_iter()
+                .map(|violation| format!("{path}: {violation}"))
+                .collect::<Vec<_>>(),
+            Err(error) => vec![format!("{path}: source did not parse: {error}")],
+        })
+        .collect::<Vec<_>>();
+    if actual == expected && alias_surface_violations.is_empty() {
         Vec::new()
     } else {
         vec![format!(
-            "termivar-scanner owned XML HTTPS transport profile must retain only its reviewed definition, canonical re-export, and three exact consumers; expected {expected:?}, observed {actual:?}, alias surface closed: {alias_surface_is_closed}"
+            "termivar-scanner owned XML HTTPS transport profile must retain only its reviewed definition, canonical re-export, and three exact consumers; expected {expected:?}, observed {actual:?}, alias surface violations: {alias_surface_violations:?}"
         )]
     }
 }
@@ -3315,9 +3320,9 @@ fn owned_profile_semantic_reference_count(syntax: &syn::File) -> usize {
     visitor.count
 }
 
-fn scanner_profile_alias_surface_is_closed(syntax: &syn::File) -> bool {
+fn scanner_profile_alias_surface_violations(syntax: &syn::File) -> BTreeSet<&'static str> {
     struct AliasVisitor {
-        closed: bool,
+        violations: BTreeSet<&'static str>,
     }
 
     impl<'ast> Visit<'ast> for AliasVisitor {
@@ -3373,7 +3378,8 @@ fn scanner_profile_alias_surface_is_closed(syntax: &syn::File) -> bool {
                     || profile_alias
                     || dangerous_glob
                 {
-                    self.closed = false;
+                    self.violations
+                        .insert("protected import aliases or re-exports the profile surface");
                 }
             }
             visit::visit_item_use(self, item);
@@ -3381,14 +3387,16 @@ fn scanner_profile_alias_surface_is_closed(syntax: &syn::File) -> bool {
 
         fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
             if type_mentions_owned_xml_profile(&item.ty) {
-                self.closed = false;
+                self.violations
+                    .insert("type alias references the profile type");
             }
             visit::visit_item_type(self, item);
         }
 
         fn visit_impl_item_type(&mut self, item: &'ast syn::ImplItemType) {
             if type_mentions_owned_xml_profile(&item.ty) {
-                self.closed = false;
+                self.violations
+                    .insert("associated type aliases the profile type");
             }
             visit::visit_impl_item_type(self, item);
         }
@@ -3399,37 +3407,58 @@ fn scanner_profile_alias_surface_is_closed(syntax: &syn::File) -> bool {
                 .as_ref()
                 .is_some_and(|(_, ty)| type_mentions_owned_xml_profile(ty))
             {
-                self.closed = false;
+                self.violations
+                    .insert("trait associated type aliases the profile type");
             }
             visit::visit_trait_item_type(self, item);
         }
 
         fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
-            let tokens = compact_whitespace(&item.mac.tokens.to_string()).replace("r#", "");
-            if tokens.contains("http_evidence")
-                || tokens.contains("request_broker")
-                || tokens.contains("OwnedXmlHttpsTestTransportProfile")
+            if item.ident.is_some()
+                && macro_tokens_contain_protected_profile_identifier(&item.mac.tokens)
             {
-                self.closed = false;
+                self.violations
+                    .insert("macro definition references the protected profile surface");
             }
             visit::visit_item_macro(self, item);
         }
 
         fn visit_macro(&mut self, expression: &'ast syn::Macro) {
-            let tokens = compact_whitespace(&expression.tokens.to_string()).replace("r#", "");
-            if tokens.contains("http_evidence")
-                || tokens.contains("request_broker")
-                || tokens.contains("OwnedXmlHttpsTestTransportProfile")
-            {
-                self.closed = false;
+            if macro_tokens_contain_protected_profile_identifier(&expression.tokens) {
+                self.violations
+                    .insert("macro invocation references the protected profile surface");
             }
             visit::visit_macro(self, expression);
         }
     }
 
-    let mut visitor = AliasVisitor { closed: true };
+    let mut visitor = AliasVisitor {
+        violations: BTreeSet::new(),
+    };
     visitor.visit_file(syntax);
-    visitor.closed
+    visitor.violations
+}
+
+fn macro_tokens_contain_protected_profile_identifier(tokens: &proc_macro2::TokenStream) -> bool {
+    [
+        "http_evidence",
+        "request_broker",
+        "OwnedXmlHttpsTestTransportProfile",
+    ]
+    .into_iter()
+    .any(|identifier| macro_tokens_contain_identifier(tokens, identifier))
+}
+
+fn macro_tokens_contain_identifier(tokens: &proc_macro2::TokenStream, expected: &str) -> bool {
+    tokens.clone().into_iter().any(|token| match token {
+        proc_macro2::TokenTree::Group(group) => {
+            macro_tokens_contain_identifier(&group.stream(), expected)
+        },
+        proc_macro2::TokenTree::Ident(identifier) => {
+            normalize_identifier(&identifier.to_string()) == expected
+        },
+        proc_macro2::TokenTree::Literal(_) | proc_macro2::TokenTree::Punct(_) => false,
+    })
 }
 
 fn scanner_provider_consumer_violations(sources: &[(String, String)]) -> Vec<String> {
@@ -6657,6 +6686,21 @@ mod tests {
             !owned_xml_profile_global_reference_violations(&production_macro_reference).is_empty()
         );
 
+        let mut production_macro_alias_invocation = valid.clone();
+        production_macro_alias_invocation[0]
+            .1
+            .push_str("\nalias_module!(crate::http_evidence => hidden);");
+        assert!(
+            !owned_xml_profile_global_reference_violations(&production_macro_alias_invocation)
+                .is_empty()
+        );
+
+        let mut production_macro_alias = valid.clone();
+        production_macro_alias[0].1.push_str(
+            "\nmacro_rules! alias_profile_module { () => { use crate::http_evidence as hidden; }; }",
+        );
+        assert!(!owned_xml_profile_global_reference_violations(&production_macro_alias).is_empty());
+
         valid.push((
             "http_evidence/passive_review.rs".to_owned(),
             "pub(crate) type AlternateOwnedProfile = super::OwnedXmlHttpsTestTransportProfile;"
@@ -7364,58 +7408,117 @@ mod tests {
             "repository native OAST client drifted from its fixed transport contract"
         );
 
-        for mutation in [
-            production.replacen("RedirectPolicy::none()", "RedirectPolicy::limited(1)", 1),
-            production.replacen(".no_proxy()", ".proxy(proxy)", 1),
-            production.replacen(
+        for (name, mutation) in [
+            (
+                "redirect policy",
+                production.replacen("RedirectPolicy::none()", "RedirectPolicy::limited(1)", 1),
+            ),
+            (
+                "ambient proxy",
+                production.replacen(".no_proxy()", ".proxy(proxy)", 1),
+            ),
+            (
+                "HTTPS-only selection",
+                production.replacen(
                 ".https_only(origin.scheme() == \"https\")",
                 ".https_only(true)",
                 1,
+                ),
             ),
-            production.replacen(
+            (
+                "fixed builder shadow",
+                production.replacen(
                 "fn fixed_client_builder(origin: &Url) -> reqwest::ClientBuilder",
                 "fn fixed_client_builder(origin: &Url) -> reqwest::ClientBuilder { let _ = origin; reqwest::Client::builder() } fn discarded_fixed_client_builder(origin: &Url) -> reqwest::ClientBuilder",
                 1,
+                ),
             ),
-            format!("mod reqwest {{ pub use ::reqwest::*; }}\n{production}"),
-            production.replacen("Engine as _", "Engine as DecodeEngine", 1),
-            format!("mod base64 {{ pub use ::base64::*; }}\n{production}"),
-            production.replacen(
+            (
+                "reqwest shadow module",
+                production.replacen(
+                    "use std::",
+                    "mod reqwest { pub use ::reqwest::*; }\n\nuse std::",
+                    1,
+                ),
+            ),
+            (
+                "base64 trait alias",
+                production.replacen("Engine as _", "Engine as DecodeEngine", 1),
+            ),
+            (
+                "base64 shadow module",
+                production.replacen(
+                    "use std::",
+                    "mod base64 { pub use ::base64::*; }\n\nuse std::",
+                    1,
+                ),
+            ),
+            (
+                "base64 cfg widening",
+                production.replacen(
                 "#[cfg(feature = \"owned-https-test-profile\")]\nuse base64",
                 "#[cfg(any(feature = \"owned-https-test-profile\", test))]\nuse base64",
                 1,
+                ),
             ),
-            production.replacen(
+            (
+                "constructor attribute",
+                production.replacen(
                 "    pub fn new_owned_https_test_profile(",
                 "    #[allow(dead_code)]\n    pub fn new_owned_https_test_profile(",
                 1,
+                ),
             ),
-            production.replacen(".tls_built_in_root_certs(false)", "", 1),
-            production.replacen(
+            (
+                "ambient TLS roots",
+                production.replacen(".tls_built_in_root_certs(false)", "", 1),
+            ),
+            (
+                "owned HTTPS host",
+                production.replacen(
                 "OWNED_HTTPS_TEST_PROVIDER_HOST,\n                profile_port.resolved_address()",
                 "other_host, profile_port.resolved_address()",
                 1,
+                ),
             ),
-            production.replacen(
+            (
+                "owned HTTPS IPv6",
+                production.replacen(
                 "const OWNED_HTTPS_TEST_PROVIDER_IPV6: Ipv6Addr = Ipv6Addr::LOCALHOST;",
                 "const OWNED_HTTPS_TEST_PROVIDER_IPV6: Ipv6Addr = Ipv6Addr::UNSPECIFIED;",
                 1,
+                ),
             ),
-            production.replacen("/v1/sessions/{}/events", "/arbitrary/{}/events", 1),
-            production.replacen(
+            (
+                "event route",
+                production.replacen("/v1/sessions/{}/events", "/arbitrary/{}/events", 1),
+            ),
+            (
+                "initialization error cfg",
+                production.replacen(
                 "return Err(client_initialization_error());",
                 "#[cfg(any())]\n            return Err(client_initialization_error());",
                 1,
+                ),
             ),
-            format!("{production}\npub fn arbitrary(url: Url) {{ let _ = url; }}"),
-            format!("{production}\nimpl Drop for NativeOastClient {{ fn drop(&mut self) {{}} }}"),
+            (
+                "arbitrary URL entry point",
+                format!("{production}\npub fn arbitrary(url: Url) {{ let _ = url; }}"),
+            ),
+            (
+                "networking drop",
+                format!("{production}\nimpl Drop for NativeOastClient {{ fn drop(&mut self) {{}} }}"),
+            ),
         ] {
-            assert_ne!(mutation, production, "native client mutation must alter source");
+            assert_ne!(
+                mutation, production,
+                "native client mutation `{name}` must alter source"
+            );
+            let violations = client_transport_contract_violations(&mutation)
+                .unwrap_or_else(|error| panic!("native client mutation `{name}` did not parse: {error}"));
             assert!(
-                !client_transport_contract_violations(&mutation)
-                    .unwrap()
-                    .is_empty(),
-                "native client transport mutation unexpectedly passed"
+                !violations.is_empty(),
+                "native client transport mutation `{name}` unexpectedly passed"
             );
         }
     }

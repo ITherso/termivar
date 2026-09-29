@@ -322,11 +322,55 @@ fn termivar() -> Command {
 fn assert_success(output: &Output, operation: &str) {
     assert!(
         output.status.success(),
-        "{operation} failed: status={:?}, stdout_bytes={}, stderr_bytes={}",
+        "{operation} failed: status={:?}, stdout_bytes={}, stderr_bytes={}, {}",
         output.status.code(),
         output.stdout.len(),
         output.stderr.len(),
+        safe_failure_diagnostic(&output.stdout),
     );
+}
+
+fn safe_failure_diagnostic(stdout: &[u8]) -> String {
+    let Ok(document) = serde_json::from_slice::<Value>(stdout) else {
+        return "diagnostic=not_json".to_owned();
+    };
+    if document["schema_version"] != "web-assessment/v2" {
+        return "diagnostic=unrecognized_json".to_owned();
+    }
+    let disposition = match document["disposition"].as_str() {
+        Some("complete") => "complete",
+        Some("incomplete") => "incomplete",
+        Some("failed") => "failed",
+        Some(_) => "other",
+        None => "missing_or_wrong_type",
+    };
+    let (reason_count, reasons, omitted_reasons) = match document["incomplete_reasons"].as_array() {
+        Some(reasons) => {
+            let classes = reasons
+                .iter()
+                .take(16)
+                .map(|reason| match reason.as_str() {
+                    Some("started_runtime_failure") => "started_runtime_failure",
+                    Some("xml_external_entity_review_incomplete") => {
+                        "xml_external_entity_review_incomplete"
+                    },
+                    Some("wall_time_limit") => "wall_time_limit",
+                    Some("total_request_limit") => "total_request_limit",
+                    Some("response_bytes_limit") => "response_bytes_limit",
+                    Some("request_body_bytes_limit") => "request_body_bytes_limit",
+                    Some("active_verification_limit") => "active_verification_limit",
+                    Some("host_cancellation") => "host_cancellation",
+                    Some(_) => "other",
+                    None => "wrong_type",
+                })
+                .collect::<Vec<_>>();
+            (reasons.len(), classes, reasons.len().saturating_sub(16))
+        },
+        None => (0, vec!["missing_or_wrong_type"], 0),
+    };
+    format!(
+        "diagnostic=web_assessment_v2, disposition={disposition}, reason_count={reason_count}, reason_classes={reasons:?}, omitted_reasons={omitted_reasons}"
+    )
 }
 
 async fn run_termivar(mut command: Command, operation: &str) -> Output {
@@ -526,12 +570,14 @@ async fn start_fixture_with_certificates(
                 PROVIDER_PRIVATE_KEY_PKCS8_BASE64,
             ),
         },
-        provider_backend,
-        provider_connections.clone(),
-        provider_connections_finished.clone(),
-        provider_tls_rejections.clone(),
-        provider_certificate != ProviderCertificate::Correct,
-        fixture_errors.clone(),
+        ProviderTlsProxyContext {
+            backend: provider_backend,
+            connections: provider_connections.clone(),
+            connections_finished: provider_connections_finished.clone(),
+            tls_rejections: provider_tls_rejections.clone(),
+            expect_tls_rejection: provider_certificate != ProviderCertificate::Correct,
+            errors: fixture_errors.clone(),
+        },
     ));
     let target_task = tokio::spawn(run_target_server(
         target_listener,
@@ -549,15 +595,17 @@ async fn start_fixture_with_certificates(
                 TARGET_PRIVATE_KEY_PKCS8_BASE64,
             ),
         },
-        port,
-        target_requests.clone(),
-        parser_mode.clone(),
-        parser_resolutions.clone(),
-        target_connections.clone(),
-        target_connections_finished.clone(),
-        target_tls_rejections.clone(),
-        target_certificate != TargetCertificate::Correct,
-        fixture_errors.clone(),
+        TargetServerContext {
+            provider_port: port,
+            requests: target_requests.clone(),
+            parser_mode: parser_mode.clone(),
+            parser_resolutions: parser_resolutions.clone(),
+            connections: target_connections.clone(),
+            connections_finished: target_connections_finished.clone(),
+            tls_rejections: target_tls_rejections.clone(),
+            expect_tls_rejection: target_certificate != TargetCertificate::Correct,
+            errors: fixture_errors.clone(),
+        },
     ));
 
     OwnedHttpsFixture {
@@ -577,16 +625,28 @@ async fn start_fixture_with_certificates(
     }
 }
 
-async fn run_tls_proxy(
-    listener: TcpListener,
-    acceptor: TlsAcceptor,
+struct ProviderTlsProxyContext {
     backend: SocketAddr,
     connections: Arc<AtomicUsize>,
     connections_finished: Arc<AtomicUsize>,
     tls_rejections: Arc<AtomicUsize>,
     expect_tls_rejection: bool,
     errors: Arc<Mutex<Vec<&'static str>>>,
+}
+
+async fn run_tls_proxy(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    context: ProviderTlsProxyContext,
 ) {
+    let ProviderTlsProxyContext {
+        backend,
+        connections,
+        connections_finished,
+        tls_rejections,
+        expect_tls_rejection,
+        errors,
+    } = context;
     let mut active = JoinSet::new();
     loop {
         let accepted = listener.accept().await;
@@ -637,9 +697,7 @@ async fn run_tls_proxy(
     }
 }
 
-async fn run_target_server(
-    listener: TcpListener,
-    acceptor: TlsAcceptor,
+struct TargetServerContext {
     provider_port: u16,
     requests: Arc<Mutex<Vec<TargetRequestFact>>>,
     parser_mode: Arc<AtomicU8>,
@@ -649,7 +707,24 @@ async fn run_target_server(
     tls_rejections: Arc<AtomicUsize>,
     expect_tls_rejection: bool,
     errors: Arc<Mutex<Vec<&'static str>>>,
+}
+
+async fn run_target_server(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    context: TargetServerContext,
 ) {
+    let TargetServerContext {
+        provider_port,
+        requests,
+        parser_mode,
+        parser_resolutions,
+        connections,
+        connections_finished,
+        tls_rejections,
+        expect_tls_rejection,
+        errors,
+    } = context;
     let mut active = JoinSet::new();
     loop {
         let accepted = listener.accept().await;
@@ -1010,6 +1085,10 @@ async fn run_expat_with_interpreter(
     let execution = async {
         stdin.write_all(body).await?;
         stdin.shutdown().await?;
+        // Tokio's process ChildStdin shutdown flushes but does not close the
+        // Unix pipe. Drop the handle explicitly so the bounded Expat helper's
+        // read-to-EOF input contract can complete on every native platform.
+        drop(stdin);
         let (status, stdout, stderr) = tokio::try_join!(
             child.wait(),
             read_bounded_pipe(stdout, MAX_PARSER_OUTPUT_BYTES),
@@ -1377,6 +1456,46 @@ fn fixture_provider_limits_admit_the_runtime_registration_contract() {
         state(stale_limits).register(&administrator, request()),
         Err(ProviderError::InvalidSessionRequest)
     ));
+}
+
+#[test]
+fn failed_process_diagnostic_is_bounded_and_does_not_reflect_values() {
+    let diagnostic = serde_json::to_vec(&json!({
+        "schema_version": "web-assessment/v2",
+        "disposition": "failed",
+        "incomplete_reasons": [
+            "started_runtime_failure",
+            "xml_external_entity_review_incomplete",
+            "PRIVATE-REASON-MUST-NOT-BE-REFLECTED",
+            false,
+        ],
+        "target_origin": "PRIVATE-TARGET-MUST-NOT-BE-REFLECTED",
+    }))
+    .unwrap();
+    let summary = safe_failure_diagnostic(&diagnostic);
+    assert_eq!(
+        summary,
+        "diagnostic=web_assessment_v2, disposition=failed, reason_count=4, reason_classes=[\"started_runtime_failure\", \"xml_external_entity_review_incomplete\", \"other\", \"wrong_type\"], omitted_reasons=0"
+    );
+    assert!(!summary.contains("PRIVATE"));
+
+    let oversized_reason_list = serde_json::to_vec(&json!({
+        "schema_version": "web-assessment/v2",
+        "disposition": "failed",
+        "incomplete_reasons": vec!["PRIVATE-REASON-MUST-NOT-BE-REFLECTED"; 17],
+    }))
+    .unwrap();
+    let bounded = safe_failure_diagnostic(&oversized_reason_list);
+    assert!(bounded.contains("reason_count=17"));
+    assert!(bounded.contains("omitted_reasons=1"));
+    assert_eq!(bounded.matches("\"other\"").count(), 16);
+    assert!(!bounded.contains("PRIVATE"));
+
+    assert_eq!(
+        safe_failure_diagnostic(br#"{"schema_version":"other","secret":"PRIVATE"}"#),
+        "diagnostic=unrecognized_json"
+    );
+    assert_eq!(safe_failure_diagnostic(b"not json"), "diagnostic=not_json");
 }
 
 #[test]
