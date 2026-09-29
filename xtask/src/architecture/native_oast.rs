@@ -89,6 +89,10 @@ const FORBIDDEN_CRYPTO_PACKAGES: &[&str] = &[
     "rsa", "ring", "openssl", "aws-lc", "aes", "chacha", "x25519", "ed25519",
 ];
 
+fn normalize_identifier(identifier: &str) -> &str {
+    identifier.strip_prefix("r#").unwrap_or(identifier)
+}
+
 const REQUIRED_REVIEWED_TLS_PACKAGES: &[&str] = &["reqwest", "ring", "rustls", "rustls-webpki"];
 
 const REQUIRED_PROTOCOL_LITERALS: &[&str] = &[
