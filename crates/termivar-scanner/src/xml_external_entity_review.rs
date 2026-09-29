@@ -1953,7 +1953,7 @@ lifetime_ms = 10000\n"
         incomplete.target_complete = false;
         assert_eq!(
             XmlExternalEntityReviewAudit::from_runtime(&policy, incomplete).unwrap_err(),
-            XmlExternalEntityAuditError::InvalidOutcome
+            XmlExternalEntityAuditError::InvalidCorrelation
         );
 
         let mut over_budget = positive_facts();
