@@ -65,6 +65,8 @@ pub use policy::{
     HttpBodyCapture, HttpEvidencePolicy, DEFAULT_HTTP_BODY_LIMIT, MAX_HTTP_BODY_LIMIT,
 };
 pub use probe::{HttpProbe, HttpProbeMethod, HttpProbeProvider, SubjectHttpProbeProvider};
+#[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+pub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile;
 #[cfg(feature = "supplied-session-review")]
 pub(crate) use request_broker::SuppliedSessionRequestError;
 #[cfg(feature = "wordpress-review")]

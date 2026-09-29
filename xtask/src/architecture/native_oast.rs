@@ -1042,6 +1042,42 @@ fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String
     Ok(violations)
 }
 
+fn owned_xml_https_profile_reexport_violations(source: &str) -> Result<Vec<String>, syn::Error> {
+    const FEATURE: &str = "xml-external-entity-owned-https-test-profile";
+    const EXPECTED_PATH: &str = "request_broker::OwnedXmlHttpsTestTransportProfile";
+
+    let syntax = syn::parse_file(source)?;
+    let exports = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Use(import) => {
+                let mut paths = Vec::new();
+                flatten_use_tree(&import.tree, &mut Vec::new(), &mut paths);
+                paths
+                    .iter()
+                    .any(|path| path == EXPECTED_PATH)
+                    .then_some((import, paths))
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let exact = exports.first().is_some_and(|(import, paths)| {
+        is_crate_visibility(&import.vis)
+            && has_only_exact_feature_cfg(&import.attrs, FEATURE)
+            && paths.len() == 1
+            && paths.first().is_some_and(|path| path == EXPECTED_PATH)
+    });
+    Ok(if exports.len() == 1 && exact {
+        Vec::new()
+    } else {
+        vec![
+            "termivar-scanner must re-export the owned XML HTTPS transport profile exactly crate-private and behind only its test-profile feature"
+                .to_owned(),
+        ]
+    })
+}
+
 fn signature_accepts_arbitrary_authority(signature: &syn::Signature) -> bool {
     signature.inputs.iter().any(|input| {
         let syn::FnArg::Typed(argument) = input else {
@@ -4197,6 +4233,42 @@ mod tests {
                     .unwrap()
                     .is_empty(),
                 "owned XML HTTPS transport profile mutation unexpectedly passed"
+            );
+        }
+
+        let http_evidence = include_str!("../../../crates/termivar-scanner/src/http_evidence.rs");
+        assert!(
+            owned_xml_https_profile_reexport_violations(http_evidence)
+                .unwrap()
+                .is_empty(),
+            "repository owned XML HTTPS profile re-export drifted from its sealed surface"
+        );
+        for mutation in [
+            http_evidence.replacen(
+                "pub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile;",
+                "pub use request_broker::OwnedXmlHttpsTestTransportProfile;",
+                1,
+            ),
+            http_evidence.replacen(
+                "#[cfg(feature = \"xml-external-entity-owned-https-test-profile\")]\npub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile;",
+                "#[cfg(feature = \"xml-external-entity-review\")]\npub(crate) use request_broker::OwnedXmlHttpsTestTransportProfile;",
+                1,
+            ),
+            http_evidence.replacen(
+                "OwnedXmlHttpsTestTransportProfile;",
+                "RenamedOwnedXmlHttpsTestTransportProfile;",
+                1,
+            ),
+        ] {
+            assert_ne!(
+                mutation, http_evidence,
+                "scanner profile re-export mutation must alter source"
+            );
+            assert!(
+                !owned_xml_https_profile_reexport_violations(&mutation)
+                    .unwrap()
+                    .is_empty(),
+                "owned XML HTTPS profile re-export mutation unexpectedly passed"
             );
         }
     }
