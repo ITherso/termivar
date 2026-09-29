@@ -4113,8 +4113,12 @@ fn boolean_pattern_is_exact(pattern: &syn::Pat, expected: bool) -> bool {
 
 fn option_pattern_is_exact(pattern: &syn::Pat, binding: Option<&str>) -> bool {
     match (pattern, binding) {
-        (syn::Pat::Path(path), None) => {
-            path.qself.is_none() && syn_path_is_exact(&path.path, &["None"])
+        (syn::Pat::Ident(none), None) => {
+            none.attrs.is_empty()
+                && none.by_ref.is_none()
+                && none.mutability.is_none()
+                && normalize_identifier(&ident_name(&none.ident)) == "None"
+                && none.subpat.is_none()
         },
         (syn::Pat::TupleStruct(tuple), Some(expected)) => {
             tuple.qself.is_none()
@@ -15942,6 +15946,16 @@ mod tests {
             source.replacen(
                 "let policy = match self.http_policy {\n            Some(policy) => policy,",
                 "let policy = match self.http_policy {\n            Some(_policy) => HttpEvidencePolicy::for_origin(root.url.clone()).expect(\"valid origin\"),",
+                1,
+            ),
+            source.replacen(
+                "            None => HttpEvidencePolicy::for_origin(root.url.clone())?,",
+                "            _ => HttpEvidencePolicy::for_origin(root.url.clone())?,",
+                1,
+            ),
+            source.replacen(
+                "            None => HttpEvidencePolicy::for_origin(root.url.clone())?,",
+                "            fallback => HttpEvidencePolicy::for_origin(root.url.clone())?,",
                 1,
             ),
             fake_probe,
