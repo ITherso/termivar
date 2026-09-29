@@ -1253,7 +1253,13 @@ async fn run_actual_scan(
     command
         .arg("scan")
         .arg(&fixture.target_url)
-        .args(["--profile", "web-review", "--xml-external-entity-review"])
+        .args([
+            "--profile",
+            "web-review",
+            "--xml-external-entity-review",
+            "--format",
+            "json",
+        ])
         .arg("--xml-external-entity-policy")
         .arg(&policy_path)
         .arg("--oast-admin-token-file")
