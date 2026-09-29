@@ -1867,6 +1867,9 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
     }) || xml_dispatch.is_none_or(|body| {
         body.contains("action_id:")
             || body.matches("XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID").count() != 1
+            || !body.contains(
+                ".collect_built_request(\n                &self.broker.client,\n                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,\n                stage,",
+            )
             || !body.contains("self.application != *policy.application()")
             || !body.contains("!policy.is_bound_to_application(&self.application)")
             || !body.contains("self.policy_binding != xml_external_entity_policy_binding(policy)")
@@ -6132,7 +6135,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, XML external-entity, and WordPress audits, plus JWT target-acceptance, before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus XML external-entity and JWT target-acceptance, before construction"
                 .to_owned(),
         );
     }
@@ -9880,6 +9883,12 @@ struct OwnershipVisitor<'source> {
     violations: BTreeSet<String>,
 }
 
+fn is_native_oast_runtime_budget_error_variant(segments: &[String], index: usize) -> bool {
+    normalize_identifier(&segments[index]) == "RuntimeBudget"
+        && index > 0
+        && normalize_identifier(&segments[index - 1]) == "NativeOastProviderErrorKind"
+}
+
 impl OwnershipVisitor<'_> {
     fn inspect_segments(&mut self, segments: &[String]) {
         if segments.is_empty()
@@ -9896,9 +9905,12 @@ impl OwnershipVisitor<'_> {
             || self.source == WORDPRESS_RUNTIME_SOURCE
             || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
             || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
-            && segments.iter().any(|segment| {
+            && segments.iter().enumerate().any(|(index, segment)| {
                 let segment = normalize_identifier(segment);
-                matches!(segment, "HttpRequestBroker" | "RuntimeBudget")
+                segment == "HttpRequestBroker"
+                    || (segment == "RuntimeBudget"
+                        && !(self.source == XML_EXTERNAL_ENTITY_RUNTIME_SOURCE
+                            && is_native_oast_runtime_budget_error_variant(segments, index)))
                     || (segment == "RequestAccountingBroker"
                         && self.source != WEBSOCKET_RUNTIME_SOURCE)
             })
@@ -10043,12 +10055,21 @@ impl OwnershipVisitor<'_> {
 
     fn inspect_macro(&mut self, stream: TokenStream) {
         let tokens: Vec<_> = stream.into_iter().collect();
-        for token in &tokens {
+        for (index, token) in tokens.iter().enumerate() {
             if let TokenTree::Group(group) = token {
                 self.inspect_macro(group.stream());
             }
             if let TokenTree::Ident(identifier) = token {
                 let identifier = normalize_identifier(&ident_name(identifier)).to_owned();
+                let native_oast_runtime_budget_variant = self.source
+                    == XML_EXTERNAL_ENTITY_RUNTIME_SOURCE
+                    && identifier == "RuntimeBudget"
+                    && index >= 3
+                    && tokens
+                        .get(index - 3)
+                        .is_some_and(|token| matches!(token, TokenTree::Ident(parent) if normalize_identifier(&ident_name(parent)) == "NativeOastProviderErrorKind"))
+                    && tokens.get(index - 2).is_some_and(|token| is_colon(token))
+                    && tokens.get(index - 1).is_some_and(|token| is_colon(token));
                 if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
                     || self.source == TLS_OBSERVATION_RUNTIME_SOURCE
                     || self.source == WEBSOCKET_RUNTIME_SOURCE
@@ -10056,6 +10077,7 @@ impl OwnershipVisitor<'_> {
                     || self.source == WORDPRESS_RUNTIME_SOURCE
                     || self.source == WORDPRESS_DISCOVERY_RUNTIME_SOURCE
                     || self.source == WORDPRESS_FINGERPRINT_RUNTIME_SOURCE)
+                    && !native_oast_runtime_budget_variant
                     && (matches!(identifier.as_str(), "HttpRequestBroker" | "RuntimeBudget")
                         || (identifier == "RequestAccountingBroker"
                             && self.source != WEBSOCKET_RUNTIME_SOURCE))
@@ -11530,6 +11552,7 @@ mod tests {
             "use crate::http_evidence::HttpRequestBroker;",
             "use crate::runtime_budget::RequestAccountingBroker;",
             "use crate::RuntimeBudget;",
+            "fn escape() { policy!(RuntimeBudget::new()); }",
         ] {
             let violations = inspect_bounded_source(XML_EXTERNAL_ENTITY_RUNTIME_SOURCE, source)
                 .unwrap()
@@ -11537,6 +11560,18 @@ mod tests {
             assert!(
                 !violations.is_empty(),
                 "XML external-entity runtime authority escape unexpectedly passed: {source}"
+            );
+        }
+
+        for source in [
+            "fn classify(kind: NativeOastProviderErrorKind) { match kind { NativeOastProviderErrorKind::RuntimeBudget(_) => (), _ => () } }",
+            "fn classify(kind: NativeOastProviderErrorKind) { let _ = matches!(kind, NativeOastProviderErrorKind::RuntimeBudget(_)); }",
+        ] {
+            assert!(
+                inspect_bounded_source(XML_EXTERNAL_ENTITY_RUNTIME_SOURCE, source)
+                    .unwrap()
+                    .is_empty(),
+                "native-provider budget outcome was mistaken for transport authority: {source}"
             );
         }
     }
@@ -14544,7 +14579,7 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains(
-                "AssessmentReviewAudits must remain one private Default-only container with exactly the eleven feature-gated redacted audit values"
+                "AssessmentReviewAudits must remain one private Default-only container with exactly the twelve feature-gated redacted audit values"
                 ),
                 "{violations}"
             );
@@ -15697,10 +15732,15 @@ mod tests {
             ),
             (
                 http.clone(),
-                broker.replace(
-                    "                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,\n                stage,",
-                    "                \"forged.xml.action\",\n                stage,",
-                ),
+                broker
+                    .replace(
+                        "                XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID,\n                stage,",
+                        "                \"forged.xml.action\",\n                stage,",
+                    )
+                    .replace(
+                        "        let target = descriptor.target();",
+                        "        let _ = XML_EXTERNAL_ENTITY_REVIEW_ACTION_ID;\n        let target = descriptor.target();",
+                    ),
                 "owned action identity",
             ),
             (
