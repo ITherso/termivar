@@ -123,4 +123,4 @@ tempfile = { workspace = true }
 termivar-oast = { version = "0.10.0-alpha.3", path = "../termivar-oast", default-features = false, features = ["client", "test-support", "owned-https-test-profile"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = { workspace = true }
-minijinja = { version = "=2.24.0", default-features = false, features = ["builtins"] }
+minijinja = { version = "=2.24.0", default-features = false, features = ["builtins", "serde"] }

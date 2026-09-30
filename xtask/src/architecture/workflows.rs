@@ -3690,12 +3690,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review";
         let scanner_member =
-            "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
+            "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
+                "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3721,12 +3721,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review";
         let scanner_member =
-            "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
+            "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
+                "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3753,12 +3753,12 @@ mod tests {
         let cli_case =
             "cargo test --locked -p termivar-cli --no-default-features --features tls-observation";
         let scanner_member =
-            "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
+            "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
+                "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3785,12 +3785,12 @@ mod tests {
         let cli_case =
             "cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review";
         let scanner_member =
-            "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
+            "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
+                "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -3816,12 +3816,12 @@ mod tests {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let cli_case = "cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review";
         let scanner_member =
-            "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
+            "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner";
         for mutation in [
             valid.replacen(cli_case, "", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
+                "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner",
                 1,
             ),
             valid.replacen(
@@ -4338,6 +4338,7 @@ mod tests {
             assert!(
                 violations[0].contains("template-evaluation")
                     || violations[0].contains("feature boundaries")
+                    || violations[0].contains("exact sequential CLI capabilities build matrix")
                     || violations[0].contains("isolated scanner features"),
                 "{violations:?}"
             );
@@ -4350,7 +4351,7 @@ mod tests {
         let cli_boundary = "cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-review";
         let matrix_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=xml-external-entity-only cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
         let owned_https_matrix_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=xml-external-entity-owned-https-profile cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
-        let scanner_member = "ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review";
+        let scanner_member = "ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review";
         for mutation in [
             valid.replacen(XML_EXTERNAL_ENTITY_CLI_SMOKE_GATE, "", 1),
             valid.replacen(XML_EXTERNAL_ENTITY_RUNTIME_SMOKE_GATE, "", 1),
@@ -4361,7 +4362,7 @@ mod tests {
             valid.replacen(cli_boundary, "cargo test --locked -p termivar-cli --no-default-features --features release-bundle", 1),
             valid.replacen(
                 scanner_member,
-                "ssrf-oast-review xml-external-entity-owned-https-test-profile supplied-session-review",
+                "ssrf-oast-review template-evaluation-review xml-external-entity-owned-https-test-profile supplied-session-review",
                 1,
             ),
             valid.replacen(

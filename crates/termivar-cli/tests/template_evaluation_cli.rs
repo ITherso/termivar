@@ -284,13 +284,41 @@ fn assert_success(output: &Output, label: &str) {
     );
 }
 
-fn assert_private_values_absent(bytes: &[u8], local_path: &Path, target: &str, label: &str) {
+fn exact_private_template_values(target: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let (primary, replay) = expected_template_pair_identities(target);
+    for identity in [&primary, &replay] {
+        values.push(format!("termivar-template-{}-control-end", identity.0));
+        values.push(format!(
+            "termivar-template-{}-{{{{'termivar_{}'|upper}}}}-end",
+            identity.0, identity.0
+        ));
+        values.push(format!(
+            "termivar-template-{}-TERMIVAR_{}-end",
+            identity.0,
+            identity.0.to_ascii_uppercase()
+        ));
+    }
+    values.sort();
+    values
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PrivateFixtureLeak {
+    FixedFixtureValue,
+    ExactTemplateValue,
+}
+
+fn private_fixture_leak(
+    bytes: &[u8],
+    local_path: &Path,
+    target: &str,
+) -> Option<PrivateFixtureLeak> {
     let text = String::from_utf8_lossy(bytes);
     let lower = text.to_ascii_lowercase();
     let local_path = local_path.to_string_lossy().into_owned();
-    for forbidden in [
+    let fixed_forbidden = [
         QUERY_NAME,
-        "termivar-template-",
         "{{'termivar_",
         "'|upper}}",
         "owned-minijinja-fixture",
@@ -299,11 +327,23 @@ fn assert_private_values_absent(bytes: &[u8], local_path: &Path, target: &str, l
         "minijinja",
         target,
         local_path.as_str(),
-    ] {
-        assert!(
-            !lower.contains(&forbidden.to_ascii_lowercase()),
-            "{label} leaked a private fixture value `{forbidden}`"
-        );
+    ];
+    if fixed_forbidden
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .any(|value| lower.contains(&value.to_ascii_lowercase()))
+    {
+        return Some(PrivateFixtureLeak::FixedFixtureValue);
+    }
+    exact_private_template_values(target)
+        .into_iter()
+        .any(|value| lower.contains(&value.to_ascii_lowercase()))
+        .then_some(PrivateFixtureLeak::ExactTemplateValue)
+}
+
+fn assert_private_values_absent(bytes: &[u8], local_path: &Path, target: &str, label: &str) {
+    if let Some(leak) = private_fixture_leak(bytes, local_path, target) {
+        panic!("{label} leaked a private fixture value classified as {leak:?}");
     }
 }
 
@@ -625,6 +665,53 @@ fn fixture_trace_accepts_only_exact_bounded_pair_grammar() {
     assert_eq!(
         classify_request(None),
         RequestTrace::new(RequestClass::Ordinary, None)
+    );
+}
+
+#[test]
+fn privacy_oracle_allows_public_schema_but_rejects_exact_nonce_bearing_values() {
+    let target = "http://127.0.0.1:49152/";
+    let mut expected_private_values = vec![
+        "termivar-template-f294a29f58ad3e7c-control-end".to_owned(),
+        "termivar-template-f294a29f58ad3e7c-{{'termivar_f294a29f58ad3e7c'|upper}}-end".to_owned(),
+        "termivar-template-f294a29f58ad3e7c-TERMIVAR_F294A29F58AD3E7C-end".to_owned(),
+        "termivar-template-cc64bb4c14c98fe0-control-end".to_owned(),
+        "termivar-template-cc64bb4c14c98fe0-{{'termivar_cc64bb4c14c98fe0'|upper}}-end".to_owned(),
+        "termivar-template-cc64bb4c14c98fe0-TERMIVAR_CC64BB4C14C98FE0-end".to_owned(),
+    ];
+    expected_private_values.sort();
+    assert_eq!(
+        exact_private_template_values(target),
+        expected_private_values
+    );
+
+    let local_path = Path::new("bounded-private-report-dir");
+    let public_schema = br#"{"schema":"termivar-template-evaluation-review-comparison/v1"}"#;
+    assert_eq!(
+        private_fixture_leak(public_schema, local_path, target),
+        None,
+        "the public comparison schema must not collide with the private fixture oracle"
+    );
+    assert_private_values_absent(
+        public_schema,
+        local_path,
+        target,
+        "public comparison schema",
+    );
+
+    for private_value in &expected_private_values {
+        assert_eq!(
+            private_fixture_leak(private_value.as_bytes(), local_path, target),
+            Some(PrivateFixtureLeak::ExactTemplateValue),
+            "the exact nonce-bearing fixture value must remain forbidden"
+        );
+    }
+
+    let unrelated_nonce = b"termivar-template-0011223344556677-control-end";
+    assert_eq!(
+        private_fixture_leak(unrelated_nonce, local_path, target),
+        None,
+        "a literal mutation outside the observed request trace must not recreate the broad-prefix collision"
     );
 }
 

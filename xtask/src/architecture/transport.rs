@@ -18410,7 +18410,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields"
             ),
             "{violations}"
         );
@@ -18438,7 +18438,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields"
             ),
             "{violations}"
         );
@@ -18466,7 +18466,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields"
             ),
             "{violations}"
         );
@@ -18507,7 +18507,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields"
             ),
             "{violations}"
         );
@@ -18555,7 +18555,7 @@ mod tests {
             .join("\n");
         assert!(
             violations.contains(
-                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields"
+                "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields"
             ),
             "{violations}"
         );
