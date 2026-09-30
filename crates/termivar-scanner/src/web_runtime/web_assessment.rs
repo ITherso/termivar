@@ -164,8 +164,8 @@ use crate::supplied_session_review::{SuppliedSessionPolicy, SuppliedSessionRunti
 #[cfg(feature = "template-evaluation-review")]
 use crate::template_evaluation_review::{
     TemplateEvaluationReviewAudit, TemplateEvaluationReviewAuditFacts,
-    TemplateEvaluationReviewOutcome, TEMPLATE_EVALUATION_MAX_ACTIVE_REQUESTS,
-    TEMPLATE_EVALUATION_MAX_REQUESTS, TEMPLATE_EVALUATION_SELECTED_CASES,
+    TemplateEvaluationReviewOutcome, TEMPLATE_EVALUATION_MAX_REQUESTS,
+    TEMPLATE_EVALUATION_SELECTED_CASES,
 };
 #[cfg(feature = "websocket-review")]
 use crate::websocket_review::WebSocketReviewPolicy;

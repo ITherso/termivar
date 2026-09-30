@@ -11809,6 +11809,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "assessment_reference_ordinal",
     "valid_xml_external_entity_policy_id",
     "xml_external_entity_evidence_linkage_is_exact",
+    "template_evaluation_evidence_linkage_is_exact",
     "xml_external_entity_operation_token",
     "xml_external_entity_outcome_token",
     "template_evaluation_outcome_token",
@@ -20846,6 +20847,24 @@ mod tests {
         assert!(
             violations.contains("AssessmentTemplateEvaluationOperationsDocument")
                 && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let production = include_str!("../../../crates/termivar-scanner/src/reporting.rs");
+        assert!(reporting_source_violations(production).unwrap().is_empty());
+        let renamed_linkage_helper = production.replacen(
+            "template_evaluation_evidence_linkage_is_exact(item)",
+            "template_evaluation_evidence_linkage_is_exactly(item)",
+            1,
+        );
+        assert_ne!(renamed_linkage_helper, production);
+        let violations = reporting_source_violations(&renamed_linkage_helper)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains(
+                "reporting production function call `template_evaluation_evidence_linkage_is_exactly` is outside the exact allowlist"
+            ),
             "{violations}"
         );
     }

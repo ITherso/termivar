@@ -2720,6 +2720,8 @@ fn authority_prelude_is_closed(
         ("native_review_seeds", 1),
         ("native_review_observer", 1),
         ("native_review_ledger", 1),
+        ("native_review_template_observer", 1),
+        ("native_review_template_ledger", 1),
     ]);
     let profile_is_exact = match build_profile {
         AssessmentBuildProfile::Fixture => {
@@ -3292,6 +3294,11 @@ fn web_assessment_map_err_try_kind(call: &syn::ExprMethodCall) -> Option<&'stati
             .then_some(error_variant)
         },
         "native_review" => {
+            if let Some(kind) =
+                web_assessment_template_evaluation_extension_try_kind(&call.receiver)
+            {
+                return Some(kind);
+            }
             let syn::Expr::Call(constructor) = call.receiver.as_ref() else {
                 return None;
             };
@@ -3339,6 +3346,32 @@ fn web_assessment_map_err_try_kind(call: &syn::ExprMethodCall) -> Option<&'stati
             }
         },
         _ => None,
+    }
+}
+
+fn web_assessment_template_evaluation_extension_try_kind(
+    expression: &syn::Expr,
+) -> Option<&'static str> {
+    let syn::Expr::MethodCall(extension) = expression else {
+        return None;
+    };
+    if !extension.attrs.is_empty()
+        || extension.method != "with_template_evaluation"
+        || extension.turbofish.is_some()
+        || extension.args.len() != 1
+        || !extension
+            .args
+            .first()
+            .is_some_and(|argument| expression_is_path_ident(argument, "parameter"))
+    {
+        return None;
+    }
+    if expression_is_path_ident(&extension.receiver, "observer") {
+        Some("native_review_template_observer")
+    } else if expression_is_path_ident(&extension.receiver, "ledger") {
+        Some("native_review_template_ledger")
+    } else {
+        None
     }
 }
 
@@ -16162,6 +16195,31 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains("exact four-way TLS/owned-HTTPS cfg"),
+                "{violations}"
+            );
+        }
+
+        for mutation in [
+            source.replacen(
+                "Some(parameter) => observer\n                    .with_template_evaluation(parameter)",
+                "Some(parameter) => observer\n                    .with_template_evaluation(other_parameter)",
+                1,
+            ),
+            source.replacen(
+                "Some(parameter) => ledger\n                    .with_template_evaluation(parameter)",
+                "Some(parameter) => alternate_ledger\n                    .with_template_evaluation(parameter)",
+                1,
+            ),
+        ] {
+            assert_ne!(
+                mutation, source,
+                "template-evaluation extension mutation must alter source"
+            );
+            let violations = inspect_web_assessment_composition(&mutation)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("build prelude contains an unreviewed try"),
                 "{violations}"
             );
         }

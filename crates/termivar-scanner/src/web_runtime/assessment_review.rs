@@ -81,8 +81,8 @@ use crate::payload_strategies::normalization_resilience_query_pair::{
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
 #[cfg(feature = "template-evaluation-review")]
 use crate::payload_strategies::template_jinja_uppercase_expression_pair::{
-    TemplateJinjaUppercaseExpressionPairStrategy, TemplateJinjaUppercaseProbe,
-    TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID, TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+    TemplateJinjaUppercaseProbe, TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+    TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
 };
 
 const ASSESSMENT_REVIEW_CATEGORY: &str = "web-review-observation";

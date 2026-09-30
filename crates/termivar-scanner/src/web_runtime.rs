@@ -1178,6 +1178,14 @@ impl StandardWebDecisionRuntimeBuilder {
         let max_action_cycles = max_action_cycles.saturating_add(
             u32::from(self.rest_review) * rest_runtime::REST_REVIEW_ACTION_CYCLE_ALLOWANCE,
         );
+        #[cfg(feature = "template-evaluation-review")]
+        let max_action_cycles = max_action_cycles.saturating_add(
+            u32::from(
+                self.native_web_review
+                    .template_evaluation_query_parameter
+                    .is_some(),
+            ) * u32::from(crate::template_evaluation_review::TEMPLATE_EVALUATION_SELECTED_CASES),
+        );
         #[cfg(feature = "ssrf-oast-review")]
         let max_action_cycles = max_action_cycles.saturating_add(
             u32::from(self.ssrf_oast_review.is_some())
