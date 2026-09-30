@@ -106,9 +106,6 @@ impl OwnedMiniJinjaServer {
     fn start(mode: FixtureMode) -> Self {
         let listener =
             TcpListener::bind("127.0.0.1:0").expect("bind owned numeric-loopback fixture");
-        listener
-            .set_nonblocking(true)
-            .expect("configure bounded fixture listener");
         let address = listener.local_addr().expect("read fixture address");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let worker_requests = Arc::clone(&requests);
@@ -121,6 +118,9 @@ impl OwnedMiniJinjaServer {
             while !worker_shutdown.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        if worker_shutdown.load(Ordering::Acquire) {
+                            break;
+                        }
                         consecutive_transient_accept_errors = 0;
                         handle_connection(&mut stream, mode, worker_requests.as_ref());
                     },
@@ -163,6 +163,7 @@ impl OwnedMiniJinjaServer {
 
     fn stop(mut self) -> StoppedFixture {
         self.shutdown.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
         self.worker
             .take()
             .expect("fixture worker")
@@ -746,6 +747,20 @@ fn fixture_accept_loop_retries_only_bounded_transient_errors() {
     ] {
         assert!(!fixture_accept_error_is_retryable(kind, 0));
     }
+
+    let stopped = OwnedMiniJinjaServer::start(FixtureMode::TemplateSource).stop();
+    assert!(
+        stopped
+            .requests
+            .lock()
+            .expect("stopped fixture request trace")
+            .is_empty(),
+        "the blocking-listener wakeup must not become a fixture request"
+    );
+    assert!(
+        TcpStream::connect_timeout(&stopped.address, Duration::from_millis(100)).is_err(),
+        "the fixture listener must be closed after its bounded wakeup"
+    );
 }
 
 #[test]
