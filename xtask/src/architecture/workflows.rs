@@ -239,7 +239,8 @@ const WORDPRESS_DISCOVERY_FUZZ_MATRIX_ENTRY: &str = r#"          - target: wordp
 const FIRST_USE_TEMP_PREFIX: &str = "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}";
 const PLATFORM_RUNTIME_OS_MATRIX: &str =
     "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]";
-const PLATFORM_RUNTIME_TIMEOUT: &str = "    timeout-minutes: 90";
+const PLATFORM_RUNTIME_TIMEOUT: &str =
+    "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}";
 const REPORT_BUNDLE_SMOKE_GATE: &str = r#"      - name: Exercise single-run report bundle CLI
         run: cargo test --locked -p termivar-cli --test report_bundle_cli"#;
 const REPORT_VERIFICATION_SMOKE_GATE: &str = r#"      - name: Exercise offline report bundle verification CLI
@@ -878,7 +879,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
                 == 1
     ) {
         violations.push(format!(
-            "{TESTS_WORKFLOW}: platform runtime smoke requires the exact ninety-minute runtime budget"
+            "{TESTS_WORKFLOW}: platform runtime smoke requires the exact Intel-only 120-minute and otherwise 90-minute runtime budget"
         ));
     }
     if !job_has_exact_step(
@@ -2904,7 +2905,12 @@ mod tests {
             1
         );
 
-        for replacement in ["    timeout-minutes: 65", "    timeout-minutes: 900"] {
+        for replacement in [
+            "    timeout-minutes: 90",
+            "    timeout-minutes: 120",
+            "    timeout-minutes: ${{ matrix.os == 'macos-latest' && 120 || 90 }}",
+            "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 900 }}",
+        ] {
             let mutated_job = job.replacen(PLATFORM_RUNTIME_TIMEOUT, replacement, 1);
             assert_ne!(mutated_job, *job, "mutation must alter the job fixture");
             let mutation = valid.replacen(job.as_str(), &mutated_job, 1);
@@ -2913,7 +2919,7 @@ mod tests {
                 capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
-                violations[0].contains("ninety-minute runtime budget"),
+                violations[0].contains("Intel-only 120-minute"),
                 "{violations:?}"
             );
         }
