@@ -1405,8 +1405,8 @@ fn validate_template_evaluation_review_audit(
     let projected_count = usize::from(audit.projected_item_count());
     if audit.capability_id() != TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID
         || projected_count != matching_items.len()
-        || !assessment_request_count
-            .is_some_and(|parent| u64::from(audit.attempted_request_count()) <= parent)
+        || assessment_request_count
+            .is_none_or(|parent| u64::from(audit.attempted_request_count()) > parent)
         || (audit.outcome() == TemplateEvaluationReviewOutcome::CandidateSpecificEvaluation)
             != (projected_count == 1)
     {
