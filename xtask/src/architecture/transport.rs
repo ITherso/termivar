@@ -12796,6 +12796,10 @@ impl OwnershipVisitor<'_> {
                     && segments
                         .get(1)
                         .is_some_and(|module| normalize_identifier(module) == "net")
+                    && segments.get(2).is_some_and(|item| {
+                        matches!(normalize_identifier(item), "lookup_host" | "TcpStream")
+                    })
+                    && segments.len() == 3
             }) || segments
                 .first()
                 .is_some_and(|root| normalize_identifier(root) == "tokio_tungstenite"));
@@ -14541,7 +14545,8 @@ mod tests {
         );
         assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&WEBSOCKET_RUNTIME_SOURCE));
 
-        let reviewed = "use tokio::net::TcpStream; use tokio_tungstenite::client_async;";
+        let reviewed =
+            "use tokio::net::{lookup_host, TcpStream}; use tokio_tungstenite::client_async;";
         assert!(inspect_bounded_source(WEBSOCKET_RUNTIME_SOURCE, reviewed)
             .unwrap()
             .is_empty());
@@ -14560,6 +14565,7 @@ mod tests {
         for forbidden in [
             "use reqwest::Client;",
             "use tokio::net::UdpSocket;",
+            "use tokio::net::TcpListener;",
             "use std::net::TcpStream;",
             "use crate::http_evidence::HttpRequestBroker;",
             "use crate::runtime_budget::RuntimeBudget;",
@@ -18781,6 +18787,8 @@ mod tests {
                 defense_audit: WebAssessmentDefenseAudit,
                 #[cfg(feature = "rest-review")]
                 rest_review_audit: Option<WebAssessmentRestAudit>,
+                #[cfg(feature = "tls-negotiation-review")]
+                tls_negotiation_review_audit: Option<WebAssessmentTlsNegotiationReviewAudit>,
             }
         "#;
         assert!(inspect_web_assessment_models(valid).unwrap().is_empty());
