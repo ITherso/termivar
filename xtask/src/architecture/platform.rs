@@ -10864,8 +10864,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 655_915;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x77e1_e665_6906_7ae4_16e9_3eea_a45a_985d;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 655_920;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xb1ee_0613_94f2_5207_24bc_bb91_3549_8353;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
