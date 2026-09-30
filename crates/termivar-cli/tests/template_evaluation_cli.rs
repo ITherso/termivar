@@ -10,8 +10,8 @@
 
 use std::{
     fs,
-    io::{ErrorKind, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    io::{self, ErrorKind, Read, Write},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     path::Path,
     process::{Command, Output, Stdio},
     sync::{
@@ -94,6 +94,7 @@ struct OwnedMiniJinjaServer {
     requests: Arc<Mutex<Vec<RequestTrace>>>,
     shutdown: Arc<AtomicBool>,
     terminal_accept_error: Arc<Mutex<Option<ErrorKind>>>,
+    terminal_connection_error: Arc<Mutex<Option<ErrorKind>>>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -113,6 +114,8 @@ impl OwnedMiniJinjaServer {
         let worker_shutdown = Arc::clone(&shutdown);
         let terminal_accept_error = Arc::new(Mutex::new(None));
         let worker_terminal_accept_error = Arc::clone(&terminal_accept_error);
+        let terminal_connection_error = Arc::new(Mutex::new(None));
+        let worker_terminal_connection_error = Arc::clone(&terminal_connection_error);
         let worker = thread::spawn(move || {
             let mut consecutive_transient_accept_errors = 0_u8;
             while !worker_shutdown.load(Ordering::Acquire) {
@@ -122,7 +125,14 @@ impl OwnedMiniJinjaServer {
                             break;
                         }
                         consecutive_transient_accept_errors = 0;
-                        handle_connection(&mut stream, mode, worker_requests.as_ref());
+                        if let Err(error) =
+                            handle_connection(&mut stream, mode, worker_requests.as_ref())
+                        {
+                            *worker_terminal_connection_error
+                                .lock()
+                                .expect("fixture connection error state") = Some(error.kind());
+                            break;
+                        }
                     },
                     Err(error)
                         if fixture_accept_error_is_retryable(
@@ -150,6 +160,7 @@ impl OwnedMiniJinjaServer {
             requests,
             shutdown,
             terminal_accept_error,
+            terminal_connection_error,
             worker: Some(worker),
         }
     }
@@ -159,6 +170,13 @@ impl OwnedMiniJinjaServer {
             .terminal_accept_error
             .lock()
             .expect("fixture accept error state")
+    }
+
+    fn terminal_connection_error(&self) -> Option<ErrorKind> {
+        *self
+            .terminal_connection_error
+            .lock()
+            .expect("fixture connection error state")
     }
 
     fn stop(mut self) -> StoppedFixture {
@@ -173,6 +191,11 @@ impl OwnedMiniJinjaServer {
             self.terminal_accept_error(),
             None,
             "owned fixture stopped after a terminal listener error"
+        );
+        assert_eq!(
+            self.terminal_connection_error(),
+            None,
+            "owned fixture stopped after a terminal connection error"
         );
         StoppedFixture {
             address: self.address,
@@ -191,14 +214,13 @@ fn handle_connection(
     stream: &mut TcpStream,
     mode: FixtureMode,
     requests: &Mutex<Vec<RequestTrace>>,
-) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+) -> io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     let mut request = Vec::with_capacity(4 * 1024);
     let mut chunk = [0_u8; 4 * 1024];
     while request.len() < 32 * 1024 {
-        let Ok(count) = stream.read(&mut chunk) else {
-            break;
-        };
+        let count = stream.read(&mut chunk)?;
         if count == 0 {
             break;
         }
@@ -240,8 +262,9 @@ fn handle_connection(
         body.len(),
         body
     );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
+    stream.write_all(response.as_bytes())?;
+    stream.flush()?;
+    Ok(())
 }
 
 fn render_fixture_value(mode: FixtureMode, value: &str) -> String {
@@ -325,9 +348,10 @@ fn assert_success(output: &Output, label: &str) {
 
 fn assert_scan_success(output: &Output, label: &str, server: &OwnedMiniJinjaServer) {
     let terminal_accept_error = server.terminal_accept_error();
+    let terminal_connection_error = server.terminal_connection_error();
     assert!(
         output.status.success(),
-        "{label} failed with {:?}; fixture_terminal_accept_error={terminal_accept_error:?}:\nstdout:\n{}\nstderr:\n{}",
+        "{label} failed with {:?}; fixture_terminal_accept_error={terminal_accept_error:?}; fixture_terminal_connection_error={terminal_connection_error:?}:\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -760,6 +784,60 @@ fn fixture_accept_loop_retries_only_bounded_transient_errors() {
     assert!(
         TcpStream::connect_timeout(&stopped.address, Duration::from_millis(100)).is_err(),
         "the fixture listener must be closed after its bounded wakeup"
+    );
+}
+
+#[test]
+fn fixture_normalizes_an_accepted_nonblocking_stream_before_reading() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind accepted-stream fixture");
+    let address = listener.local_addr().expect("read accepted-stream address");
+    let client = thread::spawn(move || {
+        let mut stream = TcpStream::connect(address).expect("connect accepted-stream fixture");
+        thread::sleep(Duration::from_millis(25));
+        stream
+            .write_all(
+                concat!(
+                    "GET /?termivar_fixture_input=",
+                    "termivar-template-a1b2c3d4e5f60708-control-end ",
+                    "HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .expect("write delayed accepted-stream request");
+        stream
+            .shutdown(Shutdown::Write)
+            .expect("finish delayed accepted-stream request");
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .expect("read complete accepted-stream response");
+        response
+    });
+
+    let (mut accepted, _) = listener.accept().expect("accept delayed fixture request");
+    accepted
+        .set_nonblocking(true)
+        .expect("model a platform-inherited nonblocking accepted stream");
+    let requests = Mutex::new(Vec::new());
+    handle_connection(&mut accepted, FixtureMode::TemplateSource, &requests)
+        .expect("normalize and serve the accepted stream");
+    drop(accepted);
+
+    let response = client.join().expect("join delayed fixture client");
+    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    let expected_body = b"termivar-template-a1b2c3d4e5f60708-control-end";
+    assert!(response
+        .windows(expected_body.len())
+        .any(|window| window == expected_body));
+    assert_eq!(
+        requests.into_inner().expect("accepted-stream trace"),
+        vec![RequestTrace::new(
+            RequestClass::TemplateControl,
+            Some(
+                TemplatePairIdentity::parse("a1b2c3d4e5f60708")
+                    .expect("literal accepted-stream identity")
+            )
+        )]
     );
 }
 
