@@ -43,6 +43,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "ssrf-oast-review",
     "supplied-session-review",
     "template-evaluation-review",
+    "tls-negotiation-review",
     "tls-observation",
     "websocket-review",
     "wordpress-review",
@@ -82,6 +83,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "ssrf-oast-review",
     "supplied-session-review",
     "template-evaluation-review",
+    "tls-negotiation-review",
     "tls-observation",
     "websocket-review",
     "wordpress-review",
@@ -171,11 +173,13 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "ring",
     "reqwest",
     "tokio",
+    "tokio-rustls",
     "tokio-util",
     "tokio-tungstenite",
     "toml",
     "termivar-oast",
     "uuid",
+    "webpki-roots",
     "x509-parser",
     "zeroize",
 ];
@@ -237,6 +241,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "ssrf-oast-review",
     "supplied-session-review",
     "template-evaluation-review",
+    "tls-negotiation-review",
     "tls-observation",
     "websocket-review",
     "wordpress-review",
@@ -992,6 +997,22 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         false,
         &[],
     ));
+    violations.extend(exact_dependency_contract_violations(
+        "termivar-scanner",
+        &scanner_dependencies,
+        "tokio-rustls",
+        true,
+        false,
+        &["ring", "tls12"],
+    ));
+    violations.extend(exact_dependency_contract_violations(
+        "termivar-scanner",
+        &scanner_dependencies,
+        "webpki-roots",
+        true,
+        true,
+        &[],
+    ));
     let mlua_requirement = scanner
         .dependencies
         .iter()
@@ -1013,6 +1034,28 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         "x509-parser",
         x509_parser_requirement.as_deref(),
         "^0.18.1",
+    ));
+    let tokio_rustls_requirement = scanner
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name.as_str() == "tokio-rustls")
+        .map(|dependency| dependency.req.to_string());
+    violations.extend(exact_dependency_requirement_violations(
+        "termivar-scanner",
+        "tokio-rustls",
+        tokio_rustls_requirement.as_deref(),
+        "^0.26.4",
+    ));
+    let webpki_roots_requirement = scanner
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name.as_str() == "webpki-roots")
+        .map(|dependency| dependency.req.to_string());
+    violations.extend(exact_dependency_requirement_violations(
+        "termivar-scanner",
+        "webpki-roots",
+        webpki_roots_requirement.as_deref(),
+        "^1.0.8",
     ));
     let cli = packages
         .iter()
@@ -1450,6 +1493,10 @@ fn cli_feature_violations(
             "supplied-session-review",
             &["termivar-scanner/supplied-session-review"][..],
         ),
+        (
+            "tls-negotiation-review",
+            &["termivar-scanner/tls-negotiation-review"][..],
+        ),
         ("tls-observation", &["termivar-scanner/tls-observation"][..]),
         (
             "websocket-review",
@@ -1770,6 +1817,23 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "scanning",
                 "core",
                 "dep:x509-parser",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "tls-negotiation-review",
+            &[
+                "tls-negotiation-review",
+                "scanning",
+                "core",
+                "dep:tokio-rustls",
+                "dep:webpki-roots",
                 "dep:async-trait",
                 "dep:html5ever",
                 "dep:markup5ever_rcdom",
@@ -5339,7 +5403,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 15
+        || report_call.args.len() != 17
     {
         return false;
     }
@@ -5402,8 +5466,18 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
             assessment_bridge_feature_field(argument, "tls_observation", "tls-observation")
         })
         && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(
+                argument,
+                "tls_negotiation_review",
+                "tls-negotiation-review",
+            )
+        })
+        && arguments.next().is_some_and(|argument| {
             assessment_bridge_feature_field(argument, "recon_ct_provider", "recon-ct-provider")
         })
+        && arguments
+            .next()
+            .is_some_and(|argument| assessment_bridge_borrowed_self_field(argument, "transport"))
 }
 
 fn assessment_bridge_exact_runtime_limits(expression: &syn::Expr) -> bool {
@@ -5685,6 +5759,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             (
                 "tls_observation",
                 "Option<AssessmentTlsObservationAuditDocument>",
+            ),
+            (
+                "tls_negotiation_review",
+                "Option<AssessmentTlsNegotiationReviewAuditDocument>",
             ),
             (
                 "jwt_policy_review",
@@ -6476,6 +6554,78 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("certificate_time_status", "&'static str"),
             ("response_occurrence_count", "u64"),
             ("standard_transport_validation_succeeded", "bool"),
+        ],
+    ),
+    (
+        "AssessmentTlsNegotiationReviewAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy", "&'static str"),
+            ("selected", "bool"),
+            ("methodology", "AssessmentTlsNegotiationMethodologyDocument"),
+            ("coverage", "AssessmentTlsNegotiationCoverageDocument"),
+            (
+                "capability_observations",
+                "Vec<AssessmentTlsNegotiationCellDocument>",
+            ),
+            ("claim_limits", "[&'static str;6]"),
+        ],
+    ),
+    (
+        "AssessmentTlsNegotiationMethodologyDocument",
+        &[],
+        &[
+            ("target_binding", "&'static str"),
+            ("address_selection", "&'static str"),
+            ("execution_order", "&'static str"),
+            ("maximum_in_flight_connections", "u8"),
+            ("network_capable_cell_count", "u8"),
+            ("matrix_cell_count", "u8"),
+            ("retries", "&'static str"),
+            ("redirects", "&'static str"),
+            ("proxy", "&'static str"),
+            ("application_data", "&'static str"),
+            ("credentials", "&'static str"),
+            ("client_certificate", "&'static str"),
+            ("alpn", "&'static str"),
+            ("session_resumption", "&'static str"),
+            ("certificate_validation", "&'static str"),
+        ],
+    ),
+    (
+        "AssessmentTlsNegotiationCoverageDocument",
+        &[],
+        &[
+            ("terminal", "&'static str"),
+            ("connection_attempt_limit", "u8"),
+            ("connection_in_flight_limit", "u8"),
+            ("per_connection_ingress_byte_limit", "u64"),
+            ("total_ingress_byte_limit", "u64"),
+            ("per_connection_egress_byte_limit", "u64"),
+            ("total_egress_byte_limit", "u64"),
+            ("attempted_connection_count", "u8"),
+            ("completed_handshake_count", "u8"),
+            ("accounted_ingress_tls_bytes", "u64"),
+            ("observed_egress_tls_bytes", "u64"),
+            ("client_backend_unsupported_cell_count", "u8"),
+        ],
+    ),
+    (
+        "AssessmentTlsNegotiationCellDocument",
+        &[],
+        &[
+            ("cell_id", "&'static str"),
+            ("offered_protocol", "&'static str"),
+            ("client_backend", "&'static str"),
+            ("dispatch_status", "&'static str"),
+            ("outcome", "&'static str"),
+            ("support", "&'static str"),
+            ("transport_validation", "&'static str"),
+            ("negotiated_protocol", "Option<&'static str>"),
+            ("negotiated_cipher_suite", "Option<&'static str>"),
+            ("accounted_ingress_tls_bytes", "u64"),
+            ("observed_egress_tls_bytes", "u64"),
         ],
     ),
     (
@@ -7566,6 +7716,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "openapi-review" => "feature=\"openapi-review\"",
         "rest-review" => "feature=\"rest-review\"",
         "secret-exposure-review" => "feature=\"secret-exposure-review\"",
+        "tls-negotiation-review" => "feature=\"tls-negotiation-review\"",
         "tls-observation" => "feature=\"tls-observation\"",
         "jwt-policy-review" => "feature=\"jwt-policy-review\"",
         "jwt-target-acceptance-review" => "feature=\"jwt-target-acceptance-review\"",
@@ -7636,6 +7787,10 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSecretExposureObservationDocument"
                 | "AssessmentTlsObservationAuditDocument"
                 | "AssessmentTlsLeafObservationDocument"
+                | "AssessmentTlsNegotiationReviewAuditDocument"
+                | "AssessmentTlsNegotiationMethodologyDocument"
+                | "AssessmentTlsNegotiationCoverageDocument"
+                | "AssessmentTlsNegotiationCellDocument"
                 | "AssessmentJwtPolicyReviewAuditDocument"
                 | "AssessmentJwtPolicyMethodologyDocument"
                 | "AssessmentJwtExternalActivityDocument"
@@ -7800,6 +7955,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 "AssessmentTlsObservationAuditDocument"
                 | "AssessmentTlsLeafObservationDocument" => {
                     "all(feature=\"scanning\",feature=\"tls-observation\")"
+                },
+                "AssessmentTlsNegotiationReviewAuditDocument"
+                | "AssessmentTlsNegotiationMethodologyDocument"
+                | "AssessmentTlsNegotiationCoverageDocument"
+                | "AssessmentTlsNegotiationCellDocument" => {
+                    "all(feature=\"scanning\",feature=\"tls-negotiation-review\")"
                 },
                 "AssessmentJwtPolicyReviewAuditDocument"
                 | "AssessmentJwtPolicyMethodologyDocument"
@@ -7985,6 +8146,12 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         )
                     } else if name == "AssessmentDocument" && field_name == "tls_observation" {
                         reporting_audit_field_attributes_are_exact(&field.attrs, "tls-observation")
+                    } else if name == "AssessmentDocument" && field_name == "tls_negotiation_review"
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "tls-negotiation-review",
+                        )
                     } else if name == "AssessmentDocument" && field_name == "jwt_policy_review" {
                         reporting_audit_field_attributes_are_exact(
                             &field.attrs,
@@ -10697,8 +10864,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 638_001;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x633d_2d67_9825_c6ca_244f_10d8_ad2a_8935;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 655_915;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x77e1_e665_6906_7ae4_16e9_3eea_a45a_985d;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -10903,6 +11070,9 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SECRET_EXPOSURE_CATALOGUE_REVISION",
     "crate::web_runtime::SECRET_EXPOSURE_POLICY_ID",
     "crate::web_runtime::SECRET_EXPOSURE_REPRESENTATION",
+    "crate::web_runtime::TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA",
+    "crate::web_runtime::TLS_NEGOTIATION_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::TLS_NEGOTIATION_REVIEW_POLICY_ID",
     "crate::web_runtime::TLS_OBSERVATION_AUDIT_SCHEMA",
     "crate::web_runtime::TLS_OBSERVATION_BACKEND_LIMIT",
     "crate::web_runtime::TLS_OBSERVATION_CLOCK_ASSURANCE",
@@ -10932,6 +11102,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::WebAssessmentRunReport",
     "crate::web_runtime::WebAssessmentReconCtProviderAudit",
     "crate::web_runtime::WebAssessmentSecretExposureAudit",
+    "crate::web_runtime::WebAssessmentTlsNegotiationReviewAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
     "crate::web_runtime::WebAssessmentTlsObservationAudit",
     "crate::web_runtime::WebAssessmentWebSocketReviewAudit",
@@ -11031,6 +11202,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentJwtTargetAcceptanceAuditDocument::from_audit",
     "AssessmentReconCertSpotterAuditDocument::from_audit",
     "AssessmentSecretExposureAuditDocument::from_audit",
+    "AssessmentTlsNegotiationReviewAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "AssessmentWebSocketReviewAuditDocument::from_audit",
     "AssessmentTemplateEvaluationReviewAuditDocument::from_audit",
@@ -11103,10 +11275,14 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::TLS_OBSERVATION_REVOCATION_STATUS",
     "crate::web_runtime::TLS_OBSERVATION_SOURCE_SCOPE",
     "crate::web_runtime::TLS_OBSERVATION_VALIDATION_SCOPE",
+    "crate::web_runtime::TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA",
+    "crate::web_runtime::TLS_NEGOTIATION_REVIEW_CAPABILITY_ID",
+    "crate::web_runtime::TLS_NEGOTIATION_REVIEW_POLICY_ID",
     "crate::web_runtime::WEBSOCKET_REVIEW_AUDIT_SCHEMA",
     "crate::web_runtime::WEBSOCKET_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::WebAssessmentTlsObservationAudit",
+    "crate::web_runtime::WebAssessmentTlsNegotiationReviewAudit",
     "crate::web_runtime::WebAssessmentWebSocketReviewAudit",
     "crate::jwt_policy_review::JWT_POLICY_REVIEW_AUDIT_SCHEMA",
     "crate::jwt_policy_review::JWT_POLICY_REVIEW_POLICY_ID",
@@ -11804,6 +11980,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
+    "AssessmentTlsNegotiationReviewAuditDocument::from_audit",
     "AssessmentTemplateEvaluationReviewAuditDocument::from_audit",
     "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
     "assessment_reference_ordinal",
@@ -12066,11 +12243,16 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "accounted_ingress_tls_bytes",
     "active_request_count",
+    "attempted_connection_count",
     "algorithm",
     "callback_targets_distinct",
+    "cells",
     "candidate_callback_observed",
     "cleanup_verified",
+    "client_backend",
+    "completed_handshake_count",
     "control_callback_observed",
     "control_model",
     "event_identities_distinct",
@@ -12079,16 +12261,23 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "file_access",
     "maximum_disposition",
     "media_type",
+    "negotiated_cipher_suite",
+    "negotiated_protocol",
+    "observed_egress_tls_bytes",
+    "offered_protocol",
     "preflight_clean",
     "projected_item_count",
     "provider_accounting_complete",
     "replay_callback_observed",
     "semantic_effect",
     "selected_case_count",
+    "support",
     "target_accounting_complete",
     "target_complete",
     "target_request_body_bytes",
     "target_response_bytes",
+    "tls_negotiation_review_audit",
+    "transport_validation",
     "template_evaluation_review_audit",
     "xml_external_entity_review_audit",
     "address",
@@ -12999,6 +13188,16 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::web_runtime::WebAssessmentSecretExposureAudit"
                 )
             });
+        let tls_negotiation_review_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::web_runtime::TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA"
+                        | "crate::web_runtime::TLS_NEGOTIATION_REVIEW_CAPABILITY_ID"
+                        | "crate::web_runtime::TLS_NEGOTIATION_REVIEW_POLICY_ID"
+                        | "crate::web_runtime::WebAssessmentTlsNegotiationReviewAudit"
+                )
+            });
         let tls_observation_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -13234,6 +13433,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
+        } else if tls_negotiation_review_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"tls-negotiation-review\")")
         } else if tls_observation_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -13274,7 +13478,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, XML external-entity, template-evaluation, and WordPress audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, active TLS-negotiation, local JWT-policy, XML external-entity, template-evaluation, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -13349,6 +13553,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
                     | Some("feature=\"secret-exposure-review\"")
+                    | Some("feature=\"tls-negotiation-review\"")
                     | Some("feature=\"tls-observation\"")
                     | Some("feature=\"jwt-policy-review\"")
                     | Some("feature=\"jwt-target-acceptance-review\"")
@@ -13366,6 +13571,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("all(feature=\"scanning\",feature=\"openapi-review\")")
                     | Some("all(feature=\"scanning\",feature=\"rest-review\")")
                     | Some("all(feature=\"scanning\",feature=\"secret-exposure-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"tls-negotiation-review\")")
                     | Some("all(feature=\"scanning\",feature=\"tls-observation\")")
                     | Some("all(feature=\"scanning\",feature=\"jwt-policy-review\")")
                     | Some("all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")")
@@ -13378,7 +13584,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
             );
         if matches!(attribute_name.as_str(), "cfg" | "cfg_attr") && !exact_feature_gate {
             self.violations.insert(
-                "reporting production source may contain only the exact scanning, supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, XML external-entity, and WordPress audit feature gates"
+                "reporting production source may contain only the exact scanning, supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, active TLS-negotiation, local JWT-policy, XML external-entity, and WordPress audit feature gates"
                     .to_owned(),
             );
         }
@@ -14148,6 +14354,14 @@ mod tests {
             vec!["scanning".to_owned(), "dep:x509-parser".to_owned()],
         );
         features.insert(
+            "tls-negotiation-review".to_owned(),
+            vec![
+                "scanning".to_owned(),
+                "dep:tokio-rustls".to_owned(),
+                "dep:webpki-roots".to_owned(),
+            ],
+        );
+        features.insert(
             "websocket-review".to_owned(),
             vec![
                 "scanning".to_owned(),
@@ -14915,6 +15129,58 @@ mod tests {
             .get_mut("release-bundle")
             .unwrap()
             .push("tls-observation".to_owned());
+        assert!(
+            cli_feature_violations(&cli_features, &dependencies)
+                .iter()
+                .any(|violation| violation.contains("release-bundle")
+                    && violation.contains("exactly"))
+        );
+    }
+
+    #[test]
+    fn tls_negotiation_review_is_isolated_non_bundled_and_absent_from_aggregates() {
+        let mut features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("tls-negotiation-review").unwrap(),
+            &[
+                "scanning".to_owned(),
+                "dep:tokio-rustls".to_owned(),
+                "dep:webpki-roots".to_owned(),
+            ]
+        );
+        let default = raw_feature_closure(&features, "default");
+        assert!(!default.contains("tls-negotiation-review"));
+        assert!(!default.contains("dep:tokio-rustls"));
+        assert!(!default.contains("dep:webpki-roots"));
+        for aggregate in ["full", "enterprise", "research"] {
+            assert!(!raw_feature_closure(&features, aggregate).contains("tls-negotiation-review"));
+        }
+
+        features
+            .get_mut("tls-negotiation-review")
+            .unwrap()
+            .retain(|member| member != "dep:tokio-rustls");
+        assert!(feature_violations(&features).iter().any(|violation| {
+            violation.contains("`tls-negotiation-review` raw feature closure")
+                && violation.contains("dep:tokio-rustls")
+        }));
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert_eq!(
+            cli_features.get("tls-negotiation-review").unwrap(),
+            &["termivar-scanner/tls-negotiation-review".to_owned()]
+        );
+        assert!(cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .all(|member| member != "tls-negotiation-review"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("tls-negotiation-review".to_owned());
         assert!(
             cli_feature_violations(&cli_features, &dependencies)
                 .iter()
@@ -17026,8 +17292,11 @@ mod tests {
                         self.secret_exposure_review,
                         #[cfg(feature = "tls-observation")]
                         self.tls_observation,
+                        #[cfg(feature = "tls-negotiation-review")]
+                        self.tls_negotiation_review,
                         #[cfg(feature = "recon-ct-provider")]
                         self.recon_ct_provider,
+                        &self.transport,
                     )
                 }
             }
@@ -17045,7 +17314,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"websocket-review\")]\n                        self.websocket_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"xml-external-entity-review\")]\n                        self.xml_external_entity_review,\n                        #[cfg(feature = \"template-evaluation-review\")]\n                        self.template_evaluation_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"websocket-review\")]\n                        self.websocket_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"xml-external-entity-review\")]\n                        self.xml_external_entity_review,\n                        #[cfg(feature = \"template-evaluation-review\")]\n                        self.template_evaluation_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"tls-negotiation-review\")]\n                        self.tls_negotiation_review,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                        &self.transport,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -17106,9 +17375,14 @@ mod tests {
             ),
             typed_assessment_bridge.replace("self.tls_observation,", "forged_tls_observation,"),
             typed_assessment_bridge.replace(
+                "self.tls_negotiation_review,",
+                "forged_tls_negotiation_review,",
+            ),
+            typed_assessment_bridge.replace(
                 "self.recon_ct_provider,",
                 "forged_recon_ct_provider,",
             ),
+            typed_assessment_bridge.replace("&self.transport,", "&forged_transport,"),
         ] {
             assert!(!reporting_cross_file_source_violations(
                 "web_runtime/web_assessment.rs",
@@ -17731,6 +18005,11 @@ mod tests {
                 SECRET_EXPOSURE_CATALOGUE_ID, SECRET_EXPOSURE_CATALOGUE_REVISION,
                 SECRET_EXPOSURE_POLICY_ID, SECRET_EXPOSURE_REPRESENTATION,
             };
+            #[cfg(all(feature = "scanning", feature = "tls-negotiation-review"))]
+            use crate::web_runtime::{
+                WebAssessmentTlsNegotiationReviewAudit, TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA,
+                TLS_NEGOTIATION_REVIEW_CAPABILITY_ID, TLS_NEGOTIATION_REVIEW_POLICY_ID,
+            };
             #[cfg(all(feature = "scanning", feature = "tls-observation"))]
             use crate::web_runtime::{
                 WebAssessmentTlsObservationAudit, HARD_MAX_WEB_ASSESSMENT_TOTAL_REQUESTS,
@@ -17962,6 +18241,16 @@ mod tests {
         );
         assert_ne!(widened_tls_observation_import, imports);
         let violations = reporting_source_import_violations(&widened_tls_observation_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_tls_negotiation_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"tls-negotiation-review\"))]",
+            "#[cfg(feature = \"scanning\")]",
+        );
+        assert_ne!(widened_tls_negotiation_import, imports);
+        let violations = reporting_source_import_violations(&widened_tls_negotiation_import)
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
@@ -18475,6 +18764,9 @@ mod tests {
                 #[cfg(feature = "tls-observation")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 tls_observation: Option<AssessmentTlsObservationAuditDocument>,
+                #[cfg(feature = "tls-negotiation-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                tls_negotiation_review: Option<AssessmentTlsNegotiationReviewAuditDocument>,
                 #[cfg(feature = "jwt-policy-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 jwt_policy_review: Option<AssessmentJwtPolicyReviewAuditDocument>,
@@ -18949,6 +19241,67 @@ mod tests {
                 certificate_time_status: &'static str,
                 response_occurrence_count: u64,
                 standard_transport_validation_succeeded: bool,
+            }
+            #[cfg(all(feature = "scanning", feature = "tls-negotiation-review"))]
+            #[derive(Serialize)]
+            struct AssessmentTlsNegotiationReviewAuditDocument {
+                schema: &'static str,
+                policy: &'static str,
+                selected: bool,
+                methodology: AssessmentTlsNegotiationMethodologyDocument,
+                coverage: AssessmentTlsNegotiationCoverageDocument,
+                capability_observations: Vec<AssessmentTlsNegotiationCellDocument>,
+                claim_limits: [&'static str; 6],
+            }
+            #[cfg(all(feature = "scanning", feature = "tls-negotiation-review"))]
+            #[derive(Serialize)]
+            struct AssessmentTlsNegotiationMethodologyDocument {
+                target_binding: &'static str,
+                address_selection: &'static str,
+                execution_order: &'static str,
+                maximum_in_flight_connections: u8,
+                network_capable_cell_count: u8,
+                matrix_cell_count: u8,
+                retries: &'static str,
+                redirects: &'static str,
+                proxy: &'static str,
+                application_data: &'static str,
+                credentials: &'static str,
+                client_certificate: &'static str,
+                alpn: &'static str,
+                session_resumption: &'static str,
+                certificate_validation: &'static str,
+            }
+            #[cfg(all(feature = "scanning", feature = "tls-negotiation-review"))]
+            #[derive(Serialize)]
+            struct AssessmentTlsNegotiationCoverageDocument {
+                terminal: &'static str,
+                connection_attempt_limit: u8,
+                connection_in_flight_limit: u8,
+                per_connection_ingress_byte_limit: u64,
+                total_ingress_byte_limit: u64,
+                per_connection_egress_byte_limit: u64,
+                total_egress_byte_limit: u64,
+                attempted_connection_count: u8,
+                completed_handshake_count: u8,
+                accounted_ingress_tls_bytes: u64,
+                observed_egress_tls_bytes: u64,
+                client_backend_unsupported_cell_count: u8,
+            }
+            #[cfg(all(feature = "scanning", feature = "tls-negotiation-review"))]
+            #[derive(Serialize)]
+            struct AssessmentTlsNegotiationCellDocument {
+                cell_id: &'static str,
+                offered_protocol: &'static str,
+                client_backend: &'static str,
+                dispatch_status: &'static str,
+                outcome: &'static str,
+                support: &'static str,
+                transport_validation: &'static str,
+                negotiated_protocol: Option<&'static str>,
+                negotiated_cipher_suite: Option<&'static str>,
+                accounted_ingress_tls_bytes: u64,
+                observed_egress_tls_bytes: u64,
             }
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             #[derive(Serialize)]
@@ -20193,6 +20546,36 @@ mod tests {
             "{violations}"
         );
 
+        let widened_tls_negotiation_field_gate = source.replace(
+            "                #[cfg(feature = \"tls-negotiation-review\")]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                tls_negotiation_review: Option<AssessmentTlsNegotiationReviewAuditDocument>,",
+            "                #[cfg(feature = \"scanning\")]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                tls_negotiation_review: Option<AssessmentTlsNegotiationReviewAuditDocument>,",
+        );
+        assert_ne!(widened_tls_negotiation_field_gate, source);
+        let violations =
+            reporting_document_contract_violations(&widened_tls_negotiation_field_gate)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let widened_tls_negotiation_document_gate = source.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"tls-negotiation-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentTlsNegotiationReviewAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentTlsNegotiationReviewAuditDocument",
+        );
+        assert_ne!(widened_tls_negotiation_document_gate, source);
+        let violations =
+            reporting_document_contract_violations(&widened_tls_negotiation_document_gate)
+                .unwrap()
+                .join("\n");
+        assert!(
+            violations.contains("AssessmentTlsNegotiationReviewAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
         let missing_websocket_document = source.replace(
             "                #[cfg(feature = \"websocket-review\")]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                websocket_review: Option<AssessmentWebSocketReviewAuditDocument>,\n",
             "",
@@ -21082,6 +21465,10 @@ mod tests {
                 vec!["termivar-scanner/tls-observation".to_owned()],
             ),
             (
+                "tls-negotiation-review".to_owned(),
+                vec!["termivar-scanner/tls-negotiation-review".to_owned()],
+            ),
+            (
                 "websocket-review".to_owned(),
                 vec!["termivar-scanner/websocket-review".to_owned()],
             ),
@@ -21508,6 +21895,7 @@ mod tests {
             "secret-exposure-review",
             "ssrf-oast-review",
             "supplied-session-review",
+            "tls-negotiation-review",
             "tls-observation",
             "websocket-review",
             "jwt-policy-review",
@@ -21622,6 +22010,12 @@ mod tests {
             .is_some_and(|dependency| dependency.optional));
         assert!(dependencies
             .get("ring")
+            .is_some_and(|dependency| dependency.optional));
+        assert!(dependencies
+            .get("tokio-rustls")
+            .is_some_and(|dependency| dependency.optional));
+        assert!(dependencies
+            .get("webpki-roots")
             .is_some_and(|dependency| dependency.optional));
 
         dependencies.get_mut("mlua").unwrap().optional = false;

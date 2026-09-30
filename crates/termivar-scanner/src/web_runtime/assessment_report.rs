@@ -86,6 +86,12 @@ use super::ssrf_oast_runtime::{
     MAX_SSRF_OAST_REVIEW_PROVIDER_REQUESTS, MAX_SSRF_OAST_REVIEW_REQUESTS,
     SSRF_OAST_REVIEW_CAPABILITY_ID,
 };
+#[cfg(feature = "tls-negotiation-review")]
+use super::tls_negotiation_review::{
+    WebAssessmentTlsNegotiationReviewAudit, TLS_NEGOTIATION_REVIEW_ACTION_TLS12,
+    TLS_NEGOTIATION_REVIEW_ACTION_TLS13, TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA,
+    TLS_NEGOTIATION_REVIEW_POLICY_ID,
+};
 #[cfg(feature = "tls-observation")]
 use super::tls_observation::{
     WebAssessmentTlsObservationAudit, TLS_OBSERVATION_AUDIT_SCHEMA, TLS_OBSERVATION_BACKEND_LIMIT,
@@ -162,7 +168,9 @@ use crate::wordpress_review::{
     WordPressCatalogStatus, MAX_WORDPRESS_ADVISORY_RECORDS, MAX_WORDPRESS_RESULT_COMPONENTS,
     MAX_WORDPRESS_RESULT_VERSION_EVIDENCE, MAX_WORDPRESS_SIGNALS,
 };
-use crate::RuntimeBudget;
+use crate::{
+    DecisionExecutionStage, RuntimeBudget, TransportDispatchAudit, TransportDispatchOutcome,
+};
 
 /// Stable schema for the typed assessment-run product envelope.
 pub const ASSESSMENT_RUN_REPORT_SCHEMA: &str = "venom-assessment-run/v1";
@@ -309,6 +317,8 @@ pub struct AssessmentRunReport {
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<WebAssessmentTlsObservationAudit>,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_negotiation_review: Option<WebAssessmentTlsNegotiationReviewAudit>,
     #[cfg(feature = "recon-ct-provider")]
     recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,
     #[cfg(feature = "jwt-policy-review")]
@@ -345,6 +355,8 @@ struct AssessmentReviewAudits {
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<WebAssessmentTlsObservationAudit>,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_negotiation_review: Option<WebAssessmentTlsNegotiationReviewAudit>,
     #[cfg(feature = "recon-ct-provider")]
     recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,
 }
@@ -384,9 +396,13 @@ impl AssessmentRunReport {
         #[cfg(feature = "tls-observation")] tls_observation: Option<
             WebAssessmentTlsObservationAudit,
         >,
+        #[cfg(feature = "tls-negotiation-review")] tls_negotiation_review: Option<
+            WebAssessmentTlsNegotiationReviewAudit,
+        >,
         #[cfg(feature = "recon-ct-provider")] recon_ct_provider: Option<
             WebAssessmentReconCtProviderAudit,
         >,
+        transport: &TransportDispatchAudit,
     ) -> Result<Self, AssessmentRunReportError> {
         let run_report = build_run_report(&truth)?;
         Self::new_validated(
@@ -418,9 +434,12 @@ impl AssessmentRunReport {
                 secret_exposure_review,
                 #[cfg(feature = "tls-observation")]
                 tls_observation,
+                #[cfg(feature = "tls-negotiation-review")]
+                tls_negotiation_review,
                 #[cfg(feature = "recon-ct-provider")]
                 recon_ct_provider,
             },
+            transport,
         )
     }
 
@@ -430,7 +449,13 @@ impl AssessmentRunReport {
         items: AssessmentItemSet,
         truth: CompletedWebAssessmentTruth,
     ) -> Result<Self, AssessmentRunReportError> {
-        Self::new_validated(run_report, items, truth, AssessmentReviewAudits::default())
+        Self::new_validated(
+            run_report,
+            items,
+            truth,
+            AssessmentReviewAudits::default(),
+            &TransportDispatchAudit::default(),
+        )
     }
 
     fn new_validated(
@@ -438,6 +463,7 @@ impl AssessmentRunReport {
         items: AssessmentItemSet,
         truth: CompletedWebAssessmentTruth,
         audits: AssessmentReviewAudits,
+        transport: &TransportDispatchAudit,
     ) -> Result<Self, AssessmentRunReportError> {
         let AssessmentReviewAudits {
             #[cfg(feature = "supplied-session-review")]
@@ -464,6 +490,8 @@ impl AssessmentRunReport {
             secret_exposure_review,
             #[cfg(feature = "tls-observation")]
             tls_observation,
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_negotiation_review,
             #[cfg(feature = "recon-ct-provider")]
             recon_ct_provider,
         } = audits;
@@ -545,6 +573,13 @@ impl AssessmentRunReport {
             &truth.target,
             truth.expected_accounting.requests().consumed(),
         )?;
+        #[cfg(feature = "tls-negotiation-review")]
+        validate_tls_negotiation_review_audit(
+            tls_negotiation_review.as_ref(),
+            transport,
+            truth.expected_accounting.requests().consumed(),
+            truth.expected_accounting.response_body_bytes().consumed(),
+        )?;
         #[cfg(feature = "recon-ct-provider")]
         validate_recon_ct_provider_audit(
             recon_ct_provider.as_ref(),
@@ -582,6 +617,8 @@ impl AssessmentRunReport {
             secret_exposure_review,
             #[cfg(feature = "tls-observation")]
             tls_observation,
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_negotiation_review,
             #[cfg(feature = "recon-ct-provider")]
             recon_ct_provider,
             #[cfg(feature = "jwt-policy-review")]
@@ -703,6 +740,14 @@ impl AssessmentRunReport {
     #[cfg(feature = "tls-observation")]
     pub const fn tls_observation_audit(&self) -> Option<&WebAssessmentTlsObservationAudit> {
         self.tls_observation.as_ref()
+    }
+
+    /// Returns the explicitly selected bounded active TLS negotiation audit.
+    #[cfg(feature = "tls-negotiation-review")]
+    pub const fn tls_negotiation_review_audit(
+        &self,
+    ) -> Option<&WebAssessmentTlsNegotiationReviewAudit> {
+        self.tls_negotiation_review.as_ref()
     }
 
     /// Returns the optional bounded certificate-transparency provider audit.
@@ -1036,6 +1081,101 @@ fn validate_tls_observation_audit(
     } else {
         Err(AssessmentRunReportError::TlsObservationAuditMismatch)
     }
+}
+
+#[cfg(feature = "tls-negotiation-review")]
+fn validate_tls_negotiation_review_audit(
+    audit: Option<&WebAssessmentTlsNegotiationReviewAudit>,
+    transport: &TransportDispatchAudit,
+    assessment_request_count: Option<u64>,
+    assessment_response_bytes: Option<u64>,
+) -> Result<(), AssessmentRunReportError> {
+    let receipts = transport
+        .receipts()
+        .iter()
+        .filter(|receipt| {
+            receipt.action_id() == TLS_NEGOTIATION_REVIEW_ACTION_TLS13
+                || receipt.action_id() == TLS_NEGOTIATION_REVIEW_ACTION_TLS12
+        })
+        .collect::<Vec<_>>();
+    let Some(audit) = audit else {
+        return if receipts.is_empty() {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch)
+        };
+    };
+    if audit.schema() != TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA
+        || audit.policy() != TLS_NEGOTIATION_REVIEW_POLICY_ID
+        || !audit.selected()
+        || !audit.is_valid()
+        || !audit.network_matrix_complete()
+        || assessment_request_count
+            .is_none_or(|count| u64::from(audit.attempted_connection_count()) > count)
+        || assessment_response_bytes.is_none_or(|count| audit.accounted_ingress_tls_bytes() > count)
+    {
+        return Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch);
+    }
+
+    if receipts.len() != usize::from(audit.attempted_connection_count())
+        || receipts.windows(2).any(|pair| {
+            pair[0].sequence() >= pair[1].sequence() || pair[0].action_id() == pair[1].action_id()
+        })
+        || receipts
+            .first()
+            .is_some_and(|receipt| receipt.action_id() != TLS_NEGOTIATION_REVIEW_ACTION_TLS13)
+        || receipts
+            .get(1)
+            .is_some_and(|receipt| receipt.action_id() != TLS_NEGOTIATION_REVIEW_ACTION_TLS12)
+    {
+        return Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch);
+    }
+
+    for cell in audit.cells().iter().take(2) {
+        let action_id = match cell.id() {
+            "tls13_default_provider" => TLS_NEGOTIATION_REVIEW_ACTION_TLS13,
+            "tls12_default_provider" => TLS_NEGOTIATION_REVIEW_ACTION_TLS12,
+            _ => return Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch),
+        };
+        let matches = receipts
+            .iter()
+            .copied()
+            .filter(|receipt| receipt.action_id() == action_id)
+            .collect::<Vec<_>>();
+        if cell.dispatch_status() == "not_dispatched" {
+            if !matches.is_empty()
+                || cell.accounted_ingress_tls_bytes() != 0
+                || cell.observed_egress_tls_bytes() != 0
+            {
+                return Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch);
+            }
+            continue;
+        }
+        if cell.dispatch_status() != "dispatched" || matches.len() != 1 {
+            return Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch);
+        }
+        let receipt = matches[0];
+        let expected_outcome = match cell.outcome() {
+            "negotiated" => TransportDispatchOutcome::Completed,
+            "peer_alert_received"
+            | "certificate_validation_failed"
+            | "handshake_failed"
+            | "transport_failed" => TransportDispatchOutcome::TransportFailure,
+            "budget_exhausted" => TransportDispatchOutcome::ResponseBudgetReached,
+            "cancelled" => TransportDispatchOutcome::Cancelled,
+            "deadline_reached" => TransportDispatchOutcome::RequestTimeout,
+            _ => return Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch),
+        };
+        if receipt.stage() != DecisionExecutionStage::Active
+            || receipt.origin().is_some()
+            || receipt.request_body_bytes() != 0
+            || receipt.response_bytes() != cell.accounted_ingress_tls_bytes()
+            || receipt.outcome() != expected_outcome
+        {
+            return Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "recon-ct-provider")]
@@ -1599,6 +1739,11 @@ impl fmt::Debug for AssessmentRunReport {
         debug.field(
             "tls_observation_audit_present",
             &self.tls_observation.is_some(),
+        );
+        #[cfg(feature = "tls-negotiation-review")]
+        debug.field(
+            "tls_negotiation_review_audit_present",
+            &self.tls_negotiation_review.is_some(),
         );
         #[cfg(feature = "recon-ct-provider")]
         debug.field(
@@ -2697,6 +2842,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "tls-observation")]
     #[error("TLS observation audit does not match transport truth")]
     TlsObservationAuditMismatch,
+    /// The optional active TLS matrix disagreed with parent transport receipts.
+    #[cfg(feature = "tls-negotiation-review")]
+    #[error("TLS negotiation review audit does not match transport truth")]
+    TlsNegotiationReviewAuditMismatch,
     /// The optional CT provider audit disagreed with runtime-owned request and byte truth.
     #[cfg(feature = "recon-ct-provider")]
     #[error("certificate-transparency provider audit does not match runtime truth")]
@@ -3276,6 +3425,23 @@ mod tests {
         assert_eq!(
             validate_tls_observation_audit(Some(&one_response), "https://example.test/", None,),
             Err(AssessmentRunReportError::TlsObservationAuditMismatch)
+        );
+    }
+
+    #[cfg(feature = "tls-negotiation-review")]
+    #[test]
+    fn completed_report_rejects_an_incomplete_tls_negotiation_audit() {
+        let audit = WebAssessmentTlsNegotiationReviewAudit::parent_authority_unavailable();
+        assert!(audit.is_valid());
+        assert!(!audit.network_matrix_complete());
+        assert_eq!(
+            validate_tls_negotiation_review_audit(
+                Some(&audit),
+                &TransportDispatchAudit::default(),
+                Some(0),
+                Some(0),
+            ),
+            Err(AssessmentRunReportError::TlsNegotiationReviewAuditMismatch)
         );
     }
 

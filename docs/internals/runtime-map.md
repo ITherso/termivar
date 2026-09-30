@@ -147,6 +147,32 @@ strict optional
 `security.tls-observation-audit/v1` produces no finding or active verification.
 See [Existing-connection TLS observation](existing-connection-tls-observation.md).
 
+## Active TLS negotiation review
+
+The non-default `tls-negotiation-review` scanner/CLI feature remains outside
+all aggregates and `release-bundle`. Explicit
+`--profile web-review --tls-negotiation-review` accepts one credential-free DNS
+HTTPS target and mints one single-use child from the existing assessment
+authority. The child shares the parent request/active-verification,
+response-byte, cancellation and deadline accounting.
+
+The fixed execution order is TLS 1.3 then TLS 1.2, using Rustls' default ring
+provider and ordinary configured certificate and hostname validation. At most
+one connection is in flight. The child sends only TLS handshake and
+close-notify bytes: no HTTP/application bytes, credential, client certificate,
+early data or ALPN offer. It disables resumption and performs no retry,
+redirect, proxy operation or alternate-address fallback. A single bounded DNS
+resolution chooses one deterministic address. Three additional matrix rows—TLS
+1.1, TLS 1.0 and legacy cipher suites—perform no network work and remain
+`not_tested_client_backend_unsupported`.
+
+The strict optional `security.tls-negotiation-review-audit/v1` records only the
+closed matrix, dispatch/outcome classes, actually negotiated protocol/cipher on
+successful cells, validation state and raw TLS byte accounting. It contains no
+target hostname or address and produces no finding. Offline Verify and Compare
+understand the audit without compiling the producer feature. See
+[Active TLS negotiation review](active-tls-negotiation-review.md).
+
 ## Local JWT policy review
 
 The non-default `jwt-policy-review` scanner/CLI feature remains outside
@@ -910,6 +936,7 @@ The following matrix separates build availability from actual execution:
 | REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
 | Passive response secret-exposure review | scanner and CLI opt-in (`secret-exposure-review`) plus explicit `--profile web-review --secret-exposure-review` | one shared observer evaluates eligible complete ordinary anonymous GET bodies inside the response transaction; only validated committed records reach the audit, and it adds no request, active verification, provider call, or subject | no | Preview, development-only; 128 KiB/response and 4 MiB/assessment admitted detector-work ceilings, 1,024 outcome/64 occurrence/32 retained-observation ceilings, fixed value-free catalogue, `Informational` / `KnowledgeOnly` only, supplied-session bodies excluded, and outside `release-bundle` |
 | Existing-connection TLS observation | scanner and CLI opt-in (`tls-observation`) plus explicit `--profile web-review --tls-observation` | existing assessment clients expose TLS information for successful responses already selected by their owning paths; one shared collector immediately reduces bounded leaf DER facts and adds no request, connection, handshake, action or retry | no | Preview, development-only; 64 KiB/leaf, 16 retained unique leaves, 256 bounded SAN entries/leaf, leaf-only Reqwest backend visibility, no active protocol/cipher enumeration, no revocation/OCSP/CT/AIA retrieval, no finding, and outside `release-bundle` |
+| Active TLS negotiation matrix (S15A) | scanner and CLI opt-in (`tls-negotiation-review`) plus explicit `--profile web-review --tls-negotiation-review` and one credential-free DNS HTTPS target | one single-use assessment child resolves once, selects one deterministic address and attempts default-provider TLS 1.3 then TLS 1.2 against the exact target host/SNI/port; it shares parent accounting/cancellation/deadline and sends no HTTP/application bytes or credentials | no | Experimental, development-only; one in-flight connection, two network cells, 5 s/cell and 10 s total ceilings, 128 KiB ingress/64 KiB egress per cell and 256 KiB/128 KiB aggregate ceilings. TLS 1.1, TLS 1.0 and legacy cipher rows are client-backend-not-tested. A failed cell is not server non-support, the matrix is not complete enumeration, and the feature is outside every aggregate and `release-bundle` |
 | Local JWT policy review | scanner and CLI opt-in (`jwt-policy-review`) plus explicit local policy with a non-secret revision and mandatory intended `typ`, issuer and audience bindings, local public JWK and one env/file/stdin token source | after local preflight/output reservation and before the target scan, one bounded transport-free evaluator parses the compact JWS, applies the local claim/time policy and verifies ES256 against the supplied P-256 public key; the local evaluator adds no target request and retrieves no remote key. Without the separate target-acceptance option it never forwards/replays the token, and only the value-free local audit is attached during final composition after the ordinary assessment completes | no | Preview, development-only; only compact ES256 JWS and strict local public JWK are supported, all three identity-context checks are mandatory, methodology compares the declared policy revision and exact public-key-byte identifier, parsed/policy/signature/target states are distinct, no finding is added, and the feature is outside `release-bundle` |
 | JWT target acceptance review | scanner and CLI opt-in (`jwt-target-acceptance-review`, which includes `jwt-policy-review`) plus the complete local JWT selection and explicit `--jwt-target-acceptance-policy FILE` | after local eligibility, one strict policy authorizes one exact-origin application-contained JSON GET; six ordered valid/anonymous/invalid candidate/replay legs run sequentially through fresh no-proxy pools under the shared parent broker, with the two invalid legs admitted only after their same-stage passive controls | no | Preview, development-only; at most six requests/two active requests, 64 KiB retained/interpreted per response and 256 KiB total, exact charged bytes retained separately, complete committed JSON-compatible 200/401/403 boolean-marker classification only, value-free audit, no finding/Confirmed claim, and outside `release-bundle` |
 | Versioned control-reference mapping | scanner and CLI opt-in (`control-reference-mapping`) plus explicit `--profile web-review --control-reference-mapping` | after ordinary composition completes, maps completed typed items to the built-in versioned finite catalogue; adds zero target/provider requests or source retrievals and does not mutate item authority | no | Preview, development-only; OWASP Top 10:2025 mappings plus bibliographic/technical-context source records, no score/pass/fail/certification/legal conclusion, Compare methodology-only for catalogue/source changes, Verify integrity/schema only, and outside `release-bundle` |
@@ -945,15 +972,16 @@ The normal CLI dependency additionally enables `reporting` for the explicit
 completed `web-review` path; this does not alter no-profile execution or its
 wire contract.
 The stock untagged alpha.3 `release-bundle` capability inventory now reports
-24 known feature identities: the marker plus seven compiled members and sixteen
+25 known feature identities: the marker plus seven compiled members and seventeen
 excluded features. The eight compiled identities remain `release-bundle`,
 `artifact-adapter`, `normalization-resilience`, `graphql-review`,
 `openapi-review`, `rest-review`, `authorization-review`, and
-`wordpress-review`. The sixteen excluded identities are `api-adapter`,
+`wordpress-review`. The seventeen excluded identities are `api-adapter`,
 `control-reference-mapping`, `jwt-policy-review`,
 `jwt-target-acceptance-review`, `legacy-scanner`,
 `proxy-adapter`, `recon-ct-provider`, `recon-snapshot-import`, `secret-exposure-review`,
-`ssrf-oast-review`, `supplied-session-review`, `template-evaluation-review`, `tls-observation`,
+`ssrf-oast-review`, `supplied-session-review`, `template-evaluation-review`,
+`tls-negotiation-review`, `tls-observation`,
 `websocket-review`, `xml-external-entity-owned-https-test-profile`, and
 `xml-external-entity-review`.
 `default` remains empty;

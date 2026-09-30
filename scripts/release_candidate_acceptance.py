@@ -79,6 +79,7 @@ EXCLUDED_FEATURES = (
     "ssrf-oast-review",
     "supplied-session-review",
     "template-evaluation-review",
+    "tls-negotiation-review",
     "tls-observation",
     "websocket-review",
     "xml-external-entity-owned-https-test-profile",
@@ -287,6 +288,24 @@ TLS_OBSERVATION_LIMITATION = (
     "OCSP, CT and AIA retrieval are not performed. Repeated certificate bytes do not identify "
     "one connection, and one successful connection does not enumerate server support. Plain "
     "HTTP is not applicable; missing TLS metadata remains unavailable rather than a clean result."
+)
+TLS_NEGOTIATION_REVIEW_OPTION = "--tls-negotiation-review"
+TLS_NEGOTIATION_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--tls-negotiation-review",
+    "credential-free DNS HTTPS target",
+)
+TLS_NEGOTIATION_REVIEW_LIMITATION = (
+    "Attempts only the fixed TLS 1.3 then TLS 1.2 default-provider handshakes against the "
+    "selected host, SNI, and port through the assessment's shared accounting, cancellation, "
+    "deadline, and standard certificate validation. It sends no HTTP or application bytes, "
+    "credentials, client certificate, early data, ALPN offer, redirect, retry, proxy request, "
+    "or address fallback. TLS 1.1, TLS 1.0, and legacy-cipher rows are explicit "
+    "client-backend-not-tested results. A successful cell establishes only that this client "
+    "negotiated that one protocol/cipher combination at that time; a failed cell does not "
+    "prove server non-support, and the matrix is not a complete cipher audit. The feature "
+    "produces no finding and remains outside default, release-bundle, and published alpha.2 "
+    "archives."
 )
 JWT_POLICY_REVIEW_OPTIONS = (
     "--jwt-policy",
@@ -1013,6 +1032,11 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require(re.search(rf"(?m)^\s*{re.escape(TLS_OBSERVATION_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled TLS observation")
+    require(re.search(
+        rf"(?m)^\s*{re.escape(TLS_NEGOTIATION_REVIEW_OPTION)}(?:\s|$)",
+        scan_text,
+    ) is None,
+        "scan help unexpectedly exposes non-bundled active TLS negotiation")
     for option in JWT_POLICY_REVIEW_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
                 f"scan help unexpectedly exposes non-bundled local JWT-policy option {option}")
@@ -1330,6 +1354,41 @@ def _validate_tls_observation_surface(
     return tls
 
 
+def _validate_tls_negotiation_review_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    tls_surfaces = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.tls-negotiation-review"
+    ]
+    require(len(tls_surfaces) == 1,
+            "packaged active TLS-negotiation surface identity changed")
+    tls = tls_surfaces[0]
+    require(tls.get("label") == "Active TLS negotiation matrix"
+            and tls.get("compile_feature") == "tls-negotiation-review"
+            and tls.get("build_state") == expected_state
+            and tls.get("maturity") == "experimental"
+            and tls.get("implementation_status") == "experimental_limited"
+            and tls.get("group") == "optional"
+            and tls.get("kind") == "scan_option"
+            and tls.get("alias") is None
+            and tls.get("documentation")
+            == "docs/internals/active-tls-negotiation-review.md",
+            "packaged active TLS-negotiation surface metadata changed")
+    prerequisites = tls.get("prerequisites")
+    require(isinstance(prerequisites, list)
+            and all(isinstance(value, str) for value in prerequisites)
+            and tuple(prerequisites) == TLS_NEGOTIATION_REVIEW_PREREQUISITES,
+            "packaged active TLS-negotiation opt-in contract changed")
+    require(tls.get("limitation") == TLS_NEGOTIATION_REVIEW_LIMITATION,
+            "packaged active TLS-negotiation limitation changed")
+    require(f"[{expected_state}] {tls['label']}" in text_value,
+            "active TLS-negotiation capability text and JSON views disagree")
+    require(f"    limit: {TLS_NEGOTIATION_REVIEW_LIMITATION}" in text_value,
+            "active TLS-negotiation limitation is absent from text output")
+    return tls
+
+
 def _validate_jwt_policy_review_surface(
         surfaces: list, text_value: str, expected_state: str) -> dict:
     jwt_surfaces = [
@@ -1500,6 +1559,8 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
     _validate_xml_external_entity_review_surface(surfaces, text_value, "not_compiled")
     _validate_secret_exposure_surface(surfaces, text_value, "not_compiled")
     _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
+    _validate_tls_negotiation_review_surface(
+        surfaces, text_value, "not_compiled")
     _validate_jwt_policy_review_surface(surfaces, text_value, "not_compiled")
     _validate_jwt_target_acceptance_surface(surfaces, text_value, "not_compiled")
     _validate_template_evaluation_review_surface(
@@ -1638,6 +1699,16 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "maturity": "preview",
             "implementation_status": "implemented",
             "runtime_activation": "unavailable_in_release_bundle",
+        },
+        "tls_negotiation_review_experimental": {
+            "build_state": "not_compiled",
+            "maturity": "experimental",
+            "implementation_status": "experimental_limited",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "network_capable_cells": 2,
+            "legacy_cells": "not_tested_client_backend_unsupported",
+            "application_bytes": 0,
+            "finding": "not_produced",
         },
         "websocket_review_preview": {
             "build_state": "not_compiled",

@@ -1249,6 +1249,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) secret_exposure_review: bool,
     #[cfg(feature = "tls-observation")]
     pub(crate) tls_observation: bool,
+    #[cfg(feature = "tls-negotiation-review")]
+    pub(crate) tls_negotiation_review: bool,
     #[cfg(feature = "control-reference-mapping")]
     pub(crate) control_reference_mapping: bool,
     #[cfg(feature = "recon-snapshot-import")]
@@ -1310,6 +1312,8 @@ pub(crate) async fn run_profile_scan(
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "tls-negotiation-review")]
+        tls_negotiation_review,
         #[cfg(feature = "control-reference-mapping")]
         control_reference_mapping,
         #[cfg(feature = "recon-snapshot-import")]
@@ -1461,6 +1465,14 @@ pub(crate) async fn run_profile_scan(
                 )
                 .into());
             }
+            #[cfg(feature = "tls-negotiation-review")]
+            if tls_negotiation_review {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "TLS negotiation review requires the web-review profile",
+                )
+                .into());
+            }
             #[cfg(feature = "authorization-review")]
             if resource_authorization_review.is_some() {
                 return Err(std::io::Error::new(
@@ -1554,6 +1566,8 @@ pub(crate) async fn run_profile_scan(
                     secret_exposure_review,
                     #[cfg(feature = "tls-observation")]
                     tls_observation,
+                    #[cfg(feature = "tls-negotiation-review")]
+                    tls_negotiation_review,
                     #[cfg(feature = "control-reference-mapping")]
                     control_reference_mapping,
                     #[cfg(feature = "recon-snapshot-import")]
@@ -1639,6 +1653,8 @@ struct WebReviewRunOptions {
     secret_exposure_review: bool,
     #[cfg(feature = "tls-observation")]
     tls_observation: bool,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_negotiation_review: bool,
     #[cfg(feature = "control-reference-mapping")]
     control_reference_mapping: bool,
     #[cfg(feature = "recon-snapshot-import")]
@@ -1693,6 +1709,8 @@ async fn run_web_review(
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "tls-negotiation-review")]
+        tls_negotiation_review,
         #[cfg(feature = "control-reference-mapping")]
         control_reference_mapping,
         #[cfg(feature = "recon-snapshot-import")]
@@ -1805,6 +1823,10 @@ async fn run_web_review(
     #[cfg(feature = "tls-observation")]
     if tls_observation {
         builder = builder.enable_tls_observation();
+    }
+    #[cfg(feature = "tls-negotiation-review")]
+    if tls_negotiation_review {
+        builder = builder.enable_tls_negotiation_review();
     }
     if let Some(context) = root_authorization_context {
         builder = builder.with_root_authorization_context(context);
@@ -2628,6 +2650,10 @@ fn incomplete_reason_code(reason: &WebAssessmentIncompleteReason) -> &'static st
         #[cfg(feature = "xml-external-entity-review")]
         WebAssessmentIncompleteReason::XmlExternalEntityReviewIncomplete => {
             "xml_external_entity_review_incomplete"
+        },
+        #[cfg(feature = "tls-negotiation-review")]
+        WebAssessmentIncompleteReason::TlsNegotiationReviewIncomplete => {
+            "tls_negotiation_review_incomplete"
         },
         #[cfg(feature = "wordpress-review")]
         WebAssessmentIncompleteReason::WordPressReviewIncomplete => "wordpress_review_incomplete",
@@ -3519,6 +3545,29 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tls-negotiation-review")]
+    #[tokio::test]
+    async fn baseline_rejects_tls_negotiation_review_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                tls_negotiation_review: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("TLS negotiation review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "TLS negotiation review requires the web-review profile"
+        );
+    }
+
     #[tokio::test]
     async fn rest_review_requires_same_run_openapi_before_transport() {
         let error = run_profile_scan(
@@ -3974,6 +4023,11 @@ lifetime_ms = 5000
                 &WebAssessmentIncompleteReason::XmlExternalEntityReviewIncomplete
             ),
             "xml_external_entity_review_incomplete"
+        );
+        #[cfg(feature = "tls-negotiation-review")]
+        assert_eq!(
+            incomplete_reason_code(&WebAssessmentIncompleteReason::TlsNegotiationReviewIncomplete),
+            "tls_negotiation_review_incomplete"
         );
         #[cfg(feature = "wordpress-review")]
         assert_eq!(

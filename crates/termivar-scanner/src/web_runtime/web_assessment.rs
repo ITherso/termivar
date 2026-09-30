@@ -84,6 +84,11 @@ use super::ssrf_oast_runtime::{
 use super::supplied_session_runtime::{
     SuppliedSessionRuntimeConfig, WebAssessmentSuppliedSessionAudit,
 };
+#[cfg(feature = "tls-negotiation-review")]
+use super::tls_negotiation_review::{
+    tls_negotiation_review_target_is_supported, WebAssessmentTlsNegotiationReviewAudit,
+    TLS_NEGOTIATION_ACTIVE_VERIFICATION_ALLOWANCE,
+};
 #[cfg(feature = "tls-observation")]
 use super::tls_observation::WebAssessmentTlsObservationAudit;
 #[cfg(feature = "template-evaluation-review")]
@@ -1109,6 +1114,11 @@ pub enum WebAssessmentIncompleteReason {
     /// target/provider lifecycle and reconciled cleanup/accounting contract.
     #[cfg(feature = "xml-external-entity-review")]
     XmlExternalEntityReviewIncomplete,
+    /// The explicitly selected active TLS matrix could not attempt every
+    /// network-capable row within its parent/evidence/cancellation/deadline
+    /// boundary.
+    #[cfg(feature = "tls-negotiation-review")]
+    TlsNegotiationReviewIncomplete,
     /// The explicitly enabled transport-free WordPress interpretation could
     /// not retain or evaluate its bounded input completely.
     #[cfg(feature = "wordpress-review")]
@@ -1468,6 +1478,8 @@ pub struct WebAssessmentRunReport {
     secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<WebAssessmentTlsObservationAudit>,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_negotiation_review: Option<WebAssessmentTlsNegotiationReviewAudit>,
     #[cfg(feature = "recon-ct-provider")]
     recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,
     assessment_items: AssessmentItemSet,
@@ -1526,6 +1538,8 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug.field("secret_exposure_review", &self.secret_exposure_review);
         #[cfg(feature = "tls-observation")]
         debug.field("tls_observation", &self.tls_observation);
+        #[cfg(feature = "tls-negotiation-review")]
+        debug.field("tls_negotiation_review", &self.tls_negotiation_review);
         #[cfg(feature = "recon-ct-provider")]
         debug.field(
             "recon_ct_provider",
@@ -1641,6 +1655,13 @@ impl WebAssessmentRunReport {
     pub const fn tls_observation_audit(&self) -> Option<&WebAssessmentTlsObservationAudit> {
         self.tls_observation.as_ref()
     }
+    /// Returns the explicitly selected active TLS negotiation matrix.
+    #[cfg(feature = "tls-negotiation-review")]
+    pub const fn tls_negotiation_review_audit(
+        &self,
+    ) -> Option<&WebAssessmentTlsNegotiationReviewAudit> {
+        self.tls_negotiation_review.as_ref()
+    }
     /// Returns the optional bounded Cert Spotter provider collection audit.
     #[cfg(feature = "recon-ct-provider")]
     pub const fn recon_ct_provider_audit(&self) -> Option<&WebAssessmentReconCtProviderAudit> {
@@ -1723,8 +1744,11 @@ impl WebAssessmentRunReport {
             self.secret_exposure_review,
             #[cfg(feature = "tls-observation")]
             self.tls_observation,
+            #[cfg(feature = "tls-negotiation-review")]
+            self.tls_negotiation_review,
             #[cfg(feature = "recon-ct-provider")]
             self.recon_ct_provider,
+            &self.transport,
         )
     }
 }
@@ -1960,6 +1984,9 @@ pub enum WebAssessmentRuntimeError {
         "passive secret-exposure review conflicts with a response source that lacks its value-free body-digest boundary"
     )]
     SecretExposureResponseSourceConflict,
+    #[cfg(feature = "tls-negotiation-review")]
+    #[error("active TLS negotiation requires one credential-free DNS HTTPS target")]
+    TlsNegotiationReviewComposition,
     #[cfg(feature = "rest-review")]
     #[error("REST review requires OpenAPI review in the same assessment")]
     RestReviewRequiresOpenApiReview,
@@ -2113,6 +2140,10 @@ impl fmt::Debug for WebAssessmentRuntimeError {
             #[cfg(feature = "secret-exposure-review")]
             Self::SecretExposureResponseSourceConflict => formatter
                 .write_str("WebAssessmentRuntimeError::SecretExposureResponseSourceConflict"),
+            #[cfg(feature = "tls-negotiation-review")]
+            Self::TlsNegotiationReviewComposition => {
+                formatter.write_str("WebAssessmentRuntimeError::TlsNegotiationReviewComposition")
+            },
             #[cfg(feature = "rest-review")]
             Self::RestReviewRequiresOpenApiReview => {
                 formatter.write_str("WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview")
@@ -2227,6 +2258,8 @@ pub struct WebAssessmentRuntimeBuilder {
     normalization_resilience: bool,
     #[cfg(feature = "template-evaluation-review")]
     template_evaluation_review: bool,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_negotiation_review: bool,
     #[cfg(feature = "graphql-review")]
     graphql_review: bool,
     #[cfg(feature = "authorization-review")]
@@ -2305,6 +2338,8 @@ impl WebAssessmentRuntimeBuilder {
             secret_exposure_review: false,
             #[cfg(feature = "tls-observation")]
             tls_observation: false,
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_negotiation_review: false,
             #[cfg(feature = "recon-ct-provider")]
             recon_ct_provider: None,
             #[cfg(feature = "websocket-review")]
@@ -2355,6 +2390,15 @@ impl WebAssessmentRuntimeBuilder {
     #[cfg(feature = "tls-observation")]
     pub fn enable_tls_observation(mut self) -> Self {
         self.tls_observation = true;
+        self
+    }
+    /// Enables the fixed, bounded TLS 1.3/TLS 1.2 negotiation matrix.
+    ///
+    /// This child connects only to the selected HTTPS host/SNI/port, sends no
+    /// HTTP or application data, and shares the assessment's parent limits.
+    #[cfg(feature = "tls-negotiation-review")]
+    pub fn enable_tls_negotiation_review(mut self) -> Self {
+        self.tls_negotiation_review = true;
         self
     }
     /// Explicitly enables the bounded normalization-resilience child review.
@@ -2703,6 +2747,10 @@ impl WebAssessmentRuntimeBuilder {
         HttpProbe::new(self.target.clone(), HttpProbeMethod::Get)?;
         let root = canonicalize_root(&self.target, self.limits)
             .ok_or(WebAssessmentRuntimeError::InvalidCanonicalTarget)?;
+        #[cfg(feature = "tls-negotiation-review")]
+        if self.tls_negotiation_review && !tls_negotiation_review_target_is_supported(&root.url) {
+            return Err(WebAssessmentRuntimeError::TlsNegotiationReviewComposition);
+        }
         #[cfg(feature = "supplied-session-review")]
         if self
             .supplied_session_review
@@ -2896,6 +2944,16 @@ impl WebAssessmentRuntimeBuilder {
                         .expect("controlled XML active-verification allowance fits u16"),
                 )
                 .expect("compiled controlled XML allowance fits u16");
+            #[cfg(feature = "tls-negotiation-review")]
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        self.tls_negotiation_review
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * TLS_NEGOTIATION_ACTIVE_VERIFICATION_ALLOWANCE,
+                )
+                .expect("compiled active TLS negotiation allowance fits u16");
             allowance
         };
         let runtime_active_verification_limit = self
@@ -3159,6 +3217,8 @@ impl WebAssessmentRuntimeBuilder {
             normalization_resilience: self.normalization_resilience,
             #[cfg(feature = "template-evaluation-review")]
             template_evaluation_review: self.template_evaluation_review,
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_negotiation_review: self.tls_negotiation_review,
             #[cfg(feature = "graphql-review")]
             graphql_review: self.graphql_review,
             #[cfg(feature = "authorization-review")]
@@ -3202,6 +3262,8 @@ impl WebAssessmentRuntimeBuilder {
             normalization_review: None,
             #[cfg(feature = "template-evaluation-review")]
             template_evaluation_review_audit: None,
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_negotiation_review_audit: None,
             root_api_visibility,
             committed_api_visibility: None,
             #[cfg(feature = "graphql-review")]
@@ -3265,6 +3327,8 @@ pub struct WebAssessmentRuntime {
     normalization_resilience: bool,
     #[cfg(feature = "template-evaluation-review")]
     template_evaluation_review: bool,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_negotiation_review: bool,
     #[cfg(feature = "graphql-review")]
     graphql_review: bool,
     #[cfg(feature = "authorization-review")]
@@ -3302,6 +3366,8 @@ pub struct WebAssessmentRuntime {
     normalization_review: Option<AssessmentNativeReviewRuntime>,
     #[cfg(feature = "template-evaluation-review")]
     template_evaluation_review_audit: Option<TemplateEvaluationReviewAudit>,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_negotiation_review_audit: Option<WebAssessmentTlsNegotiationReviewAudit>,
     root_api_visibility: Option<RootApiVisibilityRuntime>,
     committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
     #[cfg(feature = "graphql-review")]
@@ -5429,6 +5495,20 @@ impl WebAssessmentRuntime {
             reasons.insert(WebAssessmentIncompleteReason::AssessmentSubjectIdentityUnavailable);
         }
         let semantics = self.extract_semantics_and_refresh_limits(&mut reasons, started_at);
+        #[cfg(feature = "tls-negotiation-review")]
+        if self.tls_negotiation_review {
+            self.tls_negotiation_review_audit = Some(if reasons.is_empty() {
+                self.authority
+                    .mint_tls_negotiation_review()
+                    .map_err(|_| WebAssessmentRuntimeError::TlsNegotiationReviewComposition)?
+                    .execute()
+                    .await
+            } else {
+                WebAssessmentTlsNegotiationReviewAudit::parent_authority_unavailable()
+            });
+        }
+        #[cfg(feature = "tls-negotiation-review")]
+        self.refresh_parent_limits_after_tls_negotiation(&mut reasons, started_at);
         #[cfg(feature = "websocket-review")]
         if let Some(policy) = self.websocket_review.take() {
             self.websocket_review_audit = Some(if reasons.is_empty() {
@@ -5518,6 +5598,8 @@ impl WebAssessmentRuntime {
                 .map(|_| self.secret_exposure_ledger.audit()),
             #[cfg(feature = "tls-observation")]
             tls_observation: self.authority.tls_observation_audit(),
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_negotiation_review: self.tls_negotiation_review_audit.clone(),
             #[cfg(feature = "recon-ct-provider")]
             recon_ct_provider,
             assessment_items,
@@ -5948,6 +6030,43 @@ impl WebAssessmentRuntime {
             reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
         }
         semantics
+    }
+
+    /// Reconciles selected-matrix completeness and parent-global stop truth
+    /// created while active TLS negotiation was executing. Completed failed
+    /// handshake attempts remain ordinary matrix outcomes; a stop that leaves
+    /// a network-capable row unattempted makes the selected review incomplete.
+    #[cfg(feature = "tls-negotiation-review")]
+    fn refresh_parent_limits_after_tls_negotiation(
+        &self,
+        reasons: &mut BTreeSet<WebAssessmentIncompleteReason>,
+        started_at: tokio::time::Instant,
+    ) {
+        let Some(audit) = self.tls_negotiation_review_audit.as_ref() else {
+            return;
+        };
+        if !audit.network_matrix_complete() {
+            reasons.insert(WebAssessmentIncompleteReason::TlsNegotiationReviewIncomplete);
+        }
+        if self.authority.cancellation().is_cancelled() {
+            reasons.insert(WebAssessmentIncompleteReason::HostCancellation);
+        }
+        if started_at.elapsed() >= self.limits.max_wall_time() {
+            reasons.insert(WebAssessmentIncompleteReason::WallTimeLimit);
+        }
+        if audit.terminal() != "budget_exhausted" {
+            return;
+        }
+        let accounting = self.authority.request_accounting().snapshot();
+        if accounting.total_requests() >= self.limits.max_total_requests() {
+            reasons.insert(WebAssessmentIncompleteReason::TotalRequestLimit);
+        }
+        if accounting.response_bytes() >= self.limits.max_total_response_bytes() {
+            reasons.insert(WebAssessmentIncompleteReason::ResponseBytesLimit);
+        }
+        if accounting.active_verifications() >= self.runtime_active_verification_limit {
+            reasons.insert(WebAssessmentIncompleteReason::ActiveVerificationLimit);
+        }
     }
 
     /// Reconciles only parent-global stop truth created while the optional

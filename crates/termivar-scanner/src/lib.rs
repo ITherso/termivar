@@ -414,6 +414,14 @@ pub use web_runtime::{
     StandardWebDecisionRuntimeTurn,
 };
 
+#[cfg(all(feature = "scanning", feature = "tls-negotiation-review"))]
+pub use web_runtime::{
+    tls_negotiation_review_target_is_supported, WebAssessmentTlsNegotiationReviewAudit,
+    WebAssessmentTlsNegotiationReviewCell, TLS_NEGOTIATION_REVIEW_ACTION_TLS12,
+    TLS_NEGOTIATION_REVIEW_ACTION_TLS13, TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA,
+    TLS_NEGOTIATION_REVIEW_CAPABILITY_ID, TLS_NEGOTIATION_REVIEW_POLICY_ID,
+};
+
 #[cfg(all(feature = "scanning", feature = "plugins"))]
 pub use decision_runner::{PluginDecisionExecutor, PluginExecutionRequestProvider};
 

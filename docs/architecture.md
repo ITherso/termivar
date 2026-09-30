@@ -53,6 +53,16 @@ handshake kind and resumption remain unavailable at this backend seam; this
 slice does not create a second TLS client to manufacture those fields. See
 [Existing-connection TLS observation](internals/existing-connection-tls-observation.md).
 
+The separate non-default `tls-negotiation-review` feature is an explicit active
+child, not an extension of passive TLS observation. With
+`--profile web-review --tls-negotiation-review`, the shared authority may mint
+one fixed, sequential TLS 1.3/TLS 1.2 matrix for the selected DNS HTTPS
+host/SNI/port. Direct sockets remain confined to that child and share parent
+request, active-verification, response-byte, deadline, and cancellation truth.
+The child sends no HTTP/application bytes or credentials; unsupported legacy
+rows perform no network work. See
+[Active TLS negotiation review](internals/active-tls-negotiation-review.md).
+
 Local reconnaissance snapshot import uses the opposite side of the same
 authority boundary: the CLI owns one explicit hardened local-file read, the
 scanner parser owns a closed bounded inert model, and the normal runtime owns no
@@ -389,6 +399,14 @@ TLS audit and does not change client behavior. The collector cannot authorize a
 request or handshake, and saved leaf repetitions cannot be used as connection
 or resumption evidence. See
 [Existing-connection TLS observation](internals/existing-connection-tls-observation.md).
+
+Active TLS negotiation deliberately has a different ownership split. The
+assessment authority supplies the already narrowed endpoint, accounting broker,
+cancellation token, deadline, and single-use mint; the child owns only its
+fixed Rustls configurations, one bounded DNS result, and sequential handshake
+I/O. It cannot authorize another destination or enter the ordinary HTTP pool.
+Its strict value-free audit remains separate from passive leaf-certificate
+observations and produces no finding.
 
 Normalization resilience is a separate opt-in composition rather than a
 responsibility of `defense`. Both the scanner/CLI

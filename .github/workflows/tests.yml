@@ -180,6 +180,7 @@ jobs:
           cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review
           cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review
           cargo test --locked -p termivar-cli --no-default-features --features tls-observation
+          cargo test --locked -p termivar-cli --no-default-features --features tls-negotiation-review
           cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review
           cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review
           cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping
@@ -197,6 +198,7 @@ jobs:
           TERMIVAR_CAPABILITIES_MATRIX_CASE=session-only cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=secret-only cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=tls-only cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=tls-negotiation-only cargo test --locked -p termivar-cli --no-default-features --features tls-negotiation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=jwt-only cargo test --locked -p termivar-cli --no-default-features --features jwt-policy-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=jwt-target-only cargo test --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=control-reference-mapping-only cargo test --locked -p termivar-cli --no-default-features --features control-reference-mapping --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
@@ -213,7 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation tls-negotiation-review jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -336,6 +338,12 @@ jobs:
         run: cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test tls_observation_cli -- --nocapture
       - name: Exercise trusted passive TLS observation broker path
         run: cargo test --locked -p termivar-scanner --no-default-features --features tls-observation web_runtime::authority::tests::selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch -- --exact --nocapture
+      - name: Exercise active TLS negotiation through the owned HTTPS profile
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile,tls-negotiation-review --test xml_external_entity_owned_https_cli tls_negotiation_review_runs_actual_cli_and_offline_bundle_commands -- --ignored --exact --nocapture
+      - name: Exercise opt-in active TLS negotiation capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: tls-negotiation-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features tls-negotiation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
       - name: Exercise opt-in local JWT policy review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture
       - name: Exercise opt-in JWT target-acceptance review CLI

@@ -282,6 +282,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
             "template-evaluation-review",
             cfg!(feature = "template-evaluation-review"),
         ),
+        (
+            "tls-negotiation-review",
+            cfg!(feature = "tls-negotiation-review"),
+        ),
         ("tls-observation", cfg!(feature = "tls-observation")),
         ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
@@ -675,6 +679,23 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             "docs/internals/passive-secret-exposure-review.md",
         ),
         surface!(
+            "option.tls-negotiation-review",
+            "Active TLS negotiation matrix",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("tls-negotiation-review"),
+            cfg!(feature = "tls-negotiation-review"),
+            Maturity::Experimental,
+            ImplementationStatus::ExperimentalLimited,
+            &[
+                "--profile web-review",
+                "--tls-negotiation-review",
+                "credential-free DNS HTTPS target",
+            ],
+            "Attempts only the fixed TLS 1.3 then TLS 1.2 default-provider handshakes against the selected host, SNI, and port through the assessment's shared accounting, cancellation, deadline, and standard certificate validation. It sends no HTTP or application bytes, credentials, client certificate, early data, ALPN offer, redirect, retry, proxy request, or address fallback. TLS 1.1, TLS 1.0, and legacy-cipher rows are explicit client-backend-not-tested results. A successful cell establishes only that this client negotiated that one protocol/cipher combination at that time; a failed cell does not prove server non-support, and the matrix is not a complete cipher audit. The feature produces no finding and remains outside default, release-bundle, and published alpha.2 archives.",
+            "docs/internals/active-tls-negotiation-review.md",
+        ),
+        surface!(
             "option.tls-observation",
             "Existing-connection TLS observation",
             SurfaceGroup::Optional,
@@ -993,7 +1014,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 34);
+        assert_eq!(document.surfaces.len(), 35);
 
         let keys = document
             .surfaces
@@ -1030,6 +1051,7 @@ mod tests {
                 "option.recon-snapshot",
                 "option.websocket-review",
                 "option.secret-exposure-review",
+                "option.tls-negotiation-review",
                 "option.tls-observation",
                 "option.jwt-policy-review",
                 "option.jwt-target-acceptance-review",
@@ -1129,6 +1151,7 @@ mod tests {
             ),
             ("option.recon-snapshot", "recon-snapshot"),
             ("option.secret-exposure-review", "secret-exposure-review"),
+            ("option.tls-negotiation-review", "tls-negotiation-review"),
             ("option.tls-observation", "tls-observation"),
             ("option.jwt-policy-review", "jwt-policy"),
             (
@@ -1280,6 +1303,12 @@ mod tests {
                 Some("secret-exposure-review"),
                 "preview",
                 "implemented",
+            ),
+            (
+                "option.tls-negotiation-review",
+                Some("tls-negotiation-review"),
+                "experimental",
+                "experimental_limited",
             ),
             (
                 "option.tls-observation",
@@ -1675,6 +1704,35 @@ mod tests {
             assert!(
                 tls.limitation.contains(required),
                 "missing TLS-observation limitation `{required}`"
+            );
+        }
+        let active_tls = find("option.tls-negotiation-review");
+        assert_eq!(
+            active_tls.prerequisites,
+            [
+                "--profile web-review",
+                "--tls-negotiation-review",
+                "credential-free DNS HTTPS target",
+            ]
+        );
+        assert_eq!(active_tls.compile_feature, Some("tls-negotiation-review"));
+        assert_eq!(
+            active_tls.documentation,
+            "docs/internals/active-tls-negotiation-review.md"
+        );
+        for required in [
+            "fixed TLS 1.3 then TLS 1.2",
+            "shared accounting, cancellation, deadline, and standard certificate validation",
+            "no HTTP or application bytes, credentials, client certificate, early data, ALPN offer, redirect, retry, proxy request, or address fallback",
+            "explicit client-backend-not-tested results",
+            "failed cell does not prove server non-support",
+            "not a complete cipher audit",
+            "produces no finding",
+            "outside default, release-bundle, and published alpha.2 archives",
+        ] {
+            assert!(
+                active_tls.limitation.contains(required),
+                "missing active TLS limitation `{required}`"
             );
         }
         let jwt = find("option.jwt-policy-review");

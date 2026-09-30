@@ -30,6 +30,9 @@ pub(super) const SUPPLIED_SESSION_COMPARISON_SCHEMA: &str =
 pub(super) const SECRET_EXPOSURE_COMPARISON_SCHEMA: &str = "termivar-secret-exposure-comparison/v1";
 /// Additive, display-only passive TLS observation comparison section.
 pub(super) const TLS_OBSERVATION_COMPARISON_SCHEMA: &str = "termivar-tls-observation-comparison/v1";
+/// Additive, display-only bounded active TLS negotiation comparison section.
+pub(super) const TLS_NEGOTIATION_REVIEW_COMPARISON_SCHEMA: &str =
+    "termivar-tls-negotiation-review-comparison/v1";
 /// Additive, display-only bounded WebSocket exchange comparison section.
 pub(super) const WEBSOCKET_REVIEW_COMPARISON_SCHEMA: &str =
     "termivar-websocket-review-comparison/v1";
@@ -221,6 +224,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tls_observation_comparison: Option<TlsObservationComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) tls_negotiation_review_comparison: Option<TlsNegotiationReviewComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) websocket_review_comparison: Option<WebSocketReviewComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) jwt_policy_review_comparison: Option<JwtPolicyReviewComparison>,
@@ -276,6 +281,18 @@ pub(super) struct TlsObservationComparison {
     pub(super) coverage: WordPressFacetComparison,
     pub(super) certificate_observations: WordPressFacetComparison,
     pub(super) interpretation_limits: [&'static str; 5],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct TlsNegotiationReviewComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) capability_observations: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 6],
 }
 
 #[derive(Debug, Serialize)]
@@ -504,6 +521,13 @@ pub(super) struct ImportedTlsObservationAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedTlsNegotiationReviewAudit {
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+    pub(super) capability_observations: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedWebSocketReviewAudit {
     pub(super) schema: String,
     pub(super) supplied_session_identity: Option<Value>,
@@ -642,6 +666,7 @@ struct ImportedDocument {
     supplied_session: Option<ImportedSuppliedSessionAudit>,
     secret_exposure: Option<ImportedSecretExposureAudit>,
     tls_observation: Option<ImportedTlsObservationAudit>,
+    tls_negotiation_review: Option<ImportedTlsNegotiationReviewAudit>,
     websocket_review: Option<ImportedWebSocketReviewAudit>,
     jwt_policy_review: Option<ImportedJwtPolicyReviewAudit>,
     xml_external_entity_review: Option<ImportedXmlExternalEntityReviewAudit>,
@@ -677,6 +702,10 @@ fn compare_documents(
     let tls_observation_comparison = compare_tls_observation(
         before.tls_observation.as_ref(),
         after.tls_observation.as_ref(),
+    );
+    let tls_negotiation_review_comparison = compare_tls_negotiation_review(
+        before.tls_negotiation_review.as_ref(),
+        after.tls_negotiation_review.as_ref(),
     );
     let websocket_review_comparison = compare_websocket_review(
         before.websocket_review.as_ref(),
@@ -726,6 +755,7 @@ fn compare_documents(
         supplied_session_comparison,
         secret_exposure_comparison,
         tls_observation_comparison,
+        tls_negotiation_review_comparison,
         websocket_review_comparison,
         jwt_policy_review_comparison,
         xml_external_entity_review_comparison,
@@ -977,6 +1007,61 @@ fn compare_tls_observation(
             "Standard transport validation is scoped to a successful response connection and is not source authentication, a fresh signature check by this report, or worldwide trust.",
             "Revocation, AIA, CRL, OCSP, certificate-transparency, and active negotiation retrieval were not performed.",
             "A one-sided or changed certificate observation does not establish vulnerability, exploitation, impact, rotation quality, or remediation.",
+        ],
+    })
+}
+
+fn compare_tls_negotiation_review(
+    before: Option<&ImportedTlsNegotiationReviewAudit>,
+    after: Option<&ImportedTlsNegotiationReviewAudit>,
+) -> Option<TlsNegotiationReviewComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    Some(TlsNegotiationReviewComparison {
+        schema: TLS_NEGOTIATION_REVIEW_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            paired_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Policy, fixed client offer profiles, backend availability, target binding, validation trust, or connection-method changes are methodology changes; they are not target vulnerability, hardening, or remediation evidence.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            paired_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "Dispatch, terminal outcome, transport-validation result, and accounted-byte changes describe bounded matrix coverage; a failed or missing handshake does not establish that the server rejected an offered profile.",
+        ),
+        capability_observations: facet(
+            before.map(|audit| &audit.capability_observations),
+            after.map(|audit| &audit.capability_observations),
+            paired_status(
+                before.map(|audit| &audit.capability_observations),
+                after.map(|audit| &audit.capability_observations),
+            ),
+            "Negotiated protocol and cipher-suite changes are observations from the exact successful matrix cells only; they do not enumerate every server-supported protocol or cipher suite.",
+        ),
+        interpretation_limits: [
+            "The matrix contains two backend-supported offer profiles and three explicit client-backend-unsupported rows; it is not a complete protocol or cipher-suite audit.",
+            "A negotiated cell establishes compatibility only for that offered client profile at that connection attempt; it does not authenticate the source or every supported configuration.",
+            "A failed, cancelled, budget-limited, or unavailable cell is not evidence that the server does not support that protocol or cipher family.",
+            "No application request, credential, client certificate, early data, retry, redirect, proxy, or alternate-address fallback was used by this audit.",
+            "Certificate validation is scoped to the configured trust material and exact selected target; revocation, CT, AIA, CRL, and OCSP retrieval were not performed.",
+            "A one-sided or changed observation does not establish vulnerability, exploitability, impact, remediation, or production readiness.",
         ],
     })
 }
@@ -1939,6 +2024,9 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
     if let Some(tls_observation) = &document.tls_observation_comparison {
         write_tls_observation_comparison_markdown(&mut output, tls_observation)?;
     }
+    if let Some(tls_negotiation) = &document.tls_negotiation_review_comparison {
+        write_tls_negotiation_review_comparison_markdown(&mut output, tls_negotiation)?;
+    }
     if let Some(websocket_review) = &document.websocket_review_comparison {
         write_websocket_review_comparison_markdown(&mut output, websocket_review)?;
     }
@@ -2184,6 +2272,53 @@ fn write_tls_observation_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### TLS observation interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_tls_negotiation_review_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &TlsNegotiationReviewComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Active TLS negotiation review differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str(
+        "\n\nThis section compares a validated finite two-connection TLS offer matrix plus three explicit client-backend-unsupported rows. It does not enumerate all server capabilities, authenticate the source, or establish vulnerability or remediation.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+        (
+            "Capability observations",
+            &comparison.capability_observations,
+        ),
+    ] {
+        output.push_fmt(format_args!("### TLS negotiation {label}\n\n- Status: "))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### TLS negotiation interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

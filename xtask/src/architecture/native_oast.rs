@@ -1796,7 +1796,7 @@ fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String
         if implementation.trait_.is_some()
             || !has_only_exact_feature_cfg(&implementation.attrs, FEATURE)
             || !plain_impl_shape(implementation)
-            || implementation.items.len() != 3
+            || implementation.items.len() != 4
         {
             return false;
         }
@@ -1808,7 +1808,7 @@ fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String
                 _ => None,
             })
             .collect::<BTreeMap<_, _>>();
-        methods.len() == 3
+        methods.len() == 4
             && methods
                 .get("for_application_and_policy")
                 .is_some_and(|method| {
@@ -1835,16 +1835,23 @@ fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String
                     && return_type_is_path(&method.sig.output, &["NonZeroU16"])
             })
             && methods.get("target_address").is_some_and(|method| {
-                matches!(method.vis, Visibility::Inherited)
+                is_crate_visibility(&method.vis)
                     && plain_method_shape(method, false)
                     && method.sig.inputs.len() == 1
                     && owned_receiver(method.sig.inputs.first())
                     && return_type_is_path(&method.sig.output, &["SocketAddr"])
             })
+            && methods.get("root_certificate_der").is_some_and(|method| {
+                is_crate_visibility(&method.vis)
+                    && plain_method_shape(method, false)
+                    && method.sig.inputs.len() == 1
+                    && owned_receiver(method.sig.inputs.first())
+                    && return_type_is_single_wrapper(&method.sig.output, &["Vec"], &["u8"])
+            })
     });
     if implementations.len() != 1 || !methods_are_exact {
         violations.push(
-            "termivar-scanner owned XML HTTPS transport profile must retain only its exact selection, sealed-port, and fixed-target-address method signatures"
+            "termivar-scanner owned XML HTTPS transport profile must retain only its exact selection, sealed-port, fixed-target-address, and reviewed-root method signatures"
                 .to_owned(),
         );
     }
@@ -1866,11 +1873,14 @@ fn owned_xml_https_profile_surface_violations(source: &str) -> Result<Vec<String
             && methods
                 .get("target_address")
                 .is_some_and(|method| owned_profile_target_body_is_exact(method))
+            && methods
+                .get("root_certificate_der")
+                .is_some_and(|method| owned_profile_root_body_is_exact(method))
             && owned_profile_construction_count(&syntax) == 1
     });
     if !method_bodies_are_exact {
         violations.push(
-            "termivar-scanner owned XML HTTPS transport profile must retain its exact selection, port, fixed-loopback body, and sole construction site"
+            "termivar-scanner owned XML HTTPS transport profile must retain its exact selection, port, fixed-loopback and reviewed-root bodies, and sole construction site"
                 .to_owned(),
         );
     }
@@ -2245,6 +2255,32 @@ fn owned_profile_target_body_is_exact(method: &syn::ImplItemFn) -> bool {
         && port.turbofish.is_none()
         && port.args.is_empty()
         && self_field_name(&port.receiver).as_deref() == Some("port")
+}
+
+fn owned_profile_root_body_is_exact(method: &syn::ImplItemFn) -> bool {
+    let [syn::Stmt::Expr(syn::Expr::MethodCall(expect), None)] = method.block.stmts.as_slice()
+    else {
+        return false;
+    };
+    let syn::Expr::MethodCall(decode) = expect.receiver.as_ref() else {
+        return false;
+    };
+    expect.attrs.is_empty()
+        && expect.method == "expect"
+        && expect.turbofish.is_none()
+        && matches!(expect.args.first(), Some(syn::Expr::Lit(literal))
+            if expect.args.len() == 1
+                && literal.attrs.is_empty()
+                && matches!(&literal.lit, syn::Lit::Str(value)
+                    if value.value() == "reviewed owned HTTPS root DER remains valid base64"))
+        && decode.attrs.is_empty()
+        && decode.method == "decode"
+        && decode.turbofish.is_none()
+        && path_expression_name(decode.receiver.as_ref()).as_deref() == Some("STANDARD")
+        && matches!(decode.args.first(), Some(argument)
+            if decode.args.len() == 1
+                && path_expression_name(argument).as_deref()
+                    == Some("OWNED_XML_HTTPS_ROOT_DER_BASE64"))
 }
 
 fn owned_profile_construction_count(syntax: &syn::File) -> usize {
@@ -3227,7 +3263,7 @@ fn owned_xml_profile_global_reference_violations(sources: &[(String, String)]) -
     const EXPECTED: &[(&str, usize)] = &[
         (SCANNER_HTTP_EVIDENCE, 1),
         (SCANNER_REQUEST_BROKER, 6),
-        ("web_runtime/authority.rs", 4),
+        ("web_runtime/authority.rs", 5),
         ("web_runtime/xml_external_entity_runtime.rs", 3),
         ("web_runtime/web_assessment.rs", 2),
     ];
@@ -6663,7 +6699,7 @@ mod tests {
         let mut valid = vec![
             (SCANNER_HTTP_EVIDENCE.to_owned(), occurrences(1)),
             (SCANNER_REQUEST_BROKER.to_owned(), occurrences(6)),
-            ("web_runtime/authority.rs".to_owned(), occurrences(4)),
+            ("web_runtime/authority.rs".to_owned(), occurrences(5)),
             (
                 "web_runtime/xml_external_entity_runtime.rs".to_owned(),
                 occurrences(3),
@@ -7631,8 +7667,13 @@ mod tests {
                 1,
             ),
             broker.replacen(
-                "fn target_address(self) -> SocketAddr",
-                "fn target_address(self, address: SocketAddr) -> SocketAddr",
+                "pub(crate) fn target_address(self) -> SocketAddr",
+                "pub(crate) fn target_address(self, address: SocketAddr) -> SocketAddr",
+                1,
+            ),
+            broker.replacen(
+                "pub(crate) fn root_certificate_der(self) -> Vec<u8>",
+                "pub(crate) fn root_certificate_der(&self) -> Vec<u8>",
                 1,
             ),
             broker.replacen(
@@ -7654,6 +7695,11 @@ mod tests {
             broker.replacen(
                 "SocketAddr::from(([127, 0, 0, 1], self.port.get()))",
                 "SocketAddr::from(([8, 8, 8, 8], self.port.get()))",
+                1,
+            ),
+            broker.replacen(
+                "STANDARD\n            .decode(OWNED_XML_HTTPS_ROOT_DER_BASE64)",
+                "STANDARD\n            .decode(\"arbitrary-root\")",
                 1,
             ),
             broker.replacen(

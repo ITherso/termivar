@@ -30,6 +30,7 @@ const FEATURE_NAMES: &[&str] = &[
     "ssrf-oast-review",
     "supplied-session-review",
     "template-evaluation-review",
+    "tls-negotiation-review",
     "tls-observation",
     "websocket-review",
     "wordpress-review",
@@ -172,6 +173,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "template-evaluation-review",
             cfg!(feature = "template-evaluation-review"),
         ),
+        (
+            "tls-negotiation-review",
+            cfg!(feature = "tls-negotiation-review"),
+        ),
         ("tls-observation", cfg!(feature = "tls-observation")),
         ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
@@ -229,6 +234,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
     assert_eq!(
         surface_state(&document, "option.template-evaluation-review"),
         states["template-evaluation-review"]
+    );
+    assert_eq!(
+        surface_state(&document, "option.tls-negotiation-review"),
+        states["tls-negotiation-review"]
     );
     assert_eq!(
         surface_state(&document, "option.tls-observation"),
@@ -621,6 +630,44 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "missing TLS-observation limitation `{required}`"
         );
     }
+    let active_tls = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.tls-negotiation-review")
+        .expect("active TLS-negotiation surface");
+    assert_eq!(
+        active_tls["documentation"],
+        "docs/internals/active-tls-negotiation-review.md"
+    );
+    assert_eq!(active_tls["maturity"], "experimental");
+    assert_eq!(active_tls["implementation_status"], "experimental_limited");
+    assert_eq!(
+        active_tls["prerequisites"],
+        serde_json::json!([
+            "--profile web-review",
+            "--tls-negotiation-review",
+            "credential-free DNS HTTPS target",
+        ])
+    );
+    let active_tls_limit = active_tls["limitation"]
+        .as_str()
+        .expect("active TLS limitation");
+    for required in [
+        "fixed TLS 1.3 then TLS 1.2",
+        "standard certificate validation",
+        "no HTTP or application bytes, credentials",
+        "client-backend-not-tested results",
+        "failed cell does not prove server non-support",
+        "not a complete cipher audit",
+        "produces no finding",
+        "outside default, release-bundle, and published alpha.2 archives",
+    ] {
+        assert!(
+            active_tls_limit.contains(required),
+            "missing active TLS limitation `{required}`"
+        );
+    }
     let secret_exposure = document["surfaces"]
         .as_array()
         .expect("surface array")
@@ -903,6 +950,7 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         ),
         ("option.recon-snapshot", "--recon-snapshot"),
         ("option.secret-exposure-review", "--secret-exposure-review"),
+        ("option.tls-negotiation-review", "--tls-negotiation-review"),
         ("option.tls-observation", "--tls-observation"),
         ("option.jwt-policy-review", "--jwt-policy"),
         (
@@ -1073,6 +1121,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "ssrf-oast-review",
         "supplied-session-review",
         "template-evaluation-review",
+        "tls-negotiation-review",
         "tls-observation",
         "jwt-policy-review",
         "jwt-target-acceptance-review",
@@ -1100,7 +1149,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                16
+                17
             );
         },
         "rest-only" => {
@@ -1127,6 +1176,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "tls-observation" || !compiled(feature) }));
+        },
+        "tls-negotiation-only" => {
+            assert!(compiled("tls-negotiation-review"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "tls-negotiation-review" || !compiled(feature) }));
         },
         "jwt-only" => {
             assert!(compiled("jwt-policy-review"));

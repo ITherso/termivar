@@ -71,6 +71,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "rest_review",
             "secret_exposure_review",
             "tls_observation",
+            "tls_negotiation_review",
             "websocket_review",
             "jwt_policy_review",
             "xml_external_entity_review",
@@ -111,6 +112,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     let mut supplied_session = None;
     let mut secret_exposure = None;
     let mut tls_observation = None;
+    let mut tls_negotiation_review = None;
     let mut websocket_review = None;
     let mut jwt_policy_review = None;
     let mut xml_external_entity_review = None;
@@ -127,6 +129,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "rest_review",
         "secret_exposure_review",
         "tls_observation",
+        "tls_negotiation_review",
         "websocket_review",
         "jwt_policy_review",
         "xml_external_entity_review",
@@ -146,6 +149,8 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
                 secret_exposure = Some(audits::validate_secret_exposure(value, &items)?);
             } else if name == "tls_observation" {
                 tls_observation = Some(audits::validate_tls_observation(value)?);
+            } else if name == "tls_negotiation_review" {
+                tls_negotiation_review = Some(audits::validate_tls_negotiation_review(value)?);
             } else if name == "websocket_review" {
                 websocket_review = Some(audits::validate_websocket_review(value)?);
             } else if name == "jwt_policy_review" {
@@ -272,6 +277,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         supplied_session,
         secret_exposure,
         tls_observation,
+        tls_negotiation_review,
         websocket_review,
         jwt_policy_review,
         xml_external_entity_review,

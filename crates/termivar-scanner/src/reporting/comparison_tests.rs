@@ -517,6 +517,126 @@ fn report_with_tls_observation(audit: Value) -> Value {
     document
 }
 
+fn tls_negotiation_review_audit() -> Value {
+    json!({
+        "schema":"security.tls-negotiation-review-audit/v1",
+        "policy":"termivar.active-tls-negotiation-review/v1",
+        "selected":true,
+        "methodology":{
+            "target_binding":"selected_https_target_exact_host_sni_port",
+            "address_selection":"single_deterministic_address_under_selected_authority",
+            "execution_order":"tls13_then_tls12_then_backend_unsupported_rows",
+            "maximum_in_flight_connections":1,
+            "network_capable_cell_count":2,
+            "matrix_cell_count":5,
+            "retries":"none",
+            "redirects":"none",
+            "proxy":"not_used",
+            "application_data":"not_sent",
+            "credentials":"not_sent",
+            "client_certificate":"not_sent",
+            "alpn":"not_offered",
+            "session_resumption":"disabled",
+            "certificate_validation":"standard_configured_trust"
+        },
+        "coverage":{
+            "terminal":"completed",
+            "connection_attempt_limit":2,
+            "connection_in_flight_limit":1,
+            "per_connection_ingress_byte_limit":131_072,
+            "total_ingress_byte_limit":262_144,
+            "per_connection_egress_byte_limit":65_536,
+            "total_egress_byte_limit":131_072,
+            "attempted_connection_count":2,
+            "completed_handshake_count":2,
+            "accounted_ingress_tls_bytes":1_536,
+            "observed_egress_tls_bytes":1_024,
+            "client_backend_unsupported_cell_count":3
+        },
+        "capability_observations":[
+            {
+                "cell_id":"tls13_default_provider",
+                "offered_protocol":"tls1.3",
+                "client_backend":"rustls-ring",
+                "dispatch_status":"dispatched",
+                "outcome":"negotiated",
+                "support":"observed_supported",
+                "transport_validation":"succeeded",
+                "negotiated_protocol":"tls1.3",
+                "negotiated_cipher_suite":"tls13_aes_256_gcm_sha384",
+                "accounted_ingress_tls_bytes":768,
+                "observed_egress_tls_bytes":512
+            },
+            {
+                "cell_id":"tls12_default_provider",
+                "offered_protocol":"tls1.2",
+                "client_backend":"rustls-ring",
+                "dispatch_status":"dispatched",
+                "outcome":"negotiated",
+                "support":"observed_supported",
+                "transport_validation":"succeeded",
+                "negotiated_protocol":"tls1.2",
+                "negotiated_cipher_suite":"tls12_ecdhe_rsa_aes_128_gcm_sha256",
+                "accounted_ingress_tls_bytes":768,
+                "observed_egress_tls_bytes":512
+            },
+            {
+                "cell_id":"tls11_legacy_protocol",
+                "offered_protocol":"tls1.1",
+                "client_backend":"rustls-ring",
+                "dispatch_status":"not_dispatched",
+                "outcome":"client_backend_unsupported",
+                "support":"not_tested_client_backend_unsupported",
+                "transport_validation":"not_applicable",
+                "negotiated_protocol":null,
+                "negotiated_cipher_suite":null,
+                "accounted_ingress_tls_bytes":0,
+                "observed_egress_tls_bytes":0
+            },
+            {
+                "cell_id":"tls10_legacy_protocol",
+                "offered_protocol":"tls1.0",
+                "client_backend":"rustls-ring",
+                "dispatch_status":"not_dispatched",
+                "outcome":"client_backend_unsupported",
+                "support":"not_tested_client_backend_unsupported",
+                "transport_validation":"not_applicable",
+                "negotiated_protocol":null,
+                "negotiated_cipher_suite":null,
+                "accounted_ingress_tls_bytes":0,
+                "observed_egress_tls_bytes":0
+            },
+            {
+                "cell_id":"legacy_cipher_suites",
+                "offered_protocol":"legacy_cipher_suites",
+                "client_backend":"rustls-ring",
+                "dispatch_status":"not_dispatched",
+                "outcome":"client_backend_unsupported",
+                "support":"not_tested_client_backend_unsupported",
+                "transport_validation":"not_applicable",
+                "negotiated_protocol":null,
+                "negotiated_cipher_suite":null,
+                "accounted_ingress_tls_bytes":0,
+                "observed_egress_tls_bytes":0
+            }
+        ],
+        "claim_limits":[
+            "finite_matrix_not_complete_server_capability_enumeration",
+            "failed_handshake_does_not_establish_server_non_support",
+            "configured_trust_validation_not_source_authentication",
+            "revocation_and_transparency_retrieval_not_performed",
+            "application_data_and_credentials_not_sent",
+            "vulnerability_exploitability_impact_and_remediation_not_established"
+        ]
+    })
+}
+
+fn report_with_tls_negotiation_review(audit: Value) -> Value {
+    let mut document = report(Vec::new());
+    document["tls_negotiation_review"] = audit;
+    document
+}
+
 fn jwt_policy_review_audit() -> Value {
     json!({
         "schema": "security.jwt-policy-review-audit/v1",
@@ -3272,6 +3392,385 @@ fn tls_observation_reader_rejects_contract_accounting_and_leaf_mutations() {
 
     let mut extra = valid.clone();
     extra["tls_observation"]["unexpected"] = json!(true);
+    assert!(import_assessment_summary(&bytes(&extra)).is_err());
+}
+
+#[test]
+fn tls_negotiation_review_is_strict_feature_independent_and_self_compares() {
+    let audit = tls_negotiation_review_audit();
+    let document = report_with_tls_negotiation_review(audit.clone());
+    assert!(import_assessment_summary(&bytes(&document)).is_ok());
+    let comparison = compare(&document, &document);
+    assert_eq!(
+        comparison["before"]["optional_audits"]["tls_negotiation_review"],
+        audit
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["schema"],
+        "termivar-tls-negotiation-review-comparison/v1"
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["status"],
+        "compared"
+    );
+    for facet in ["methodology", "coverage", "capability_observations"] {
+        assert_eq!(
+            comparison["tls_negotiation_review_comparison"][facet]["status"],
+            "unchanged"
+        );
+    }
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["capability_observations"]["before"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for group in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(comparison[group].as_array().unwrap().is_empty());
+    }
+
+    let markdown = compare_reports(
+        &bytes(&document),
+        &bytes(&document),
+        ComparisonFormat::Markdown,
+    )
+    .unwrap();
+    assert!(markdown.contains("Active TLS negotiation review differences"));
+    assert!(markdown.contains("does not enumerate all server capabilities"));
+    let html =
+        compare_reports(&bytes(&document), &bytes(&document), ComparisonFormat::Html).unwrap();
+    assert!(html.contains("Active TLS negotiation review differences"));
+    assert!(html.contains("TLS negotiation capability observations"));
+}
+
+#[test]
+fn tls_negotiation_review_distinguishes_methodology_coverage_and_negotiated_observations() {
+    let before = report_with_tls_negotiation_review(tls_negotiation_review_audit());
+
+    let mut methodology_changed = before.clone();
+    methodology_changed["tls_negotiation_review"]["methodology"]["certificate_validation"] =
+        json!("other");
+    assert!(import_assessment_summary(&bytes(&methodology_changed)).is_err());
+
+    let mut observation_changed = before.clone();
+    observation_changed["tls_negotiation_review"]["capability_observations"][0]
+        ["negotiated_cipher_suite"] = json!("tls13_aes_128_gcm_sha256");
+    let comparison = compare(&before, &observation_changed);
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["capability_observations"]["status"],
+        "changed"
+    );
+
+    let mut coverage_changed = before.clone();
+    let first = &mut coverage_changed["tls_negotiation_review"]["capability_observations"][0];
+    first["outcome"] = json!("handshake_failed");
+    first["support"] = json!("not_established");
+    first["transport_validation"] = json!("not_established");
+    first["negotiated_protocol"] = Value::Null;
+    first["negotiated_cipher_suite"] = Value::Null;
+    coverage_changed["tls_negotiation_review"]["coverage"]["completed_handshake_count"] = json!(1);
+    let comparison = compare(&before, &coverage_changed);
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["capability_observations"]["status"],
+        "changed"
+    );
+
+    let missing = report(Vec::new());
+    let comparison = compare(&before, &missing);
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["reason"],
+        "after_audit_missing"
+    );
+}
+
+#[test]
+fn tls_negotiation_review_accepts_completed_handshake_failures_and_rejects_incomplete_terminals() {
+    let base = tls_negotiation_review_audit();
+
+    let mut certificate_failure = base.clone();
+    let first = &mut certificate_failure["capability_observations"][0];
+    first["outcome"] = json!("certificate_validation_failed");
+    first["support"] = json!("not_established");
+    first["transport_validation"] = json!("not_established");
+    first["negotiated_protocol"] = Value::Null;
+    first["negotiated_cipher_suite"] = Value::Null;
+    certificate_failure["coverage"]["completed_handshake_count"] = json!(1);
+    assert!(
+        import_assessment_summary(&bytes(&report_with_tls_negotiation_review(
+            certificate_failure
+        )))
+        .is_ok()
+    );
+
+    let mut budget = base.clone();
+    let second = &mut budget["capability_observations"][1];
+    second["dispatch_status"] = json!("not_dispatched");
+    second["outcome"] = json!("budget_exhausted");
+    second["support"] = json!("not_established");
+    second["transport_validation"] = json!("not_established");
+    second["negotiated_protocol"] = Value::Null;
+    second["negotiated_cipher_suite"] = Value::Null;
+    second["accounted_ingress_tls_bytes"] = json!(0);
+    second["observed_egress_tls_bytes"] = json!(0);
+    budget["coverage"]["terminal"] = json!("budget_exhausted");
+    budget["coverage"]["attempted_connection_count"] = json!(1);
+    budget["coverage"]["completed_handshake_count"] = json!(1);
+    budget["coverage"]["accounted_ingress_tls_bytes"] = json!(768);
+    budget["coverage"]["observed_egress_tls_bytes"] = json!(512);
+    assert!(
+        import_assessment_summary(&bytes(&report_with_tls_negotiation_review(budget))).is_err()
+    );
+
+    let mut dispatched_budget = base.clone();
+    let second = &mut dispatched_budget["capability_observations"][1];
+    second["outcome"] = json!("budget_exhausted");
+    second["support"] = json!("not_established");
+    second["transport_validation"] = json!("not_established");
+    second["negotiated_protocol"] = Value::Null;
+    second["negotiated_cipher_suite"] = Value::Null;
+    dispatched_budget["coverage"]["terminal"] = json!("budget_exhausted");
+    dispatched_budget["coverage"]["completed_handshake_count"] = json!(1);
+    assert!(
+        import_assessment_summary(&bytes(&report_with_tls_negotiation_review(
+            dispatched_budget
+        )))
+        .is_err()
+    );
+
+    for terminal in [
+        "parent_authority_unavailable",
+        "cancelled",
+        "deadline_reached",
+    ] {
+        let mut zero = base.clone();
+        for (index, row) in zero["capability_observations"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .take(2)
+            .enumerate()
+        {
+            row["dispatch_status"] = json!("not_dispatched");
+            row["outcome"] = json!(
+                if terminal == "parent_authority_unavailable" || index == 0 {
+                    terminal
+                } else {
+                    "not_reached"
+                }
+            );
+            row["support"] = json!("not_established");
+            row["transport_validation"] = json!("not_established");
+            row["negotiated_protocol"] = Value::Null;
+            row["negotiated_cipher_suite"] = Value::Null;
+            row["accounted_ingress_tls_bytes"] = json!(0);
+            row["observed_egress_tls_bytes"] = json!(0);
+        }
+        zero["coverage"]["terminal"] = json!(terminal);
+        zero["coverage"]["attempted_connection_count"] = json!(0);
+        zero["coverage"]["completed_handshake_count"] = json!(0);
+        zero["coverage"]["accounted_ingress_tls_bytes"] = json!(0);
+        zero["coverage"]["observed_egress_tls_bytes"] = json!(0);
+        assert!(
+            import_assessment_summary(&bytes(&report_with_tls_negotiation_review(zero))).is_err()
+        );
+    }
+}
+
+#[test]
+fn tls_negotiation_review_reader_rejects_missing_unknown_impossible_and_miscounted_data() {
+    let valid = report_with_tls_negotiation_review(tls_negotiation_review_audit());
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+
+    for field in [
+        "schema",
+        "policy",
+        "selected",
+        "methodology",
+        "coverage",
+        "capability_observations",
+        "claim_limits",
+    ] {
+        let mut missing = valid.clone();
+        missing["tls_negotiation_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            import_assessment_summary(&bytes(&missing)).is_err(),
+            "missing {field} must fail"
+        );
+    }
+    for (path, replacement) in [
+        (
+            ("schema", None),
+            json!("security.tls-negotiation-review-audit/v2"),
+        ),
+        (("policy", None), json!("termivar.other/v1")),
+        (("selected", None), json!(false)),
+        (("capability_observations", None), json!({})),
+        (
+            ("coverage", Some("attempted_connection_count")),
+            json!(true),
+        ),
+        (("coverage", Some("completed_handshake_count")), json!(3)),
+    ] {
+        let mut changed = valid.clone();
+        if let Some(child) = path.1 {
+            changed["tls_negotiation_review"][path.0][child] = replacement;
+        } else {
+            changed["tls_negotiation_review"][path.0] = replacement;
+        }
+        assert!(import_assessment_summary(&bytes(&changed)).is_err());
+    }
+
+    let mut wrong_order = valid.clone();
+    wrong_order["tls_negotiation_review"]["capability_observations"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    assert!(import_assessment_summary(&bytes(&wrong_order)).is_err());
+
+    let mut missing_row = valid.clone();
+    missing_row["tls_negotiation_review"]["capability_observations"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert!(import_assessment_summary(&bytes(&missing_row)).is_err());
+
+    let mut false_support = valid.clone();
+    false_support["tls_negotiation_review"]["capability_observations"][0]["outcome"] =
+        json!("handshake_failed");
+    assert!(import_assessment_summary(&bytes(&false_support)).is_err());
+
+    let mut mismatched_protocol = valid.clone();
+    mismatched_protocol["tls_negotiation_review"]["capability_observations"][0]
+        ["negotiated_protocol"] = json!("tls1.2");
+    assert!(import_assessment_summary(&bytes(&mismatched_protocol)).is_err());
+
+    let mut fake_legacy_network = valid.clone();
+    fake_legacy_network["tls_negotiation_review"]["capability_observations"][2]
+        ["dispatch_status"] = json!("dispatched");
+    assert!(import_assessment_summary(&bytes(&fake_legacy_network)).is_err());
+
+    let mut later_dispatch_after_stop = valid.clone();
+    let first =
+        &mut later_dispatch_after_stop["tls_negotiation_review"]["capability_observations"][0];
+    first["dispatch_status"] = json!("not_dispatched");
+    first["outcome"] = json!("budget_exhausted");
+    first["support"] = json!("not_established");
+    first["transport_validation"] = json!("not_established");
+    first["negotiated_protocol"] = Value::Null;
+    first["negotiated_cipher_suite"] = Value::Null;
+    first["accounted_ingress_tls_bytes"] = json!(0);
+    first["observed_egress_tls_bytes"] = json!(0);
+    later_dispatch_after_stop["tls_negotiation_review"]["coverage"]["terminal"] =
+        json!("budget_exhausted");
+    later_dispatch_after_stop["tls_negotiation_review"]["coverage"]["attempted_connection_count"] =
+        json!(1);
+    later_dispatch_after_stop["tls_negotiation_review"]["coverage"]["completed_handshake_count"] =
+        json!(1);
+    later_dispatch_after_stop["tls_negotiation_review"]["coverage"]
+        ["accounted_ingress_tls_bytes"] = json!(768);
+    later_dispatch_after_stop["tls_negotiation_review"]["coverage"]["observed_egress_tls_bytes"] =
+        json!(512);
+    assert!(import_assessment_summary(&bytes(&later_dispatch_after_stop)).is_err());
+
+    let mut reversed_stop = valid.clone();
+    for (index, row) in reversed_stop["tls_negotiation_review"]["capability_observations"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .take(2)
+        .enumerate()
+    {
+        row["dispatch_status"] = json!("not_dispatched");
+        row["outcome"] = json!(if index == 0 {
+            "not_reached"
+        } else {
+            "budget_exhausted"
+        });
+        row["support"] = json!("not_established");
+        row["transport_validation"] = json!("not_established");
+        row["negotiated_protocol"] = Value::Null;
+        row["negotiated_cipher_suite"] = Value::Null;
+        row["accounted_ingress_tls_bytes"] = json!(0);
+        row["observed_egress_tls_bytes"] = json!(0);
+    }
+    reversed_stop["tls_negotiation_review"]["coverage"]["terminal"] = json!("budget_exhausted");
+    reversed_stop["tls_negotiation_review"]["coverage"]["attempted_connection_count"] = json!(0);
+    reversed_stop["tls_negotiation_review"]["coverage"]["completed_handshake_count"] = json!(0);
+    reversed_stop["tls_negotiation_review"]["coverage"]["accounted_ingress_tls_bytes"] = json!(0);
+    reversed_stop["tls_negotiation_review"]["coverage"]["observed_egress_tls_bytes"] = json!(0);
+    assert!(import_assessment_summary(&bytes(&reversed_stop)).is_err());
+
+    let mut completed_after_budget = valid.clone();
+    let second =
+        &mut completed_after_budget["tls_negotiation_review"]["capability_observations"][1];
+    second["outcome"] = json!("budget_exhausted");
+    second["support"] = json!("not_established");
+    second["transport_validation"] = json!("not_established");
+    second["negotiated_protocol"] = Value::Null;
+    second["negotiated_cipher_suite"] = Value::Null;
+    completed_after_budget["tls_negotiation_review"]["coverage"]["completed_handshake_count"] =
+        json!(1);
+    assert!(import_assessment_summary(&bytes(&completed_after_budget)).is_err());
+
+    let mut aggregate_mismatch = valid.clone();
+    aggregate_mismatch["tls_negotiation_review"]["coverage"]["accounted_ingress_tls_bytes"] =
+        json!(1_535);
+    assert!(import_assessment_summary(&bytes(&aggregate_mismatch)).is_err());
+
+    let mut incomplete_claimed_complete = valid.clone();
+    let first =
+        &mut incomplete_claimed_complete["tls_negotiation_review"]["capability_observations"][0];
+    first["outcome"] = json!("transport_failed");
+    first["support"] = json!("not_established");
+    first["transport_validation"] = json!("not_established");
+    first["negotiated_protocol"] = Value::Null;
+    first["negotiated_cipher_suite"] = Value::Null;
+    let second =
+        &mut incomplete_claimed_complete["tls_negotiation_review"]["capability_observations"][1];
+    second["dispatch_status"] = json!("not_dispatched");
+    second["outcome"] = json!("not_reached");
+    second["support"] = json!("not_established");
+    second["transport_validation"] = json!("not_established");
+    second["negotiated_protocol"] = Value::Null;
+    second["negotiated_cipher_suite"] = Value::Null;
+    second["accounted_ingress_tls_bytes"] = json!(0);
+    second["observed_egress_tls_bytes"] = json!(0);
+    incomplete_claimed_complete["tls_negotiation_review"]["coverage"]
+        ["attempted_connection_count"] = json!(1);
+    incomplete_claimed_complete["tls_negotiation_review"]["coverage"]
+        ["completed_handshake_count"] = json!(0);
+    incomplete_claimed_complete["tls_negotiation_review"]["coverage"]
+        ["accounted_ingress_tls_bytes"] = json!(768);
+    incomplete_claimed_complete["tls_negotiation_review"]["coverage"]
+        ["observed_egress_tls_bytes"] = json!(512);
+    assert!(import_assessment_summary(&bytes(&incomplete_claimed_complete)).is_err());
+
+    let mut extra = valid.clone();
+    extra["tls_negotiation_review"]["target"] = json!("secret.example");
     assert!(import_assessment_summary(&bytes(&extra)).is_err());
 }
 

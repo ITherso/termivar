@@ -75,6 +75,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     REST_RUNTIME_SOURCE,
     SECRET_EXPOSURE_RUNTIME_SOURCE,
     TLS_OBSERVATION_RUNTIME_SOURCE,
+    TLS_NEGOTIATION_RUNTIME_SOURCE,
     WEBSOCKET_RUNTIME_SOURCE,
     RESOURCE_AUTHORIZATION_RUNTIME_SOURCE,
     JWT_TARGET_ACCEPTANCE_RUNTIME_SOURCE,
@@ -125,6 +126,8 @@ const SECRET_EXPOSURE_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/secret_exposure.rs";
 const TLS_OBSERVATION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/tls_observation.rs";
+const TLS_NEGOTIATION_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/tls_negotiation_review.rs";
 const WEBSOCKET_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/websocket_runtime.rs";
 const RESOURCE_AUTHORIZATION_RUNTIME_SOURCE: &str =
@@ -432,6 +435,7 @@ const DIRECT_CLIENT_SOURCE_ALLOWLIST: &[&str] = &[
     "crates/termivar-scanner/src/context.rs",
     NATIVE_OAST_PROVIDER_ADAPTER_SOURCE,
     RECON_CT_PROVIDER_RUNTIME_SOURCE,
+    TLS_NEGOTIATION_RUNTIME_SOURCE,
     WEBSOCKET_RUNTIME_SOURCE,
     TRANSPORT_OWNER_SOURCE,
     "crates/termivar-scanner/src/sdk.rs",
@@ -469,6 +473,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(native_review_execution_contract_violations(workspace_root)?);
     violations.extend(openapi_runtime_contract_violations(workspace_root)?);
     violations.extend(websocket_runtime_contract_violations(workspace_root)?);
+    violations.extend(tls_negotiation_runtime_contract_violations(workspace_root)?);
 
     let expected_clients: BTreeSet<_> = DIRECT_CLIENT_SOURCE_ALLOWLIST
         .iter()
@@ -528,6 +533,13 @@ fn websocket_runtime_contract_violations(
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let source = fs::read_to_string(workspace_root.join(WEBSOCKET_RUNTIME_SOURCE))?;
     Ok(inspect_websocket_runtime_parent_accounting(&source)?)
+}
+
+fn tls_negotiation_runtime_contract_violations(
+    workspace_root: &Path,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let source = fs::read_to_string(workspace_root.join(TLS_NEGOTIATION_RUNTIME_SOURCE))?;
+    Ok(inspect_tls_negotiation_runtime_parent_accounting(&source)?)
 }
 
 fn inspect_websocket_runtime_parent_accounting(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -644,6 +656,194 @@ fn inspect_websocket_runtime_parent_accounting(source: &str) -> Result<Vec<Strin
     }
 
     Ok(violations)
+}
+
+fn inspect_tls_negotiation_runtime_parent_accounting(
+    source: &str,
+) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    let mut imports = BTreeSet::new();
+    let mut accounting_import_count = 0_usize;
+    for item in &syntax.items {
+        let Item::Use(item) = item else {
+            continue;
+        };
+        let mut paths = Vec::new();
+        collect_use_paths(&item.tree, Vec::new(), &mut paths);
+        for (segments, binding, glob) in paths {
+            let Some(last) = segments.last().map(|value| normalize_identifier(value)) else {
+                continue;
+            };
+            if matches!(last, "RequestAccountingBroker" | "RequestAccountingLease") {
+                accounting_import_count = accounting_import_count.saturating_add(1);
+                let exact = !glob
+                    && segments
+                        .iter()
+                        .map(|segment| normalize_identifier(segment))
+                        .eq(["crate", "runtime_budget", last])
+                    && binding
+                        .as_deref()
+                        .is_some_and(|binding| normalize_identifier(binding) == last);
+                if exact {
+                    imports.insert(last.to_owned());
+                }
+            }
+        }
+    }
+    if accounting_import_count != 2
+        || imports
+            != BTreeSet::from([
+                "RequestAccountingBroker".to_owned(),
+                "RequestAccountingLease".to_owned(),
+            ])
+    {
+        violations.push(
+            "active TLS-negotiation runtime must import the unaliased parent RequestAccountingBroker and RequestAccountingLease only through crate::runtime_budget"
+                .to_owned(),
+        );
+    }
+
+    let runtime = syntax.items.iter().find_map(|item| match item {
+        Item::Struct(item) if item.ident == "TlsNegotiationReviewRuntime" => Some(item),
+        _ => None,
+    });
+    let exact_field = runtime.is_some_and(|item| {
+        item.fields
+            .iter()
+            .filter(|field| {
+                field
+                    .ident
+                    .as_ref()
+                    .is_some_and(|ident| ident == "accounting")
+                    && type_is_exact_path(&field.ty, &["RequestAccountingBroker"])
+            })
+            .count()
+            == 1
+    });
+    if !exact_field {
+        violations.push(
+            "TlsNegotiationReviewRuntime must retain exactly one parent-owned accounting: RequestAccountingBroker field"
+                .to_owned(),
+        );
+    }
+
+    let mut constructors = 0_usize;
+    let mut exact_arguments = 0_usize;
+    for item in &syntax.items {
+        let Item::Impl(item) = item else { continue };
+        if item.trait_.is_some()
+            || !type_is_exact_path(item.self_ty.as_ref(), &["TlsNegotiationReviewRuntime"])
+        {
+            continue;
+        }
+        for member in &item.items {
+            let syn::ImplItem::Fn(method) = member else {
+                continue;
+            };
+            if method.sig.ident == "new" {
+                constructors = constructors.saturating_add(1);
+                exact_arguments = exact_arguments.saturating_add(
+                    method
+                        .sig
+                        .inputs
+                        .iter()
+                        .filter(|argument| {
+                            exact_named_typed_argument(argument, "accounting", |item_type| {
+                                type_is_exact_path(item_type, &["RequestAccountingBroker"])
+                            })
+                        })
+                        .count(),
+                );
+            }
+        }
+    }
+    if constructors != 1 || exact_arguments != 1 {
+        violations.push(
+            "TlsNegotiationReviewRuntime::new must consume exactly one parent-owned RequestAccountingBroker argument"
+                .to_owned(),
+        );
+    }
+
+    let mut references = TlsNegotiationAccountingReferenceVisitor::default();
+    references.visit_file(&syntax);
+    if references.broker_type_references != 2
+        || references.lease_type_references != 3
+        || references.begin_calls != 1
+        || references.macro_references != 0
+    {
+        violations.push(format!(
+            "active TLS-negotiation accounting path drifted; expected broker/lease/begin/macro references 2/3/1/0, found {}/{}/{}/{}",
+            references.broker_type_references,
+            references.lease_type_references,
+            references.begin_calls,
+            references.macro_references,
+        ));
+    }
+    for forbidden in ["HttpRequestBroker", "RuntimeBudget"] {
+        if syntax_references_exact_ident_outside_tests(&syntax, forbidden) {
+            violations.push(format!(
+                "active TLS-negotiation runtime must not own independent {forbidden} authority"
+            ));
+        }
+    }
+    Ok(violations)
+}
+
+#[derive(Default)]
+struct TlsNegotiationAccountingReferenceVisitor {
+    broker_type_references: usize,
+    lease_type_references: usize,
+    begin_calls: usize,
+    macro_references: usize,
+}
+
+impl<'ast> Visit<'ast> for TlsNegotiationAccountingReferenceVisitor {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !transport_item_is_test_only(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_item_use(&mut self, _item: &'ast ItemUse) {}
+
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        for segment in &path.segments {
+            match normalize_identifier(&ident_name(&segment.ident)) {
+                "RequestAccountingBroker" => {
+                    self.broker_type_references = self.broker_type_references.saturating_add(1)
+                },
+                "RequestAccountingLease" => {
+                    self.lease_type_references = self.lease_type_references.saturating_add(1)
+                },
+                _ => {},
+            }
+        }
+        visit::visit_path(self, path);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if call.method == "try_begin_with_request_body_bytes"
+            && expression_is_self_field(&call.receiver, "accounting")
+        {
+            self.begin_calls = self.begin_calls.saturating_add(1);
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_macro(&mut self, item: &'ast Macro) {
+        let mut identifiers = BTreeSet::new();
+        collect_token_identifiers(item.tokens.clone(), &mut identifiers);
+        if identifiers.iter().any(|identifier| {
+            matches!(
+                normalize_identifier(identifier),
+                "RequestAccountingBroker" | "RequestAccountingLease"
+            )
+        }) {
+            self.macro_references = self.macro_references.saturating_add(1);
+        }
+        visit::visit_macro(self, item);
+    }
 }
 
 #[derive(Default)]
@@ -2688,6 +2888,7 @@ fn authority_prelude_is_closed(
         ("RootRetentionLimit", 1),
         ("SecretExposureResponseSourceConflict", 1),
         ("SuppliedSessionApplicationMismatch", 1),
+        ("TlsNegotiationReviewComposition", 1),
         ("WebSocketReviewApplicationMismatch", 1),
         ("WebSocketSuppliedSessionRequiresInputs", 1),
         ("WebSocketSuppliedSessionUnsupportedPolicy", 1),
@@ -2835,6 +3036,7 @@ fn web_assessment_build_typed_error_return_variant(
             Some("SecretExposureResponseSourceConflict")
         },
         Some("SuppliedSessionApplicationMismatch") => Some("SuppliedSessionApplicationMismatch"),
+        Some("TlsNegotiationReviewComposition") => Some("TlsNegotiationReviewComposition"),
         Some("WebSocketReviewApplicationMismatch") => Some("WebSocketReviewApplicationMismatch"),
         Some("WebSocketSuppliedSessionRequiresInputs") => {
             Some("WebSocketSuppliedSessionRequiresInputs")
@@ -3723,6 +3925,13 @@ fn authority_allowance_binding_is_exact(local: &syn::Local) -> bool {
                 "controlled XML active-verification allowance fits u16",
             ),
             message: "compiled controlled XML allowance fits u16",
+        },
+        AllowanceSpec {
+            feature: "tls-negotiation-review",
+            field: "tls_negotiation_review",
+            boolean_source: AllowanceBooleanSource::Direct,
+            amount: AllowanceAmount::Direct("TLS_NEGOTIATION_ACTIVE_VERIFICATION_ALLOWANCE"),
+            message: "compiled active TLS negotiation allowance fits u16",
         },
     ];
 
@@ -5078,6 +5287,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     let mut defense_audit_owners = BTreeMap::<String, usize>::new();
     let mut rest_audit_owners = BTreeMap::<String, usize>::new();
     let mut tls_observation_audit_owners = BTreeMap::<String, usize>::new();
+    let mut tls_negotiation_audit_owners = BTreeMap::<String, usize>::new();
     let mut recon_ct_provider_audit_owners = BTreeMap::<String, usize>::new();
     let mut wordpress_audit_owners = BTreeMap::<String, usize>::new();
 
@@ -5329,6 +5539,16 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                 if tls_observation_audit_count > 0 {
                     tls_observation_audit_owners.insert(name.clone(), tls_observation_audit_count);
                 }
+                let tls_negotiation_audit_count = item
+                    .fields
+                    .iter()
+                    .filter(|field| {
+                        type_references_ident(&field.ty, "WebAssessmentTlsNegotiationReviewAudit")
+                    })
+                    .count();
+                if tls_negotiation_audit_count > 0 {
+                    tls_negotiation_audit_owners.insert(name.clone(), tls_negotiation_audit_count);
+                }
                 let recon_ct_provider_audit_count = item
                     .fields
                     .iter()
@@ -5426,6 +5646,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "tls_observation")
                     });
+                    let tls_negotiation_review = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "tls_negotiation_review")
+                    });
                     let recon_ct_provider = item.fields.iter().find(|field| {
                         field
                             .ident
@@ -5513,6 +5739,15 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             "Option",
                             &["WebAssessmentTlsObservationAudit"],
                         ) || !attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
+                    }) || tls_negotiation_review.is_none_or(|field| {
+                        !is_generic_of_idents(
+                            &field.ty,
+                            "Option",
+                            &["WebAssessmentTlsNegotiationReviewAudit"],
+                        ) || !attributes_are_exact_cfg_feature(
+                            &field.attrs,
+                            "tls-negotiation-review",
+                        )
                     }) || recon_ct_provider.is_none_or(|field| {
                         !is_generic_of_idents(
                             &field.ty,
@@ -5540,6 +5775,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                                     | "rest_review"
                                     | "secret_exposure_review"
                                     | "tls_observation"
+                                    | "tls_negotiation_review"
                                     | "recon_ct_provider"
                                     | "ssrf_oast_review"
                                     | "wordpress_review"
@@ -5547,7 +5783,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields, plus the exact active TLS-negotiation audit field, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -5601,6 +5837,15 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
     if tls_observation_audit_owners != expected_tls_observation_audit_owners {
         violations.push(format!(
             "assessment TLS-observation audit ownership drifted: expected {expected_tls_observation_audit_owners:?}, observed {tls_observation_audit_owners:?}"
+        ));
+    }
+    let expected_tls_negotiation_audit_owners = BTreeMap::from([
+        ("WebAssessmentRunReport".to_owned(), 1usize),
+        ("WebAssessmentRuntime".to_owned(), 1usize),
+    ]);
+    if tls_negotiation_audit_owners != expected_tls_negotiation_audit_owners {
+        violations.push(format!(
+            "assessment active TLS-negotiation audit ownership drifted: expected {expected_tls_negotiation_audit_owners:?}, observed {tls_negotiation_audit_owners:?}"
         ));
     }
     let expected_recon_ct_provider_audit_owners =
@@ -8062,7 +8307,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 21
+                fields.len() == 22
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -8113,6 +8358,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     })
                     && fields.get("tls_observation").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentTlsObservationAudit"])
+                    })
+                    && fields.get("tls_negotiation_review").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "Option",
+                            &["WebAssessmentTlsNegotiationReviewAudit"],
+                        )
                     })
                     && fields.get("recon_ct_provider").is_some_and(|field| {
                         is_generic_of_idents(
@@ -8176,6 +8428,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "tls_observation").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
             })
+            && private_named_field(item, "tls_negotiation_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "tls-negotiation-review")
+            })
             && private_named_field(item, "recon_ct_provider").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "recon-ct-provider")
             })
@@ -8208,7 +8463,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus XML external-entity, template-evaluation, JWT target-acceptance, and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus XML external-entity, template-evaluation, JWT target-acceptance, the active TLS-negotiation audit, and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
         ));
     }
 
@@ -8224,7 +8479,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 &["Clone", "Copy", "Serialize", "Deserialize"],
             )
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 13
+                fields.len() == 14
                     && fields.get("supplied_session").is_some_and(|field| {
                         is_generic_of_idents(
                             field,
@@ -8256,6 +8511,13 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     })
                     && fields.get("tls_observation").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentTlsObservationAudit"])
+                    })
+                    && fields.get("tls_negotiation_review").is_some_and(|field| {
+                        is_generic_of_idents(
+                            field,
+                            "Option",
+                            &["WebAssessmentTlsNegotiationReviewAudit"],
+                        )
                     })
                     && fields.get("recon_ct_provider").is_some_and(|field| {
                         is_generic_of_idents(
@@ -8308,6 +8570,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "tls_observation").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "tls-observation")
             })
+            && private_named_field(item, "tls_negotiation_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "tls-negotiation-review")
+            })
             && private_named_field(item, "recon_ct_provider").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "recon-ct-provider")
             })
@@ -8326,7 +8591,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     });
     if !review_audits_shape_is_exact {
         violations.push(
-            "AssessmentReviewAudits must remain one private Default-only container with exactly the thirteen feature-gated redacted audit values"
+            "AssessmentReviewAudits must remain one private Default-only container with exactly the fourteen feature-gated redacted audit values"
                 .to_owned(),
         );
     }
@@ -8378,7 +8643,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, XML external-entity, template-evaluation, WordPress, and JWT target-acceptance audits, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth, the exact feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, active TLS-negotiation, Cert Spotter reconnaissance, SSRF/OAST, XML external-entity, template-evaluation, WordPress, and JWT target-acceptance audits, and the borrowed transport audit; it must build the generic envelope internally and then validate it"
                 .to_owned(),
         );
     }
@@ -8438,6 +8703,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_rest_audit",
                     "validate_secret_exposure_audit",
                     "validate_tls_observation_audit",
+                    "validate_tls_negotiation_review_audit",
                     "validate_recon_ct_provider_audit",
                     "validate_ssrf_oast_audit",
                     "validate_xml_external_entity_audit",
@@ -8490,6 +8756,11 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && statement_reference_precedes(&method.block, "validate_rest_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_secret_exposure_audit", "Self")
             && statement_reference_precedes(&method.block, "validate_tls_observation_audit", "Self")
+            && statement_reference_precedes(
+                &method.block,
+                "validate_tls_negotiation_review_audit",
+                "Self",
+            )
             && statement_reference_precedes(
                 &method.block,
                 "validate_recon_ct_provider_audit",
@@ -9667,6 +9938,63 @@ fn syntax_references_exact_ident(syntax: &syn::File, needle: &str) -> bool {
     visitor.found
 }
 
+fn syntax_references_exact_ident_outside_tests(syntax: &syn::File, needle: &str) -> bool {
+    struct ExactProductionIdentifierVisitor<'a> {
+        needle: &'a str,
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for ExactProductionIdentifierVisitor<'_> {
+        fn visit_item(&mut self, item: &'ast Item) {
+            if !transport_item_is_test_only(item_attributes(item)) {
+                visit::visit_item(self, item);
+            }
+        }
+
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            if !transport_item_is_test_only(&item.attrs) {
+                visit::visit_impl_item_fn(self, item);
+            }
+        }
+
+        fn visit_path(&mut self, path: &'ast SynPath) {
+            self.found |= path
+                .segments
+                .iter()
+                .any(|segment| normalize_identifier(&ident_name(&segment.ident)) == self.needle);
+            if !self.found {
+                visit::visit_path(self, path);
+            }
+        }
+
+        fn visit_item_use(&mut self, item: &'ast ItemUse) {
+            let mut paths = Vec::new();
+            collect_use_paths(&item.tree, Vec::new(), &mut paths);
+            self.found |= paths.iter().any(|(segments, _, _)| {
+                segments
+                    .iter()
+                    .any(|segment| normalize_identifier(segment) == self.needle)
+            });
+            if !self.found {
+                visit::visit_item_use(self, item);
+            }
+        }
+
+        fn visit_macro(&mut self, item: &'ast Macro) {
+            self.found |= token_stream_contains_identifier(item.tokens.clone(), self.needle);
+            if !self.found {
+                visit::visit_macro(self, item);
+            }
+        }
+    }
+
+    let mut visitor = ExactProductionIdentifierVisitor {
+        needle: normalize_identifier(needle),
+        found: false,
+    };
+    visitor.visit_file(syntax);
+    visitor.found
+}
+
 fn block_has_exact_knowledge_authority_comparison(block: &syn::Block) -> bool {
     struct ComparisonVisitor {
         exact_calls: usize,
@@ -9948,7 +10276,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 13
+    typed.len() == expected_prefix.len() + 15
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -10058,13 +10386,28 @@ fn assessment_report_constructor_inputs_are_exact(
                         &["WebAssessmentTlsObservationAudit"],
                     )
             })
+        && typed
+            .get(expected_prefix.len() + 12)
+            .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "tls-negotiation-review")
+                    && is_generic_of_idents(
+                        &argument.ty,
+                        "Option",
+                        &["WebAssessmentTlsNegotiationReviewAudit"],
+                    )
+            })
+        && typed
+            .get(expected_prefix.len() + 13)
+            .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "recon-ct-provider")
+                    && is_generic_of_idents(
+                        &argument.ty,
+                        "Option",
+                        &["WebAssessmentReconCtProviderAudit"],
+                    )
+            })
         && typed.last().is_some_and(|argument| {
-            attributes_are_exact_cfg_feature(&argument.attrs, "recon-ct-provider")
-                && is_generic_of_idents(
-                    &argument.ty,
-                    "Option",
-                    &["WebAssessmentReconCtProviderAudit"],
-                )
+            argument.attrs.is_empty() && is_borrowed_ident(&argument.ty, "TransportDispatchAudit")
         })
 }
 
@@ -10084,9 +10427,16 @@ fn assessment_report_validator_inputs_are_exact(method: &syn::ImplItemFn) -> boo
         "CompletedWebAssessmentTruth",
         "AssessmentReviewAudits",
     ];
-    typed.len() == expected.len()
-        && typed.iter().zip(expected).all(|(argument, expected)| {
-            argument.attrs.is_empty() && is_plain_ident(&argument.ty, expected)
+    typed.len() == expected.len() + 1
+        && typed
+            .iter()
+            .take(expected.len())
+            .zip(expected)
+            .all(|(argument, expected)| {
+                argument.attrs.is_empty() && is_plain_ident(&argument.ty, expected)
+            })
+        && typed.last().is_some_and(|argument| {
+            argument.attrs.is_empty() && is_borrowed_ident(&argument.ty, "TransportDispatchAudit")
         })
 }
 
@@ -10912,6 +11262,15 @@ fn validate_policy_inventory() -> Vec<String> {
     {
         violations.push(
             "WebSocket runtime must remain one bounded one-shot consumer with an exact direct-socket exception and no unmetered broker authority"
+                .to_owned(),
+        );
+    }
+    if !bounded.contains(TLS_NEGOTIATION_RUNTIME_SOURCE)
+        || !DIRECT_CLIENT_SOURCE_ALLOWLIST.contains(&TLS_NEGOTIATION_RUNTIME_SOURCE)
+        || UNMETERED_STANDALONE_FACADE_SOURCES.contains(&TLS_NEGOTIATION_RUNTIME_SOURCE)
+    {
+        violations.push(
+            "active TLS-negotiation runtime must remain one bounded sequential consumer with an exact direct-socket exception and no unmetered broker authority"
                 .to_owned(),
         );
     }
@@ -12327,6 +12686,7 @@ impl OwnershipVisitor<'_> {
         }
         if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
             || self.source == TLS_OBSERVATION_RUNTIME_SOURCE
+            || self.source == TLS_NEGOTIATION_RUNTIME_SOURCE
             || self.source == WEBSOCKET_RUNTIME_SOURCE
             || self.source == XML_EXTERNAL_ENTITY_RUNTIME_SOURCE
             || self.source == WORDPRESS_RUNTIME_SOURCE
@@ -12339,7 +12699,8 @@ impl OwnershipVisitor<'_> {
                         && !(self.source == XML_EXTERNAL_ENTITY_RUNTIME_SOURCE
                             && is_native_oast_runtime_budget_error_variant(segments, index)))
                     || (segment == "RequestAccountingBroker"
-                        && self.source != WEBSOCKET_RUNTIME_SOURCE)
+                        && self.source != WEBSOCKET_RUNTIME_SOURCE
+                        && self.source != TLS_NEGOTIATION_RUNTIME_SOURCE)
             })
         {
             self.violations.insert(format!(
@@ -12438,8 +12799,31 @@ impl OwnershipVisitor<'_> {
             }) || segments
                 .first()
                 .is_some_and(|root| normalize_identifier(root) == "tokio_tungstenite"));
+        let reviewed_tls_negotiation_transport = self.source == TLS_NEGOTIATION_RUNTIME_SOURCE
+            && (segments.first().is_some_and(|root| {
+                normalize_identifier(root) == "tokio"
+                    && segments
+                        .get(1)
+                        .is_some_and(|module| normalize_identifier(module) == "net")
+                    && segments.get(2).is_some_and(|item| {
+                        matches!(normalize_identifier(item), "lookup_host" | "TcpStream")
+                    })
+                    && segments.len() == 3
+            }) || (segments
+                .first()
+                .is_some_and(|root| normalize_identifier(root) == "std")
+                && segments
+                    .get(1)
+                    .is_some_and(|module| normalize_identifier(module) == "net")
+                && segments
+                    .get(2)
+                    .is_some_and(|item| normalize_identifier(item) == "SocketAddr"))
+                || segments
+                    .first()
+                    .is_some_and(|root| normalize_identifier(root) == "tokio_rustls"));
         if !reviewed_recon_provider_reqwest
             && !reviewed_websocket_transport
+            && !reviewed_tls_negotiation_transport
             && (reqwest || is_direct_transport_path(segments) || legacy_client_path)
         {
             self.violations.insert(format!(
@@ -12499,6 +12883,7 @@ impl OwnershipVisitor<'_> {
                     && tokens.get(index - 1).is_some_and(is_colon);
                 if (NATIVE_REVIEW_BOUNDED_SOURCES.contains(&self.source)
                     || self.source == TLS_OBSERVATION_RUNTIME_SOURCE
+                    || self.source == TLS_NEGOTIATION_RUNTIME_SOURCE
                     || self.source == WEBSOCKET_RUNTIME_SOURCE
                     || self.source == XML_EXTERNAL_ENTITY_RUNTIME_SOURCE
                     || self.source == WORDPRESS_RUNTIME_SOURCE
@@ -12507,7 +12892,8 @@ impl OwnershipVisitor<'_> {
                     && !native_oast_runtime_budget_variant
                     && (matches!(identifier.as_str(), "HttpRequestBroker" | "RuntimeBudget")
                         || (identifier == "RequestAccountingBroker"
-                            && self.source != WEBSOCKET_RUNTIME_SOURCE))
+                            && self.source != WEBSOCKET_RUNTIME_SOURCE
+                            && self.source != TLS_NEGOTIATION_RUNTIME_SOURCE))
                 {
                     self.violations.insert(format!(
                         "{} hides forbidden transport-owning review authority {identifier} inside a macro",
@@ -12698,6 +13084,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 )
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
+                    "tls_negotiation_review"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime.rs",
                     "websocket_runtime"
                 )
                 | (
@@ -12798,6 +13188,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
             && module == "tls_observation"
         {
             attributes_are_exact_cfg_feature(&item.attrs, "tls-observation")
+        } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
+            && module == "tls_negotiation_review"
+        {
+            attributes_are_exact_cfg_feature(&item.attrs, "tls-negotiation-review")
         } else if self.source == "crates/termivar-scanner/src/web_runtime.rs"
             && module == "websocket_runtime"
         {
@@ -14165,7 +14559,8 @@ mod tests {
 
         for forbidden in [
             "use reqwest::Client;",
-            "use tokio::{self};",
+            "use tokio::net::UdpSocket;",
+            "use std::net::TcpStream;",
             "use crate::http_evidence::HttpRequestBroker;",
             "use crate::runtime_budget::RuntimeBudget;",
         ] {
@@ -14175,6 +14570,92 @@ mod tests {
             assert!(
                 !violations.is_empty(),
                 "WebSocket direct-socket exception unexpectedly admitted {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tls_negotiation_runtime_has_one_exact_bounded_direct_socket_exception() {
+        assert_eq!(
+            BOUNDED_RUNTIME_SOURCES
+                .iter()
+                .filter(|source| **source == TLS_NEGOTIATION_RUNTIME_SOURCE)
+                .count(),
+            1
+        );
+        assert_eq!(
+            DIRECT_CLIENT_SOURCE_ALLOWLIST
+                .iter()
+                .filter(|source| **source == TLS_NEGOTIATION_RUNTIME_SOURCE)
+                .count(),
+            1
+        );
+        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES.contains(&TLS_NEGOTIATION_RUNTIME_SOURCE));
+
+        let reviewed = "use std::net::SocketAddr; use tokio::net::{lookup_host, TcpStream}; use tokio_rustls::TlsConnector; use crate::runtime_budget::{RequestAccountingBroker, RequestAccountingLease};";
+        assert!(
+            inspect_bounded_source(TLS_NEGOTIATION_RUNTIME_SOURCE, reviewed)
+                .unwrap()
+                .is_empty()
+        );
+
+        let wrong_owner = inspect_bounded_source(
+            "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
+            reviewed,
+        )
+        .unwrap()
+        .join("\n");
+        assert!(
+            wrong_owner.contains("forbidden direct transport path"),
+            "{wrong_owner}"
+        );
+
+        for forbidden in [
+            "use reqwest::Client;",
+            "use tokio::{self};",
+            "use crate::http_evidence::HttpRequestBroker;",
+            "use crate::runtime_budget::RuntimeBudget;",
+        ] {
+            let violations = inspect_bounded_source(TLS_NEGOTIATION_RUNTIME_SOURCE, forbidden)
+                .unwrap()
+                .join("\n");
+            assert!(
+                !violations.is_empty(),
+                "active TLS direct-socket exception unexpectedly admitted {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tls_negotiation_runtime_parent_accounting_contract_rejects_mutations() {
+        let reviewed = include_str!(
+            "../../../crates/termivar-scanner/src/web_runtime/tls_negotiation_review.rs"
+        );
+        let reviewed_violations =
+            inspect_tls_negotiation_runtime_parent_accounting(reviewed).unwrap();
+        assert!(reviewed_violations.is_empty(), "{reviewed_violations:?}");
+        for mutation in [
+            reviewed.replacen(
+                "RequestAccountingBroker, RequestAccountingLease",
+                "RequestAccountingBroker as Accounting, RequestAccountingLease",
+                1,
+            ),
+            reviewed.replacen(
+                "accounting: RequestAccountingBroker,",
+                "accounting: RuntimeBudget,",
+                1,
+            ),
+            reviewed.replacen(
+                "self.accounting.try_begin_with_request_body_bytes(",
+                "self.accounting.unmetered_begin(",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, reviewed);
+            assert!(
+                !inspect_tls_negotiation_runtime_parent_accounting(&mutation)
+                    .unwrap()
+                    .is_empty()
             );
         }
     }
@@ -15209,6 +15690,10 @@ mod tests {
                 "#[cfg(feature = \"xml-external-entity-review\")] mod xml_external_entity_runtime;",
             ),
             (
+                "crates/termivar-scanner/src/web_runtime.rs",
+                "#[cfg(feature = \"tls-negotiation-review\")] mod tls_negotiation_review;",
+            ),
+            (
                 "crates/termivar-scanner/src/web_runtime/web_assessment.rs",
                 "#[cfg(feature = \"normalization-resilience\")] mod normalization_transform_catalog;",
             ),
@@ -15298,6 +15783,22 @@ mod tests {
             assert!(
                 violations.contains("unregistered external submodule"),
                 "XML external-entity runtime feature boundary unexpectedly passed: {source}: {violations}"
+            );
+        }
+
+        for source in [
+            "mod tls_negotiation_review;",
+            "#[cfg(feature = \"scanning\")] mod tls_negotiation_review;",
+            "#[cfg(feature = \"tls-negotiation-review\")] pub mod tls_negotiation_review;",
+            "#[cfg(any(feature = \"tls-negotiation-review\", feature = \"scanning\"))] mod tls_negotiation_review;",
+        ] {
+            let violations =
+                inspect_bounded_source("crates/termivar-scanner/src/web_runtime.rs", source)
+                    .unwrap()
+                    .join("\n");
+            assert!(
+                violations.contains("unregistered external submodule"),
+                "active TLS-negotiation runtime feature boundary unexpectedly passed: {source}: {violations}"
             );
         }
 
@@ -17397,6 +17898,20 @@ mod tests {
             "{violations}"
         );
 
+        let missing_tls_negotiation_audit = report_source.replacen(
+            "    #[cfg(feature = \"tls-negotiation-review\")]\n    tls_negotiation_review: Option<WebAssessmentTlsNegotiationReviewAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_tls_negotiation_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_tls_negotiation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("active TLS-negotiation audit"),
+            "{violations}"
+        );
+
         let missing_jwt_target_audit = report_source.replacen(
             "    #[cfg(feature = \"jwt-target-acceptance-review\")]\n    jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,\n",
             "",
@@ -17756,7 +18271,7 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains(
-                    "AssessmentReviewAudits must remain one private Default-only container with exactly the thirteen feature-gated redacted audit values"
+                    "AssessmentReviewAudits must remain one private Default-only container with exactly the fourteen feature-gated redacted audit values"
                 ),
                 "{violations}"
             );
@@ -17777,8 +18292,8 @@ mod tests {
         );
 
         let reordered_recon_ct_provider_argument = report_source.replacen(
-            "        #[cfg(feature = \"tls-observation\")] tls_observation: Option<\n            WebAssessmentTlsObservationAudit,\n        >,\n        #[cfg(feature = \"recon-ct-provider\")] recon_ct_provider: Option<\n            WebAssessmentReconCtProviderAudit,\n        >,",
-            "        #[cfg(feature = \"recon-ct-provider\")] recon_ct_provider: Option<\n            WebAssessmentReconCtProviderAudit,\n        >,\n        #[cfg(feature = \"tls-observation\")] tls_observation: Option<\n            WebAssessmentTlsObservationAudit,\n        >,",
+            "        #[cfg(feature = \"tls-negotiation-review\")] tls_negotiation_review: Option<\n            WebAssessmentTlsNegotiationReviewAudit,\n        >,\n        #[cfg(feature = \"recon-ct-provider\")] recon_ct_provider: Option<\n            WebAssessmentReconCtProviderAudit,\n        >,",
+            "        #[cfg(feature = \"recon-ct-provider\")] recon_ct_provider: Option<\n            WebAssessmentReconCtProviderAudit,\n        >,\n        #[cfg(feature = \"tls-negotiation-review\")] tls_negotiation_review: Option<\n            WebAssessmentTlsNegotiationReviewAudit,\n        >,",
             1,
         );
         assert_ne!(reordered_recon_ct_provider_argument, report_source);
@@ -18190,6 +18705,7 @@ mod tests {
             pub struct WebAssessmentWebSocketReviewAudit { outcome: String }
             pub struct WebAssessmentSecretExposureAudit { outcome: String }
             pub struct WebAssessmentTlsObservationAudit { outcome: String }
+            pub struct WebAssessmentTlsNegotiationReviewAudit { outcome: String }
             pub struct WebAssessmentReconCtProviderAudit { outcome: String }
             pub struct WebAssessmentSsrfOastAudit { outcome: String }
             pub struct XmlExternalEntityReviewAudit { outcome: String }
@@ -18248,6 +18764,8 @@ mod tests {
                 secret_exposure_review: Option<WebAssessmentSecretExposureAudit>,
                 #[cfg(feature = "tls-observation")]
                 tls_observation: Option<WebAssessmentTlsObservationAudit>,
+                #[cfg(feature = "tls-negotiation-review")]
+                tls_negotiation_review: Option<WebAssessmentTlsNegotiationReviewAudit>,
                 #[cfg(feature = "recon-ct-provider")]
                 recon_ct_provider: Option<WebAssessmentReconCtProviderAudit>,
                 #[cfg(feature = "ssrf-oast-review")]
@@ -18468,6 +18986,32 @@ mod tests {
             violations.contains(
                 "feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields"
             ),
+            "{violations}"
+        );
+
+        let nested_tls_negotiation_audit = valid.replace(
+            "subject: String",
+            "subject: String, tls_negotiation_review: Option<WebAssessmentTlsNegotiationReviewAudit>",
+        );
+        assert_ne!(nested_tls_negotiation_audit, valid);
+        let violations = inspect_web_assessment_models(&nested_tls_negotiation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("active TLS-negotiation audit ownership drifted"),
+            "{violations}"
+        );
+
+        let missing_tls_negotiation_audit = valid.replace(
+            "                #[cfg(feature = \"tls-negotiation-review\")]\n                tls_negotiation_review: Option<WebAssessmentTlsNegotiationReviewAudit>,\n",
+            "",
+        );
+        assert_ne!(missing_tls_negotiation_audit, valid);
+        let violations = inspect_web_assessment_models(&missing_tls_negotiation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("exact active TLS-negotiation audit field"),
             "{violations}"
         );
 

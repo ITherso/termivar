@@ -76,6 +76,8 @@ mod secret_exposure;
 mod ssrf_oast_runtime;
 #[cfg(feature = "supplied-session-review")]
 mod supplied_session_runtime;
+#[cfg(feature = "tls-negotiation-review")]
+mod tls_negotiation_review;
 #[cfg(feature = "tls-observation")]
 mod tls_observation;
 mod web_assessment;
@@ -126,6 +128,13 @@ pub(crate) use authority::authenticated_transport_is_allowed;
 #[cfg(feature = "oast-native-provider")]
 pub(crate) use authority::NativeOastProviderMintToken;
 pub(crate) use authority::SharedWebRuntimeAuthority;
+#[cfg(feature = "tls-negotiation-review")]
+pub use tls_negotiation_review::{
+    tls_negotiation_review_target_is_supported, WebAssessmentTlsNegotiationReviewAudit,
+    WebAssessmentTlsNegotiationReviewCell, TLS_NEGOTIATION_REVIEW_ACTION_TLS12,
+    TLS_NEGOTIATION_REVIEW_ACTION_TLS13, TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA,
+    TLS_NEGOTIATION_REVIEW_CAPABILITY_ID, TLS_NEGOTIATION_REVIEW_POLICY_ID,
+};
 #[cfg(feature = "tls-observation")]
 pub(crate) use tls_observation::TlsObservationCollector;
 pub(crate) use web_assessment::AssessmentDiscoveryObserver;

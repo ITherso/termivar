@@ -165,8 +165,14 @@ impl OwnedXmlHttpsTestTransportProfile {
         self.port
     }
 
-    fn target_address(self) -> SocketAddr {
+    pub(crate) fn target_address(self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.port.get()))
+    }
+
+    pub(crate) fn root_certificate_der(self) -> Vec<u8> {
+        STANDARD
+            .decode(OWNED_XML_HTTPS_ROOT_DER_BASE64)
+            .expect("reviewed owned HTTPS root DER remains valid base64")
     }
 }
 

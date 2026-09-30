@@ -42,6 +42,8 @@ toml = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 mlua = { version = "0.9", default-features = false, features = ["lua54", "vendored"], optional = true }
 x509-parser = { workspace = true, optional = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"], optional = true }
+webpki-roots = { version = "1.0.8", optional = true }
 
 [dev-dependencies]
 clap = { workspace = true }
@@ -98,6 +100,11 @@ secret-exposure-review = ["scanning"]
 # connection that delivered an existing HTTPS response. The backend exposes
 # only bounded leaf-certificate bytes; active negotiation remains separate.
 tls-observation = ["scanning", "dep:x509-parser"]
+
+# Explicitly selected active TLS version negotiation against the exact
+# authorized HTTPS host/SNI/port. The fixed matrix sends no HTTP/application
+# data and remains outside every aggregate and release bundle.
+tls-negotiation-review = ["scanning", "dep:tokio-rustls", "dep:webpki-roots"]
 
 # Explicitly selected, transport-free review of one caller-supplied compact
 # JWS against a bounded policy and an explicitly trusted local ES256 key.

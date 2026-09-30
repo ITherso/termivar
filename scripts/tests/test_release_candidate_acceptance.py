@@ -64,6 +64,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "ssrf-oast-review",
     "supplied-session-review",
     "template-evaluation-review",
+    "tls-negotiation-review",
     "tls-observation",
     "websocket-review",
     "xml-external-entity-owned-https-test-profile",
@@ -89,6 +90,7 @@ EXPECTED_FEATURE_STATES = {
     "ssrf-oast-review": "not_compiled",
     "supplied-session-review": "not_compiled",
     "template-evaluation-review": "not_compiled",
+    "tls-negotiation-review": "not_compiled",
     "tls-observation": "not_compiled",
     "websocket-review": "not_compiled",
     "wordpress-review": "compiled",
@@ -296,6 +298,24 @@ EXPECTED_TLS_OBSERVATION_LIMITATION = (
     "OCSP, CT and AIA retrieval are not performed. Repeated certificate bytes do not identify "
     "one connection, and one successful connection does not enumerate server support. Plain "
     "HTTP is not applicable; missing TLS metadata remains unavailable rather than a clean result."
+)
+EXPECTED_TLS_NEGOTIATION_REVIEW_OPTION = "--tls-negotiation-review"
+EXPECTED_TLS_NEGOTIATION_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--tls-negotiation-review",
+    "credential-free DNS HTTPS target",
+)
+EXPECTED_TLS_NEGOTIATION_REVIEW_LIMITATION = (
+    "Attempts only the fixed TLS 1.3 then TLS 1.2 default-provider handshakes against the "
+    "selected host, SNI, and port through the assessment's shared accounting, cancellation, "
+    "deadline, and standard certificate validation. It sends no HTTP or application bytes, "
+    "credentials, client certificate, early data, ALPN offer, redirect, retry, proxy request, "
+    "or address fallback. TLS 1.1, TLS 1.0, and legacy-cipher rows are explicit "
+    "client-backend-not-tested results. A successful cell establishes only that this client "
+    "negotiated that one protocol/cipher combination at that time; a failed cell does not "
+    "prove server non-support, and the matrix is not a complete cipher audit. The feature "
+    "produces no finding and remains outside default, release-bundle, and published alpha.2 "
+    "archives."
 )
 EXPECTED_JWT_POLICY_REVIEW_OPTIONS = (
     "--jwt-policy",
@@ -1334,6 +1354,21 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "prerequisites": list(EXPECTED_SECRET_EXPOSURE_PREREQUISITES),
             "limitation": EXPECTED_SECRET_EXPOSURE_LIMITATION,
             "documentation": "docs/internals/passive-secret-exposure-review.md",
+        },
+        {
+            "key": "option.tls-negotiation-review",
+            "label": "Active TLS negotiation matrix",
+            "compile_feature": "tls-negotiation-review",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "experimental",
+            "implementation_status": "experimental_limited",
+            "alias": None,
+            "prerequisites": list(
+                EXPECTED_TLS_NEGOTIATION_REVIEW_PREREQUISITES),
+            "limitation": EXPECTED_TLS_NEGOTIATION_REVIEW_LIMITATION,
+            "documentation": "docs/internals/active-tls-negotiation-review.md",
         },
         {
             "key": "option.tls-observation",
@@ -2993,9 +3028,9 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 24)
+        self.assertEqual(len(rows), 25)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 16)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 17)
         self.assertEqual(
             next(row for row in rows
                  if row["name"] == "xml-external-entity-owned-https-test-profile"),
@@ -3066,6 +3101,16 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "maturity": "preview",
             "implementation_status": "implemented",
             "runtime_activation": "unavailable_in_release_bundle",
+        })
+        self.assertEqual(result["tls_negotiation_review_experimental"], {
+            "build_state": "not_compiled",
+            "maturity": "experimental",
+            "implementation_status": "experimental_limited",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "network_capable_cells": 2,
+            "legacy_cells": "not_tested_client_backend_unsupported",
+            "application_bytes": 0,
+            "finding": "not_produced",
         })
         self.assertEqual(result["websocket_review_preview"], {
             "build_state": "not_compiled",
@@ -4042,6 +4087,108 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         ]
         self.assert_rejected(missing, "secret-exposure surface identity")
 
+    def test_pinned_tls_negotiation_surface_matches_the_named_producer_literals(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.tls-negotiation-review",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = (
+            '\n            "docs/internals/active-tls-negotiation-review.md",'
+        )
+        self.assertEqual(block.count(documentation), 1)
+        before_documentation = block.split(documentation, 1)[0]
+        limitation_line = before_documentation.splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_TLS_NEGOTIATION_REVIEW_LIMITATION)
+
+        document = capabilities()
+        surface = next(surface for surface in document["surfaces"]
+                       if surface["key"] == "option.tls-negotiation-review")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_TLS_NEGOTIATION_REVIEW_PREREQUISITES)
+        self.assertEqual(surface["limitation"],
+                         EXPECTED_TLS_NEGOTIATION_REVIEW_LIMITATION)
+
+    def test_tls_negotiation_surface_is_exact_and_fails_closed_on_mutations(self):
+        metadata_mutations = (
+            ("label", "TLS scanner"),
+            ("compile_feature", "tls-observation"),
+            ("build_state", "compiled"),
+            ("maturity", "preview"),
+            ("implementation_status", "implemented"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "tls"),
+            ("documentation", "docs/tls.md"),
+        )
+        for field, wrong in metadata_mutations:
+            with self.subTest(field=field):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"]
+                               == "option.tls-negotiation-review")
+                surface[field] = wrong
+                self.assert_rejected(
+                    document, "active TLS-negotiation surface metadata")
+
+        for wrong in (None, True, "--tls-negotiation-review", {}, [True],
+                      ["--profile web-review", "--tls-negotiation-review-120"]):
+            with self.subTest(prerequisites=wrong):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"]
+                               == "option.tls-negotiation-review")
+                surface["prerequisites"] = wrong
+                self.assert_rejected(
+                    document, "active TLS-negotiation opt-in contract")
+
+        limitation_mutations = (
+            ("fixed TLS 1.3 then TLS 1.2", "all TLS versions and ciphers"),
+            ("standard certificate validation", "certificate validation disabled"),
+            ("no HTTP or application bytes", "one HTTP request"),
+            ("failed cell does not prove server non-support",
+             "failed cell proves server non-support"),
+            ("not a complete cipher audit", "a complete cipher audit"),
+            ("produces no finding", "produces a Confirmed finding"),
+        )
+        for old, new in limitation_mutations:
+            with self.subTest(old=old):
+                self.assertEqual(
+                    EXPECTED_TLS_NEGOTIATION_REVIEW_LIMITATION.count(old), 1)
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"]
+                               == "option.tls-negotiation-review")
+                surface["limitation"] = surface["limitation"].replace(old, new)
+                self.assert_rejected(
+                    document, "active TLS-negotiation limitation")
+
+        for wrong in (None, True, 12, [], {}):
+            with self.subTest(limitation=wrong):
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"]
+                               == "option.tls-negotiation-review")
+                surface["limitation"] = wrong
+                self.assert_rejected(
+                    document, "active TLS-negotiation limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            surface for surface in missing["surfaces"]
+            if surface["key"] != "option.tls-negotiation-review"
+        ]
+        self.assert_rejected(missing, "active TLS-negotiation surface identity")
+
+        document = capabilities()
+        text = capabilities_text(document).replace(
+            b"Active TLS negotiation matrix", b"other")
+        self.assert_rejected(
+            document, "text and JSON views disagree", text)
+
     def test_pinned_tls_observation_surface_matches_the_named_producer_literals(self):
         source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
             encoding="utf-8")
@@ -4782,7 +4929,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         next(row for row in counts_only["cli_package_features"]
              if row["name"] == "control-reference-mapping")["name"] = (
                  "unclassified-control-mapping")
-        self.assertEqual(len(counts_only["cli_package_features"]), 24)
+        self.assertEqual(len(counts_only["cli_package_features"]), 25)
         self.assertEqual(
             sum(row["build_state"] == "compiled"
                 for row in counts_only["cli_package_features"]),
@@ -4791,7 +4938,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assertEqual(
             sum(row["build_state"] == "not_compiled"
                 for row in counts_only["cli_package_features"]),
-            16,
+            17,
         )
         self.assert_rejected(counts_only, "feature names changed")
 
@@ -4802,6 +4949,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("openapi-review", "not_compiled"),
             ("supplied-session-review", "compiled"),
             ("template-evaluation-review", "compiled"),
+            ("tls-negotiation-review", "compiled"),
             ("tls-observation", "compiled"),
             ("jwt-policy-review", "compiled"),
             ("jwt-target-acceptance-review", "compiled"),
@@ -4917,6 +5065,11 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "xml-external-entity-owned-https-test-profile",
             features["release-bundle"],
         )
+        self.assertEqual(
+            features["tls-negotiation-review"],
+            ["termivar-scanner/tls-negotiation-review"],
+        )
+        self.assertNotIn("tls-negotiation-review", features["release-bundle"])
 
         simulated = copy.deepcopy(features)
         simulated["future-unclassified-review"] = []
@@ -6024,6 +6177,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn(
             "unexpectedly exposes non-bundled TLS observation",
+            result["failure"],
+        )
+
+    def test_packaged_help_must_not_expose_non_bundled_tls_negotiation_option(self):
+        result, _ = self.execute(
+            exposed_session_option=EXPECTED_TLS_NEGOTIATION_REVIEW_OPTION,
+            path_suffix="-tls-negotiation-help",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(
+            "unexpectedly exposes non-bundled active TLS negotiation",
             result["failure"],
         )
 

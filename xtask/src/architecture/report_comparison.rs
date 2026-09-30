@@ -759,6 +759,7 @@ impl ComparisonVisitor<'_> {
                     "super::super::ImportedSecretExposureAudit",
                     "super::super::ImportedSuppliedSessionAudit",
                     "super::super::ImportedTemplateEvaluationReviewAudit",
+                    "super::super::ImportedTlsNegotiationReviewAudit",
                     "super::super::ImportedTlsObservationAudit",
                     "super::super::ImportedWebSocketReviewAudit",
                     "super::super::ImportedXmlExternalEntityReviewAudit",
@@ -783,6 +784,7 @@ impl ComparisonVisitor<'_> {
                     "super::SourceMetadata",
                     "super::SuppliedSessionComparison",
                     "super::TemplateEvaluationReviewComparison",
+                    "super::TlsNegotiationReviewComparison",
                     "super::TlsObservationComparison",
                     "super::WebSocketReviewComparison",
                     "super::WordPressEntityChanges",
@@ -1250,6 +1252,47 @@ mod tests {
             (
                 "reporting/comparison/html.rs",
                 "use super::ImportedJwtPolicyReviewAudit;",
+            ),
+        ] {
+            let violations = source_violations(relative, addition).unwrap();
+            assert!(
+                !violations.is_empty(),
+                "accepted `{addition}` in {relative}"
+            );
+        }
+    }
+
+    #[test]
+    fn tls_negotiation_review_uses_only_exact_inert_comparison_projections() {
+        for (relative, addition) in [
+            (
+                "reporting/comparison/import/audits.rs",
+                "use super::super::ImportedTlsNegotiationReviewAudit;",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::TlsNegotiationReviewComparison;",
+            ),
+        ] {
+            let violations = source_violations(relative, addition).unwrap();
+            assert!(
+                violations.is_empty(),
+                "rejected `{addition}` in {relative}: {violations:?}"
+            );
+        }
+
+        for (relative, addition) in [
+            (
+                "reporting/comparison/import/audits.rs",
+                "use super::super::WebAssessmentTlsNegotiationReviewAudit;",
+            ),
+            (
+                "reporting/comparison/import/audits.rs",
+                "use crate::web_runtime::WebAssessmentTlsNegotiationReviewAudit;",
+            ),
+            (
+                "reporting/comparison/html.rs",
+                "use super::ImportedTlsNegotiationReviewAudit;",
             ),
         ] {
             let violations = source_violations(relative, addition).unwrap();

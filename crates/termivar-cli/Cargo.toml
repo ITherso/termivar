@@ -67,6 +67,7 @@ rest-review = ["openapi-review", "termivar-scanner/rest-review"]
 authorization-review = ["termivar-scanner/authorization-review"]
 secret-exposure-review = ["termivar-scanner/secret-exposure-review"]
 tls-observation = ["termivar-scanner/tls-observation"]
+tls-negotiation-review = ["termivar-scanner/tls-negotiation-review"]
 jwt-policy-review = ["dep:toml", "termivar-scanner/jwt-policy-review"]
 jwt-target-acceptance-review = [
     "jwt-policy-review",

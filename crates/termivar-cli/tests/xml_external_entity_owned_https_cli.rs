@@ -132,6 +132,16 @@ struct TargetRequestFact {
     cookie_header_present: bool,
 }
 
+#[cfg(feature = "tls-negotiation-review")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TargetTlsOnlyFact {
+    sni: Option<String>,
+    protocol: Option<String>,
+    cipher_suite: Option<String>,
+    alpn: Option<Vec<u8>>,
+    application_bytes: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContentTypeClass {
     ExactXml,
@@ -210,6 +220,8 @@ impl ParserMode {
 struct OwnedHttpsFixture {
     target_url: String,
     target_requests: Arc<Mutex<Vec<TargetRequestFact>>>,
+    #[cfg(feature = "tls-negotiation-review")]
+    target_tls_only: Arc<Mutex<Vec<TargetTlsOnlyFact>>>,
     parser_mode: Arc<AtomicU8>,
     parser_resolutions: Arc<AtomicUsize>,
     target_connections: Arc<AtomicUsize>,
@@ -277,6 +289,8 @@ impl OwnedHttpsFixture {
         }
         FixtureSnapshot {
             target_requests: self.target_requests.lock().unwrap().clone(),
+            #[cfg(feature = "tls-negotiation-review")]
+            target_tls_only: self.target_tls_only.lock().unwrap().clone(),
             parser_resolutions: self.parser_resolutions.load(Ordering::SeqCst),
             target_connections: self.target_connections.load(Ordering::SeqCst),
             target_tls_rejections: self.target_tls_rejections.load(Ordering::SeqCst),
@@ -291,6 +305,8 @@ impl OwnedHttpsFixture {
 #[derive(Debug)]
 struct FixtureSnapshot {
     target_requests: Vec<TargetRequestFact>,
+    #[cfg(feature = "tls-negotiation-review")]
+    target_tls_only: Vec<TargetTlsOnlyFact>,
     parser_resolutions: usize,
     target_connections: usize,
     target_tls_rejections: usize,
@@ -354,6 +370,9 @@ fn safe_failure_diagnostic(stdout: &[u8]) -> String {
                     Some("xml_external_entity_review_incomplete") => {
                         "xml_external_entity_review_incomplete"
                     },
+                    Some("tls_negotiation_review_incomplete") => {
+                        "tls_negotiation_review_incomplete"
+                    },
                     Some("assessment_subject_identity_unavailable") => {
                         "assessment_subject_identity_unavailable"
                     },
@@ -379,6 +398,10 @@ fn safe_failure_diagnostic(stdout: &[u8]) -> String {
 fn safe_fixture_failure_diagnostic(fixture: &OwnedHttpsFixture) -> String {
     let requests = fixture.target_requests.lock().unwrap();
     let target_request_count = requests.len();
+    #[cfg(feature = "tls-negotiation-review")]
+    let target_tls_only_count = fixture.target_tls_only.lock().unwrap().len();
+    #[cfg(not(feature = "tls-negotiation-review"))]
+    let target_tls_only_count = 0_usize;
     let get_requests = requests
         .iter()
         .filter(|request| request.method == "GET")
@@ -441,7 +464,7 @@ fn safe_fixture_failure_diagnostic(fixture: &OwnedHttpsFixture) -> String {
     let omitted_errors = error_count.saturating_sub(error_classes.len());
 
     format!(
-        "fixture=bounded_counts, target_requests={}, target_get={get_requests}, target_post={post_requests}, target_other={other_requests}, exact_hosts={exact_hosts}, exact_xml_content_types={exact_xml_content_types}, envelope_control={}, envelope_candidate={}, envelope_replay={}, envelope_invalid={}, parser_resolutions={}, target_connections={}/{}, target_tls_rejections={}, provider_connections={}/{}, provider_tls_rejections={}, provider_requests={}/{}/{}/{}/{}/{}, sensitive_header_or_body_observations={sensitive_header_or_body_observations}, fixture_error_count={error_count}, fixture_error_classes={error_classes:?}, omitted_fixture_errors={omitted_errors}",
+        "fixture=bounded_counts, target_requests={}, target_tls_only={target_tls_only_count}, target_get={get_requests}, target_post={post_requests}, target_other={other_requests}, exact_hosts={exact_hosts}, exact_xml_content_types={exact_xml_content_types}, envelope_control={}, envelope_candidate={}, envelope_replay={}, envelope_invalid={}, parser_resolutions={}, target_connections={}/{}, target_tls_rejections={}, provider_connections={}/{}, provider_tls_rejections={}, provider_requests={}/{}/{}/{}/{}/{}, sensitive_header_or_body_observations={sensitive_header_or_body_observations}, fixture_error_count={error_count}, fixture_error_classes={error_classes:?}, omitted_fixture_errors={omitted_errors}",
         target_request_count,
         envelope_counts[0],
         envelope_counts[1],
@@ -629,6 +652,8 @@ async fn start_fixture_with_certificates(
 
     let fixture_errors = Arc::new(Mutex::new(Vec::new()));
     let target_requests = Arc::new(Mutex::new(Vec::new()));
+    #[cfg(feature = "tls-negotiation-review")]
+    let target_tls_only = Arc::new(Mutex::new(Vec::new()));
     let parser_mode = Arc::new(AtomicU8::new(ParserMode::Safe as u8));
     let parser_resolutions = Arc::new(AtomicUsize::new(0));
     let target_connections = Arc::new(AtomicUsize::new(0));
@@ -700,6 +725,8 @@ async fn start_fixture_with_certificates(
         TargetServerContext {
             provider_port: port,
             requests: target_requests.clone(),
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_only: target_tls_only.clone(),
             parser_mode: parser_mode.clone(),
             parser_resolutions: parser_resolutions.clone(),
             connections: target_connections.clone(),
@@ -713,6 +740,8 @@ async fn start_fixture_with_certificates(
     OwnedHttpsFixture {
         target_url: format!("https://{TARGET_HOST}:{port}/application/"),
         target_requests,
+        #[cfg(feature = "tls-negotiation-review")]
+        target_tls_only,
         parser_mode,
         parser_resolutions,
         target_connections,
@@ -802,6 +831,8 @@ async fn run_tls_proxy(
 struct TargetServerContext {
     provider_port: u16,
     requests: Arc<Mutex<Vec<TargetRequestFact>>>,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_only: Arc<Mutex<Vec<TargetTlsOnlyFact>>>,
     parser_mode: Arc<AtomicU8>,
     parser_resolutions: Arc<AtomicUsize>,
     connections: Arc<AtomicUsize>,
@@ -819,6 +850,8 @@ async fn run_target_server(
     let TargetServerContext {
         provider_port,
         requests,
+        #[cfg(feature = "tls-negotiation-review")]
+        tls_only,
         parser_mode,
         parser_resolutions,
         connections,
@@ -837,13 +870,15 @@ async fn run_target_server(
         connections.fetch_add(1, Ordering::SeqCst);
         let acceptor = acceptor.clone();
         let requests = requests.clone();
+        #[cfg(feature = "tls-negotiation-review")]
+        let tls_only = tls_only.clone();
         let parser_mode = parser_mode.clone();
         let parser_resolutions = parser_resolutions.clone();
         let connections_finished = connections_finished.clone();
         let tls_rejections = tls_rejections.clone();
         let errors = errors.clone();
         active.spawn(async move {
-            let frontend = match acceptor.accept(stream).await {
+            let mut frontend = match acceptor.accept(stream).await {
                 Ok(frontend) => {
                     if expect_tls_rejection {
                         errors.lock().unwrap().push("target_tls_unexpected_accept");
@@ -862,14 +897,39 @@ async fn run_target_server(
                     return;
                 },
             };
-            let result = handle_target_connection(
-                frontend,
-                provider_port,
-                requests,
-                parser_mode,
-                parser_resolutions,
-            )
-            .await;
+            let mut first_application_byte = [0_u8; 1];
+            let result = match frontend.read(&mut first_application_byte).await {
+                #[cfg(feature = "tls-negotiation-review")]
+                Ok(0) => {
+                    let connection = frontend.get_ref().1;
+                    tls_only.lock().unwrap().push(TargetTlsOnlyFact {
+                        sni: connection.server_name().map(str::to_owned),
+                        protocol: connection
+                            .protocol_version()
+                            .map(|version| format!("{version:?}")),
+                        cipher_suite: connection
+                            .negotiated_cipher_suite()
+                            .map(|suite| format!("{:?}", suite.suite())),
+                        alpn: connection.alpn_protocol().map(Vec::from),
+                        application_bytes: 0,
+                    });
+                    Ok(())
+                },
+                #[cfg(not(feature = "tls-negotiation-review"))]
+                Ok(0) => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "request head")),
+                Ok(_) => {
+                    handle_target_connection(
+                        frontend,
+                        provider_port,
+                        requests,
+                        parser_mode,
+                        parser_resolutions,
+                        &first_application_byte,
+                    )
+                    .await
+                },
+                Err(error) => Err(error),
+            };
             if result.is_err() {
                 errors.lock().unwrap().push("target_connection_failed");
             }
@@ -896,11 +956,12 @@ async fn handle_target_connection<S>(
     requests: Arc<Mutex<Vec<TargetRequestFact>>>,
     parser_mode: Arc<AtomicU8>,
     parser_resolutions: Arc<AtomicUsize>,
+    initial_bytes: &[u8],
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let request = read_request(&mut stream, provider_port).await?;
+    let request = read_request(&mut stream, provider_port, initial_bytes).await?;
     let mode = ParserMode::from_atomic(parser_mode.load(Ordering::SeqCst));
     let (envelope_role, private_callback_sentinels) = if request.method == "POST" {
         classify_xml_envelope(&request.body)
@@ -942,11 +1003,15 @@ where
     write_response(&mut stream, content_type, body).await
 }
 
-async fn read_request<S>(stream: &mut S, target_port: u16) -> io::Result<FixtureRequest>
+async fn read_request<S>(
+    stream: &mut S,
+    target_port: u16,
+    initial_bytes: &[u8],
+) -> io::Result<FixtureRequest>
 where
     S: AsyncRead + Unpin,
 {
-    let mut bytes = Vec::new();
+    let mut bytes = initial_bytes.to_vec();
     let header_end = loop {
         if bytes.len() >= MAX_FIXTURE_REQUEST_BYTES {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "request bound"));
@@ -1341,6 +1406,7 @@ async fn run_actual_scan(
     fixture: &OwnedHttpsFixture,
     mode: ParserMode,
     label: &str,
+    active_tls_negotiation: bool,
 ) -> CompletedScan {
     fixture.select_parser_mode(mode);
     let policy_path = private_path(temporary, &format!("owned-xml-policy-{label}.toml"));
@@ -1368,6 +1434,15 @@ async fn run_actual_scan(
         .arg(&secret_path)
         .arg("--report-dir")
         .arg(&report_dir);
+    #[cfg(feature = "tls-negotiation-review")]
+    if active_tls_negotiation {
+        command.arg("--tls-negotiation-review");
+    }
+    #[cfg(not(feature = "tls-negotiation-review"))]
+    assert!(
+        !active_tls_negotiation,
+        "active TLS negotiation was requested without its compile feature"
+    );
     let scan = run_termivar(command, label).await;
     let policy_cleanup = fs::remove_file(&policy_path);
     let secret_cleanup = fs::remove_file(&secret_path);
@@ -1474,6 +1549,53 @@ fn assert_common_audit(audit: &Value) {
     assert_eq!(audit["impact_validation"], "not_performed");
 }
 
+#[cfg(feature = "tls-negotiation-review")]
+fn assert_tls_negotiation_audit(audit: &Value) {
+    assert_eq!(audit["schema"], "security.tls-negotiation-review-audit/v1");
+    assert_eq!(audit["policy"], "termivar.active-tls-negotiation-review/v1");
+    assert_eq!(audit["selected"], true);
+    assert_eq!(audit["coverage"]["terminal"], "completed");
+    assert_eq!(audit["coverage"]["attempted_connection_count"], 2);
+    assert_eq!(audit["coverage"]["completed_handshake_count"], 2);
+    assert!(audit["coverage"]["accounted_ingress_tls_bytes"]
+        .as_u64()
+        .is_some_and(|bytes| bytes > 0));
+    assert!(audit["coverage"]["observed_egress_tls_bytes"]
+        .as_u64()
+        .is_some_and(|bytes| bytes > 0));
+    let cells = audit["capability_observations"]
+        .as_array()
+        .expect("active TLS matrix rows");
+    assert_eq!(cells.len(), 5);
+    for (index, (cell_id, protocol)) in [
+        ("tls13_default_provider", "tls1.3"),
+        ("tls12_default_provider", "tls1.2"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(cells[index]["cell_id"], cell_id);
+        assert_eq!(cells[index]["offered_protocol"], protocol);
+        assert_eq!(cells[index]["dispatch_status"], "dispatched");
+        assert_eq!(cells[index]["outcome"], "negotiated");
+        assert_eq!(cells[index]["support"], "observed_supported");
+        assert_eq!(cells[index]["transport_validation"], "succeeded");
+        assert_eq!(cells[index]["negotiated_protocol"], protocol);
+        assert!(cells[index]["negotiated_cipher_suite"]
+            .as_str()
+            .is_some_and(|cipher| !cipher.is_empty()));
+    }
+    for cell in &cells[2..] {
+        assert_eq!(cell["dispatch_status"], "not_dispatched");
+        assert_eq!(cell["outcome"], "client_backend_unsupported");
+        assert_eq!(cell["support"], "not_tested_client_backend_unsupported");
+        assert_eq!(cell["transport_validation"], "not_applicable");
+        assert_eq!(cell["accounted_ingress_tls_bytes"], 0);
+        assert_eq!(cell["observed_egress_tls_bytes"], 0);
+    }
+    assert!(audit.get("target").is_none());
+}
+
 fn xml_items(assessment: &Value) -> Vec<&Value> {
     assessment["items"]
         .as_array()
@@ -1532,6 +1654,14 @@ async fn verify_and_self_compare(scan: &CompletedScan, label: &str) {
     assert_eq!(xml_comparison["status"], "compared");
     for facet in ["methodology", "coverage", "outcome"] {
         assert_eq!(xml_comparison[facet]["status"], "unchanged");
+    }
+    #[cfg(feature = "tls-negotiation-review")]
+    if scan.assessment.get("tls_negotiation_review").is_some() {
+        let tls_comparison = &comparison["tls_negotiation_review_comparison"];
+        assert_eq!(tls_comparison["status"], "compared");
+        for facet in ["methodology", "coverage", "capability_observations"] {
+            assert_eq!(tls_comparison[facet]["status"], "unchanged");
+        }
     }
     assert_eq!(
         bundle_bytes(&scan.report_dir, &scan.private_sentinels),
@@ -1626,6 +1756,8 @@ fn failed_fixture_diagnostic_is_bounded_and_does_not_reflect_values() {
             authorization_header_present: true,
             cookie_header_present: true,
         }])),
+        #[cfg(feature = "tls-negotiation-review")]
+        target_tls_only: Arc::new(Mutex::new(Vec::new())),
         parser_mode: Arc::new(AtomicU8::new(ParserMode::Safe as u8)),
         parser_resolutions: Arc::new(AtomicUsize::new(7)),
         target_connections: Arc::new(AtomicUsize::new(2)),
@@ -1645,7 +1777,7 @@ fn failed_fixture_diagnostic_is_bounded_and_does_not_reflect_values() {
     let summary = safe_fixture_failure_diagnostic(&fixture);
     assert_eq!(
         summary,
-        "fixture=bounded_counts, target_requests=1, target_get=0, target_post=0, target_other=1, exact_hosts=0, exact_xml_content_types=0, envelope_control=0, envelope_candidate=0, envelope_replay=0, envelope_invalid=1, parser_resolutions=7, target_connections=1/2, target_tls_rejections=3, provider_connections=4/5, provider_tls_rejections=6, provider_requests=0/0/0/0/0/0, sensitive_header_or_body_observations=1, fixture_error_count=2, fixture_error_classes=[\"target_connection_failed\", \"other\"], omitted_fixture_errors=0"
+        "fixture=bounded_counts, target_requests=1, target_tls_only=0, target_get=0, target_post=0, target_other=1, exact_hosts=0, exact_xml_content_types=0, envelope_control=0, envelope_candidate=0, envelope_replay=0, envelope_invalid=1, parser_resolutions=7, target_connections=1/2, target_tls_rejections=3, provider_connections=4/5, provider_tls_rejections=6, provider_requests=0/0/0/0/0/0, sensitive_header_or_body_observations=1, fixture_error_count=2, fixture_error_classes=[\"target_connection_failed\", \"other\"], omitted_fixture_errors=0"
     );
     assert!(!summary.contains("PRIVATE"));
 }
@@ -1843,7 +1975,7 @@ async fn owned_https_profile_runs_actual_cli_and_offline_bundle_commands() {
     let feature_inventory = capability_document["cli_package_features"]
         .as_array()
         .expect("feature inventory");
-    assert_eq!(feature_inventory.len(), 24);
+    assert_eq!(feature_inventory.len(), 25);
     let feature_names = feature_inventory
         .iter()
         .map(|row| row["name"].as_str().expect("feature name"))
@@ -1869,7 +2001,7 @@ async fn owned_https_profile_runs_actual_cli_and_offline_bundle_commands() {
         ));
 
     let fixture = start_fixture(ProviderCertificate::Correct).await;
-    let safe = run_actual_scan(temporary.path(), &fixture, ParserMode::Safe, "safe").await;
+    let safe = run_actual_scan(temporary.path(), &fixture, ParserMode::Safe, "safe", false).await;
     let safe_audit = &safe.assessment["xml_external_entity_review"];
     assert_common_audit(safe_audit);
     assert_eq!(safe_audit["outcome"], "no_callback");
@@ -1884,8 +2016,14 @@ async fn owned_https_profile_runs_actual_cli_and_offline_bundle_commands() {
     let private_after_safe = fixture.private_callback_sentinels();
     assert_eq!(private_after_safe.len(), 4);
 
-    let enabled =
-        run_actual_scan(temporary.path(), &fixture, ParserMode::External, "enabled").await;
+    let enabled = run_actual_scan(
+        temporary.path(),
+        &fixture,
+        ParserMode::External,
+        "enabled",
+        false,
+    )
+    .await;
     let enabled_audit = &enabled.assessment["xml_external_entity_review"];
     assert_common_audit(enabled_audit);
     assert_eq!(
@@ -2083,4 +2221,154 @@ async fn owned_https_profile_runs_actual_cli_and_offline_bundle_commands() {
     assert_eq!(xml_comparison["methodology"]["status"], "unchanged");
     assert_eq!(xml_comparison["coverage"]["status"], "changed");
     assert_eq!(xml_comparison["outcome"]["status"], "changed");
+}
+
+#[cfg(feature = "tls-negotiation-review")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "runs only in the pinned four-platform Runtime Smoke acceptance"]
+async fn tls_negotiation_review_runs_actual_cli_and_offline_bundle_commands() {
+    assert_eq!(
+        format!("{:x}", Sha256::digest(decode(ROOT_CERTIFICATE_DER_BASE64))),
+        "8a838ab89d539252df6bafc16eb489aebb42cbd350b941f3d708fecc7041d409"
+    );
+    let temporary = tempfile::tempdir().expect("create private fixture directory");
+
+    let mut capability_command = termivar();
+    capability_command.args(["capabilities", "--format", "json"]);
+    let capabilities = run_termivar(capability_command, "active TLS capabilities").await;
+    assert_success(&capabilities, "active TLS capabilities");
+    assert_output_has_no_private_sentinels(&capabilities, "active TLS capabilities");
+    let capability_document: Value =
+        serde_json::from_slice(&capabilities.stdout).expect("parse capabilities JSON");
+    let feature_inventory = capability_document["cli_package_features"]
+        .as_array()
+        .expect("feature inventory");
+    assert_eq!(feature_inventory.len(), 25);
+    let compiled = feature_inventory
+        .iter()
+        .filter(|row| row["build_state"] == "compiled")
+        .map(|row| row["name"].as_str().expect("feature name"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        compiled,
+        BTreeSet::from([
+            "tls-negotiation-review",
+            "xml-external-entity-owned-https-test-profile",
+            "xml-external-entity-review",
+        ])
+    );
+    assert_eq!(
+        capability_document["surfaces"]
+            .as_array()
+            .expect("surface inventory")
+            .iter()
+            .find(|surface| surface["key"] == "option.tls-negotiation-review")
+            .expect("active TLS surface")["build_state"],
+        "compiled"
+    );
+
+    let fixture = start_fixture(ProviderCertificate::Correct).await;
+    let safe = run_actual_scan(
+        temporary.path(),
+        &fixture,
+        ParserMode::Safe,
+        "tls-safe",
+        true,
+    )
+    .await;
+    assert_common_audit(&safe.assessment["xml_external_entity_review"]);
+    assert_tls_negotiation_audit(&safe.assessment["tls_negotiation_review"]);
+    let provider_after_safe = fixture.provider_requests();
+    assert_eq!(provider_after_safe, expected_provider_requests(0));
+
+    let enabled = run_actual_scan(
+        temporary.path(),
+        &fixture,
+        ParserMode::External,
+        "tls-enabled",
+        true,
+    )
+    .await;
+    assert_common_audit(&enabled.assessment["xml_external_entity_review"]);
+    assert_tls_negotiation_audit(&enabled.assessment["tls_negotiation_review"]);
+    let provider_after_enabled = fixture.provider_requests();
+    assert_eq!(
+        provider_request_delta(provider_after_enabled, provider_after_safe),
+        expected_provider_requests(2)
+    );
+
+    let snapshot = fixture.shutdown().await;
+    assert!(snapshot.fixture_errors.is_empty(), "{snapshot:?}");
+    assert_eq!(snapshot.target_requests.len(), 12, "{snapshot:?}");
+    assert_eq!(snapshot.target_tls_only.len(), 4, "{snapshot:?}");
+    assert_eq!(snapshot.target_connections, 16, "{snapshot:?}");
+    assert_eq!(snapshot.target_tls_rejections, 0, "{snapshot:?}");
+    assert_eq!(snapshot.parser_resolutions, 2, "{snapshot:?}");
+    assert_eq!(snapshot.provider_requests, provider_after_enabled);
+    assert!(snapshot.target_requests.iter().all(|request| {
+        !request.administrator_secret_present
+            && !request.authorization_header_present
+            && !request.cookie_header_present
+    }));
+    assert_eq!(
+        snapshot
+            .target_tls_only
+            .iter()
+            .map(|fact| fact.protocol.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            Some("TLSv1_3"),
+            Some("TLSv1_2"),
+            Some("TLSv1_3"),
+            Some("TLSv1_2"),
+        ]
+    );
+    assert!(snapshot.target_tls_only.iter().all(|fact| {
+        fact.sni.as_deref() == Some(TARGET_HOST)
+            && fact
+                .cipher_suite
+                .as_deref()
+                .is_some_and(|cipher| cipher.starts_with("TLS"))
+            && fact.alpn.is_none()
+            && fact.application_bytes == 0
+    }));
+
+    verify_and_self_compare(&safe, "tls-safe").await;
+    verify_and_self_compare(&enabled, "tls-enabled").await;
+
+    let mut controlled_command = termivar();
+    controlled_command
+        .args(["report", "compare", "--before"])
+        .arg(safe.report_dir.join(JSON_NAME))
+        .arg("--after")
+        .arg(enabled.report_dir.join(JSON_NAME))
+        .args(["--same-scope", "--format", "json"]);
+    let controlled = run_termivar(controlled_command, "active TLS controlled Compare").await;
+    assert_success(&controlled, "active TLS controlled Compare");
+    assert_output_has_no_private_sentinels(&controlled, "active TLS controlled Compare");
+    let mut controlled_sentinels = safe.private_sentinels.clone();
+    for sentinel in &enabled.private_sentinels {
+        if !controlled_sentinels.contains(sentinel) {
+            controlled_sentinels.push(sentinel.clone());
+        }
+    }
+    assert_output_has_no_dynamic_sentinels(
+        &controlled,
+        "active TLS controlled Compare",
+        &controlled_sentinels,
+    );
+    let comparison: Value = serde_json::from_slice(&controlled.stdout).unwrap();
+    assert_eq!(comparison["schema"], "termivar-report-comparison/v1");
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["schema"],
+        "termivar-tls-negotiation-review-comparison/v1"
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["status"],
+        "compared"
+    );
+    assert_eq!(
+        comparison["tls_negotiation_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
 }

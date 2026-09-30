@@ -452,6 +452,25 @@ fn scan_tls_observation_flags_conflict(
     }
 }
 
+/// Rejects active TLS negotiation outside its explicit fixed HTTPS matrix.
+/// This runs before output reservation or runtime construction.
+#[cfg(feature = "tls-negotiation-review")]
+fn scan_tls_negotiation_review_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+    target: &Url,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--tls-negotiation-review` requires `--profile web-review`")
+    } else if selected && !termivar_scanner::tls_negotiation_review_target_is_supported(target) {
+        Some(
+            "`--tls-negotiation-review` requires one credential-free DNS HTTPS target with a known port",
+        )
+    } else {
+        None
+    }
+}
+
 /// Rejects offline control-reference projection outside its explicit
 /// web-review contract. This runs before output reservation or runtime
 /// construction; the selected projection itself adds no network authority.
@@ -709,6 +728,12 @@ struct ScanArgs {
     #[cfg(feature = "tls-observation")]
     #[arg(long, requires = "profile")]
     tls_observation: bool,
+    /// Actively attempt the fixed TLS 1.3/TLS 1.2 handshake matrix against
+    /// the selected DNS HTTPS peer. No HTTP bytes or credentials are sent;
+    /// legacy protocol/cipher rows remain explicit client-backend unknowns.
+    #[cfg(feature = "tls-negotiation-review")]
+    #[arg(long, requires = "profile")]
+    tls_negotiation_review: bool,
     /// Project completed assessment items onto a bounded built-in catalogue of
     /// versioned control references. This adds no target or provider request
     /// and does not perform a compliance or legal assessment.
@@ -1451,6 +1476,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         secret_exposure_review,
         #[cfg(feature = "tls-observation")]
         tls_observation,
+        #[cfg(feature = "tls-negotiation-review")]
+        tls_negotiation_review,
         #[cfg(feature = "control-reference-mapping")]
         control_reference_mapping,
         #[cfg(feature = "recon-snapshot-import")]
@@ -1606,6 +1633,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     }
     #[cfg(feature = "tls-observation")]
     if let Some(message) = scan_tls_observation_flags_conflict(profile, tls_observation) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "tls-negotiation-review")]
+    if let Some(message) =
+        scan_tls_negotiation_review_flags_conflict(profile, tls_negotiation_review, &target.url)
+    {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -2247,6 +2283,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 secret_exposure_review,
                 #[cfg(feature = "tls-observation")]
                 tls_observation,
+                #[cfg(feature = "tls-negotiation-review")]
+                tls_negotiation_review,
                 #[cfg(feature = "control-reference-mapping")]
                 control_reference_mapping,
                 #[cfg(feature = "recon-snapshot-import")]
@@ -3257,6 +3295,113 @@ mod tests {
             "--profile",
             "web-review",
             "--tls-observation",
+            "https://example.test/",
+        ])
+        .is_err());
+    }
+
+    #[cfg(feature = "tls-negotiation-review")]
+    #[test]
+    fn tls_negotiation_review_is_explicit_https_web_review_only() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--tls-negotiation-review"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--tls-negotiation-review",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--tls-negotiation-review",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(
+            scan_tls_negotiation_review_flags_conflict(
+                baseline.profile,
+                baseline.tls_negotiation_review,
+                &baseline.target.url,
+            ),
+            Some("`--tls-negotiation-review` requires `--profile web-review`")
+        );
+
+        for target in [
+            "http://example.test/",
+            "https://127.0.0.1/",
+            "https://user@example.test/",
+            "https://-bad.example/",
+            "https://bad-.example/",
+        ] {
+            let parsed = Cli::try_parse_from([
+                "termivar",
+                "scan",
+                "--profile",
+                "web-review",
+                "--tls-negotiation-review",
+                target,
+            ])
+            .unwrap();
+            let parsed = parsed_scan_args(&parsed);
+            assert!(scan_tls_negotiation_review_flags_conflict(
+                parsed.profile,
+                parsed.tls_negotiation_review,
+                &parsed.target.url,
+            )
+            .is_some());
+        }
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--tls-negotiation-review",
+            "https://example.test/",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert_eq!(
+            scan_tls_negotiation_review_flags_conflict(
+                review.profile,
+                review.tls_negotiation_review,
+                &review.target.url,
+            ),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "tls-negotiation-review"))]
+    #[test]
+    fn default_cli_does_not_expose_tls_negotiation_review() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--tls-negotiation-review"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--tls-negotiation-review",
             "https://example.test/",
         ])
         .is_err());

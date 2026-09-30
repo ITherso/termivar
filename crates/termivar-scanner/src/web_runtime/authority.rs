@@ -24,6 +24,10 @@ use super::websocket_runtime::{WebSocketReviewRuntime, WebSocketReviewRuntimeMin
 #[cfg(feature = "websocket-review")]
 use crate::websocket_review::WebSocketReviewPolicy;
 
+#[cfg(feature = "tls-negotiation-review")]
+use super::tls_negotiation_review::{
+    TlsNegotiationOwnedTransportProfile, TlsNegotiationReviewMintError, TlsNegotiationReviewRuntime,
+};
 #[cfg(feature = "tls-observation")]
 use super::{TlsObservationCollector, WebAssessmentTlsObservationAudit};
 
@@ -92,6 +96,10 @@ pub(crate) struct SharedWebRuntimeAuthority {
     timing: Arc<OnceLock<SharedWebRuntimeTiming>>,
     #[cfg(feature = "tls-observation")]
     tls_observation: Option<TlsObservationCollector>,
+    #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+    owned_xml_https_test_profile: Option<OwnedXmlHttpsTestTransportProfile>,
+    #[cfg(feature = "tls-negotiation-review")]
+    tls_negotiation_review_minted: Arc<std::sync::Mutex<bool>>,
     #[cfg(feature = "oast-native-provider")]
     native_oast_provider_minted: Arc<std::sync::Mutex<bool>>,
     #[cfg(feature = "websocket-review")]
@@ -223,6 +231,10 @@ impl SharedWebRuntimeAuthority {
             cancellation,
             timing: Arc::new(OnceLock::new()),
             tls_observation: Some(tls_observation),
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            owned_xml_https_test_profile: None,
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_negotiation_review_minted: Arc::new(std::sync::Mutex::new(false)),
             #[cfg(feature = "oast-native-provider")]
             native_oast_provider_minted: Arc::new(std::sync::Mutex::new(false)),
             #[cfg(feature = "websocket-review")]
@@ -311,6 +323,10 @@ impl SharedWebRuntimeAuthority {
             timing: Arc::new(OnceLock::new()),
             #[cfg(feature = "tls-observation")]
             tls_observation,
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            owned_xml_https_test_profile,
+            #[cfg(feature = "tls-negotiation-review")]
+            tls_negotiation_review_minted: Arc::new(std::sync::Mutex::new(false)),
             #[cfg(feature = "oast-native-provider")]
             native_oast_provider_minted: Arc::new(std::sync::Mutex::new(false)),
             #[cfg(feature = "websocket-review")]
@@ -352,6 +368,44 @@ impl SharedWebRuntimeAuthority {
         self.tls_observation
             .as_ref()
             .map(TlsObservationCollector::audit)
+    }
+
+    /// Mints the sole direct TLS-negotiation child for this assessment.
+    ///
+    /// Host, SNI, port, trust, accounting, cancellation, and deadline are all
+    /// derived from the already narrowed parent authority. No caller-selected
+    /// connection input enters this seam.
+    #[cfg(feature = "tls-negotiation-review")]
+    pub(super) fn mint_tls_negotiation_review(
+        &self,
+    ) -> Result<TlsNegotiationReviewRuntime, TlsNegotiationReviewMintError> {
+        self.authorize_target(&self.selected_target)
+            .map_err(|_| TlsNegotiationReviewMintError::EndpointOutsideAuthority)?;
+        let mut minted = self
+            .tls_negotiation_review_minted
+            .lock()
+            .map_err(|_| TlsNegotiationReviewMintError::InternalInvariant)?;
+        if *minted {
+            return Err(TlsNegotiationReviewMintError::AuthorityAlreadyMinted);
+        }
+        #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+        let owned_profile = self.owned_xml_https_test_profile.map(|profile| {
+            TlsNegotiationOwnedTransportProfile::new(
+                profile.target_address(),
+                profile.root_certificate_der(),
+            )
+        });
+        #[cfg(not(feature = "xml-external-entity-owned-https-test-profile"))]
+        let owned_profile = None;
+        let runtime = TlsNegotiationReviewRuntime::new(
+            &self.selected_target,
+            self.request_accounting.clone(),
+            self.cancellation.clone(),
+            self.start().deadline(),
+            owned_profile,
+        )?;
+        *minted = true;
+        Ok(runtime)
     }
 
     /// Starts the shared monotonic clock once and returns the same timing on replay.

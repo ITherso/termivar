@@ -4,7 +4,7 @@ use super::super::{
     ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit,
     ImportedReconCertSpotterAudit, ImportedReconSnapshotAudit, ImportedSecretExposureAudit,
     ImportedSuppliedSessionAudit, ImportedTemplateEvaluationReviewAudit,
-    ImportedTlsObservationAudit, ImportedWebSocketReviewAudit,
+    ImportedTlsNegotiationReviewAudit, ImportedTlsObservationAudit, ImportedWebSocketReviewAudit,
     ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit,
     ImportedXmlExternalEntityReviewAudit, SuppliedSessionResourceBinding, WordPressAdvisoryKey,
     WordPressAssetFingerprintComponentKey, WordPressAssetFingerprintResourceKey,
@@ -46,6 +46,45 @@ const TLS_OBSERVATION_REVOCATION: &str = "not_checked";
 const TLS_OBSERVATION_VALIDATION_SCOPE: &str = "successful_https_response_connection/v1";
 const TLS_OBSERVATION_SOURCE_SCOPE: &str = "assessment_exact_origin_existing_connections/v1";
 const TLS_OBSERVATION_CLOCK_ASSURANCE: &str = "local_system_clock_not_independently_verified";
+const TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA: &str = "security.tls-negotiation-review-audit/v1";
+const TLS_NEGOTIATION_REVIEW_POLICY: &str = "termivar.active-tls-negotiation-review/v1";
+const TLS_NEGOTIATION_REVIEW_CLAIM_LIMITS: [&str; 6] = [
+    "finite_matrix_not_complete_server_capability_enumeration",
+    "failed_handshake_does_not_establish_server_non_support",
+    "configured_trust_validation_not_source_authentication",
+    "revocation_and_transparency_retrieval_not_performed",
+    "application_data_and_credentials_not_sent",
+    "vulnerability_exploitability_impact_and_remediation_not_established",
+];
+const TLS_NEGOTIATION_CELL_IDS: [&str; 5] = [
+    "tls13_default_provider",
+    "tls12_default_provider",
+    "tls11_legacy_protocol",
+    "tls10_legacy_protocol",
+    "legacy_cipher_suites",
+];
+const TLS_NEGOTIATION_OFFERED_PROTOCOLS: [&str; 5] = [
+    "tls1.3",
+    "tls1.2",
+    "tls1.1",
+    "tls1.0",
+    "legacy_cipher_suites",
+];
+const TLS13_CIPHER_SUITES: [&str; 3] = [
+    "tls13_aes_256_gcm_sha384",
+    "tls13_aes_128_gcm_sha256",
+    "tls13_chacha20_poly1305_sha256",
+];
+const TLS12_CIPHER_SUITES: [&str; 6] = [
+    "tls12_ecdhe_ecdsa_aes_256_gcm_sha384",
+    "tls12_ecdhe_ecdsa_aes_128_gcm_sha256",
+    "tls12_ecdhe_ecdsa_chacha20_poly1305_sha256",
+    "tls12_ecdhe_rsa_aes_256_gcm_sha384",
+    "tls12_ecdhe_rsa_aes_128_gcm_sha256",
+    "tls12_ecdhe_rsa_chacha20_poly1305_sha256",
+];
+const MAX_TLS_NEGOTIATION_INGRESS_BYTES: u64 = 256 * 1024;
+const MAX_TLS_NEGOTIATION_EGRESS_BYTES: u64 = 128 * 1024;
 const WEBSOCKET_REVIEW_AUDIT_SCHEMA: &str = "security.websocket-review-audit/v1";
 const WEBSOCKET_SUPPLIED_SESSION_AUDIT_SCHEMA: &str = "security.websocket-review-audit/v2";
 const WEBSOCKET_REVIEW_CAPABILITY_ID: &str = "termivar.websocket-review/v1";
@@ -2526,6 +2565,382 @@ pub(super) fn validate_tls_observation(
         methodology,
         coverage,
         certificate_observations: Value::Array(certificate_observations),
+    })
+}
+
+pub(super) fn validate_tls_negotiation_review(
+    value: &Value,
+) -> Result<ImportedTlsNegotiationReviewAudit, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "methodology",
+            "coverage",
+            "capability_observations",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA)?;
+    check(string(fields, "policy")? == TLS_NEGOTIATION_REVIEW_POLICY)?;
+    check(boolean(fields, "selected")?)?;
+
+    let methodology = object(required(fields, "methodology")?)?;
+    keys(
+        methodology,
+        &[
+            "target_binding",
+            "address_selection",
+            "execution_order",
+            "maximum_in_flight_connections",
+            "network_capable_cell_count",
+            "matrix_cell_count",
+            "retries",
+            "redirects",
+            "proxy",
+            "application_data",
+            "credentials",
+            "client_certificate",
+            "alpn",
+            "session_resumption",
+            "certificate_validation",
+        ],
+        &[],
+    )?;
+    check(
+        string(methodology, "target_binding")? == "selected_https_target_exact_host_sni_port"
+            && string(methodology, "address_selection")?
+                == "single_deterministic_address_under_selected_authority"
+            && string(methodology, "execution_order")?
+                == "tls13_then_tls12_then_backend_unsupported_rows"
+            && number(methodology, "maximum_in_flight_connections", 1)? == 1
+            && number(methodology, "network_capable_cell_count", 2)? == 2
+            && number(methodology, "matrix_cell_count", 5)? == 5
+            && string(methodology, "retries")? == "none"
+            && string(methodology, "redirects")? == "none"
+            && string(methodology, "proxy")? == "not_used"
+            && string(methodology, "application_data")? == "not_sent"
+            && string(methodology, "credentials")? == "not_sent"
+            && string(methodology, "client_certificate")? == "not_sent"
+            && string(methodology, "alpn")? == "not_offered"
+            && string(methodology, "session_resumption")? == "disabled"
+            && string(methodology, "certificate_validation")? == "standard_configured_trust",
+    )?;
+
+    let coverage = object(required(fields, "coverage")?)?;
+    keys(
+        coverage,
+        &[
+            "terminal",
+            "connection_attempt_limit",
+            "connection_in_flight_limit",
+            "per_connection_ingress_byte_limit",
+            "total_ingress_byte_limit",
+            "per_connection_egress_byte_limit",
+            "total_egress_byte_limit",
+            "attempted_connection_count",
+            "completed_handshake_count",
+            "accounted_ingress_tls_bytes",
+            "observed_egress_tls_bytes",
+            "client_backend_unsupported_cell_count",
+        ],
+        &[],
+    )?;
+    let terminal = token(
+        coverage,
+        "terminal",
+        &[
+            "completed",
+            "parent_authority_unavailable",
+            "budget_exhausted",
+            "cancelled",
+            "deadline_reached",
+        ],
+    )?;
+    check(
+        number(coverage, "connection_attempt_limit", 2)? == 2
+            && number(coverage, "connection_in_flight_limit", 1)? == 1
+            && number(coverage, "per_connection_ingress_byte_limit", 128 * 1024)? == 128 * 1024
+            && number(
+                coverage,
+                "total_ingress_byte_limit",
+                MAX_TLS_NEGOTIATION_INGRESS_BYTES,
+            )? == MAX_TLS_NEGOTIATION_INGRESS_BYTES
+            && number(coverage, "per_connection_egress_byte_limit", 64 * 1024)? == 64 * 1024
+            && number(
+                coverage,
+                "total_egress_byte_limit",
+                MAX_TLS_NEGOTIATION_EGRESS_BYTES,
+            )? == MAX_TLS_NEGOTIATION_EGRESS_BYTES
+            && number(coverage, "client_backend_unsupported_cell_count", 3)? == 3,
+    )?;
+    let declared_attempted = number(coverage, "attempted_connection_count", 2)?;
+    let declared_completed = number(coverage, "completed_handshake_count", 2)?;
+    let declared_ingress = number(
+        coverage,
+        "accounted_ingress_tls_bytes",
+        MAX_TLS_NEGOTIATION_INGRESS_BYTES,
+    )?;
+    let declared_egress = number(
+        coverage,
+        "observed_egress_tls_bytes",
+        MAX_TLS_NEGOTIATION_EGRESS_BYTES,
+    )?;
+
+    let claim_limits = array(fields, "claim_limits")?;
+    check(claim_limits.len() == TLS_NEGOTIATION_REVIEW_CLAIM_LIMITS.len())?;
+    check(
+        claim_limits
+            .iter()
+            .zip(TLS_NEGOTIATION_REVIEW_CLAIM_LIMITS)
+            .all(|(actual, expected)| actual.as_str() == Some(expected)),
+    )?;
+
+    let rows = array(fields, "capability_observations")?;
+    check(rows.len() == TLS_NEGOTIATION_CELL_IDS.len())?;
+    let mut attempted = 0_u64;
+    let mut completed = 0_u64;
+    let mut ingress = 0_u64;
+    let mut egress = 0_u64;
+    let mut coverage_rows = Vec::with_capacity(rows.len());
+    let mut negotiated_observations = Vec::new();
+    let mut first_network_dispatched = false;
+    let mut terminal_stop_seen = false;
+    let mut terminal_sequence_valid = true;
+    for (index, value) in rows.iter().enumerate() {
+        let row = object(value)?;
+        keys(
+            row,
+            &[
+                "cell_id",
+                "offered_protocol",
+                "client_backend",
+                "dispatch_status",
+                "outcome",
+                "support",
+                "transport_validation",
+                "negotiated_protocol",
+                "negotiated_cipher_suite",
+                "accounted_ingress_tls_bytes",
+                "observed_egress_tls_bytes",
+            ],
+            &[],
+        )?;
+        check(string(row, "cell_id")? == TLS_NEGOTIATION_CELL_IDS[index])?;
+        check(string(row, "offered_protocol")? == TLS_NEGOTIATION_OFFERED_PROTOCOLS[index])?;
+        let backend = token(row, "client_backend", &["rustls-ring"])?;
+        let dispatch = token(row, "dispatch_status", &["not_dispatched", "dispatched"])?;
+        let outcome = token(
+            row,
+            "outcome",
+            &[
+                "negotiated",
+                "peer_alert_received",
+                "certificate_validation_failed",
+                "handshake_failed",
+                "transport_failed",
+                "client_backend_unsupported",
+                "parent_authority_unavailable",
+                "budget_exhausted",
+                "cancelled",
+                "deadline_reached",
+                "not_reached",
+            ],
+        )?;
+        let support = token(
+            row,
+            "support",
+            &[
+                "observed_supported",
+                "not_established",
+                "not_tested_client_backend_unsupported",
+            ],
+        )?;
+        let transport_validation = token(
+            row,
+            "transport_validation",
+            &["succeeded", "not_established", "not_applicable"],
+        )?;
+        let negotiated_protocol =
+            optional_token(row, "negotiated_protocol", &["tls1.3", "tls1.2"])?;
+        let negotiated_cipher_suite = optional_token(
+            row,
+            "negotiated_cipher_suite",
+            &[
+                "tls13_aes_256_gcm_sha384",
+                "tls13_aes_128_gcm_sha256",
+                "tls13_chacha20_poly1305_sha256",
+                "tls12_ecdhe_ecdsa_aes_256_gcm_sha384",
+                "tls12_ecdhe_ecdsa_aes_128_gcm_sha256",
+                "tls12_ecdhe_ecdsa_chacha20_poly1305_sha256",
+                "tls12_ecdhe_rsa_aes_256_gcm_sha384",
+                "tls12_ecdhe_rsa_aes_128_gcm_sha256",
+                "tls12_ecdhe_rsa_chacha20_poly1305_sha256",
+            ],
+        )?;
+        let row_ingress = number(row, "accounted_ingress_tls_bytes", 128 * 1024)?;
+        let row_egress = number(row, "observed_egress_tls_bytes", 64 * 1024)?;
+        ingress = ingress
+            .checked_add(row_ingress)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        egress = egress
+            .checked_add(row_egress)
+            .ok_or(ComparisonError::InvalidDocument)?;
+
+        if index >= 2 {
+            check(
+                backend == "rustls-ring"
+                    && dispatch == "not_dispatched"
+                    && outcome == "client_backend_unsupported"
+                    && support == "not_tested_client_backend_unsupported"
+                    && transport_validation == "not_applicable"
+                    && negotiated_protocol.is_none()
+                    && negotiated_cipher_suite.is_none()
+                    && row_ingress == 0
+                    && row_egress == 0,
+            )?;
+        } else {
+            check(backend == "rustls-ring")?;
+            if index == 1 {
+                check(first_network_dispatched || dispatch == "not_dispatched")?;
+            }
+            if dispatch == "dispatched" {
+                attempted += 1;
+                if index == 0 {
+                    first_network_dispatched = true;
+                }
+                check(!matches!(
+                    outcome,
+                    "client_backend_unsupported" | "parent_authority_unavailable" | "not_reached"
+                ))?;
+            } else {
+                check(row_ingress == 0 && row_egress == 0)?;
+                check(matches!(
+                    outcome,
+                    "parent_authority_unavailable"
+                        | "budget_exhausted"
+                        | "cancelled"
+                        | "deadline_reached"
+                        | "not_reached"
+                ))?;
+            }
+            let stop_family = matches!(
+                outcome,
+                "parent_authority_unavailable"
+                    | "budget_exhausted"
+                    | "cancelled"
+                    | "deadline_reached"
+            );
+            match terminal {
+                "completed" => terminal_sequence_valid &= !stop_family,
+                "parent_authority_unavailable" => {},
+                "budget_exhausted" | "cancelled" | "deadline_reached" => {
+                    if terminal_stop_seen {
+                        terminal_sequence_valid &=
+                            dispatch == "not_dispatched" && outcome == "not_reached";
+                    } else if stop_family {
+                        let matches_terminal = outcome == terminal
+                            || (terminal == "deadline_reached" && outcome == "budget_exhausted");
+                        terminal_sequence_valid &= matches_terminal;
+                        terminal_stop_seen = matches_terminal;
+                    } else if outcome == "not_reached" {
+                        terminal_sequence_valid = false;
+                    }
+                },
+                _ => terminal_sequence_valid = false,
+            }
+            if outcome == "negotiated" {
+                completed += 1;
+                check(
+                    dispatch == "dispatched"
+                        && support == "observed_supported"
+                        && transport_validation == "succeeded"
+                        && row_ingress > 0
+                        && row_egress > 0,
+                )?;
+                let expected_protocol = TLS_NEGOTIATION_OFFERED_PROTOCOLS[index];
+                check(negotiated_protocol == Some(expected_protocol))?;
+                check(match index {
+                    0 => negotiated_cipher_suite
+                        .is_some_and(|value| TLS13_CIPHER_SUITES.contains(&value)),
+                    1 => negotiated_cipher_suite
+                        .is_some_and(|value| TLS12_CIPHER_SUITES.contains(&value)),
+                    _ => false,
+                })?;
+                negotiated_observations.push(selected_object(
+                    row,
+                    &["cell_id", "negotiated_protocol", "negotiated_cipher_suite"],
+                    &[],
+                )?);
+            } else {
+                check(
+                    support == "not_established"
+                        && transport_validation == "not_established"
+                        && negotiated_protocol.is_none()
+                        && negotiated_cipher_suite.is_none(),
+                )?;
+            }
+        }
+        coverage_rows.push(selected_object(
+            row,
+            &[
+                "cell_id",
+                "dispatch_status",
+                "outcome",
+                "support",
+                "transport_validation",
+                "accounted_ingress_tls_bytes",
+                "observed_egress_tls_bytes",
+            ],
+            &[],
+        )?);
+    }
+    check(
+        attempted == declared_attempted
+            && completed == declared_completed
+            && ingress == declared_ingress
+            && egress == declared_egress
+            && completed <= attempted,
+    )?;
+    check(terminal == "completed" && terminal_sequence_valid && attempted == 2)?;
+
+    let methodology_projection = selected_object(
+        fields,
+        &[
+            "schema",
+            "policy",
+            "selected",
+            "methodology",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    let coverage_projection = selected_object(
+        coverage,
+        &[
+            "terminal",
+            "connection_attempt_limit",
+            "connection_in_flight_limit",
+            "per_connection_ingress_byte_limit",
+            "total_ingress_byte_limit",
+            "per_connection_egress_byte_limit",
+            "total_egress_byte_limit",
+            "attempted_connection_count",
+            "completed_handshake_count",
+            "accounted_ingress_tls_bytes",
+            "observed_egress_tls_bytes",
+            "client_backend_unsupported_cell_count",
+        ],
+        &[("cells", Some(&Value::Array(coverage_rows)))],
+    )?;
+    Ok(ImportedTlsNegotiationReviewAudit {
+        methodology: methodology_projection,
+        coverage: coverage_projection,
+        capability_observations: Value::Array(negotiated_observations),
     })
 }
 

@@ -5,9 +5,9 @@ use super::{
     ComparisonDocument, ComparisonError, ComparisonItem, ControlReferenceMappingComparison,
     ItemProjection, JwtPolicyReviewComparison, ReconCertSpotterComparison,
     ReconSnapshotImportComparison, SecretExposureComparison, SourceMetadata,
-    SuppliedSessionComparison, TemplateEvaluationReviewComparison, TlsObservationComparison,
-    WebSocketReviewComparison, WordPressEntityChanges, WordPressFacetComparison,
-    WordPressReviewComparison, XmlExternalEntityReviewComparison,
+    SuppliedSessionComparison, TemplateEvaluationReviewComparison, TlsNegotiationReviewComparison,
+    TlsObservationComparison, WebSocketReviewComparison, WordPressEntityChanges,
+    WordPressFacetComparison, WordPressReviewComparison, XmlExternalEntityReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -43,6 +43,9 @@ pub(super) fn render(
     }
     if let Some(comparison) = &document.tls_observation_comparison {
         tls_observation(&mut output, comparison)?;
+    }
+    if let Some(comparison) = &document.tls_negotiation_review_comparison {
+        tls_negotiation_review(&mut output, comparison)?;
     }
     if let Some(comparison) = &document.websocket_review_comparison {
         websocket_review(&mut output, comparison)?;
@@ -238,6 +241,53 @@ fn tls_observation(
         wordpress_facet(output, label, facet)?;
     }
     output.push_str("<details><summary>TLS observation interpretation limits</summary><ul>")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn tls_negotiation_review(
+    output: &mut RenderBuffer,
+    comparison: &TlsNegotiationReviewComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"tls-negotiation-review-differences\"><h2 id=\"tls-negotiation-review-differences\">Active TLS negotiation review differences</h2><p class=\"muted\">Validated finite TLS offer-matrix projections are compared separately from target items. This display does not enumerate every server protocol or cipher suite, authenticate a source, or establish vulnerability or remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Coverage", comparison.coverage.status.as_str()),
+        (
+            "Capability observations",
+            comparison.capability_observations.status.as_str(),
+        ),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div><p><strong>Comparison schema:</strong> <span class=\"hash\">")?;
+    write_html_text(output, comparison.schema)?;
+    output.push_str("</span></p>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str("</span>. Missing or reduced matrix coverage is not protocol rejection or remediation.</p>")?;
+    }
+    for (label, facet) in [
+        ("TLS negotiation methodology", &comparison.methodology),
+        ("TLS negotiation coverage", &comparison.coverage),
+        (
+            "TLS negotiation capability observations",
+            &comparison.capability_observations,
+        ),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str("<details><summary>TLS negotiation interpretation limits</summary><ul>")?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;
         write_html_text(output, limit)?;

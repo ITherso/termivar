@@ -98,6 +98,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "recon_snapshot",
     "rest_review",
     "secret_exposure_review",
+    "tls_negotiation_review",
     "tls_observation",
     "websocket_review_policy",
     "websocket_supplied_session",
