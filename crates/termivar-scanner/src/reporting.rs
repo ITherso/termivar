@@ -22583,7 +22583,9 @@ mod tests {
             Err(ReportError::Serialization)
         );
 
-        let historical = observation_assessment_document("ordinary-observation");
+        let mut historical = observation_assessment_document("ordinary-observation");
+        historical.items[0].fingerprint =
+            "sha256:5555555555555555555555555555555555555555555555555555555555555555";
         let historical_json =
             render_assessment_with_limit(&historical, ReportFormat::Json, usize::MAX).unwrap();
         let historical_value: serde_json::Value = serde_json::from_str(&historical_json).unwrap();
