@@ -1182,7 +1182,8 @@ impl StandardWebDecisionRuntimeBuilder {
         let max_action_cycles = max_action_cycles.saturating_add(
             u32::from(
                 self.native_web_review
-                    .template_evaluation_query_parameter
+                    .as_ref()
+                    .and_then(|review| review.template_evaluation_query_parameter.as_ref())
                     .is_some(),
             ) * u32::from(crate::template_evaluation_review::TEMPLATE_EVALUATION_SELECTED_CASES),
         );
