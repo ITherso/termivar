@@ -20461,7 +20461,14 @@ mod tests {
     #[cfg(all(feature = "scanning", feature = "tls-negotiation-review"))]
     #[test]
     fn tls_negotiation_review_audit_is_rendered_honestly_in_every_format() {
-        let mut document = observation_assessment_document("unrelated.observation@1");
+        // This test also sends the rendered document through the strict saved-
+        // report reader. The generic renderer fixture reuses this literal for
+        // every item string, including `fingerprint`, so use an independently
+        // valid digest rather than a display-only capability label.
+        let mut document = observation_assessment_document(concat!(
+            "sha256:",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
         #[cfg(feature = "tls-observation")]
         {
             document.tls_observation = Some(tls_observation_audit_document());
