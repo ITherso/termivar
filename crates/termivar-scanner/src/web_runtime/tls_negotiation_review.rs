@@ -1207,6 +1207,97 @@ impl AsyncWrite for CountedTlsIo<'_> {
 mod tests {
     use super::*;
 
+    struct OwnedTlsMaterial {
+        root_der: Vec<u8>,
+        leaf_der: Vec<u8>,
+        key_der: Vec<u8>,
+    }
+
+    struct OwnedTlsAccept {
+        protocol: rustls::ProtocolVersion,
+        alpn_selected: bool,
+        application_bytes: usize,
+    }
+
+    fn owned_tls_material(dns_name: &str) -> OwnedTlsMaterial {
+        use rcgen::{
+            date_time_ymd, BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose,
+            IsCa, KeyPair, KeyUsagePurpose,
+        };
+
+        let mut root_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        root_params
+            .distinguished_name
+            .push(DnType::CommonName, "Termivar active TLS test root");
+        root_params.not_before = date_time_ymd(2020, 1, 1);
+        root_params.not_after = date_time_ymd(2100, 1, 1);
+        root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        root_params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::DigitalSignature,
+        ];
+        let root_key = KeyPair::generate().unwrap();
+        let root = root_params.self_signed(&root_key).unwrap();
+
+        let mut leaf_params = CertificateParams::new(vec![dns_name.to_owned()]).unwrap();
+        leaf_params
+            .distinguished_name
+            .push(DnType::CommonName, dns_name);
+        leaf_params.not_before = date_time_ymd(2020, 1, 1);
+        leaf_params.not_after = date_time_ymd(2100, 1, 1);
+        leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let leaf_key = KeyPair::generate().unwrap();
+        let leaf = leaf_params.signed_by(&leaf_key, &root, &root_key).unwrap();
+
+        OwnedTlsMaterial {
+            root_der: root.der().to_vec(),
+            leaf_der: leaf.der().to_vec(),
+            key_der: leaf_key.serialize_der(),
+        }
+    }
+
+    async fn owned_tls_server(
+        material: &OwnedTlsMaterial,
+        connection_count: usize,
+    ) -> (SocketAddr, tokio::task::JoinHandle<Vec<OwnedTlsAccept>>) {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio::io::AsyncReadExt;
+        use tokio_rustls::{rustls::ServerConfig, TlsAcceptor};
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let certificates = vec![CertificateDer::from(material.leaf_der.clone())];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(material.key_der.clone()));
+        let server = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certificates, key)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(server));
+        let task = tokio::spawn(async move {
+            let mut accepted = Vec::with_capacity(connection_count);
+            for _ in 0..connection_count {
+                let (stream, peer) = listener.accept().await.unwrap();
+                assert!(peer.ip().is_loopback());
+                let mut stream = acceptor.accept(stream).await.unwrap();
+                let connection = stream.get_ref().1;
+                let protocol = connection.protocol_version().unwrap();
+                let alpn_selected = connection.alpn_protocol().is_some();
+                let mut application = [0_u8; 1];
+                let application_bytes = stream.read(&mut application).await.unwrap();
+                accepted.push(OwnedTlsAccept {
+                    protocol,
+                    alpn_selected,
+                    application_bytes,
+                });
+            }
+            accepted
+        });
+        (address, task)
+    }
+
     #[test]
     fn selected_empty_matrix_has_fixed_order_and_zero_network_legacy_rows() {
         let audit = WebAssessmentTlsNegotiationReviewAudit::empty();
@@ -1350,6 +1441,182 @@ mod tests {
             WebAssessmentTlsNegotiationReviewCell::pending(CellId::Tls12DefaultProvider);
         assert!(audit.is_valid());
         assert!(!audit.network_matrix_complete());
+    }
+
+    #[tokio::test]
+    async fn owned_tls_matrix_negotiates_two_versions_without_application_data() {
+        let dns_name = "active-tls.termivar.test";
+        let material = owned_tls_material(dns_name);
+        let (address, server) = owned_tls_server(&material, NETWORK_CELL_COUNT).await;
+        let accounting = RequestAccountingBroker::new(
+            crate::RuntimeBudget::default()
+                .with_max_total_requests(NETWORK_CELL_COUNT as u32)
+                .with_max_active_verifications(NETWORK_CELL_COUNT as u16),
+        );
+        let target = Url::parse(&format!("https://{dns_name}:{}/review", address.port())).unwrap();
+        let runtime = TlsNegotiationReviewRuntime::new(
+            &target,
+            accounting.clone(),
+            CancellationToken::new(),
+            None,
+            Some(TlsNegotiationOwnedTransportProfile::new(
+                address,
+                material.root_der,
+            )),
+        )
+        .unwrap();
+
+        let audit = runtime.execute().await;
+        let accepted = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("owned TLS server completed")
+            .unwrap();
+
+        assert!(audit.is_valid());
+        assert!(audit.network_matrix_complete());
+        assert_eq!(audit.terminal(), "complete");
+        assert_eq!(audit.attempted_connection_count(), 2);
+        assert_eq!(audit.completed_handshake_count(), 2);
+        assert!(audit.accounted_ingress_tls_bytes() > 0);
+        assert!(audit.observed_egress_tls_bytes() > 0);
+        assert_eq!(
+            audit
+                .cells()
+                .iter()
+                .take(NETWORK_CELL_COUNT)
+                .map(|cell| (cell.outcome(), cell.negotiated_protocol()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("negotiated", Some("tls1.3")),
+                ("negotiated", Some("tls1.2"))
+            ]
+        );
+        assert_eq!(
+            accepted
+                .iter()
+                .map(|fact| fact.protocol)
+                .collect::<Vec<_>>(),
+            vec![
+                rustls::ProtocolVersion::TLSv1_3,
+                rustls::ProtocolVersion::TLSv1_2
+            ]
+        );
+        assert!(accepted
+            .iter()
+            .all(|fact| !fact.alpn_selected && fact.application_bytes == 0));
+
+        let transport = accounting.dispatch_audit();
+        assert_eq!(transport.receipts().len(), NETWORK_CELL_COUNT);
+        assert_eq!(transport.omitted_receipt_count(), 0);
+        assert!(transport.receipts().iter().all(|receipt| {
+            receipt.stage() == DecisionExecutionStage::Active
+                && receipt.request_body_bytes() == 0
+                && receipt.response_bytes() > 0
+                && receipt.outcome() == TransportDispatchOutcome::Completed
+        }));
+    }
+
+    #[tokio::test]
+    async fn cancellation_and_parent_budget_stop_before_any_connection() {
+        let dns_name = "active-tls.termivar.test";
+        let material = owned_tls_material(dns_name);
+        let fixed_address = SocketAddr::from(([127, 0, 0, 1], 9));
+
+        let cancelled_accounting = RequestAccountingBroker::new(crate::RuntimeBudget::default());
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let cancelled = TlsNegotiationReviewRuntime::new(
+            &Url::parse(&format!("https://{dns_name}/")).unwrap(),
+            cancelled_accounting.clone(),
+            cancellation,
+            None,
+            Some(TlsNegotiationOwnedTransportProfile::new(
+                fixed_address,
+                material.root_der.clone(),
+            )),
+        )
+        .unwrap()
+        .execute()
+        .await;
+        assert!(cancelled.is_valid());
+        assert_eq!(cancelled.terminal(), "cancelled");
+        assert_eq!(cancelled.attempted_connection_count(), 0);
+        assert!(cancelled_accounting.dispatch_audit().receipts().is_empty());
+
+        let exhausted_accounting = RequestAccountingBroker::new(
+            crate::RuntimeBudget::default()
+                .with_max_total_requests(0)
+                .with_max_active_verifications(0),
+        );
+        let exhausted = TlsNegotiationReviewRuntime::new(
+            &Url::parse(&format!("https://{dns_name}/")).unwrap(),
+            exhausted_accounting.clone(),
+            CancellationToken::new(),
+            None,
+            Some(TlsNegotiationOwnedTransportProfile::new(
+                fixed_address,
+                material.root_der,
+            )),
+        )
+        .unwrap()
+        .execute()
+        .await;
+        assert!(exhausted.is_valid());
+        assert_eq!(exhausted.terminal(), "budget_exhausted");
+        assert_eq!(exhausted.attempted_connection_count(), 0);
+        assert_eq!(exhausted.cells()[0].outcome(), "budget_exhausted");
+        assert!(exhausted_accounting.dispatch_audit().receipts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_first_handshake_cannot_reset_the_shared_active_limit() {
+        let dns_name = "active-tls.termivar.test";
+        let material = owned_tls_material(dns_name);
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            assert!(peer.ip().is_loopback());
+            drop(stream);
+        });
+        let accounting = RequestAccountingBroker::new(
+            crate::RuntimeBudget::default()
+                .with_max_total_requests(2)
+                .with_max_active_verifications(1),
+        );
+        let runtime = TlsNegotiationReviewRuntime::new(
+            &Url::parse(&format!("https://{dns_name}:{}/", address.port())).unwrap(),
+            accounting.clone(),
+            CancellationToken::new(),
+            None,
+            Some(TlsNegotiationOwnedTransportProfile::new(
+                address,
+                material.root_der,
+            )),
+        )
+        .unwrap();
+
+        let audit = runtime.execute().await;
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("rejecting server completed")
+            .unwrap();
+
+        assert!(audit.is_valid());
+        assert_eq!(audit.terminal(), "budget_exhausted");
+        assert_eq!(audit.attempted_connection_count(), 1);
+        assert_eq!(audit.cells()[0].dispatch_status(), "dispatched");
+        assert_eq!(audit.cells()[0].outcome(), "transport_failed");
+        assert_eq!(audit.cells()[1].dispatch_status(), "not_dispatched");
+        assert_eq!(audit.cells()[1].outcome(), "budget_exhausted");
+        let transport = accounting.dispatch_audit();
+        assert_eq!(transport.receipts().len(), 1);
+        assert_eq!(
+            transport.receipts()[0].outcome(),
+            TransportDispatchOutcome::TransportFailure
+        );
     }
 
     #[tokio::test]
