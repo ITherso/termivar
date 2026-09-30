@@ -31,6 +31,7 @@ const QUERY_NAME: &str = "termivar_fixture_input";
 const ROOT_BODY: &str = "<!doctype html><html><body>owned-minijinja-fixture</body></html>";
 const JSON_NAME: &str = "assessment.json";
 const CAPABILITY_ID: &str = "web.review.template-evaluation.jinja-compatible-semantics@1";
+const MAX_CONSECUTIVE_TRANSIENT_ACCEPT_ERRORS: u8 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FixtureMode {
@@ -92,6 +93,7 @@ struct OwnedMiniJinjaServer {
     url: String,
     requests: Arc<Mutex<Vec<RequestTrace>>>,
     shutdown: Arc<AtomicBool>,
+    terminal_accept_error: Arc<Mutex<Option<ErrorKind>>>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -112,16 +114,33 @@ impl OwnedMiniJinjaServer {
         let worker_requests = Arc::clone(&requests);
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
+        let terminal_accept_error = Arc::new(Mutex::new(None));
+        let worker_terminal_accept_error = Arc::clone(&terminal_accept_error);
         let worker = thread::spawn(move || {
+            let mut consecutive_transient_accept_errors = 0_u8;
             while !worker_shutdown.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        consecutive_transient_accept_errors = 0;
                         handle_connection(&mut stream, mode, worker_requests.as_ref());
                     },
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    Err(error)
+                        if fixture_accept_error_is_retryable(
+                            error.kind(),
+                            consecutive_transient_accept_errors,
+                        ) =>
+                    {
+                        if error.kind() != ErrorKind::WouldBlock {
+                            consecutive_transient_accept_errors += 1;
+                        }
                         thread::sleep(Duration::from_millis(2));
                     },
-                    Err(_) => break,
+                    Err(error) => {
+                        *worker_terminal_accept_error
+                            .lock()
+                            .expect("fixture accept error state") = Some(error.kind());
+                        break;
+                    },
                 }
             }
         });
@@ -130,8 +149,16 @@ impl OwnedMiniJinjaServer {
             url: format!("http://{address}/?{QUERY_NAME}=fixture-seed"),
             requests,
             shutdown,
+            terminal_accept_error,
             worker: Some(worker),
         }
+    }
+
+    fn terminal_accept_error(&self) -> Option<ErrorKind> {
+        *self
+            .terminal_accept_error
+            .lock()
+            .expect("fixture accept error state")
     }
 
     fn stop(mut self) -> StoppedFixture {
@@ -141,11 +168,22 @@ impl OwnedMiniJinjaServer {
             .expect("fixture worker")
             .join()
             .expect("fixture worker stopped cleanly");
+        assert_eq!(
+            self.terminal_accept_error(),
+            None,
+            "owned fixture stopped after a terminal listener error"
+        );
         StoppedFixture {
             address: self.address,
             requests: self.requests,
         }
     }
+}
+
+fn fixture_accept_error_is_retryable(kind: ErrorKind, consecutive_transient: u8) -> bool {
+    kind == ErrorKind::WouldBlock
+        || (consecutive_transient < MAX_CONSECUTIVE_TRANSIENT_ACCEPT_ERRORS
+            && matches!(kind, ErrorKind::Interrupted | ErrorKind::ConnectionAborted))
 }
 
 fn handle_connection(
@@ -278,6 +316,17 @@ fn assert_success(output: &Output, label: &str) {
     assert!(
         output.status.success(),
         "{label} failed with {:?}:\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_scan_success(output: &Output, label: &str, server: &OwnedMiniJinjaServer) {
+    let terminal_accept_error = server.terminal_accept_error();
+    assert!(
+        output.status.success(),
+        "{label} failed with {:?}; fixture_terminal_accept_error={terminal_accept_error:?}:\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -672,6 +721,34 @@ fn fixture_trace_accepts_only_exact_bounded_pair_grammar() {
 }
 
 #[test]
+fn fixture_accept_loop_retries_only_bounded_transient_errors() {
+    for kind in [
+        ErrorKind::WouldBlock,
+        ErrorKind::Interrupted,
+        ErrorKind::ConnectionAborted,
+    ] {
+        assert!(fixture_accept_error_is_retryable(kind, 0));
+    }
+    assert!(fixture_accept_error_is_retryable(
+        ErrorKind::WouldBlock,
+        MAX_CONSECUTIVE_TRANSIENT_ACCEPT_ERRORS
+    ));
+    for kind in [ErrorKind::Interrupted, ErrorKind::ConnectionAborted] {
+        assert!(!fixture_accept_error_is_retryable(
+            kind,
+            MAX_CONSECUTIVE_TRANSIENT_ACCEPT_ERRORS
+        ));
+    }
+    for kind in [
+        ErrorKind::PermissionDenied,
+        ErrorKind::AddrNotAvailable,
+        ErrorKind::Other,
+    ] {
+        assert!(!fixture_accept_error_is_retryable(kind, 0));
+    }
+}
+
+#[test]
 fn privacy_oracle_allows_public_schema_but_rejects_exact_nonce_bearing_values() {
     let target = "http://127.0.0.1:49152/";
     let mut expected_private_values = vec![
@@ -732,7 +809,7 @@ fn actual_cli_uses_two_replayed_minijinja_pairs_without_broadening_the_claim() {
     let option_off_target = option_off_server.url.clone();
     let option_off_directory = parent.path().join("option-off");
     let option_off = run_scan(&option_off_server, &option_off_directory, false);
-    assert_success(&option_off, "option-off scan");
+    assert_scan_success(&option_off, "option-off scan", &option_off_server);
     assert_private_values_absent(
         &option_off.stdout,
         &option_off_directory,
@@ -769,7 +846,7 @@ fn actual_cli_uses_two_replayed_minijinja_pairs_without_broadening_the_claim() {
     let positive_target = positive_server.url.clone();
     let positive_directory = parent.path().join("positive");
     let positive = run_scan(&positive_server, &positive_directory, true);
-    assert_success(&positive, "positive MiniJinja scan");
+    assert_scan_success(&positive, "positive MiniJinja scan", &positive_server);
     assert_private_values_absent(
         &positive.stdout,
         &positive_directory,
@@ -810,7 +887,11 @@ fn actual_cli_uses_two_replayed_minijinja_pairs_without_broadening_the_claim() {
     let context_bound_target = context_bound_server.url.clone();
     let context_bound_directory = parent.path().join("context-bound");
     let context_bound = run_scan(&context_bound_server, &context_bound_directory, true);
-    assert_success(&context_bound, "context-bound MiniJinja scan");
+    assert_scan_success(
+        &context_bound,
+        "context-bound MiniJinja scan",
+        &context_bound_server,
+    );
     assert_private_values_absent(
         &context_bound.stdout,
         &context_bound_directory,
