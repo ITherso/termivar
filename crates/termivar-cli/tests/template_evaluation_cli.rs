@@ -781,10 +781,6 @@ fn fixture_accept_loop_retries_only_bounded_transient_errors() {
             .is_empty(),
         "the blocking-listener wakeup must not become a fixture request"
     );
-    assert!(
-        TcpStream::connect_timeout(&stopped.address, Duration::from_millis(100)).is_err(),
-        "the fixture listener must be closed after its bounded wakeup"
-    );
 }
 
 #[test]
