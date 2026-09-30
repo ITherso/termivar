@@ -2534,6 +2534,12 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
             )?;
             output.push_str("</code></li>")?;
         }
+        output.push_str("</ul><h3>Claim limits</h3><ul>")?;
+        for limit in &audit.claim_limits {
+            output.push_str("<li><code>")?;
+            write_html_text(&mut output, limit)?;
+            output.push_str("</code></li>")?;
+        }
         output.push_str("</ul><p class=\"wp-note\">The configured trust validation is not source authentication. Revocation, certificate-transparency, AIA, CRL, and OCSP retrieval, vulnerability confirmation, exploit execution, impact validation, and remediation verification were not performed.</p></section>")?;
     }
     #[cfg(feature = "jwt-policy-review")]
@@ -5071,6 +5077,12 @@ fn render_assessment_markdown(
                     cell.observed_egress_tls_bytes,
                 ),
             )?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Claim limits\n\n")?;
+        for limit in &audit.claim_limits {
+            output.push_str("- ")?;
+            write_markdown_code_span(&mut output, limit)?;
             output.push_char('\n')?;
         }
         output.push_str("\nThe configured trust validation is not source authentication. Revocation, certificate-transparency, AIA, CRL, and OCSP retrieval, vulnerability confirmation, exploit execution, impact validation, and remediation verification were not performed.\n")?;

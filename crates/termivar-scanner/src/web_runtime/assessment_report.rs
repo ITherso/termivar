@@ -88,9 +88,9 @@ use super::ssrf_oast_runtime::{
 };
 #[cfg(feature = "tls-negotiation-review")]
 use super::tls_negotiation_review::{
-    WebAssessmentTlsNegotiationReviewAudit, TLS_NEGOTIATION_REVIEW_ACTION_TLS12,
-    TLS_NEGOTIATION_REVIEW_ACTION_TLS13, TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA,
-    TLS_NEGOTIATION_REVIEW_POLICY_ID,
+    WebAssessmentTlsNegotiationReviewAudit, TLS_NEGOTIATION_ACTIVE_VERIFICATION_ALLOWANCE,
+    TLS_NEGOTIATION_REVIEW_ACTION_TLS12, TLS_NEGOTIATION_REVIEW_ACTION_TLS13,
+    TLS_NEGOTIATION_REVIEW_AUDIT_SCHEMA, TLS_NEGOTIATION_REVIEW_POLICY_ID,
 };
 #[cfg(feature = "tls-observation")]
 use super::tls_observation::{
@@ -3082,6 +3082,8 @@ fn validate_completed_assessment_truth_with_active_limit(
             u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS)
                 .expect("controlled XML active-verification allowance fits u16"),
         );
+        #[cfg(feature = "tls-negotiation-review")]
+        let allowance = allowance.saturating_add(TLS_NEGOTIATION_ACTIVE_VERIFICATION_ALLOWANCE);
         allowance
     };
     let expected_active_limit = limits
@@ -4058,6 +4060,10 @@ mod tests {
         let compiled_allowance = compiled_allowance
             .checked_add(u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS).unwrap())
             .unwrap();
+        #[cfg(feature = "tls-negotiation-review")]
+        let compiled_allowance = compiled_allowance
+            .checked_add(TLS_NEGOTIATION_ACTIVE_VERIFICATION_ALLOWANCE)
+            .unwrap();
         let expected = limits
             .max_active_verifications()
             .checked_add(compiled_allowance)
@@ -4094,6 +4100,61 @@ mod tests {
             validate_completed_assessment_truth_with_active_limit(
                 root,
                 AssessmentRuntimeLimits::new(limits, expected + 1, compiled_allowance + 1),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+    }
+
+    #[cfg(feature = "tls-negotiation-review")]
+    #[test]
+    fn tls_negotiation_has_exact_two_active_handshake_allowance() {
+        let runtime =
+            WebAssessmentRuntime::builder(Url::parse("https://example.test/review").unwrap())
+                .build()
+                .unwrap();
+        let root = runtime.authorized_root();
+        let limits = WebAssessmentLimits::default();
+        let allowance = TLS_NEGOTIATION_ACTIVE_VERIFICATION_ALLOWANCE;
+        let expected = limits
+            .max_active_verifications()
+            .checked_add(allowance)
+            .unwrap();
+        let usage = AssessmentUsageTruth {
+            active_verifications: allowance,
+            ..usage_truth(root.url().as_str())
+        };
+        let profile = ScanProfileV1::web_review().unwrap();
+
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected, allowance),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected - 1, allowance),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected, allowance + 1),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,

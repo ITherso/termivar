@@ -866,7 +866,7 @@ impl TlsNegotiationReviewRuntime {
                             lease.finish(TransportDispatchOutcome::RequestTimeout);
                         },
                         Ok(Ok(())) => {
-                            if tls_byte_limit_reached(&lease, &counters, &totals) {
+                            if tls_byte_limit_reached(&lease, &counters, totals) {
                                 cell.outcome = CellOutcome::BudgetExhausted;
                                 lease.finish(TransportDispatchOutcome::ResponseBudgetReached);
                             } else {
@@ -879,7 +879,7 @@ impl TlsNegotiationReviewRuntime {
                             }
                         },
                         Ok(Err(_)) => {
-                            if tls_byte_limit_reached(&lease, &counters, &totals) {
+                            if tls_byte_limit_reached(&lease, &counters, totals) {
                                 cell.outcome = CellOutcome::BudgetExhausted;
                                 lease.finish(TransportDispatchOutcome::ResponseBudgetReached);
                             } else {
@@ -896,7 +896,7 @@ impl TlsNegotiationReviewRuntime {
             },
             Ok(Err((error, counted))) => {
                 drop(counted);
-                if tls_byte_limit_reached(&lease, &counters, &totals) {
+                if tls_byte_limit_reached(&lease, &counters, totals) {
                     cell.outcome = CellOutcome::BudgetExhausted;
                     lease.finish(TransportDispatchOutcome::ResponseBudgetReached);
                 } else {
