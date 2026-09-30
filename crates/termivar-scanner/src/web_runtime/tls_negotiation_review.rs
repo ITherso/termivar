@@ -1474,7 +1474,7 @@ mod tests {
 
         assert!(audit.is_valid());
         assert!(audit.network_matrix_complete());
-        assert_eq!(audit.terminal(), "complete");
+        assert_eq!(audit.terminal(), "completed");
         assert_eq!(audit.attempted_connection_count(), 2);
         assert_eq!(audit.completed_handshake_count(), 2);
         assert!(audit.accounted_ingress_tls_bytes() > 0);
