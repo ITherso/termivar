@@ -1519,6 +1519,7 @@ fn render_assessment_csv(
                 "",
                 "",
                 "",
+                "",
             ],
         )?;
     }
@@ -20526,6 +20527,9 @@ mod tests {
 
         let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
         let rows: Vec<Vec<String>> = csv.lines().map(parse_csv_line).collect();
+        assert!(rows
+            .iter()
+            .all(|row| row.len() == ASSESSMENT_CSV_HEADERS.len()));
         assert!(rows.iter().any(|row| row
             .first()
             .is_some_and(|cell| cell == "tls_negotiation_review_audit")));
