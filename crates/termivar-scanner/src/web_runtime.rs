@@ -712,6 +712,8 @@ struct NativeWebReviewRuntimeConfig {
     reflection_query_parameter: Option<String>,
     sql_query_parameter: Option<String>,
     ssti_query_parameter: Option<String>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_query_parameter: Option<String>,
     xss_query_parameter: Option<String>,
     xss_selection: Option<web_assessment::XssProbeSelection>,
     #[cfg(feature = "normalization-resilience")]
@@ -937,6 +939,8 @@ impl StandardWebDecisionRuntimeBuilder {
             reflection_query_parameter,
             sql_query_parameter,
             ssti_query_parameter,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_query_parameter: None,
             xss_query_parameter: None,
             xss_selection: None,
             #[cfg(feature = "normalization-resilience")]
@@ -945,6 +949,23 @@ impl StandardWebDecisionRuntimeBuilder {
             normalization_selection: None,
             structural_only: false,
         });
+        self
+    }
+
+    /// Adds the closed harmless template-expression pairs to the already
+    /// configured root native-review pass. The root runtime's existing
+    /// bootstrap is reused; only the four differential legs are added.
+    #[cfg(feature = "template-evaluation-review")]
+    pub(in crate::web_runtime) fn with_native_template_evaluation_parameter(
+        mut self,
+        query_parameter: String,
+    ) -> Self {
+        let config = self
+            .native_web_review
+            .as_mut()
+            .filter(|config| !config.structural_only)
+            .expect("template evaluation augments the configured root native-review pass");
+        config.template_evaluation_query_parameter = Some(query_parameter);
         self
     }
 
@@ -964,6 +985,8 @@ impl StandardWebDecisionRuntimeBuilder {
             reflection_query_parameter,
             sql_query_parameter,
             ssti_query_parameter,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_query_parameter: None,
             xss_query_parameter: None,
             xss_selection: None,
             #[cfg(feature = "normalization-resilience")]
@@ -998,6 +1021,8 @@ impl StandardWebDecisionRuntimeBuilder {
             reflection_query_parameter: None,
             sql_query_parameter: None,
             ssti_query_parameter: None,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_query_parameter: None,
             xss_query_parameter: Some(query_parameter),
             xss_selection: Some(selection),
             #[cfg(feature = "normalization-resilience")]
@@ -1036,6 +1061,8 @@ impl StandardWebDecisionRuntimeBuilder {
             reflection_query_parameter: None,
             sql_query_parameter: None,
             ssti_query_parameter: None,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_query_parameter: None,
             xss_query_parameter: None,
             xss_selection: None,
             normalization_query_parameter: Some(query_parameter),
@@ -1291,6 +1318,8 @@ impl StandardWebDecisionRuntimeBuilder {
                                     config.reflection_query_parameter,
                                     config.sql_query_parameter,
                                     config.ssti_query_parameter,
+                                    #[cfg(feature = "template-evaluation-review")]
+                                    config.template_evaluation_query_parameter,
                                 ),
                             )
                         }
@@ -1330,6 +1359,8 @@ impl StandardWebDecisionRuntimeBuilder {
                                     config.reflection_query_parameter,
                                     config.sql_query_parameter,
                                     config.ssti_query_parameter,
+                                    #[cfg(feature = "template-evaluation-review")]
+                                    config.template_evaluation_query_parameter,
                                 ),
                             )
                         }

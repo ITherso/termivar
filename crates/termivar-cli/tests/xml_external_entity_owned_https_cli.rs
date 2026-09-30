@@ -1843,7 +1843,7 @@ async fn owned_https_profile_runs_actual_cli_and_offline_bundle_commands() {
     let feature_inventory = capability_document["cli_package_features"]
         .as_array()
         .expect("feature inventory");
-    assert_eq!(feature_inventory.len(), 23);
+    assert_eq!(feature_inventory.len(), 24);
     let feature_names = feature_inventory
         .iter()
         .map(|row| row["name"].as_str().expect("feature name"))

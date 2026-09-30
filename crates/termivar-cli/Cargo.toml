@@ -50,6 +50,10 @@ required-features = ["xml-external-entity-review"]
 name = "xml_external_entity_owned_https_cli"
 required-features = ["xml-external-entity-owned-https-test-profile"]
 
+[[test]]
+name = "template_evaluation_cli"
+required-features = ["template-evaluation-review"]
+
 [features]
 default = []
 legacy-scanner = ["dep:reqwest", "termivar-scanner/legacy-scanner"]
@@ -74,6 +78,7 @@ recon-ct-provider = ["termivar-scanner/recon-ct-provider"]
 websocket-review = ["termivar-scanner/websocket-review"]
 supplied-session-review = ["termivar-scanner/supplied-session-review"]
 ssrf-oast-review = ["termivar-scanner/ssrf-oast-review"]
+template-evaluation-review = ["termivar-scanner/template-evaluation-review"]
 xml-external-entity-review = ["termivar-scanner/xml-external-entity-review"]
 xml-external-entity-owned-https-test-profile = [
     "xml-external-entity-review",
@@ -118,3 +123,4 @@ tempfile = { workspace = true }
 termivar-oast = { version = "0.10.0-alpha.3", path = "../termivar-oast", default-features = false, features = ["client", "test-support", "owned-https-test-profile"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = { workspace = true }
+minijinja = { version = "=2.24.0", default-features = false, features = ["builtins"] }

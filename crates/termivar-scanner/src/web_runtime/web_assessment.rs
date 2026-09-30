@@ -86,6 +86,8 @@ use super::supplied_session_runtime::{
 };
 #[cfg(feature = "tls-observation")]
 use super::tls_observation::WebAssessmentTlsObservationAudit;
+#[cfg(feature = "template-evaluation-review")]
+use super::web_review_execution::enabled_native_web_review_actions_with_template;
 #[cfg(feature = "websocket-review")]
 use super::websocket_runtime::{
     execute_websocket_review, websocket_review_not_run, WebAssessmentWebSocketReviewAudit,
@@ -159,6 +161,12 @@ use crate::supplied_session_review::SuppliedSessionCredentialMechanism;
 use crate::supplied_session_review::SuppliedSessionPolicyVersion;
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{SuppliedSessionPolicy, SuppliedSessionRuntimeInput};
+#[cfg(feature = "template-evaluation-review")]
+use crate::template_evaluation_review::{
+    TemplateEvaluationReviewAudit, TemplateEvaluationReviewAuditFacts,
+    TemplateEvaluationReviewOutcome, TEMPLATE_EVALUATION_MAX_ACTIVE_REQUESTS,
+    TEMPLATE_EVALUATION_MAX_REQUESTS, TEMPLATE_EVALUATION_SELECTED_CASES,
+};
 #[cfg(feature = "websocket-review")]
 use crate::websocket_review::WebSocketReviewPolicy;
 #[cfg(feature = "wordpress-review")]
@@ -168,6 +176,8 @@ use crate::xml_external_entity_review::{
     XmlExternalEntityAdminToken, XmlExternalEntityReviewAudit, XmlExternalEntityReviewOutcome,
     XmlExternalEntityReviewPolicy, XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS,
 };
+#[cfg(feature = "template-evaluation-review")]
+use crate::TransportDispatchOutcome;
 use crate::{
     http_evidence::{
         CompleteHttpResponseObservation, CompleteHttpResponseObserver,
@@ -284,6 +294,9 @@ pub(crate) const GRAPHQL_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE: u16 =
 #[cfg(feature = "authorization-review")]
 pub(crate) const AUTHORIZATION_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE: u16 =
     MAX_AUTHORIZATION_REVIEW_ACTIVE_VERIFICATIONS as u16;
+/// Two additional active candidate legs in the selected root template review.
+#[cfg(feature = "template-evaluation-review")]
+pub(crate) const TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE: u16 = 2;
 /// Assessment subjects execute sequentially under one shared authority.
 pub const WEB_ASSESSMENT_CONCURRENCY: usize = 1;
 
@@ -1439,6 +1452,8 @@ pub struct WebAssessmentRunReport {
     jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
     #[cfg(feature = "xml-external-entity-review")]
     xml_external_entity_review: Option<XmlExternalEntityReviewAudit>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_review: Option<TemplateEvaluationReviewAudit>,
     #[cfg(feature = "authorization-review")]
     authorization_review: Option<WebAssessmentAuthorizationAudit>,
     #[cfg(feature = "openapi-review")]
@@ -1493,6 +1508,11 @@ impl fmt::Debug for WebAssessmentRunReport {
         debug.field(
             "xml_external_entity_review",
             &self.xml_external_entity_review,
+        );
+        #[cfg(feature = "template-evaluation-review")]
+        debug.field(
+            "template_evaluation_review",
+            &self.template_evaluation_review,
         );
         #[cfg(feature = "openapi-review")]
         debug.field("openapi_review", &self.openapi_review);
@@ -1587,6 +1607,11 @@ impl WebAssessmentRunReport {
     #[cfg(feature = "xml-external-entity-review")]
     pub const fn xml_external_entity_review_audit(&self) -> Option<&XmlExternalEntityReviewAudit> {
         self.xml_external_entity_review.as_ref()
+    }
+    /// Returns the optional raw-free harmless expression-semantics audit.
+    #[cfg(feature = "template-evaluation-review")]
+    pub const fn template_evaluation_review_audit(&self) -> Option<&TemplateEvaluationReviewAudit> {
+        self.template_evaluation_review.as_ref()
     }
     #[cfg(feature = "openapi-review")]
     pub const fn openapi_review_audit(&self) -> Option<&WebAssessmentOpenApiAudit> {
@@ -1690,6 +1715,8 @@ impl WebAssessmentRunReport {
             self.ssrf_oast_review,
             #[cfg(feature = "xml-external-entity-review")]
             self.xml_external_entity_review,
+            #[cfg(feature = "template-evaluation-review")]
+            self.template_evaluation_review,
             #[cfg(feature = "wordpress-review")]
             self.wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
@@ -2198,6 +2225,8 @@ pub struct WebAssessmentRuntimeBuilder {
     low_risk_differential_review: bool,
     #[cfg(feature = "normalization-resilience")]
     normalization_resilience: bool,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_review: bool,
     #[cfg(feature = "graphql-review")]
     graphql_review: bool,
     #[cfg(feature = "authorization-review")]
@@ -2248,6 +2277,8 @@ impl WebAssessmentRuntimeBuilder {
             low_risk_differential_review: false,
             #[cfg(feature = "normalization-resilience")]
             normalization_resilience: false,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_review: false,
             #[cfg(feature = "graphql-review")]
             graphql_review: false,
             #[cfg(feature = "authorization-review")]
@@ -2335,6 +2366,18 @@ impl WebAssessmentRuntimeBuilder {
     #[cfg(feature = "normalization-resilience")]
     pub fn enable_normalization_resilience(mut self) -> Self {
         self.normalization_resilience = true;
+        self
+    }
+    /// Explicitly enables two independently replayed harmless
+    /// Jinja-compatible expression pairs inside the established root review.
+    ///
+    /// The four legs reuse the root runtime's bootstrap, exact-origin broker,
+    /// parent budget, cancellation token, and evidence commit. They do not
+    /// identify a template implementation or authorize operating-system
+    /// interaction.
+    #[cfg(feature = "template-evaluation-review")]
+    pub fn enable_template_evaluation_review(mut self) -> Self {
+        self.template_evaluation_review = true;
         self
     }
     /// Explicitly enables one bounded, anonymous GraphQL surface review.
@@ -2789,6 +2832,16 @@ impl WebAssessmentRuntimeBuilder {
                     ) * AUTHORIZATION_REVIEW_ACTIVE_VERIFICATION_ALLOWANCE,
                 )
                 .expect("compiled authorization allowance fits u16");
+            #[cfg(feature = "template-evaluation-review")]
+            let allowance = allowance
+                .checked_add(
+                    u16::from(
+                        self.template_evaluation_review
+                            && self.limits.max_active_verifications()
+                                == DEFAULT_WEB_ASSESSMENT_MAX_ACTIVE_VERIFICATIONS,
+                    ) * TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE,
+                )
+                .expect("compiled template-evaluation allowance fits u16");
             #[cfg(feature = "jwt-target-acceptance-review")]
             let allowance = allowance
                 .checked_add(
@@ -3002,6 +3055,11 @@ impl WebAssessmentRuntimeBuilder {
                 select_sql_review_query_parameter(&root_subject.query_parameter_names);
             let ssti_query_parameter =
                 select_ssti_review_query_parameter(&root_subject.query_parameter_names);
+            #[cfg(feature = "template-evaluation-review")]
+            let template_evaluation_query_parameter = self
+                .template_evaluation_review
+                .then(|| ssti_query_parameter.clone())
+                .flatten();
             let reflection_query_parameter =
                 select_reflection_review_query_parameter(&root_subject.query_parameter_names);
             let observer = AssessmentReviewObserverSet::new_with_sql(
@@ -3013,6 +3071,13 @@ impl WebAssessmentRuntimeBuilder {
                 ssti_query_parameter.as_deref(),
             )
             .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+            #[cfg(feature = "template-evaluation-review")]
+            let observer = match template_evaluation_query_parameter.as_deref() {
+                Some(parameter) => observer
+                    .with_template_evaluation(parameter)
+                    .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
+                None => observer,
+            };
             #[cfg(feature = "secret-exposure-review")]
             let observer = if self.secret_exposure_review {
                 observer.with_secret_exposure_privacy_guard()
@@ -3029,21 +3094,42 @@ impl WebAssessmentRuntimeBuilder {
                 ssti_query_parameter.as_deref(),
             )
             .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+            #[cfg(feature = "template-evaluation-review")]
+            let ledger = match template_evaluation_query_parameter.as_deref() {
+                Some(parameter) => ledger
+                    .with_template_evaluation(parameter)
+                    .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?,
+                None => ledger,
+            };
+            #[cfg(feature = "template-evaluation-review")]
+            let enabled_actions = enabled_native_web_review_actions_with_template(
+                true,
+                redirect_query_parameter.is_some(),
+                reflection_query_parameter.is_some(),
+                sql_query_parameter.is_some(),
+                ssti_query_parameter.is_some(),
+                template_evaluation_query_parameter.is_some(),
+                None,
+            );
+            #[cfg(not(feature = "template-evaluation-review"))]
+            let enabled_actions = enabled_native_web_review_actions(
+                true,
+                redirect_query_parameter.is_some(),
+                reflection_query_parameter.is_some(),
+                sql_query_parameter.is_some(),
+                ssti_query_parameter.is_some(),
+                None,
+            );
             Some(AssessmentNativeReviewRuntime {
                 target: root.url.clone(),
                 seeds,
-                enabled_actions: enabled_native_web_review_actions(
-                    true,
-                    redirect_query_parameter.is_some(),
-                    reflection_query_parameter.is_some(),
-                    sql_query_parameter.is_some(),
-                    ssti_query_parameter.is_some(),
-                    None,
-                ),
+                enabled_actions,
                 redirect_query_parameter,
                 reflection_query_parameter,
                 sql_query_parameter,
                 ssti_query_parameter,
+                #[cfg(feature = "template-evaluation-review")]
+                template_evaluation_query_parameter,
                 observer,
                 ledger,
             })
@@ -3071,6 +3157,8 @@ impl WebAssessmentRuntimeBuilder {
             defense_enforcement: self.defense_enforcement,
             #[cfg(feature = "normalization-resilience")]
             normalization_resilience: self.normalization_resilience,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_review: self.template_evaluation_review,
             #[cfg(feature = "graphql-review")]
             graphql_review: self.graphql_review,
             #[cfg(feature = "authorization-review")]
@@ -3112,6 +3200,8 @@ impl WebAssessmentRuntimeBuilder {
             xss_structural_review: None,
             #[cfg(feature = "normalization-resilience")]
             normalization_review: None,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_review_audit: None,
             root_api_visibility,
             committed_api_visibility: None,
             #[cfg(feature = "graphql-review")]
@@ -3173,6 +3263,8 @@ pub struct WebAssessmentRuntime {
     defense_enforcement: bool,
     #[cfg(feature = "normalization-resilience")]
     normalization_resilience: bool,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_review: bool,
     #[cfg(feature = "graphql-review")]
     graphql_review: bool,
     #[cfg(feature = "authorization-review")]
@@ -3208,6 +3300,8 @@ pub struct WebAssessmentRuntime {
     xss_structural_review: Option<AssessmentNativeReviewRuntime>,
     #[cfg(feature = "normalization-resilience")]
     normalization_review: Option<AssessmentNativeReviewRuntime>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_review_audit: Option<TemplateEvaluationReviewAudit>,
     root_api_visibility: Option<RootApiVisibilityRuntime>,
     committed_api_visibility: Option<CommittedAssessmentApiVisibility>,
     #[cfg(feature = "graphql-review")]
@@ -3253,6 +3347,8 @@ struct AssessmentNativeReviewRuntime {
     reflection_query_parameter: Option<String>,
     sql_query_parameter: Option<String>,
     ssti_query_parameter: Option<String>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_query_parameter: Option<String>,
     observer: Arc<AssessmentReviewObserverSet>,
     ledger: CommittedAssessmentReviewLedger,
     enabled_actions: Vec<NativeWebReviewActionKind>,
@@ -3361,6 +3457,68 @@ fn replay_native_review(
         && !review.ledger.has_incomplete_sql_observation()
         && !review.ledger.has_incomplete_ssti_observation()
         && review.ledger.observations().len() == expected_observations)
+}
+
+#[cfg(feature = "template-evaluation-review")]
+fn template_evaluation_audit_from_committed_runtime(
+    review: Option<&AssessmentNativeReviewRuntime>,
+    transport: &TransportDispatchAudit,
+) -> Result<TemplateEvaluationReviewAudit, ()> {
+    if transport.omitted_receipt_count() != 0 {
+        return Err(());
+    }
+    let primary = NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair.action_id();
+    let replay = NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair.action_id();
+    let receipts = transport
+        .receipts()
+        .iter()
+        .filter(|receipt| {
+            let action = receipt.action_id();
+            action == primary || action == replay
+        })
+        .collect::<Vec<_>>();
+    if receipts.len() > usize::from(TEMPLATE_EVALUATION_MAX_REQUESTS) {
+        return Err(());
+    }
+    let attempted_request_count = u8::try_from(receipts.len()).map_err(|_| ())?;
+    let active_request_count = u8::try_from(
+        receipts
+            .iter()
+            .filter(|receipt| receipt.stage() == DecisionExecutionStage::Active)
+            .count(),
+    )
+    .map_err(|_| ())?;
+    let completed_response_count = u8::try_from(
+        receipts
+            .iter()
+            .filter(|receipt| receipt.outcome() == TransportDispatchOutcome::Completed)
+            .count(),
+    )
+    .map_err(|_| ())?;
+
+    let summary = review.and_then(|review| review.ledger.template_evaluation_summary());
+    let facts = match summary {
+        Some(summary) => TemplateEvaluationReviewAuditFacts {
+            outcome: summary.outcome(),
+            selected_case_count: TEMPLATE_EVALUATION_SELECTED_CASES,
+            attempted_request_count,
+            active_request_count,
+            completed_response_count,
+            committed_response_count: summary.committed_response_count(),
+            projected_item_count: summary.projected_item_count(),
+        },
+        None if receipts.is_empty() => TemplateEvaluationReviewAuditFacts {
+            outcome: TemplateEvaluationReviewOutcome::ParentNotObserved,
+            selected_case_count: 0,
+            attempted_request_count: 0,
+            active_request_count: 0,
+            completed_response_count: 0,
+            committed_response_count: 0,
+            projected_item_count: 0,
+        },
+        None => return Err(()),
+    };
+    TemplateEvaluationReviewAudit::from_runtime(facts).map_err(|_| ())
 }
 
 impl WebAssessmentRuntime {
@@ -3654,6 +3812,8 @@ impl WebAssessmentRuntime {
                             ssti_query_parameter: select_ssti_review_query_parameter(
                                 &subject.query_parameter_names,
                             ),
+                            #[cfg(feature = "template-evaluation-review")]
+                            template_evaluation_query_parameter: None,
                             observer,
                             ledger,
                         });
@@ -3735,14 +3895,22 @@ impl WebAssessmentRuntime {
                         Some(review) => {
                             let observer: Arc<dyn CompleteHttpResponseObserver> =
                                 review.observer.clone();
-                            builder.with_native_web_review(
+                            let builder = builder.with_native_web_review(
                                 review.seeds.clone(),
                                 observer,
                                 review.redirect_query_parameter.clone(),
                                 review.reflection_query_parameter.clone(),
                                 review.sql_query_parameter.clone(),
                                 review.ssti_query_parameter.clone(),
-                            )
+                            );
+                            #[cfg(feature = "template-evaluation-review")]
+                            let builder = match review.template_evaluation_query_parameter.clone() {
+                                Some(parameter) => {
+                                    builder.with_native_template_evaluation_parameter(parameter)
+                                },
+                                None => builder,
+                            };
+                            builder
                         },
                         None => builder,
                     }
@@ -4200,6 +4368,8 @@ impl WebAssessmentRuntime {
                         reflection_query_parameter: None,
                         sql_query_parameter: None,
                         ssti_query_parameter: None,
+                        #[cfg(feature = "template-evaluation-review")]
+                        template_evaluation_query_parameter: None,
                         observer: observer.clone(),
                         ledger,
                         enabled_actions: vec![xss_action],
@@ -4324,6 +4494,8 @@ impl WebAssessmentRuntime {
                         reflection_query_parameter: None,
                         sql_query_parameter: None,
                         ssti_query_parameter: None,
+                        #[cfg(feature = "template-evaluation-review")]
+                        template_evaluation_query_parameter: None,
                         observer: observer.clone(),
                         ledger,
                         enabled_actions: vec![
@@ -5133,6 +5305,19 @@ impl WebAssessmentRuntime {
                 }
             }
         }
+        #[cfg(feature = "template-evaluation-review")]
+        if self.template_evaluation_review {
+            let transport = self.authority.request_accounting().dispatch_audit();
+            let audit = template_evaluation_audit_from_committed_runtime(
+                self.native_review.as_ref(),
+                &transport,
+            )
+            .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
+            if audit.outcome() == TemplateEvaluationReviewOutcome::Incomplete {
+                reasons.insert(WebAssessmentIncompleteReason::DifferentialReviewIncomplete);
+            }
+            self.template_evaluation_review_audit = Some(audit);
+        }
         #[cfg(not(feature = "normalization-resilience"))]
         let review_ledgers = self
             .native_review
@@ -5311,6 +5496,8 @@ impl WebAssessmentRuntime {
             jwt_target_acceptance: self.jwt_target_acceptance_audit.clone(),
             #[cfg(feature = "xml-external-entity-review")]
             xml_external_entity_review: self.xml_external_entity_review_audit.clone(),
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_review: self.template_evaluation_review_audit.clone(),
             #[cfg(feature = "authorization-review")]
             authorization_review: self.authorization_review_audit.clone(),
             #[cfg(feature = "openapi-review")]

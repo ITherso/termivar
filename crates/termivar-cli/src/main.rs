@@ -184,6 +184,20 @@ fn scan_profile_flags_conflict(
     }
 }
 
+/// Rejects the additional engine-semantics review outside the explicit
+/// web-review profile before runtime or output construction.
+#[cfg(feature = "template-evaluation-review")]
+fn scan_template_evaluation_review_flags_conflict(
+    profile: Option<CliScanProfile>,
+    selected: bool,
+) -> Option<&'static str> {
+    if selected && profile != Some(CliScanProfile::WebReview) {
+        Some("`--template-evaluation-review` requires `--profile web-review`")
+    } else {
+        None
+    }
+}
+
 /// Rejects live presentation outside the one supported explicit assessment
 /// profile before output reservation, secret loading, or runtime construction.
 fn scan_progress_flags_conflict(
@@ -658,6 +672,13 @@ struct ScanArgs {
     #[cfg(feature = "normalization-resilience")]
     #[arg(long, requires = "profile")]
     normalization_resilience: bool,
+    /// Explicitly enable two independently replayed, harmless
+    /// Jinja-compatible uppercase-filter expression pairs. The result is a
+    /// bounded compatibility observation, not template-engine identity or
+    /// operating-system execution evidence.
+    #[cfg(feature = "template-evaluation-review")]
+    #[arg(long, requires = "profile")]
+    template_evaluation_review: bool,
     /// Explicitly enable the bounded anonymous GraphQL surface review. This
     /// option is compiled only with `graphql-review` and is valid only with
     /// `--profile web-review`.
@@ -1418,6 +1439,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         enforce_defense,
         #[cfg(feature = "normalization-resilience")]
         normalization_resilience,
+        #[cfg(feature = "template-evaluation-review")]
+        template_evaluation_review,
         #[cfg(feature = "graphql-review")]
         graphql_review,
         #[cfg(feature = "openapi-review")]
@@ -1648,6 +1671,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .exit();
     }
     if let Some(message) = scan_progress_flags_conflict(profile, progress) {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(clap::error::ErrorKind::ArgumentConflict, message)
+            .exit();
+    }
+    #[cfg(feature = "template-evaluation-review")]
+    if let Some(message) =
+        scan_template_evaluation_review_flags_conflict(profile, template_evaluation_review)
+    {
         use clap::CommandFactory;
         Cli::command()
             .error(clap::error::ErrorKind::ArgumentConflict, message)
@@ -2206,6 +2238,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 progress,
                 root_authorization_context,
                 normalization_resilience,
+                #[cfg(feature = "template-evaluation-review")]
+                template_evaluation_review,
                 graphql_review,
                 openapi_review,
                 rest_review,
@@ -3872,6 +3906,78 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[cfg(feature = "template-evaluation-review")]
+    #[test]
+    fn template_evaluation_review_is_explicit_web_review_only() {
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--template-evaluation-review",
+            "https://example.test/",
+        ])
+        .is_err());
+
+        let baseline = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "baseline",
+            "--template-evaluation-review",
+            "https://example.test/",
+        ])
+        .expect("semantic profile validation runs before runtime dispatch");
+        let baseline = parsed_scan_args(&baseline);
+        assert_eq!(
+            scan_template_evaluation_review_flags_conflict(
+                baseline.profile,
+                baseline.template_evaluation_review,
+            ),
+            Some("`--template-evaluation-review` requires `--profile web-review`")
+        );
+
+        let review = Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--template-evaluation-review",
+            "https://example.test/?name=seed",
+        ])
+        .unwrap();
+        let review = parsed_scan_args(&review);
+        assert!(review.template_evaluation_review);
+        assert_eq!(
+            scan_template_evaluation_review_flags_conflict(
+                review.profile,
+                review.template_evaluation_review,
+            ),
+            None
+        );
+    }
+
+    #[cfg(not(feature = "template-evaluation-review"))]
+    #[test]
+    fn default_cli_does_not_expose_template_evaluation_review() {
+        use clap::CommandFactory as _;
+
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--template-evaluation-review"));
+        assert!(Cli::try_parse_from([
+            "termivar",
+            "scan",
+            "--profile",
+            "web-review",
+            "--template-evaluation-review",
+            "https://example.test/",
+        ])
+        .is_err());
     }
 
     #[cfg(feature = "normalization-resilience")]

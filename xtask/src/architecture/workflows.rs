@@ -290,6 +290,12 @@ const WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE: &str = r#"      - name
         env:
           TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-session
         run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
+const TEMPLATE_EVALUATION_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise harmless template-evaluation review through a real owned engine
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features template-evaluation-review --test template_evaluation_cli -- --nocapture"#;
+const TEMPLATE_EVALUATION_REVIEW_CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exercise opt-in template-evaluation capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: template-evaluation-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features template-evaluation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const XML_EXTERNAL_ENTITY_CLI_SMOKE_GATE: &str = r#"      - name: Exercise opt-in XML external-entity CLI preflight contracts
         run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test xml_external_entity_review_cli -- --nocapture"#;
 const XML_EXTERNAL_ENTITY_RUNTIME_SMOKE_GATE: &str = r#"      - name: Exercise bounded XML external-entity runtime through an owned loopback fixture
@@ -442,6 +448,7 @@ const CAPABILITIES_MATRIX_GATE: &str = r#"      - name: Verify compiled CLI capa
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-ct-provider-only cargo test --locked -p termivar-cli --no-default-features --features recon-ct-provider --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=recon-snapshot-import-only cargo test --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-only cargo test --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+          TERMIVAR_CAPABILITIES_MATRIX_CASE=template-evaluation-only cargo test --locked -p termivar-cli --no-default-features --features template-evaluation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=xml-external-entity-only cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=xml-external-entity-owned-https-profile cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
           TERMIVAR_CAPABILITIES_MATRIX_CASE=websocket-session cargo test --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
@@ -456,6 +463,7 @@ const CLI_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify default and opt-
           cargo test --locked -p termivar-cli --no-default-features --features artifact-adapter
           cargo test --locked -p termivar-cli --no-default-features --features normalization-resilience
           cargo test --locked -p termivar-cli --no-default-features --features ssrf-oast-review
+          cargo test --locked -p termivar-cli --no-default-features --features template-evaluation-review
           cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-review
           cargo test --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile
           cargo test --locked -p termivar-cli --no-default-features --features authorization-review
@@ -473,7 +481,7 @@ const SCANNER_FEATURE_BOUNDARY_GATE: &str = r#"      - name: Verify scanner feat
         run: |
           set -euo pipefail
           for feature in \
-            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
+            core scanning normalization-resilience oast-correlation oast-native-provider ssrf-oast-review template-evaluation-review xml-external-entity-review xml-external-entity-owned-https-test-profile supplied-session-review secret-exposure-review tls-observation jwt-policy-review jwt-target-acceptance-review control-reference-mapping recon-ct-provider recon-snapshot-import websocket-review legacy-scanner platform-models reporting detection ml \
             distributed monitoring compliance threat-intel plugins lua
           do
             cargo test --locked -p termivar-scanner --no-default-features --features "$feature" --lib --tests
@@ -1041,6 +1049,26 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must validate the exact release-profile supplied-session WebSocket capability contract"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise harmless template-evaluation review through a real owned engine",
+        TEMPLATE_EVALUATION_REVIEW_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must execute the exact release-profile feature-minimal template-evaluation CLI against its owned real-engine fixture"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise opt-in template-evaluation capability contract",
+        TEMPLATE_EVALUATION_REVIEW_CAPABILITIES_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must validate the exact release-profile feature-minimal template-evaluation capability contract"
         ));
     }
     if !job_has_exact_step(
@@ -4256,6 +4284,61 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("WebSocket capability"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn template_evaluation_native_gates_reject_omission_aliasing_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let cli_boundary = "cargo test --locked -p termivar-cli --no-default-features --features template-evaluation-review";
+        let matrix_case = "TERMIVAR_CAPABILITIES_MATRIX_CASE=template-evaluation-only cargo test --locked -p termivar-cli --no-default-features --features template-evaluation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture";
+        let scanner_member =
+            "ssrf-oast-review template-evaluation-review xml-external-entity-review";
+        for mutation in [
+            valid.replacen(TEMPLATE_EVALUATION_REVIEW_SMOKE_GATE, "", 1),
+            valid.replacen(
+                TEMPLATE_EVALUATION_REVIEW_CAPABILITIES_SMOKE_GATE,
+                "",
+                1,
+            ),
+            valid.replacen(matrix_case, "", 1),
+            valid.replacen(cli_boundary, "cargo test --locked -p termivar-cli --no-default-features --features release-bundle", 1),
+            valid.replacen(
+                scanner_member,
+                "ssrf-oast-review xml-external-entity-review",
+                1,
+            ),
+            valid.replacen(
+                TEMPLATE_EVALUATION_REVIEW_SMOKE_GATE,
+                &TEMPLATE_EVALUATION_REVIEW_SMOKE_GATE.replace(
+                    "--no-default-features --features template-evaluation-review",
+                    "--all-features",
+                ),
+                1,
+            ),
+            valid.replacen(
+                TEMPLATE_EVALUATION_REVIEW_SMOKE_GATE,
+                &format!(
+                    "{TEMPLATE_EVALUATION_REVIEW_SMOKE_GATE}\n        continue-on-error: true"
+                ),
+                1,
+            ),
+            valid.replacen(
+                "TERMIVAR_CAPABILITIES_MATRIX_CASE: template-evaluation-only",
+                "TERMIVAR_CAPABILITIES_MATRIX_CASE: release-bundle",
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("template-evaluation")
+                    || violations[0].contains("feature boundaries")
+                    || violations[0].contains("isolated scanner features"),
                 "{violations:?}"
             );
         }

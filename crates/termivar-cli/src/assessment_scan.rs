@@ -1240,6 +1240,8 @@ pub(crate) struct ProfileScanRuntimeOptions {
     pub(crate) progress: bool,
     pub(crate) root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     pub(crate) normalization_resilience: bool,
+    #[cfg(feature = "template-evaluation-review")]
+    pub(crate) template_evaluation_review: bool,
     pub(crate) graphql_review: bool,
     pub(crate) openapi_review: bool,
     pub(crate) rest_review: bool,
@@ -1299,6 +1301,8 @@ pub(crate) async fn run_profile_scan(
         progress,
         root_authorization_context,
         normalization_resilience,
+        #[cfg(feature = "template-evaluation-review")]
+        template_evaluation_review,
         graphql_review,
         openapi_review,
         rest_review,
@@ -1353,6 +1357,14 @@ pub(crate) async fn run_profile_scan(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "normalization-resilience review requires the web-review profile",
+                )
+                .into());
+            }
+            #[cfg(feature = "template-evaluation-review")]
+            if template_evaluation_review {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "template-evaluation review requires the web-review profile",
                 )
                 .into());
             }
@@ -1533,6 +1545,8 @@ pub(crate) async fn run_profile_scan(
                     progress,
                     root_authorization_context,
                     normalization_resilience,
+                    #[cfg(feature = "template-evaluation-review")]
+                    template_evaluation_review,
                     graphql_review,
                     openapi_review,
                     rest_review,
@@ -1616,6 +1630,8 @@ struct WebReviewRunOptions {
     progress: bool,
     root_authorization_context: Option<WebAssessmentRootAuthorizationContext>,
     normalization_resilience: bool,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_review: bool,
     graphql_review: bool,
     openapi_review: bool,
     rest_review: bool,
@@ -1668,6 +1684,8 @@ async fn run_web_review(
         progress: progress_requested,
         root_authorization_context,
         normalization_resilience,
+        #[cfg(feature = "template-evaluation-review")]
+        template_evaluation_review,
         graphql_review,
         openapi_review,
         rest_review,
@@ -1733,6 +1751,10 @@ async fn run_web_review(
             )
             .into());
         }
+    }
+    #[cfg(feature = "template-evaluation-review")]
+    if template_evaluation_review {
+        builder = builder.enable_template_evaluation_review();
     }
     if graphql_review {
         #[cfg(feature = "graphql-review")]
@@ -3304,6 +3326,29 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "normalization-resilience review requires the web-review profile"
+        );
+    }
+
+    #[cfg(feature = "template-evaluation-review")]
+    #[tokio::test]
+    async fn baseline_rejects_template_evaluation_review_before_transport() {
+        let error = run_profile_scan(
+            Url::parse("https://example.test/?name=seed").unwrap(),
+            ScanProfileV1::baseline().unwrap(),
+            ProfileScanOutput::Stdout {
+                diagnostic_json: false,
+                report_format: None,
+            },
+            ProfileScanRuntimeOptions {
+                template_evaluation_review: true,
+                ..ProfileScanRuntimeOptions::default()
+            },
+        )
+        .await
+        .expect_err("template-evaluation review is web-review only");
+        assert_eq!(
+            error.to_string(),
+            "template-evaluation review requires the web-review profile"
         );
     }
 

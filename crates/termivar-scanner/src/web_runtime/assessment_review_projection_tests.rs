@@ -86,6 +86,10 @@ fn plan(
             | NativeReviewProjectionKind::SstiStructuralEvaluation => {
                 AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
             },
+            #[cfg(feature = "template-evaluation-review")]
+            NativeReviewProjectionKind::TemplateEvaluationJinjaCompatibleSemantics => {
+                AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
+            },
             NativeReviewProjectionKind::XssStructuralBoundary => {
                 AssessmentItemTarget::query_parameter(QUERY_PARAMETER).unwrap()
             },
@@ -282,6 +286,26 @@ fn closed_capability_mapping_never_projects_confirmed() {
             },
         }
     }
+}
+
+#[cfg(feature = "template-evaluation-review")]
+#[test]
+fn template_projection_is_exact_differential_knowledge_only_review() {
+    let item = project_one(NativeReviewProjectionKind::TemplateEvaluationJinjaCompatibleSemantics);
+    assert_eq!(
+        item.capability_id(),
+        "web.review.template-evaluation.jinja-compatible-semantics@1"
+    );
+    assert_eq!(item.disposition(), AssessmentDisposition::NeedsReview);
+    assert!(matches!(item.basis(), AssessmentBasis::Differential(_)));
+    assert_eq!(item.basis().case_reference(), None);
+    assert_eq!(item.cwe(), Some("CWE-1336"));
+    assert_eq!(item.severity(), None);
+    assert_ne!(item.disposition(), AssessmentDisposition::Confirmed);
+    assert!(item
+        .redacted_summary()
+        .contains("candidate-specific benign expression semantics"));
+    assert!(item.redacted_summary().contains("remain unestablished"));
 }
 
 #[cfg(feature = "normalization-resilience")]

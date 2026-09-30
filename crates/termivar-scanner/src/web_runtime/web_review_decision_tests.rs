@@ -127,6 +127,12 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyR
             SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
             SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         ),
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => (
+            crate::payload_strategies::TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+            crate::payload_strategies::TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+        ),
         NativeWebReviewActionKind::XssStructuralQueryPair => (
             XSS_STRUCTURAL_QUERY_PAIR_ID,
             XSS_STRUCTURAL_QUERY_PAIR_REVISION,

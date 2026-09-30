@@ -79,6 +79,11 @@ use crate::payload_strategies::normalization_resilience_query_pair::{
     NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
 };
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
+#[cfg(feature = "template-evaluation-review")]
+use crate::payload_strategies::template_jinja_uppercase_expression_pair::{
+    TemplateJinjaUppercaseExpressionPairStrategy, TemplateJinjaUppercaseProbe,
+    TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID, TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+};
 
 const ASSESSMENT_REVIEW_CATEGORY: &str = "web-review-observation";
 const ASSESSMENT_REVIEW_ALGORITHM: &str = "web.review.bounded-response-relations";
@@ -108,6 +113,10 @@ const SQL_HTTP_STATUS_CLASS: &str = "sql-http-status-class";
 const SQL_BODY_STRUCTURE: &str = "sql-body-structure";
 const SSTI_HTTP_STATUS_CLASS: &str = "ssti-http-status-class";
 const SSTI_EVALUATION_RELATION: &str = "ssti-evaluation-relation";
+#[cfg(feature = "template-evaluation-review")]
+const TEMPLATE_EVALUATION_HTTP_STATUS_CLASS: &str = "template-evaluation-http-status-class";
+#[cfg(feature = "template-evaluation-review")]
+const TEMPLATE_EVALUATION_RELATION: &str = "template-evaluation-relation";
 const XSS_PROBE_FAMILY: &str = "xss-probe-family";
 const XSS_PROBE_VARIANT: &str = "xss-probe-variant";
 const XSS_STRUCTURAL_RELATION: &str = "xss-structural-relation";
@@ -126,6 +135,12 @@ const SSTI_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.ssti-structural-query-pair.pair-complete@1";
 const SSTI_REPLAY_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.ssti-structural-query-replay-pair.pair-complete@1";
+#[cfg(feature = "template-evaluation-review")]
+const TEMPLATE_EVALUATION_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.template-jinja-uppercase-query-pair.pair-complete@1";
+#[cfg(feature = "template-evaluation-review")]
+const TEMPLATE_EVALUATION_REPLAY_ACTIVE_VERIFIER_RULE_ID: &str =
+    "web.review.verify.active.template-jinja-uppercase-query-replay-pair.pair-complete@1";
 const XSS_ACTIVE_VERIFIER_RULE_ID: &str =
     "web.review.verify.active.xss-structural-query-pair.pair-complete@1";
 const XSS_ATTRIBUTE_ACTIVE_VERIFIER_RULE_ID: &str =
@@ -157,6 +172,14 @@ pub(crate) const fn native_review_active_verifier_rule_id(
         NativeWebReviewActionKind::SstiStructuralQueryPair => SSTI_ACTIVE_VERIFIER_RULE_ID,
         NativeWebReviewActionKind::SstiStructuralQueryReplayPair => {
             SSTI_REPLAY_ACTIVE_VERIFIER_RULE_ID
+        },
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair => {
+            TEMPLATE_EVALUATION_ACTIVE_VERIFIER_RULE_ID
+        },
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => {
+            TEMPLATE_EVALUATION_REPLAY_ACTIVE_VERIFIER_RULE_ID
         },
         NativeWebReviewActionKind::XssStructuralQueryPair => XSS_ACTIVE_VERIFIER_RULE_ID,
         NativeWebReviewActionKind::XssAttributeBoundaryQueryPair => {
@@ -231,6 +254,22 @@ struct SstiStructuralContract {
     query_parameter: String,
     primary: SstiProbeContract,
     replay: SstiProbeContract,
+}
+
+#[cfg(feature = "template-evaluation-review")]
+#[derive(Clone, PartialEq, Eq)]
+struct TemplateEvaluationProbeContract {
+    probe: TemplateJinjaUppercaseProbe,
+    control_url: Url,
+    candidate_url: Url,
+}
+
+#[cfg(feature = "template-evaluation-review")]
+#[derive(Clone, PartialEq, Eq)]
+struct TemplateEvaluationContract {
+    query_parameter: String,
+    primary: TemplateEvaluationProbeContract,
+    replay: TemplateEvaluationProbeContract,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -534,6 +573,8 @@ struct ReviewContracts<'a> {
     reflection: Option<&'a ReflectionContextContract>,
     sql: Option<&'a SqlStructuralContract>,
     ssti: Option<&'a SstiStructuralContract>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation: Option<&'a TemplateEvaluationContract>,
     xss: Option<&'a XssStructuralContract>,
 }
 
@@ -543,6 +584,21 @@ impl fmt::Debug for SstiStructuralContract {
             .debug_struct("SstiStructuralContract")
             .field("query_parameter", &"<redacted>")
             .field("family", &"web.review.ssti.family.brace-arithmetic@1")
+            .field("urls", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "template-evaluation-review")]
+impl fmt::Debug for TemplateEvaluationContract {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TemplateEvaluationContract")
+            .field("query_parameter", &"<redacted>")
+            .field(
+                "family",
+                &"web.review.template-evaluation.family.jinja-compatible-benign-expression@1",
+            )
             .field("urls", &"<redacted>")
             .finish()
     }
@@ -608,6 +664,8 @@ pub(crate) struct AssessmentReviewObserverSet {
     reflection: Option<ReflectionContextContract>,
     sql: Option<SqlStructuralContract>,
     ssti: Option<SstiStructuralContract>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation: Option<TemplateEvaluationContract>,
     xss: Option<XssStructuralContract>,
     #[cfg(feature = "secret-exposure-review")]
     secret_exposure_privacy_guard: bool,
@@ -628,6 +686,11 @@ impl fmt::Debug for AssessmentReviewObserverSet {
             .field("sql", &self.sql.as_ref().map(|_| "<configured>"))
             .field("ssti", &self.ssti.as_ref().map(|_| "<configured>"))
             .field("xss", &self.xss.as_ref().map(|_| "<configured>"));
+        #[cfg(feature = "template-evaluation-review")]
+        debug.field(
+            "template_evaluation",
+            &self.template_evaluation.as_ref().map(|_| "<configured>"),
+        );
         #[cfg(feature = "secret-exposure-review")]
         debug.field(
             "secret_exposure_privacy_guard",
@@ -769,10 +832,63 @@ impl AssessmentReviewObserverSet {
             reflection,
             sql,
             ssti,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation: None,
             xss: None,
             #[cfg(feature = "secret-exposure-review")]
             secret_exposure_privacy_guard: false,
         })
+    }
+
+    #[cfg(feature = "template-evaluation-review")]
+    pub(in crate::web_runtime) fn new_template_evaluation(
+        root: Url,
+        seeds: NativeWebReviewSeeds,
+        query_parameter: &str,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        Self::new_with_sql(root, seeds, None, None, None, None)?
+            .with_template_evaluation(query_parameter)
+    }
+
+    /// Adds template-evaluation observation to the existing root native-review
+    /// observer so the assessment reuses its already planned bootstrap.
+    #[cfg(feature = "template-evaluation-review")]
+    pub(in crate::web_runtime) fn with_template_evaluation(
+        mut self,
+        query_parameter: &str,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        if !valid_query_parameter(query_parameter) {
+            return Err(AssessmentReviewObserverError::QueryParameter);
+        }
+        if self.template_evaluation.is_some() {
+            return Err(AssessmentReviewObserverError::Candidate);
+        }
+        let build_probe = |probe: &TemplateJinjaUppercaseProbe| {
+            let mut control_url = self.root.clone();
+            control_url
+                .query_pairs_mut()
+                .append_pair(query_parameter, &probe.control_value());
+            let mut candidate_url = self.root.clone();
+            candidate_url
+                .query_pairs_mut()
+                .append_pair(query_parameter, &probe.candidate_value());
+            TemplateEvaluationProbeContract {
+                probe: probe.clone(),
+                control_url,
+                candidate_url,
+            }
+        };
+        let primary = build_probe(self.seeds.template_primary_probe());
+        let replay = build_probe(self.seeds.template_replay_probe());
+        if primary.probe.expected_value() == replay.probe.expected_value() {
+            return Err(AssessmentReviewObserverError::Candidate);
+        }
+        self.template_evaluation = Some(TemplateEvaluationContract {
+            query_parameter: query_parameter.to_owned(),
+            primary,
+            replay,
+        });
+        Ok(self)
     }
 
     /// Replaces the public body digest for native review responses with one
@@ -945,6 +1061,22 @@ impl AssessmentReviewObserverSet {
                     DecisionExecutionStage::Active => &contract.replay.candidate_url,
                 })
             },
+            #[cfg(feature = "template-evaluation-review")]
+            (NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair, stage) => self
+                .template_evaluation
+                .as_ref()
+                .map(|contract| match stage {
+                    DecisionExecutionStage::Passive => &contract.primary.control_url,
+                    DecisionExecutionStage::Active => &contract.primary.candidate_url,
+                }),
+            #[cfg(feature = "template-evaluation-review")]
+            (NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair, stage) => self
+                .template_evaluation
+                .as_ref()
+                .map(|contract| match stage {
+                    DecisionExecutionStage::Passive => &contract.replay.control_url,
+                    DecisionExecutionStage::Active => &contract.replay.candidate_url,
+                }),
             (
                 NativeWebReviewActionKind::XssStructuralQueryPair
                 | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
@@ -1129,6 +1261,28 @@ impl AssessmentReviewObserverSet {
                 records.push((
                     ReviewProperty::SstiEvaluation,
                     ssti_evaluation_slug(classify_ssti_evaluation(observation, probe)).to_owned(),
+                ));
+            },
+            #[cfg(feature = "template-evaluation-review")]
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+            | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => {
+                let contract = self
+                    .template_evaluation
+                    .as_ref()
+                    .expect("enabled template-evaluation observer retains its bounded contract");
+                let probe = if kind == NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair {
+                    &contract.primary.probe
+                } else {
+                    &contract.replay.probe
+                };
+                records.push((
+                    ReviewProperty::TemplateEvaluationHttpStatusClass,
+                    http_status_class_slug(classify_http_status(observation.status())).to_owned(),
+                ));
+                records.push((
+                    ReviewProperty::TemplateEvaluation,
+                    template_evaluation_slug(classify_template_evaluation(observation, probe))
+                        .to_owned(),
                 ));
             },
             NativeWebReviewActionKind::XssStructuralQueryPair
@@ -1353,6 +1507,12 @@ fn native_review_strategy_ref(kind: NativeWebReviewActionKind) -> PayloadStrateg
             SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
             SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         ),
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => (
+            TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+            TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+        ),
         NativeWebReviewActionKind::XssStructuralQueryPair => (
             XSS_STRUCTURAL_QUERY_PAIR_ID,
             XSS_STRUCTURAL_QUERY_PAIR_REVISION,
@@ -1432,6 +1592,7 @@ fn review_projection_parents(
                 | NativeWebReviewActionKind::SstiStructuralQueryPair
                 | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
         )
+        || is_template_evaluation_response_action(kind)
     {
         if observation.media_type().is_some() {
             parents.push(
@@ -1703,6 +1864,59 @@ const fn ssti_evaluation_slug(relation: SstiEvaluationRelation) -> &'static str 
     }
 }
 
+#[cfg(feature = "template-evaluation-review")]
+fn classify_template_evaluation(
+    observation: &CompleteHttpResponseObservation<'_>,
+    probe: &TemplateJinjaUppercaseProbe,
+) -> TemplateEvaluationRelation {
+    match observation.media_type() {
+        Some("text/html" | "application/json") => {},
+        Some(value) if value.starts_with("text/") => {},
+        Some(_) => return TemplateEvaluationRelation::Unsupported,
+        None => return TemplateEvaluationRelation::Incomplete,
+    }
+    let Some(body) = observation.complete_body() else {
+        return TemplateEvaluationRelation::Incomplete;
+    };
+    let Ok(body) = std::str::from_utf8(body) else {
+        return TemplateEvaluationRelation::Incomplete;
+    };
+    if observation.stage() == DecisionExecutionStage::Active
+        && template_candidate_is_literal_or_html_escaped(body, &probe.candidate_value())
+    {
+        return TemplateEvaluationRelation::LiteralOrEscaped;
+    }
+    if body.contains(&probe.expected_value()) {
+        if observation.stage() == DecisionExecutionStage::Passive {
+            TemplateEvaluationRelation::ExpectedPresentInControl
+        } else {
+            TemplateEvaluationRelation::ExpectedEvaluation
+        }
+    } else {
+        TemplateEvaluationRelation::Absent
+    }
+}
+
+#[cfg(feature = "template-evaluation-review")]
+fn template_candidate_is_literal_or_html_escaped(body: &str, candidate: &str) -> bool {
+    body.contains(candidate)
+        || ["&#39;", "&#x27;", "&#X27;", "&apos;"]
+            .into_iter()
+            .any(|escaped_quote| body.contains(&candidate.replace('\'', escaped_quote)))
+}
+
+#[cfg(feature = "template-evaluation-review")]
+const fn template_evaluation_slug(relation: TemplateEvaluationRelation) -> &'static str {
+    match relation {
+        TemplateEvaluationRelation::Absent => "absent",
+        TemplateEvaluationRelation::ExpectedPresentInControl => "expected-present-in-control",
+        TemplateEvaluationRelation::LiteralOrEscaped => "literal-or-escaped",
+        TemplateEvaluationRelation::ExpectedEvaluation => "expected-evaluation",
+        TemplateEvaluationRelation::Unsupported => "unsupported",
+        TemplateEvaluationRelation::Incomplete => "incomplete",
+    }
+}
+
 fn sql_body_structure(observation: &CompleteHttpResponseObservation<'_>) -> String {
     let Some(media_type) = observation.media_type() else {
         return "incomplete".to_owned();
@@ -1838,6 +2052,26 @@ fn review_source_method(
             NativeWebReviewActionKind::SstiStructuralQueryReplayPair,
             DecisionExecutionStage::Active,
         ) => "ssti-structural-replay-candidate-response",
+        #[cfg(feature = "template-evaluation-review")]
+        (
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+            DecisionExecutionStage::Passive,
+        ) => "template-jinja-uppercase-control-response",
+        #[cfg(feature = "template-evaluation-review")]
+        (
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+            DecisionExecutionStage::Active,
+        ) => "template-jinja-uppercase-candidate-response",
+        #[cfg(feature = "template-evaluation-review")]
+        (
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair,
+            DecisionExecutionStage::Passive,
+        ) => "template-jinja-uppercase-replay-control-response",
+        #[cfg(feature = "template-evaluation-review")]
+        (
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair,
+            DecisionExecutionStage::Active,
+        ) => "template-jinja-uppercase-replay-candidate-response",
         (NativeWebReviewActionKind::XssStructuralQueryPair, DecisionExecutionStage::Passive) => {
             "xss-structural-control-response"
         },
@@ -1974,6 +2208,10 @@ enum ReviewProperty {
     SqlBodyStructure,
     SstiHttpStatusClass,
     SstiEvaluation,
+    #[cfg(feature = "template-evaluation-review")]
+    TemplateEvaluationHttpStatusClass,
+    #[cfg(feature = "template-evaluation-review")]
+    TemplateEvaluation,
     XssProbeFamily,
     XssProbeVariant,
     XssStructuralRelation,
@@ -2003,6 +2241,10 @@ impl ReviewProperty {
             Self::SqlBodyStructure => SQL_BODY_STRUCTURE,
             Self::SstiHttpStatusClass => SSTI_HTTP_STATUS_CLASS,
             Self::SstiEvaluation => SSTI_EVALUATION_RELATION,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluationHttpStatusClass => TEMPLATE_EVALUATION_HTTP_STATUS_CLASS,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation => TEMPLATE_EVALUATION_RELATION,
             Self::XssProbeFamily => XSS_PROBE_FAMILY,
             Self::XssProbeVariant => XSS_PROBE_VARIANT,
             Self::XssStructuralRelation => XSS_STRUCTURAL_RELATION,
@@ -2046,6 +2288,17 @@ enum SstiEvaluationRelation {
     Incomplete,
 }
 
+#[cfg(feature = "template-evaluation-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateEvaluationRelation {
+    Absent,
+    ExpectedPresentInControl,
+    LiteralOrEscaped,
+    ExpectedEvaluation,
+    Unsupported,
+    Incomplete,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CommittedReviewResponse {
     Cors {
@@ -2070,6 +2323,11 @@ enum CommittedReviewResponse {
     SstiStructural {
         status: ReviewHttpStatusClass,
         evaluation: SstiEvaluationRelation,
+    },
+    #[cfg(feature = "template-evaluation-review")]
+    TemplateEvaluation {
+        status: ReviewHttpStatusClass,
+        evaluation: TemplateEvaluationRelation,
     },
     XssStructural {
         family: XssProbeFamily,
@@ -2143,6 +2401,8 @@ pub(crate) struct CommittedAssessmentReviewLedger {
     reflection: Option<ReflectionContextContract>,
     sql: Option<SqlStructuralContract>,
     ssti: Option<SstiStructuralContract>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation: Option<TemplateEvaluationContract>,
     xss: Option<XssStructuralContract>,
     observations: BTreeMap<ReviewReceiptKey, CommittedAssessmentReviewObservation>,
     #[cfg(feature = "normalization-resilience")]
@@ -2165,6 +2425,11 @@ impl fmt::Debug for CommittedAssessmentReviewLedger {
             .field("ssti", &self.ssti.as_ref().map(|_| "<configured>"))
             .field("xss", &self.xss.as_ref().map(|_| "<configured>"))
             .field("observation_count", &self.observations.len());
+        #[cfg(feature = "template-evaluation-review")]
+        debug.field(
+            "template_evaluation",
+            &self.template_evaluation.as_ref().map(|_| "<configured>"),
+        );
         #[cfg(feature = "normalization-resilience")]
         debug.field(
             "normalization_candidate",
@@ -2229,11 +2494,34 @@ impl CommittedAssessmentReviewLedger {
             reflection: observer.reflection,
             sql: observer.sql,
             ssti: observer.ssti,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation: observer.template_evaluation,
             xss: observer.xss,
             observations: BTreeMap::new(),
             #[cfg(feature = "normalization-resilience")]
             normalization_candidate: None,
         })
+    }
+
+    /// Adds template-evaluation replay to the existing root native-review
+    /// ledger before any response is committed.
+    #[cfg(feature = "template-evaluation-review")]
+    pub(in crate::web_runtime) fn with_template_evaluation(
+        mut self,
+        query_parameter: &str,
+    ) -> Result<Self, AssessmentReviewObserverError> {
+        if self.template_evaluation.is_some() || !self.observations.is_empty() {
+            return Err(AssessmentReviewObserverError::Candidate);
+        }
+        let template_evaluation = AssessmentReviewObserverSet::new_template_evaluation(
+            self.root.clone(),
+            self.seeds.clone(),
+            query_parameter,
+        )?
+        .template_evaluation
+        .expect("template observer constructor retains its contract");
+        self.template_evaluation = Some(template_evaluation);
+        Ok(self)
     }
 
     #[cfg(test)]
@@ -2274,6 +2562,8 @@ impl CommittedAssessmentReviewLedger {
             reflection: observer.reflection,
             sql: observer.sql,
             ssti: observer.ssti,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation: observer.template_evaluation,
             xss: observer.xss,
             observations: BTreeMap::new(),
             #[cfg(feature = "normalization-resilience")]
@@ -2301,6 +2591,69 @@ impl CommittedAssessmentReviewLedger {
 
     pub(crate) fn subject(&self) -> &EntityId {
         &self.subject
+    }
+
+    #[cfg(feature = "template-evaluation-review")]
+    pub(in crate::web_runtime) fn template_evaluation_summary(
+        &self,
+    ) -> Option<TemplateEvaluationLedgerSummary> {
+        self.template_evaluation.as_ref()?;
+        let relevant = self
+            .observations
+            .values()
+            .filter(|observation| {
+                matches!(
+                    observation.kind,
+                    NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+                        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair
+                )
+            })
+            .collect::<Vec<_>>();
+        let committed_response_count = u8::try_from(relevant.len()).unwrap_or(u8::MAX);
+        let outcome = if relevant.len() != 4
+            || relevant.iter().any(|observation| {
+                matches!(
+                    observation.response,
+                    CommittedReviewResponse::TemplateEvaluation {
+                        evaluation: TemplateEvaluationRelation::Incomplete,
+                        ..
+                    }
+                )
+            }) {
+            crate::template_evaluation_review::TemplateEvaluationReviewOutcome::Incomplete
+        } else if relevant.iter().any(|observation| {
+            matches!(
+                observation.response,
+                CommittedReviewResponse::TemplateEvaluation {
+                    evaluation: TemplateEvaluationRelation::LiteralOrEscaped,
+                    ..
+                }
+            )
+        }) {
+            crate::template_evaluation_review::TemplateEvaluationReviewOutcome::LiteralOrEscaped
+        } else if relevant.iter().any(|observation| {
+            matches!(
+                observation.response,
+                CommittedReviewResponse::TemplateEvaluation {
+                    evaluation: TemplateEvaluationRelation::Unsupported,
+                    ..
+                }
+            )
+        }) {
+            crate::template_evaluation_review::TemplateEvaluationReviewOutcome::UnsupportedRepresentation
+        } else if template_evaluation_exact_four_leg_positive(&self.observations) {
+            crate::template_evaluation_review::TemplateEvaluationReviewOutcome::CandidateSpecificEvaluation
+        } else {
+            crate::template_evaluation_review::TemplateEvaluationReviewOutcome::ReplayMismatch
+        };
+        Some(TemplateEvaluationLedgerSummary {
+            outcome,
+            committed_response_count,
+            projected_item_count: u8::from(matches!(
+                outcome,
+                crate::template_evaluation_review::TemplateEvaluationReviewOutcome::CandidateSpecificEvaluation
+            )),
+        })
     }
 
     /// Derives a normalization parent only from one complete XSS pair and its
@@ -2564,6 +2917,8 @@ impl CommittedAssessmentReviewLedger {
             reflection: self.reflection.as_ref(),
             sql: self.sql.as_ref(),
             ssti: self.ssti.as_ref(),
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation: self.template_evaluation.as_ref(),
             xss: self.xss.as_ref(),
         };
         validate_receipt_authority(
@@ -2682,6 +3037,29 @@ impl CommittedAssessmentReviewLedger {
                 (first, replay)
             {
                 append_ssti_candidate(
+                    control,
+                    candidate,
+                    replay_control,
+                    replay_candidate,
+                    &contract.query_parameter,
+                    &mut candidates,
+                );
+            }
+        }
+        #[cfg(feature = "template-evaluation-review")]
+        if let Some(contract) = self.template_evaluation.as_ref() {
+            let first = exact_pair(
+                &self.observations,
+                NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+            );
+            let replay = exact_pair(
+                &self.observations,
+                NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair,
+            );
+            if let (Some((control, candidate)), Some((replay_control, replay_candidate))) =
+                (first, replay)
+            {
+                append_template_evaluation_candidate(
                     control,
                     candidate,
                     replay_control,
@@ -3231,6 +3609,23 @@ fn parse_review_receipt(
                 evaluation: parse_ssti_evaluation(value(&values, ReviewProperty::SstiEvaluation)?)?,
             }
         },
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => {
+            if contracts.template_evaluation.is_none() {
+                return Err(AssessmentReviewLedgerError::EvidenceProjection);
+            }
+            CommittedReviewResponse::TemplateEvaluation {
+                status: parse_http_status_class(value(
+                    &values,
+                    ReviewProperty::TemplateEvaluationHttpStatusClass,
+                )?)?,
+                evaluation: parse_template_evaluation(value(
+                    &values,
+                    ReviewProperty::TemplateEvaluation,
+                )?)?,
+            }
+        },
         NativeWebReviewActionKind::XssStructuralQueryPair
         | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
         | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
@@ -3464,6 +3859,7 @@ fn expected_review_parent_ids(
                 | NativeWebReviewActionKind::SstiStructuralQueryPair
                 | NativeWebReviewActionKind::SstiStructuralQueryReplayPair
         )
+        || is_template_evaluation_response_action(kind)
     {
         let media = optional_unique_base(receipt, HttpEvidencePredicate::RESPONSE_MEDIA_TYPE)?;
         if let Some(media) = media {
@@ -3650,6 +4046,20 @@ fn requested_url_value_matches_with_sql(
                 DecisionExecutionStage::Active => url == contract.replay.candidate_url,
             })
         },
+        #[cfg(feature = "template-evaluation-review")]
+        (NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair, stage) => contracts
+            .template_evaluation
+            .is_some_and(|contract| match stage {
+                DecisionExecutionStage::Passive => url == contract.primary.control_url,
+                DecisionExecutionStage::Active => url == contract.primary.candidate_url,
+            }),
+        #[cfg(feature = "template-evaluation-review")]
+        (NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair, stage) => contracts
+            .template_evaluation
+            .is_some_and(|contract| match stage {
+                DecisionExecutionStage::Passive => url == contract.replay.control_url,
+                DecisionExecutionStage::Active => url == contract.replay.candidate_url,
+            }),
         (
             NativeWebReviewActionKind::XssStructuralQueryPair
             | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
@@ -3723,6 +4133,9 @@ const fn is_xss_response_action(kind: NativeWebReviewActionKind) -> bool {
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair
         | NativeWebReviewActionKind::SstiStructuralQueryPair
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => false,
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => false,
         #[cfg(feature = "authorization-review")]
         NativeWebReviewActionKind::ResourceAuthorizationDifferential => false,
         #[cfg(feature = "openapi-review")]
@@ -3774,6 +4187,13 @@ const SSTI_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
     ReviewProperty::SstiEvaluation,
 ];
 
+#[cfg(feature = "template-evaluation-review")]
+const TEMPLATE_EVALUATION_REVIEW_PROPERTIES: [ReviewProperty; 3] = [
+    ReviewProperty::ResponseMarker,
+    ReviewProperty::TemplateEvaluationHttpStatusClass,
+    ReviewProperty::TemplateEvaluation,
+];
+
 const XSS_REVIEW_PROPERTIES: [ReviewProperty; 8] = [
     ReviewProperty::ResponseMarker,
     ReviewProperty::XssProbeFamily,
@@ -3794,6 +4214,11 @@ fn expected_properties(kind: NativeWebReviewActionKind) -> &'static [ReviewPrope
         | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => &SQL_REVIEW_PROPERTIES,
         NativeWebReviewActionKind::SstiStructuralQueryPair
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => &SSTI_REVIEW_PROPERTIES,
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => {
+            &TEMPLATE_EVALUATION_REVIEW_PROPERTIES
+        },
         NativeWebReviewActionKind::XssStructuralQueryPair
         | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
         | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => &XSS_REVIEW_PROPERTIES,
@@ -3997,6 +4422,8 @@ fn requested_url_value_matches(
             reflection: None,
             sql: None,
             ssti: None,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation: None,
             xss: None,
         },
         stage,
@@ -4014,6 +4441,127 @@ fn parse_ssti_evaluation(
         "expected-evaluation" => Ok(SstiEvaluationRelation::ExpectedEvaluation),
         "unsupported" => Ok(SstiEvaluationRelation::Unsupported),
         "incomplete" => Ok(SstiEvaluationRelation::Incomplete),
+        _ => Err(AssessmentReviewLedgerError::EvidenceProjection),
+    }
+}
+
+const fn is_template_evaluation_response_action(kind: NativeWebReviewActionKind) -> bool {
+    #[cfg(feature = "template-evaluation-review")]
+    {
+        matches!(
+            kind,
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+                | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair
+        )
+    }
+    #[cfg(not(feature = "template-evaluation-review"))]
+    {
+        let _ = kind;
+        false
+    }
+}
+
+#[cfg(feature = "template-evaluation-review")]
+fn template_evaluation_exact_four_leg_positive(
+    observations: &BTreeMap<ReviewReceiptKey, CommittedAssessmentReviewObservation>,
+) -> bool {
+    let Some((control, candidate)) = exact_pair(
+        observations,
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+    ) else {
+        return false;
+    };
+    let Some((replay_control, replay_candidate)) = exact_pair(
+        observations,
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair,
+    ) else {
+        return false;
+    };
+    template_evaluation_four_legs_match(control, candidate, replay_control, replay_candidate)
+}
+
+#[cfg(feature = "template-evaluation-review")]
+fn template_evaluation_four_legs_match(
+    control: &CommittedAssessmentReviewObservation,
+    candidate: &CommittedAssessmentReviewObservation,
+    replay_control: &CommittedAssessmentReviewObservation,
+    replay_candidate: &CommittedAssessmentReviewObservation,
+) -> bool {
+    control.subject == replay_control.subject
+        && candidate.subject == replay_candidate.subject
+        && control.hypothesis_id == replay_control.hypothesis_id
+        && control.case_id != replay_control.case_id
+        && disjoint(&control.evidence_ids, &candidate.evidence_ids)
+        && disjoint(&control.evidence_ids, &replay_control.evidence_ids)
+        && disjoint(&control.evidence_ids, &replay_candidate.evidence_ids)
+        && disjoint(&candidate.evidence_ids, &replay_control.evidence_ids)
+        && disjoint(&candidate.evidence_ids, &replay_candidate.evidence_ids)
+        && disjoint(&replay_control.evidence_ids, &replay_candidate.evidence_ids)
+        && matches!(
+            (
+                &control.response,
+                &candidate.response,
+                &replay_control.response,
+                &replay_candidate.response
+            ),
+            (
+                CommittedReviewResponse::TemplateEvaluation {
+                    status: ReviewHttpStatusClass::Successful,
+                    evaluation: TemplateEvaluationRelation::Absent,
+                },
+                CommittedReviewResponse::TemplateEvaluation {
+                    status: ReviewHttpStatusClass::Successful,
+                    evaluation: TemplateEvaluationRelation::ExpectedEvaluation,
+                },
+                CommittedReviewResponse::TemplateEvaluation {
+                    status: ReviewHttpStatusClass::Successful,
+                    evaluation: TemplateEvaluationRelation::Absent,
+                },
+                CommittedReviewResponse::TemplateEvaluation {
+                    status: ReviewHttpStatusClass::Successful,
+                    evaluation: TemplateEvaluationRelation::ExpectedEvaluation,
+                },
+            )
+        )
+}
+
+/// Value-free committed ledger classification for the selected template child.
+#[cfg(feature = "template-evaluation-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::web_runtime) struct TemplateEvaluationLedgerSummary {
+    outcome: crate::template_evaluation_review::TemplateEvaluationReviewOutcome,
+    committed_response_count: u8,
+    projected_item_count: u8,
+}
+
+#[cfg(feature = "template-evaluation-review")]
+impl TemplateEvaluationLedgerSummary {
+    pub(in crate::web_runtime) const fn outcome(
+        self,
+    ) -> crate::template_evaluation_review::TemplateEvaluationReviewOutcome {
+        self.outcome
+    }
+
+    pub(in crate::web_runtime) const fn committed_response_count(self) -> u8 {
+        self.committed_response_count
+    }
+
+    pub(in crate::web_runtime) const fn projected_item_count(self) -> u8 {
+        self.projected_item_count
+    }
+}
+
+#[cfg(feature = "template-evaluation-review")]
+fn parse_template_evaluation(
+    value: &str,
+) -> Result<TemplateEvaluationRelation, AssessmentReviewLedgerError> {
+    match value {
+        "absent" => Ok(TemplateEvaluationRelation::Absent),
+        "expected-present-in-control" => Ok(TemplateEvaluationRelation::ExpectedPresentInControl),
+        "literal-or-escaped" => Ok(TemplateEvaluationRelation::LiteralOrEscaped),
+        "expected-evaluation" => Ok(TemplateEvaluationRelation::ExpectedEvaluation),
+        "unsupported" => Ok(TemplateEvaluationRelation::Unsupported),
+        "incomplete" => Ok(TemplateEvaluationRelation::Incomplete),
         _ => Err(AssessmentReviewLedgerError::EvidenceProjection),
     }
 }
@@ -4071,6 +4619,16 @@ pub(crate) struct SstiStructuralReviewCandidate {
     candidate_evidence_ids: Vec<EvidenceId>,
 }
 
+#[cfg(feature = "template-evaluation-review")]
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct TemplateEvaluationReviewCandidate {
+    subject: EntityId,
+    case_id: String,
+    query_parameter: String,
+    control_evidence_ids: Vec<EvidenceId>,
+    candidate_evidence_ids: Vec<EvidenceId>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct XssStructuralReviewCandidate {
     subject: EntityId,
@@ -4104,6 +4662,8 @@ pub(crate) enum AssessmentReviewCandidate {
     Reflection(ReflectionReviewCandidate),
     SqlStructural(SqlStructuralReviewCandidate),
     SstiStructural(SstiStructuralReviewCandidate),
+    #[cfg(feature = "template-evaluation-review")]
+    TemplateEvaluation(TemplateEvaluationReviewCandidate),
     XssStructural(XssStructuralReviewCandidate),
     #[cfg(feature = "normalization-resilience")]
     Normalization(NormalizationReviewCandidate),
@@ -4135,6 +4695,11 @@ redacted_candidate_debug!(
     SstiStructuralReviewCandidate,
     "SstiStructuralReviewCandidate"
 );
+#[cfg(feature = "template-evaluation-review")]
+redacted_candidate_debug!(
+    TemplateEvaluationReviewCandidate,
+    "TemplateEvaluationReviewCandidate"
+);
 redacted_candidate_debug!(XssStructuralReviewCandidate, "XssStructuralReviewCandidate");
 #[cfg(feature = "normalization-resilience")]
 redacted_candidate_debug!(NormalizationReviewCandidate, "NormalizationReviewCandidate");
@@ -4165,6 +4730,8 @@ impl fmt::Debug for AssessmentReviewCandidate {
             Self::Reflection(value) => value.fmt(formatter),
             Self::SqlStructural(value) => value.fmt(formatter),
             Self::SstiStructural(value) => value.fmt(formatter),
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation(value) => value.fmt(formatter),
             Self::XssStructural(value) => value.fmt(formatter),
             #[cfg(feature = "normalization-resilience")]
             Self::Normalization(value) => value.fmt(formatter),
@@ -4179,6 +4746,8 @@ impl AssessmentReviewCandidate {
             | Self::Redirect(_)
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => NativeReviewDisposition::NeedsReview,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation(_) => NativeReviewDisposition::NeedsReview,
             Self::XssStructural(_) => NativeReviewDisposition::NeedsReview,
             #[cfg(feature = "normalization-resilience")]
             Self::Normalization(_) => NativeReviewDisposition::NeedsReview,
@@ -4193,6 +4762,8 @@ impl AssessmentReviewCandidate {
             Self::Reflection(candidate) => &candidate.subject,
             Self::SqlStructural(candidate) => &candidate.subject,
             Self::SstiStructural(candidate) => &candidate.subject,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation(candidate) => &candidate.subject,
             Self::XssStructural(candidate) => &candidate.subject,
             #[cfg(feature = "normalization-resilience")]
             Self::Normalization(candidate) => &candidate.subject,
@@ -4206,6 +4777,8 @@ impl AssessmentReviewCandidate {
             Self::Reflection(candidate) => &candidate.control_evidence_ids,
             Self::SqlStructural(candidate) => &candidate.control_evidence_ids,
             Self::SstiStructural(candidate) => &candidate.control_evidence_ids,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation(candidate) => &candidate.control_evidence_ids,
             Self::XssStructural(candidate) => &candidate.control_evidence_ids,
             #[cfg(feature = "normalization-resilience")]
             Self::Normalization(candidate) => &candidate.control_evidence_ids,
@@ -4219,6 +4792,8 @@ impl AssessmentReviewCandidate {
             Self::Reflection(candidate) => &candidate.candidate_evidence_ids,
             Self::SqlStructural(candidate) => &candidate.candidate_evidence_ids,
             Self::SstiStructural(candidate) => &candidate.candidate_evidence_ids,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation(candidate) => &candidate.candidate_evidence_ids,
             Self::XssStructural(candidate) => &candidate.candidate_evidence_ids,
             #[cfg(feature = "normalization-resilience")]
             Self::Normalization(candidate) => &candidate.candidate_evidence_ids,
@@ -4232,6 +4807,8 @@ impl AssessmentReviewCandidate {
             | Self::Redirect(_)
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => None,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation(_) => None,
             Self::XssStructural(_) => None,
             #[cfg(feature = "normalization-resilience")]
             Self::Normalization(_) => None,
@@ -4246,6 +4823,8 @@ impl AssessmentReviewCandidate {
             | Self::Reflection(_)
             | Self::SqlStructural(_)
             | Self::SstiStructural(_) => None,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation(_) => None,
             Self::XssStructural(_) => None,
             #[cfg(feature = "normalization-resilience")]
             Self::Normalization(_) => None,
@@ -4258,6 +4837,8 @@ impl AssessmentReviewCandidate {
             Self::Reflection(candidate) => Some(&candidate.query_parameter),
             Self::SqlStructural(candidate) => Some(&candidate.query_parameter),
             Self::SstiStructural(candidate) => Some(&candidate.query_parameter),
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluation(candidate) => Some(&candidate.query_parameter),
             Self::XssStructural(candidate) => Some(&candidate.query_parameter),
             #[cfg(feature = "normalization-resilience")]
             Self::Normalization(candidate) => Some(&candidate.query_parameter),
@@ -4565,6 +5146,53 @@ fn append_ssti_candidate(
                             ReviewProperty::ResponseMarker,
                             ReviewProperty::SstiHttpStatusClass,
                             ReviewProperty::SstiEvaluation,
+                        ],
+                    )
+                })
+                .collect(),
+        },
+    ));
+}
+
+#[cfg(feature = "template-evaluation-review")]
+fn append_template_evaluation_candidate(
+    control: &CommittedAssessmentReviewObservation,
+    candidate: &CommittedAssessmentReviewObservation,
+    replay_control: &CommittedAssessmentReviewObservation,
+    replay_candidate: &CommittedAssessmentReviewObservation,
+    query_parameter: &str,
+    output: &mut Vec<AssessmentReviewCandidate>,
+) {
+    if !template_evaluation_four_legs_match(control, candidate, replay_control, replay_candidate) {
+        return;
+    }
+    output.push(AssessmentReviewCandidate::TemplateEvaluation(
+        TemplateEvaluationReviewCandidate {
+            subject: control.subject.clone(),
+            case_id: control.case_id.clone(),
+            query_parameter: query_parameter.to_owned(),
+            control_evidence_ids: [control, replay_control]
+                .into_iter()
+                .flat_map(|observation| {
+                    ids_for(
+                        observation,
+                        &[
+                            ReviewProperty::ResponseMarker,
+                            ReviewProperty::TemplateEvaluationHttpStatusClass,
+                            ReviewProperty::TemplateEvaluation,
+                        ],
+                    )
+                })
+                .collect(),
+            candidate_evidence_ids: [candidate, replay_candidate]
+                .into_iter()
+                .flat_map(|observation| {
+                    ids_for(
+                        observation,
+                        &[
+                            ReviewProperty::ResponseMarker,
+                            ReviewProperty::TemplateEvaluationHttpStatusClass,
+                            ReviewProperty::TemplateEvaluation,
                         ],
                     )
                 })

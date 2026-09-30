@@ -137,6 +137,11 @@ oast-native-provider = ["oast-correlation", "scanning", "dep:termivar-oast"]
 # remains a narrowing child authority and is not included in any aggregate.
 ssrf-oast-review = ["scanning", "oast-correlation", "oast-native-provider", "dep:getrandom"]
 
+# Explicitly enabled, bounded engine-semantics review using two harmless
+# Jinja-compatible uppercase-filter pairs. It remains outside every aggregate
+# and reuses the assessment broker, budget, cancellation, and evidence commit.
+template-evaluation-review = ["scanning"]
+
 # Explicitly enabled, bounded XML external-entity resolution review for one
 # operator-declared disposable endpoint. It is intentionally absent from every
 # aggregate and cannot enlarge the default or release product.

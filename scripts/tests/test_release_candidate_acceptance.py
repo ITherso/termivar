@@ -63,6 +63,7 @@ EXPECTED_EXCLUDED_FEATURES = (
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "template-evaluation-review",
     "tls-observation",
     "websocket-review",
     "xml-external-entity-owned-https-test-profile",
@@ -87,12 +88,27 @@ EXPECTED_FEATURE_STATES = {
     "secret-exposure-review": "not_compiled",
     "ssrf-oast-review": "not_compiled",
     "supplied-session-review": "not_compiled",
+    "template-evaluation-review": "not_compiled",
     "tls-observation": "not_compiled",
     "websocket-review": "not_compiled",
     "wordpress-review": "compiled",
     "xml-external-entity-owned-https-test-profile": "not_compiled",
     "xml-external-entity-review": "not_compiled",
 }
+EXPECTED_TEMPLATE_EVALUATION_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--template-evaluation-review",
+)
+EXPECTED_TEMPLATE_EVALUATION_REVIEW_OPTION = "--template-evaluation-review"
+EXPECTED_TEMPLATE_EVALUATION_REVIEW_LIMITATION = (
+    "Runs two independently replayed, harmless uppercase-filter expression pairs through "
+    "the existing exact-origin broker, with at most four requests and two active candidate "
+    "legs inside the shared parent allowance. A positive result is consistent only with the listed "
+    "Jinja-compatible semantics; it does not identify the template engine, execute "
+    "operating-system commands, access files, perform outbound interaction, validate impact, "
+    "or establish a vulnerability. Compilation does not enable the option, and the feature "
+    "remains outside default, release-bundle, and published alpha.2 archives."
+)
 EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES = (
     "--profile web-review",
     "--authorization-review-policy FILE",
@@ -1360,6 +1376,21 @@ def capabilities(*, include_ssrf: bool = False) -> dict:
             "prerequisites": list(EXPECTED_JWT_TARGET_ACCEPTANCE_PREREQUISITES),
             "limitation": EXPECTED_JWT_TARGET_ACCEPTANCE_LIMITATION,
             "documentation": "docs/internals/local-jwt-policy-review.md",
+        },
+        {
+            "key": "option.template-evaluation-review",
+            "label": "Jinja-compatible template-expression semantics review",
+            "compile_feature": "template-evaluation-review",
+            "build_state": "not_compiled",
+            "group": "optional",
+            "kind": "scan_option",
+            "maturity": "experimental",
+            "implementation_status": "experimental_limited",
+            "alias": None,
+            "prerequisites": list(
+                EXPECTED_TEMPLATE_EVALUATION_REVIEW_PREREQUISITES),
+            "limitation": EXPECTED_TEMPLATE_EVALUATION_REVIEW_LIMITATION,
+            "documentation": "docs/internals/template-evaluation-review.md",
         },
         {
             "key": "option.supplied-session-review",
@@ -2962,9 +2993,9 @@ class CapabilityInventoryContractTests(unittest.TestCase):
     def test_independent_current_inventory_and_optional_surfaces_pass(self):
         document = capabilities()
         rows = document["cli_package_features"]
-        self.assertEqual(len(rows), 23)
+        self.assertEqual(len(rows), 24)
         self.assertEqual(sum(row["build_state"] == "compiled" for row in rows), 8)
-        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 15)
+        self.assertEqual(sum(row["build_state"] == "not_compiled" for row in rows), 16)
         self.assertEqual(
             next(row for row in rows
                  if row["name"] == "xml-external-entity-owned-https-test-profile"),
@@ -3075,6 +3106,17 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             "maximum_active_requests": 2,
             "confirmed_finding": "not_produced",
         })
+        self.assertEqual(result["template_evaluation_review_preview"], {
+            "build_state": "not_compiled",
+            "maturity": "experimental",
+            "implementation_status": "experimental_limited",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "maximum_requests": 4,
+            "maximum_active_requests": 2,
+            "engine_identity": "not_established",
+            "os_execution": "not_performed",
+            "outbound_interaction": "not_performed",
+        })
         self.assertEqual(result["supplied_session_preview"], {
             "build_state": "not_compiled",
             "maturity": "preview",
@@ -3106,6 +3148,90 @@ class CapabilityInventoryContractTests(unittest.TestCase):
                          EXPECTED_AUTHORIZATION_REVIEW_PREREQUISITES)
         self.assertEqual(surface["limitation"],
                          EXPECTED_AUTHORIZATION_REVIEW_LIMITATION)
+
+    def test_template_evaluation_surface_matches_producer_and_fails_closed(self):
+        source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(
+            encoding="utf-8")
+        block_start = 'surface!(\n            "option.template-evaluation-review",'
+        block_end = '\n        ),'
+        self.assertEqual(source.count(block_start), 1)
+        block = source.split(block_start, 1)[1].split(block_end, 1)[0]
+        documentation = (
+            '\n            "docs/internals/template-evaluation-review.md",'
+        )
+        self.assertEqual(block.count(documentation), 1)
+        limitation_line = block.split(documentation, 1)[0].splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(","))
+        self.assertEqual(json.loads(limitation_line[:-1]),
+                         EXPECTED_TEMPLATE_EVALUATION_REVIEW_LIMITATION)
+
+        document = capabilities()
+        surface = next(surface for surface in document["surfaces"]
+                       if surface["key"] == "option.template-evaluation-review")
+        self.assertEqual(tuple(surface["prerequisites"]),
+                         EXPECTED_TEMPLATE_EVALUATION_REVIEW_PREREQUISITES)
+        self.assertEqual(surface["limitation"],
+                         EXPECTED_TEMPLATE_EVALUATION_REVIEW_LIMITATION)
+        self.validate(document)
+
+        for field, wrong in (
+            ("label", "Template scanner"),
+            ("compile_feature", "wordpress-review"),
+            ("build_state", "compiled"),
+            ("maturity", "stable"),
+            ("implementation_status", "verified"),
+            ("group", "core"),
+            ("kind", "command"),
+            ("alias", "template"),
+            ("documentation", "docs/template.md"),
+        ):
+            with self.subTest(field=field):
+                changed = capabilities()
+                next(row for row in changed["surfaces"]
+                     if row["key"] == "option.template-evaluation-review")[field] = wrong
+                self.assert_rejected(changed,
+                                     "template-evaluation surface metadata")
+
+        for wrong in (None, True, 4, {}, [True],
+                      ["--profile web-review"]):
+            with self.subTest(prerequisites=wrong):
+                changed = capabilities()
+                next(row for row in changed["surfaces"]
+                     if row["key"] == "option.template-evaluation-review")[
+                         "prerequisites"] = wrong
+                self.assert_rejected(changed,
+                                     "template-evaluation opt-in contract")
+
+        for old, new in (
+            ("at most four requests", "at most forty requests"),
+            ("two active candidate legs", "twenty active candidate legs"),
+            ("existing exact-origin broker", "independent client"),
+            ("does not identify the template engine", "identifies Jinja"),
+            ("perform outbound interaction", "perform outbound callbacks"),
+            ("outside default, release-bundle", "inside default, release-bundle"),
+        ):
+            with self.subTest(old=old):
+                self.assertEqual(
+                    EXPECTED_TEMPLATE_EVALUATION_REVIEW_LIMITATION.count(old), 1)
+                changed = capabilities()
+                row = next(row for row in changed["surfaces"]
+                           if row["key"] == "option.template-evaluation-review")
+                row["limitation"] = row["limitation"].replace(old, new)
+                self.assert_rejected(changed,
+                                     "template-evaluation limitation")
+
+        missing = capabilities()
+        missing["surfaces"] = [
+            row for row in missing["surfaces"]
+            if row["key"] != "option.template-evaluation-review"
+        ]
+        self.assert_rejected(missing, "template-evaluation surface identity")
+
+        text_changed = capabilities()
+        text = capabilities_text(text_changed).replace(
+            b"Jinja-compatible template-expression semantics review", b"other")
+        self.assert_rejected(
+            text_changed, "text and JSON views disagree", text)
 
     def test_authorization_surface_is_exact_and_fails_closed_on_mutations(self):
         metadata_mutations = (
@@ -4656,7 +4782,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         next(row for row in counts_only["cli_package_features"]
              if row["name"] == "control-reference-mapping")["name"] = (
                  "unclassified-control-mapping")
-        self.assertEqual(len(counts_only["cli_package_features"]), 23)
+        self.assertEqual(len(counts_only["cli_package_features"]), 24)
         self.assertEqual(
             sum(row["build_state"] == "compiled"
                 for row in counts_only["cli_package_features"]),
@@ -4665,7 +4791,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         self.assertEqual(
             sum(row["build_state"] == "not_compiled"
                 for row in counts_only["cli_package_features"]),
-            15,
+            16,
         )
         self.assert_rejected(counts_only, "feature names changed")
 
@@ -4675,6 +4801,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             ("api-adapter", "compiled"),
             ("openapi-review", "not_compiled"),
             ("supplied-session-review", "compiled"),
+            ("template-evaluation-review", "compiled"),
             ("tls-observation", "compiled"),
             ("jwt-policy-review", "compiled"),
             ("jwt-target-acceptance-review", "compiled"),
@@ -5930,6 +6057,17 @@ class CandidateOrchestrationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn(
             "unexpectedly exposes non-bundled WebSocket review",
+            result["failure"],
+        )
+
+    def test_packaged_help_must_not_expose_non_bundled_template_evaluation_option(self):
+        result, _ = self.execute(
+            exposed_session_option=EXPECTED_TEMPLATE_EVALUATION_REVIEW_OPTION,
+            path_suffix="-template-evaluation-help",
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(
+            "unexpectedly exposes non-bundled template-evaluation review",
             result["failure"],
         )
 

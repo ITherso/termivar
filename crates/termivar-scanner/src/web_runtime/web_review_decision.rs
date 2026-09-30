@@ -45,6 +45,11 @@ use crate::{
     DecisionLoop,
 };
 
+#[cfg(feature = "template-evaluation-review")]
+use crate::payload_strategies::{
+    TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID, TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+};
+
 #[cfg(feature = "normalization-resilience")]
 use crate::payload_strategies::normalization_resilience_query_pair::{
     NORMALIZATION_RESILIENCE_QUERY_PAIR_ID, NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
@@ -500,6 +505,12 @@ fn payload_strategy_ref(
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => (
             SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
             SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
+        ),
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => (
+            TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+            TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
         ),
         NativeWebReviewActionKind::XssStructuralQueryPair => (
             XSS_STRUCTURAL_QUERY_PAIR_ID,

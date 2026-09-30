@@ -3,7 +3,8 @@
 use super::super::{
     ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit,
     ImportedReconCertSpotterAudit, ImportedReconSnapshotAudit, ImportedSecretExposureAudit,
-    ImportedSuppliedSessionAudit, ImportedTlsObservationAudit, ImportedWebSocketReviewAudit,
+    ImportedSuppliedSessionAudit, ImportedTemplateEvaluationReviewAudit,
+    ImportedTlsObservationAudit, ImportedWebSocketReviewAudit,
     ImportedWordPressAssetFingerprintAudit, ImportedWordPressAudit,
     ImportedXmlExternalEntityReviewAudit, SuppliedSessionResourceBinding, WordPressAdvisoryKey,
     WordPressAssetFingerprintComponentKey, WordPressAssetFingerprintResourceKey,
@@ -92,6 +93,29 @@ const JWT_POLICY_KEY_SOURCE_ASSURANCE: &str = "operator_supplied_not_authenticat
 const JWT_POLICY_TOKEN_KEY_SELECTION: &str = "prohibited";
 const XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA: &str =
     "security.xml-external-entity-review-audit/v1";
+const TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA: &str =
+    "security.template-evaluation-review-audit/v1";
+const TEMPLATE_EVALUATION_REVIEW_POLICY: &str = "termivar.template-evaluation-review/v1";
+const TEMPLATE_EVALUATION_REVIEW_FAMILY: &str =
+    "web.review.template-evaluation.family.jinja-compatible-benign-expression@1";
+pub(super) const TEMPLATE_EVALUATION_REVIEW_CAPABILITY: &str =
+    "web.review.template-evaluation.jinja-compatible-semantics@1";
+pub(super) const TEMPLATE_EVALUATION_REVIEW_TITLE: &str =
+    "Candidate-specific behavior consistent with Jinja-compatible expression semantics";
+pub(super) const TEMPLATE_EVALUATION_REVIEW_CATEGORY: &str = "Template expression evaluation";
+pub(super) const TEMPLATE_EVALUATION_REVIEW_SUMMARY: &str = "Two bounded candidate/replay cases produced candidate-specific benign expression semantics while controls remained negative; template engine identity, operating-system execution, file access, outbound interaction, and impact remain unestablished.";
+pub(super) const TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID: &str =
+    "web.remediation.template-evaluation-review@1";
+pub(super) const TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY: &str = "Review server-side template construction and bind untrusted values as data rather than compiling them as template source.";
+const TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS: [&str; 7] = [
+    "engine_identity_not_established",
+    "candidate_specific_evaluation_does_not_establish_template_engine_identity",
+    "outbound_interaction_not_performed",
+    "os_execution_not_performed",
+    "file_access_not_performed",
+    "impact_validation_not_performed",
+    "vulnerability_confirmation_not_established",
+];
 const XML_EXTERNAL_ENTITY_REVIEW_ALGORITHM: &str =
     "security.xml-external-entity-resolution-review/v1";
 pub(super) const XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY: &str =
@@ -3975,6 +3999,176 @@ pub(super) fn validate_xml_external_entity_review(
         methodology,
         coverage,
         outcome,
+    })
+}
+
+pub(super) fn validate_template_evaluation_review(
+    value: &Value,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<ImportedTemplateEvaluationReviewAudit, ComparisonError> {
+    const OUTCOMES: [&str; 6] = [
+        "parent_not_observed",
+        "literal_or_escaped",
+        "unsupported_representation",
+        "replay_mismatch",
+        "candidate_specific_evaluation",
+        "incomplete",
+    ];
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "policy_id",
+            "family_id",
+            "outcome",
+            "engine_identity",
+            "coverage",
+            "operations",
+            "claim_limits",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA)?;
+    check(string(fields, "policy_id")? == TEMPLATE_EVALUATION_REVIEW_POLICY)?;
+    check(string(fields, "family_id")? == TEMPLATE_EVALUATION_REVIEW_FAMILY)?;
+    let outcome = token(fields, "outcome", &OUTCOMES)?;
+    check(string(fields, "engine_identity")? == "not_established")?;
+
+    let coverage = object(required(fields, "coverage")?)?;
+    keys(
+        coverage,
+        &[
+            "selected_case_count",
+            "attempted_request_count",
+            "active_request_count",
+            "completed_response_count",
+            "committed_response_count",
+            "projected_item_count",
+        ],
+        &[],
+    )?;
+    let selected_case_count = number(coverage, "selected_case_count", 2)?;
+    let attempted_request_count = number(coverage, "attempted_request_count", 4)?;
+    let active_request_count = number(coverage, "active_request_count", 2)?;
+    let completed_response_count = number(coverage, "completed_response_count", 4)?;
+    let committed_response_count = number(coverage, "committed_response_count", 4)?;
+    let projected_item_count = number(coverage, "projected_item_count", 1)?;
+    check(matches!(selected_case_count, 0 | 2))?;
+    check(
+        completed_response_count <= attempted_request_count
+            && committed_response_count <= completed_response_count
+            && active_request_count <= attempted_request_count,
+    )?;
+
+    let operations = object(required(fields, "operations")?)?;
+    keys(
+        operations,
+        &[
+            "outbound_interaction",
+            "os_execution",
+            "file_access",
+            "impact_validation",
+        ],
+        &[],
+    )?;
+    for name in [
+        "outbound_interaction",
+        "os_execution",
+        "file_access",
+        "impact_validation",
+    ] {
+        check(string(operations, name)? == "not_performed")?;
+    }
+
+    let claim_limits = array(fields, "claim_limits")?;
+    check(claim_limits.len() == TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS.len())?;
+    for (actual, expected) in claim_limits
+        .iter()
+        .zip(TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS)
+    {
+        check(actual.as_str() == Some(expected))?;
+    }
+
+    let matching_items = items
+        .values()
+        .filter(|item| item.capability_id == TEMPLATE_EVALUATION_REVIEW_CAPABILITY)
+        .count();
+    check(matching_items <= 1 && projected_item_count == matching_items as u64)?;
+    check(match outcome {
+        "parent_not_observed" => {
+            selected_case_count == 0
+                && attempted_request_count == 0
+                && active_request_count == 0
+                && completed_response_count == 0
+                && committed_response_count == 0
+                && projected_item_count == 0
+        },
+        "candidate_specific_evaluation" => {
+            selected_case_count == 2
+                && attempted_request_count == 4
+                && active_request_count == 2
+                && completed_response_count == 4
+                && committed_response_count == 4
+                && projected_item_count == 1
+        },
+        "literal_or_escaped" | "unsupported_representation" | "replay_mismatch" => {
+            selected_case_count == 2
+                && attempted_request_count == 4
+                && active_request_count == 2
+                && completed_response_count == 4
+                && committed_response_count == 4
+                && projected_item_count == 0
+        },
+        "incomplete" => selected_case_count == 2 && projected_item_count == 0,
+        _ => false,
+    })?;
+
+    let methodology = json_object([
+        (
+            "schema",
+            Value::String(TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA.to_owned()),
+        ),
+        (
+            "policy_id",
+            Value::String(TEMPLATE_EVALUATION_REVIEW_POLICY.to_owned()),
+        ),
+        (
+            "family_id",
+            Value::String(TEMPLATE_EVALUATION_REVIEW_FAMILY.to_owned()),
+        ),
+        (
+            "engine_identity",
+            Value::String("not_established".to_owned()),
+        ),
+        (
+            "operations",
+            canonical_value(required(fields, "operations")?)?,
+        ),
+        (
+            "claim_limits",
+            canonical_value(required(fields, "claim_limits")?)?,
+        ),
+    ]);
+    let coverage_projection = selected_object(
+        coverage,
+        &[
+            "selected_case_count",
+            "attempted_request_count",
+            "active_request_count",
+            "completed_response_count",
+            "committed_response_count",
+        ],
+        &[],
+    )?;
+    let outcome_projection = json_object([
+        ("outcome", Value::String(outcome.to_owned())),
+        ("projected_item_count", Value::from(projected_item_count)),
+    ]);
+    Ok(ImportedTemplateEvaluationReviewAudit {
+        methodology,
+        coverage: coverage_projection,
+        outcome: outcome_projection,
     })
 }
 

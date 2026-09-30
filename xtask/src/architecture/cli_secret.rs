@@ -128,6 +128,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "ssrf_oast_policy",
     "ssrf_oast_review",
     "target",
+    "template_evaluation_review",
     "xml_external_entity_policy",
     "xml_external_entity_review",
 ];
@@ -1111,6 +1112,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("session_auth_stdin", "bool", None),
         ("session_cookie_file", "Option", Some("PathBuf")),
         ("session_login_file", "Option", Some("PathBuf")),
+        ("template_evaluation_review", "bool", None),
         ("authz_primary_env", "Option", Some("OsString")),
         ("authz_primary_file", "Option", Some("PathBuf")),
         ("authz_primary_stdin", "bool", None),
@@ -1384,6 +1386,33 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     }) {
         violations.push(
             "CLI `openapi_review` must remain an exact cfg-gated bool requiring the explicit scan profile"
+                .to_owned(),
+        );
+    }
+
+    if fields
+        .get("template_evaluation_review")
+        .is_none_or(|field| {
+            !is_plain_type(&field.ty, "bool")
+                || !exact_cfg_feature_attribute(&field.attrs, "template-evaluation-review")
+                || !exact_arg_attribute(&field.attrs, "long,requires=\"profile\"")
+        })
+    {
+        violations.push(
+            "CLI `template_evaluation_review` must remain an exact private feature-gated bool requiring the explicit scan profile"
+                .to_owned(),
+        );
+    }
+
+    if !compact.contains(
+        "fnscan_template_evaluation_review_flags_conflict(profile:Option<CliScanProfile>,selected:bool,)->Option<&'staticstr>{ifselected&&profile!=Some(CliScanProfile::WebReview){Some(\"`--template-evaluation-review`requires`--profileweb-review`\")}else{None}}",
+    ) || compact
+        .matches("fnscan_template_evaluation_review_flags_conflict(")
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI template-evaluation review validation must retain the exact explicit web-review-only, value-free preflight"
                 .to_owned(),
         );
     }
@@ -1945,6 +1974,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "scan_websocket_review_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
+        "scan_template_evaluation_review_flags_conflict",
         "scan_wordpress_review_flags_conflict",
         "scan_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
@@ -1996,6 +2026,18 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
     {
         violations.push(
             "CLI control-reference mapping validation must receive the exact selected flag before any input or network work"
+                .to_owned(),
+        );
+    }
+    if compact
+        .matches(
+            "scan_template_evaluation_review_flags_conflict(profile,template_evaluation_review)",
+        )
+        .count()
+        != 1
+    {
+        violations.push(
+            "CLI template-evaluation review validation must receive the exact selected flag before any input or network work"
                 .to_owned(),
         );
     }
@@ -2115,6 +2157,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         || ordered
             .iter()
             .filter(|name| name.as_str() == "scan_progress_flags_conflict")
+            .count()
+            != 1
+        || ordered
+            .iter()
+            .filter(|name| name.as_str() == "scan_template_evaluation_review_flags_conflict")
             .count()
             != 1
         || ordered
@@ -3337,6 +3384,7 @@ fn ordered_boundary_references(function: &ItemFn) -> Vec<String> {
         "scan_websocket_review_flags_conflict",
         "scan_jwt_policy_review_flags_conflict",
         "scan_progress_flags_conflict",
+        "scan_template_evaluation_review_flags_conflict",
         "scan_wordpress_review_flags_conflict",
         "scan_oast_review_flags_conflict",
         "scan_profile_flags_conflict",
@@ -4140,6 +4188,21 @@ mod tests {
                 "    #[cfg(feature = \"openapi-review\")]\n    #[arg(long, requires = \"profile\")]\n    openapi_review: bool,",
                 "    #[arg(long, requires = \"profile\")]\n    openapi_review: bool,",
                 "must remain an exact cfg-gated bool",
+            ),
+            (
+                "    #[cfg(feature = \"template-evaluation-review\")]\n    #[arg(long, requires = \"profile\")]\n    template_evaluation_review: bool,",
+                "    #[arg(long)]\n    template_evaluation_review: bool,",
+                "template_evaluation_review",
+            ),
+            (
+                "if selected && profile != Some(CliScanProfile::WebReview) {\n        Some(\"`--template-evaluation-review` requires `--profile web-review`\")",
+                "if selected && profile.is_none() {\n        Some(\"`--template-evaluation-review` requires `--profile web-review`\")",
+                "template-evaluation review validation must retain",
+            ),
+            (
+                "scan_template_evaluation_review_flags_conflict(profile, template_evaluation_review)",
+                "scan_template_evaluation_review_flags_conflict(profile, false)",
+                "must receive the exact selected flag",
             ),
             (
                 "    #[cfg(feature = \"control-reference-mapping\")]\n    #[arg(long, requires = \"profile\")]\n    control_reference_mapping: bool,",

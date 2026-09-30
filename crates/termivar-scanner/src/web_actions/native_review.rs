@@ -15,6 +15,7 @@ use crate::planner::{RiskScore, VerificationTarget};
 
 /// Number of actions in the native low-risk web-review catalog.
 pub const NATIVE_WEB_REVIEW_ACTION_COUNT: usize = 10
+    + (2 * cfg!(feature = "template-evaluation-review") as usize)
     + cfg!(feature = "normalization-resilience") as usize
     + cfg!(feature = "authorization-review") as usize
     + cfg!(feature = "openapi-review") as usize
@@ -106,6 +107,12 @@ pub enum NativeWebReviewActionKind {
     SstiStructuralQueryPair,
     /// Independent arithmetic replay of the SSTI structural comparison.
     SstiStructuralQueryReplayPair,
+    /// First harmless Jinja-compatible uppercase-filter semantic comparison.
+    #[cfg(feature = "template-evaluation-review")]
+    TemplateJinjaUppercaseQueryPair,
+    /// Independent uppercase-filter replay with a distinct scanner-owned literal.
+    #[cfg(feature = "template-evaluation-review")]
+    TemplateJinjaUppercaseQueryReplayPair,
     /// One context-selected non-executing structural XSS comparison.
     XssStructuralQueryPair,
     /// One source-anchored quote-aware inert attribute-boundary comparison.
@@ -175,6 +182,10 @@ impl NativeWebReviewActionKind {
             Self::SqlStructuralQueryReplayPair,
             Self::SstiStructuralQueryPair,
             Self::SstiStructuralQueryReplayPair,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryPair,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryReplayPair,
             Self::XssStructuralQueryPair,
             Self::XssAttributeBoundaryQueryPair,
             Self::XssScriptLexicalBoundaryQueryPair,
@@ -201,6 +212,14 @@ impl NativeWebReviewActionKind {
             Self::SqlStructuralQueryReplayPair => "web.review.sql.structural-query-replay-pair@1",
             Self::SstiStructuralQueryPair => "web.review.ssti.structural-query-pair@1",
             Self::SstiStructuralQueryReplayPair => "web.review.ssti.structural-query-replay-pair@1",
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryPair => {
+                "web.review.template-evaluation.jinja-uppercase-query-pair@1"
+            },
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryReplayPair => {
+                "web.review.template-evaluation.jinja-uppercase-query-replay-pair@1"
+            },
             Self::XssStructuralQueryPair => "web.review.xss.structural-query-pair@1",
             Self::XssAttributeBoundaryQueryPair => "web.review.xss.attribute-boundary-query-pair@1",
             Self::XssScriptLexicalBoundaryQueryPair => {
@@ -241,6 +260,14 @@ impl NativeWebReviewActionKind {
             Self::SstiStructuralQueryReplayPair => {
                 "web.review.probe.ssti-structural-query-replay-pair@1"
             },
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryPair => {
+                "web.review.probe.template-jinja-uppercase-query-pair@1"
+            },
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryReplayPair => {
+                "web.review.probe.template-jinja-uppercase-query-replay-pair@1"
+            },
             Self::XssStructuralQueryPair => "web.review.probe.xss-structural-query-pair@1",
             Self::XssAttributeBoundaryQueryPair => {
                 "web.review.probe.xss-attribute-boundary-query-pair@1"
@@ -273,6 +300,12 @@ impl NativeWebReviewActionKind {
             Self::SqlStructuralQueryReplayPair => "sql-structural-query-replay-pair",
             Self::SstiStructuralQueryPair => "ssti-structural-query-pair",
             Self::SstiStructuralQueryReplayPair => "ssti-structural-query-replay-pair",
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryPair => "template-jinja-uppercase-query-pair",
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryReplayPair => {
+                "template-jinja-uppercase-query-replay-pair"
+            },
             Self::XssStructuralQueryPair => "xss-structural-query-pair",
             Self::XssAttributeBoundaryQueryPair => "xss-attribute-boundary-query-pair",
             Self::XssScriptLexicalBoundaryQueryPair => "xss-script-lexical-boundary-query-pair",
@@ -306,6 +339,10 @@ impl NativeWebReviewActionKind {
             | Self::XssStructuralQueryPair
             | Self::XssAttributeBoundaryQueryPair
             | Self::XssScriptLexicalBoundaryQueryPair => {
+                NativeWebReviewDifferentialInput::SingleQueryParameter
+            },
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryPair | Self::TemplateJinjaUppercaseQueryReplayPair => {
                 NativeWebReviewDifferentialInput::SingleQueryParameter
             },
             #[cfg(feature = "normalization-resilience")]
@@ -370,6 +407,10 @@ impl NativeWebReviewActionKind {
             | Self::XssStructuralQueryPair
             | Self::XssAttributeBoundaryQueryPair
             | Self::XssScriptLexicalBoundaryQueryPair => 7,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateJinjaUppercaseQueryPair | Self::TemplateJinjaUppercaseQueryReplayPair => {
+                7
+            },
             #[cfg(feature = "normalization-resilience")]
             Self::NormalizationResilienceQueryPair => 7,
             #[cfg(feature = "authorization-review")]
@@ -455,6 +496,20 @@ mod tests {
                 "web.review.probe.ssti-structural-query-replay-pair@1",
                 "ssti-structural-query-replay-pair",
             ),
+            #[cfg(feature = "template-evaluation-review")]
+            (
+                NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+                "web.review.template-evaluation.jinja-uppercase-query-pair@1",
+                "web.review.probe.template-jinja-uppercase-query-pair@1",
+                "template-jinja-uppercase-query-pair",
+            ),
+            #[cfg(feature = "template-evaluation-review")]
+            (
+                NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair,
+                "web.review.template-evaluation.jinja-uppercase-query-replay-pair@1",
+                "web.review.probe.template-jinja-uppercase-query-replay-pair@1",
+                "template-jinja-uppercase-query-replay-pair",
+            ),
             (
                 NativeWebReviewActionKind::XssStructuralQueryPair,
                 "web.review.xss.structural-query-pair@1",
@@ -539,6 +594,10 @@ mod tests {
             800,
             500,
             700,
+            700,
+            #[cfg(feature = "template-evaluation-review")]
+            700,
+            #[cfg(feature = "template-evaluation-review")]
             700,
             700,
             700,

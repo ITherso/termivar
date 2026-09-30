@@ -25,6 +25,11 @@ pub(super) const MAX_REFERENCES: usize = 256;
 pub(super) const MAX_AUDIT_TEXT_BYTES: usize = 4_096;
 pub(super) const MAX_LEGACY_AUDIT_TEXT_BYTES: usize = 2_048;
 const MAX_SUBJECTS: u64 = 1_024;
+// Mirrors the exact feature-owned projection while keeping this saved-report
+// reader independent of the compile-time template-evaluation feature.
+const TEMPLATE_EVALUATION_REVIEW_CONFIDENCE_PPM: u64 = 1_000_000;
+const TEMPLATE_EVALUATION_REVIEW_CONTROL_EVIDENCE_COUNT: usize = 6;
+const TEMPLATE_EVALUATION_REVIEW_CANDIDATE_EVIDENCE_COUNT: usize = 6;
 // Deepest current wire value: root/wordpress_asset_fingerprints/components/
 // component/resources/resource/release_relations/relation/field (root=0).
 // Exact per-schema inventories still reject unrelated shapes at this depth.
@@ -69,6 +74,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             "websocket_review",
             "jwt_policy_review",
             "xml_external_entity_review",
+            "template_evaluation_review",
             "control_reference_mapping",
             "recon_snapshot_import",
             "recon_certspotter",
@@ -108,6 +114,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     let mut websocket_review = None;
     let mut jwt_policy_review = None;
     let mut xml_external_entity_review = None;
+    let mut template_evaluation_review = None;
     let mut control_reference_mapping = None;
     let mut recon_snapshot_import = None;
     let mut recon_certspotter = None;
@@ -123,6 +130,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         "websocket_review",
         "jwt_policy_review",
         "xml_external_entity_review",
+        "template_evaluation_review",
         "control_reference_mapping",
         "recon_snapshot_import",
         "recon_certspotter",
@@ -145,6 +153,9 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             } else if name == "xml_external_entity_review" {
                 xml_external_entity_review =
                     Some(audits::validate_xml_external_entity_review(value, &items)?);
+            } else if name == "template_evaluation_review" {
+                template_evaluation_review =
+                    Some(audits::validate_template_evaluation_review(value, &items)?);
             } else if name == "control_reference_mapping" {
                 control_reference_mapping =
                     Some(audits::validate_control_reference_mapping(value, &items)?);
@@ -238,6 +249,12 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             .any(|item| item.capability_id == audits::XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY)
             || xml_external_entity_review.is_some(),
     )?;
+    check(
+        !items
+            .values()
+            .any(|item| item.capability_id == audits::TEMPLATE_EVALUATION_REVIEW_CAPABILITY)
+            || template_evaluation_review.is_some(),
+    )?;
     Ok(ImportedDocument {
         metadata: SourceMetadata {
             sha256: format!("{:x}", Sha256::digest(bytes)),
@@ -258,6 +275,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
         websocket_review,
         jwt_policy_review,
         xml_external_entity_review,
+        template_evaluation_review,
         control_reference_mapping,
         recon_snapshot_import,
         recon_certspotter,
@@ -431,6 +449,9 @@ fn item(value: &Value, subject_count: u64) -> Result<(String, ImportedItem), Com
     if capability_id == audits::XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY {
         validate_xml_external_entity_item(fields, subject, &evidence, remediation)?;
     }
+    if capability_id == audits::TEMPLATE_EVALUATION_REVIEW_CAPABILITY {
+        validate_template_evaluation_review_item(fields, subject, &evidence, remediation)?;
+    }
     Ok((
         fingerprint.to_owned(),
         ImportedItem {
@@ -508,6 +529,43 @@ fn validate_xml_external_entity_item(
         ordinals
             .windows(2)
             .all(|pair| pair[0].checked_add(1) == Some(pair[1])),
+    )
+}
+
+fn validate_template_evaluation_review_item(
+    fields: &Map<String, Value>,
+    subject: u32,
+    evidence: &EvidenceMetadata,
+    remediation: &Map<String, Value>,
+) -> Result<(), ComparisonError> {
+    check(
+        subject == 0
+            && string(fields, "title")? == audits::TEMPLATE_EVALUATION_REVIEW_TITLE
+            && string(fields, "disposition")? == "needs_review"
+            && string(fields, "claim_basis")? == "differential"
+            && optional_token(
+                fields,
+                "severity",
+                &["info", "low", "medium", "high", "critical"],
+            )?
+            .is_none()
+            && number(fields, "confidence_ppm", 1_000_000)?
+                == TEMPLATE_EVALUATION_REVIEW_CONFIDENCE_PPM
+            && string(fields, "redacted_summary")? == audits::TEMPLATE_EVALUATION_REVIEW_SUMMARY
+            && string(fields, "category")? == audits::TEMPLATE_EVALUATION_REVIEW_CATEGORY
+            && optional_text(fields, "cwe", MAX_IDENTIFIER_BYTES)? == Some("CWE-1336")
+            && string(remediation, "id")? == audits::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID
+            && string(remediation, "summary")?
+                == audits::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY
+            && evidence.evidence_count
+                == (TEMPLATE_EVALUATION_REVIEW_CONTROL_EVIDENCE_COUNT
+                    + TEMPLATE_EVALUATION_REVIEW_CANDIDATE_EVIDENCE_COUNT)
+                    as u64
+            && evidence.evidence_reference_count == 0
+            && evidence.control_reference_count
+                == TEMPLATE_EVALUATION_REVIEW_CONTROL_EVIDENCE_COUNT
+            && evidence.candidate_reference_count
+                == TEMPLATE_EVALUATION_REVIEW_CANDIDATE_EVIDENCE_COUNT,
     )
 }
 

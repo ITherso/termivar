@@ -24,6 +24,11 @@ use crate::payload_strategies::normalization_resilience_query_pair::{
     NORMALIZATION_RESILIENCE_QUERY_PAIR_ID, NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
 };
 use crate::payload_strategies::ssti_arithmetic_expression_pair::SstiArithmeticProbe;
+#[cfg(feature = "template-evaluation-review")]
+use crate::payload_strategies::template_jinja_uppercase_expression_pair::{
+    TemplateJinjaUppercaseProbe, TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+    TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+};
 use crate::{
     decision_runner::{
         DecisionActionExecutor, DecisionExecutionStage, DecisionExecutorRegistry,
@@ -113,6 +118,8 @@ pub(crate) struct NativeWebReviewQueryParameters {
     reflection: Option<String>,
     sql: Option<String>,
     ssti: Option<String>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation: Option<String>,
     xss: Option<(String, XssProbeSelection)>,
     #[cfg(feature = "normalization-resilience")]
     normalization: Option<(String, NormalizationTransformSelection)>,
@@ -124,12 +131,15 @@ impl NativeWebReviewQueryParameters {
         reflection: Option<String>,
         sql: Option<String>,
         ssti: Option<String>,
+        #[cfg(feature = "template-evaluation-review")] template_evaluation: Option<String>,
     ) -> Self {
         Self {
             redirect,
             reflection,
             sql,
             ssti,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation,
             xss: None,
             #[cfg(feature = "normalization-resilience")]
             normalization: None,
@@ -141,7 +151,14 @@ impl NativeWebReviewQueryParameters {
         sql: Option<String>,
         ssti: Option<String>,
     ) -> Self {
-        Self::full(None, reflection, sql, ssti)
+        Self::full(
+            None,
+            reflection,
+            sql,
+            ssti,
+            #[cfg(feature = "template-evaluation-review")]
+            None,
+        )
     }
 
     pub(crate) fn xss_only(parameter: String, selection: XssProbeSelection) -> Self {
@@ -150,6 +167,8 @@ impl NativeWebReviewQueryParameters {
             reflection: None,
             sql: None,
             ssti: None,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation: None,
             xss: Some((parameter, selection)),
             #[cfg(feature = "normalization-resilience")]
             normalization: None,
@@ -166,6 +185,8 @@ impl NativeWebReviewQueryParameters {
             reflection: None,
             sql: None,
             ssti: None,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation: None,
             xss: None,
             normalization: Some((parameter, selection)),
         }
@@ -181,6 +202,49 @@ pub(crate) fn enabled_native_web_review_actions(
     ssti_query_configured: bool,
     xss_action: Option<NativeWebReviewActionKind>,
 ) -> Vec<NativeWebReviewActionKind> {
+    enabled_native_web_review_actions_internal(
+        include_cors,
+        redirect_query_configured,
+        reflection_query_configured,
+        sql_query_configured,
+        ssti_query_configured,
+        false,
+        xss_action,
+    )
+}
+
+#[cfg(feature = "template-evaluation-review")]
+pub(crate) fn enabled_native_web_review_actions_with_template(
+    include_cors: bool,
+    redirect_query_configured: bool,
+    reflection_query_configured: bool,
+    sql_query_configured: bool,
+    ssti_query_configured: bool,
+    template_query_configured: bool,
+    xss_action: Option<NativeWebReviewActionKind>,
+) -> Vec<NativeWebReviewActionKind> {
+    enabled_native_web_review_actions_internal(
+        include_cors,
+        redirect_query_configured,
+        reflection_query_configured,
+        sql_query_configured,
+        ssti_query_configured,
+        template_query_configured,
+        xss_action,
+    )
+}
+
+fn enabled_native_web_review_actions_internal(
+    include_cors: bool,
+    redirect_query_configured: bool,
+    reflection_query_configured: bool,
+    sql_query_configured: bool,
+    ssti_query_configured: bool,
+    template_query_configured: bool,
+    xss_action: Option<NativeWebReviewActionKind>,
+) -> Vec<NativeWebReviewActionKind> {
+    #[cfg(not(feature = "template-evaluation-review"))]
+    let _ = template_query_configured;
     NativeWebReviewActionKind::all()
         .into_iter()
         .filter(|kind| match kind {
@@ -191,6 +255,11 @@ pub(crate) fn enabled_native_web_review_actions(
             | NativeWebReviewActionKind::SqlStructuralQueryReplayPair => sql_query_configured,
             NativeWebReviewActionKind::SstiStructuralQueryPair
             | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => ssti_query_configured,
+            #[cfg(feature = "template-evaluation-review")]
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+            | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => {
+                template_query_configured
+            },
             NativeWebReviewActionKind::XssStructuralQueryPair
             | NativeWebReviewActionKind::XssAttributeBoundaryQueryPair
             | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
@@ -226,14 +295,16 @@ pub(crate) struct NativeWebReviewExecutorProfile {
     reflection_query_configured: bool,
     sql_query_configured: bool,
     ssti_query_configured: bool,
+    #[cfg(feature = "template-evaluation-review")]
+    template_query_configured: bool,
     xss_action: Option<NativeWebReviewActionKind>,
     cors_configured: bool,
 }
 
 impl fmt::Debug for NativeWebReviewExecutorProfile {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("NativeWebReviewExecutorProfile")
+        let mut debug = formatter.debug_struct("NativeWebReviewExecutorProfile");
+        debug
             .field(
                 "actions",
                 &self
@@ -256,7 +327,10 @@ impl fmt::Debug for NativeWebReviewExecutorProfile {
                 &self.reflection_query_configured,
             )
             .field("sql_query_configured", &self.sql_query_configured)
-            .field("ssti_query_configured", &self.ssti_query_configured)
+            .field("ssti_query_configured", &self.ssti_query_configured);
+        #[cfg(feature = "template-evaluation-review")]
+        debug.field("template_query_configured", &self.template_query_configured);
+        debug
             .field(
                 "xss_action",
                 &self.xss_action.map(NativeWebReviewActionKind::action_id),
@@ -324,6 +398,8 @@ impl NativeWebReviewExecutorProfile {
             reflection: reflection_query_parameter,
             sql: sql_query_parameter,
             ssti: ssti_query_parameter,
+            #[cfg(feature = "template-evaluation-review")]
+                template_evaluation: template_query_parameter,
             xss: xss_query_parameter,
             #[cfg(feature = "normalization-resilience")]
                 normalization: normalization_query_parameter,
@@ -346,6 +422,17 @@ impl NativeWebReviewExecutorProfile {
         } else {
             xss_action
         };
+        #[cfg(feature = "template-evaluation-review")]
+        let enabled_actions = enabled_native_web_review_actions_with_template(
+            include_cors,
+            redirect_query_parameter.is_some(),
+            reflection_query_parameter.is_some(),
+            sql_query_parameter.is_some(),
+            ssti_query_parameter.is_some(),
+            template_query_parameter.is_some(),
+            xss_action,
+        );
+        #[cfg(not(feature = "template-evaluation-review"))]
         let enabled_actions = enabled_native_web_review_actions(
             include_cors,
             redirect_query_parameter.is_some(),
@@ -354,6 +441,8 @@ impl NativeWebReviewExecutorProfile {
             ssti_query_parameter.is_some(),
             xss_action,
         );
+        #[cfg(feature = "template-evaluation-review")]
+        let template_query_configured = template_query_parameter.is_some();
 
         let mut bindings = Vec::new();
         if enabled_actions.contains(&NativeWebReviewActionKind::CorsPolicyPair) {
@@ -505,6 +594,41 @@ impl NativeWebReviewExecutorProfile {
             }
         }
 
+        #[cfg(feature = "template-evaluation-review")]
+        if let Some(parameter) = template_query_parameter {
+            for (kind, probe) in [
+                (
+                    NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+                    seeds.template_primary_probe(),
+                ),
+                (
+                    NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair,
+                    seeds.template_replay_probe(),
+                ),
+            ] {
+                let payload = HttpQueryPayloadBinding::new(
+                    strategies.clone(),
+                    payload_strategy_reference(kind)?,
+                    PayloadSeed::new(probe.seed().into_bytes(), limits)?,
+                    limits,
+                    parameter.clone(),
+                )?;
+                let executor = configure_executor(
+                    HttpEvidenceExecutor::with_id_and_request_broker(
+                        kind.executor_id(),
+                        requests.clone(),
+                        provider.clone(),
+                    )?
+                    .with_query_payload_binding(payload),
+                    observer.as_ref(),
+                );
+                bindings.push(NativeExecutorBinding {
+                    kind,
+                    executor: Arc::new(executor),
+                });
+            }
+        }
+
         if let Some((parameter, selection)) = xss_query_parameter {
             let kind = selection.action_kind();
             let seed = selection.strategy_seed(seeds.reflection_identity());
@@ -579,6 +703,8 @@ impl NativeWebReviewExecutorProfile {
             reflection_query_configured,
             sql_query_configured,
             ssti_query_configured,
+            #[cfg(feature = "template-evaluation-review")]
+            template_query_configured,
             xss_action,
             cors_configured: include_cors,
         })
@@ -661,6 +787,8 @@ impl NativeWebReviewExecutorProfile {
                 redirect: redirect_query_parameter,
                 sql: None,
                 ssti: None,
+                #[cfg(feature = "template-evaluation-review")]
+                template_evaluation: None,
                 xss: None,
                 #[cfg(feature = "normalization-resilience")]
                 normalization: None,
@@ -693,6 +821,12 @@ fn payload_strategy_reference(
         | NativeWebReviewActionKind::SstiStructuralQueryReplayPair => (
             SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
             SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
+        ),
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => (
+            TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+            TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
         ),
         NativeWebReviewActionKind::XssStructuralQueryPair => (
             XSS_STRUCTURAL_QUERY_PAIR_ID,
@@ -782,12 +916,16 @@ pub(crate) struct NativeWebReviewSeeds {
     sql_token: String,
     ssti_primary_probe: SstiArithmeticProbe,
     ssti_replay_probe: SstiArithmeticProbe,
+    #[cfg(feature = "template-evaluation-review")]
+    template_primary_probe: TemplateJinjaUppercaseProbe,
+    #[cfg(feature = "template-evaluation-review")]
+    template_replay_probe: TemplateJinjaUppercaseProbe,
 }
 
 impl fmt::Debug for NativeWebReviewSeeds {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("NativeWebReviewSeeds")
+        let mut debug = formatter.debug_struct("NativeWebReviewSeeds");
+        debug
             .field("origin", &"<redacted>")
             .field("cors_origin_bytes", &self.cors_origin.len())
             .field("external_url_bytes", &self.external_url.len())
@@ -796,9 +934,13 @@ impl fmt::Debug for NativeWebReviewSeeds {
             .field(
                 "ssti_probe_family",
                 &"web.review.ssti.family.brace-arithmetic@1",
-            )
-            .field("values", &"<redacted>")
-            .finish()
+            );
+        #[cfg(feature = "template-evaluation-review")]
+        debug.field(
+            "template_probe_family",
+            &"web.review.template-evaluation.family.jinja-compatible-benign-expression@1",
+        );
+        debug.field("values", &"<redacted>").finish()
     }
 }
 
@@ -819,6 +961,12 @@ impl NativeWebReviewSeeds {
         let ssti_replay_probe =
             SstiArithmeticProbe::new(lowercase_hex(&digest[8..16]), replay_left, replay_right)
                 .expect("bounded digest-derived replay SSTI operands are valid");
+        #[cfg(feature = "template-evaluation-review")]
+        let template_primary_probe = TemplateJinjaUppercaseProbe::new(lowercase_hex(&digest[..8]))
+            .expect("bounded digest-derived primary template nonce is valid");
+        #[cfg(feature = "template-evaluation-review")]
+        let template_replay_probe = TemplateJinjaUppercaseProbe::new(lowercase_hex(&digest[8..16]))
+            .expect("bounded digest-derived replay template nonce is valid");
         Ok(Self {
             origin_identity: origin,
             cors_origin: format!("https://cors-{identity}.review.invalid"),
@@ -827,6 +975,10 @@ impl NativeWebReviewSeeds {
             sql_token: format!("venom-review-{identity}"),
             ssti_primary_probe,
             ssti_replay_probe,
+            #[cfg(feature = "template-evaluation-review")]
+            template_primary_probe,
+            #[cfg(feature = "template-evaluation-review")]
+            template_replay_probe,
         })
     }
 
@@ -888,6 +1040,16 @@ impl NativeWebReviewSeeds {
 
     pub(crate) fn ssti_replay_probe(&self) -> &SstiArithmeticProbe {
         &self.ssti_replay_probe
+    }
+
+    #[cfg(feature = "template-evaluation-review")]
+    pub(crate) fn template_primary_probe(&self) -> &TemplateJinjaUppercaseProbe {
+        &self.template_primary_probe
+    }
+
+    #[cfg(feature = "template-evaluation-review")]
+    pub(crate) fn template_replay_probe(&self) -> &TemplateJinjaUppercaseProbe {
+        &self.template_replay_probe
     }
 
     fn matches_origin(&self, root: &Url) -> bool {

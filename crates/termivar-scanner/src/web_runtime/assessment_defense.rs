@@ -712,6 +712,11 @@ const fn native_interaction_class(kind: NativeWebReviewActionKind) -> DefenseInt
         | NativeWebReviewActionKind::XssScriptLexicalBoundaryQueryPair => {
             DefenseInteractionClass::DifferentialRead
         },
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => {
+            DefenseInteractionClass::DifferentialRead
+        },
         #[cfg(feature = "normalization-resilience")]
         NativeWebReviewActionKind::NormalizationResilienceQueryPair => {
             DefenseInteractionClass::DifferentialRead

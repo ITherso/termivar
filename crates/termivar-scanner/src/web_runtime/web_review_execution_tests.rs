@@ -48,6 +48,12 @@ fn expected_strategy(kind: NativeWebReviewActionKind) -> Option<PayloadStrategyR
             SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
             SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
         ),
+        #[cfg(feature = "template-evaluation-review")]
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair
+        | NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair => (
+            crate::payload_strategies::TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+            crate::payload_strategies::TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+        ),
         NativeWebReviewActionKind::XssStructuralQueryPair => (
             XSS_STRUCTURAL_QUERY_PAIR_ID,
             XSS_STRUCTURAL_QUERY_PAIR_REVISION,
@@ -350,6 +356,8 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
                 reflection: reflection.map(str::to_owned),
                 sql: sql.map(str::to_owned),
                 ssti: ssti.map(str::to_owned),
+                #[cfg(feature = "template-evaluation-review")]
+                template_evaluation: None,
                 xss: None,
                 #[cfg(feature = "normalization-resilience")]
                 normalization: None,
@@ -373,6 +381,54 @@ fn decision_and_executor_share_each_subject_specific_enabled_action_set() {
             NativeWebReviewDecisionProfile::for_actions(executor_actions.iter().copied()).unwrap();
         assert_eq!(decision.actions().collect::<Vec<_>>(), executor_actions);
     }
+}
+
+#[cfg(feature = "template-evaluation-review")]
+#[test]
+fn root_profile_adds_exactly_two_template_actions_to_existing_native_review() {
+    let root = Url::parse("https://example.test/review").unwrap();
+    let seeds = NativeWebReviewSeeds::from_authorized_origin(&root).unwrap();
+    let observer = Arc::new(
+        super::super::assessment_review::AssessmentReviewObserverSet::new_with_sql(
+            root.clone(),
+            seeds.clone(),
+            Some("item"),
+            Some("item"),
+            Some("item"),
+            Some("item"),
+        )
+        .unwrap()
+        .with_template_evaluation("item")
+        .unwrap(),
+    );
+    let profile = NativeWebReviewExecutorProfile::new(
+        broker_for_test(&root),
+        root,
+        seeds,
+        observer,
+        NativeWebReviewQueryParameters::full(
+            Some("item".to_owned()),
+            Some("item".to_owned()),
+            Some("item".to_owned()),
+            Some("item".to_owned()),
+            Some("item".to_owned()),
+        ),
+    )
+    .unwrap();
+    let enabled = profile.actions().collect::<Vec<_>>();
+    assert_eq!(
+        enabled,
+        enabled_native_web_review_actions_with_template(true, true, true, true, true, true, None,)
+    );
+    assert!(enabled.contains(&NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair));
+    assert!(enabled.contains(&NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair));
+    assert!(
+        profile.supports_exact_strategy(NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair)
+    );
+    assert!(profile
+        .supports_exact_strategy(NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair));
+    let decision = NativeWebReviewDecisionProfile::for_actions(enabled.iter().copied()).unwrap();
+    assert_eq!(decision.actions().collect::<Vec<_>>(), enabled);
 }
 
 #[test]

@@ -34,6 +34,13 @@ use crate::jwt_target_acceptance::{
     JWT_TARGET_ACCEPTANCE_POLICY_ID, MAX_JWT_TARGET_ACCEPTANCE_ACTIVE_REQUESTS,
     MAX_JWT_TARGET_ACCEPTANCE_REQUESTS,
 };
+#[cfg(feature = "template-evaluation-review")]
+use crate::template_evaluation_review::{
+    TemplateEvaluationReviewAudit, TemplateEvaluationReviewOutcome,
+    TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID, TEMPLATE_EVALUATION_REVIEW_CATEGORY,
+    TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID, TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY,
+    TEMPLATE_EVALUATION_REVIEW_SUMMARY, TEMPLATE_EVALUATION_REVIEW_TITLE,
+};
 #[cfg(feature = "xml-external-entity-review")]
 use crate::xml_external_entity_review::{
     XmlExternalEntityReviewAudit, XmlExternalEntityReviewOutcome,
@@ -43,8 +50,13 @@ use crate::xml_external_entity_review::{
     XML_EXTERNAL_ENTITY_TARGET_REQUESTS,
 };
 
-#[cfg(feature = "secret-exposure-review")]
+#[cfg(any(
+    feature = "secret-exposure-review",
+    feature = "template-evaluation-review"
+))]
 use super::assessment_item::AssessmentBasis;
+#[cfg(feature = "template-evaluation-review")]
+use super::assessment_item::AssessmentDisposition;
 #[cfg(feature = "openapi-review")]
 use super::openapi_runtime::{
     OpenApiRuntimeOutcome, WebAssessmentOpenApiAudit, MAX_OPENAPI_REVIEW_REQUESTS,
@@ -80,6 +92,8 @@ use super::tls_observation::{
     TLS_OBSERVATION_CLOCK_ASSURANCE, TLS_OBSERVATION_POLICY_ID, TLS_OBSERVATION_REVOCATION_STATUS,
     TLS_OBSERVATION_SOURCE_SCOPE, TLS_OBSERVATION_VALIDATION_SCOPE,
 };
+#[cfg(feature = "template-evaluation-review")]
+use super::web_assessment::TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE;
 #[cfg(feature = "websocket-review")]
 use super::websocket_runtime::{
     WebAssessmentWebSocketReviewAudit, WebSocketReviewMessageStatus,
@@ -287,6 +301,8 @@ pub struct AssessmentRunReport {
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
     #[cfg(feature = "xml-external-entity-review")]
     xml_external_entity_review: Option<XmlExternalEntityReviewAudit>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_review: Option<TemplateEvaluationReviewAudit>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WebAssessmentWordPressAudit>,
     #[cfg(feature = "secret-exposure-review")]
@@ -321,6 +337,8 @@ struct AssessmentReviewAudits {
     ssrf_oast_review: Option<WebAssessmentSsrfOastAudit>,
     #[cfg(feature = "xml-external-entity-review")]
     xml_external_entity_review: Option<XmlExternalEntityReviewAudit>,
+    #[cfg(feature = "template-evaluation-review")]
+    template_evaluation_review: Option<TemplateEvaluationReviewAudit>,
     #[cfg(feature = "wordpress-review")]
     wordpress_review: Option<WebAssessmentWordPressAudit>,
     #[cfg(feature = "secret-exposure-review")]
@@ -356,6 +374,9 @@ impl AssessmentRunReport {
         #[cfg(feature = "xml-external-entity-review")] xml_external_entity_review: Option<
             XmlExternalEntityReviewAudit,
         >,
+        #[cfg(feature = "template-evaluation-review")] template_evaluation_review: Option<
+            TemplateEvaluationReviewAudit,
+        >,
         #[cfg(feature = "wordpress-review")] wordpress_review: Option<WebAssessmentWordPressAudit>,
         #[cfg(feature = "secret-exposure-review")] secret_exposure_review: Option<
             WebAssessmentSecretExposureAudit,
@@ -389,6 +410,8 @@ impl AssessmentRunReport {
                 ssrf_oast_review,
                 #[cfg(feature = "xml-external-entity-review")]
                 xml_external_entity_review,
+                #[cfg(feature = "template-evaluation-review")]
+                template_evaluation_review,
                 #[cfg(feature = "wordpress-review")]
                 wordpress_review,
                 #[cfg(feature = "secret-exposure-review")]
@@ -433,6 +456,8 @@ impl AssessmentRunReport {
             ssrf_oast_review,
             #[cfg(feature = "xml-external-entity-review")]
             xml_external_entity_review,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
@@ -500,6 +525,12 @@ impl AssessmentRunReport {
             truth.expected_accounting.request_body_bytes().consumed(),
             truth.expected_accounting.response_body_bytes().consumed(),
         )?;
+        #[cfg(feature = "template-evaluation-review")]
+        validate_template_evaluation_review_audit(
+            template_evaluation_review.as_ref(),
+            &items,
+            truth.expected_accounting.requests().consumed(),
+        )?;
         #[cfg(feature = "wordpress-review")]
         validate_wordpress_audit(wordpress_review.as_ref(), &items)?;
         #[cfg(feature = "secret-exposure-review")]
@@ -543,6 +574,8 @@ impl AssessmentRunReport {
             ssrf_oast_review,
             #[cfg(feature = "xml-external-entity-review")]
             xml_external_entity_review,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_review,
             #[cfg(feature = "wordpress-review")]
             wordpress_review,
             #[cfg(feature = "secret-exposure-review")]
@@ -646,6 +679,12 @@ impl AssessmentRunReport {
     #[cfg(feature = "xml-external-entity-review")]
     pub const fn xml_external_entity_review_audit(&self) -> Option<&XmlExternalEntityReviewAudit> {
         self.xml_external_entity_review.as_ref()
+    }
+
+    /// Returns the optional value-free benign template-evaluation audit.
+    #[cfg(feature = "template-evaluation-review")]
+    pub const fn template_evaluation_review_audit(&self) -> Option<&TemplateEvaluationReviewAudit> {
+        self.template_evaluation_review.as_ref()
     }
 
     /// Returns the optional redaction-safe, transport-free WordPress audit.
@@ -1342,6 +1381,62 @@ fn validate_xml_external_entity_audit(
     }
 }
 
+#[cfg(feature = "template-evaluation-review")]
+fn validate_template_evaluation_review_audit(
+    audit: Option<&TemplateEvaluationReviewAudit>,
+    items: &[AssessmentItem],
+    assessment_request_count: Option<u64>,
+) -> Result<(), AssessmentRunReportError> {
+    let matching_items = items
+        .iter()
+        .filter(|item| item.capability_id() == TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID)
+        .collect::<Vec<_>>();
+    if matching_items.len() > 1 {
+        return Err(AssessmentRunReportError::TemplateEvaluationReviewAuditMismatch);
+    }
+    let Some(audit) = audit else {
+        return if matching_items.is_empty() {
+            Ok(())
+        } else {
+            Err(AssessmentRunReportError::TemplateEvaluationReviewAuditMismatch)
+        };
+    };
+
+    let projected_count = usize::from(audit.projected_item_count());
+    if audit.capability_id() != TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID
+        || projected_count != matching_items.len()
+        || !assessment_request_count
+            .is_some_and(|parent| u64::from(audit.attempted_request_count()) <= parent)
+        || (audit.outcome() == TemplateEvaluationReviewOutcome::CandidateSpecificEvaluation)
+            != (projected_count == 1)
+    {
+        return Err(AssessmentRunReportError::TemplateEvaluationReviewAuditMismatch);
+    }
+
+    if let Some(item) = matching_items.first() {
+        let remediation = item.remediation();
+        let AssessmentBasis::Differential(basis) = item.basis() else {
+            return Err(AssessmentRunReportError::TemplateEvaluationReviewAuditMismatch);
+        };
+        if item.presentation_target_kind() != "query_parameter"
+            || item.title() != TEMPLATE_EVALUATION_REVIEW_TITLE
+            || item.disposition() != AssessmentDisposition::NeedsReview
+            || item.severity().is_some()
+            || item.redacted_summary() != TEMPLATE_EVALUATION_REVIEW_SUMMARY
+            || item.category() != TEMPLATE_EVALUATION_REVIEW_CATEGORY
+            || item.cwe() != Some("CWE-1336")
+            || remediation.id() != TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID
+            || remediation.summary() != TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY
+            || basis.control().is_empty()
+            || basis.candidate().is_empty()
+            || basis.paired_comparison().is_some()
+        {
+            return Err(AssessmentRunReportError::TemplateEvaluationReviewAuditMismatch);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "openapi-review")]
 fn validate_openapi_audit(
     audit: Option<&WebAssessmentOpenApiAudit>,
@@ -1484,6 +1579,11 @@ impl fmt::Debug for AssessmentRunReport {
         debug.field(
             "xml_external_entity_review_audit_present",
             &self.xml_external_entity_review.is_some(),
+        );
+        #[cfg(feature = "template-evaluation-review")]
+        debug.field(
+            "template_evaluation_review_audit_present",
+            &self.template_evaluation_review.is_some(),
         );
         #[cfg(feature = "wordpress-review")]
         debug.field(
@@ -2581,6 +2681,10 @@ pub enum AssessmentRunReportError {
     #[cfg(feature = "xml-external-entity-review")]
     #[error("controlled XML review audit does not match projected item truth")]
     XmlExternalEntityAuditMismatch,
+    /// The optional benign template-evaluation audit disagreed with projected item truth.
+    #[cfg(feature = "template-evaluation-review")]
+    #[error("template-evaluation review audit does not match projected item truth")]
+    TemplateEvaluationReviewAuditMismatch,
     /// The optional WordPress audit disagreed with projected item truth.
     #[cfg(feature = "wordpress-review")]
     #[error("WordPress review audit does not match projected item truth")]
@@ -2822,6 +2926,8 @@ fn validate_completed_assessment_truth_with_active_limit(
         let allowance = allowance.saturating_add(1);
         #[cfg(feature = "rest-review")]
         let allowance = allowance.saturating_add(1);
+        #[cfg(feature = "template-evaluation-review")]
+        let allowance = allowance.saturating_add(TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE);
         #[cfg(feature = "xml-external-entity-review")]
         let allowance = allowance.saturating_add(
             u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS)
@@ -3778,6 +3884,10 @@ mod tests {
         let root = runtime.authorized_root();
         let limits = WebAssessmentLimits::default();
         let compiled_allowance = 6_u16;
+        #[cfg(feature = "template-evaluation-review")]
+        let compiled_allowance = compiled_allowance
+            .checked_add(TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE)
+            .unwrap();
         #[cfg(feature = "xml-external-entity-review")]
         let compiled_allowance = compiled_allowance
             .checked_add(u16::try_from(XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS).unwrap())
@@ -3818,6 +3928,61 @@ mod tests {
             validate_completed_assessment_truth_with_active_limit(
                 root,
                 AssessmentRuntimeLimits::new(limits, expected + 1, compiled_allowance + 1),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+    }
+
+    #[cfg(feature = "template-evaluation-review")]
+    #[test]
+    fn template_evaluation_has_exact_two_active_control_allowance() {
+        let runtime =
+            WebAssessmentRuntime::builder(Url::parse("https://example.test/review").unwrap())
+                .build()
+                .unwrap();
+        let root = runtime.authorized_root();
+        let limits = WebAssessmentLimits::default();
+        let allowance = TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE;
+        let expected = limits
+            .max_active_verifications()
+            .checked_add(allowance)
+            .unwrap();
+        let usage = AssessmentUsageTruth {
+            active_verifications: allowance,
+            ..usage_truth(root.url().as_str())
+        };
+        let profile = ScanProfileV1::web_review().unwrap();
+
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected, allowance),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected - 1, allowance),
+                usage,
+                &WebAssessmentCompletion::Complete,
+                WebAssessmentDefenseMode::ObservationOnly,
+                &profile,
+            ),
+            Err(AssessmentRunReportError::AssessmentUsageMismatch)
+        );
+        assert_eq!(
+            validate_completed_assessment_truth_with_active_limit(
+                root,
+                AssessmentRuntimeLimits::new(limits, expected, allowance + 1),
                 usage,
                 &WebAssessmentCompletion::Complete,
                 WebAssessmentDefenseMode::ObservationOnly,

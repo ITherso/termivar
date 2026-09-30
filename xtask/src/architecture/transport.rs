@@ -896,8 +896,8 @@ fn inspect_native_review_execution_broker_boundary(
     Ok(violations.into_iter().collect())
 }
 
-const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 29_776;
-const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x8527_2255_8ecc_5916_5bb4_b93d_fa2f_4e9d;
+const EXACT_NATIVE_REVIEW_EXECUTION_TOKEN_BYTES: usize = 35_418;
+const EXACT_NATIVE_REVIEW_EXECUTION_FINGERPRINT: u128 = 0x07d1_d788_bd7f_faab_67f8_a7ca_4b7e_a984;
 
 fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     let exact_tests = matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -1519,6 +1519,7 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
             || attributes_are_exact_cfg_feature(&arm.attrs, "authorization-review")
             || attributes_are_exact_cfg_feature(&arm.attrs, "openapi-review")
             || attributes_are_exact_cfg_feature(&arm.attrs, "rest-review")
+            || attributes_are_exact_cfg_feature(&arm.attrs, "template-evaluation-review")
             || attributes_are_exact_cfg_feature(&arm.attrs, "ssrf-oast-review"))
             && arm.guard.is_none()
             && collect_exact_native_review_patterns(&arm.pat, &mut variants)
@@ -1546,6 +1547,8 @@ fn native_defense_classifier_is_exact(function: &syn::ItemFn) -> bool {
                 "XssStructuralQueryPair".to_owned(),
                 "XssAttributeBoundaryQueryPair".to_owned(),
                 "XssScriptLexicalBoundaryQueryPair".to_owned(),
+                "TemplateJinjaUppercaseQueryPair".to_owned(),
+                "TemplateJinjaUppercaseQueryReplayPair".to_owned(),
                 "NormalizationResilienceQueryPair".to_owned(),
                 "OpenApiDocumentReplay".to_owned(),
                 "RestReadOnlyReplay".to_owned(),
@@ -1578,6 +1581,8 @@ fn collect_exact_native_review_patterns(
                 "XssStructuralQueryPair",
                 "XssAttributeBoundaryQueryPair",
                 "XssScriptLexicalBoundaryQueryPair",
+                "TemplateJinjaUppercaseQueryPair",
+                "TemplateJinjaUppercaseQueryReplayPair",
                 "NormalizationResilienceQueryPair",
                 "OpenApiDocumentReplay",
                 "RestReadOnlyReplay",
@@ -3633,6 +3638,13 @@ fn authority_allowance_binding_is_exact(local: &syn::Local) -> bool {
             message: "compiled authorization allowance fits u16",
         },
         AllowanceSpec {
+            feature: "template-evaluation-review",
+            field: "template_evaluation_review",
+            boolean_source: AllowanceBooleanSource::Direct,
+            amount: AllowanceAmount::Direct("TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE"),
+            message: "compiled template-evaluation allowance fits u16",
+        },
+        AllowanceSpec {
             feature: "jwt-target-acceptance-review",
             field: "jwt_target_acceptance_review",
             boolean_source: AllowanceBooleanSource::IsSome,
@@ -3710,6 +3722,47 @@ fn fixture_authority_allowance_binding_is_exact(local: &syn::Local) -> bool {
         if literal.attrs.is_empty()
             && matches!(&literal.lit, syn::Lit::Int(value)
                 if value.base10_digits() == "0" && value.suffix() == "u16"))
+}
+
+fn completed_truth_template_allowance_is_exact(block: &syn::Block) -> bool {
+    let locals = direct_locals_binding_normalized_identifier(block, "compiled_optional_allowance");
+    let [local] = locals.as_slice() else {
+        return false;
+    };
+    let Some(syn::Expr::Block(expression)) =
+        plain_local_initializer(local, "compiled_optional_allowance")
+    else {
+        return false;
+    };
+    let template_steps = expression
+        .block
+        .stmts
+        .iter()
+        .filter_map(|statement| match statement {
+            syn::Stmt::Local(local)
+                if local_has_exact_cfg(local, "feature=\"template-evaluation-review\"") =>
+            {
+                Some(local)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [step] = template_steps.as_slice() else {
+        return false;
+    };
+    let Some(initializer) = &step.init else {
+        return false;
+    };
+    matches!(initializer.expr.as_ref(), syn::Expr::MethodCall(call)
+        if initializer.diverge.is_none()
+            && authority_binding_is_named(step, "allowance")
+            && call.attrs.is_empty()
+            && call.method == "saturating_add"
+            && call.turbofish.is_none()
+            && expression_is_path_ident(&call.receiver, "allowance")
+            && call.args.len() == 1
+            && call.args.first().is_some_and(|argument|
+                expression_is_path_ident(argument, "TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE")))
 }
 
 fn initial_zero_allowance_is_exact(statement: &syn::Stmt) -> bool {
@@ -5304,6 +5357,12 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             .as_ref()
                             .is_some_and(|ident| ident_name(ident) == "xml_external_entity_review")
                     });
+                    let template_evaluation_review = item.fields.iter().find(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident_name(ident) == "template_evaluation_review")
+                    });
                     let supplied_session = item.fields.iter().find(|field| {
                         field
                             .ident
@@ -5391,6 +5450,15 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                             &field.attrs,
                             "xml-external-entity-review",
                         )
+                    }) || template_evaluation_review.is_none_or(|field| {
+                        !is_generic_of_idents(
+                            &field.ty,
+                            "Option",
+                            &["TemplateEvaluationReviewAudit"],
+                        ) || !attributes_are_exact_cfg_feature(
+                            &field.attrs,
+                            "template-evaluation-review",
+                        )
                     }) || openapi_review.is_none_or(|field| {
                         !is_generic_of_idents(&field.ty, "Option", &["WebAssessmentOpenApiAudit"])
                             || !attributes_are_exact_cfg_feature(&field.attrs, "openapi-review")
@@ -5434,6 +5502,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                                     | "websocket_review"
                                     | "jwt_target_acceptance"
                                     | "xml_external_entity_review"
+                                    | "template_evaluation_review"
                                     | "openapi_review"
                                     | "rest_review"
                                     | "secret_exposure_review"
@@ -5445,7 +5514,7 @@ fn inspect_web_assessment_models(source: &str) -> Result<Vec<String>, syn::Error
                         }) && !field.attrs.is_empty()
                     }) {
                         violations.push(
-                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress redacted audit fields, plus the XML external-entity and JWT target-acceptance redacted audit fields, and no other conditional fields"
+                            "WebAssessmentRunReport must retain exactly one private cfg(reporting) SystemTime run_started_at field, exact private feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, WordPress, XML external-entity, template-evaluation, and JWT target-acceptance redacted audit fields, and no other conditional fields"
                                 .to_owned(),
                         );
                     }
@@ -7960,7 +8029,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
     let report_shape_is_exact = report.is_some_and(|item| {
         matches!(item.vis, syn::Visibility::Public(_))
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 20
+                fields.len() == 21
                     && fields
                         .get("run_report")
                         .is_some_and(|field| is_plain_ident(field, "RunReport"))
@@ -8038,6 +8107,15 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                         .is_some_and(|field| {
                             is_generic_of_idents(field, "Option", &["XmlExternalEntityReviewAudit"])
                         })
+                    && fields
+                        .get("template_evaluation_review")
+                        .is_some_and(|field| {
+                            is_generic_of_idents(
+                                field,
+                                "Option",
+                                &["TemplateEvaluationReviewAudit"],
+                            )
+                        })
                     && fields.get("wordpress_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentWordPressAudit"])
                     })
@@ -8083,6 +8161,9 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "xml_external_entity_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "xml-external-entity-review")
             })
+            && private_named_field(item, "template_evaluation_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "template-evaluation-review")
+            })
             && private_named_field(item, "wordpress_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
             })
@@ -8094,7 +8175,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             .and_then(private_named_fields)
             .map(|fields| fields.keys().cloned().collect::<Vec<_>>());
         violations.push(format!(
-            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus XML external-entity, JWT target-acceptance, and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
+            "AssessmentRunReport must privately retain the validated run/profile, consumed subject inventory, typed items, and exact feature-gated redacted supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus XML external-entity, template-evaluation, JWT target-acceptance, and independently attached local JWT-policy, offline control-reference mapping, and inert reconnaissance snapshot audits; observed fields {observed:?}"
         ));
     }
 
@@ -8110,7 +8191,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 &["Clone", "Copy", "Serialize", "Deserialize"],
             )
             && private_named_fields(item).is_some_and(|fields| {
-                fields.len() == 12
+                fields.len() == 13
                     && fields.get("supplied_session").is_some_and(|field| {
                         is_generic_of_idents(
                             field,
@@ -8158,6 +8239,15 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                         .is_some_and(|field| {
                             is_generic_of_idents(field, "Option", &["XmlExternalEntityReviewAudit"])
                         })
+                    && fields
+                        .get("template_evaluation_review")
+                        .is_some_and(|field| {
+                            is_generic_of_idents(
+                                field,
+                                "Option",
+                                &["TemplateEvaluationReviewAudit"],
+                            )
+                        })
                     && fields.get("wordpress_review").is_some_and(|field| {
                         is_generic_of_idents(field, "Option", &["WebAssessmentWordPressAudit"])
                     })
@@ -8194,13 +8284,16 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
             && private_named_field(item, "xml_external_entity_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "xml-external-entity-review")
             })
+            && private_named_field(item, "template_evaluation_review").is_some_and(|field| {
+                attributes_are_exact_cfg_feature(&field.attrs, "template-evaluation-review")
+            })
             && private_named_field(item, "wordpress_review").is_some_and(|field| {
                 attributes_are_exact_cfg_feature(&field.attrs, "wordpress-review")
             })
     });
     if !review_audits_shape_is_exact {
         violations.push(
-            "AssessmentReviewAudits must remain one private Default-only container with exactly the twelve feature-gated redacted audit values"
+            "AssessmentReviewAudits must remain one private Default-only container with exactly the thirteen feature-gated redacted audit values"
                 .to_owned(),
         );
     }
@@ -8252,7 +8345,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
         });
     if !completed_constructor {
         violations.push(
-            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, XML external-entity, and WordPress audits, plus JWT target-acceptance, build the generic envelope internally, and then validate it"
+            "AssessmentRunReport::from_completed_truth must consume AssessmentItemSet plus runtime-owned completion truth and only the exact feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, XML external-entity, template-evaluation, WordPress, and JWT target-acceptance audits, build the generic envelope internally, and then validate it"
                 .to_owned(),
         );
     }
@@ -8315,6 +8408,7 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                     "validate_recon_ct_provider_audit",
                     "validate_ssrf_oast_audit",
                     "validate_xml_external_entity_audit",
+                    "validate_template_evaluation_review_audit",
                     "validate_wordpress_audit",
                     "jwt_policy_review",
                     "control_reference_mapping",
@@ -8374,11 +8468,40 @@ fn inspect_assessment_report_boundary(source: &str) -> Result<Vec<String>, syn::
                 "validate_xml_external_entity_audit",
                 "Self",
             )
+            && statement_reference_precedes(
+                &method.block,
+                "validate_template_evaluation_review_audit",
+                "Self",
+            )
             && statement_reference_precedes(&method.block, "validate_wordpress_audit", "Self")
     });
     if !validator {
         violations.push(
-            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus XML external-entity and JWT target-acceptance, before construction"
+            "AssessmentRunReport::new_validated must remain private and validate run identity/completion/accounting, the exact root subject, inventory, items, and feature-gated supplied-session, authorization, OpenAPI, REST, passive secret-exposure, TLS-observation, Cert Spotter reconnaissance, SSRF/OAST, and WordPress audits, plus XML external-entity, template-evaluation, and JWT target-acceptance, before construction"
+                .to_owned(),
+        );
+    }
+
+    let template_evaluation_audit_accessor = report_methods
+        .get("template_evaluation_review_audit")
+        .is_some_and(|method| {
+            matches!(method.vis, syn::Visibility::Public(_))
+                && attributes_are_exact_cfg_feature_allowing_docs(
+                    &method.attrs,
+                    "template-evaluation-review",
+                )
+                && method.sig.constness.is_some()
+                && method.sig.receiver().is_some_and(|receiver| {
+                    receiver.reference.is_some() && receiver.mutability.is_none()
+                })
+                && typed_input_types(method).is_empty()
+                && matches!(&method.sig.output, syn::ReturnType::Type(_, output)
+                    if is_optional_borrowed_ident(output, "TemplateEvaluationReviewAudit"))
+                && block_references_all(&method.block, &["template_evaluation_review", "as_ref"])
+        });
+    if !template_evaluation_audit_accessor {
+        violations.push(
+            "AssessmentRunReport::template_evaluation_review_audit must remain the exact feature-gated borrowed accessor to the value-free benign expression-semantics audit"
                 .to_owned(),
         );
     }
@@ -8894,7 +9017,10 @@ fn inspect_assessment_report_truth_validators(syntax: &syn::File) -> Vec<String>
                         "active_verifications",
                         "runtime_active_verification_limit",
                         "max_active_verifications",
+                        "optional_active_verification_allowance",
+                        "compiled_optional_allowance",
                         "saturating_add",
+                        "TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE",
                         "XML_EXTERNAL_ENTITY_ACTIVE_VERIFICATIONS",
                         "request_body_bytes",
                         "max_request_body_bytes",
@@ -8905,6 +9031,7 @@ fn inspect_assessment_report_truth_validators(syntax: &syn::File) -> Vec<String>
                         "AssessmentUsageMismatch",
                     ],
                 )
+                && completed_truth_template_allowance_is_exact(&function.block)
         });
     if !assessment_truth {
         violations.push(
@@ -9788,7 +9915,7 @@ fn assessment_report_constructor_inputs_are_exact(
     } else {
         ["AssessmentItemSet", "CompletedWebAssessmentTruth"].as_slice()
     };
-    typed.len() == expected_prefix.len() + 12
+    typed.len() == expected_prefix.len() + 13
         && typed
             .iter()
             .take(expected_prefix.len())
@@ -9861,6 +9988,16 @@ fn assessment_report_constructor_inputs_are_exact(
         && typed
             .get(expected_prefix.len() + 8)
             .is_some_and(|argument| {
+                attributes_are_exact_cfg_feature(&argument.attrs, "template-evaluation-review")
+                    && is_generic_of_idents(
+                        &argument.ty,
+                        "Option",
+                        &["TemplateEvaluationReviewAudit"],
+                    )
+            })
+        && typed
+            .get(expected_prefix.len() + 9)
+            .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "wordpress-review")
                     && is_generic_of_idents(
                         &argument.ty,
@@ -9869,7 +10006,7 @@ fn assessment_report_constructor_inputs_are_exact(
                     )
             })
         && typed
-            .get(expected_prefix.len() + 9)
+            .get(expected_prefix.len() + 10)
             .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "secret-exposure-review")
                     && is_generic_of_idents(
@@ -9879,7 +10016,7 @@ fn assessment_report_constructor_inputs_are_exact(
                     )
             })
         && typed
-            .get(expected_prefix.len() + 10)
+            .get(expected_prefix.len() + 11)
             .is_some_and(|argument| {
                 attributes_are_exact_cfg_feature(&argument.attrs, "tls-observation")
                     && is_generic_of_idents(
@@ -17213,6 +17350,28 @@ mod tests {
             .join("\n");
         assert!(violations.contains("JWT target-acceptance"), "{violations}");
 
+        let missing_template_evaluation_audit = report_source.replacen(
+            "    #[cfg(feature = \"template-evaluation-review\")]\n    template_evaluation_review: Option<TemplateEvaluationReviewAudit>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_template_evaluation_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&missing_template_evaluation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("template-evaluation"), "{violations}");
+
+        let forged_template_evaluation_accessor =
+            report_source.replacen("self.template_evaluation_review.as_ref()", "None", 1);
+        assert_ne!(forged_template_evaluation_accessor, report_source);
+        let violations = inspect_assessment_report_boundary(&forged_template_evaluation_accessor)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("template_evaluation_review_audit must remain"),
+            "{violations}"
+        );
+
         let missing_control_mapping_audit = report_source.replacen(
             "    #[cfg(feature = \"control-reference-mapping\")]\n    control_reference_mapping: Option<ControlReferenceMappingAudit>,\n",
             "",
@@ -17505,6 +17664,17 @@ mod tests {
             "{violations}"
         );
 
+        let unvalidated_template_evaluation_audit = report_source.replacen(
+            "        #[cfg(feature = \"template-evaluation-review\")]\n        validate_template_evaluation_review_audit(\n            template_evaluation_review.as_ref(),\n            &items,\n            truth.expected_accounting.requests().consumed(),\n        )?;",
+            "        #[cfg(feature = \"template-evaluation-review\")]\n        let _ = template_evaluation_review.as_ref();",
+            1,
+        );
+        assert_ne!(unvalidated_template_evaluation_audit, report_source);
+        let violations = inspect_assessment_report_boundary(&unvalidated_template_evaluation_audit)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("template-evaluation"), "{violations}");
+
         for escaped_audit_container in [
             report_source.replacen(
                 "#[derive(Default)]\nstruct AssessmentReviewAudits {",
@@ -17528,7 +17698,7 @@ mod tests {
                 .join("\n");
             assert!(
                 violations.contains(
-                "AssessmentReviewAudits must remain one private Default-only container with exactly the twelve feature-gated redacted audit values"
+                    "AssessmentReviewAudits must remain one private Default-only container with exactly the thirteen feature-gated redacted audit values"
                 ),
                 "{violations}"
             );
@@ -17593,6 +17763,28 @@ mod tests {
             violations.contains("accept the runtime-owned start"),
             "{violations}"
         );
+
+        for weakened_template_allowance in [
+            report_source.replacen(
+                "#[cfg(feature = \"template-evaluation-review\")]\n        let allowance = allowance.saturating_add(TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE);",
+                "#[cfg(feature = \"template-evaluation-review\")]\n        let allowance = allowance.saturating_add(0);",
+                1,
+            ),
+            report_source.replacen(
+                "#[cfg(feature = \"template-evaluation-review\")]\n        let allowance = allowance.saturating_add(TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE);",
+                "let allowance = allowance.saturating_add(TEMPLATE_EVALUATION_ACTIVE_VERIFICATION_ALLOWANCE);",
+                1,
+            ),
+        ] {
+            assert_ne!(weakened_template_allowance, report_source);
+            let violations = inspect_assessment_report_boundary(&weakened_template_allowance)
+                .unwrap()
+                .join("\n");
+            assert!(
+                violations.contains("completed assessment truth validator"),
+                "{violations}"
+            );
+        }
 
         for (original, replacement) in [
             (
@@ -17943,6 +18135,7 @@ mod tests {
             pub struct WebAssessmentReconCtProviderAudit { outcome: String }
             pub struct WebAssessmentSsrfOastAudit { outcome: String }
             pub struct XmlExternalEntityReviewAudit { outcome: String }
+            pub struct TemplateEvaluationReviewAudit { outcome: String }
             pub struct WebAssessmentSuppliedSessionAudit { outcome: String }
             pub struct WebAssessmentWordPressAudit { outcome: String }
             #[non_exhaustive]
@@ -17987,6 +18180,8 @@ mod tests {
                 jwt_target_acceptance: Option<JwtTargetAcceptanceAudit>,
                 #[cfg(feature = "xml-external-entity-review")]
                 xml_external_entity_review: Option<XmlExternalEntityReviewAudit>,
+                #[cfg(feature = "template-evaluation-review")]
+                template_evaluation_review: Option<TemplateEvaluationReviewAudit>,
                 #[cfg(feature = "openapi-review")]
                 openapi_review: Option<WebAssessmentOpenApiAudit>,
                 #[cfg(feature = "rest-review")]

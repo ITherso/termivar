@@ -29,6 +29,7 @@ const FEATURE_NAMES: &[&str] = &[
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "template-evaluation-review",
     "tls-observation",
     "websocket-review",
     "wordpress-review",
@@ -167,6 +168,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "supplied-session-review",
             cfg!(feature = "supplied-session-review"),
         ),
+        (
+            "template-evaluation-review",
+            cfg!(feature = "template-evaluation-review"),
+        ),
         ("tls-observation", cfg!(feature = "tls-observation")),
         ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
@@ -220,6 +225,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
     assert_eq!(
         surface_state(&document, "option.supplied-session-review"),
         states["supplied-session-review"]
+    );
+    assert_eq!(
+        surface_state(&document, "option.template-evaluation-review"),
+        states["template-evaluation-review"]
     );
     assert_eq!(
         surface_state(&document, "option.tls-observation"),
@@ -524,6 +533,39 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "one of --oast-admin-token-env, --oast-admin-token-file, or --oast-admin-token-stdin"
         ])
     );
+    let template_evaluation = document["surfaces"]
+        .as_array()
+        .expect("surface array")
+        .iter()
+        .find(|surface| surface["key"] == "option.template-evaluation-review")
+        .expect("template-evaluation surface");
+    assert_eq!(
+        template_evaluation["documentation"],
+        "docs/internals/template-evaluation-review.md"
+    );
+    assert_eq!(template_evaluation["maturity"], "experimental");
+    assert_eq!(
+        template_evaluation["implementation_status"],
+        "experimental_limited"
+    );
+    assert_eq!(
+        template_evaluation["prerequisites"],
+        serde_json::json!(["--profile web-review", "--template-evaluation-review"])
+    );
+    let template_limit = template_evaluation["limitation"]
+        .as_str()
+        .expect("template-evaluation limitation");
+    for claim in [
+        "two independently replayed",
+        "existing exact-origin broker",
+        "at most four requests and two active candidate legs inside the shared parent allowance",
+        "does not identify the template engine",
+        "operating-system commands",
+        "outbound interaction",
+        "outside default, release-bundle, and published alpha.2 archives",
+    ] {
+        assert!(template_limit.contains(claim), "missing claim: {claim}");
+    }
     let xml_limit = xml_external_entity["limitation"]
         .as_str()
         .expect("XML external-entity limitation");
@@ -869,6 +911,10 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         ),
         ("option.ssrf-oast-review", "--ssrf-oast-review"),
         (
+            "option.template-evaluation-review",
+            "--template-evaluation-review",
+        ),
+        (
             "option.xml-external-entity-review",
             "--xml-external-entity-review",
         ),
@@ -1026,6 +1072,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
         "secret-exposure-review",
         "ssrf-oast-review",
         "supplied-session-review",
+        "template-evaluation-review",
         "tls-observation",
         "jwt-policy-review",
         "jwt-target-acceptance-review",
@@ -1053,7 +1100,7 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
                     .values()
                     .filter(|state| **state == "not_compiled")
                     .count(),
-                15
+                16
             );
         },
         "rest-only" => {
@@ -1126,6 +1173,12 @@ fn matrix_case_proves_release_bundle_is_composition_not_origin() {
             assert!(FEATURE_NAMES
                 .iter()
                 .all(|feature| { *feature == "xml-external-entity-review" || !compiled(feature) }));
+        },
+        "template-evaluation-only" => {
+            assert!(compiled("template-evaluation-review"));
+            assert!(FEATURE_NAMES
+                .iter()
+                .all(|feature| { *feature == "template-evaluation-review" || !compiled(feature) }));
         },
         "xml-external-entity-owned-https-profile" => {
             assert!(compiled("xml-external-entity-owned-https-test-profile"));

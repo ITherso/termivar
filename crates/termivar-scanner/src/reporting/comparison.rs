@@ -41,6 +41,9 @@ pub(super) const JWT_POLICY_REVIEW_COMPARISON_SCHEMA: &str =
 /// Additive, display-only controlled XML external-entity review comparison.
 pub(super) const XML_EXTERNAL_ENTITY_REVIEW_COMPARISON_SCHEMA: &str =
     "termivar-xml-external-entity-review-comparison/v1";
+/// Additive, display-only benign template-evaluation review comparison.
+pub(super) const TEMPLATE_EVALUATION_REVIEW_COMPARISON_SCHEMA: &str =
+    "termivar-template-evaluation-review-comparison/v1";
 /// Additive, display-only control-reference mapping comparison section.
 pub(super) const CONTROL_REFERENCE_MAPPING_COMPARISON_SCHEMA: &str =
     "termivar-control-reference-mapping-comparison/v1";
@@ -224,6 +227,8 @@ pub(super) struct ComparisonDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) xml_external_entity_review_comparison: Option<XmlExternalEntityReviewComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) template_evaluation_review_comparison: Option<TemplateEvaluationReviewComparison>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) control_reference_mapping_comparison: Option<ControlReferenceMappingComparison>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) recon_snapshot_import_comparison: Option<ReconSnapshotImportComparison>,
@@ -303,6 +308,18 @@ pub(super) struct JwtPolicyReviewComparison {
 
 #[derive(Debug, Serialize)]
 pub(super) struct XmlExternalEntityReviewComparison {
+    pub(super) schema: &'static str,
+    pub(super) status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<&'static str>,
+    pub(super) methodology: WordPressFacetComparison,
+    pub(super) coverage: WordPressFacetComparison,
+    pub(super) outcome: WordPressFacetComparison,
+    pub(super) interpretation_limits: [&'static str; 6],
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct TemplateEvaluationReviewComparison {
     pub(super) schema: &'static str,
     pub(super) status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -512,6 +529,13 @@ pub(super) struct ImportedXmlExternalEntityReviewAudit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImportedTemplateEvaluationReviewAudit {
+    pub(super) methodology: Value,
+    pub(super) coverage: Value,
+    pub(super) outcome: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ImportedControlReferenceMappingAudit {
     pub(super) methodology: Value,
     pub(super) coverage: Value,
@@ -621,6 +645,7 @@ struct ImportedDocument {
     websocket_review: Option<ImportedWebSocketReviewAudit>,
     jwt_policy_review: Option<ImportedJwtPolicyReviewAudit>,
     xml_external_entity_review: Option<ImportedXmlExternalEntityReviewAudit>,
+    template_evaluation_review: Option<ImportedTemplateEvaluationReviewAudit>,
     control_reference_mapping: Option<ImportedControlReferenceMappingAudit>,
     recon_snapshot_import: Option<ImportedReconSnapshotAudit>,
     recon_certspotter: Option<ImportedReconCertSpotterAudit>,
@@ -665,6 +690,10 @@ fn compare_documents(
         before.xml_external_entity_review.as_ref(),
         after.xml_external_entity_review.as_ref(),
     );
+    let template_evaluation_review_comparison = compare_template_evaluation_review(
+        before.template_evaluation_review.as_ref(),
+        after.template_evaluation_review.as_ref(),
+    );
     let control_reference_mapping_comparison = compare_control_reference_mapping(
         before.control_reference_mapping.as_ref(),
         after.control_reference_mapping.as_ref(),
@@ -700,6 +729,7 @@ fn compare_documents(
         websocket_review_comparison,
         jwt_policy_review_comparison,
         xml_external_entity_review_comparison,
+        template_evaluation_review_comparison,
         control_reference_mapping_comparison,
         recon_snapshot_import_comparison,
         recon_certspotter_comparison,
@@ -1209,6 +1239,68 @@ fn compare_xml_external_entity_review(
             "File read, data exfiltration, internal-network access, parser identity, semantic response effect, and impact validation were not performed or established.",
             "A one-sided or incomplete audit is not evidence that behavior appeared, disappeared, was blocked, or was remediated.",
             "Equal saved values do not establish equivalent deployment, authorization, provider health, review coverage, or target security.",
+        ],
+    })
+}
+
+fn compare_template_evaluation_review(
+    before: Option<&ImportedTemplateEvaluationReviewAudit>,
+    after: Option<&ImportedTemplateEvaluationReviewAudit>,
+) -> Option<TemplateEvaluationReviewComparison> {
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+    let (status, reason) = match (before, after) {
+        (Some(_), Some(_)) => ("compared", None),
+        (Some(_), None) => ("not_comparable", Some("after_audit_missing")),
+        (None, Some(_)) => ("not_comparable", Some("before_audit_missing")),
+        (None, None) => return None,
+    };
+    let facet_status = |before: Option<&Value>, after: Option<&Value>| {
+        if status == "compared" {
+            paired_status(before, after)
+        } else {
+            "not_comparable"
+        }
+    };
+    Some(TemplateEvaluationReviewComparison {
+        schema: TEMPLATE_EVALUATION_REVIEW_COMPARISON_SCHEMA,
+        status,
+        reason,
+        methodology: facet(
+            before.map(|audit| &audit.methodology),
+            after.map(|audit| &audit.methodology),
+            facet_status(
+                before.map(|audit| &audit.methodology),
+                after.map(|audit| &audit.methodology),
+            ),
+            "Policy, harmless expression family, engine-identity limitation, operation declarations, or claim-limit changes are methodology changes; they do not establish a target security change or template-engine identity.",
+        ),
+        coverage: facet(
+            before.map(|audit| &audit.coverage),
+            after.map(|audit| &audit.coverage),
+            facet_status(
+                before.map(|audit| &audit.coverage),
+                after.map(|audit| &audit.coverage),
+            ),
+            "Selected cases and bounded request/response commitment counts describe review coverage. Reduced, missing, or incomplete coverage is not remediation or parser hardening.",
+        ),
+        outcome: facet(
+            before.map(|audit| &audit.outcome),
+            after.map(|audit| &audit.outcome),
+            facet_status(
+                before.map(|audit| &audit.outcome),
+                after.map(|audit| &audit.outcome),
+            ),
+            "The classified benign-expression outcome and projected-item count are separate from methodology and coverage. A changed outcome does not establish a particular engine, operating-system execution, file access, outbound interaction, impact, vulnerability, or remediation.",
+        ),
+        interpretation_limits: [
+            "The comparison retains no expression, query name or value, URL, response body, template source, engine banner, token, credential, file path, command, or raw error.",
+            "Candidate-specific evaluation means only that two bounded benign candidate/replay cases differed from their controls under the declared family.",
+            "The listed family is compatible with Jinja-like semantics but does not authenticate or uniquely identify a template engine.",
+            "Operating-system execution, file access, outbound interaction, and impact validation were not performed.",
+            "A one-sided or incomplete audit is not evidence that behavior appeared, disappeared, was blocked, or was remediated.",
+            "Equal saved values do not establish equivalent deployment, authorization, response coverage, source authenticity, or target security.",
         ],
     })
 }
@@ -1859,6 +1951,12 @@ Unchanged means equality of the compared projection, not proof of security.\n\n"
             xml_external_entity_review,
         )?;
     }
+    if let Some(template_evaluation_review) = &document.template_evaluation_review_comparison {
+        write_template_evaluation_review_comparison_markdown(
+            &mut output,
+            template_evaluation_review,
+        )?;
+    }
     if let Some(control_reference_mapping) = &document.control_reference_mapping_comparison {
         write_control_reference_mapping_comparison_markdown(
             &mut output,
@@ -2249,6 +2347,52 @@ fn write_xml_external_entity_review_comparison_markdown(
         output.push_str("\n\n")?;
     }
     output.push_str("### XML external-entity review interpretation limits\n\n")?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("- ")?;
+        write_markdown_code_span(output, limit)?;
+        output.push_char('\n')?;
+    }
+    output.push_char('\n')?;
+    Ok(())
+}
+
+fn write_template_evaluation_review_comparison_markdown(
+    output: &mut RenderBuffer,
+    comparison: &TemplateEvaluationReviewComparison,
+) -> Result<(), ComparisonError> {
+    output.push_str("## Benign template-evaluation review differences\n\n- Schema: ")?;
+    write_markdown_code_span(output, comparison.schema)?;
+    output.push_str("\n- Status: ")?;
+    write_markdown_code_span(output, comparison.status)?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("\n- Reason: ")?;
+        write_markdown_code_span(output, reason)?;
+    }
+    output.push_str(
+        "\n\nThis section compares validated, value-free projections of two bounded benign expression cases. It retains no expression, query value, response body, template source, engine banner, file path, command, or raw error. It does not identify a template engine or establish operating-system execution, file access, outbound interaction, impact, vulnerability, or remediation.\n\n",
+    )?;
+    for (label, facet) in [
+        ("Methodology", &comparison.methodology),
+        ("Coverage", &comparison.coverage),
+        ("Outcome", &comparison.outcome),
+    ] {
+        output.push_fmt(format_args!(
+            "### Template-evaluation {label}\n\n- Status: "
+        ))?;
+        write_markdown_code_span(output, &facet.status)?;
+        if !facet.changed_fields.is_empty() {
+            output.push_str("\n- Changed fields: ")?;
+            write_markdown_code_span(output, &facet.changed_fields.join(", "))?;
+        }
+        output.push_str("\n- Before: ")?;
+        write_markdown_code_span(output, &display_json(facet.before.as_ref())?)?;
+        output.push_str("\n- After: ")?;
+        write_markdown_code_span(output, &display_json(facet.after.as_ref())?)?;
+        output.push_str("\n- Interpretation: ")?;
+        write_markdown_code_span(output, facet.note)?;
+        output.push_str("\n\n")?;
+    }
+    output.push_str("### Template-evaluation interpretation limits\n\n")?;
     for limit in comparison.interpretation_limits {
         output.push_str("- ")?;
         write_markdown_code_span(output, limit)?;

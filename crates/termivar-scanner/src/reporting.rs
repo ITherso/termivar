@@ -41,6 +41,27 @@ use crate::jwt_target_acceptance::{
 };
 #[cfg(all(feature = "scanning", feature = "rest-review"))]
 use crate::rest_review::RestDocumentedResponseClass;
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+use crate::template_evaluation_review::{
+    TemplateEvaluationReviewAudit, TemplateEvaluationReviewOutcome,
+    TEMPLATE_EVALUATION_ENGINE_IDENTITY, TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED,
+    TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA, TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID,
+    TEMPLATE_EVALUATION_REVIEW_CATEGORY, TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS,
+    TEMPLATE_EVALUATION_REVIEW_FAMILY_ID, TEMPLATE_EVALUATION_REVIEW_POLICY_ID,
+    TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID, TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY,
+    TEMPLATE_EVALUATION_REVIEW_SUMMARY, TEMPLATE_EVALUATION_REVIEW_TITLE,
+};
+
+// Mirrors the closed projection emitted by
+// `assessment_review_projection::TEMPLATE_EVALUATION_REVIEW`. Keeping these
+// values in the writer contract makes a producer change fail closed instead of
+// silently changing the saved-report meaning.
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+const TEMPLATE_EVALUATION_REVIEW_CONFIDENCE_PPM: u32 = 1_000_000;
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+const TEMPLATE_EVALUATION_REVIEW_CONTROL_EVIDENCE_COUNT: usize = 6;
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+const TEMPLATE_EVALUATION_REVIEW_CANDIDATE_EVIDENCE_COUNT: usize = 6;
 #[cfg(all(feature = "scanning", feature = "recon-ct-provider"))]
 use crate::web_runtime::WebAssessmentReconCtProviderAudit;
 #[cfg(all(
@@ -1224,6 +1245,63 @@ fn render_assessment_csv(
             ],
         )?;
     }
+    #[cfg(feature = "template-evaluation-review")]
+    if let Some(audit) = &document.template_evaluation_review {
+        let evidence_count = document
+            .items
+            .iter()
+            .find(|item| item.capability_id == TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID)
+            .map_or(0, |item| item.evidence_count)
+            .to_string();
+        let summary = audit.wire_json()?;
+        write_assessment_csv_row(
+            &mut output,
+            [
+                "template_evaluation_review_audit",
+                audit.schema,
+                "",
+                "",
+                "",
+                "",
+                audit.outcome,
+                "",
+                "",
+                "",
+                TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID,
+                "",
+                "",
+                if audit.coverage.projected_item_count == 1 {
+                    "needs_review"
+                } else {
+                    ""
+                },
+                if audit.coverage.projected_item_count == 1 {
+                    "differential"
+                } else {
+                    ""
+                },
+                "",
+                "",
+                "",
+                &evidence_count,
+                &summary,
+                "template-evaluation-review",
+                if audit.coverage.projected_item_count == 1 {
+                    "CWE-1336"
+                } else {
+                    ""
+                },
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        )?;
+    }
     #[cfg(feature = "openapi-review")]
     if let Some(audit) = &document.openapi_review {
         let request_count = audit.request_count.to_string();
@@ -2238,6 +2316,27 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
         output.push_str(
             "<section><h2>Controlled XML external-entity review audit</h2>\
 <p class=\"wp-note\">This audit records a bounded callback-control review without retaining endpoint URLs or paths, provider origins, callback values, XML bodies, system literals, tokens, response bodies, or raw errors. Repeated candidate and replay interactions remain review-level evidence: they do not confirm XXE, identify a parser, prove file read, data exfiltration, internal-network access, semantic effect, or impact.</p><dl class=\"meta\">",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_str("<dt>")?;
+            write_html_text(&mut output, label)?;
+            output.push_str("</dt><dd><code>")?;
+            write_html_text(&mut output, &value)?;
+            output.push_str("</code></dd>")?;
+        }
+        output.push_str("</dl><h3>Claim limits</h3><ul>")?;
+        for limit in &audit.claim_limits {
+            output.push_str("<li><code>")?;
+            write_html_text(&mut output, limit)?;
+            output.push_str("</code></li>")?;
+        }
+        output.push_str("</ul></section>")?;
+    }
+    #[cfg(feature = "template-evaluation-review")]
+    if let Some(audit) = &document.template_evaluation_review {
+        output.push_str(
+            "<section><h2>Template-evaluation review audit</h2>\
+<p class=\"wp-note\">This audit records bounded, benign primary/replay differential semantics without retaining expressions, query values, URLs, response bodies, template-engine errors, or raw transport errors. Candidate-specific evaluation does not establish a template-engine identity, operating-system execution, file access, outbound interaction, vulnerability confirmation, or impact.</p><dl class=\"meta\">",
         )?;
         for (label, value) in audit.metadata() {
             output.push_str("<dt>")?;
@@ -4755,6 +4854,23 @@ fn render_assessment_markdown(
             output.push_char('\n')?;
         }
     }
+    #[cfg(feature = "template-evaluation-review")]
+    if let Some(audit) = &document.template_evaluation_review {
+        output.push_str(
+            "\n### Template-evaluation review audit\n\nThis audit records bounded, benign primary/replay differential semantics without retaining expressions, query values, URLs, response bodies, template-engine errors, or raw transport errors. Candidate-specific evaluation does not establish a template-engine identity, operating-system execution, file access, outbound interaction, vulnerability confirmation, or impact.\n\n",
+        )?;
+        for (label, value) in audit.metadata() {
+            output.push_fmt(format_args!("- {label}: "))?;
+            write_markdown_code_span(&mut output, &value)?;
+            output.push_char('\n')?;
+        }
+        output.push_str("\n#### Claim limits\n\n")?;
+        for limit in &audit.claim_limits {
+            output.push_str("- ")?;
+            write_markdown_code_span(&mut output, limit)?;
+            output.push_char('\n')?;
+        }
+    }
     #[cfg(feature = "openapi-review")]
     if let Some(audit) = &document.openapi_review {
         output.push_str("\n### OpenAPI review audit\n\n")?;
@@ -5116,6 +5232,9 @@ struct AssessmentDocument<'a> {
     #[cfg(feature = "xml-external-entity-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     xml_external_entity_review: Option<AssessmentXmlExternalEntityReviewAuditDocument>,
+    #[cfg(feature = "template-evaluation-review")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_evaluation_review: Option<AssessmentTemplateEvaluationReviewAuditDocument>,
     #[cfg(feature = "openapi-review")]
     #[serde(skip_serializing_if = "Option::is_none")]
     openapi_review: Option<AssessmentOpenApiAuditDocument>,
@@ -5270,6 +5389,11 @@ impl<'a> AssessmentDocument<'a> {
                 .xml_external_entity_review_audit()
                 .map(AssessmentXmlExternalEntityReviewAuditDocument::from_audit)
                 .transpose()?,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_review: report
+                .template_evaluation_review_audit()
+                .map(AssessmentTemplateEvaluationReviewAuditDocument::from_audit)
+                .transpose()?,
             #[cfg(feature = "openapi-review")]
             openapi_review: report
                 .openapi_review_audit()
@@ -5391,6 +5515,16 @@ impl<'a> AssessmentDocument<'a> {
             .items
             .iter()
             .any(|item| item.capability_id == XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID)
+        {
+            return Err(ReportError::Serialization);
+        }
+        #[cfg(feature = "template-evaluation-review")]
+        if let Some(audit) = &self.template_evaluation_review {
+            audit.validate(&self.items)?;
+        } else if self
+            .items
+            .iter()
+            .any(|item| item.capability_id == TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID)
         {
             return Err(ReportError::Serialization);
         }
@@ -10845,6 +10979,222 @@ impl AssessmentXmlExternalEntityReviewAuditDocument {
     }
 }
 
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+#[derive(Serialize)]
+struct AssessmentTemplateEvaluationReviewAuditDocument {
+    schema: &'static str,
+    policy_id: &'static str,
+    family_id: &'static str,
+    outcome: &'static str,
+    engine_identity: &'static str,
+    coverage: AssessmentTemplateEvaluationCoverageDocument,
+    operations: AssessmentTemplateEvaluationOperationsDocument,
+    claim_limits: Vec<&'static str>,
+}
+
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+#[derive(Serialize)]
+struct AssessmentTemplateEvaluationCoverageDocument {
+    selected_case_count: u8,
+    attempted_request_count: u8,
+    active_request_count: u8,
+    completed_response_count: u8,
+    committed_response_count: u8,
+    projected_item_count: u8,
+}
+
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+#[derive(Serialize)]
+struct AssessmentTemplateEvaluationOperationsDocument {
+    outbound_interaction: &'static str,
+    os_execution: &'static str,
+    file_access: &'static str,
+    impact_validation: &'static str,
+}
+
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+impl AssessmentTemplateEvaluationReviewAuditDocument {
+    fn from_audit(audit: &TemplateEvaluationReviewAudit) -> Result<Self, ReportError> {
+        let document = Self {
+            schema: audit.schema(),
+            policy_id: audit.policy_id(),
+            family_id: audit.family_id(),
+            outcome: template_evaluation_outcome_token(audit.outcome()),
+            engine_identity: audit.engine_identity(),
+            coverage: AssessmentTemplateEvaluationCoverageDocument {
+                selected_case_count: audit.selected_case_count(),
+                attempted_request_count: audit.attempted_request_count(),
+                active_request_count: audit.active_request_count(),
+                completed_response_count: audit.completed_response_count(),
+                committed_response_count: audit.committed_response_count(),
+                projected_item_count: audit.projected_item_count(),
+            },
+            operations: AssessmentTemplateEvaluationOperationsDocument {
+                outbound_interaction: audit.outbound_interaction(),
+                os_execution: audit.os_execution(),
+                file_access: audit.file_access(),
+                impact_validation: audit.impact_validation(),
+            },
+            claim_limits: audit.claim_limits().to_vec(),
+        };
+        document.validate_wire()?;
+        Ok(document)
+    }
+
+    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        self.validate_wire()?;
+        let matching_items = items
+            .iter()
+            .filter(|item| item.capability_id == TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID)
+            .collect::<Vec<_>>();
+        if matching_items.len() != usize::from(self.coverage.projected_item_count)
+            || matching_items.len() > 1
+            || matching_items.first().is_some_and(|item| {
+                item.subject_reference != "subject-0000"
+                    || item.presentation_target != "query_parameter"
+                    || item.title != TEMPLATE_EVALUATION_REVIEW_TITLE
+                    || item.disposition != "needs_review"
+                    || item.claim_basis != "differential"
+                    || item.severity.is_some()
+                    || item.confidence_ppm != TEMPLATE_EVALUATION_REVIEW_CONFIDENCE_PPM
+                    || item.redacted_summary != TEMPLATE_EVALUATION_REVIEW_SUMMARY
+                    || item.category != TEMPLATE_EVALUATION_REVIEW_CATEGORY
+                    || item.cwe != Some("CWE-1336")
+                    || item.remediation.id != TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID
+                    || item.remediation.summary != TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY
+                    || !template_evaluation_evidence_linkage_is_exact(item)
+            })
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn validate_wire(&self) -> Result<(), ReportError> {
+        let positive = self.outcome == "candidate_specific_evaluation";
+        let parent_absent = self.outcome == "parent_not_observed";
+        let outcome_is_known = matches!(
+            self.outcome,
+            "parent_not_observed"
+                | "literal_or_escaped"
+                | "unsupported_representation"
+                | "replay_mismatch"
+                | "candidate_specific_evaluation"
+                | "incomplete"
+        );
+        let counts_are_bounded = matches!(self.coverage.selected_case_count, 0 | 2)
+            && self.coverage.attempted_request_count <= 4
+            && self.coverage.active_request_count <= 2
+            && self.coverage.completed_response_count <= 4
+            && self.coverage.committed_response_count <= 4
+            && self.coverage.projected_item_count <= 1;
+        let counts_are_ordered = self.coverage.completed_response_count
+            <= self.coverage.attempted_request_count
+            && self.coverage.committed_response_count <= self.coverage.completed_response_count
+            && self.coverage.active_request_count <= self.coverage.attempted_request_count;
+        let outcome_matches = if parent_absent {
+            self.coverage.selected_case_count == 0
+                && self.coverage.attempted_request_count == 0
+                && self.coverage.active_request_count == 0
+                && self.coverage.completed_response_count == 0
+                && self.coverage.committed_response_count == 0
+                && self.coverage.projected_item_count == 0
+        } else if positive {
+            self.coverage.selected_case_count == 2
+                && self.coverage.attempted_request_count == 4
+                && self.coverage.active_request_count == 2
+                && self.coverage.completed_response_count == 4
+                && self.coverage.committed_response_count == 4
+                && self.coverage.projected_item_count == 1
+        } else if matches!(
+            self.outcome,
+            "literal_or_escaped" | "unsupported_representation" | "replay_mismatch"
+        ) {
+            self.coverage.selected_case_count == 2
+                && self.coverage.attempted_request_count == 4
+                && self.coverage.active_request_count == 2
+                && self.coverage.completed_response_count == 4
+                && self.coverage.committed_response_count == 4
+                && self.coverage.projected_item_count == 0
+        } else {
+            self.coverage.selected_case_count == 2 && self.coverage.projected_item_count == 0
+        };
+        if self.schema != TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA
+            || self.policy_id != TEMPLATE_EVALUATION_REVIEW_POLICY_ID
+            || self.family_id != TEMPLATE_EVALUATION_REVIEW_FAMILY_ID
+            || !outcome_is_known
+            || self.engine_identity != TEMPLATE_EVALUATION_ENGINE_IDENTITY
+            || self.operations.outbound_interaction != TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED
+            || self.operations.os_execution != TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED
+            || self.operations.file_access != TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED
+            || self.operations.impact_validation != TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED
+            || self.claim_limits.as_slice() != TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS
+            || !counts_are_bounded
+            || !counts_are_ordered
+            || !outcome_matches
+        {
+            return Err(ReportError::Serialization);
+        }
+        Ok(())
+    }
+
+    fn wire_json(&self) -> Result<String, ReportError> {
+        render_serializable_json(self, MAX_RENDERED_REPORT_BYTES)
+    }
+
+    fn metadata(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Schema", self.schema.to_owned()),
+            ("Policy", self.policy_id.to_owned()),
+            ("Expression family", self.family_id.to_owned()),
+            ("Outcome", self.outcome.to_owned()),
+            ("Engine identity", self.engine_identity.to_owned()),
+            (
+                "Selected case count",
+                self.coverage.selected_case_count.to_string(),
+            ),
+            (
+                "Attempted request count",
+                self.coverage.attempted_request_count.to_string(),
+            ),
+            (
+                "Active request count",
+                self.coverage.active_request_count.to_string(),
+            ),
+            (
+                "Completed response count",
+                self.coverage.completed_response_count.to_string(),
+            ),
+            (
+                "Committed response count",
+                self.coverage.committed_response_count.to_string(),
+            ),
+            (
+                "Projected item count",
+                self.coverage.projected_item_count.to_string(),
+            ),
+            (
+                "Outbound interaction",
+                self.operations.outbound_interaction.to_owned(),
+            ),
+            ("OS execution", self.operations.os_execution.to_owned()),
+            ("File access", self.operations.file_access.to_owned()),
+            (
+                "Impact validation",
+                self.operations.impact_validation.to_owned(),
+            ),
+            ("Claim limits", self.claim_limits.join(",")),
+        ]
+    }
+}
+
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+const fn template_evaluation_outcome_token(
+    outcome: TemplateEvaluationReviewOutcome,
+) -> &'static str {
+    outcome.as_str()
+}
+
 #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
 fn valid_xml_external_entity_policy_id(value: &str) -> bool {
     value
@@ -10884,6 +11234,21 @@ fn xml_external_entity_evidence_linkage_is_exact(item: &AssessmentItemDocument<'
             .windows(2)
             .all(|pair| pair[0].checked_add(1) == Some(pair[1]))
     })
+}
+
+#[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+fn template_evaluation_evidence_linkage_is_exact(item: &AssessmentItemDocument<'_>) -> bool {
+    item.evidence_references.is_empty()
+        && item.control_evidence_references.len()
+            == TEMPLATE_EVALUATION_REVIEW_CONTROL_EVIDENCE_COUNT
+        && item.candidate_evidence_references.len()
+            == TEMPLATE_EVALUATION_REVIEW_CANDIDATE_EVIDENCE_COUNT
+        && item.evidence_count
+            == u64::try_from(
+                TEMPLATE_EVALUATION_REVIEW_CONTROL_EVIDENCE_COUNT
+                    + TEMPLATE_EVALUATION_REVIEW_CANDIDATE_EVIDENCE_COUNT,
+            )
+            .unwrap_or(u64::MAX)
 }
 
 #[cfg(all(feature = "scanning", feature = "xml-external-entity-review"))]
@@ -17922,6 +18287,8 @@ mod tests {
             websocket_review: None,
             #[cfg(feature = "xml-external-entity-review")]
             xml_external_entity_review: None,
+            #[cfg(feature = "template-evaluation-review")]
+            template_evaluation_review: None,
             #[cfg(feature = "openapi-review")]
             openapi_review: None,
             #[cfg(feature = "rest-review")]
@@ -18153,6 +18520,91 @@ mod tests {
         mutate: impl FnOnce(&mut AssessmentItemDocument<'static>),
     ) {
         let mut document = xml_external_entity_assessment_document();
+        mutate(&mut document.items[0]);
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
+    }
+
+    #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+    fn template_evaluation_review_document(
+        outcome: &'static str,
+        projected_item_count: u8,
+    ) -> AssessmentTemplateEvaluationReviewAuditDocument {
+        AssessmentTemplateEvaluationReviewAuditDocument {
+            schema: TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA,
+            policy_id: TEMPLATE_EVALUATION_REVIEW_POLICY_ID,
+            family_id: TEMPLATE_EVALUATION_REVIEW_FAMILY_ID,
+            outcome,
+            engine_identity: TEMPLATE_EVALUATION_ENGINE_IDENTITY,
+            coverage: AssessmentTemplateEvaluationCoverageDocument {
+                selected_case_count: 2,
+                attempted_request_count: 4,
+                active_request_count: 2,
+                completed_response_count: 4,
+                committed_response_count: 4,
+                projected_item_count,
+            },
+            operations: AssessmentTemplateEvaluationOperationsDocument {
+                outbound_interaction: TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED,
+                os_execution: TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED,
+                file_access: TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED,
+                impact_validation: TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED,
+            },
+            claim_limits: TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS.to_vec(),
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+    fn template_evaluation_review_item_document() -> AssessmentItemDocument<'static> {
+        AssessmentItemDocument {
+            schema: crate::web_runtime::ASSESSMENT_ITEM_SCHEMA,
+            capability_id: TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID,
+            subject_reference: "subject-0000".to_owned(),
+            presentation_target: "query_parameter",
+            title: TEMPLATE_EVALUATION_REVIEW_TITLE,
+            disposition: "needs_review",
+            claim_basis: "differential",
+            severity: None,
+            confidence_ppm: TEMPLATE_EVALUATION_REVIEW_CONFIDENCE_PPM,
+            fingerprint: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            evidence_count: 12,
+            redacted_summary: TEMPLATE_EVALUATION_REVIEW_SUMMARY,
+            category: TEMPLATE_EVALUATION_REVIEW_CATEGORY,
+            cwe: Some("CWE-1336"),
+            remediation: AssessmentRemediationDocument {
+                id: TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID,
+                summary: TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY,
+            },
+            evidence_references: Vec::new(),
+            control_evidence_references: (0..6)
+                .map(|ordinal| format!("evidence-{ordinal:04}"))
+                .collect(),
+            candidate_evidence_references: (6..12)
+                .map(|ordinal| format!("evidence-{ordinal:04}"))
+                .collect(),
+            case_reference: None,
+            outcome_reference: None,
+            verification_stage: None,
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+    fn template_evaluation_assessment_document() -> AssessmentDocument<'static> {
+        let mut document = observation_assessment_document(
+            "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        );
+        document.items[0] = template_evaluation_review_item_document();
+        document.template_evaluation_review = Some(template_evaluation_review_document(
+            "candidate_specific_evaluation",
+            1,
+        ));
+        document
+    }
+
+    #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+    fn assert_template_evaluation_item_mutation_rejected(
+        mutate: impl FnOnce(&mut AssessmentItemDocument<'static>),
+    ) {
+        let mut document = template_evaluation_assessment_document();
         mutate(&mut document.items[0]);
         assert_eq!(document.validate(), Err(ReportError::Serialization));
     }
@@ -22034,6 +22486,203 @@ mod tests {
             stopped_with_complete_accounting.validate_wire(),
             Err(ReportError::Serialization)
         );
+    }
+
+    #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+    #[test]
+    fn template_evaluation_review_writer_is_value_free_strict_and_rendered_everywhere() {
+        let document = template_evaluation_assessment_document();
+        assert!(document.validate().is_ok());
+
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        comparison::import_assessment_summary(json.as_bytes()).unwrap();
+        let audit = &parsed["template_evaluation_review"];
+        assert_eq!(audit["schema"], TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA);
+        assert_eq!(audit["policy_id"], TEMPLATE_EVALUATION_REVIEW_POLICY_ID);
+        assert_eq!(audit["family_id"], TEMPLATE_EVALUATION_REVIEW_FAMILY_ID);
+        assert_eq!(audit["outcome"], "candidate_specific_evaluation");
+        assert_eq!(audit["engine_identity"], "not_established");
+        assert_eq!(audit["coverage"]["selected_case_count"], 2);
+        assert_eq!(audit["coverage"]["attempted_request_count"], 4);
+        assert_eq!(audit["coverage"]["active_request_count"], 2);
+        assert_eq!(audit["coverage"]["completed_response_count"], 4);
+        assert_eq!(audit["coverage"]["committed_response_count"], 4);
+        assert_eq!(audit["coverage"]["projected_item_count"], 1);
+        assert_eq!(audit["operations"]["os_execution"], "not_performed");
+        assert_eq!(audit["operations"]["file_access"], "not_performed");
+        assert_eq!(audit["claim_limits"].as_array().unwrap().len(), 7);
+        assert_eq!(parsed["items"][0]["confidence_ppm"], 1_000_000);
+        assert_eq!(parsed["items"][0]["evidence_count"], 12);
+        assert_eq!(
+            parsed["items"][0]["control_evidence_references"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
+        assert_eq!(
+            parsed["items"][0]["candidate_evidence_references"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
+
+        let csv = render_assessment_with_limit(&document, ReportFormat::Csv, usize::MAX).unwrap();
+        let audit_row = csv
+            .lines()
+            .find(|line| line.contains("template_evaluation_review_audit"))
+            .unwrap();
+        let audit_cells = parse_csv_line(audit_row);
+        assert_eq!(audit_cells.len(), ASSESSMENT_CSV_HEADERS.len());
+        assert_eq!(audit_cells[18], "12");
+
+        let html = render_assessment_with_limit(&document, ReportFormat::Html, usize::MAX).unwrap();
+        let markdown =
+            render_assessment_with_limit(&document, ReportFormat::Markdown, usize::MAX).unwrap();
+        for rendered in [&json, &csv, &html, &markdown] {
+            assert!(rendered.contains("candidate_specific_evaluation"));
+            assert!(rendered.contains("engine_identity_not_established"));
+            assert!(rendered.contains(TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID));
+            for forbidden in [
+                "{{",
+                "query=",
+                "https://target.invalid",
+                "jinja2.exceptions",
+                "raw-template-body",
+                "raw-transport-error",
+            ] {
+                assert!(!rendered.contains(forbidden));
+            }
+        }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+    #[test]
+    fn template_evaluation_review_selected_empty_audit_is_valid_and_cross_link_is_mandatory() {
+        let mut document = observation_assessment_document("ordinary-observation");
+        document.items.clear();
+        document.item_count = 0;
+        document.template_evaluation_review =
+            Some(template_evaluation_review_document("literal_or_escaped", 0));
+        assert!(document.validate().is_ok());
+        let json = render_assessment_with_limit(&document, ReportFormat::Json, usize::MAX).unwrap();
+        comparison::import_assessment_summary(json.as_bytes()).unwrap();
+
+        document
+            .items
+            .push(template_evaluation_review_item_document());
+        document.item_count = 1;
+        assert_eq!(document.validate(), Err(ReportError::Serialization));
+
+        let mut positive_without_audit = template_evaluation_assessment_document();
+        positive_without_audit.template_evaluation_review = None;
+        assert_eq!(
+            positive_without_audit.validate(),
+            Err(ReportError::Serialization)
+        );
+
+        let historical = observation_assessment_document("ordinary-observation");
+        let historical_json =
+            render_assessment_with_limit(&historical, ReportFormat::Json, usize::MAX).unwrap();
+        let historical_value: serde_json::Value = serde_json::from_str(&historical_json).unwrap();
+        assert!(historical_value.get("template_evaluation_review").is_none());
+        comparison::import_assessment_summary(historical_json.as_bytes()).unwrap();
+    }
+
+    #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+    #[test]
+    fn template_evaluation_review_writer_rejects_invalid_counts_and_substituted_cross_links() {
+        let mut invalid_positive =
+            template_evaluation_review_document("candidate_specific_evaluation", 1);
+        invalid_positive.coverage.committed_response_count = 3;
+        assert_eq!(
+            invalid_positive.validate_wire(),
+            Err(ReportError::Serialization)
+        );
+
+        let mut invalid_negative = template_evaluation_review_document("incomplete", 0);
+        invalid_negative.coverage.selected_case_count = 0;
+        assert_eq!(
+            invalid_negative.validate_wire(),
+            Err(ReportError::Serialization)
+        );
+
+        let mut partial_incomplete = template_evaluation_review_document("incomplete", 0);
+        partial_incomplete.coverage.attempted_request_count = 3;
+        partial_incomplete.coverage.active_request_count = 1;
+        partial_incomplete.coverage.completed_response_count = 2;
+        partial_incomplete.coverage.committed_response_count = 2;
+        assert!(partial_incomplete.validate_wire().is_ok());
+
+        for outcome in [
+            "literal_or_escaped",
+            "unsupported_representation",
+            "replay_mismatch",
+        ] {
+            let mut incomplete_terminal = template_evaluation_review_document(outcome, 0);
+            incomplete_terminal.coverage.attempted_request_count = 0;
+            incomplete_terminal.coverage.active_request_count = 0;
+            incomplete_terminal.coverage.completed_response_count = 0;
+            incomplete_terminal.coverage.committed_response_count = 0;
+            assert_eq!(
+                incomplete_terminal.validate_wire(),
+                Err(ReportError::Serialization)
+            );
+        }
+
+        let mut invalid_parent_absent =
+            template_evaluation_review_document("parent_not_observed", 0);
+        assert_eq!(
+            invalid_parent_absent.validate_wire(),
+            Err(ReportError::Serialization)
+        );
+        invalid_parent_absent.coverage = AssessmentTemplateEvaluationCoverageDocument {
+            selected_case_count: 0,
+            attempted_request_count: 0,
+            active_request_count: 0,
+            completed_response_count: 0,
+            committed_response_count: 0,
+            projected_item_count: 0,
+        };
+        assert!(invalid_parent_absent.validate_wire().is_ok());
+
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            item.subject_reference = "subject-0001".to_owned();
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            item.presentation_target = "assessment_subject";
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            item.title = "Substituted template result";
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            item.claim_basis = "observation";
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            item.cwe = Some("CWE-94");
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            item.confidence_ppm = 999_999;
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            let moved = item.control_evidence_references.pop().unwrap();
+            item.candidate_evidence_references.push(moved);
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            let moved = item.candidate_evidence_references.pop().unwrap();
+            item.control_evidence_references.push(moved);
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            item.evidence_count = 1;
+            item.evidence_references = vec!["evidence-0000".to_owned()];
+            item.control_evidence_references.clear();
+            item.candidate_evidence_references.clear();
+        });
+        assert_template_evaluation_item_mutation_rejected(|item| {
+            item.candidate_evidence_references[0] = item.control_evidence_references[0].clone();
+        });
     }
 
     #[cfg(all(

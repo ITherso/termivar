@@ -42,6 +42,7 @@ const QUARANTINED_FEATURES: &[&str] = &[
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "template-evaluation-review",
     "tls-observation",
     "websocket-review",
     "wordpress-review",
@@ -80,6 +81,7 @@ const EXACT_SCANNER_FEATURES: &[&str] = &[
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "template-evaluation-review",
     "tls-observation",
     "websocket-review",
     "wordpress-review",
@@ -234,6 +236,7 @@ const EXACT_CLI_FEATURES: &[&str] = &[
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "template-evaluation-review",
     "tls-observation",
     "websocket-review",
     "wordpress-review",
@@ -304,6 +307,10 @@ const EXACT_MODULE_GATES: &[(&str, &str)] = &[
     (
         "supplied_session_review",
         "feature=\"supplied-session-review\"",
+    ),
+    (
+        "template_evaluation_review",
+        "feature=\"template-evaluation-review\"",
     ),
     ("wordpress_review", "feature=\"wordpress-review\""),
     (
@@ -1425,6 +1432,10 @@ fn cli_feature_violations(
             &["termivar-scanner/ssrf-oast-review"][..],
         ),
         (
+            "template-evaluation-review",
+            &["termivar-scanner/template-evaluation-review"][..],
+        ),
+        (
             "xml-external-entity-review",
             &["termivar-scanner/xml-external-entity-review"][..],
         ),
@@ -1917,6 +1928,21 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "dep:getrandom",
                 "dep:termivar-oast",
                 "dep:zeroize",
+                "dep:async-trait",
+                "dep:html5ever",
+                "dep:markup5ever_rcdom",
+                "dep:reqwest",
+                "dep:tokio",
+                "dep:tokio-util",
+                "dep:toml",
+            ],
+        ),
+        (
+            "template-evaluation-review",
+            &[
+                "template-evaluation-review",
+                "scanning",
+                "core",
                 "dep:async-trait",
                 "dep:html5ever",
                 "dep:markup5ever_rcdom",
@@ -5313,7 +5339,7 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
     };
     if reporting_expression_path_key(report_call.func.as_ref()).as_deref()
         != Some("AssessmentRunReport::from_completed_truth")
-        || report_call.args.len() != 14
+        || report_call.args.len() != 15
     {
         return false;
     }
@@ -5353,6 +5379,13 @@ fn assessment_bridge_body_is_exact(block: &syn::Block) -> bool {
                 argument,
                 "xml_external_entity_review",
                 "xml-external-entity-review",
+            )
+        })
+        && arguments.next().is_some_and(|argument| {
+            assessment_bridge_feature_field(
+                argument,
+                "template_evaluation_review",
+                "template-evaluation-review",
             )
         })
         && arguments.next().is_some_and(|argument| {
@@ -5639,6 +5672,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "xml_external_entity_review",
                 "Option<AssessmentXmlExternalEntityReviewAuditDocument>",
             ),
+            (
+                "template_evaluation_review",
+                "Option<AssessmentTemplateEvaluationReviewAuditDocument>",
+            ),
             ("openapi_review", "Option<AssessmentOpenApiAuditDocument>"),
             ("rest_review", "Option<AssessmentRestAuditDocument>"),
             (
@@ -5732,6 +5769,45 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("event_identities_distinct", "bool"),
             ("cleanup_verified", "bool"),
             ("complete", "bool"),
+        ],
+    ),
+    (
+        "AssessmentTemplateEvaluationReviewAuditDocument",
+        &[],
+        &[
+            ("schema", "&'static str"),
+            ("policy_id", "&'static str"),
+            ("family_id", "&'static str"),
+            ("outcome", "&'static str"),
+            ("engine_identity", "&'static str"),
+            ("coverage", "AssessmentTemplateEvaluationCoverageDocument"),
+            (
+                "operations",
+                "AssessmentTemplateEvaluationOperationsDocument",
+            ),
+            ("claim_limits", "Vec<&'static str>"),
+        ],
+    ),
+    (
+        "AssessmentTemplateEvaluationCoverageDocument",
+        &[],
+        &[
+            ("selected_case_count", "u8"),
+            ("attempted_request_count", "u8"),
+            ("active_request_count", "u8"),
+            ("completed_response_count", "u8"),
+            ("committed_response_count", "u8"),
+            ("projected_item_count", "u8"),
+        ],
+    ),
+    (
+        "AssessmentTemplateEvaluationOperationsDocument",
+        &[],
+        &[
+            ("outbound_interaction", "&'static str"),
+            ("os_execution", "&'static str"),
+            ("file_access", "&'static str"),
+            ("impact_validation", "&'static str"),
         ],
     ),
     (
@@ -7498,6 +7574,7 @@ fn reporting_audit_field_attributes_are_exact(attributes: &[Attribute], feature:
         "recon-snapshot-import" => "feature=\"recon-snapshot-import\"",
         "wordpress-review" => "feature=\"wordpress-review\"",
         "supplied-session-review" => "feature=\"supplied-session-review\"",
+        "template-evaluation-review" => "feature=\"template-evaluation-review\"",
         "xml-external-entity-review" => "feature=\"xml-external-entity-review\"",
         _ => return false,
     };
@@ -7549,6 +7626,9 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentXmlExternalEntityPolicyDocument"
                 | "AssessmentXmlExternalEntityTargetDocument"
                 | "AssessmentXmlExternalEntityProviderDocument"
+                | "AssessmentTemplateEvaluationReviewAuditDocument"
+                | "AssessmentTemplateEvaluationCoverageDocument"
+                | "AssessmentTemplateEvaluationOperationsDocument"
                 | "AssessmentOpenApiAuditDocument"
                 | "AssessmentRestAuditDocument"
                 | "AssessmentSecretExposureAuditDocument"
@@ -7700,6 +7780,11 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentXmlExternalEntityTargetDocument"
                 | "AssessmentXmlExternalEntityProviderDocument" => {
                     "all(feature=\"scanning\",feature=\"xml-external-entity-review\")"
+                },
+                "AssessmentTemplateEvaluationReviewAuditDocument"
+                | "AssessmentTemplateEvaluationCoverageDocument"
+                | "AssessmentTemplateEvaluationOperationsDocument" => {
+                    "all(feature=\"scanning\",feature=\"template-evaluation-review\")"
                 },
                 "AssessmentOpenApiAuditDocument" => {
                     "all(feature=\"scanning\",feature=\"openapi-review\")"
@@ -7873,6 +7958,13 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                         reporting_audit_field_attributes_are_exact(
                             &field.attrs,
                             "xml-external-entity-review",
+                        )
+                    } else if name == "AssessmentDocument"
+                        && field_name == "template_evaluation_review"
+                    {
+                        reporting_audit_field_attributes_are_exact(
+                            &field.attrs,
+                            "template-evaluation-review",
                         )
                     } else if name == "AssessmentWebSocketReviewAuditDocument"
                         && field_name == "supplied_session_context"
@@ -10605,8 +10697,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 624_577;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xf685_d0dc_84a3_ec60_640c_49cf_19e5_0ef7;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 638_001;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x633d_2d67_9825_c6ca_244f_10d8_ad2a_8935;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -10752,6 +10844,20 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::recon_snapshot::ReconSnapshot",
     "crate::recon_snapshot::ReconnaissanceRecordValue",
     "crate::rest_review::RestDocumentedResponseClass",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_ENGINE_IDENTITY",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CATEGORY",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_FAMILY_ID",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_POLICY_ID",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_SUMMARY",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_TITLE",
+    "crate::template_evaluation_review::TemplateEvaluationReviewAudit",
+    "crate::template_evaluation_review::TemplateEvaluationReviewOutcome",
     "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_DOCUMENT_BYTES",
     "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_PROVIDER_REQUESTS",
     "crate::xml_external_entity_review::MAX_XML_EXTERNAL_ENTITY_TARGET_RESPONSE_BYTES",
@@ -10927,7 +11033,28 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentSecretExposureAuditDocument::from_audit",
     "AssessmentTlsObservationAuditDocument::from_audit",
     "AssessmentWebSocketReviewAuditDocument::from_audit",
+    "AssessmentTemplateEvaluationReviewAuditDocument::from_audit",
     "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
+    "TemplateEvaluationReviewOutcome::CandidateSpecificEvaluation",
+    "TemplateEvaluationReviewOutcome::Incomplete",
+    "TemplateEvaluationReviewOutcome::LiteralOrEscaped",
+    "TemplateEvaluationReviewOutcome::ParentNotObserved",
+    "TemplateEvaluationReviewOutcome::ReplayMismatch",
+    "TemplateEvaluationReviewOutcome::UnsupportedRepresentation",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_ENGINE_IDENTITY",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CATEGORY",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_FAMILY_ID",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_POLICY_ID",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_SUMMARY",
+    "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_TITLE",
+    "crate::template_evaluation_review::TemplateEvaluationReviewAudit",
+    "crate::template_evaluation_review::TemplateEvaluationReviewOutcome",
     "XmlExternalEntityMaximumDisposition::NeedsReview",
     "XmlExternalEntityOperationStatus::NotPerformed",
     "XmlExternalEntityReviewOutcome::BudgetExhausted",
@@ -11677,12 +11804,14 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
+    "AssessmentTemplateEvaluationReviewAuditDocument::from_audit",
     "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
     "assessment_reference_ordinal",
     "valid_xml_external_entity_policy_id",
     "xml_external_entity_evidence_linkage_is_exact",
     "xml_external_entity_operation_token",
     "xml_external_entity_outcome_token",
+    "template_evaluation_outcome_token",
     "health_is_valid",
     "health_matches",
     "valid_recon_report_sha256",
@@ -11936,6 +12065,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "active_request_count",
     "algorithm",
     "callback_targets_distinct",
     "candidate_callback_observed",
@@ -11943,16 +12073,22 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "control_callback_observed",
     "control_model",
     "event_identities_distinct",
+    "engine_identity",
+    "family_id",
+    "file_access",
     "maximum_disposition",
     "media_type",
     "preflight_clean",
+    "projected_item_count",
     "provider_accounting_complete",
     "replay_callback_observed",
     "semantic_effect",
+    "selected_case_count",
     "target_accounting_complete",
     "target_complete",
     "target_request_body_bytes",
     "target_response_bytes",
+    "template_evaluation_review_audit",
     "xml_external_entity_review_audit",
     "address",
     "has_supplied_session_context",
@@ -12120,6 +12256,8 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "valid_marker",
     "with_control_reference_mapping",
     "with_jwt_policy_review_audit",
+    "os_execution",
+    "outbound_interaction",
     "cmp",
     "detector_class",
     "body_derived_projection_suppressed_response_count",
@@ -12823,6 +12961,26 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                         | "crate::xml_external_entity_review::XmlExternalEntityReviewOutcome"
                 )
             });
+        let template_evaluation_import = !paths.is_empty()
+            && paths.iter().all(|path| {
+                matches!(
+                    path.as_str(),
+                    "crate::template_evaluation_review::TEMPLATE_EVALUATION_ENGINE_IDENTITY"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CATEGORY"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_FAMILY_ID"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_POLICY_ID"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_SUMMARY"
+                        | "crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_TITLE"
+                        | "crate::template_evaluation_review::TemplateEvaluationReviewAudit"
+                        | "crate::template_evaluation_review::TemplateEvaluationReviewOutcome"
+                )
+            });
         let secret_exposure_import = !paths.is_empty()
             && paths.iter().all(|path| {
                 matches!(
@@ -13065,6 +13223,11 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                 && item.attrs[0].path().is_ident("cfg")
                 && cfg_predicate(&item.attrs[0]).as_deref()
                     == Some("all(feature=\"scanning\",feature=\"xml-external-entity-review\")")
+        } else if template_evaluation_import {
+            item.attrs.len() == 1
+                && item.attrs[0].path().is_ident("cfg")
+                && cfg_predicate(&item.attrs[0]).as_deref()
+                    == Some("all(feature=\"scanning\",feature=\"template-evaluation-review\")")
         } else if secret_exposure_import {
             item.attrs.len() == 1
                 && item.attrs[0].path().is_ident("cfg")
@@ -13110,7 +13273,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
         };
         if !matches!(item.vis, Visibility::Inherited) || !attributes_are_exact {
             violations.push(
-                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, XML external-entity, and WordPress audit imports may use their pinned feature gates"
+                "reporting production imports must remain private; only the exact web-assessment and feature-gated supplied-session, authorization, WebSocket, OpenAPI, REST, passive secret-exposure, TLS-observation, local JWT-policy, XML external-entity, template-evaluation, and WordPress audit imports may use their pinned feature gates"
                     .to_owned(),
             );
         }
@@ -13191,6 +13354,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("not(feature=\"jwt-target-acceptance-review\")")
                     | Some("feature=\"supplied-session-review\"")
                     | Some("not(feature=\"supplied-session-review\")")
+                    | Some("feature=\"template-evaluation-review\"")
                     | Some("feature=\"wordpress-review\"")
                     | Some("feature=\"xml-external-entity-review\"")
                     | Some("all(feature=\"scanning\",feature=\"authorization-review\")")
@@ -13205,6 +13369,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("all(feature=\"scanning\",feature=\"jwt-policy-review\")")
                     | Some("all(feature=\"scanning\",feature=\"jwt-target-acceptance-review\")")
                     | Some("all(feature=\"scanning\",feature=\"supplied-session-review\")")
+                    | Some("all(feature=\"scanning\",feature=\"template-evaluation-review\")")
                     | Some("all(feature=\"scanning\",feature=\"websocket-review\",feature=\"supplied-session-review\")")
                     | Some("all(feature=\"scanning\",feature=\"wordpress-review\")")
                     | Some("all(feature=\"scanning\",feature=\"xml-external-entity-review\")")
@@ -13499,6 +13664,7 @@ fn inspect_reporting_path(segments: &[String], violations: &mut BTreeSet<String>
             || key.starts_with("crate::recon_snapshot::")
             || key.starts_with("crate::rest_review::")
             || key.starts_with("crate::supplied_session_review::")
+            || key.starts_with("crate::template_evaluation_review::")
             || key.starts_with("crate::websocket_review::")
             || key.starts_with("crate::xml_external_entity_review::")
             || key.starts_with("crate::wordpress_review::")
@@ -14061,6 +14227,10 @@ mod tests {
             ],
         );
         features.insert(
+            "template-evaluation-review".to_owned(),
+            vec!["scanning".to_owned()],
+        );
+        features.insert(
             "xml-external-entity-review".to_owned(),
             vec![
                 "scanning".to_owned(),
@@ -14248,6 +14418,49 @@ mod tests {
             .unwrap()
             .push("ssrf-oast-review".to_owned());
         assert!(!feature_violations(&widened).is_empty());
+    }
+
+    #[test]
+    fn template_evaluation_review_is_exact_non_default_and_absent_from_aggregates() {
+        let features = valid_feature_map();
+        assert!(feature_violations(&features).is_empty());
+        assert_eq!(
+            features.get("template-evaluation-review").unwrap(),
+            &["scanning".to_owned()]
+        );
+        for aggregate in ["default", "full", "enterprise", "research"] {
+            assert!(
+                !raw_feature_closure(&features, aggregate).contains("template-evaluation-review")
+            );
+        }
+
+        for aggregate in ["default", "full", "enterprise", "research"] {
+            let mut widened = valid_feature_map();
+            widened
+                .get_mut(aggregate)
+                .unwrap()
+                .push("template-evaluation-review".to_owned());
+            assert!(!feature_violations(&widened).is_empty());
+        }
+
+        let (mut cli_features, dependencies) = valid_cli_contract();
+        assert!(cli_feature_violations(&cli_features, &dependencies).is_empty());
+        assert_eq!(
+            cli_features.get("template-evaluation-review").unwrap(),
+            &["termivar-scanner/template-evaluation-review".to_owned()]
+        );
+        assert!(!cli_features
+            .get("release-bundle")
+            .unwrap()
+            .iter()
+            .any(|member| member == "template-evaluation-review"));
+        cli_features
+            .get_mut("release-bundle")
+            .unwrap()
+            .push("template-evaluation-review".to_owned());
+        assert!(cli_feature_violations(&cli_features, &dependencies)
+            .iter()
+            .any(|violation| violation.contains("`release-bundle` members")));
     }
 
     #[test]
@@ -16804,6 +17017,8 @@ mod tests {
                         self.ssrf_oast_review,
                         #[cfg(feature = "xml-external-entity-review")]
                         self.xml_external_entity_review,
+                        #[cfg(feature = "template-evaluation-review")]
+                        self.template_evaluation_review,
                         #[cfg(feature = "wordpress-review")]
                         self.wordpress_review,
                         #[cfg(feature = "secret-exposure-review")]
@@ -16829,7 +17044,7 @@ mod tests {
             ),
             typed_assessment_bridge.replace("#[cfg(feature = \"reporting\")]", ""),
             typed_assessment_bridge.replace(
-                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"websocket-review\")]\n                        self.websocket_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"xml-external-entity-review\")]\n                        self.xml_external_entity_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                    )",
+                "AssessmentRunReport::from_completed_truth(\n                        self.assessment_items,\n                        truth,\n                        #[cfg(feature = \"supplied-session-review\")]\n                        self.supplied_session,\n                        #[cfg(feature = \"authorization-review\")]\n                        self.authorization_review,\n                        #[cfg(feature = \"websocket-review\")]\n                        self.websocket_review,\n                        #[cfg(feature = \"jwt-target-acceptance-review\")]\n                        self.jwt_target_acceptance,\n                        #[cfg(feature = \"openapi-review\")]\n                        self.openapi_review,\n                        #[cfg(feature = \"rest-review\")]\n                        self.rest_review,\n                        #[cfg(feature = \"ssrf-oast-review\")]\n                        self.ssrf_oast_review,\n                        #[cfg(feature = \"xml-external-entity-review\")]\n                        self.xml_external_entity_review,\n                        #[cfg(feature = \"template-evaluation-review\")]\n                        self.template_evaluation_review,\n                        #[cfg(feature = \"wordpress-review\")]\n                        self.wordpress_review,\n                        #[cfg(feature = \"secret-exposure-review\")]\n                        self.secret_exposure_review,\n                        #[cfg(feature = \"tls-observation\")]\n                        self.tls_observation,\n                        #[cfg(feature = \"recon-ct-provider\")]\n                        self.recon_ct_provider,\n                    )",
                 "render(self.assessment_items)",
             ),
             typed_assessment_bridge.replace(
@@ -16878,6 +17093,10 @@ mod tests {
             typed_assessment_bridge.replace(
                 "self.xml_external_entity_review,",
                 "forged_xml_external_entity_review,",
+            ),
+            typed_assessment_bridge.replace(
+                "self.template_evaluation_review,",
+                "forged_template_evaluation_review,",
             ),
             typed_assessment_bridge.replace("self.wordpress_review,", "forged_wordpress_review,"),
             typed_assessment_bridge.replace(
@@ -17487,6 +17706,21 @@ mod tests {
                 MAX_REST_REVIEW_ACTIVE_VERIFICATIONS, MAX_REST_REVIEW_REQUESTS,
                 REST_REVIEW_CAPABILITY_ID,
             };
+            #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+            use crate::template_evaluation_review::{
+                TemplateEvaluationReviewAudit, TemplateEvaluationReviewOutcome,
+                TEMPLATE_EVALUATION_ENGINE_IDENTITY,
+                TEMPLATE_EVALUATION_OPERATION_NOT_PERFORMED,
+                TEMPLATE_EVALUATION_REVIEW_AUDIT_SCHEMA,
+                TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID,
+                TEMPLATE_EVALUATION_REVIEW_CATEGORY,
+                TEMPLATE_EVALUATION_REVIEW_CLAIM_LIMITS,
+                TEMPLATE_EVALUATION_REVIEW_FAMILY_ID,
+                TEMPLATE_EVALUATION_REVIEW_POLICY_ID,
+                TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID,
+                TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY,
+                TEMPLATE_EVALUATION_REVIEW_SUMMARY, TEMPLATE_EVALUATION_REVIEW_TITLE,
+            };
             #[cfg(all(feature = "scanning", feature = "secret-exposure-review"))]
             use crate::web_runtime::{
                 WebAssessmentSecretExposureAudit, MAX_SECRET_EXPOSURE_BODY_BYTES,
@@ -17737,6 +17971,16 @@ mod tests {
         );
         assert_ne!(widened_xml_external_entity_import, imports);
         let violations = reporting_source_import_violations(&widened_xml_external_entity_import)
+            .unwrap()
+            .join("\n");
+        assert!(violations.contains("pinned feature gates"), "{violations}");
+
+        let widened_template_evaluation_import = imports.replace(
+            "#[cfg(all(feature = \"scanning\", feature = \"template-evaluation-review\"))]",
+            "#[cfg(feature = \"scanning\")]",
+        );
+        assert_ne!(widened_template_evaluation_import, imports);
+        let violations = reporting_source_import_violations(&widened_template_evaluation_import)
             .unwrap()
             .join("\n");
         assert!(violations.contains("pinned feature gates"), "{violations}");
@@ -18215,6 +18459,9 @@ mod tests {
                 #[cfg(feature = "xml-external-entity-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 xml_external_entity_review: Option<AssessmentXmlExternalEntityReviewAuditDocument>,
+                #[cfg(feature = "template-evaluation-review")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                template_evaluation_review: Option<AssessmentTemplateEvaluationReviewAuditDocument>,
                 #[cfg(feature = "openapi-review")]
                 #[serde(skip_serializing_if = "Option::is_none")]
                 openapi_review: Option<AssessmentOpenApiAuditDocument>,
@@ -19667,6 +19914,36 @@ mod tests {
                 cleanup_verified: bool,
                 complete: bool,
             }
+            #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+            #[derive(Serialize)]
+            struct AssessmentTemplateEvaluationReviewAuditDocument {
+                schema: &'static str,
+                policy_id: &'static str,
+                family_id: &'static str,
+                outcome: &'static str,
+                engine_identity: &'static str,
+                coverage: AssessmentTemplateEvaluationCoverageDocument,
+                operations: AssessmentTemplateEvaluationOperationsDocument,
+                claim_limits: Vec<&'static str>,
+            }
+            #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+            #[derive(Serialize)]
+            struct AssessmentTemplateEvaluationCoverageDocument {
+                selected_case_count: u8,
+                attempted_request_count: u8,
+                active_request_count: u8,
+                completed_response_count: u8,
+                committed_response_count: u8,
+                projected_item_count: u8,
+            }
+            #[cfg(all(feature = "scanning", feature = "template-evaluation-review"))]
+            #[derive(Serialize)]
+            struct AssessmentTemplateEvaluationOperationsDocument {
+                outbound_interaction: &'static str,
+                os_execution: &'static str,
+                file_access: &'static str,
+                impact_validation: &'static str,
+            }
             #[cfg(all(feature = "scanning", feature = "openapi-review"))]
             #[derive(Serialize)]
             struct AssessmentOpenApiAuditDocument {
@@ -20506,6 +20783,74 @@ mod tests {
     }
 
     #[test]
+    fn template_evaluation_reporting_shape_and_gate_mutations_are_rejected() {
+        let source = valid_reporting_document_contract_fixture();
+        assert!(reporting_document_contract_violations(source)
+            .unwrap()
+            .is_empty());
+
+        let missing_audit = source.replacen(
+            "                #[cfg(feature = \"template-evaluation-review\")]\n                #[serde(skip_serializing_if = \"Option::is_none\")]\n                template_evaluation_review: Option<AssessmentTemplateEvaluationReviewAuditDocument>,\n",
+            "",
+            1,
+        );
+        assert_ne!(missing_audit, source);
+        let violations = reporting_document_contract_violations(&missing_audit)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let widened_gate = source.replacen(
+            "#[cfg(all(feature = \"scanning\", feature = \"template-evaluation-review\"))]\n            #[derive(Serialize)]\n            struct AssessmentTemplateEvaluationReviewAuditDocument",
+            "#[cfg(feature = \"scanning\")]\n            #[derive(Serialize)]\n            struct AssessmentTemplateEvaluationReviewAuditDocument",
+            1,
+        );
+        assert_ne!(widened_gate, source);
+        let violations = reporting_document_contract_violations(&widened_gate)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentTemplateEvaluationReviewAuditDocument")
+                && violations.contains("exactly cfg"),
+            "{violations}"
+        );
+
+        let widened_counter = source.replacen(
+            "            struct AssessmentTemplateEvaluationCoverageDocument {\n                selected_case_count: u8,\n                attempted_request_count: u8,\n                active_request_count: u8,",
+            "            struct AssessmentTemplateEvaluationCoverageDocument {\n                selected_case_count: u8,\n                attempted_request_count: usize,\n                active_request_count: u8,",
+            1,
+        );
+        assert_ne!(widened_counter, source);
+        let violations = reporting_document_contract_violations(&widened_counter)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentTemplateEvaluationCoverageDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+
+        let executable_operation = source.replacen(
+            "                os_execution: &'static str,\n                file_access: &'static str,",
+            "                os_execution: bool,\n                file_access: &'static str,",
+            1,
+        );
+        assert_ne!(executable_operation, source);
+        let violations = reporting_document_contract_violations(&executable_operation)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("AssessmentTemplateEvaluationOperationsDocument")
+                && violations.contains("fields must remain exactly"),
+            "{violations}"
+        );
+    }
+
+    #[test]
     fn recon_snapshot_reporting_shape_gate_and_serde_contract_are_exact() {
         let source = valid_reporting_document_contract_fixture();
         assert!(reporting_document_contract_violations(source)
@@ -20738,6 +21083,10 @@ mod tests {
             (
                 "ssrf-oast-review".to_owned(),
                 vec!["termivar-scanner/ssrf-oast-review".to_owned()],
+            ),
+            (
+                "template-evaluation-review".to_owned(),
+                vec!["termivar-scanner/template-evaluation-review".to_owned()],
             ),
             (
                 "xml-external-entity-review".to_owned(),
@@ -21707,6 +22056,7 @@ mod tests {
             #[cfg(feature = "oast-correlation")] pub mod oast;
             #[cfg(feature = "ssrf-oast-review")] pub mod ssrf_oast_review;
             #[cfg(feature = "supplied-session-review")] pub mod supplied_session_review;
+            #[cfg(feature = "template-evaluation-review")] pub mod template_evaluation_review;
             #[cfg(feature = "websocket-review")] pub mod websocket_review;
             #[cfg(feature = "wordpress-review")] pub mod wordpress_review;
             #[cfg(feature = "xml-external-entity-review")] pub mod xml_external_entity_review;
@@ -21779,6 +22129,15 @@ mod tests {
         .unwrap();
         assert!(xml_external_entity_violations.iter().any(|violation| {
             violation.contains("module `xml_external_entity_review`")
+                && violation.contains("exact cfg")
+        }));
+
+        let template_evaluation_violations = module_gate_violations(
+            r#"#[cfg(feature = "scanning")] pub mod template_evaluation_review;"#,
+        )
+        .unwrap();
+        assert!(template_evaluation_violations.iter().any(|violation| {
+            violation.contains("module `template_evaluation_review`")
                 && violation.contains("exact cfg")
         }));
     }

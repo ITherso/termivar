@@ -33,6 +33,8 @@ pub(crate) mod normalization_resilience_query_pair;
 pub mod reflection_marker_query_pair;
 pub mod sql_quote_balance_query_pair;
 pub mod ssti_arithmetic_expression_pair;
+#[cfg(feature = "template-evaluation-review")]
+pub mod template_jinja_uppercase_expression_pair;
 pub mod xss_attribute_boundary_query_pair;
 pub mod xss_javascript_lexical_boundary_query_pair;
 pub mod xss_structural_query_pair;
@@ -67,6 +69,11 @@ pub use ssti_arithmetic_expression_pair::{
     SstiArithmeticExpressionPairStrategy, SSTI_ARITHMETIC_EXPRESSION_PAIR_ID,
     SSTI_ARITHMETIC_EXPRESSION_PAIR_REVISION,
 };
+#[cfg(feature = "template-evaluation-review")]
+pub use template_jinja_uppercase_expression_pair::{
+    TemplateJinjaUppercaseExpressionPairStrategy, TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+    TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+};
 pub use xss_attribute_boundary_query_pair::{
     XssAttributeBoundaryQueryPairStrategy, XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_ID,
     XSS_ATTRIBUTE_BOUNDARY_QUERY_PAIR_REVISION,
@@ -97,6 +104,8 @@ pub fn standard_payload_strategies() -> Result<PayloadStrategyRegistry, PayloadS
     registry.register(Arc::new(ReflectionMarkerQueryPairStrategy::new()))?;
     registry.register(Arc::new(SqlQuoteBalanceQueryPairStrategy::new()))?;
     registry.register(Arc::new(SstiArithmeticExpressionPairStrategy::new()))?;
+    #[cfg(feature = "template-evaluation-review")]
+    registry.register(Arc::new(TemplateJinjaUppercaseExpressionPairStrategy::new()))?;
     registry.register(Arc::new(XssAttributeBoundaryQueryPairStrategy::new()))?;
     registry.register(Arc::new(
         XssJavascriptLexicalBoundaryQueryPairStrategy::new(),
@@ -166,8 +175,10 @@ mod tests {
         )
         .unwrap();
 
-        #[cfg(not(feature = "normalization-resilience"))]
-        assert_eq!(registry.len(), 10);
+        let expected_len = 10
+            + cfg!(feature = "normalization-resilience") as usize
+            + cfg!(feature = "template-evaluation-review") as usize;
+        assert_eq!(registry.len(), expected_len);
         #[cfg(feature = "normalization-resilience")]
         {
             use normalization_resilience_query_pair::{
@@ -180,8 +191,16 @@ mod tests {
                 NORMALIZATION_RESILIENCE_QUERY_PAIR_REVISION,
             )
             .unwrap();
-            assert_eq!(registry.len(), 11);
             assert!(registry.contains(&normalization));
+        }
+        #[cfg(feature = "template-evaluation-review")]
+        {
+            let template = PayloadStrategyRef::new(
+                TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_ID,
+                TEMPLATE_JINJA_UPPERCASE_EXPRESSION_PAIR_REVISION,
+            )
+            .unwrap();
+            assert!(registry.contains(&template));
         }
         assert!(registry.contains(&header_pair));
         assert!(registry.contains(&authorization_pair));

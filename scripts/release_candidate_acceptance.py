@@ -78,12 +78,27 @@ EXCLUDED_FEATURES = (
     "secret-exposure-review",
     "ssrf-oast-review",
     "supplied-session-review",
+    "template-evaluation-review",
     "tls-observation",
     "websocket-review",
     "xml-external-entity-owned-https-test-profile",
     "xml-external-entity-review",
 )
 ALL_FEATURES = tuple(sorted(("release-bundle", *RELEASE_MEMBERS, *EXCLUDED_FEATURES)))
+TEMPLATE_EVALUATION_REVIEW_PREREQUISITES = (
+    "--profile web-review",
+    "--template-evaluation-review",
+)
+TEMPLATE_EVALUATION_REVIEW_OPTION = "--template-evaluation-review"
+TEMPLATE_EVALUATION_REVIEW_LIMITATION = (
+    "Runs two independently replayed, harmless uppercase-filter expression pairs through "
+    "the existing exact-origin broker, with at most four requests and two active candidate "
+    "legs inside the shared parent allowance. A positive result is consistent only with the listed "
+    "Jinja-compatible semantics; it does not identify the template engine, execute "
+    "operating-system commands, access files, perform outbound interaction, validate impact, "
+    "or establish a vulnerability. Compilation does not enable the option, and the feature "
+    "remains outside default, release-bundle, and published alpha.2 archives."
+)
 AUTHORIZATION_REVIEW_PREREQUISITES = (
     "--profile web-review",
     "--authorization-review-policy FILE",
@@ -1016,6 +1031,11 @@ def _validate_help(runner: CandidateRunner, expected_version: str) -> dict:
     require(re.search(rf"(?m)^\s*{re.escape(WEBSOCKET_REVIEW_OPTION)}(?:\s|$)",
                       scan_text) is None,
             "scan help unexpectedly exposes non-bundled WebSocket review")
+    require(re.search(
+        rf"(?m)^\s*{re.escape(TEMPLATE_EVALUATION_REVIEW_OPTION)}(?:\s|$)",
+        scan_text,
+    ) is None,
+        "scan help unexpectedly exposes non-bundled template-evaluation review")
     for option in XML_EXTERNAL_ENTITY_REVIEW_OPTIONS:
         require(re.search(rf"(?m)^\s*{re.escape(option)}(?:\s|$)", scan_text) is None,
                 f"scan help unexpectedly exposes non-bundled XML option {option}")
@@ -1376,6 +1396,44 @@ def _validate_jwt_target_acceptance_surface(
     return target
 
 
+def _validate_template_evaluation_review_surface(
+        surfaces: list, text_value: str, expected_state: str) -> dict:
+    matches = [
+        surface for surface in surfaces
+        if isinstance(surface, dict)
+        and surface.get("key") == "option.template-evaluation-review"
+    ]
+    require(len(matches) == 1,
+            "packaged template-evaluation surface identity changed")
+    surface = matches[0]
+    require(
+        surface.get("label")
+        == "Jinja-compatible template-expression semantics review"
+        and surface.get("compile_feature") == "template-evaluation-review"
+        and surface.get("build_state") == expected_state
+        and surface.get("maturity") == "experimental"
+        and surface.get("implementation_status") == "experimental_limited"
+        and surface.get("group") == "optional"
+        and surface.get("kind") == "scan_option"
+        and surface.get("alias") is None
+        and surface.get("documentation")
+        == "docs/internals/template-evaluation-review.md",
+        "packaged template-evaluation surface metadata changed",
+    )
+    prerequisites = surface.get("prerequisites")
+    require(
+        isinstance(prerequisites, list)
+        and all(isinstance(value, str) for value in prerequisites)
+        and tuple(prerequisites) == TEMPLATE_EVALUATION_REVIEW_PREREQUISITES,
+        "packaged template-evaluation opt-in contract changed",
+    )
+    require(surface.get("limitation") == TEMPLATE_EVALUATION_REVIEW_LIMITATION,
+            "packaged template-evaluation limitation changed")
+    require(f"[{expected_state}] {surface['label']}" in text_value,
+            "template-evaluation capability text and JSON views disagree")
+    return surface
+
+
 def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> dict:
     text, _ = runner.run("capabilities-text", ["capabilities"], expected_stderr_empty=True)
     encoded, _ = runner.run(
@@ -1444,6 +1502,8 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
     _validate_tls_observation_surface(surfaces, text_value, "not_compiled")
     _validate_jwt_policy_review_surface(surfaces, text_value, "not_compiled")
     _validate_jwt_target_acceptance_surface(surfaces, text_value, "not_compiled")
+    _validate_template_evaluation_review_surface(
+        surfaces, text_value, "not_compiled")
     session_surfaces = [
         surface for surface in surfaces
         if surface.get("key") == "option.supplied-session-review"
@@ -1617,6 +1677,17 @@ def _validate_capabilities(runner: CandidateRunner, expected_version: str) -> di
             "maximum_requests": 6,
             "maximum_active_requests": 2,
             "confirmed_finding": "not_produced",
+        },
+        "template_evaluation_review_preview": {
+            "build_state": "not_compiled",
+            "maturity": "experimental",
+            "implementation_status": "experimental_limited",
+            "runtime_activation": "unavailable_in_release_bundle",
+            "maximum_requests": 4,
+            "maximum_active_requests": 2,
+            "engine_identity": "not_established",
+            "os_execution": "not_performed",
+            "outbound_interaction": "not_performed",
         },
         "supplied_session_preview": {
             "build_state": "not_compiled",

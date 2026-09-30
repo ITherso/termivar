@@ -278,6 +278,10 @@ fn build_features() -> Vec<BuildFeatureDescriptor> {
             "supplied-session-review",
             cfg!(feature = "supplied-session-review"),
         ),
+        (
+            "template-evaluation-review",
+            cfg!(feature = "template-evaluation-review"),
+        ),
         ("tls-observation", cfg!(feature = "tls-observation")),
         ("websocket-review", cfg!(feature = "websocket-review")),
         ("wordpress-review", cfg!(feature = "wordpress-review")),
@@ -517,6 +521,19 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
             &["--profile web-review", "--normalization-resilience"],
             "Uses bounded committed evidence and remains KnowledgeOnly; compilation does not enable it.",
             "docs/internals/normalization-resilience.md",
+        ),
+        surface!(
+            "option.template-evaluation-review",
+            "Jinja-compatible template-expression semantics review",
+            SurfaceGroup::Optional,
+            SurfaceKind::ScanOption,
+            Some("template-evaluation-review"),
+            cfg!(feature = "template-evaluation-review"),
+            Maturity::Experimental,
+            ImplementationStatus::ExperimentalLimited,
+            &["--profile web-review", "--template-evaluation-review"],
+            "Runs two independently replayed, harmless uppercase-filter expression pairs through the existing exact-origin broker, with at most four requests and two active candidate legs inside the shared parent allowance. A positive result is consistent only with the listed Jinja-compatible semantics; it does not identify the template engine, execute operating-system commands, access files, perform outbound interaction, validate impact, or establish a vulnerability. Compilation does not enable the option, and the feature remains outside default, release-bundle, and published alpha.2 archives.",
+            "docs/internals/template-evaluation-review.md",
         ),
         surface!(
             "option.graphql-review",
@@ -976,7 +993,7 @@ mod tests {
         assert_eq!(document.package_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(document.inventory_scope, "cli_surfaces");
         assert_eq!(document.runtime_execution, "not_performed");
-        assert_eq!(document.surfaces.len(), 33);
+        assert_eq!(document.surfaces.len(), 34);
 
         let keys = document
             .surfaces
@@ -1003,6 +1020,7 @@ mod tests {
                 "option.defense-enforcement",
                 "command.artifact",
                 "option.normalization-resilience",
+                "option.template-evaluation-review",
                 "option.graphql-review",
                 "option.openapi-review",
                 "option.rest-review",
@@ -1089,6 +1107,10 @@ mod tests {
             (
                 "option.normalization-resilience",
                 "normalization-resilience",
+            ),
+            (
+                "option.template-evaluation-review",
+                "template-evaluation-review",
             ),
             ("option.graphql-review", "graphql-review"),
             ("option.openapi-review", "openapi-review"),
@@ -1198,6 +1220,12 @@ mod tests {
                 Some("normalization-resilience"),
                 "preview",
                 "implemented",
+            ),
+            (
+                "option.template-evaluation-review",
+                Some("template-evaluation-review"),
+                "experimental",
+                "experimental_limited",
             ),
             (
                 "option.graphql-review",

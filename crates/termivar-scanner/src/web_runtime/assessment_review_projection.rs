@@ -26,7 +26,8 @@ use super::{
 #[cfg(feature = "normalization-resilience")]
 use super::web_assessment::XssProbeFamily;
 
-const MAX_NATIVE_REVIEW_PROJECTION_ITEMS: usize = 5;
+const MAX_NATIVE_REVIEW_PROJECTION_ITEMS: usize =
+    5 + cfg!(feature = "template-evaluation-review") as usize;
 
 const SSTI_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
     AssessmentCapabilityDescriptor::differential_review(
@@ -39,6 +40,20 @@ const SSTI_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
         Some("CWE-1336"),
         "web.remediation.template-input-separation@1",
         "Keep untrusted input out of template source and review the exact rendering path manually before treating this behavioral signal as a vulnerability.",
+    );
+
+#[cfg(feature = "template-evaluation-review")]
+const TEMPLATE_EVALUATION_REVIEW: AssessmentCapabilityDescriptor =
+    AssessmentCapabilityDescriptor::differential_review(
+        crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CAPABILITY_ID,
+        crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_TITLE,
+        crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_CATEGORY,
+        crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_SUMMARY,
+        None,
+        1_000_000,
+        Some("CWE-1336"),
+        crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_ID,
+        crate::template_evaluation_review::TEMPLATE_EVALUATION_REVIEW_REMEDIATION_SUMMARY,
     );
 
 const SQL_STRUCTURAL_REVIEW: AssessmentCapabilityDescriptor =
@@ -267,6 +282,8 @@ enum NativeReviewProjectionKind {
     EmbeddedHtmlReflection,
     SqlStructuralDifferential,
     SstiStructuralEvaluation,
+    #[cfg(feature = "template-evaluation-review")]
+    TemplateEvaluationJinjaCompatibleSemantics,
     XssStructuralBoundary,
     #[cfg(feature = "normalization-resilience")]
     NormalizationHtmlTextTokenCase,
@@ -293,6 +310,8 @@ impl NativeReviewProjectionKind {
             Self::EmbeddedHtmlReflection => &EMBEDDED_HTML_REFLECTION_REVIEW,
             Self::SqlStructuralDifferential => &SQL_STRUCTURAL_REVIEW,
             Self::SstiStructuralEvaluation => &SSTI_STRUCTURAL_REVIEW,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluationJinjaCompatibleSemantics => &TEMPLATE_EVALUATION_REVIEW,
             Self::XssStructuralBoundary => &XSS_STRUCTURAL_REVIEW,
             #[cfg(feature = "normalization-resilience")]
             Self::NormalizationHtmlTextTokenCase => &HTML_TEXT_TOKEN_CASE_NORMALIZATION_REVIEW,
@@ -325,6 +344,10 @@ impl NativeReviewProjectionKind {
             | Self::EmbeddedHtmlReflection
             | Self::SqlStructuralDifferential => NativeReviewProjectionBasis::Differential,
             Self::SstiStructuralEvaluation => NativeReviewProjectionBasis::Differential,
+            #[cfg(feature = "template-evaluation-review")]
+            Self::TemplateEvaluationJinjaCompatibleSemantics => {
+                NativeReviewProjectionBasis::Differential
+            },
             Self::XssStructuralBoundary => NativeReviewProjectionBasis::Differential,
             #[cfg(feature = "normalization-resilience")]
             Self::NormalizationHtmlTextTokenCase
@@ -514,6 +537,22 @@ fn plan_candidate(
                 .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
             (
                 NativeReviewProjectionKind::SstiStructuralEvaluation,
+                AssessmentItemTarget::query_parameter(query_parameter)?,
+            )
+        },
+        #[cfg(feature = "template-evaluation-review")]
+        AssessmentReviewCandidate::TemplateEvaluation(_) => {
+            if candidate.disposition() != NativeReviewDisposition::NeedsReview
+                || candidate.reflection_context().is_some()
+                || candidate.cors_status_relationship().is_some()
+            {
+                return Err(AssessmentReviewItemProjectionError::CandidateContract);
+            }
+            let query_parameter = candidate
+                .query_parameter()
+                .ok_or(AssessmentReviewItemProjectionError::CandidateContract)?;
+            (
+                NativeReviewProjectionKind::TemplateEvaluationJinjaCompatibleSemantics,
                 AssessmentItemTarget::query_parameter(query_parameter)?,
             )
         },

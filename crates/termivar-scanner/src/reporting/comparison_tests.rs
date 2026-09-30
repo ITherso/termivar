@@ -737,6 +737,95 @@ fn report_with_xml_external_entity_review(positive: bool) -> Value {
     document
 }
 
+fn template_evaluation_review_audit(outcome: &str) -> Value {
+    let (selected, attempted, active, completed, committed, projected) = match outcome {
+        "parent_not_observed" => (0, 0, 0, 0, 0, 0),
+        "candidate_specific_evaluation" => (2, 4, 2, 4, 4, 1),
+        "incomplete" => (2, 3, 1, 2, 2, 0),
+        "literal_or_escaped" | "unsupported_representation" | "replay_mismatch" => {
+            (2, 4, 2, 4, 4, 0)
+        },
+        _ => panic!("test outcome must be part of the literal closed vocabulary"),
+    };
+    json!({
+        "schema":"security.template-evaluation-review-audit/v1",
+        "policy_id":"termivar.template-evaluation-review/v1",
+        "family_id":"web.review.template-evaluation.family.jinja-compatible-benign-expression@1",
+        "outcome":outcome,
+        "engine_identity":"not_established",
+        "coverage":{
+            "selected_case_count":selected,
+            "attempted_request_count":attempted,
+            "active_request_count":active,
+            "completed_response_count":completed,
+            "committed_response_count":committed,
+            "projected_item_count":projected
+        },
+        "operations":{
+            "outbound_interaction":"not_performed",
+            "os_execution":"not_performed",
+            "file_access":"not_performed",
+            "impact_validation":"not_performed"
+        },
+        "claim_limits":[
+            "engine_identity_not_established",
+            "candidate_specific_evaluation_does_not_establish_template_engine_identity",
+            "outbound_interaction_not_performed",
+            "os_execution_not_performed",
+            "file_access_not_performed",
+            "impact_validation_not_performed",
+            "vulnerability_confirmation_not_established"
+        ]
+    })
+}
+
+fn template_evaluation_review_item(identity: u32) -> Value {
+    let mut item = item(identity);
+    item["capability_id"] = json!("web.review.template-evaluation.jinja-compatible-semantics@1");
+    item["title"] =
+        json!("Candidate-specific behavior consistent with Jinja-compatible expression semantics");
+    item["disposition"] = json!("needs_review");
+    item["claim_basis"] = json!("differential");
+    item["severity"] = Value::Null;
+    item["confidence_ppm"] = json!(1_000_000);
+    item["evidence_count"] = json!(12);
+    item["redacted_summary"] = json!("Two bounded candidate/replay cases produced candidate-specific benign expression semantics while controls remained negative; template engine identity, operating-system execution, file access, outbound interaction, and impact remain unestablished.");
+    item["category"] = json!("Template expression evaluation");
+    item["cwe"] = json!("CWE-1336");
+    item["remediation"] = json!({
+        "id":"web.remediation.template-evaluation-review@1",
+        "summary":"Review server-side template construction and bind untrusted values as data rather than compiling them as template source."
+    });
+    item["evidence_references"] = json!([]);
+    item["control_evidence_references"] = json!([
+        "evidence-0000",
+        "evidence-0001",
+        "evidence-0002",
+        "evidence-0003",
+        "evidence-0004",
+        "evidence-0005"
+    ]);
+    item["candidate_evidence_references"] = json!([
+        "evidence-0006",
+        "evidence-0007",
+        "evidence-0008",
+        "evidence-0009",
+        "evidence-0010",
+        "evidence-0011"
+    ]);
+    item
+}
+
+fn report_with_template_evaluation_review(outcome: &str) -> Value {
+    let mut document = report(if outcome == "candidate_specific_evaluation" {
+        vec![template_evaluation_review_item(613)]
+    } else {
+        Vec::new()
+    });
+    document["template_evaluation_review"] = template_evaluation_review_audit(outcome);
+    document
+}
+
 fn websocket_review_audit() -> Value {
     json!({
         "schema": "security.websocket-review-audit/v1",
@@ -1192,6 +1281,10 @@ fn xml_external_entity_saved_audit_rejects_unknown_raw_and_inconsistent_values()
     substituted_summary["items"][0]["redacted_summary"] = json!("A substituted interpretation.");
     reject(&substituted_summary);
 
+    let mut substituted_subject = valid.clone();
+    substituted_subject["items"][0]["subject_reference"] = json!("subject-0001");
+    reject(&substituted_subject);
+
     let mut substituted_remediation = valid.clone();
     substituted_remediation["items"][0]["remediation"]["id"] =
         json!("web.remediation.substituted@1");
@@ -1267,6 +1360,363 @@ fn xml_external_entity_saved_audit_rejects_unknown_raw_and_inconsistent_values()
     stopped_with_complete_accounting["items"] = json!([]);
     stopped_with_complete_accounting["item_count"] = json!(0);
     reject(&stopped_with_complete_accounting);
+}
+
+#[test]
+fn template_evaluation_saved_audit_is_feature_independent_and_compared_by_facets() {
+    let empty = report_with_template_evaluation_review("parent_not_observed");
+    let empty_summary = import_assessment_summary(&bytes(&empty)).unwrap();
+    assert_eq!(empty_summary.item_count(), 0);
+    let empty_comparison = compare(&empty, &empty);
+    assert_eq!(
+        empty_comparison["template_evaluation_review_comparison"]["schema"],
+        "termivar-template-evaluation-review-comparison/v1"
+    );
+    assert_eq!(
+        empty_comparison["template_evaluation_review_comparison"]["status"],
+        "compared"
+    );
+    for facet in ["methodology", "coverage", "outcome"] {
+        assert_eq!(
+            empty_comparison["template_evaluation_review_comparison"][facet]["status"],
+            "unchanged"
+        );
+    }
+    for name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        assert!(group(&empty_comparison, name).is_empty());
+    }
+
+    let positive = report_with_template_evaluation_review("candidate_specific_evaluation");
+    let positive_comparison = compare(&positive, &positive);
+    assert_eq!(group(&positive_comparison, "unchanged").len(), 1);
+    assert_eq!(
+        positive_comparison["template_evaluation_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+
+    let literal = report_with_template_evaluation_review("literal_or_escaped");
+    let changed_outcome = compare(&positive, &literal);
+    assert_eq!(
+        changed_outcome["template_evaluation_review_comparison"]["methodology"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        changed_outcome["template_evaluation_review_comparison"]["coverage"]["status"],
+        "unchanged"
+    );
+    assert_eq!(
+        changed_outcome["template_evaluation_review_comparison"]["outcome"]["status"],
+        "changed"
+    );
+    assert_eq!(group(&changed_outcome, "only_in_before").len(), 1);
+    assert!(group(&changed_outcome, "only_in_after").is_empty());
+
+    let mut incomplete = report_with_template_evaluation_review("incomplete");
+    let mut differently_incomplete = incomplete.clone();
+    differently_incomplete["template_evaluation_review"]["coverage"]["attempted_request_count"] =
+        json!(4);
+    let coverage_change = compare(&incomplete, &differently_incomplete);
+    assert_eq!(
+        coverage_change["template_evaluation_review_comparison"]["coverage"]["status"],
+        "changed"
+    );
+    assert_eq!(
+        coverage_change["template_evaluation_review_comparison"]["outcome"]["status"],
+        "unchanged"
+    );
+    incomplete
+        .as_object_mut()
+        .unwrap()
+        .remove("template_evaluation_review");
+    let one_sided = compare(&incomplete, &literal);
+    assert_eq!(
+        one_sided["template_evaluation_review_comparison"]["status"],
+        "not_comparable"
+    );
+    assert_eq!(
+        one_sided["template_evaluation_review_comparison"]["reason"],
+        "before_audit_missing"
+    );
+
+    for format in [
+        ComparisonFormat::Json,
+        ComparisonFormat::Markdown,
+        ComparisonFormat::Html,
+    ] {
+        let rendered = compare_reports(&bytes(&positive), &bytes(&literal), format).unwrap();
+        assert!(rendered.contains("termivar-template-evaluation-review-comparison/v1"));
+        assert!(!rendered.contains("{{"));
+        assert!(!rendered.contains("file:///"));
+    }
+}
+
+#[test]
+fn template_evaluation_saved_audit_rejects_invalid_types_counts_and_cross_links() {
+    let valid = report_with_template_evaluation_review("candidate_specific_evaluation");
+    let mutate = |path: &[&str], replacement: Value| {
+        let mut document = valid.clone();
+        let mut selected = &mut document;
+        for key in &path[..path.len() - 1] {
+            selected = &mut selected[*key];
+        }
+        selected[path[path.len() - 1]] = replacement;
+        reject(&document);
+    };
+    for (path, replacement) in [
+        (
+            &["template_evaluation_review", "schema"][..],
+            json!("security.template-evaluation-review-audit/v2"),
+        ),
+        (
+            &["template_evaluation_review", "policy_id"][..],
+            json!("termivar.template-evaluation-review/v2"),
+        ),
+        (
+            &["template_evaluation_review", "family_id"][..],
+            json!("web.review.template-evaluation.family.unknown@1"),
+        ),
+        (
+            &["template_evaluation_review", "outcome"][..],
+            json!("engine_confirmed"),
+        ),
+        (
+            &["template_evaluation_review", "engine_identity"][..],
+            json!("jinja2"),
+        ),
+        (
+            &[
+                "template_evaluation_review",
+                "coverage",
+                "selected_case_count",
+            ][..],
+            json!(true),
+        ),
+        (
+            &[
+                "template_evaluation_review",
+                "coverage",
+                "selected_case_count",
+            ][..],
+            json!(1),
+        ),
+        (
+            &[
+                "template_evaluation_review",
+                "coverage",
+                "attempted_request_count",
+            ][..],
+            json!(5),
+        ),
+        (
+            &[
+                "template_evaluation_review",
+                "coverage",
+                "active_request_count",
+            ][..],
+            json!(3),
+        ),
+        (
+            &[
+                "template_evaluation_review",
+                "coverage",
+                "completed_response_count",
+            ][..],
+            json!(3),
+        ),
+        (
+            &[
+                "template_evaluation_review",
+                "coverage",
+                "committed_response_count",
+            ][..],
+            json!(3),
+        ),
+        (
+            &[
+                "template_evaluation_review",
+                "coverage",
+                "projected_item_count",
+            ][..],
+            json!(0),
+        ),
+        (
+            &["template_evaluation_review", "operations", "os_execution"][..],
+            json!("performed"),
+        ),
+    ] {
+        mutate(path, replacement);
+    }
+
+    let mut reordered_limits = valid.clone();
+    reordered_limits["template_evaluation_review"]["claim_limits"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    reject(&reordered_limits);
+
+    let mut raw_value = valid.clone();
+    raw_value["template_evaluation_review"]["expression"] = json!("{{ unsafe }}");
+    reject(&raw_value);
+
+    for key in ["coverage", "operations", "claim_limits"] {
+        let mut missing_group = valid.clone();
+        missing_group["template_evaluation_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove(key);
+        reject(&missing_group);
+    }
+    for (key, replacement) in [
+        ("coverage", json!([])),
+        ("operations", Value::Null),
+        ("claim_limits", json!({})),
+    ] {
+        let mut wrong_group_type = valid.clone();
+        wrong_group_type["template_evaluation_review"][key] = replacement;
+        reject(&wrong_group_type);
+    }
+
+    let mut missing_audit = valid.clone();
+    missing_audit
+        .as_object_mut()
+        .unwrap()
+        .remove("template_evaluation_review");
+    reject(&missing_audit);
+
+    let mut missing_item = valid.clone();
+    missing_item["items"] = json!([]);
+    missing_item["item_count"] = json!(0);
+    reject(&missing_item);
+
+    let mut duplicate_item = valid.clone();
+    duplicate_item["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(template_evaluation_review_item(614));
+    duplicate_item["item_count"] = json!(2);
+    reject(&duplicate_item);
+
+    for (key, replacement) in [
+        ("title", json!("Substituted template observation")),
+        ("category", json!("substituted category")),
+        ("cwe", json!("CWE-94")),
+        ("severity", json!("high")),
+    ] {
+        let mut document = valid.clone();
+        document["items"][0][key] = replacement;
+        reject(&document);
+    }
+
+    let mut arbitrary_confidence = valid.clone();
+    arbitrary_confidence["items"][0]["confidence_ppm"] = json!(900_000);
+    reject(&arbitrary_confidence);
+
+    let mut too_few_control = valid.clone();
+    let moved = too_few_control["items"][0]["control_evidence_references"]
+        .as_array_mut()
+        .unwrap()
+        .pop()
+        .unwrap();
+    too_few_control["items"][0]["candidate_evidence_references"]
+        .as_array_mut()
+        .unwrap()
+        .push(moved);
+    reject(&too_few_control);
+
+    let mut too_few_candidate = valid.clone();
+    let moved = too_few_candidate["items"][0]["candidate_evidence_references"]
+        .as_array_mut()
+        .unwrap()
+        .pop()
+        .unwrap();
+    too_few_candidate["items"][0]["control_evidence_references"]
+        .as_array_mut()
+        .unwrap()
+        .push(moved);
+    reject(&too_few_candidate);
+
+    for (key, replacement) in [
+        ("control_evidence_references", json!("evidence-0000")),
+        ("candidate_evidence_references", Value::Null),
+    ] {
+        let mut wrong_reference_group_type = valid.clone();
+        wrong_reference_group_type["items"][0][key] = replacement;
+        reject(&wrong_reference_group_type);
+    }
+
+    let mut duplicate_reference = valid.clone();
+    let duplicated = duplicate_reference["items"][0]["control_evidence_references"][0].clone();
+    duplicate_reference["items"][0]["candidate_evidence_references"][0] = duplicated;
+    reject(&duplicate_reference);
+
+    let mut substituted_summary = valid.clone();
+    substituted_summary["items"][0]["redacted_summary"] = json!("A substituted interpretation.");
+    reject(&substituted_summary);
+
+    let mut substituted_remediation = valid.clone();
+    substituted_remediation["items"][0]["remediation"]["id"] =
+        json!("web.remediation.substituted@1");
+    reject(&substituted_remediation);
+
+    let mut atomic_differential = valid.clone();
+    atomic_differential["items"][0]["evidence_count"] = json!(1);
+    atomic_differential["items"][0]["evidence_references"] = json!(["evidence-0000"]);
+    atomic_differential["items"][0]["control_evidence_references"] = json!([]);
+    atomic_differential["items"][0]["candidate_evidence_references"] = json!([]);
+    reject(&atomic_differential);
+
+    let mut overlapping_evidence = valid.clone();
+    overlapping_evidence["items"][0]["candidate_evidence_references"][0] = json!("evidence-0001");
+    reject(&overlapping_evidence);
+
+    let mut nonpositive_with_item = report_with_template_evaluation_review("literal_or_escaped");
+    nonpositive_with_item["items"] = json!([template_evaluation_review_item(615)]);
+    nonpositive_with_item["item_count"] = json!(1);
+    reject(&nonpositive_with_item);
+
+    let mut invalid_parent = report_with_template_evaluation_review("parent_not_observed");
+    invalid_parent["template_evaluation_review"]["coverage"]["selected_case_count"] = json!(2);
+    reject(&invalid_parent);
+
+    for outcome in [
+        "literal_or_escaped",
+        "unsupported_representation",
+        "replay_mismatch",
+    ] {
+        let mut incomplete_terminal = report_with_template_evaluation_review(outcome);
+        for name in [
+            "attempted_request_count",
+            "active_request_count",
+            "completed_response_count",
+            "committed_response_count",
+        ] {
+            incomplete_terminal["template_evaluation_review"]["coverage"][name] = json!(0);
+        }
+        reject(&incomplete_terminal);
+    }
+
+    let partial_incomplete = report_with_template_evaluation_review("incomplete");
+    import_assessment_summary(&bytes(&partial_incomplete)).unwrap();
+}
+
+#[test]
+fn historical_ssti_item_remains_valid_without_template_evaluation_audit() {
+    let mut historical = item(616);
+    historical["capability_id"] = json!("web.review.ssti.structural-evaluation@1");
+    historical["disposition"] = json!("needs_review");
+    historical["claim_basis"] = json!("differential");
+    let document = report(vec![historical]);
+    let comparison = compare(&document, &document);
+    assert!(comparison
+        .get("template_evaluation_review_comparison")
+        .is_none());
+    assert_eq!(group(&comparison, "unchanged").len(), 1);
+    assert_eq!(
+        import_assessment_summary(&bytes(&document))
+            .unwrap()
+            .item_count(),
+        1
+    );
 }
 
 #[test]

@@ -5,9 +5,9 @@ use super::{
     ComparisonDocument, ComparisonError, ComparisonItem, ControlReferenceMappingComparison,
     ItemProjection, JwtPolicyReviewComparison, ReconCertSpotterComparison,
     ReconSnapshotImportComparison, SecretExposureComparison, SourceMetadata,
-    SuppliedSessionComparison, TlsObservationComparison, WebSocketReviewComparison,
-    WordPressEntityChanges, WordPressFacetComparison, WordPressReviewComparison,
-    XmlExternalEntityReviewComparison,
+    SuppliedSessionComparison, TemplateEvaluationReviewComparison, TlsObservationComparison,
+    WebSocketReviewComparison, WordPressEntityChanges, WordPressFacetComparison,
+    WordPressReviewComparison, XmlExternalEntityReviewComparison,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
@@ -52,6 +52,9 @@ pub(super) fn render(
     }
     if let Some(comparison) = &document.xml_external_entity_review_comparison {
         xml_external_entity_review(&mut output, comparison)?;
+    }
+    if let Some(comparison) = &document.template_evaluation_review_comparison {
+        template_evaluation_review(&mut output, comparison)?;
     }
     if let Some(comparison) = &document.control_reference_mapping_comparison {
         control_reference_mapping(&mut output, comparison)?;
@@ -375,6 +378,47 @@ fn xml_external_entity_review(
     output.push_str(
         "<details><summary>XML external-entity review interpretation limits</summary><ul>",
     )?;
+    for limit in comparison.interpretation_limits {
+        output.push_str("<li>")?;
+        write_html_text(output, limit)?;
+        output.push_str("</li>")?;
+    }
+    output.push_str("</ul></details></section>")
+}
+
+fn template_evaluation_review(
+    output: &mut RenderBuffer,
+    comparison: &TemplateEvaluationReviewComparison,
+) -> Result<(), ReportError> {
+    output.push_str("<section class=\"wp-review\" aria-labelledby=\"template-evaluation-review-differences\"><h2 id=\"template-evaluation-review-differences\">Benign template-evaluation review differences</h2><p class=\"muted\">Validated, value-free audit projections compare two bounded benign expression cases without retaining expressions, query values, response bodies, template source, engine banners, file paths, commands, or raw errors. This display does not identify a template engine or establish operating-system execution, file access, outbound interaction, impact, vulnerability, or remediation.</p><div class=\"wp-summary\">")?;
+    for (label, value) in [
+        ("Comparison", comparison.status),
+        ("Methodology", comparison.methodology.status.as_str()),
+        ("Coverage", comparison.coverage.status.as_str()),
+        ("Outcome", comparison.outcome.status.as_str()),
+    ] {
+        output.push_str("<div><strong>")?;
+        write_html_text(output, label)?;
+        output.push_str("</strong><br><span class=\"hash\">")?;
+        write_html_text(output, value)?;
+        output.push_str("</span></div>")?;
+    }
+    output.push_str("</div><p><strong>Comparison schema:</strong> <span class=\"hash\">")?;
+    write_html_text(output, comparison.schema)?;
+    output.push_str("</span></p>")?;
+    if let Some(reason) = comparison.reason {
+        output.push_str("<p><strong>Not compared reason:</strong> <span class=\"hash\">")?;
+        write_html_text(output, reason)?;
+        output.push_str("</span>. Audit presence changes are not engine rejection, vulnerability absence, or remediation.</p>")?;
+    }
+    for (label, facet) in [
+        ("Template-evaluation methodology", &comparison.methodology),
+        ("Template-evaluation coverage", &comparison.coverage),
+        ("Template-evaluation outcome", &comparison.outcome),
+    ] {
+        wordpress_facet(output, label, facet)?;
+    }
+    output.push_str("<details><summary>Template-evaluation interpretation limits</summary><ul>")?;
     for limit in comparison.interpretation_limits {
         output.push_str("<li>")?;
         write_html_text(output, limit)?;

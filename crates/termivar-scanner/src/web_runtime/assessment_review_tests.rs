@@ -2142,6 +2142,258 @@ fn ssti_observer_classifies_literal_static_evaluated_unsupported_and_incomplete_
     }
 }
 
+#[cfg(feature = "template-evaluation-review")]
+fn template_observation(
+    kind: NativeWebReviewActionKind,
+    stage: DecisionExecutionStage,
+    evaluation: TemplateEvaluationRelation,
+    active_success: bool,
+    evidence_prefix: &str,
+) -> CommittedAssessmentReviewObservation {
+    fake_observation(
+        kind,
+        stage,
+        CommittedReviewResponse::TemplateEvaluation {
+            status: ReviewHttpStatusClass::Successful,
+            evaluation,
+        },
+        active_success,
+        evidence_prefix,
+    )
+}
+
+#[cfg(feature = "template-evaluation-review")]
+fn template_pair_set(
+    candidate: TemplateEvaluationRelation,
+    replay_candidate: TemplateEvaluationRelation,
+) -> [CommittedAssessmentReviewObservation; 4] {
+    let control = template_observation(
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+        DecisionExecutionStage::Passive,
+        TemplateEvaluationRelation::Absent,
+        false,
+        "template-control",
+    );
+    let candidate = template_observation(
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+        DecisionExecutionStage::Active,
+        candidate,
+        true,
+        "template-candidate",
+    );
+    let mut replay_control = template_observation(
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair,
+        DecisionExecutionStage::Passive,
+        TemplateEvaluationRelation::Absent,
+        false,
+        "template-replay-control",
+    );
+    replay_control.case_id = "case:decision:2:template-replay".to_owned();
+    let mut replay_candidate = template_observation(
+        NativeWebReviewActionKind::TemplateJinjaUppercaseQueryReplayPair,
+        DecisionExecutionStage::Active,
+        replay_candidate,
+        true,
+        "template-replay-candidate",
+    );
+    replay_candidate.case_id = replay_control.case_id.clone();
+    [control, candidate, replay_control, replay_candidate]
+}
+
+#[cfg(feature = "template-evaluation-review")]
+fn template_ledger(
+    observations: impl IntoIterator<Item = CommittedAssessmentReviewObservation>,
+) -> CommittedAssessmentReviewLedger {
+    let mut ledger =
+        CommittedAssessmentReviewLedger::new_with_sql(root(), seeds(), None, None, None, None)
+            .unwrap()
+            .with_template_evaluation(QUERY_PARAMETER)
+            .unwrap();
+    for observation in observations {
+        let key = ReviewReceiptKey {
+            kind: observation.kind,
+            case_id: observation.case_id.clone(),
+            stage: observation.stage,
+        };
+        assert!(ledger.observations.insert(key, observation).is_none());
+    }
+    ledger
+}
+
+#[cfg(feature = "template-evaluation-review")]
+#[test]
+fn template_review_requires_two_exact_uppercase_evaluations_and_summarizes_four_legs() {
+    let observations = template_pair_set(
+        TemplateEvaluationRelation::ExpectedEvaluation,
+        TemplateEvaluationRelation::ExpectedEvaluation,
+    );
+    let mut output = Vec::new();
+    append_template_evaluation_candidate(
+        &observations[0],
+        &observations[1],
+        &observations[2],
+        &observations[3],
+        QUERY_PARAMETER,
+        &mut output,
+    );
+    assert_eq!(output.len(), 1);
+    assert_eq!(
+        output[0].disposition(),
+        NativeReviewDisposition::NeedsReview
+    );
+    assert!(matches!(
+        output[0],
+        AssessmentReviewCandidate::TemplateEvaluation(_)
+    ));
+
+    let ledger = template_ledger(observations);
+    let summary = ledger.template_evaluation_summary().unwrap();
+    assert_eq!(
+        summary.outcome(),
+        crate::template_evaluation_review::TemplateEvaluationReviewOutcome::CandidateSpecificEvaluation
+    );
+    assert_eq!(summary.committed_response_count(), 4);
+    assert_eq!(summary.projected_item_count(), 1);
+    assert_eq!(
+        ledger
+            .candidates()
+            .into_iter()
+            .filter(|candidate| matches!(
+                candidate,
+                AssessmentReviewCandidate::TemplateEvaluation(_)
+            ))
+            .count(),
+        1
+    );
+}
+
+#[cfg(feature = "template-evaluation-review")]
+#[test]
+fn template_summary_keeps_literal_unsupported_replay_and_incomplete_distinct() {
+    use crate::template_evaluation_review::TemplateEvaluationReviewOutcome;
+
+    for (candidate, replay, expected) in [
+        (
+            TemplateEvaluationRelation::LiteralOrEscaped,
+            TemplateEvaluationRelation::LiteralOrEscaped,
+            TemplateEvaluationReviewOutcome::LiteralOrEscaped,
+        ),
+        (
+            TemplateEvaluationRelation::Unsupported,
+            TemplateEvaluationRelation::Unsupported,
+            TemplateEvaluationReviewOutcome::UnsupportedRepresentation,
+        ),
+        (
+            TemplateEvaluationRelation::ExpectedEvaluation,
+            TemplateEvaluationRelation::Absent,
+            TemplateEvaluationReviewOutcome::ReplayMismatch,
+        ),
+        (
+            TemplateEvaluationRelation::Incomplete,
+            TemplateEvaluationRelation::ExpectedEvaluation,
+            TemplateEvaluationReviewOutcome::Incomplete,
+        ),
+    ] {
+        let ledger = template_ledger(template_pair_set(candidate, replay));
+        let summary = ledger.template_evaluation_summary().unwrap();
+        assert_eq!(summary.outcome(), expected);
+        assert_eq!(summary.committed_response_count(), 4);
+        assert_eq!(summary.projected_item_count(), 0);
+        assert!(ledger.candidates().into_iter().all(|candidate| !matches!(
+            candidate,
+            AssessmentReviewCandidate::TemplateEvaluation(_)
+        )));
+    }
+
+    let partial = template_pair_set(
+        TemplateEvaluationRelation::ExpectedEvaluation,
+        TemplateEvaluationRelation::ExpectedEvaluation,
+    );
+    let ledger = template_ledger(partial.into_iter().take(3));
+    let summary = ledger.template_evaluation_summary().unwrap();
+    assert_eq!(
+        summary.outcome(),
+        TemplateEvaluationReviewOutcome::Incomplete
+    );
+    assert_eq!(summary.committed_response_count(), 3);
+}
+
+#[cfg(feature = "template-evaluation-review")]
+#[test]
+fn template_observer_classifies_evaluated_literal_escaped_unsupported_and_incomplete_bodies() {
+    let observer =
+        AssessmentReviewObserverSet::new_with_sql(root(), seeds(), None, None, None, None)
+            .unwrap()
+            .with_template_evaluation(QUERY_PARAMETER)
+            .unwrap();
+    let contract = observer.template_evaluation.as_ref().unwrap();
+    let probe = &contract.primary.probe;
+    let strategy =
+        native_review_strategy_ref(NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair);
+    let escaped = probe.candidate_value().replace('\'', "&#39;");
+    let cases = [
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.candidate_value()),
+            Some("text/html"),
+            "literal-or-escaped",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(escaped),
+            Some("text/html"),
+            "literal-or-escaped",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.expected_value()),
+            Some("text/html"),
+            "expected-evaluation",
+        ),
+        (
+            DecisionExecutionStage::Passive,
+            &contract.primary.control_url,
+            Some(probe.expected_value()),
+            Some("text/html"),
+            "expected-present-in-control",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            Some(probe.expected_value()),
+            Some("application/octet-stream"),
+            "unsupported",
+        ),
+        (
+            DecisionExecutionStage::Active,
+            &contract.primary.candidate_url,
+            None,
+            Some("text/html"),
+            "incomplete",
+        ),
+    ];
+    for (stage, url, body, media_type, expected) in cases {
+        let evidence = observe(
+            &observer,
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair,
+            stage,
+            url,
+            &HeaderMap::new(),
+            200,
+            media_type,
+            body.as_deref().map(str::as_bytes),
+            NativeWebReviewActionKind::TemplateJinjaUppercaseQueryPair.executor_id(),
+            Some(&strategy),
+            false,
+        )
+        .unwrap();
+        assert!(values(&evidence).contains(&(TEMPLATE_EVALUATION_RELATION, expected)));
+    }
+}
+
 mod scanner_corpus_conformance {
     use std::{
         collections::{BTreeMap, BTreeSet},
