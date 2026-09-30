@@ -317,6 +317,12 @@ fn private_fixture_leak(
     let text = String::from_utf8_lossy(bytes);
     let lower = text.to_ascii_lowercase();
     let local_path = local_path.to_string_lossy().into_owned();
+    if exact_private_template_values(target)
+        .into_iter()
+        .any(|value| lower.contains(&value.to_ascii_lowercase()))
+    {
+        return Some(PrivateFixtureLeak::ExactTemplateValue);
+    }
     let fixed_forbidden = [
         QUERY_NAME,
         "{{'termivar_",
@@ -335,10 +341,7 @@ fn private_fixture_leak(
     {
         return Some(PrivateFixtureLeak::FixedFixtureValue);
     }
-    exact_private_template_values(target)
-        .into_iter()
-        .any(|value| lower.contains(&value.to_ascii_lowercase()))
-        .then_some(PrivateFixtureLeak::ExactTemplateValue)
+    None
 }
 
 fn assert_private_values_absent(bytes: &[u8], local_path: &Path, target: &str, label: &str) {
@@ -706,6 +709,12 @@ fn privacy_oracle_allows_public_schema_but_rejects_exact_nonce_bearing_values() 
             "the exact nonce-bearing fixture value must remain forbidden"
         );
     }
+
+    assert_eq!(
+        private_fixture_leak(b"{{'termivar_", local_path, target),
+        Some(PrivateFixtureLeak::FixedFixtureValue),
+        "the generic private candidate fragment remains independently forbidden"
+    );
 
     let unrelated_nonce = b"termivar-template-0011223344556677-control-end";
     assert_eq!(
