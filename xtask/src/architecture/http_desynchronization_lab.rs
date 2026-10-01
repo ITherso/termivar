@@ -354,10 +354,8 @@ mod tests {
         }
 
         fn account(broker: &RequestAccountingBroker) {
-            let request_bytes = 1;
-            let matrix_bytes = 1;
             assert_eq!(http_request_line_marker_count(spec.request), 1);
-            validate_case_bounds(request_bytes, matrix_bytes).unwrap();
+            validate_case_bounds(spec.request.len(), matrix_bytes)?;
             let _ = broker.try_begin_with_request_body_bytes(
                 "case",
                 DecisionExecutionStage::Active,
