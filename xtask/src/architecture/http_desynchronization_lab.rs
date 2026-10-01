@@ -11,7 +11,8 @@ use std::{
 use syn::{visit::Visit, Item, Visibility};
 
 const SCANNER_LIBRARY: &str = "crates/termivar-scanner/src/lib.rs";
-const LAB_SOURCE: &str = "crates/termivar-scanner/src/http_desynchronization_lab.rs";
+const LAB_SOURCE: &str = "crates/termivar-scanner/tests/support/http_desynchronization_lab.rs";
+const LAB_MODULE_PATH: &str = "../tests/support/http_desynchronization_lab.rs";
 const CRATES_ROOT: &str = "crates";
 const MODULE: &str = "http_desynchronization_lab";
 const PRODUCT_SURFACE_PATHS: &[&str] = &[
@@ -101,6 +102,11 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     };
     let product_sources = product_rust_sources(workspace_root)?;
     let mut violations = contract_violations(&library, &lab, &product_sources)?;
+    if !lab_source_is_nested_test_support(LAB_SOURCE) {
+        violations.push(format!(
+            "{LAB_SOURCE}: laboratory source must remain a nested non-target support file below `tests/`"
+        ));
+    }
     let product_surfaces = PRODUCT_SURFACE_PATHS
         .iter()
         .map(|path| {
@@ -126,6 +132,16 @@ fn product_surface_violations(sources: &[(String, String)]) -> Vec<String> {
     violations
 }
 
+fn lab_source_is_nested_test_support(source: &str) -> bool {
+    let path = Path::new(source);
+    path.parent().and_then(Path::file_name) == Some(std::ffi::OsStr::new("support"))
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            == Some(std::ffi::OsStr::new("tests"))
+}
+
 fn contract_violations(
     library: &str,
     lab: &str,
@@ -140,6 +156,19 @@ fn contract_violations(
         violations.push(format!(
             "{LAB_SOURCE}: laboratory items must remain private; found {} non-private visibility declarations",
             visibility.count
+        ));
+    }
+
+    let mut writes = ReviewedWriteAllVisitor::default();
+    writes.visit_file(&lab_syntax);
+    if writes.total != 2
+        || writes.client_request != 1
+        || writes.forwarded_received != 1
+        || writes.unreviewed != 0
+    {
+        violations.push(format!(
+            "{LAB_SOURCE}: laboratory must contain exactly the two reviewed fixed-byte `write_all` calls and no alternate socket writes; found total={}, client_request={}, forwarded_received={}, unreviewed={}",
+            writes.total, writes.client_request, writes.forwarded_received, writes.unreviewed
         ));
     }
 
@@ -227,21 +256,39 @@ fn module_declaration_violations(library: &str) -> Result<Vec<String>, syn::Erro
         )]);
     };
 
-    let guard_is_exact = module.attrs.len() == 1
-        && module.attrs[0].path().is_ident("cfg")
-        && module.attrs[0]
-            .meta
-            .require_list()
-            .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == EXACT_GUARD);
+    let guard_is_exact = module.attrs.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute
+                .meta
+                .require_list()
+                .is_ok_and(|list| compact_whitespace(&list.tokens.to_string()) == EXACT_GUARD)
+    });
+    let path_is_exact = module.attrs.iter().any(|attribute| {
+        if !attribute.path().is_ident("path") {
+            return false;
+        }
+        let syn::Meta::NameValue(name_value) = &attribute.meta else {
+            return false;
+        };
+        let syn::Expr::Lit(expression) = &name_value.value else {
+            return false;
+        };
+        matches!(&expression.lit, syn::Lit::Str(value) if value.value() == LAB_MODULE_PATH)
+    });
     let declaration_is_private_external = matches!(module.vis, Visibility::Inherited)
         && module.content.is_none()
         && module.semi.is_some();
     let references = library.matches(MODULE).count();
-    if guard_is_exact && declaration_is_private_external && references == 1 {
+    if module.attrs.len() == 2
+        && guard_is_exact
+        && path_is_exact
+        && declaration_is_private_external
+        && references == 2
+    {
         Ok(Vec::new())
     } else {
         Ok(vec![format!(
-            "{SCANNER_LIBRARY}: `{MODULE}` must appear once as exact `#[cfg(all(test, feature = \"scanning\"))] mod {MODULE};` and remain private"
+            "{SCANNER_LIBRARY}: `{MODULE}` must appear once as exact `#[cfg(all(test, feature = \"scanning\"))] #[path = \"{LAB_MODULE_PATH}\"] mod {MODULE};` and remain private"
         )])
     }
 }
@@ -258,6 +305,85 @@ impl<'ast> Visit<'ast> for NonPrivateVisibility {
         }
         syn::visit::visit_visibility(self, visibility);
     }
+}
+
+#[derive(Default)]
+struct ReviewedWriteAllVisitor {
+    total: usize,
+    client_request: usize,
+    forwarded_received: usize,
+    unreviewed: usize,
+}
+
+impl<'ast> Visit<'ast> for ReviewedWriteAllVisitor {
+    fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+        if expression.method == "write_all" {
+            self.total += 1;
+            if expression.args.len() == 1
+                && expression_is_path(&expression.receiver, "client")
+                && expression_is_path(&expression.args[0], "client_request")
+            {
+                self.client_request += 1;
+            }
+            if expression.args.len() == 1
+                && expression_is_path(&expression.receiver, "forward")
+                && expression_is_reference_to_path(&expression.args[0], "received")
+            {
+                self.forwarded_received += 1;
+            }
+        } else if is_unreviewed_write_identifier(&expression.method.to_string()) {
+            self.unreviewed += 1;
+        }
+        syn::visit::visit_expr_method_call(self, expression);
+    }
+
+    fn visit_expr_call(&mut self, expression: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = expression.func.as_ref() {
+            if path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "write_all")
+            {
+                self.total += 1;
+            } else if path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| is_unreviewed_write_identifier(&segment.ident.to_string()))
+            {
+                self.unreviewed += 1;
+            }
+        }
+        syn::visit::visit_expr_call(self, expression);
+    }
+}
+
+fn is_unreviewed_write_identifier(identifier: &str) -> bool {
+    matches!(
+        identifier,
+        "write"
+            | "write_buf"
+            | "write_buf_all"
+            | "write_vectored"
+            | "try_write"
+            | "poll_write"
+            | "copy"
+            | "copy_bidirectional"
+    )
+}
+
+fn expression_is_path(expression: &syn::Expr, expected: &str) -> bool {
+    matches!(expression, syn::Expr::Path(path)
+        if path.qself.is_none()
+            && path.path.segments.len() == 1
+            && path.path.segments[0].ident == expected)
+}
+
+fn expression_is_reference_to_path(expression: &syn::Expr, expected: &str) -> bool {
+    matches!(expression, syn::Expr::Reference(reference)
+        if reference.mutability.is_none()
+            && expression_is_path(&reference.expr, expected))
 }
 
 fn product_rust_sources(workspace_root: &Path) -> Result<Vec<(String, String)>, io::Error> {
@@ -308,12 +434,13 @@ mod tests {
 
     const VALID_LIBRARY: &str = r#"
         #[cfg(all(test, feature = "scanning"))]
+        #[path = "../tests/support/http_desynchronization_lab.rs"]
         mod http_desynchronization_lab;
     "#;
 
     const VALID_LAB: &str = r#"
         use std::{net::Ipv4Addr, time::Duration};
-        use tokio::net::{TcpListener, TcpStream};
+        use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}};
         use crate::web_runtime::{DecisionExecutionStage, RequestAccountingBroker};
 
         const MAX_CASE_REQUEST_BYTES: usize = 2 * 1024;
@@ -347,8 +474,12 @@ mod tests {
             let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
             let front_address = listener.local_addr().unwrap();
             let back_address = front_address;
-            let _ = TcpStream::connect(front_address).await;
-            let _ = TcpStream::connect(back_address).await;
+            let mut client = TcpStream::connect(front_address).await.unwrap();
+            let client_request = b"request";
+            client.write_all(client_request).await.unwrap();
+            let mut forward = TcpStream::connect(back_address).await.unwrap();
+            let received = [0_u8; 1];
+            forward.write_all(&received).await.unwrap();
             let (_, peer) = listener.accept().await.unwrap();
             assert!(peer.ip().is_loopback());
         }
@@ -401,11 +532,34 @@ mod tests {
                 "mod http_desynchronization_lab",
                 "pub mod http_desynchronization_lab",
             ),
+            VALID_LIBRARY.replace(
+                "#[path = \"../tests/support/http_desynchronization_lab.rs\"]",
+                "",
+            ),
+            VALID_LIBRARY.replace(
+                "../tests/support/http_desynchronization_lab.rs",
+                "../tests/http_desynchronization_lab.rs",
+            ),
+            VALID_LIBRARY.replace(
+                "#[path = \"../tests/support/http_desynchronization_lab.rs\"]",
+                "#[path = \"../tests/support/http_desynchronization_lab.rs\"]\n#[allow(dead_code)]",
+            ),
             format!("{VALID_LIBRARY}\npub use crate::http_desynchronization_lab::*;"),
         ] {
             assert_ne!(mutation, VALID_LIBRARY);
             assert!(!module_declaration_violations(&mutation).unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn laboratory_source_is_nested_below_tests_without_becoming_an_auto_target() {
+        assert!(lab_source_is_nested_test_support(LAB_SOURCE));
+        assert!(!lab_source_is_nested_test_support(
+            "crates/termivar-scanner/tests/http_desynchronization_lab.rs"
+        ));
+        assert!(!lab_source_is_nested_test_support(
+            "crates/termivar-scanner/src/http_desynchronization_lab.rs"
+        ));
     }
 
     #[test]
@@ -466,6 +620,14 @@ mod tests {
             VALID_LAB.replace(
                 "assert_eq!(http_request_line_marker_count(spec.request), 1);",
                 "assert_eq!(http_request_line_marker_count(spec.request), 2);",
+            ),
+            VALID_LAB.replace(
+                "client.write_all(client_request).await.unwrap();",
+                "client.write_all(client_request).await.unwrap();\nclient.write_all(b\"GET /second HTTP/1.1\\r\\n\\r\\n\").await.unwrap();",
+            ),
+            VALID_LAB.replace(
+                "client.write_all(client_request).await.unwrap();",
+                "client.write_all(client_request).await.unwrap();\nlet _ = client.write(b\"GET /second HTTP/1.1\\r\\n\\r\\n\").await;",
             ),
             format!("{VALID_LAB}\nfn input() {{ let _ = std::env::args_os(); }}"),
             format!("{VALID_LAB}\nfn output() {{ println!(\"{{:?}}\", b\"raw\"); }}"),

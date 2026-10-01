@@ -1,4 +1,4 @@
-//! Test-only laboratory for bounded HTTP/1 parser-boundary comparisons.
+//! Test-only support module for bounded HTTP/1 parser-boundary comparisons.
 //!
 //! This module deliberately has no product, CLI, report, or live-target entry
 //! point. It sends four fixed, harmless byte sequences through single-use
