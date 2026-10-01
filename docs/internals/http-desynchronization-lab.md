@@ -60,8 +60,10 @@ matrix permits four total requests/four active cases, at most 2 KiB per case,
 at most 8 KiB admitted request bytes, one byte of response budget that remains
 unused, one case in flight, at most one second per case and at most five seconds
 for the matrix. Parser-declared complete or required boundaries above the 2 KiB
-case ceiling are rejected before any remainder allocation. Existing smaller
-parent limits still win.
+case ceiling are rejected before any remainder allocation. The broker enforces
+the fixed count and byte ceilings; explicit timeout wrappers independently
+enforce the one- and five-second ceilings. This private test does not receive an
+external parent deadline.
 
 The completed matrix has four receipts: three `Completed` and one
 `RequestTimeout`. It records four front-end and three back-end connections, 328
