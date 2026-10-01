@@ -593,8 +593,8 @@ mod tests {
                 "TcpStream::connect(\"198.51.100.1:80\")",
             ),
             VALID_LAB.replace(
-                "let _ = TcpStream::connect(back_address).await;",
-                "let _ = TcpStream::connect(back_address).await;\nlet _ = TcpStream::connect(\"198.51.100.1:80\").await;",
+                "let mut forward = TcpStream::connect(back_address).await.unwrap();",
+                "let mut forward = TcpStream::connect(back_address).await.unwrap();\nlet _ = TcpStream::connect(\"198.51.100.1:80\").await;",
             ),
             VALID_LAB.replace(
                 "const MATRIX_CASE_LIMIT: u32 = 4;",
