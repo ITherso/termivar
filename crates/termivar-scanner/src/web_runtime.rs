@@ -2740,5 +2740,9 @@ fn outcome_made_progress(
 }
 
 #[cfg(test)]
+#[path = "../tests/support/http_desynchronization_lab.rs"]
+mod http_desynchronization_lab;
+
+#[cfg(test)]
 #[path = "web_runtime_tests.rs"]
 mod tests;

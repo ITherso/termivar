@@ -10,12 +10,14 @@ supported live-target test.
 ## Reachability boundary
 
 The implementation is a private `termivar-scanner` module guarded by exact
-`cfg(all(test, feature = "scanning"))`. Its source is a non-target support file
-under `tests/support`, bound into the library test harness by one exact private
-module path; Cargo does not discover it as a standalone integration crate. It
-has no CLI flag, Cargo product feature, public API, target policy, report/audit
-schema, capability row, release-bundle member or package scenario. Ordinary
-scanner transports and connection pools cannot call it.
+`cfg(test)` beneath the existing `cfg(feature = "scanning")` `web_runtime`
+module, so its effective reachability still requires both test and scanning
+builds. Its source is a non-target support file under `tests/support`, bound into
+the library test harness by one exact private module path; Cargo does not
+discover it as a standalone integration crate. It has no CLI flag, Cargo
+product feature, public API, target policy, report/audit schema, capability row,
+release-bundle member or package scenario. Ordinary scanner transports and
+connection pools cannot call it.
 
 Every socket binds an ephemeral `127.0.0.1` port and accepts one loopback peer.
 Each case owns a fresh front-end listener; the three complete cases also own a

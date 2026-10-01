@@ -11,6 +11,7 @@ use std::{
 use syn::{visit::Visit, Item, Visibility};
 
 const SCANNER_LIBRARY: &str = "crates/termivar-scanner/src/lib.rs";
+const LAB_HOST: &str = "crates/termivar-scanner/src/web_runtime.rs";
 const LAB_SOURCE: &str = "crates/termivar-scanner/tests/support/http_desynchronization_lab.rs";
 const LAB_MODULE_PATH: &str = "../tests/support/http_desynchronization_lab.rs";
 const CRATES_ROOT: &str = "crates";
@@ -24,7 +25,8 @@ const PRODUCT_SURFACE_PATHS: &[&str] = &[
     ".github/workflows/release.yml",
 ];
 const EXACT_TEST: &str = "owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries";
-const EXACT_GUARD: &str = "all(test,feature=\"scanning\")";
+const EXACT_PARENT_GUARD: &str = "feature=\"scanning\"";
+const EXACT_GUARD: &str = "test";
 
 const REQUIRED_COMPACT_FRAGMENTS: &[&str] = &[
     "constMAX_CASE_REQUEST_BYTES:usize=2*1024;",
@@ -104,6 +106,7 @@ const FORBIDDEN_LAB_FRAGMENTS: &[&str] = &[
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let library = fs::read_to_string(workspace_root.join(SCANNER_LIBRARY))?;
+    let host = fs::read_to_string(workspace_root.join(LAB_HOST))?;
     let lab = match fs::read_to_string(workspace_root.join(LAB_SOURCE)) {
         Ok(source) => source,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -114,7 +117,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         Err(error) => return Err(error.into()),
     };
     let product_sources = product_rust_sources(workspace_root)?;
-    let mut violations = contract_violations(&library, &lab, &product_sources)?;
+    let mut violations = contract_violations(&library, &host, &lab, &product_sources)?;
     if !lab_source_is_nested_test_support(LAB_SOURCE) {
         violations.push(format!(
             "{LAB_SOURCE}: laboratory source must remain a nested non-target support file below `tests/`"
@@ -157,10 +160,11 @@ fn lab_source_is_nested_test_support(source: &str) -> bool {
 
 fn contract_violations(
     library: &str,
+    host: &str,
     lab: &str,
     product_sources: &[(String, String)],
 ) -> Result<Vec<String>, syn::Error> {
-    let mut violations = module_declaration_violations(library)?;
+    let mut violations = module_declaration_violations(library, host)?;
     let lab_syntax = syn::parse_file(lab)?;
 
     let mut visibility = NonPrivateVisibility::default();
@@ -254,9 +258,30 @@ fn contract_violations(
     Ok(violations)
 }
 
-fn module_declaration_violations(library: &str) -> Result<Vec<String>, syn::Error> {
-    let syntax = syn::parse_file(library)?;
-    let modules = syntax
+fn module_declaration_violations(library: &str, host: &str) -> Result<Vec<String>, syn::Error> {
+    let library_syntax = syn::parse_file(library)?;
+    let parent_modules = library_syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(module) if module.ident == "web_runtime" => Some(module),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let parent_is_exact = matches!(parent_modules.as_slice(), [module]
+        if module.attrs.len() == 1
+            && module.attrs.iter().any(|attribute| {
+                attribute.path().is_ident("cfg")
+                    && attribute.meta.require_list().is_ok_and(|list| {
+                        compact_whitespace(&list.tokens.to_string()) == EXACT_PARENT_GUARD
+                    })
+            })
+            && matches!(module.vis, Visibility::Public(_))
+            && module.content.is_none()
+            && module.semi.is_some());
+
+    let host_syntax = syn::parse_file(host)?;
+    let modules = host_syntax
         .items
         .iter()
         .filter_map(|item| match item {
@@ -266,7 +291,7 @@ fn module_declaration_violations(library: &str) -> Result<Vec<String>, syn::Erro
         .collect::<Vec<_>>();
     let [module] = modules.as_slice() else {
         return Ok(vec![format!(
-            "{SCANNER_LIBRARY}: expected exactly one private test-and-scanning-only `{MODULE}` module declaration"
+            "{LAB_HOST}: expected exactly one private test-only `{MODULE}` child of the scanning-gated `web_runtime` module"
         )]);
     };
 
@@ -292,8 +317,10 @@ fn module_declaration_violations(library: &str) -> Result<Vec<String>, syn::Erro
     let declaration_is_private_external = matches!(module.vis, Visibility::Inherited)
         && module.content.is_none()
         && module.semi.is_some();
-    let references = library.matches(MODULE).count();
-    if module.attrs.len() == 2
+    let references = host.matches(MODULE).count();
+    if parent_is_exact
+        && !library.contains(MODULE)
+        && module.attrs.len() == 2
         && guard_is_exact
         && path_is_exact
         && declaration_is_private_external
@@ -302,7 +329,7 @@ fn module_declaration_violations(library: &str) -> Result<Vec<String>, syn::Erro
         Ok(Vec::new())
     } else {
         Ok(vec![format!(
-            "{SCANNER_LIBRARY}: `{MODULE}` must appear once as exact `#[cfg(all(test, feature = \"scanning\"))] #[path = \"{LAB_MODULE_PATH}\"] mod {MODULE};` and remain private"
+            "{SCANNER_LIBRARY} and {LAB_HOST}: public `web_runtime` must retain exact `#[cfg(feature = \"scanning\")]`, while `{MODULE}` must appear only beneath it as exact private `#[cfg(test)] #[path = \"{LAB_MODULE_PATH}\"] mod {MODULE};`"
         )])
     }
 }
@@ -409,11 +436,11 @@ fn product_rust_sources(workspace_root: &Path) -> Result<Vec<(String, String)>, 
     let mut paths = Vec::new();
     collect_rust_sources(&workspace_root.join(CRATES_ROOT), &mut paths)?;
     paths.sort();
-    let scanner_library = workspace_root.join(SCANNER_LIBRARY);
+    let lab_host = workspace_root.join(LAB_HOST);
     let lab_source = workspace_root.join(LAB_SOURCE);
     paths
         .into_iter()
-        .filter(|path| path != &scanner_library && path != &lab_source)
+        .filter(|path| path != &lab_host && path != &lab_source)
         .map(|path| {
             let relative = path
                 .strip_prefix(workspace_root)
@@ -452,7 +479,12 @@ mod tests {
     use super::*;
 
     const VALID_LIBRARY: &str = r#"
-        #[cfg(all(test, feature = "scanning"))]
+        #[cfg(feature = "scanning")]
+        pub mod web_runtime;
+    "#;
+
+    const VALID_HOST: &str = r#"
+        #[cfg(test)]
         #[path = "../tests/support/http_desynchronization_lab.rs"]
         mod http_desynchronization_lab;
     "#;
@@ -533,40 +565,48 @@ mod tests {
     "#;
 
     #[test]
-    fn exact_private_test_and_scanning_guard_is_required() {
-        assert!(module_declaration_violations(VALID_LIBRARY)
+    fn exact_private_test_child_and_scanning_parent_are_required() {
+        assert!(module_declaration_violations(VALID_LIBRARY, VALID_HOST)
             .unwrap()
             .is_empty());
 
         for mutation in [
-            VALID_LIBRARY.replace(
-                "all(test, feature = \"scanning\")",
-                "any(test, feature = \"scanning\")",
-            ),
-            VALID_LIBRARY.replace(
-                "all(test, feature = \"scanning\")",
-                "feature = \"scanning\"",
-            ),
-            VALID_LIBRARY.replace(
+            VALID_HOST.replace("#[cfg(test)]", "#[cfg(feature = \"scanning\")]"),
+            VALID_HOST.replace("#[cfg(test)]", "#[cfg(any(test))]"),
+            VALID_HOST.replace(
                 "mod http_desynchronization_lab",
                 "pub mod http_desynchronization_lab",
             ),
-            VALID_LIBRARY.replace(
+            VALID_HOST.replace(
                 "#[path = \"../tests/support/http_desynchronization_lab.rs\"]",
                 "",
             ),
-            VALID_LIBRARY.replace(
+            VALID_HOST.replace(
                 "../tests/support/http_desynchronization_lab.rs",
                 "../tests/http_desynchronization_lab.rs",
             ),
-            VALID_LIBRARY.replace(
+            VALID_HOST.replace(
                 "#[path = \"../tests/support/http_desynchronization_lab.rs\"]",
                 "#[path = \"../tests/support/http_desynchronization_lab.rs\"]\n#[allow(dead_code)]",
             ),
-            format!("{VALID_LIBRARY}\npub use crate::http_desynchronization_lab::*;"),
+            format!("{VALID_HOST}\npub use self::http_desynchronization_lab::*;"),
+        ] {
+            assert_ne!(mutation, VALID_HOST);
+            assert!(!module_declaration_violations(VALID_LIBRARY, &mutation)
+                .unwrap()
+                .is_empty());
+        }
+
+        for mutation in [
+            VALID_LIBRARY.replace("feature = \"scanning\"", "feature = \"wordpress-review\""),
+            VALID_LIBRARY.replace("pub mod web_runtime", "mod web_runtime"),
+            VALID_LIBRARY.replace("pub mod web_runtime;", "pub mod web_runtime {}"),
+            format!("{VALID_LIBRARY}\nmod http_desynchronization_lab;"),
         ] {
             assert_ne!(mutation, VALID_LIBRARY);
-            assert!(!module_declaration_violations(&mutation).unwrap().is_empty());
+            assert!(!module_declaration_violations(&mutation, VALID_HOST)
+                .unwrap()
+                .is_empty());
         }
     }
 
@@ -583,7 +623,7 @@ mod tests {
 
     #[test]
     fn bounded_private_loopback_contract_accepts_the_reviewed_shape() {
-        let violations = contract_violations(VALID_LIBRARY, VALID_LAB, &[]).unwrap();
+        let violations = contract_violations(VALID_LIBRARY, VALID_HOST, VALID_LAB, &[]).unwrap();
         assert!(violations.is_empty(), "{violations:?}");
     }
 
@@ -591,10 +631,10 @@ mod tests {
     fn laboratory_contract_rejects_product_reachability_and_widened_inputs() {
         let product_source = vec![(
             "crates/termivar-cli/src/main.rs".to_owned(),
-            "use termivar_scanner::http_desynchronization_lab;".to_owned(),
+            "use termivar_scanner::web_runtime::http_desynchronization_lab;".to_owned(),
         )];
         assert!(
-            contract_violations(VALID_LIBRARY, VALID_LAB, &product_source)
+            contract_violations(VALID_LIBRARY, VALID_HOST, VALID_LAB, &product_source)
                 .unwrap()
                 .iter()
                 .any(|violation| violation.contains("product source"))
@@ -685,7 +725,7 @@ mod tests {
             format!("{VALID_LAB}\nunsafe fn raw_socket_escape() {{}}"),
         ] {
             assert_ne!(mutation, VALID_LAB);
-            assert!(!contract_violations(VALID_LIBRARY, &mutation, &[])
+            assert!(!contract_violations(VALID_LIBRARY, VALID_HOST, &mutation, &[])
                 .unwrap()
                 .is_empty());
         }

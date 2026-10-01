@@ -268,7 +268,7 @@ const TLS_NEGOTIATION_CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exercise 
           TERMIVAR_CAPABILITIES_MATRIX_CASE: tls-negotiation-only
         run: cargo test --release --locked -p termivar-cli --no-default-features --features tls-negotiation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
 const HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE: &str = r#"      - name: Exercise isolated HTTP desynchronization parser-boundary laboratory
-        run: cargo test --release --locked -p termivar-scanner --no-default-features --features scanning --lib http_desynchronization_lab::tests::owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries -- --exact --nocapture"#;
+        run: cargo test --release --locked -p termivar-scanner --no-default-features --features scanning --lib web_runtime::http_desynchronization_lab::tests::owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries -- --exact --nocapture"#;
 const JWT_POLICY_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in local JWT policy review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture"#;
 const JWT_TARGET_ACCEPTANCE_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in JWT target-acceptance review CLI
@@ -4197,7 +4197,7 @@ mod tests {
     #[test]
     fn http_desynchronization_lab_smoke_is_exact_and_unsuppressible() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
-        let exact_filter = "http_desynchronization_lab::tests::owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries";
+        let exact_filter = "web_runtime::http_desynchronization_lab::tests::owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries";
         for mutation in [
             valid.replacen(HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE, "", 1),
             valid.replacen(
@@ -4223,7 +4223,7 @@ mod tests {
                 HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
                 &HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE.replace(
                     exact_filter,
-                    "http_desynchronization_lab::tests::another_case",
+                    "web_runtime::http_desynchronization_lab::tests::another_case",
                 ),
                 1,
             ),

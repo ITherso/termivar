@@ -1705,7 +1705,6 @@ fn has_cfg_test(attributes: &[Attribute]) -> bool {
                 predicate == "test"
                     || predicate == "all(test,feature=\"oast-correlation\")"
                     || predicate == "all(test,feature=\"oast-native-provider\")"
-                    || predicate == "all(test,feature=\"scanning\")"
             })
     })
 }
@@ -1758,12 +1757,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cfg_test_recognizes_only_exact_reviewed_test_guards() {
+    fn cfg_test_recognizes_only_exact_oast_feature_test_guards() {
         for source in [
             "#[cfg(test)] mod tests {}",
             "#[cfg(all(test, feature = \"oast-correlation\"))] mod tests {}",
             "#[cfg(all(test, feature = \"oast-native-provider\"))] mod tests {}",
-            "#[cfg(all(test, feature = \"scanning\"))] mod tests {}",
         ] {
             let item: Item = syn::parse_str(source).unwrap();
             assert!(has_cfg_test(item_attributes(&item)));
@@ -1773,11 +1771,7 @@ mod tests {
             "#[cfg(not(test))] mod production {}",
             "#[cfg(any(test, feature = \"oast-native-provider\"))] mod production {}",
             "#[cfg(feature = \"oast-native-provider\")] mod production {}",
-            "#[cfg(any(test, feature = \"scanning\"))] mod production {}",
-            "#[cfg(feature = \"scanning\")] mod production {}",
-            "#[cfg(all(feature = \"scanning\", test))] mod production {}",
-            "#[cfg(all(test, feature = \"scanning\", unix))] mod production {}",
-            "#[cfg(all(feature = \"scanning\", not(test)))] mod production {}",
+            "#[cfg(all(test, feature = \"scanning\"))] mod production {}",
         ] {
             let item: Item = syn::parse_str(source).unwrap();
             assert!(!has_cfg_test(item_attributes(&item)));
