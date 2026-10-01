@@ -43,15 +43,6 @@ enum LabCaseId {
 }
 
 impl LabCaseId {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Clean => "clean",
-            Self::ContentLengthThenTransferEncoding => "content_length_then_transfer_encoding",
-            Self::TransferEncodingThenContentLength => "transfer_encoding_then_content_length",
-            Self::Incomplete => "incomplete",
-        }
-    }
-
     const fn action_id(self) -> &'static str {
         match self {
             Self::Clean => "lab.http-desynchronization.clean",
