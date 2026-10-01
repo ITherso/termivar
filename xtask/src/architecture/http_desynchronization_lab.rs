@@ -67,6 +67,10 @@ const FORBIDDEN_LAB_FRAGMENTS: &[&str] = &[
     "std::env",
     "std::fs",
     "std::process",
+    "unsafe",
+    "libc",
+    "socket2",
+    "windows_sys",
     "Command::",
     "stdin(",
     "args(",
@@ -79,6 +83,15 @@ const FORBIDDEN_LAB_FRAGMENTS: &[&str] = &[
     "RunReport",
     "ScanFinding",
     "WebAssessmentRuntime",
+    "TcpSocket",
+    "UdpSocket",
+    "UnixStream",
+    "UnixDatagram",
+    "std::net::TcpStream",
+    "connect_timeout",
+    "ToSocketAddrs",
+    "to_socket_addrs",
+    "lookup_host",
     "#[no_mangle]",
     "#[export_name",
     "#[macro_export]",
@@ -218,9 +231,10 @@ fn contract_violations(
     let loopback_bind_calls = compact
         .matches("TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,0))")
         .count();
-    if loopback_bind_calls != 1 {
+    let listener_bind_calls = compact.matches("TcpListener::bind(").count();
+    if loopback_bind_calls != 1 || listener_bind_calls != 1 {
         violations.push(format!(
-            "{LAB_SOURCE}: laboratory must have exactly one reviewed numeric-loopback listener binding helper; found {loopback_bind_calls}"
+            "{LAB_SOURCE}: laboratory must have exactly one reviewed numeric-loopback listener binding helper; found reviewed={loopback_bind_calls}, total={listener_bind_calls}"
         ));
     }
     let connect_calls = compact.matches("TcpStream::connect(").count();
@@ -357,20 +371,25 @@ impl<'ast> Visit<'ast> for ReviewedWriteAllVisitor {
         }
         syn::visit::visit_expr_call(self, expression);
     }
+
+    fn visit_macro(&mut self, expression: &'ast syn::Macro) {
+        if expression
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| is_unreviewed_write_identifier(&segment.ident.to_string()))
+        {
+            self.unreviewed += 1;
+        }
+        syn::visit::visit_macro(self, expression);
+    }
 }
 
 fn is_unreviewed_write_identifier(identifier: &str) -> bool {
-    matches!(
-        identifier,
-        "write"
-            | "write_buf"
-            | "write_buf_all"
-            | "write_vectored"
-            | "try_write"
-            | "poll_write"
-            | "copy"
-            | "copy_bidirectional"
-    )
+    identifier.starts_with("write")
+        || identifier.starts_with("try_write")
+        || identifier.starts_with("poll_write")
+        || identifier.starts_with("copy")
 }
 
 fn expression_is_path(expression: &syn::Expr, expected: &str) -> bool {
@@ -589,6 +608,10 @@ mod tests {
                 "std::net::Ipv4Addr::UNSPECIFIED",
             ),
             VALID_LAB.replace(
+                "let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();",
+                "let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();\nlet _extra = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await;",
+            ),
+            VALID_LAB.replace(
                 "TcpStream::connect(front_address)",
                 "TcpStream::connect(\"198.51.100.1:80\")",
             ),
@@ -629,8 +652,37 @@ mod tests {
                 "client.write_all(client_request).await.unwrap();",
                 "client.write_all(client_request).await.unwrap();\nlet _ = client.write(b\"GET /second HTTP/1.1\\r\\n\\r\\n\").await;",
             ),
+            VALID_LAB.replace(
+                "client.write_all(client_request).await.unwrap();",
+                "client.write_all(client_request).await.unwrap();\nclient.write_u8(b'X').await.unwrap();",
+            ),
+            VALID_LAB.replace(
+                "client.write_all(client_request).await.unwrap();",
+                "client.write_all(client_request).await.unwrap();\nlet _ = client.try_write_vectored(&[]);",
+            ),
+            VALID_LAB.replace(
+                "client.write_all(client_request).await.unwrap();",
+                "client.write_all(client_request).await.unwrap();\nlet _ = tokio::io::copy_buf(&mut client_request, &mut client).await;",
+            ),
+            VALID_LAB.replace(
+                "client.write_all(client_request).await.unwrap();",
+                "client.write_all(client_request).await.unwrap();\nwrite!(&mut client, \"second\").unwrap();",
+            ),
             format!("{VALID_LAB}\nfn input() {{ let _ = std::env::args_os(); }}"),
             format!("{VALID_LAB}\nfn output() {{ println!(\"{{:?}}\", b\"raw\"); }}"),
+            format!(
+                "{VALID_LAB}\nasync fn udp() {{ let socket = tokio::net::UdpSocket::bind(\"127.0.0.1:0\").await.unwrap(); let _ = socket.send_to(b\"x\", \"127.0.0.1:9\").await; }}"
+            ),
+            format!(
+                "{VALID_LAB}\nasync fn socket() {{ let _ = tokio::net::TcpSocket::new_v4(); }}"
+            ),
+            format!(
+                "{VALID_LAB}\nfn external_tcp() {{ let address = \"198.51.100.1:80\".parse().unwrap(); let _ = std::net::TcpStream::connect_timeout(&address, Duration::from_millis(1)); }}"
+            ),
+            format!(
+                "{VALID_LAB}\nfn external_dns() {{ use std::net::ToSocketAddrs as _; let _ = (\"example.invalid\", 80).to_socket_addrs(); }}"
+            ),
+            format!("{VALID_LAB}\nunsafe fn raw_socket_escape() {{}}"),
         ] {
             assert_ne!(mutation, VALID_LAB);
             assert!(!contract_violations(VALID_LIBRARY, &mutation, &[])
