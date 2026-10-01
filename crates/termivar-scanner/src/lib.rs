@@ -128,6 +128,9 @@ pub mod decision_runner;
 #[cfg(feature = "scanning")]
 pub mod http_evidence;
 
+#[cfg(all(test, feature = "scanning"))]
+mod http_desynchronization_lab;
+
 #[cfg(feature = "scanning")]
 pub mod runtime_budget;
 

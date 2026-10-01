@@ -344,6 +344,8 @@ jobs:
         env:
           TERMIVAR_CAPABILITIES_MATRIX_CASE: tls-negotiation-only
         run: cargo test --release --locked -p termivar-cli --no-default-features --features tls-negotiation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Exercise isolated HTTP desynchronization parser-boundary laboratory
+        run: cargo test --release --locked -p termivar-scanner --no-default-features --features scanning --lib http_desynchronization_lab::tests::owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries -- --exact --nocapture
       - name: Exercise opt-in local JWT policy review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture
       - name: Exercise opt-in JWT target-acceptance review CLI

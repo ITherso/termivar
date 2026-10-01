@@ -267,6 +267,8 @@ const TLS_NEGOTIATION_CAPABILITIES_SMOKE_GATE: &str = r#"      - name: Exercise 
         env:
           TERMIVAR_CAPABILITIES_MATRIX_CASE: tls-negotiation-only
         run: cargo test --release --locked -p termivar-cli --no-default-features --features tls-negotiation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture"#;
+const HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE: &str = r#"      - name: Exercise isolated HTTP desynchronization parser-boundary laboratory
+        run: cargo test --release --locked -p termivar-scanner --no-default-features --features scanning --lib http_desynchronization_lab::tests::owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries -- --exact --nocapture"#;
 const JWT_POLICY_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in local JWT policy review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture"#;
 const JWT_TARGET_ACCEPTANCE_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in JWT target-acceptance review CLI
@@ -779,6 +781,9 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     violations.extend(report_bundle_workflow_policy_violations(&files));
     violations.extend(report_verification_workflow_policy_violations(&files));
     violations.extend(capabilities_workflow_policy_violations(&files));
+    violations.extend(http_desynchronization_lab_workflow_policy_violations(
+        &files,
+    ));
     violations.extend(progress_workflow_policy_violations(&files));
     violations.extend(wordpress_review_workflow_policy_violations(&files));
     violations.extend(wordpress_discovery_workflow_policy_violations(&files));
@@ -795,6 +800,29 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     ));
     violations.extend(coverage_build_input_policy_violations(workspace_root)?);
     Ok(violations)
+}
+
+fn http_desynchronization_lab_workflow_policy_violations(
+    files: &[(String, String)],
+) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed HTTP desynchronization laboratory workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    if job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise isolated HTTP desynchronization parser-boundary laboratory",
+        HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
+    ) {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must execute the exact private test-and-scanning-only HTTP desynchronization parser-boundary laboratory"
+        )]
+    }
 }
 
 fn report_bundle_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
@@ -4161,6 +4189,71 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("active TLS negotiation capability"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_desynchronization_lab_smoke_is_exact_and_unsuppressible() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let exact_filter = "http_desynchronization_lab::tests::owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries";
+        for mutation in [
+            valid.replacen(HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE, "", 1),
+            valid.replacen(
+                HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
+                &HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE.replace(
+                    "--no-default-features --features scanning",
+                    "--all-features",
+                ),
+                1,
+            ),
+            valid.replacen(
+                HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
+                &HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE
+                    .replace("cargo test --release", "cargo test --release --no-run"),
+                1,
+            ),
+            valid.replacen(
+                HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
+                &HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE.replace(" --lib ", " "),
+                1,
+            ),
+            valid.replacen(
+                HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
+                &HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE.replace(
+                    exact_filter,
+                    "http_desynchronization_lab::tests::another_case",
+                ),
+                1,
+            ),
+            valid.replacen(
+                HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
+                &HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE
+                    .replace(exact_filter, &format!("{exact_filter} another_filter")),
+                1,
+            ),
+            valid.replacen(
+                HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
+                &HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE.replace(" -- --exact", " --"),
+                1,
+            ),
+            valid.replacen(
+                HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
+                &format!(
+                    "{HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE}\n        continue-on-error: true"
+                ),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations = http_desynchronization_lab_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                mutation,
+            )]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("HTTP desynchronization"),
                 "{violations:?}"
             );
         }
