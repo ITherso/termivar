@@ -13,9 +13,9 @@ use std::{
 };
 
 use termivar_core::{
-    DerivationAlgorithm, EntityId, Evidence, EvidenceDerivation, EvidenceId, EvidenceKind,
-    EvidenceOrigin, EvidenceSource, EvidenceValue, HttpEvidencePredicate, KnowledgePredicate,
-    PredicateDescriptor,
+    ConfidenceScore, DerivationAlgorithm, EntityId, Evidence, EvidenceDerivation, EvidenceId,
+    EvidenceKind, EvidenceOrigin, EvidenceSource, EvidenceValue, HttpEvidencePredicate,
+    KnowledgePredicate, PredicateDescriptor,
 };
 
 use crate::{
@@ -1397,6 +1397,22 @@ pub(crate) fn project_active_review_body_privacy_lineage(
     observation: &crate::http_evidence::CompleteHttpResponseObservation<'_>,
 ) -> Result<Evidence, HttpEvidenceError> {
     let parents = secret_exposure_observation_parent_ids(observation)?;
+    project_active_review_privacy_parts(
+        observation.subject(),
+        observation.executor_id(),
+        observation.case_id(),
+        observation.reliability(),
+        parents,
+    )
+}
+
+fn project_active_review_privacy_parts(
+    subject: &EntityId,
+    executor_id: &str,
+    case_id: &str,
+    reliability: ConfidenceScore,
+    parents: Vec<EvidenceId>,
+) -> Result<Evidence, HttpEvidenceError> {
     let derivation = EvidenceDerivation::new(
         parents,
         DerivationAlgorithm::new(
@@ -1404,18 +1420,15 @@ pub(crate) fn project_active_review_body_privacy_lineage(
             ACTIVE_REVIEW_PRIVACY_ALGORITHM_VERSION,
         )?,
     )?;
-    let source = EvidenceSource::new(
-        observation.executor_id(),
-        ACTIVE_REVIEW_PRIVACY_SOURCE_METHOD,
-    )?
-    .with_correlation_id(observation.case_id())?;
+    let source = EvidenceSource::new(executor_id, ACTIVE_REVIEW_PRIVACY_SOURCE_METHOD)?
+        .with_correlation_id(case_id)?;
     Ok(Evidence::new(
-        observation.subject().clone(),
+        subject.clone(),
         EvidenceKind::Custom(SECRET_EXPOSURE_CATEGORY.to_owned()),
         KnowledgePredicate::new(SECRET_EXPOSURE_NAMESPACE, ACTIVE_REVIEW_BODY_LINEAGE)?,
         EvidenceValue::Boolean(true),
         source,
-        observation.reliability(),
+        reliability,
     )
     .derived_from(derivation))
 }
@@ -1512,6 +1525,78 @@ pub(crate) fn secret_exposure_response_parent_ids_for_executor(
     expected_correlation_id: &str,
     expected_executor_id: &str,
 ) -> Option<Vec<EvidenceId>> {
+    response_parent_ids(
+        evidence,
+        expected_subject,
+        expected_correlation_id,
+        ResponseParentContext {
+            executor_id: expected_executor_id,
+            graphql_post: false,
+        },
+    )
+}
+
+/// The only POST exception is the closed, scanner-owned three-operation GraphQL
+/// route. This does not admit POSTs to the passive secret detector or to the
+/// ordinary complete-response observer.
+#[cfg(feature = "graphql-review")]
+pub(crate) fn graphql_response_privacy_parent_ids(
+    evidence: &[Evidence],
+    case: &crate::VerificationCase,
+    stage: DecisionExecutionStage,
+    executor_id: &str,
+) -> Option<Vec<EvidenceId>> {
+    if !super::graphql_runtime::graphql_privacy_route_is_valid(case, stage, executor_id) {
+        return None;
+    }
+    response_parent_ids(
+        evidence,
+        case.subject(),
+        case.id(),
+        ResponseParentContext {
+            executor_id,
+            graphql_post: true,
+        },
+    )
+}
+
+#[cfg(feature = "graphql-review")]
+pub(crate) fn project_graphql_body_privacy_lineage(
+    decision: &crate::DecisionExecutionRequest,
+    evidence: &[Evidence],
+    executor_id: &str,
+    reliability: ConfidenceScore,
+) -> Result<Evidence, HttpEvidenceError> {
+    let parents = graphql_response_privacy_parent_ids(
+        evidence,
+        decision.case(),
+        decision.stage(),
+        executor_id,
+    )
+    .ok_or(HttpEvidenceError::AssessmentObserverInvariant {
+        invariant: "GraphQL privacy lineage requires closed POST transport provenance",
+    })?;
+    project_active_review_privacy_parts(
+        decision.case().subject(),
+        executor_id,
+        decision.case().id(),
+        reliability,
+        parents,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ResponseParentContext<'a> {
+    executor_id: &'a str,
+    graphql_post: bool,
+}
+
+fn response_parent_ids(
+    evidence: &[Evidence],
+    expected_subject: &EntityId,
+    expected_correlation_id: &str,
+    context: ResponseParentContext<'_>,
+) -> Option<Vec<EvidenceId>> {
     let required = [
         (
             HttpEvidencePredicate::REQUEST_METHOD,
@@ -1559,7 +1644,7 @@ pub(crate) fn secret_exposure_response_parent_ids_for_executor(
                 source_method,
                 expected_subject,
                 expected_correlation_id,
-                expected_executor_id,
+                context,
             )
         {
             return None;
@@ -1580,7 +1665,7 @@ pub(crate) fn secret_exposure_response_parent_ids_for_executor(
                 "response-media-type",
                 expected_subject,
                 expected_correlation_id,
-                expected_executor_id,
+                context,
             )
         {
             return None;
@@ -1598,11 +1683,11 @@ fn valid_secret_exposure_response_parent(
     expected_source_method: &str,
     expected_subject: &EntityId,
     expected_correlation_id: &str,
-    expected_executor_id: &str,
+    context: ResponseParentContext<'_>,
 ) -> bool {
     if evidence.subject() != expected_subject
         || evidence.kind() != expected_kind
-        || evidence.source().component() != expected_executor_id
+        || evidence.source().component() != context.executor_id
         || evidence.source().method() != expected_source_method
         || evidence.source().correlation_id() != Some(expected_correlation_id)
         || !matches!(evidence.origin(), EvidenceOrigin::Direct)
@@ -1611,7 +1696,8 @@ fn valid_secret_exposure_response_parent(
     }
     match descriptor {
         HttpEvidencePredicate::REQUEST_METHOD => {
-            matches!(evidence.value(), EvidenceValue::Text(value) if matches!(value.as_str(), "GET" | "HEAD"))
+            matches!(evidence.value(), EvidenceValue::Text(value) if
+                if context.graphql_post { value == "POST" } else { matches!(value.as_str(), "GET" | "HEAD") })
         },
         HttpEvidencePredicate::REQUEST_URL | HttpEvidencePredicate::RESPONSE_FINAL_URL => {
             matches!(evidence.value(), EvidenceValue::Text(value) if !value.is_empty())

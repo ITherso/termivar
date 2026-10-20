@@ -44,8 +44,8 @@ use crate::jwt_policy_review::JwtTargetAcceptanceRuntimeInput;
 
 #[cfg(feature = "graphql-review")]
 use super::graphql_runtime::{
-    execute_graphql_review, graphql_endpoint_hints, CommittedGraphqlReview, GraphqlRuntimeResult,
-    GraphqlRuntimeStop,
+    execute_graphql_review, graphql_endpoint_hints, CommittedGraphqlReview, GraphqlResponsePrivacy,
+    GraphqlRuntimeResult, GraphqlRuntimeStop,
 };
 #[cfg(feature = "jwt-target-acceptance-review")]
 use super::jwt_target_acceptance_runtime::JwtTargetAcceptanceRuntimeConfig;
@@ -2670,8 +2670,6 @@ impl WebAssessmentRuntimeBuilder {
     #[cfg(feature = "secret-exposure-review")]
     fn secret_exposure_response_source_conflict(&self) -> bool {
         let conflict = false;
-        #[cfg(feature = "graphql-review")]
-        let conflict = conflict || self.graphql_review;
         #[cfg(feature = "openapi-review")]
         let conflict = conflict || self.openapi_review;
         #[cfg(feature = "rest-review")]
@@ -5382,6 +5380,18 @@ impl WebAssessmentRuntime {
                         hints,
                         self.limits.max_response_body_bytes(),
                         self.defense_enforcement,
+                        {
+                            #[cfg(feature = "secret-exposure-review")]
+                            if self.secret_exposure_collector.is_some() {
+                                GraphqlResponsePrivacy::ValueFree
+                            } else {
+                                GraphqlResponsePrivacy::HistoricalDigests
+                            }
+                            #[cfg(not(feature = "secret-exposure-review"))]
+                            {
+                                GraphqlResponsePrivacy::HistoricalDigests
+                            }
+                        },
                     )
                     .await
                     {

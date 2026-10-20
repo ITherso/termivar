@@ -305,7 +305,6 @@ fn actual_cli_reuses_ordinary_responses_and_keeps_secret_value_out_of_reports() 
 }
 
 #[cfg(all(
-    feature = "graphql-review",
     feature = "openapi-review",
     feature = "rest-review",
     feature = "authorization-review",
@@ -315,7 +314,6 @@ fn actual_cli_reuses_ordinary_responses_and_keeps_secret_value_out_of_reports() 
 fn actual_cli_rejects_each_unprotected_response_pipeline_before_target_or_output_work() {
     let parent = tempfile::tempdir().expect("create private report parent");
     let cases: &[(&str, &[&str])] = &[
-        ("graphql", &["--graphql-review"]),
         ("openapi", &["--openapi-review"]),
         ("rest", &["--openapi-review", "--rest-review"]),
         (

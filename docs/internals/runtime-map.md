@@ -678,12 +678,17 @@ created. See [REST read-only review](rest-readonly-review.md).
 
 The non-default `secret-exposure-review` scanner/CLI feature requires explicit
 `--secret-exposure-review --profile web-review`. V1 rejects combinations with
-GraphQL, OpenAPI, REST, resource authorization, or WordPress
+OpenAPI, REST, resource authorization, or WordPress
 discovery before target or output work because those separate response paths do
 not yet share its value-free body-digest boundary. One shared observer stages
 value-free facts inside the ordinary anonymous GET response transaction; only
 the committed ledger may consume them. It adds zero requests or active
-verifications. Admission fails closed for redirects,
+verifications. Explicit GraphQL composition preserves the fixed anonymous POST
+classification, root-presence and replay-agreement facts with exact committed
+opaque lineage instead of public whole-body or framed GraphQL response digests.
+Those POSTs are not detector inputs and add no detector response/match count;
+GraphQL keeps its existing parent-accounted request and replay allowances.
+Admission fails closed for redirects,
 explicit request headers, credentials, content coding, inconsistent lengths,
 unsupported media types, invalid UTF-8, truncation, failure, or configured
 limits. The fixed catalogue projects only value-free `Informational` /

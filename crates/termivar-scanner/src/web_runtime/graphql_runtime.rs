@@ -64,6 +64,52 @@ const GRAPHQL_CONTROL_CASE_ID: &str = "case:web.graphql.control";
 const GRAPHQL_CANDIDATE_CASE_ID: &str = "case:web.graphql.introspection";
 const GRAPHQL_REPLAY_CASE_ID: &str = "case:web.graphql.introspection-replay";
 
+/// Selected by the assessment, never inferred from response contents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GraphqlResponsePrivacy {
+    HistoricalDigests,
+    #[cfg(feature = "secret-exposure-review")]
+    ValueFree,
+}
+
+impl GraphqlResponsePrivacy {
+    pub(crate) fn is_value_free(self) -> bool {
+        match self {
+            Self::HistoricalDigests => false,
+            #[cfg(feature = "secret-exposure-review")]
+            Self::ValueFree => true,
+        }
+    }
+}
+
+#[cfg(feature = "secret-exposure-review")]
+pub(super) fn graphql_privacy_route_is_valid(
+    case: &VerificationCase,
+    stage: DecisionExecutionStage,
+    executor_id: &str,
+) -> bool {
+    executor_id == GRAPHQL_EXECUTOR_ID
+        && !case.applies_hypothesis_transition()
+        && case.payload_strategy().is_none()
+        && case.hypothesis_id() == GRAPHQL_HYPOTHESIS_ID
+        && matches!(
+            (case.id(), case.action_id(), stage),
+            (
+                GRAPHQL_CONTROL_CASE_ID,
+                GRAPHQL_CONTROL_ACTION_ID,
+                DecisionExecutionStage::Passive
+            ) | (
+                GRAPHQL_CANDIDATE_CASE_ID,
+                GRAPHQL_CANDIDATE_ACTION_ID,
+                DecisionExecutionStage::Passive
+            ) | (
+                GRAPHQL_REPLAY_CASE_ID,
+                GRAPHQL_REPLAY_ACTION_ID,
+                DecisionExecutionStage::Active
+            )
+        )
+}
+
 const GRAPHQL_SURFACE_CAPABILITY: AssessmentCapabilityDescriptor =
     AssessmentCapabilityDescriptor::informational(
         "graphql.surface-observed@1",
@@ -116,7 +162,7 @@ pub(super) enum GraphqlRuntimeInvariantError {
 struct GraphqlLegReceipt {
     role: GraphqlOperationRole,
     request_digest: [u8; 32],
-    response_digest: [u8; 32],
+    response_digest: Option<[u8; 32]>,
     response_bytes: usize,
     exact_graphql_media: bool,
     classification: GraphqlResponseKind,
@@ -282,6 +328,7 @@ struct GraphqlDecisionExecutor {
     candidate: GraphqlOperation,
     replay: GraphqlOperation,
     classifier: GraphqlResponseClassifier,
+    privacy: GraphqlResponsePrivacy,
     candidate_root_identity: Mutex<Option<[u8; 32]>>,
 }
 
@@ -365,7 +412,7 @@ impl DecisionActionExecutor for GraphqlDecisionExecutor {
             )
             .await
             .map_err(HttpRequestBrokerError::into_decision_executor_error)?;
-        let mut classified = classify_response(self.classifier, operation, &response);
+        let mut classified = classify_response(self.classifier, operation, &response, self.privacy);
         classified.receipt.replay_matches_candidate_roots =
             self.bind_transient_root_identity(operation.role(), classified.root_identity_digest)?;
         let summary = classified.receipt;
@@ -378,8 +425,8 @@ impl DecisionActionExecutor for GraphqlDecisionExecutor {
             &self.endpoint,
             response,
             reliability,
-            graphql_observations,
-            graphql_classification,
+            self.privacy,
+            (graphql_observations, graphql_classification),
         )
         .map_err(crate::http_evidence::into_decision_executor_error)
     }
@@ -416,10 +463,6 @@ fn graphql_transport_observations(
             EvidenceValue::Text(encode_digest(summary.request_digest)),
         )?,
         observation(
-            "response_digest",
-            EvidenceValue::Text(encode_digest(summary.response_digest)),
-        )?,
-        observation(
             "response_bytes",
             EvidenceValue::Unsigned(u64::try_from(summary.response_bytes).unwrap_or(u64::MAX)),
         )?,
@@ -428,6 +471,16 @@ fn graphql_transport_observations(
             EvidenceValue::Boolean(summary.exact_graphql_media),
         )?,
     ];
+    if let Some(digest) = summary.response_digest {
+        // Retain historical ordering and identities when privacy is unselected.
+        evidence.insert(
+            2,
+            observation(
+                "response_digest",
+                EvidenceValue::Text(encode_digest(digest)),
+            )?,
+        );
+    }
     if let Some((query, mutation, subscription)) = summary.introspection_roots {
         evidence.push(observation(
             "query_root_present",
@@ -558,6 +611,7 @@ pub(super) async fn execute_graphql_review(
     hints: Vec<GraphqlEndpointHint>,
     response_body_limit: usize,
     defense_enforcement: bool,
+    privacy: GraphqlResponsePrivacy,
 ) -> Result<GraphqlRuntimeResult, GraphqlRuntimeInvariantError> {
     let catalog = GraphqlReviewCatalog::v1();
     if catalog.executable().is_none()
@@ -620,6 +674,7 @@ pub(super) async fn execute_graphql_review(
         candidate: operations.candidate().clone(),
         replay: operations.replay().clone(),
         classifier,
+        privacy,
         candidate_root_identity: Mutex::new(None),
     });
     let mut executors = DecisionExecutorRegistry::new();
@@ -648,6 +703,7 @@ pub(super) async fn execute_graphql_review(
         endpoint_subject: &endpoint_subject,
         runner: &runner,
         limits: per_request_limits,
+        privacy,
         deadline: timing.deadline(),
     };
 
@@ -846,6 +902,7 @@ struct GraphqlDispatchContext<'a> {
     runner: &'a DecisionRunnerAdapter,
     limits: DecisionExecutionLimits,
     deadline: Option<tokio::time::Instant>,
+    privacy: GraphqlResponsePrivacy,
 }
 
 async fn dispatch_leg(
@@ -926,7 +983,7 @@ async fn dispatch_leg(
             )));
         },
     };
-    let leg = leg_from_decision_receipt(&receipt, operation)?;
+    let leg = leg_from_decision_receipt(&receipt, operation, context.privacy)?;
     Ok(DispatchedLeg::Receipt {
         leg,
         receipt: Box::new(receipt),
@@ -936,10 +993,41 @@ async fn dispatch_leg(
 fn leg_from_decision_receipt(
     receipt: &DecisionEvidenceReceipt,
     operation: &GraphqlOperation,
+    privacy: GraphqlResponsePrivacy,
 ) -> Result<GraphqlLegReceipt, GraphqlRuntimeInvariantError> {
+    #[cfg(feature = "secret-exposure-review")]
+    let privacy_lineages = receipt
+        .evidence()
+        .iter()
+        .filter(|item| {
+            item.predicate().namespace() == super::secret_exposure::SECRET_EXPOSURE_NAMESPACE
+                && matches!(
+                    item.predicate().name(),
+                    super::secret_exposure::ACTIVE_REVIEW_BODY_LINEAGE
+                        | super::secret_exposure::RESPONSE_BODY_LINEAGE
+                )
+        })
+        .collect::<Vec<_>>();
+    #[cfg(feature = "secret-exposure-review")]
+    if (privacy.is_value_free() && privacy_lineages.len() != 1)
+        || (!privacy.is_value_free() && !privacy_lineages.is_empty())
+    {
+        return Err(GraphqlRuntimeInvariantError::Catalog);
+    }
     let role = transport_text(receipt, "role")?;
     let request_digest = transport_digest(receipt, "request_digest")?;
-    let response_digest = transport_digest(receipt, "response_digest")?;
+    let response_digest = if privacy.is_value_free() {
+        if receipt.evidence().iter().any(|item| {
+            item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+                || (item.predicate().namespace() == GRAPHQL_TRANSPORT_EVIDENCE_NAMESPACE
+                    && item.predicate().name() == "response_digest")
+        }) {
+            return Err(GraphqlRuntimeInvariantError::Catalog);
+        }
+        None
+    } else {
+        Some(transport_digest(receipt, "response_digest")?)
+    };
     let response_bytes = usize::try_from(transport_unsigned(receipt, "response_bytes")?)
         .map_err(|_| GraphqlRuntimeInvariantError::Catalog)?;
     let exact_graphql_media = transport_boolean(receipt, "exact_graphql_media")?;
@@ -1034,7 +1122,6 @@ fn leg_from_decision_receipt(
         HttpEvidencePredicate::RESPONSE_STATUS,
         HttpEvidencePredicate::RESPONSE_FINAL_URL,
         HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
-        HttpEvidencePredicate::RESPONSE_BODY_SHA256,
     ] {
         let evidence = receipt_evidence(receipt, &descriptor.into_knowledge())?;
         if !evidence.origin().is_direct()
@@ -1043,6 +1130,41 @@ fn leg_from_decision_receipt(
             return Err(GraphqlRuntimeInvariantError::Catalog);
         }
         expected_parents.insert(evidence.id().clone());
+    }
+    if privacy.is_value_free() {
+        #[cfg(feature = "secret-exposure-review")]
+        {
+            let parents = super::secret_exposure::graphql_response_privacy_parent_ids(
+                receipt.evidence(),
+                receipt.case(),
+                receipt.stage(),
+                receipt.executor_id(),
+            )
+            .ok_or(GraphqlRuntimeInvariantError::Catalog)?;
+            let lineage = privacy_lineages[0];
+            if !super::secret_exposure::is_active_review_body_privacy_lineage(
+                lineage,
+                receipt.case().subject(),
+                receipt.case().id(),
+                receipt.executor_id(),
+                &parents,
+            ) || lineage.reliability() != classification_evidence.reliability()
+            {
+                return Err(GraphqlRuntimeInvariantError::Catalog);
+            }
+            expected_parents.insert(lineage.id().clone());
+        }
+    } else {
+        let digest = receipt_evidence(
+            receipt,
+            &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge(),
+        )?;
+        if !digest.origin().is_direct()
+            || digest.reliability() != classification_evidence.reliability()
+        {
+            return Err(GraphqlRuntimeInvariantError::Catalog);
+        }
+        expected_parents.insert(digest.id().clone());
     }
     if classification_derivation.parents() != expected_parents.into_iter().collect::<Vec<_>>() {
         return Err(GraphqlRuntimeInvariantError::Catalog);
@@ -1171,6 +1293,7 @@ fn classify_response(
     classifier: GraphqlResponseClassifier,
     operation: &GraphqlOperation,
     response: &CollectedHttpResponse,
+    privacy: GraphqlResponsePrivacy,
 ) -> ClassifiedGraphqlLeg {
     let media_type = response.normalized_media_type();
     let mut classification = classifier.classify(GraphqlResponseInput {
@@ -1204,14 +1327,17 @@ fn classify_response(
         ),
         _ => (None, None),
     };
-    let mut digest = Sha256::new();
-    update_framed(&mut digest, GRAPHQL_RESPONSE_DIGEST_DOMAIN);
-    update_framed(&mut digest, response.body());
+    let response_digest = (!privacy.is_value_free()).then(|| {
+        let mut digest = Sha256::new();
+        update_framed(&mut digest, GRAPHQL_RESPONSE_DIGEST_DOMAIN);
+        update_framed(&mut digest, response.body());
+        digest.finalize().into()
+    });
     ClassifiedGraphqlLeg {
         receipt: GraphqlLegReceipt {
             role: operation.role(),
             request_digest: operation.body_digest(),
-            response_digest: digest.finalize().into(),
+            response_digest,
             response_bytes: response.body().len(),
             exact_graphql_media: media_type.as_deref() == Some("application/graphql-response+json"),
             classification: classification.kind(),
@@ -1504,6 +1630,614 @@ mod tests {
     use crate::graphql_review::{GraphqlEndpointHint, GraphqlFallbackPolicy};
     use termivar_core::{ApiKnowledgePredicate, ApiSurfaceKind};
 
+    #[cfg(feature = "secret-exposure-review")]
+    mod receipt_privacy {
+        use super::*;
+        use crate::web_runtime::assessment_defense::CommittedAssessmentDefenseLedger;
+
+        // Literal synthetic receipt records, not captured HTTP output. The
+        // ordinary runner supplies real atomic-commit metadata; no HTTP
+        // projector or privacy-parent matcher manufactures this test oracle.
+        struct SyntheticExecutor(Vec<Evidence>);
+
+        #[async_trait]
+        impl DecisionActionExecutor for SyntheticExecutor {
+            fn id(&self) -> &str {
+                "http.graphql-review"
+            }
+
+            async fn execute(
+                &self,
+                _request: &DecisionExecutionRequest,
+            ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+                assert!(self.0.len() <= 32);
+                Ok(self.0.clone())
+            }
+        }
+
+        fn record(
+            subject: &EntityId,
+            kind: EvidenceKind,
+            predicate: KnowledgePredicate,
+            value: EvidenceValue,
+            method: &str,
+        ) -> Evidence {
+            Evidence::new(
+                subject.clone(),
+                kind,
+                predicate,
+                value,
+                EvidenceSource::new("http.graphql-review", method)
+                    .unwrap()
+                    .with_correlation_id("case:web.graphql.control")
+                    .unwrap(),
+                ConfidenceScore::from_percent(73).unwrap(),
+            )
+        }
+
+        fn derived(item: Evidence, parents: Vec<EvidenceId>, algorithm: &str) -> Evidence {
+            item.derived_from(
+                EvidenceDerivation::new(parents, DerivationAlgorithm::new(algorithm, 1).unwrap())
+                    .unwrap(),
+            )
+        }
+
+        async fn literal_receipt(
+            privacy: GraphqlResponsePrivacy,
+        ) -> (KnowledgeBase, DecisionEvidenceReceipt, GraphqlOperation) {
+            let root = Url::parse("https://example.test/").unwrap();
+            let endpoint = select_graphql_endpoint(
+                &root,
+                Vec::<GraphqlEndpointHint>::new(),
+                GraphqlFallbackPolicy::GraphqlOnly,
+            )
+            .unwrap()
+            .unwrap();
+            let operation = GraphqlOperationSet::v1(&endpoint)
+                .unwrap()
+                .control()
+                .clone();
+            let subject = EntityId::new("graphql-endpoint:https://example.test/graphql").unwrap();
+            let facts = [
+                (
+                    HttpEvidencePredicate::REQUEST_METHOD,
+                    EvidenceKind::Http,
+                    EvidenceValue::Text("POST".to_owned()),
+                    "request-method",
+                ),
+                (
+                    HttpEvidencePredicate::REQUEST_URL,
+                    EvidenceKind::Http,
+                    EvidenceValue::Text("https://example.test/graphql".to_owned()),
+                    "request-url",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_STATUS,
+                    EvidenceKind::Http,
+                    EvidenceValue::Unsigned(200),
+                    "response-status",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_FINAL_URL,
+                    EvidenceKind::Http,
+                    EvidenceValue::Text("https://example.test/graphql".to_owned()),
+                    "response-final-url",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+                    EvidenceKind::Content,
+                    EvidenceValue::Unsigned(42),
+                    "response-body-size",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+                    EvidenceKind::Content,
+                    EvidenceValue::Boolean(false),
+                    "response-body-truncation",
+                ),
+                (
+                    HttpEvidencePredicate::RATE_LIMIT_DETECTED,
+                    EvidenceKind::RateLimit,
+                    EvidenceValue::Boolean(false),
+                    "rate-limit-status",
+                ),
+                (
+                    HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
+                    EvidenceKind::RateLimit,
+                    EvidenceValue::Boolean(false),
+                    "rate-limit-headers",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_MEDIA_TYPE,
+                    EvidenceKind::Http,
+                    EvidenceValue::Text("application/graphql-response+json".to_owned()),
+                    "response-media-type",
+                ),
+            ];
+            let mut batch = facts
+                .into_iter()
+                .map(|(predicate, kind, value, method)| {
+                    record(&subject, kind, predicate.into_knowledge(), value, method)
+                })
+                .collect::<Vec<_>>();
+            let mut lineage_parents = batch[..6]
+                .iter()
+                .map(|item| item.id().clone())
+                .collect::<Vec<_>>();
+            lineage_parents.push(batch[8].id().clone());
+            let body = if privacy == GraphqlResponsePrivacy::ValueFree {
+                derived(
+                    record(
+                        &subject,
+                        EvidenceKind::Custom("passive-secret-exposure".to_owned()),
+                        KnowledgePredicate::new(
+                            "web.secret-exposure",
+                            "active_review_body_lineage",
+                        )
+                        .unwrap(),
+                        EvidenceValue::Boolean(true),
+                        "active-review-body-digest-privacy-guard",
+                    ),
+                    lineage_parents,
+                    "web.secret-exposure.active-review-body-digest-privacy-guard",
+                )
+            } else {
+                record(
+                    &subject,
+                    EvidenceKind::Content,
+                    HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge(),
+                    EvidenceValue::Text("ab".repeat(32)),
+                    "response-body-sha256",
+                )
+            };
+            let body_id = body.id().clone();
+            batch.push(body);
+            let mut classification_parents = vec![
+                batch[1].id().clone(),
+                batch[2].id().clone(),
+                batch[3].id().clone(),
+                batch[5].id().clone(),
+                body_id.clone(),
+            ];
+            let mut properties = vec![
+                ("role", EvidenceValue::Text("control".to_owned())),
+                (
+                    "request_digest",
+                    EvidenceValue::Text(
+                        operation
+                            .body_digest()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect(),
+                    ),
+                ),
+                ("response_bytes", EvidenceValue::Unsigned(42)),
+                ("exact_graphql_media", EvidenceValue::Boolean(true)),
+            ];
+            if privacy == GraphqlResponsePrivacy::HistoricalDigests {
+                properties.insert(2, ("response_digest", EvidenceValue::Text("cd".repeat(32))));
+            }
+            for (name, value) in properties {
+                let item = record(
+                    &subject,
+                    EvidenceKind::Custom("graphql-transport-observation".to_owned()),
+                    KnowledgePredicate::new("web.graphql.transport", name).unwrap(),
+                    value,
+                    name,
+                );
+                classification_parents.push(item.id().clone());
+                batch.push(item);
+            }
+            batch.push(derived(
+                record(
+                    &subject,
+                    EvidenceKind::Custom("graphql-transport-observation".to_owned()),
+                    KnowledgePredicate::new("web.graphql.transport", "classification").unwrap(),
+                    EvidenceValue::Text("exact-control-envelope".to_owned()),
+                    "classification",
+                ),
+                classification_parents,
+                "web.graphql.transport-classification",
+            ));
+            let mut defense_parents = batch[..8]
+                .iter()
+                .map(|item| item.id().clone())
+                .collect::<Vec<_>>();
+            defense_parents.push(body_id);
+            for (name, value) in [
+                (
+                    "observation_v1",
+                    EvidenceValue::TextList(vec!["posture:open".to_owned()]),
+                ),
+                (
+                    "body_coverage",
+                    EvidenceValue::Text("complete_utf8_prefix".to_owned()),
+                ),
+                ("posture", EvidenceValue::Text("open".to_owned())),
+            ] {
+                batch.push(derived(
+                    record(
+                        &subject,
+                        EvidenceKind::Custom("assessment-defense".to_owned()),
+                        KnowledgePredicate::new("web.defense", name).unwrap(),
+                        value,
+                        "assessment-defense-projection",
+                    ),
+                    defense_parents.clone(),
+                    "web-assessment-defense-observation",
+                ));
+            }
+            let mut registry = DecisionExecutorRegistry::new();
+            registry
+                .register(Arc::new(SyntheticExecutor(batch)))
+                .unwrap();
+            registry
+                .route_action(
+                    DecisionExecutionStage::Passive,
+                    "web.review.graphql.control",
+                    "http.graphql-review",
+                )
+                .unwrap();
+            let command = DecisionLoopCommand::ExecuteAction {
+                case: VerificationCase::new(
+                    "case:web.graphql.control",
+                    subject,
+                    "web.review.graphql.control",
+                    "hypothesis:web.graphql.surface",
+                )
+                .unwrap()
+                .without_hypothesis_transition(),
+                executor: None,
+                origin: DecisionActionOrigin::Bootstrap,
+                delay_ms: None,
+            };
+            let knowledge = KnowledgeBase::new();
+            let receipt = DecisionRunnerAdapter::new(registry)
+                .execute_command(&command, &knowledge)
+                .await
+                .unwrap();
+            (knowledge, receipt, operation)
+        }
+
+        fn lineage_index(batch: &[Evidence]) -> usize {
+            batch
+                .iter()
+                .position(|item| {
+                    item.predicate().namespace() == "web.secret-exposure"
+                        && item.predicate().name() == "active_review_body_lineage"
+                })
+                .unwrap()
+        }
+
+        fn copy_with(
+            item: &Evidence,
+            value: EvidenceValue,
+            source: EvidenceSource,
+            parents: Option<Vec<EvidenceId>>,
+            fresh: bool,
+        ) -> Evidence {
+            let mut copy = if fresh {
+                Evidence::new(
+                    item.subject().clone(),
+                    item.kind().clone(),
+                    item.predicate().clone(),
+                    value,
+                    source,
+                    item.reliability(),
+                )
+            } else {
+                Evidence::with_id_at(
+                    item.id().clone(),
+                    item.subject().clone(),
+                    item.kind().clone(),
+                    item.predicate().clone(),
+                    value,
+                    source,
+                    item.reliability(),
+                    item.observed_at_ms(),
+                )
+            };
+            if let Some(original) = item.origin().derivation() {
+                copy = copy.derived_from(
+                    EvidenceDerivation::new(
+                        parents.unwrap_or_else(|| original.parents().to_vec()),
+                        original.algorithm().clone(),
+                    )
+                    .unwrap(),
+                );
+            }
+            copy
+        }
+
+        fn committed_mutation(
+            template: &DecisionEvidenceReceipt,
+            batch: Vec<Evidence>,
+        ) -> (KnowledgeBase, DecisionEvidenceReceipt) {
+            let knowledge = KnowledgeBase::new();
+            let writes = knowledge.insert_evidence_batch(batch.clone()).unwrap();
+            let snapshot = knowledge.snapshot_for_subject(template.case().subject());
+            (
+                knowledge,
+                template.with_test_committed_batch(batch, writes, snapshot),
+            )
+        }
+
+        fn assert_rejected(
+            template: &DecisionEvidenceReceipt,
+            batch: Vec<Evidence>,
+            operation: &GraphqlOperation,
+            privacy: GraphqlResponsePrivacy,
+            label: &str,
+        ) {
+            let (knowledge, receipt) = committed_mutation(template, batch);
+            let leg_rejected = leg_from_decision_receipt(&receipt, operation, privacy).is_err();
+            let mut ledger = CommittedAssessmentDefenseLedger::default();
+            assert!(
+                ledger.ingest_receipt(&receipt, &knowledge, true).is_err(),
+                "defense: {label}"
+            );
+            assert!(
+                ledger.observations().is_empty(),
+                "atomic rejection: {label}"
+            );
+            assert!(leg_rejected, "leg: {label}");
+        }
+
+        #[tokio::test]
+        async fn literal_graphql_receipts_accept_only_the_selected_privacy_mode() {
+            for privacy in [
+                GraphqlResponsePrivacy::HistoricalDigests,
+                GraphqlResponsePrivacy::ValueFree,
+            ] {
+                let (knowledge, receipt, operation) = literal_receipt(privacy).await;
+                let leg = leg_from_decision_receipt(&receipt, &operation, privacy).unwrap();
+                assert_eq!(leg.role, GraphqlOperationRole::Control);
+                assert_eq!(leg.response_bytes, 42);
+                assert_eq!(
+                    leg.classification,
+                    GraphqlResponseKind::ExactControlEnvelope
+                );
+                assert_eq!(
+                    leg.response_digest,
+                    if privacy == GraphqlResponsePrivacy::ValueFree {
+                        None
+                    } else {
+                        Some([0xcd; 32])
+                    }
+                );
+                let other = if privacy == GraphqlResponsePrivacy::ValueFree {
+                    GraphqlResponsePrivacy::HistoricalDigests
+                } else {
+                    GraphqlResponsePrivacy::ValueFree
+                };
+                assert!(leg_from_decision_receipt(&receipt, &operation, other).is_err());
+                let mut ledger = CommittedAssessmentDefenseLedger::default();
+                assert!(ledger
+                    .ingest_receipt(&receipt, &knowledge, true)
+                    .unwrap()
+                    .is_some());
+                assert_eq!(ledger.observations().len(), 1);
+                let mut uncommitted = CommittedAssessmentDefenseLedger::default();
+                assert!(uncommitted
+                    .ingest_receipt(&receipt, &KnowledgeBase::new(), true)
+                    .is_err());
+                assert!(uncommitted.observations().is_empty());
+            }
+        }
+
+        #[tokio::test]
+        async fn literal_graphql_receipts_reject_malformed_and_reintroduced_body_identity() {
+            let (_, receipt, operation) = literal_receipt(GraphqlResponsePrivacy::ValueFree).await;
+            let original = receipt.evidence();
+            let index = lineage_index(original);
+            let lineage = &original[index];
+            for (label, value, source, parents) in [
+                (
+                    "wrong value",
+                    EvidenceValue::Boolean(false),
+                    lineage.source().clone(),
+                    None,
+                ),
+                (
+                    "wrong correlation",
+                    lineage.value().clone(),
+                    EvidenceSource::new(
+                        "http.graphql-review",
+                        "active-review-body-digest-privacy-guard",
+                    )
+                    .unwrap()
+                    .with_correlation_id("case:synthetic-wrong-correlation")
+                    .unwrap(),
+                    None,
+                ),
+                (
+                    "wrong executor",
+                    lineage.value().clone(),
+                    EvidenceSource::new(
+                        "http.synthetic-other",
+                        "active-review-body-digest-privacy-guard",
+                    )
+                    .unwrap()
+                    .with_correlation_id("case:web.graphql.control")
+                    .unwrap(),
+                    None,
+                ),
+                (
+                    "wrong source method",
+                    lineage.value().clone(),
+                    EvidenceSource::new("http.graphql-review", "synthetic-wrong-method")
+                        .unwrap()
+                        .with_correlation_id("case:web.graphql.control")
+                        .unwrap(),
+                    None,
+                ),
+                (
+                    "wrong parents",
+                    lineage.value().clone(),
+                    lineage.source().clone(),
+                    Some(vec![original[0].id().clone()]),
+                ),
+            ] {
+                let mut batch = original.to_vec();
+                batch[index] = copy_with(lineage, value, source, parents, false);
+                assert_rejected(
+                    &receipt,
+                    batch,
+                    &operation,
+                    GraphqlResponsePrivacy::ValueFree,
+                    label,
+                );
+            }
+            let mut missing = original.to_vec();
+            missing.remove(index);
+            for item in &mut missing {
+                if let Some(derivation) = item.origin().derivation() {
+                    if derivation.references_parent(lineage.id()) {
+                        let parents = derivation
+                            .parents()
+                            .iter()
+                            .map(|id| {
+                                if id == lineage.id() {
+                                    original[0].id().clone()
+                                } else {
+                                    id.clone()
+                                }
+                            })
+                            .collect();
+                        *item = copy_with(
+                            item,
+                            item.value().clone(),
+                            item.source().clone(),
+                            Some(parents),
+                            false,
+                        );
+                    }
+                }
+            }
+            assert_rejected(
+                &receipt,
+                missing,
+                &operation,
+                GraphqlResponsePrivacy::ValueFree,
+                "missing lineage",
+            );
+            let mut duplicate = original.to_vec();
+            duplicate.insert(
+                index,
+                copy_with(
+                    lineage,
+                    lineage.value().clone(),
+                    lineage.source().clone(),
+                    None,
+                    true,
+                ),
+            );
+            assert_rejected(
+                &receipt,
+                duplicate,
+                &operation,
+                GraphqlResponsePrivacy::ValueFree,
+                "duplicate lineage",
+            );
+            let mut digest = original.to_vec();
+            digest.insert(
+                index,
+                record(
+                    receipt.case().subject(),
+                    EvidenceKind::Content,
+                    HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge(),
+                    EvidenceValue::Text("ab".repeat(32)),
+                    "response-body-sha256",
+                ),
+            );
+            assert_rejected(
+                &receipt,
+                digest,
+                &operation,
+                GraphqlResponsePrivacy::ValueFree,
+                "reintroduced body digest",
+            );
+
+            // This second, GraphQL-specific public digest is independently
+            // prohibited even though the HTTP defense base does not own it.
+            let mut digest = original.to_vec();
+            digest.insert(
+                index,
+                record(
+                    receipt.case().subject(),
+                    EvidenceKind::Custom("graphql-transport-observation".to_owned()),
+                    KnowledgePredicate::new("web.graphql.transport", "response_digest").unwrap(),
+                    EvidenceValue::Text("cd".repeat(32)),
+                    "response_digest",
+                ),
+            );
+            let (_, reintroduced) = committed_mutation(&receipt, digest);
+            assert!(leg_from_decision_receipt(
+                &reintroduced,
+                &operation,
+                GraphqlResponsePrivacy::ValueFree,
+            )
+            .is_err());
+        }
+
+        #[tokio::test]
+        async fn literal_graphql_value_free_receipts_reject_extraneous_lineage() {
+            let (_, private, operation) = literal_receipt(GraphqlResponsePrivacy::ValueFree).await;
+            let lineage = &private.evidence()[lineage_index(private.evidence())];
+            let mut extra = private.evidence().to_vec();
+            extra.insert(
+                lineage_index(&extra),
+                copy_with(
+                    lineage,
+                    EvidenceValue::Boolean(false),
+                    lineage.source().clone(),
+                    None,
+                    true,
+                ),
+            );
+            assert_rejected(
+                &private,
+                extra,
+                &operation,
+                GraphqlResponsePrivacy::ValueFree,
+                "extra malformed lineage",
+            );
+        }
+
+        #[tokio::test]
+        async fn literal_graphql_historical_receipts_reject_extraneous_lineage() {
+            let (_, private, _) = literal_receipt(GraphqlResponsePrivacy::ValueFree).await;
+            let lineage = &private.evidence()[lineage_index(private.evidence())];
+            let (_, historical, operation) =
+                literal_receipt(GraphqlResponsePrivacy::HistoricalDigests).await;
+            let mut extra = historical.evidence().to_vec();
+            // Its parents bind literal metadata already present in the historical
+            // batch, not references copied from another run's evidence IDs.
+            let mut parents = extra[..6]
+                .iter()
+                .map(|item| item.id().clone())
+                .collect::<Vec<_>>();
+            parents.push(extra[8].id().clone());
+            extra.insert(
+                9,
+                copy_with(
+                    lineage,
+                    lineage.value().clone(),
+                    lineage.source().clone(),
+                    Some(parents),
+                    true,
+                ),
+            );
+            assert_rejected(
+                &historical,
+                extra,
+                &operation,
+                GraphqlResponsePrivacy::HistoricalDigests,
+                "historical plus privacy lineage",
+            );
+        }
+    }
+
     #[test]
     fn endpoint_hints_are_bounded_and_debug_is_redacted() {
         let root = Url::parse("https://example.test/").unwrap();
@@ -1588,7 +2322,7 @@ mod tests {
             vec![GraphqlLegReceipt {
                 role: GraphqlOperationRole::Control,
                 request_digest: [1; 32],
-                response_digest: [2; 32],
+                response_digest: Some([2; 32]),
                 response_bytes: 44,
                 exact_graphql_media: true,
                 classification: GraphqlResponseKind::ExactControlEnvelope,

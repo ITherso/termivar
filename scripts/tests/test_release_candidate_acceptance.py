@@ -276,8 +276,12 @@ EXPECTED_SECRET_EXPOSURE_PREREQUISITES = (
 EXPECTED_SECRET_EXPOSURE_LIMITATION = (
     "Reviews only existing anonymous committed complete status-200 uncoded textual GET "
     "response bodies. It issues zero additional requests and uses a fixed bounded detector "
-    "catalogue. Reports contain no raw matched values or hashes. V1 fails closed when "
-    "GraphQL, OpenAPI, REST, resource authorization, "
+    "catalogue. Reports contain no raw matched values or hashes. When combined with explicit "
+    "GraphQL review, its fixed anonymous POST control, candidate and replay responses are not "
+    "detector inputs: their public whole-body and GraphQL response digests are suppressed "
+    "while categorical classification, replay agreement and exact committed opaque lineage "
+    "are retained. GraphQL retains its own authorized request allowance; this privacy "
+    "boundary adds no request. V1 fails closed when OpenAPI, REST, resource authorization, "
     "or WordPress discovery is selected because those response paths do not share its "
     "value-free body-digest boundary. Credential validity, ownership, source authenticity, "
     "provider acceptance, exploit execution, and impact "
@@ -4086,6 +4090,34 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             if surface["key"] != "option.secret-exposure-review"
         ]
         self.assert_rejected(missing, "secret-exposure surface identity")
+
+    def test_secret_exposure_graphql_composition_preserves_each_reviewed_boundary(self):
+        mutations = (
+            ("existing anonymous committed complete status-200 uncoded textual GET",
+             "all acquired GET and POST"),
+            ("When combined with explicit GraphQL review", "During automatic GraphQL review"),
+            ("fixed anonymous POST control, candidate and replay responses are not detector inputs",
+             "all GraphQL responses are detector inputs"),
+            ("public whole-body and GraphQL response digests are suppressed",
+             "public whole-body and GraphQL response digests are retained"),
+            ("categorical classification, replay agreement and exact committed opaque lineage are retained",
+             "classification uses an uncommitted whole-body hash"),
+            ("GraphQL retains its own authorized request allowance; this privacy boundary adds no request",
+             "GraphQL receives a fresh request allowance"),
+            ("V1 fails closed when OpenAPI, REST, resource authorization, or WordPress discovery is selected",
+             "All response-producing reviews are supported"),
+            ("Authenticated supplied-session response bodies are not selected",
+             "Authenticated supplied-session response bodies are selected"),
+        )
+        for reviewed, unsupported in mutations:
+            with self.subTest(boundary=reviewed):
+                self.assertEqual(EXPECTED_SECRET_EXPOSURE_LIMITATION.count(reviewed), 1)
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.secret-exposure-review")
+                surface["limitation"] = EXPECTED_SECRET_EXPOSURE_LIMITATION.replace(
+                    reviewed, unsupported, 1)
+                self.assert_rejected(document, "limitation")
 
     def test_pinned_tls_negotiation_surface_matches_the_named_producer_literals(self):
         source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(

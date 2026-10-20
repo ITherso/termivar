@@ -2056,9 +2056,10 @@ pub(crate) fn project_graphql_transport_response(
     requested_url: &Url,
     response: CollectedHttpResponse,
     reliability: ConfidenceScore,
-    mut graphql_observations: Vec<Evidence>,
-    graphql_classification: Evidence,
+    privacy: crate::web_runtime::GraphqlResponsePrivacy,
+    graphql_projection: (Vec<Evidence>, Evidence),
 ) -> Result<Vec<Evidence>, HttpEvidenceError> {
+    let (mut graphql_observations, graphql_classification) = graphql_projection;
     if response.final_url != *requested_url {
         return Err(HttpEvidenceError::AssessmentObserverInvariant {
             invariant: "GraphQL transport changed the exact requested target",
@@ -2146,12 +2147,6 @@ pub(crate) fn project_graphql_transport_response(
             "response-body-truncation",
         )?,
         observation(
-            EvidenceKind::Content,
-            HttpEvidencePredicate::RESPONSE_BODY_SHA256.into(),
-            EvidenceValue::Text(format!("{:x}", Sha256::digest(&response.body))),
-            "response-body-sha256",
-        )?,
-        observation(
             EvidenceKind::RateLimit,
             HttpEvidencePredicate::RATE_LIMIT_DETECTED.into(),
             EvidenceValue::Boolean(response.status == StatusCode::TOO_MANY_REQUESTS),
@@ -2178,6 +2173,32 @@ pub(crate) fn project_graphql_transport_response(
             "response-media-type-json-compatibility",
         )?);
     }
+    let body_parent = match privacy {
+        crate::web_runtime::GraphqlResponsePrivacy::HistoricalDigests => {
+            let digest = observation(
+                EvidenceKind::Content,
+                HttpEvidencePredicate::RESPONSE_BODY_SHA256.into(),
+                EvidenceValue::Text(format!("{:x}", Sha256::digest(&response.body))),
+                "response-body-sha256",
+            )?;
+            let id = digest.id().clone();
+            // Option-off evidence ordering and identities are unchanged.
+            evidence.insert(9, digest);
+            id
+        },
+        #[cfg(feature = "secret-exposure-review")]
+        crate::web_runtime::GraphqlResponsePrivacy::ValueFree => {
+            let lineage = crate::web_runtime::project_graphql_body_privacy_lineage(
+                decision,
+                &evidence,
+                executor_id,
+                reliability,
+            )?;
+            let id = lineage.id().clone();
+            evidence.push(lineage);
+            id
+        },
+    };
     let classification_predicate =
         KnowledgePredicate::new("web.graphql.transport", "classification")?;
     if graphql_observations
@@ -2210,9 +2231,9 @@ pub(crate) fn project_graphql_transport_response(
         HttpEvidencePredicate::RESPONSE_STATUS,
         HttpEvidencePredicate::RESPONSE_FINAL_URL,
         HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
-        HttpEvidencePredicate::RESPONSE_BODY_SHA256,
     ];
     let mut classification_parents = graphql_parent_ids;
+    classification_parents.push(body_parent.clone());
     for descriptor in classification_http_parents {
         let predicate = descriptor.into_knowledge();
         let mut matching = evidence
@@ -2252,11 +2273,11 @@ pub(crate) fn project_graphql_transport_response(
         HttpEvidencePredicate::RESPONSE_FINAL_URL,
         HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
         HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
-        HttpEvidencePredicate::RESPONSE_BODY_SHA256,
         HttpEvidencePredicate::RATE_LIMIT_DETECTED,
         HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
     ];
     let mut parents = Vec::with_capacity(parent_predicates.len());
+    parents.push(body_parent);
     for descriptor in parent_predicates {
         let predicate = descriptor.into_knowledge();
         let mut matching = evidence

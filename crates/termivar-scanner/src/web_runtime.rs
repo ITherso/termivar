@@ -173,6 +173,8 @@ pub use crate::xml_external_entity_review::{
     XML_EXTERNAL_ENTITY_REVIEW_AUDIT_SCHEMA, XML_EXTERNAL_ENTITY_REVIEW_CAPABILITY_ID,
     XML_EXTERNAL_ENTITY_TARGET_REQUESTS,
 };
+#[cfg(feature = "graphql-review")]
+pub(crate) use graphql_runtime::GraphqlResponsePrivacy;
 #[cfg(feature = "openapi-review")]
 pub use openapi_runtime::{
     OpenApiCandidateSource, OpenApiRuntimeOutcome, WebAssessmentOpenApiAudit,
@@ -203,6 +205,8 @@ pub use scan_profile::{
     BASELINE_SCAN_PROFILE_MAX_TOTAL_RESPONSE_BYTES, BASELINE_SCAN_PROFILE_MAX_WALL_TIME_MS,
     SCAN_PROFILE_V1_SCHEMA, WEB_REVIEW_SCAN_PROFILE_ID,
 };
+#[cfg(all(feature = "graphql-review", feature = "secret-exposure-review"))]
+pub(crate) use secret_exposure::project_graphql_body_privacy_lineage;
 #[cfg(feature = "secret-exposure-review")]
 pub use secret_exposure::{
     SecretExposureDetectorClass, SecretExposureResponseOutcome, WebAssessmentSecretExposureAudit,

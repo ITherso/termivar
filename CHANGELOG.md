@@ -16,6 +16,12 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ### Changed
 
+- Allowed explicit GraphQL review alongside passive secret-exposure review by
+  replacing public GraphQL response-body digests with exact committed value-free
+  lineage. The fixed anonymous GraphQL POSTs remain outside the GET-only detector;
+  categorical classification, replay agreement, parent accounting and option-off
+  evidence remain unchanged. Other unsupported response-source combinations
+  still fail closed, and this does not promote either feature into a bundle.
 - Advanced the post-`v0.10.0-alpha.2` development source line to
   `0.10.0-alpha.3` so later source binaries cannot be confused with the
   published alpha.2 prerelease.

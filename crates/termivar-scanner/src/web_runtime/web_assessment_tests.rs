@@ -1055,16 +1055,13 @@ fn secret_exposure_rejects_wordpress_discovery_at_builder_preflight() {
 
 #[cfg(all(feature = "secret-exposure-review", feature = "graphql-review"))]
 #[test]
-fn secret_exposure_rejects_graphql_at_builder_preflight() {
+fn secret_exposure_accepts_graphql_with_the_value_free_response_boundary() {
     let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
         .enable_secret_exposure_review()
         .enable_graphql_review()
         .build();
 
-    assert!(matches!(
-        result,
-        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
-    ));
+    assert!(result.is_ok());
 }
 
 #[cfg(all(feature = "secret-exposure-review", feature = "openapi-review"))]
@@ -5437,6 +5434,257 @@ async fn graphql_transport_persists_presence_and_replay_match_but_no_root_name_d
     };
     assert_eq!(surface_evidence, 1);
     assert_eq!(introspection_evidence, MAX_GRAPHQL_ITEM_EVIDENCE_REFERENCES);
+}
+
+#[cfg(all(feature = "graphql-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn graphql_privacy_composition_preserves_the_plan_and_committed_categorical_evidence() {
+    use crate::web_runtime::secret_exposure::{
+        graphql_response_privacy_parent_ids, is_active_review_body_privacy_lineage,
+        secret_exposure_response_parent_ids_for_executor, ACTIVE_REVIEW_BODY_LINEAGE,
+        SECRET_EXPOSURE_NAMESPACE,
+    };
+    for mode in [
+        GraphqlFixtureMode::Available,
+        GraphqlFixtureMode::Restricted,
+        GraphqlFixtureMode::ReplayMismatch,
+    ] {
+        let server = serve(move |request| graphql_fixture_reply(mode, request)).await;
+        let mut ordinary = WebAssessmentRuntime::builder(server.url("/"))
+            .enable_graphql_review()
+            .build()
+            .unwrap();
+        let before = ordinary.analyze().await.unwrap();
+        let before_requests = server.requests().await;
+        let mut private = WebAssessmentRuntime::builder(server.url("/"))
+            .enable_graphql_review()
+            .enable_secret_exposure_review()
+            .build()
+            .unwrap();
+        let after = private.analyze().await.unwrap();
+        assert_report_reconciles(&after);
+        assert_eq!(before.completion(), after.completion());
+        let requests = server.requests().await;
+        let after_requests = &requests[before_requests.len()..];
+        let trace = |requests: &[RecordedRequest]| {
+            requests
+                .iter()
+                .map(|item| {
+                    (
+                        item.method.clone(),
+                        item.path().to_owned(),
+                        item.body().to_vec(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(trace(&before_requests), trace(after_requests));
+        assert_eq!(after_requests.len(), 4);
+        assert_eq!(graphql_posts(after_requests).len(), 3);
+        assert_eq!(
+            before.usage().total_requests(),
+            after.usage().total_requests()
+        );
+        let identities = |report: &WebAssessmentRunReport| {
+            graphql_items(report)
+                .into_iter()
+                .map(|(capability, item)| (capability.to_owned(), item.fingerprint().to_owned()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(identities(&before), identities(&after));
+        // Fixed POST operations are NOT inputs to the passive GET detector.
+        let audit = after.secret_exposure_review_audit().unwrap();
+        assert_eq!(audit.response_count(), 1);
+        assert_eq!(audit.body_derived_projection_suppressed_response_count(), 1);
+
+        let subject =
+            EntityId::new(format!("graphql-endpoint:{}", server.url("/graphql"))).unwrap();
+        let evidence = private.authority.knowledge().evidence_for_subject(&subject);
+        assert!(!evidence.is_empty());
+        for item in &evidence {
+            assert_ne!(
+                item.predicate(),
+                &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+            );
+            assert!(
+                !(item.predicate().namespace() == "web.graphql.transport"
+                    && matches!(
+                        item.predicate().name(),
+                        "response_digest" | "root_identity_digest"
+                    ))
+            );
+            let debug = format!("{item:?}");
+            assert!(!debug.contains(GRAPHQL_ROOT_NAME_SECRET));
+            assert!(!debug.contains(GRAPHQL_REVIEW_SECRET));
+        }
+        for (case_id, action_id, stage) in [
+            (
+                "case:web.graphql.control",
+                "web.review.graphql.control",
+                DecisionExecutionStage::Passive,
+            ),
+            (
+                "case:web.graphql.introspection",
+                "web.review.graphql.introspection",
+                DecisionExecutionStage::Passive,
+            ),
+            (
+                "case:web.graphql.introspection-replay",
+                "web.review.graphql.introspection-replay",
+                DecisionExecutionStage::Active,
+            ),
+        ] {
+            let case = crate::VerificationCase::new(
+                case_id,
+                subject.clone(),
+                action_id,
+                "hypothesis:web.graphql.surface",
+            )
+            .unwrap()
+            .without_hypothesis_transition();
+            let batch = evidence
+                .iter()
+                .filter(|item| item.source().correlation_id() == Some(case_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            let parents =
+                graphql_response_privacy_parent_ids(&batch, &case, stage, "http.graphql-review")
+                    .unwrap();
+            assert_eq!(parents.len(), 7);
+            assert!(
+                secret_exposure_response_parent_ids_for_executor(
+                    &batch,
+                    &subject,
+                    case_id,
+                    "http.graphql-review"
+                )
+                .is_none(),
+                "ordinary response admission must still reject POST"
+            );
+            let lineages = batch
+                .iter()
+                .filter(|item| {
+                    item.predicate().namespace() == SECRET_EXPOSURE_NAMESPACE
+                        && item.predicate().name() == ACTIVE_REVIEW_BODY_LINEAGE
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(lineages.len(), 1);
+            assert!(is_active_review_body_privacy_lineage(
+                lineages[0],
+                &subject,
+                case_id,
+                "http.graphql-review",
+                &parents
+            ));
+            let classification = batch
+                .iter()
+                .find(|item| {
+                    item.predicate().namespace() == "web.graphql.transport"
+                        && item.predicate().name() == "classification"
+                })
+                .unwrap();
+            assert!(classification
+                .origin()
+                .derivation()
+                .unwrap()
+                .references_parent(lineages[0].id()));
+            assert!(classification
+                .origin()
+                .derivation()
+                .unwrap()
+                .parents()
+                .iter()
+                .all(|id| private.authority.knowledge().evidence(id).is_some()));
+            assert!(batch
+                .iter()
+                .filter(|item| item.predicate().namespace() == ASSESSMENT_DEFENSE_NAMESPACE)
+                .all(|item| item
+                    .origin()
+                    .derivation()
+                    .unwrap()
+                    .references_parent(lineages[0].id())));
+
+            // Closed route, exact parent set and direct provenance are independently enforced.
+            assert!(
+                graphql_response_privacy_parent_ids(&batch, &case, stage, "http.other").is_none()
+            );
+            let wrong_stage = if stage == DecisionExecutionStage::Passive {
+                DecisionExecutionStage::Active
+            } else {
+                DecisionExecutionStage::Passive
+            };
+            assert!(graphql_response_privacy_parent_ids(
+                &batch,
+                &case,
+                wrong_stage,
+                "http.graphql-review"
+            )
+            .is_none());
+            let mut duplicate = batch.clone();
+            duplicate.push(
+                batch
+                    .iter()
+                    .find(|item| {
+                        item.predicate() == &HttpEvidencePredicate::REQUEST_METHOD.into_knowledge()
+                    })
+                    .unwrap()
+                    .clone(),
+            );
+            assert!(graphql_response_privacy_parent_ids(
+                &duplicate,
+                &case,
+                stage,
+                "http.graphql-review"
+            )
+            .is_none());
+            for descriptor in [
+                HttpEvidencePredicate::REQUEST_METHOD,
+                HttpEvidencePredicate::REQUEST_URL,
+                HttpEvidencePredicate::RESPONSE_STATUS,
+                HttpEvidencePredicate::RESPONSE_FINAL_URL,
+                HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+                HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+            ] {
+                let missing = batch
+                    .iter()
+                    .filter(|item| item.predicate() != &descriptor.into_knowledge())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert!(graphql_response_privacy_parent_ids(
+                    &missing,
+                    &case,
+                    stage,
+                    "http.graphql-review"
+                )
+                .is_none());
+            }
+            let mut wrong_method = batch.clone();
+            let method = wrong_method
+                .iter_mut()
+                .find(|item| {
+                    item.predicate() == &HttpEvidencePredicate::REQUEST_METHOD.into_knowledge()
+                })
+                .unwrap();
+            *method = termivar_core::Evidence::new(
+                subject.clone(),
+                termivar_core::EvidenceKind::Http,
+                HttpEvidencePredicate::REQUEST_METHOD.into_knowledge(),
+                termivar_core::EvidenceValue::Text("GET".to_owned()),
+                termivar_core::EvidenceSource::new("http.graphql-review", "request-method")
+                    .unwrap()
+                    .with_correlation_id(case_id)
+                    .unwrap(),
+                method.reliability(),
+            );
+            assert!(graphql_response_privacy_parent_ids(
+                &wrong_method,
+                &case,
+                stage,
+                "http.graphql-review"
+            )
+            .is_none());
+        }
+    }
 }
 
 #[cfg(feature = "graphql-review")]

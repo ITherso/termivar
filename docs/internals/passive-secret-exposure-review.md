@@ -54,14 +54,54 @@ The first slice deliberately does not inspect supplied-session response bodies.
 Selecting `supplied-session-review` does not transfer its credentials or
 authenticated body authority to this observer.
 
-V1 fails closed when the same invocation selects GraphQL, OpenAPI, REST,
-resource authorization, or WordPress discovery. Those separate
+V1 fails closed when the same invocation selects OpenAPI, REST, resource
+authorization, or WordPress discovery. Those separate
 response-producing paths do not yet implement this feature's value-free body
 digest boundary. This is a preflight refusal before target traffic or output
 reservation, not an assertion that those reviews found or leaked a secret.
 Supplied-session review remains compatible because its authenticated bodies are
 reduced inside their context-specific runtime and are never selected by this
 anonymous observer.
+
+## Explicit GraphQL composition
+
+A binary compiled with both `graphql-review` and `secret-exposure-review` may
+select both options under the existing web-review profile:
+
+```console
+termivar scan https://app.example.test/ \
+  --profile web-review --graphql-review --secret-exposure-review \
+  --report-dir assessment-graphql-value-free
+```
+
+The fixed anonymous GraphQL `POST` control, candidate and replay responses do
+not enter the passive detector. They add no detector response, interpreted-byte,
+match or exposure-observation count. Their existing bounded categorical
+classification, root-presence facts and candidate/replay agreement remain
+available. The schema-root names remain transient and are not published.
+
+With secret-exposure review selected, neither the ordinary whole-body SHA-256
+nor the separate framed GraphQL response digest is retained for these responses,
+including zero-detector-match and unsuccessful classifications. An opaque
+value-free record binds each classification and defense projection to its exact
+committed response receipt. It is not a secret finding, source authentication
+or a substitute for response completeness. Ordinary passive detector admission
+remains the GET-only contract above.
+
+GraphQL still consumes its own existing authorized parent request, byte, deadline
+and replay allowances; the privacy guard creates no request, retry or budget.
+Without secret-exposure review, its historical digest evidence and classification
+contract remain unchanged. A matched fixture with no links or forms retains the
+same GraphQL request trace with the privacy option off or on. This is not a
+general promise that all body-derived discovery is unchanged: ordinary selected
+responses still have the documented generic-body projection suppression.
+
+The process tests use synthetic GraphQL root-name and error-message canaries,
+independent literal request/operation expectations, and both raw and framed body
+digest checks. The owned fixture is stopped and joined before bundle Verify and
+self-Compare; these offline operations must preserve bundle bytes. Incomplete
+GraphQL collection must not publish a completed bundle. No inventory, account,
+real secret or external provider is required by these fixtures.
 
 ## Fixed V1 detector catalogue
 

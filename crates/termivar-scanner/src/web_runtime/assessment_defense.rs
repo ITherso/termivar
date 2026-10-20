@@ -1043,6 +1043,15 @@ impl BaseEvidence {
             receipt.case().id(),
             receipt.executor_id(),
         );
+        #[cfg(all(feature = "secret-exposure-review", feature = "graphql-review"))]
+        let expected_active_lineage_parents = expected_active_lineage_parents.or_else(|| {
+            super::secret_exposure::graphql_response_privacy_parent_ids(
+                receipt.evidence(),
+                receipt.case(),
+                receipt.stage(),
+                receipt.executor_id(),
+            )
+        });
         match (digests.as_slice(), lineages.as_slice()) {
             ([(index, digest)], [])
                 if *index < first_defense
